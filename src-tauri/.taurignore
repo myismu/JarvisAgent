@@ -1,0 +1,10 @@
+memory.jsonl
+memory/
+memory/*
+memory/global_memory.md
+memory/GEMINI.md
+.transcripts/
+.transcripts/*
+.agent_loop_debug.txt
+
+
