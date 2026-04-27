@@ -8,6 +8,7 @@ use crate::core::tasks::TaskManager;
 pub async fn task_create(
     _app: &tauri::AppHandle,
     input: &serde_json::Value,
+    _session_id: &str,
 ) -> String {
     let subject = input["subject"].as_str().unwrap_or("").to_string();
     let description = input["description"].as_str().unwrap_or("").to_string();
@@ -20,6 +21,7 @@ pub async fn task_create(
 pub async fn task_update(
     _app: &tauri::AppHandle,
     input: &serde_json::Value,
+    _session_id: &str,
 ) -> String {
     let id = input["task_id"].as_i64().unwrap_or(0) as i32;
     let status = input["status"].as_str().map(|s| match s {
@@ -46,6 +48,7 @@ pub async fn task_update(
 pub async fn task_list(
     _app: &tauri::AppHandle,
     _input: &serde_json::Value,
+    _session_id: &str,
 ) -> String {
     TaskManager::new().list_all().unwrap_or_else(|e| e)
 }
@@ -54,6 +57,7 @@ pub async fn task_list(
 pub async fn task_get(
     _app: &tauri::AppHandle,
     input: &serde_json::Value,
+    _session_id: &str,
 ) -> String {
     let id = input["task_id"].as_i64().unwrap_or(0) as i32;
     TaskManager::new().get(id).unwrap_or_else(|e| e)
@@ -63,6 +67,7 @@ pub async fn task_get(
 pub async fn task_summary(
     _app: &tauri::AppHandle,
     _input: &serde_json::Value,
+    _session_id: &str,
 ) -> String {
     TaskManager::new().summary().unwrap_or_else(|e| e)
 }

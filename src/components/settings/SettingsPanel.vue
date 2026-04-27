@@ -9,7 +9,7 @@
           </svg>
         </button>
       </div>
-      
+
       <div class="settings-container">
         <!-- 左侧预设列表 -->
         <div class="settings-sidebar">
@@ -18,19 +18,33 @@
             <button class="add-btn" @click="addProfile" title="添加新预设">+</button>
           </div>
           <div class="profile-list">
-            <div 
-              v-for="profile in appConfig.profiles" 
+            <div
+              v-for="profile in draftConfig.profiles"
               :key="profile.id"
               class="profile-item"
-              :class="{ 
+              :class="{
                 'active': selectedProfileId === profile.id,
-                'is-running': appConfig.activeProfileId === profile.id 
+                'is-running': draftConfig.activeProfileId === profile.id
               }"
               @click="selectProfile(profile.id)"
             >
               <span class="profile-name">{{ profile.name }}</span>
               <div class="profile-actions">
-                <button v-if="appConfig.profiles.length > 1" class="delete-btn" @click.stop="deleteProfile(profile.id)">
+                <label class="sidebar-switch" title="设为全局默认" @click.stop>
+                  <input
+                    type="checkbox"
+                    :checked="savedConfig.globalProfileId === profile.id"
+                    :disabled="actionLoading"
+                    @change="toggleGlobalProfile(profile.id)"
+                  />
+                  <span class="slider"></span>
+                </label>
+                <button
+                  v-if="draftConfig.profiles.length > 1"
+                  class="delete-btn"
+                  :disabled="actionLoading"
+                  @click.stop="requestDeleteProfile(profile.id)"
+                >
                   <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
                 </button>
               </div>
@@ -47,15 +61,7 @@
                 <label>预设名称</label>
                 <input type="text" v-model="editingProfile.name" placeholder="例如：Claude 3.5 Pro" />
               </div>
-              <div class="setting-item">
-                <label>设为当前激活</label>
-                <div class="switch-container">
-                  <input type="checkbox" :checked="appConfig.activeProfileId === selectedProfileId" @change="toggleActive" />
-                  <span class="switch-label">{{ appConfig.activeProfileId === selectedProfileId ? '当前正在使用' : '切换到此预设' }}</span>
-                </div>
-              </div>
             </div>
-
             <div class="setting-group">
               <h4>API 配置</h4>
               <div class="setting-item">
@@ -79,19 +85,91 @@
             <div class="setting-group">
               <h4>模型配置</h4>
               <div class="setting-item">
-                <label>主代理模型 (Main Agent)</label>
-                <input type="text" v-model="editingProfile.config.mainModel" placeholder="claude-3-5-sonnet-20241022" />
-                <div class="setting-desc">负责对话、意图识别与任务分发。建议使用最强的模型。</div>
-              </div>
-              <div class="setting-item">
-                <label>子代理模型 (Sub Agent)</label>
-                <input type="text" v-model="editingProfile.config.subModel" placeholder="claude-3-5-sonnet-20241022" />
-                <div class="setting-desc">负责实际执行具体任务（文件读写、搜索等）。</div>
+                <label>对话模型 (Main + Sub Agent)</label>
+                <input
+                  type="text"
+                  v-model="editingProfile.config.mainModel"
+                  placeholder="deepseek-v4-pro / claude-3-5-sonnet-20241022"
+                  @input="onMainModelInput"
+                />
+                <div class="capability-badges" v-if="mainModelCaps !== null">
+                  <span class="badge" :class="mainModelCaps ? 'badge-ok' : 'badge-none'">
+                    <svg v-if="mainModelCaps" viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                    <svg v-else viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                    <span>{{ mainModelCaps ? '已识别' : '未知模型' }}</span>
+                  </span>
+                  <template v-if="mainModelCaps">
+                    <span class="badge" :class="mainModelCaps.streaming ? 'badge-ok' : 'badge-no'">
+                      <svg v-if="mainModelCaps.streaming" viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+                      <svg v-else viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                      <span>{{ mainModelCaps.streaming ? '流式' : '无流式' }}</span>
+                    </span>
+                    <span class="badge" :class="mainModelCaps.thinking ? 'badge-think' : 'badge-none'">
+                      <svg v-if="mainModelCaps.thinking" viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"></path><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"></path></svg>
+                      <svg v-else viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                      <span>{{ mainModelCaps.thinking ? '深度思考' : '无思考' }}</span>
+                    </span>
+                    <span class="badge" :class="mainModelCaps.temperature ? 'badge-ok' : 'badge-none'">
+                      <svg v-if="mainModelCaps.temperature" viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line></svg>
+                      <svg v-else viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                      <span>{{ mainModelCaps.temperature ? '温度可调' : '温度固定' }}</span>
+                    </span>
+                    <span class="badge" :class="mainModelCaps.vision ? 'badge-ok' : 'badge-none'">
+                      <svg v-if="mainModelCaps.vision" viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                      <svg v-else viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+                      <span>{{ mainModelCaps.vision ? '多模态' : '纯文本' }}</span>
+                    </span>
+                    <span class="badge badge-info">
+                      <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h14a2 2 0 0 0 2-2V7.5L14.5 2H6a2 2 0 0 0-2 2v4"></path><polyline points="14 2 14 8 20 8"></polyline><path d="M2 15h10"></path><path d="M9 18l3-3-3-3"></path></svg>
+                      <span>Max {{ mainModelCaps.maxTokens.toLocaleString() }} tokens</span>
+                    </span>
+                  </template>
+                  <span class="badge badge-warn" v-else>手动确认是否支持各功能</span>
+                </div>
+                <div class="capability-note" v-if="mainModelCaps?.notes">{{ mainModelCaps.notes }}</div>
+                <div class="setting-desc">主代理（对话）与子代理（执行任务）共用此模型。建议使用最强的模型。</div>
               </div>
               <div class="setting-item">
                 <label>工具代理模型 (Utility Agent)</label>
                 <input type="text" v-model="editingProfile.config.utilityModel" placeholder="claude-3-5-haiku-20241022" />
                 <div class="setting-desc">负责后台记忆整理、摘要压缩等。可使用更便宜、更快的模型。</div>
+              </div>
+
+              <div class="setting-item">
+                <label>温度 (Temperature)</label>
+                <input type="number" v-model.number="editingProfile.config.temperature" placeholder="留空使用模型默认值" step="0.1" min="0" max="2" />
+                <div class="setting-desc">控制输出的随机性，值越大越具创造性，越小越严谨。</div>
+              </div>
+
+              <div class="setting-item">
+                <label>Top-P</label>
+                <input type="number" v-model.number="editingProfile.config.topP" placeholder="留空使用模型默认值" step="0.1" min="0" max="1" />
+                <div class="setting-desc">核采样，控制输出词汇的范围分布，与温度类似。</div>
+              </div>
+
+              <div class="setting-item" v-show="editingProfile.config.apiFormat === 'anthropic'">
+                <label>Top-K</label>
+                <input type="number" v-model.number="editingProfile.config.topK" placeholder="留空使用模型默认值" step="1" min="0" />
+                <div class="setting-desc">控制每次采样只从概率最高的 K 个词中选取。</div>
+              </div>
+            </div>
+
+            <div class="setting-group">
+              <h4>图片压缩</h4>
+              <div class="setting-item">
+                <label>最大宽度 (px)</label>
+                <input type="number" v-model.number="editingProfile.config.imageMaxWidth" placeholder="1920" step="1" min="100" max="8192" />
+                <div class="setting-desc">超过此宽度的图片将等比缩放。留空使用默认值 1920。</div>
+              </div>
+              <div class="setting-item">
+                <label>最大高度 (px)</label>
+                <input type="number" v-model.number="editingProfile.config.imageMaxHeight" placeholder="1080" step="1" min="100" max="8192" />
+                <div class="setting-desc">超过此高度的图片将等比缩放。留空使用默认值 1080。</div>
+              </div>
+              <div class="setting-item">
+                <label>压缩质量</label>
+                <input type="number" v-model.number="editingProfile.config.imageQuality" placeholder="0.8" step="0.05" min="0.1" max="1.0" />
+                <div class="setting-desc">JPEG/WebP 压缩质量，0.1 最小体积 ~ 1.0 最高画质。留空使用默认值 0.8。</div>
               </div>
             </div>
           </div>
@@ -101,18 +179,32 @@
       <div class="settings-footer">
         <span class="status-msg" :class="{ 'error': isError, 'success': isSuccess }">{{ statusMsg }}</span>
         <div class="footer-actions">
-          <button class="save-btn" @click="save" :disabled="isSaving">
+          <button class="save-btn" @click="save" :disabled="isSaving || actionLoading">
             {{ isSaving ? '保存中...' : '保存所有更改' }}
           </button>
         </div>
       </div>
     </div>
+
+    <ConfirmModal
+      :open="!!deleteConfirm"
+      :title="deleteConfirm?.title || ''"
+      :message="deleteConfirm?.message || ''"
+      :warning="deleteConfirm?.warning || ''"
+      confirm-text="确认删除"
+      cancel-text="取消"
+      confirm-kind="danger"
+      :loading="actionLoading"
+      @cancel="deleteConfirm = null"
+      @confirm="confirmDeleteProfile"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import ConfirmModal from '../common/ConfirmModal.vue'
 
 const props = defineProps<{
   modelValue: boolean
@@ -127,8 +219,24 @@ interface AgentConfig {
   apiKey: string
   baseUrl: string
   mainModel: string
-  subModel: string
   utilityModel: string
+  enableThinking?: boolean
+  temperature?: number | null
+  topP?: number | null
+  topK?: number | null
+  imageMaxWidth?: number | null
+  imageMaxHeight?: number | null
+  imageQuality?: number | null
+}
+
+interface ModelCapabilities {
+  streaming: boolean
+  thinking: boolean
+  thinkingParam?: string
+  temperature: boolean
+  vision: boolean
+  maxTokens: number
+  notes: string
 }
 
 interface ModelProfile {
@@ -139,31 +247,123 @@ interface ModelProfile {
 
 interface AppConfig {
   activeProfileId: string
+  globalProfileId: string
   profiles: ModelProfile[]
 }
 
-const appConfig = ref<AppConfig>({
+const createEmptyConfig = (): AppConfig => ({
   activeProfileId: 'default',
+  globalProfileId: 'default',
   profiles: []
 })
 
+const cloneConfig = <T>(value: T): T => JSON.parse(JSON.stringify(value))
+
+const normalizeProfileConfig = (config: AppConfig) => {
+  config.profiles.forEach((p) => {
+    p.config.temperature = p.config.temperature == null ? null : Number(p.config.temperature)
+    p.config.topP = p.config.topP == null ? null : Number(p.config.topP)
+    p.config.topK = p.config.topK == null ? null : Number(p.config.topK)
+    p.config.imageMaxWidth = p.config.imageMaxWidth == null ? null : Number(p.config.imageMaxWidth)
+    p.config.imageMaxHeight = p.config.imageMaxHeight == null ? null : Number(p.config.imageMaxHeight)
+    p.config.imageQuality = p.config.imageQuality == null ? null : Number(p.config.imageQuality)
+  })
+  return config
+}
+
+const ensureValidSelection = (config: AppConfig, preferredId?: string) => {
+  if (config.profiles.length === 0) {
+    config.activeProfileId = 'default'
+    config.globalProfileId = 'default'
+    selectedProfileId.value = 'default'
+    return
+  }
+
+  const fallbackId = preferredId && config.profiles.find((p) => p.id === preferredId)
+    ? preferredId
+    : config.profiles[0].id
+
+  if (!config.profiles.find((p) => p.id === config.activeProfileId)) {
+    config.activeProfileId = config.profiles[0].id
+  }
+  if (!config.profiles.find((p) => p.id === config.globalProfileId)) {
+    config.globalProfileId = config.profiles[0].id
+  }
+  if (!config.profiles.find((p) => p.id === selectedProfileId.value)) {
+    selectedProfileId.value = fallbackId
+  }
+}
+
+const syncConfigs = (config: AppConfig, preferredId?: string) => {
+  const normalized = normalizeProfileConfig(cloneConfig(config))
+  ensureValidSelection(normalized, preferredId)
+  savedConfig.value = cloneConfig(normalized)
+  draftConfig.value = cloneConfig(normalized)
+}
+
+const savedConfig = ref<AppConfig>(createEmptyConfig())
+const draftConfig = ref<AppConfig>(createEmptyConfig())
 const selectedProfileId = ref('default')
 const isSaving = ref(false)
+const actionLoading = ref(false)
 const statusMsg = ref('')
 const isError = ref(false)
 const isSuccess = ref(false)
+const deleteConfirm = ref<{ id: string; title: string; message: string; warning: string } | null>(null)
 
 const editingProfile = computed(() => {
-  return appConfig.value.profiles.find(p => p.id === selectedProfileId.value)
+  return draftConfig.value.profiles.find(p => p.id === selectedProfileId.value)
+})
+
+const mainModelCaps = ref<ModelCapabilities | null | undefined>(undefined)
+let capQueryTimer: ReturnType<typeof setTimeout> | null = null
+
+const resetStatus = () => {
+  statusMsg.value = ''
+  isError.value = false
+  isSuccess.value = false
+}
+
+const setErrorStatus = (message: string) => {
+  statusMsg.value = message
+  isError.value = true
+  isSuccess.value = false
+}
+
+const setSuccessStatus = (message: string) => {
+  statusMsg.value = message
+  isError.value = false
+  isSuccess.value = true
+}
+
+const onMainModelInput = () => {
+  if (capQueryTimer) clearTimeout(capQueryTimer)
+  mainModelCaps.value = undefined
+  capQueryTimer = setTimeout(async () => {
+    const modelId = editingProfile.value?.config.mainModel?.trim()
+    if (!modelId) {
+      mainModelCaps.value = undefined
+      return
+    }
+    try {
+      const caps = await invoke<ModelCapabilities | null>('get_model_capabilities', { modelId })
+      mainModelCaps.value = caps
+    } catch {
+      mainModelCaps.value = null
+    }
+  }, 400)
+}
+
+watch(selectedProfileId, () => {
+  const modelId = editingProfile.value?.config.mainModel?.trim()
+  if (modelId) onMainModelInput()
+  else mainModelCaps.value = undefined
 })
 
 const loadConfig = async () => {
   try {
     const res = await invoke<AppConfig>('get_config')
-    appConfig.value = res
-    if (res.profiles.length > 0 && !res.profiles.find(p => p.id === selectedProfileId.value)) {
-      selectedProfileId.value = res.activeProfileId || res.profiles[0].id
-    }
+    syncConfigs(res, res.activeProfileId || res.profiles[0]?.id)
   } catch (e) {
     console.error('Failed to load config:', e)
   }
@@ -171,8 +371,9 @@ const loadConfig = async () => {
 
 watch(() => props.modelValue, (newVal) => {
   if (newVal) {
+    resetStatus()
+    deleteConfirm.value = null
     loadConfig()
-    statusMsg.value = ''
   }
 })
 
@@ -181,8 +382,9 @@ const selectProfile = (id: string) => {
 }
 
 const addProfile = () => {
+  resetStatus()
   const newId = `profile_${Date.now()}`
-  appConfig.value.profiles.push({
+  draftConfig.value.profiles.push({
     id: newId,
     name: '新预设',
     config: {
@@ -190,55 +392,140 @@ const addProfile = () => {
       apiKey: '',
       baseUrl: '',
       mainModel: '',
-      subModel: '',
-      utilityModel: ''
+      utilityModel: '',
+      enableThinking: false,
+      temperature: null,
+      topP: null,
+      topK: null,
+      imageMaxWidth: null,
+      imageMaxHeight: null,
+      imageQuality: null
     }
   })
   selectedProfileId.value = newId
 }
 
-const deleteProfile = (id: string) => {
-  if (appConfig.value.profiles.length <= 1) return
-  
-  const index = appConfig.value.profiles.findIndex(p => p.id === id)
-  if (index !== -1) {
-    appConfig.value.profiles.splice(index, 1)
-    if (selectedProfileId.value === id) {
-      selectedProfileId.value = appConfig.value.profiles[0].id
-    }
-    if (appConfig.value.activeProfileId === id) {
-      appConfig.value.activeProfileId = appConfig.value.profiles[0].id
-    }
+const toggleGlobalProfile = async (profileId: string) => {
+  if (actionLoading.value || savedConfig.value.globalProfileId === profileId) return
+
+  actionLoading.value = true
+  resetStatus()
+  try {
+    const nextConfig = cloneConfig(savedConfig.value)
+    nextConfig.globalProfileId = profileId
+    ensureValidSelection(nextConfig, selectedProfileId.value)
+    await invoke('save_config_cmd', { newConfig: nextConfig })
+    syncConfigs(nextConfig, selectedProfileId.value)
+    setSuccessStatus('全局默认预设已更新')
+  } catch (e) {
+    console.error('保存全局预设失败:', e)
+    setErrorStatus(`保存全局预设失败: ${e}`)
+  } finally {
+    actionLoading.value = false
   }
 }
 
-const toggleActive = (e: Event) => {
-  const checked = (e.target as HTMLInputElement).checked
-  if (checked) {
-    appConfig.value.activeProfileId = selectedProfileId.value
+const requestDeleteProfile = (id: string) => {
+  if (draftConfig.value.profiles.length <= 1) return
+
+  const profile = draftConfig.value.profiles.find(p => p.id === id)
+  if (!profile) return
+
+  deleteConfirm.value = {
+    id,
+    title: '确认删除配置预设',
+    message: `确定要删除配置预设“${profile.name}”吗？`,
+    warning: '此操作会立即保存且不可撤销。'
+  }
+}
+
+const confirmDeleteProfile = async () => {
+  if (!deleteConfirm.value || actionLoading.value) return
+
+  actionLoading.value = true
+  resetStatus()
+  try {
+    const targetId = deleteConfirm.value.id
+    const nextConfig = cloneConfig(savedConfig.value)
+    const index = nextConfig.profiles.findIndex((p) => p.id === targetId)
+    if (index === -1) {
+      deleteConfirm.value = null
+      return
+    }
+
+    nextConfig.profiles.splice(index, 1)
+    if (nextConfig.profiles.length === 0) {
+      throw new Error('至少需要保留一个配置预设')
+    }
+
+    const fallbackId = nextConfig.profiles[0].id
+    if (nextConfig.activeProfileId === targetId) {
+      nextConfig.activeProfileId = fallbackId
+    }
+    if (nextConfig.globalProfileId === targetId) {
+      nextConfig.globalProfileId = fallbackId
+    }
+
+    const nextSelectedId = selectedProfileId.value === targetId ? fallbackId : selectedProfileId.value
+    ensureValidSelection(nextConfig, nextSelectedId)
+    await invoke('save_config_cmd', { newConfig: nextConfig })
+    syncConfigs(nextConfig, nextSelectedId)
+    deleteConfirm.value = null
+    setSuccessStatus('配置预设已删除并保存')
+  } catch (e) {
+    console.error('删除配置预设失败:', e)
+    setErrorStatus(`删除配置预设失败: ${e}`)
+  } finally {
+    actionLoading.value = false
   }
 }
 
 const close = () => {
+  draftConfig.value = cloneConfig(savedConfig.value)
+  ensureValidSelection(draftConfig.value, selectedProfileId.value)
+  deleteConfirm.value = null
+  resetStatus()
   emit('update:modelValue', false)
 }
 
 const save = async () => {
+  if (!draftConfig.value.profiles || draftConfig.value.profiles.length === 0) return
+
+  ensureValidSelection(draftConfig.value, selectedProfileId.value)
+
+  for (const p of draftConfig.value.profiles) {
+    if (!p.name || !p.name.trim()) {
+      setErrorStatus('预设名称不能为空')
+      return
+    }
+    if (!p.config.baseUrl || !p.config.baseUrl.trim()) {
+      setErrorStatus(`预设 [${p.name}] 的 API Base URL 不能为空`)
+      return
+    }
+    if (!p.config.mainModel || !p.config.mainModel.trim()) {
+      setErrorStatus(`预设 [${p.name}] 的主代理模型不能为空`)
+      return
+    }
+    if (!p.config.utilityModel || !p.config.utilityModel.trim()) {
+      setErrorStatus(`预设 [${p.name}] 的工具代理模型不能为空`)
+      return
+    }
+  }
+
   isSaving.value = true
-  statusMsg.value = ''
-  isError.value = false
-  isSuccess.value = false
+  resetStatus()
 
   try {
-    await invoke('save_config_cmd', { newConfig: appConfig.value })
-    isSuccess.value = true
-    statusMsg.value = '配置已保存并同步'
+    const nextConfig = normalizeProfileConfig(cloneConfig(draftConfig.value))
+    ensureValidSelection(nextConfig, selectedProfileId.value)
+    await invoke('save_config_cmd', { newConfig: nextConfig })
+    syncConfigs(nextConfig, selectedProfileId.value)
+    setSuccessStatus('配置已保存并同步')
     setTimeout(() => {
       close()
     }, 800)
   } catch (e) {
-    isError.value = true
-    statusMsg.value = `保存失败: ${e}`
+    setErrorStatus(`保存失败: ${e}`)
   } finally {
     isSaving.value = false
   }
@@ -252,31 +539,40 @@ const save = async () => {
   left: 0;
   width: 100%;
   height: 100%;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.4);
   display: flex;
   justify-content: center;
   align-items: center;
   z-index: 1000;
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  animation: fadeIn var(--transition-fast);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .settings-modal {
-  background: var(--bg-panel);
-  border: 1px solid var(--border-color);
-  border-radius: 16px;
+  background: var(--glass-bg-heavy);
+  backdrop-filter: blur(var(--glass-blur-heavy));
+  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-xl);
   width: 850px;
   max-width: 95%;
   height: 600px;
   max-height: 90vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.3);
-  animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: var(--glass-shadow);
+  animation: slideIn var(--transition-normal);
   overflow: hidden;
 }
 
 @keyframes slideIn {
-  from { opacity: 0; transform: scale(0.95) translateY(10px); }
+  from { opacity: 0; transform: scale(0.96) translateY(12px); }
   to { opacity: 1; transform: scale(1) translateY(0); }
 }
 
@@ -285,15 +581,18 @@ const save = async () => {
   justify-content: space-between;
   align-items: center;
   padding: 16px 24px;
-  border-bottom: 1px solid var(--border-color);
-  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
 }
 
 .settings-header h3 {
   margin: 0;
-  font-size: 18px;
+  font-size: 1.1rem;
   font-weight: 600;
   color: var(--text-main);
+  letter-spacing: 0.02em;
 }
 
 .settings-container {
@@ -304,82 +603,78 @@ const save = async () => {
 
 /* 侧边栏样式 */
 .settings-sidebar {
-  width: 220px;
-  border-right: 1px solid var(--border-color);
-  background: var(--bg-sidebar);
+  width: 240px;
+  border-right: 1px solid var(--glass-border);
+  background: var(--glass-bg-light);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
   display: flex;
   flex-direction: column;
 }
 
 .sidebar-section-header {
-  padding: 16px;
+  padding: 16px 20px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 0.8rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.05em;
 }
 
 .add-btn {
-  background: var(--accent-blue);
-  color: white;
-  border: none;
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
+  background: var(--glass-bg-light);
+  color: var(--accent-blue);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   font-size: 16px;
-  transition: all 0.2s;
+  font-weight: 600;
+  transition: all var(--transition-fast);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 .add-btn:hover {
-  transform: scale(1.1);
-  filter: brightness(1.1);
+  background: rgba(59, 130, 246, 0.1);
+  border-color: var(--accent-blue);
+  transform: translateY(-1px);
 }
 
 .profile-list {
   flex: 1;
   overflow-y: auto;
-  padding: 8px;
+  padding: 8px 12px;
 }
 
 .profile-item {
-  padding: 10px 12px;
-  border-radius: 8px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   margin-bottom: 4px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  transition: all 0.2s;
+  transition: all var(--transition-fast);
   color: var(--text-muted);
 }
 
 .profile-item:hover {
-  background: rgba(128, 128, 128, 0.1);
+  background: var(--glass-bg-light);
   color: var(--text-main);
 }
 
 .profile-item.active {
-  background: rgba(0, 102, 204, 0.1);
+  background: rgba(0, 102, 204, 0.12);
   color: var(--accent-blue);
   font-weight: 500;
-}
-
-.profile-item.is-running::after {
-  content: "RUNNING";
-  font-size: 9px;
-  padding: 2px 4px;
-  background: var(--accent-green);
-  color: white;
-  border-radius: 4px;
-  font-weight: 700;
 }
 
 .profile-name {
@@ -388,6 +683,60 @@ const save = async () => {
   text-overflow: ellipsis;
   flex: 1;
   font-size: 13px;
+  padding-right: 8px;
+}
+
+.profile-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sidebar-switch {
+  position: relative;
+  display: inline-block;
+  width: 28px;
+  height: 16px;
+  margin: 0;
+}
+
+.sidebar-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.sidebar-switch .slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--border-color);
+  transition: .3s;
+  border-radius: 16px;
+}
+
+.sidebar-switch .slider:before {
+  position: absolute;
+  content: "";
+  height: 12px;
+  width: 12px;
+  left: 2px;
+  bottom: 2px;
+  background-color: white;
+  transition: .3s;
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+}
+
+.sidebar-switch input:checked + .slider {
+  background-color: var(--accent-green);
+}
+
+.sidebar-switch input:checked + .slider:before {
+  transform: translateX(12px);
 }
 
 .delete-btn {
@@ -412,7 +761,7 @@ const save = async () => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: var(--bg-panel);
+  background: var(--glass-bg-heavy);
 }
 
 .settings-body {
@@ -448,20 +797,22 @@ const save = async () => {
 .setting-item input, .setting-item select {
   width: 100%;
   padding: 10px 14px;
-  background: var(--bg-sidebar);
-  border: 1px solid var(--border-color);
+  background: var(--glass-bg-light);
+  border: 1px solid var(--glass-border);
   border-radius: 8px;
   color: var(--text-main);
   font-family: var(--font-mono);
   font-size: 13px;
   transition: all 0.2s;
   box-sizing: border-box;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 .setting-item input:focus, .setting-item select:focus {
   outline: none;
   border-color: var(--accent-blue);
-  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.15);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
 .switch-container {
@@ -469,63 +820,136 @@ const save = async () => {
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  background: rgba(128, 128, 128, 0.05);
-  border-radius: 8px;
+  background: var(--glass-bg-light);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border-subtle);
   width: fit-content;
+  transition: background var(--transition-fast);
 }
 
 .switch-label {
   font-size: 13px;
+  font-weight: 500;
   color: var(--text-main);
+}
+
+.capability-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  transition: all var(--transition-fast);
+}
+
+.badge-ok {
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--accent-green);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.badge-think {
+  background: rgba(139, 92, 246, 0.1);
+  color: #a080f0;
+  border: 1px solid rgba(139, 92, 246, 0.2);
+}
+
+.badge-none {
+  background: rgba(100, 116, 139, 0.08);
+  color: var(--text-muted);
+  border: 1px solid rgba(100, 116, 139, 0.15);
+}
+
+.badge-no {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--accent-red);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.badge-info {
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--accent-blue);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+}
+
+.badge-warn {
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--accent-yellow);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
+.capability-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 6px;
+  font-style: italic;
+  line-height: 1.5;
+}
+
+.switch-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .setting-desc {
   font-size: 12px;
   color: var(--text-muted);
-  margin-top: 6px;
-  line-height: 1.4;
+  margin-top: 8px;
+  line-height: 1.5;
 }
 
 .settings-footer {
   padding: 16px 24px;
-  border-top: 1px solid var(--border-color);
+  border-top: 1px solid var(--glass-border);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: var(--bg-sidebar);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
 }
 
 .save-btn {
   background: var(--accent-blue);
-  color: white;
+  color: var(--text-inverse);
   border: none;
   padding: 10px 24px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   font-size: 14px;
   font-weight: 600;
-  transition: all 0.2s;
-  box-shadow: 0 2px 8px rgba(0, 102, 204, 0.3);
+  transition: all var(--transition-fast);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.25);
 }
 
-.save-btn:hover {
-  filter: brightness(1.1);
+.save-btn:hover:not(:disabled) {
+  background: var(--accent-blue-hover);
   transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(59, 130, 246, 0.35);
 }
 
-.save-btn:active {
+.save-btn:active:not(:disabled) {
   transform: translateY(0);
 }
 
 .save-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-  transform: none;
 }
 
 .status-msg {
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .status-msg.error {
@@ -537,20 +961,21 @@ const save = async () => {
 }
 
 .icon-btn {
-  background: transparent;
-  border: none;
+  background: var(--glass-bg-light);
+  border: 1px solid var(--glass-border-subtle);
   color: var(--text-muted);
   cursor: pointer;
-  padding: 6px;
-  border-radius: 8px;
+  padding: 8px;
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s;
+  transition: all var(--transition-fast);
 }
 
 .icon-btn:hover {
-  background: rgba(128, 128, 128, 0.15);
+  background: var(--glass-bg);
+  border-color: var(--glass-border);
   color: var(--text-main);
 }
 </style>

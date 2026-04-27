@@ -88,6 +88,10 @@ pub fn parse_skill(text: &str, path: &Path) -> Option<Skill> {
 
 // 获取工具定义（按意图筛选）
 pub fn get_tools_definition(intent: &str) -> Vec<serde_json::Value> {
+    if intent == "CHAT" {
+        return vec![];
+    }
+
     let mut tools = vec![
         json!({
             "name": "get_system_info",
@@ -106,10 +110,6 @@ pub fn get_tools_definition(intent: &str) -> Vec<serde_json::Value> {
             }
         }),
     ];
-
-    if intent == "GENERAL_CHAT" {
-        return tools;
-    }
     //记忆工具
     if intent == "MEMORY_QUERY" {
         tools.extend(vec![
@@ -308,7 +308,7 @@ pub fn get_tools_definition(intent: &str) -> Vec<serde_json::Value> {
                 "type": "object",
                 "properties": {
                     "prompt": {"type": "string", "description": "要子代理完成的任务说明，越详细越好。包括你想要子代理返回什么数据。"},
-                    "read_only": {"type": "boolean", "description": "是否以只读模式运行子代理。在只读模式下，子代理无法使用修改文件、系统状态或执行高风险命令的工具。默认为 true。"}
+                    "read_only": {"type": "boolean", "description": "是否以只读模式运行子代理。默认为 true。如果需要子代理修改文件、写代码或执行高风险命令，【必须】显式设置为 false，否则子代理将没有写入文件的权限！"}
                 },
                 "required": ["prompt"]
             }
@@ -383,14 +383,27 @@ pub async fn handle_tool_call(
     app: &tauri::AppHandle,
     name: &str,
     input: &serde_json::Value,
+    session_id: &str,
 ) -> (String, u64, u64) {
     if name == "task" {
         let prompt = input["prompt"].as_str().unwrap_or("");
         let read_only = input["read_only"].as_bool().unwrap_or(true);
-        let fut = run_subagent(app.clone(), prompt.to_string(), read_only);
+        let task_id = input["task_id"]
+            .as_i64()
+            .or_else(|| input["taskId"].as_i64())
+            .map(|id| id as i32);
+        let label = input["label"].as_str().map(|value| value.to_string());
+        let fut = run_subagent(
+            app.clone(),
+            prompt.to_string(),
+            read_only,
+            session_id.to_string(),
+            task_id,
+            label,
+        );
         Box::pin(fut).await
     } else {
-        (handle_tool_call_inner(app, name, input).await, 0, 0)
+        (handle_tool_call_inner(app, name, input, session_id).await, 0, 0)
     }
 }
 
@@ -399,40 +412,41 @@ pub async fn handle_tool_call_inner(
     app: &tauri::AppHandle,
     name: &str,
     input: &serde_json::Value,
+    session_id: &str,
 ) -> String {
     match name {
         // 系统工具
-        "set_workspace" => system_tools::set_workspace(app, input).await,
-        "get_system_info" => system_tools::get_system_info(app, input).await,
+        "set_workspace" => system_tools::set_workspace(app, input, session_id).await,
+        "get_system_info" => system_tools::get_system_info(app, input, session_id).await,
 
         // 文件工具
-        "list_directory" => file_tools::list_directory(app, input).await,
-        "search_repo" => file_tools::search_repo(app, input).await,
-        "read_file" => file_tools::read_file(app, input).await,
-        "read_file_skeleton" => file_tools::read_file_skeleton(app, input).await,
-        "write_file" => file_tools::write_file(app, input).await,
-        "edit_file" => file_tools::edit_file(app, input).await,
+        "list_directory" => file_tools::list_directory(app, input, session_id).await,
+        "search_repo" => file_tools::search_repo(app, input, session_id).await,
+        "read_file" => file_tools::read_file(app, input, session_id).await,
+        "read_file_skeleton" => file_tools::read_file_skeleton(app, input, session_id).await,
+        "write_file" => file_tools::write_file(app, input, session_id).await,
+        "edit_file" => file_tools::edit_file(app, input, session_id).await,
 
         // Shell 工具
-        "git_command" => shell_tools::git_command(app, input).await,
-        "run_shell" => shell_tools::run_shell(app, input).await,
-        "background_run" => shell_tools::background_run(app, input).await,
-        "check_background" => shell_tools::check_background(app, input).await,
+        "git_command" => shell_tools::git_command(app, input, session_id).await,
+        "run_shell" => shell_tools::run_shell(app, input, session_id).await,
+        "background_run" => shell_tools::background_run(app, input, session_id).await,
+        "check_background" => shell_tools::check_background(app, input, session_id).await,
 
         // 任务工具
-        "task_create" => task_tools::task_create(app, input).await,
-        "task_update" => task_tools::task_update(app, input).await,
-        "task_list" => task_tools::task_list(app, input).await,
-        "task_get" => task_tools::task_get(app, input).await,
-        "task_summary" => task_tools::task_summary(app, input).await,
+        "task_create" => task_tools::task_create(app, input, session_id).await,
+        "task_update" => task_tools::task_update(app, input, session_id).await,
+        "task_list" => task_tools::task_list(app, input, session_id).await,
+        "task_get" => task_tools::task_get(app, input, session_id).await,
+        "task_summary" => task_tools::task_summary(app, input, session_id).await,
 
         // Agent 工具
-        "load_skill" => agent_tools::load_skill(app, input).await,
-        "compact" => agent_tools::compact(app, input).await,
-        "dream" => agent_tools::dream(app, input).await,
+        "load_skill" => agent_tools::load_skill(app, input, session_id).await,
+        "compact" => agent_tools::compact(app, input, session_id).await,
+        "dream" => agent_tools::dream(app, input, session_id).await,
 
         // 方案审批工具
-        "propose_plan" => agent_tools::propose_plan(app, input).await,
+        "propose_plan" => agent_tools::propose_plan(app, input, session_id).await,
 
         _ => format!("未知工具: {}", name),
     }

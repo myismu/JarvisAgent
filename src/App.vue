@@ -1,18 +1,27 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, ref, computed } from "vue";
 import { useJarvis } from "./composables/useJarvis";
 
 import TitleBar from "./components/layout/TitleBar.vue";
 import Sidebar from "./components/layout/Sidebar.vue";
 import ChatArea from "./components/chat/ChatArea.vue";
 import TerminalInput from "./components/chat/TerminalInput.vue";
+import AgentPanel from "./components/chat/AgentPanel.vue";
 import PermissionModal from "./components/common/PermissionModal.vue";
 import PlanPreviewPanel from "./components/common/PlanPreviewPanel.vue";
 import SettingsPanel from "./components/settings/SettingsPanel.vue";
 
 const showSettings = ref(false);
+const sidebarCollapsed = ref(false);
 
-const { initListeners, systemStatus } = useJarvis();
+const { initListeners, currentSessionStatus, isCurrentSessionRunning, agentSteps, currentSubAgentRuns, currentPlanDocuments, showAgentPanel } = useJarvis();
+
+const displayStatus = computed(() => {
+  if (isCurrentSessionRunning.value) return 'running';
+  if (currentSessionStatus.value === 'ERROR') return 'error';
+  if (currentSessionStatus.value === 'FINISH') return 'finish';
+  return 'idle';
+});
 
 onMounted(async () => {
   await initListeners();
@@ -22,29 +31,47 @@ onMounted(async () => {
 <template>
   <main class="editor-container">
     <div class="editor-window">
-      <TitleBar @open-settings="showSettings = true" />
+      <TitleBar :sidebar-collapsed="sidebarCollapsed" />
 
       <div class="editor-body">
-        <Sidebar />
+        <Sidebar :collapsed="sidebarCollapsed" @open-settings="showSettings = true" />
 
         <div class="main-content">
           <div class="tab-bar">
-            <div class="tab active">
-              <span class="tab-icon">
-                <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
+            <button class="sidebar-toggle" @click="sidebarCollapsed = !sidebarCollapsed" :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'">
+              <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <polyline :points="sidebarCollapsed ? '9 18 15 12 9 6' : '15 18 9 12 15 6'"></polyline>
+              </svg>
+            </button>
+            <div class="tab-bar-center">
+              <div class="status-indicator" :class="displayStatus">
+                <svg class="status-light" viewBox="0 0 24 24" width="20" height="20">
+                  <circle class="status-glow" cx="12" cy="12" r="10" />
+                  <circle class="status-core" cx="12" cy="12" r="5" />
                 </svg>
-              </span>
-              output.log
+              </div>
             </div>
-            <div class="status-indicator" :class="systemStatus.toLowerCase()">
-              Status: {{ systemStatus }}
-            </div>
+            <button
+              v-if="agentSteps.length > 0 || currentSubAgentRuns.length > 0 || currentPlanDocuments.length > 0"
+              class="agent-panel-toggle"
+              :class="{ active: showAgentPanel }"
+              @click="showAgentPanel = !showAgentPanel"
+              :title="showAgentPanel ? '隐藏执行流程' : '显示执行流程'"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="22 12 18 12"></polyline>
+                <polyline points="6 12 2 12"></polyline>
+                <polyline points="16 6 18 12 16 18"></polyline>
+                <polyline points="8 6 6 12 8 18"></polyline>
+              </svg>
+            </button>
           </div>
           
           <ChatArea />
           <TerminalInput />
         </div>
+
+        <AgentPanel />
       </div>
     </div>
 
@@ -54,23 +81,23 @@ onMounted(async () => {
   </main>
 </template>
 
-<!-- 组件局部样式：仅包含布局相关的样式，全局变量和重置已迁移到 global.css -->
 <style scoped>
 .editor-container {
   height: 100%;
   width: 100%;
   display: flex;
-  background-color: var(--bg-panel);
+  background-color: var(--bg-dark);
   color: var(--text-main);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   overflow: hidden;
-  transition: all 0.3s ease;
+  transition: background-color var(--transition-normal), color var(--transition-normal);
+  position: relative;
+  z-index: 1;
 }
 
 .editor-window {
   width: 100%;
   height: 100%;
-  background-color: var(--bg-panel);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -86,47 +113,163 @@ onMounted(async () => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background-color: var(--bg-panel);
+  background: var(--glass-bg-heavy);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
   min-width: 0;
   min-height: 0;
 }
 
 .tab-bar {
-  height: 35px;
-  background-color: var(--bg-sidebar);
+  height: 38px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--glass-border);
   flex-shrink: 0;
+  padding: 0 4px;
+  position: relative;
 }
 
-.tab {
-  background-color: var(--bg-panel);
-  border-top: 1px solid var(--accent-blue);
-  border-right: 1px solid var(--border-color);
-  padding: 0 15px;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  font-size: 0.85rem;
-  color: var(--text-main);
-}
-
-.tab-icon {
-  margin-right: 6px;
-  color: var(--accent-blue);
+.sidebar-toggle {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 8px;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  transition: all var(--transition-fast);
+  -webkit-app-region: no-drag;
+}
+.sidebar-toggle:hover {
+  color: var(--accent-blue);
+  background: var(--glass-bg-light);
+  border-color: var(--glass-border-subtle);
 }
 
 .status-indicator {
-  font-size: 0.75rem;
-  padding: 0 15px;
-  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast);
 }
+
+.tab-bar-center {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.status-light {
+  flex-shrink: 0;
+  overflow: visible;
+  filter: drop-shadow(0 0 2px currentColor);
+  transition: filter var(--transition-fast);
+}
+
+.status-glow {
+  fill: currentColor;
+  opacity: 0.2;
+  animation: breathe 3s ease-in-out infinite;
+}
+
+.status-core {
+  fill: currentColor;
+  opacity: 0.9;
+  animation: breatheCore 3s ease-in-out infinite;
+}
+
 .status-indicator.finish { color: var(--accent-green); }
+.status-indicator.finish .status-glow { animation: breatheGreen 3s ease-in-out infinite; }
+.status-indicator.finish .status-core { animation: breatheCoreGreen 3s ease-in-out infinite; }
+.status-indicator.finish .status-light { filter: drop-shadow(0 0 4px rgba(16, 185, 129, 0.5)); }
+
 .status-indicator.error { color: var(--accent-red); }
+.status-indicator.error .status-glow { animation: breatheRed 2s ease-in-out infinite; }
+.status-indicator.error .status-core { animation: breatheCoreRed 2s ease-in-out infinite; }
+.status-indicator.error .status-light { filter: drop-shadow(0 0 4px rgba(239, 68, 68, 0.5)); }
+
 .status-indicator.running { color: var(--accent-yellow); }
-.status-indicator.cancelled { color: var(--accent-red); opacity: 0.7; }
+.status-indicator.running .status-glow { animation: breatheYellow 1.5s ease-in-out infinite; }
+.status-indicator.running .status-core { animation: breatheCoreYellow 1.5s ease-in-out infinite; }
+.status-indicator.running .status-light { filter: drop-shadow(0 0 4px rgba(245, 158, 11, 0.5)); }
+
+.status-indicator.cancelled { color: var(--text-muted); }
+.status-indicator.cancelled .status-glow { animation: none; opacity: 0.15; }
+.status-indicator.cancelled .status-core { animation: none; opacity: 0.5; }
+.status-indicator.cancelled .status-light { filter: none; }
+
+.status-indicator.idle { color: var(--text-muted); }
+.status-indicator.idle .status-glow { animation: none; opacity: 0.12; }
+.status-indicator.idle .status-core { animation: none; opacity: 0.4; }
+.status-indicator.idle .status-light { filter: none; }
+
+.agent-panel-toggle {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  transition: all var(--transition-fast);
+  -webkit-app-region: no-drag;
+}
+.agent-panel-toggle:hover {
+  color: var(--accent-blue);
+  background: var(--glass-bg-light);
+  border-color: var(--glass-border-subtle);
+}
+.agent-panel-toggle.active {
+  color: var(--accent-blue);
+  background: rgba(59, 130, 246, 0.08);
+  border-color: rgba(59, 130, 246, 0.2);
+}
+
+@keyframes breatheGreen {
+  0%, 100% { opacity: 0.15; r: 10; }
+  50% { opacity: 0.4; r: 11; }
+}
+@keyframes breatheCoreGreen {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+@keyframes breatheYellow {
+  0%, 100% { opacity: 0.2; r: 10; }
+  50% { opacity: 0.55; r: 11.5; }
+}
+@keyframes breatheCoreYellow {
+  0%, 100% { opacity: 0.75; }
+  50% { opacity: 1; }
+}
+
+@keyframes breatheRed {
+  0%, 100% { opacity: 0.2; r: 10; }
+  50% { opacity: 0.5; r: 11; }
+}
+@keyframes breatheCoreRed {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 1; }
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 0.12; r: 10; }
+  50% { opacity: 0.3; r: 11; }
+}
+@keyframes breatheCore {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.8; }
+}
 </style>

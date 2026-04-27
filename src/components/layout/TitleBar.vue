@@ -1,12 +1,10 @@
 <script setup lang="ts">
 import { useWindow } from '../../composables/useWindow';
-import { useTheme } from '../../composables/useTheme';
 
 const { closeWindow, minimizeWindow, maximizeWindow } = useWindow();
-const { isDark, toggleTheme } = useTheme();
 
-const emit = defineEmits<{
-  (e: 'open-settings'): void
+defineProps<{
+  sidebarCollapsed: boolean;
 }>()
 </script>
 
@@ -17,53 +15,39 @@ const emit = defineEmits<{
       <span class="control minimize" @click="minimizeWindow"></span>
       <span class="control maximize" @click="maximizeWindow"></span>
     </div>
-    <div class="window-title" data-tauri-drag-region>Jarvis Agent Workspace</div>
-    <div class="header-actions">
-      <!-- 设置按钮 -->
-      <button class="theme-toggle" @click="emit('open-settings')" title="系统设置">
-        <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="3"></circle>
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-        </svg>
-      </button>
-
-      <!-- 主题切换按钮 -->
-      <button class="theme-toggle" @click="toggleTheme" :title="isDark ? '切换到亮色模式' : '切换到暗色模式'">
-        <!-- 太阳图标（暗色模式下显示，点击切换到亮色） -->
-        <svg v-if="isDark" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="5"></circle>
-          <line x1="12" y1="1" x2="12" y2="3"></line>
-          <line x1="12" y1="21" x2="12" y2="23"></line>
-          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
-          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
-          <line x1="1" y1="12" x2="3" y2="12"></line>
-          <line x1="21" y1="12" x2="23" y2="12"></line>
-          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
-          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
-        </svg>
-        <!-- 月亮图标（亮色模式下显示，点击切换到暗色） -->
-        <svg v-else viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
-        </svg>
-      </button>
+    <div class="window-title" :class="{ 'sidebar-open': !sidebarCollapsed }" data-tauri-drag-region>
+      <div class="reactor-label">
+        <span class="label-char" style="--i:0">J</span><span class="label-dot">.</span>
+        <span class="label-char" style="--i:1">A</span><span class="label-dot">.</span>
+        <span class="label-char" style="--i:2">R</span><span class="label-dot">.</span>
+        <span class="label-char" style="--i:3">V</span><span class="label-dot">.</span>
+        <span class="label-char" style="--i:4">I</span><span class="label-dot">.</span>
+        <span class="label-char" style="--i:5">S</span>
+      </div>
     </div>
+    <div class="header-spacer" data-tauri-drag-region></div>
   </div>
 </template>
 
 <style scoped>
 .editor-header {
-  height: 35px;
-  background-color: var(--bg-sidebar);
-  border-bottom: 1px solid var(--border-color);
+  height: var(--header-height);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur-heavy));
+  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
+  border-bottom: 1px solid var(--glass-border);
   display: flex;
   align-items: center;
-  padding: 0 15px;
+  padding: 0 16px;
   user-select: none;
+  transition: background var(--transition-normal);
 }
 
 .window-controls {
   display: flex;
   gap: 8px;
+  align-items: center;
+  width: 60px;
 }
 
 .control {
@@ -71,39 +55,54 @@ const emit = defineEmits<{
   height: 12px;
   border-radius: 50%;
   cursor: pointer;
+  transition: filter var(--transition-fast), box-shadow var(--transition-fast);
+  -webkit-app-region: no-drag;
 }
+.control:hover { filter: brightness(1.2); box-shadow: 0 0 6px rgba(255, 255, 255, 0.2); }
 .control.close { background-color: #ff5f56; }
 .control.minimize { background-color: #ffbd2e; }
 .control.maximize { background-color: #27c93f; }
 
 .window-title {
   flex: 1;
-  text-align: center;
+  position: relative;
+  height: 100%;
   font-size: 0.85rem;
+  font-weight: 600;
   color: var(--text-muted);
+  letter-spacing: 0.02em;
 }
-
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  -webkit-app-region: no-drag;
-}
-
-.theme-toggle {
-  background: none;
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 3px 6px;
+.reactor-label {
+  position: absolute;
+  top: 50%;
+  left: calc(50% + var(--sidebar-offset, 0px));
+  transform: translate(-50%, -50%);
   display: inline-flex;
   align-items: center;
-  transition: all var(--transition-fast);
+  gap: 0;
+  line-height: 1;
+  transition: left 0.25s ease;
 }
-.theme-toggle:hover {
-  color: var(--accent-blue);
-  border-color: var(--accent-blue);
-  background: rgba(0, 102, 204, 0.08);
+.window-title.sidebar-open {
+  --sidebar-offset: 125px;
+}
+.label-char {
+  display: inline-block;
+  animation: charPulse 3s ease-in-out infinite;
+  animation-delay: calc(var(--i) * 0.2s);
+}
+.label-dot {
+  display: inline-block;
+  opacity: 0.4;
+  font-size: 0.7em;
+  margin: 0 1px;
+}
+@keyframes charPulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+.header-spacer {
+  width: 60px;
+  height: 100%;
 }
 </style>

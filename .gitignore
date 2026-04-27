@@ -11,11 +11,15 @@ node_modules
 dist
 dist-ssr
 *.local
+*.backup
+*.optimized.backup
 
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
 .idea
+.claude/
+.trae/
 .DS_Store
 *.suo
 *.ntvs*
@@ -30,6 +34,8 @@ dist-ssr
 .plans/
 .transcripts/
 .checkpoints/
+.agent_runs/
+.snapshots/
 skills/
 memory/
 
@@ -41,6 +47,7 @@ agent_loop_debug.txt
 thoughts_and_plans.md
 .jarvis_workspace
 .env
+src-tauri/test.rs
 
 # Excluded project folders
 agent/

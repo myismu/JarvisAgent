@@ -1,20 +1,19 @@
 pub mod core;
 
-use crate::core::models::SessionMemory;
-use crate::core::{SessionState, ActiveSession, SecurityState, PendingPermissions};
+use crate::core::state::{
+    WorkspaceState,
+    SnapshotRegistry, SessionManager,
+};
 use crate::core::background::BackgroundState;
-use crate::core::cancellation::CancellationState;
 use crate::core::config::{ConfigState, load_config};
+use crate::core::snapshot_manager::session_manager::SessionManagerRegistry;
+use crate::core::subagents::SubAgentMonitorState;
 use tokio::sync::Mutex;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-/// Agent 启动时的"家目录"，用于锚定所有内部基础设施路径（.tasks、.logs、memory、skills）。
-/// 它会在 run() 函数中被初始化一次，之后任何 set_current_dir 都不会影响它。
 static AGENT_HOME_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-/// 获取 Agent 的不可变家目录。所有内部基础设施路径都应该基于此目录。
 pub fn get_agent_home() -> &'static PathBuf {
     AGENT_HOME_DIR.get().expect("AGENT_HOME_DIR not initialized")
 }
@@ -23,12 +22,10 @@ pub fn get_agent_home() -> &'static PathBuf {
 pub fn run() {
     dotenvy::dotenv().ok();
 
-    // 在任何 CWD 操作之前锁定 Agent 的家目录
     let startup_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let _ = AGENT_HOME_DIR.set(startup_dir.clone());
     println!("[System] Agent home directory locked to: {}", startup_dir.display());
 
-    // 尝试读取上次的工作区路径并恢复 (存放在安装目录/运行目录)
     let workspace_file = startup_dir.join(core::constants::FILE_WORKSPACE);
     if let Ok(path) = std::fs::read_to_string(workspace_file) {
         let path = path.trim();
@@ -38,34 +35,83 @@ pub fn run() {
         }
     }
 
-    // 启动时始终创建新会话作为默认会话
-    let meta = core::sessions::create_session();
-    println!("[System] 启动应用，创建新会话: {}", meta.id);
-    let initial_memory = SessionMemory::default();
-    let initial_session_id = Some(meta.id);
+    let startup_session_id = core::sessions::get_last_active_session_id()
+        .filter(|id| core::sessions::get_session_meta(id).is_ok())
+        .unwrap_or_else(|| core::sessions::create_session(None).id);
+    println!("[System] 启动应用，恢复会话: {}", startup_session_id);
 
     tauri::Builder::default()
-        .manage(SessionState(Mutex::new(initial_memory)))
-        .manage(ActiveSession(Mutex::new(initial_session_id)))
-        .manage(SecurityState { session_allowed: Mutex::new(false) })
-        .manage(PendingPermissions(Mutex::new(HashMap::new())))
+        .manage(SessionManager::new())
         .manage(BackgroundState::default())
-        .manage(CancellationState::new())
+        .manage(SubAgentMonitorState::default())
         .manage(ConfigState(std::sync::Arc::new(Mutex::new(load_config()))))
+        .manage(WorkspaceState(Mutex::new(None)))
+        .manage(SnapshotRegistry(tokio::sync::RwLock::new(SessionManagerRegistry::new())))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_window_state::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
-            core::ask_jarvis,
-            core::cancel_jarvis,
-            core::resolve_permission,
-            core::list_sessions,
-            core::create_session,
-            core::switch_session,
-            core::delete_session,
-            core::rename_session,
-            core::get_session_history,
-            core::get_active_session_id,
-            core::get_config,
-            core::save_config_cmd,
+            core::agent::ask_jarvis,
+            core::commands::permission::cancel_jarvis,
+            core::commands::permission::resolve_permission,
+            core::commands::session::recall_last_message,
+            core::commands::session::get_active_session_id,
+            core::commands::session::list_sessions,
+            core::commands::session::create_session,
+            core::commands::session::switch_session,
+            core::commands::session::delete_session,
+            core::commands::session::rename_session,
+            core::commands::session::update_session_profile,
+            core::commands::session::get_session_meta,
+            core::commands::session::get_workspace_dir,
+            core::commands::session::save_agent_steps,
+            core::commands::session::get_agent_steps,
+            core::commands::session::list_plan_documents,
+            core::commands::session::list_agent_runs,
+            core::commands::session::list_agent_run_events,
+            core::commands::session::prepare_resume_agent_run,
+            core::commands::session::get_background_tasks,
+            core::commands::session::get_subagent_runs,
+            core::commands::session::list_subagents,
+            core::commands::session::list_subagent_events,
+            core::commands::session::cancel_subagent_run,
+            core::commands::config::get_config,
+            core::commands::config::save_config_cmd,
+            core::commands::config::get_image_compress_config,
+            core::commands::history::get_session_history,
+            core::commands::checkpoint::list_checkpoints,
+            core::commands::checkpoint::get_checkpoint_tree,
+            core::commands::checkpoint::rollback_to_checkpoint,
+            core::commands::checkpoint::create_branch,
+            core::commands::checkpoint::switch_branch,
+            core::commands::checkpoint::list_branches,
+            core::commands::checkpoint::delete_branch,
+            core::commands::checkpoint::get_active_branch,
+            core::commands::checkpoint::commit_checkpoint,
+            core::commands::checkpoint::clear_pending_operations,
+            core::commands::snapshot::snapshot_create,
+            core::commands::snapshot::snapshot_get_tree_view,
+            core::commands::snapshot::snapshot_get_summaries,
+            core::commands::snapshot::snapshot_get_detail,
+            core::commands::snapshot::snapshot_create_branch,
+            core::commands::snapshot::snapshot_switch_branch,
+            core::commands::snapshot::snapshot_rollback,
+            core::commands::snapshot::snapshot_list,
+            core::commands::snapshot::snapshot_list_branches,
+            core::commands::snapshot::snapshot_get_current,
+            core::commands::sandbox::sandbox_create,
+            core::commands::sandbox::sandbox_get,
+            core::commands::sandbox::sandbox_list,
+            core::commands::sandbox::sandbox_complete,
+            core::commands::sandbox::sandbox_abandon,
+            core::commands::sandbox::sandbox_publish,
+            core::commands::sandbox::sandbox_compare,
+            core::commands::merge::merge_preview,
+            core::commands::merge::merge_execute,
+            core::commands::merge::merge_get_conflicts,
+            core::registry::get_model_capabilities,
+            core::registry::list_model_registry,
         ])
         .run(tauri::generate_context!())
         .expect("运行失败");

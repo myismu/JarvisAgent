@@ -1,40 +1,116 @@
 /* ============================
    JarvisAgent 全局样式
-   从 index.html 迁移到 Vue 工程
+   Glassmorphism (毛玻璃) 设计系统
    ============================ */
 
-/* --- 1. CSS 变量定义 --- */
+/* --- 1. CSS 变量定义 (Glassmorphism) --- */
 :root {
-  /* 编辑器主题变量（浅色模式） */
-  --bg-dark: #ffffff;
-  --bg-panel: #ffffff;
-  --bg-sidebar: #f8f9fa;
-  --border-color: #f0f0f0;
-  --text-main: #333333;
-  --text-muted: #888888;
-  --accent-blue: #0066cc;
-  --accent-green: #28a745;
-  --accent-red: #d73a49;
-  --accent-yellow: #b08800;
+  /* 浅色模式调色板 */
+  --bg-dark: #e8edf5;
+  --bg-panel: rgba(255, 255, 255, 0.65);
+  --bg-sidebar: rgba(241, 245, 249, 0.6);
+  --border-color: rgba(226, 232, 240, 0.6);
+
+  /* 文本颜色 */
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --text-inverse: #ffffff;
+
+  /* 交互色 / 强调色 */
+  --accent-blue: #3b82f6;
+  --accent-blue-hover: #2563eb;
+  --accent-green: #10b981;
+  --accent-red: #ef4444;
+  --accent-yellow: #f59e0b;
+  --text-soft: #475569;
+  --text-warning: #7c2d12;
+  --text-on-danger: #ffffff;
+  --surface-strong: rgba(255, 255, 255, 0.94);
+  --surface-danger: rgba(220, 38, 38, 0.96);
+  --surface-danger-hover: rgba(185, 28, 28, 0.98);
+  --border-danger: rgba(185, 28, 28, 0.46);
+  --surface-warning: rgba(255, 247, 237, 0.96);
+  --border-warning: rgba(245, 158, 11, 0.4);
+
+  /* 字体系统 */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
 
-  /* 布局变量 */
-  --header-height: 35px;
-  --sidebar-width: 250px;
+  /* 毛玻璃核心变量 */
+  --glass-bg: rgba(255, 255, 255, 0.45);
+  --glass-bg-heavy: rgba(255, 255, 255, 0.65);
+  --glass-bg-light: rgba(255, 255, 255, 0.25);
+  --glass-border: rgba(255, 255, 255, 0.35);
+  --glass-border-subtle: rgba(255, 255, 255, 0.15);
+  --glass-blur: 16px;
+  --glass-blur-heavy: 24px;
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.06);
 
-  /* 过渡动画 */
-  --transition-fast: 0.15s ease;
-  --transition-normal: 0.3s ease;
+  /* 渐变光晕 */
+  --glow-blue: rgba(59, 130, 246, 0.15);
+  --glow-purple: rgba(139, 92, 246, 0.12);
+  --glow-cyan: rgba(6, 182, 212, 0.1);
+
+  /* 阴影层级 */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.04), 0 2px 4px -1px rgba(0, 0, 0, 0.02);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.04), 0 4px 6px -2px rgba(0, 0, 0, 0.02);
+
+  /* 布局与圆角 */
+  --header-height: 44px;
+  --sidebar-width: 260px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  /* 过渡动画 (Material Design Standard Easing) */
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 350ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* --- 2. 暗色模式变量 --- */
+/* --- 2. 暗色模式变量 (Glassmorphism) --- */
 body.dark-mode {
-  --bg-dark: #1a1a2e;
-  --bg-panel: #1a1a2e;
-  --bg-sidebar: #252541;
-  --border-color: #495057;
-  --text-main: #e9ecef;
-  --text-muted: #adb5bd;
+  --bg-dark: #07080d;
+  --bg-panel: rgba(15, 17, 25, 0.6);
+  --bg-sidebar: rgba(20, 22, 35, 0.55);
+  --border-color: rgba(55, 60, 80, 0.5);
+
+  --text-main: #f1f5f9;
+  --text-muted: #94a3b8;
+  --text-inverse: #0f172a;
+
+  --accent-blue: #60a5fa;
+  --accent-blue-hover: #3b82f6;
+  --accent-green: #34d399;
+  --accent-red: #f87171;
+  --accent-yellow: #fbbf24;
+  --text-soft: #dbe4ee;
+  --text-warning: #fef3c7;
+  --text-on-danger: #ffffff;
+  --surface-strong: rgba(11, 15, 24, 0.96);
+  --surface-danger: rgba(185, 28, 28, 0.94);
+  --surface-danger-hover: rgba(153, 27, 27, 0.98);
+  --border-danger: rgba(252, 165, 165, 0.42);
+  --surface-warning: rgba(120, 53, 15, 0.94);
+  --border-warning: rgba(252, 211, 77, 0.36);
+
+  --glass-bg: rgba(15, 17, 25, 0.45);
+  --glass-bg-heavy: rgba(15, 17, 25, 0.65);
+  --glass-bg-light: rgba(15, 17, 25, 0.25);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-border-subtle: rgba(255, 255, 255, 0.04);
+  --glass-blur: 20px;
+  --glass-blur-heavy: 28px;
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+
+  --glow-blue: rgba(59, 130, 246, 0.2);
+  --glow-purple: rgba(139, 92, 246, 0.18);
+  --glow-cyan: rgba(6, 182, 212, 0.12);
+
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.15);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.4), 0 4px 6px -2px rgba(0, 0, 0, 0.2);
 }
 
 /* --- 3. 基础重置 --- */
@@ -48,11 +124,13 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  font-family: var(--font-mono);
-  font-size: 16px;
+  font-family: var(--font-sans);
+  font-size: 15px;
   line-height: 1.6;
   color: var(--text-main);
-  background-color: var(--bg-panel);
+  background-color: var(--bg-dark);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   transition: background-color var(--transition-normal), color var(--transition-normal);
 }
 
@@ -63,20 +141,89 @@ html, body {
   padding: 0;
 }
 
-/* --- 4. 无障碍焦点样式 --- */
+/* --- 4. 渐变光晕装饰层 --- */
+body::before {
+  content: "";
+  position: fixed;
+  top: -20%;
+  left: -10%;
+  width: 50%;
+  height: 50%;
+  background: radial-gradient(circle, var(--glow-blue) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+  filter: blur(80px);
+  animation: glowDrift1 20s ease-in-out infinite alternate;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  bottom: -15%;
+  right: -10%;
+  width: 45%;
+  height: 45%;
+  background: radial-gradient(circle, var(--glow-purple) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+  filter: blur(80px);
+  animation: glowDrift2 25s ease-in-out infinite alternate;
+}
+
+@keyframes glowDrift1 {
+  0% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(5%, 8%) scale(1.1); }
+  100% { transform: translate(-3%, 4%) scale(0.95); }
+}
+
+@keyframes glowDrift2 {
+  0% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-6%, -5%) scale(1.05); }
+  100% { transform: translate(4%, -8%) scale(1.1); }
+}
+
+/* --- 5. 毛玻璃工具类 --- */
+.glass-panel {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+}
+
+.glass-panel-heavy {
+  background: var(--glass-bg-heavy);
+  backdrop-filter: blur(var(--glass-blur-heavy));
+  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+}
+
+.glass-panel-light {
+  background: var(--glass-bg-light);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border-subtle);
+  box-shadow: var(--shadow-sm);
+}
+
+/* --- 6. 无障碍焦点样式 --- */
 :focus-visible {
   outline: 2px solid var(--accent-blue);
   outline-offset: 2px;
+  border-radius: 2px;
 }
 
-/* --- 5. 全局拖拽指示 --- */
+/* --- 7. 全局拖拽指示 --- */
 body.dragging-active .editor-container {
   outline: 2px dashed var(--accent-blue);
   outline-offset: -4px;
-  background-color: rgba(0, 102, 204, 0.05);
+  background-color: rgba(59, 130, 246, 0.05);
+  border-radius: var(--radius-lg);
+  transition: all var(--transition-fast);
 }
 
-/* --- 6. 滚动条美化 --- */
+/* --- 8. 滚动条美化 --- */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -85,9 +232,76 @@ body.dragging-active .editor-container {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(128, 128, 128, 0.3);
+  background: var(--border-color);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(128, 128, 128, 0.5);
+  background: var(--text-muted);
+}
+
+/* --- 9. prefers-reduced-motion --- */
+@media (prefers-reduced-motion: reduce) {
+  body::before,
+  body::after {
+    animation: none;
+  }
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
+.token-usage {
+  margin-top: 10px;
+  padding-top: 5px;
+  border-top: 1px dashed color-mix(in srgb, var(--text-muted) 35%, transparent);
+  color: var(--text-muted);
+  font-size: 0.8em;
+}
+
+.tool-status-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  margin: 4px 0;
+  color: var(--text-muted);
+  font-size: 0.86rem;
+  line-height: 1.4;
+}
+
+.tool-status-line code {
+  color: var(--text-main);
+  background: transparent;
+  padding: 0;
+  font-size: 0.86em;
+}
+
+.tool-status-line.completed {
+  color: var(--accent-green);
+}
+
+.tool-status-line.error {
+  color: var(--accent-red);
+}
+
+.tool-status-icon {
+  flex: 0 0 auto;
+}
+
+.tool-status-icon.running {
+  color: var(--accent-yellow);
+  animation: toolStatusSpin 0.9s linear infinite;
+}
+
+.tool-status-track {
+  opacity: 0.22;
+}
+
+.tool-status-head {
+  opacity: 0.95;
+}
+
+@keyframes toolStatusSpin {
+  to { transform: rotate(360deg); }
 }

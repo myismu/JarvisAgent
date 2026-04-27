@@ -3,9 +3,11 @@
 
 // --- Directory Names ---
 pub const DIR_SESSIONS: &str = ".sessions";
+pub const DIR_IMAGES: &str = ".images";
 pub const DIR_TASKS: &str = ".tasks";
 pub const DIR_LOGS: &str = ".logs";
 pub const DIR_PLANS: &str = ".plans";
+pub const DIR_AGENT_RUNS: &str = ".agent_runs";
 pub const DIR_SKILLS: &str = "skills";
 pub const DIR_TRANSCRIPTS: &str = ".transcripts";
 

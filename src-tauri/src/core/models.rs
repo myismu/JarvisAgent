@@ -6,6 +6,15 @@ pub struct JarvisResult {
     pub content: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    pub session_input_tokens: u64,
+    pub session_output_tokens: u64,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct ThinkingConfig {
+    pub r#type: String, // "enabled" or "disabled"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_tokens: Option<i32>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -16,6 +25,14 @@ pub struct AnthropicRequest {
     pub messages: Vec<Message>,
     pub tools: Vec<serde_json::Value>,
     pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
 }
 
 // --- OpenAI Format Structs ---
@@ -36,6 +53,25 @@ pub struct OpenAIRequest {
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<StreamOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_budget: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_thinking: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(untagged)]
+pub enum OpenAIUserContent {
+    Text(String),
+    Parts(Vec<OpenAIContentPart>),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -44,19 +80,37 @@ pub enum OpenAIMessage {
     #[serde(rename = "system")]
     System { content: String },
     #[serde(rename = "user")]
-    User { content: String },
+    User {
+        content: OpenAIUserContent,
+    },
     #[serde(rename = "assistant")]
     Assistant {
         #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         tool_calls: Option<Vec<OpenAIToolCall>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning_content: Option<serde_json::Value>,
     },
     #[serde(rename = "tool")]
     Tool {
         content: String,
         tool_call_id: String,
     },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "type")]
+pub enum OpenAIContentPart {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image_url")]
+    ImageUrl { image_url: OpenAIImageUrl },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct OpenAIImageUrl {
+    pub url: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -106,6 +160,8 @@ pub enum Content {
 pub enum ContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "thinking")]
+    Thinking { thinking: String, signature: String },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -117,6 +173,18 @@ pub enum ContentBlock {
         tool_use_id: String,
         content: String,
     },
+    #[serde(rename = "image")]
+    Image { source: ImageSource },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ImageSource {
+    pub r#type: String,
+    pub media_type: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub data: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
 }
 
 pub struct Skill {
@@ -128,7 +196,42 @@ pub struct Skill {
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct SessionMemory {
     pub messages: Vec<Message>,
-    pub context: Vec<String>, // 当前任务状态
+    pub context: Vec<String>,
+    #[serde(default)]
+    pub agent_steps: Vec<AgentStep>,
+    #[serde(default)]
+    pub plan_documents: Vec<PlanDocument>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStep {
+    #[serde(rename = "type")]
+    pub step_type: String,
+    pub tool: Option<String>,
+    pub input_summary: Option<String>,
+    pub output_summary: Option<String>,
+    pub error: Option<String>,
+    pub task: Option<String>,
+    pub attempt: Option<i32>,
+    pub max: Option<i32>,
+    pub content: Option<String>,
+    pub timestamp: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanDocument {
+    pub id: String,
+    #[serde(default)]
+    pub session_id: String,
+    pub title: String,
+    pub content: String,
+    pub status: String,
+    pub path: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub decided_at: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

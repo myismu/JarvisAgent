@@ -10,7 +10,7 @@ use crate::get_agent_home;
 
 /// Agent 配置结构体（代表单个模型的连接信息）
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct AgentConfig {
     /// API 格式 (anthropic 或 openai)
     pub api_format: String,
@@ -18,12 +18,27 @@ pub struct AgentConfig {
     pub api_key: String,
     /// API 基础 URL
     pub base_url: String,
-    /// 主 Agent 使用的模型 ID
+    /// 主对话模型 ID（主代理 + 子代理共用此模型）
     pub main_model: String,
-    /// 子 Agent 使用的模型 ID
-    pub sub_model: String,
     /// 意图分类器 / 记忆 Agent 使用的模型 ID（可用更便宜的模型）
     pub utility_model: String,
+    /// 是否开启深度思考模式 (DeepSeek / Claude 3.7+)
+    pub enable_thinking: Option<bool>,
+    /// 模型生成的温度参数
+    pub temperature: Option<f32>,
+    /// 模型生成的 Top P 参数
+    pub top_p: Option<f32>,
+    /// 模型生成的 Top K 参数
+    pub top_k: Option<u32>,
+    /// 图片压缩最大宽度（像素），超过此宽度将等比缩放
+    pub image_max_width: Option<u32>,
+    /// 图片压缩最大高度（像素），超过此高度将等比缩放
+    pub image_max_height: Option<u32>,
+    /// 图片压缩质量 (0.0 ~ 1.0)，仅对 JPEG/WebP 有效
+    pub image_quality: Option<f32>,
+    /// [兼容旧配置] 旧版 sub_model 字段，读取后忽略（合并进 main_model）
+    #[serde(default, skip_serializing)]
+    pub sub_model: Option<String>,
 }
 
 impl Default for AgentConfig {
@@ -33,8 +48,15 @@ impl Default for AgentConfig {
             api_key: String::new(),
             base_url: "https://api.xiaomimimo.com/anthropic/v1/messages".to_string(),
             main_model: "mimo-v2-flash".to_string(),
-            sub_model: "mimo-v2-flash".to_string(),
             utility_model: "mimo-v2-flash".to_string(),
+            enable_thinking: Some(false),
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            image_max_width: None,
+            image_max_height: None,
+            image_quality: None,
+            sub_model: None,
         }
     }
 }
@@ -48,11 +70,17 @@ pub struct ModelProfile {
     pub config: AgentConfig,
 }
 
+fn default_global_profile_id() -> String {
+    "default".to_string()
+}
+
 /// 顶级应用配置
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
     pub active_profile_id: String,
+    #[serde(default = "default_global_profile_id")]
+    pub global_profile_id: String,
     pub profiles: Vec<ModelProfile>,
 }
 
@@ -65,6 +93,7 @@ impl Default for AppConfig {
         };
         Self {
             active_profile_id: "default".to_string(),
+            global_profile_id: "default".to_string(),
             profiles: vec![default_profile],
         }
     }
@@ -73,14 +102,35 @@ impl Default for AppConfig {
 impl AppConfig {
     /// 获取当前激活的配置
     pub fn active_config(&self) -> AgentConfig {
-        self.profiles.iter()
+        let mut config = self.profiles.iter()
             .find(|p| p.id == self.active_profile_id)
             .map(|p| p.config.clone())
             .unwrap_or_else(|| {
                 self.profiles.first()
                     .map(|p| p.config.clone())
                     .unwrap_or_default()
-            })
+            });
+
+        // 规范化 base_url
+        let mut url = config.base_url.trim_end_matches('/').to_string();
+        if config.api_format == "openai" {
+            if !url.ends_with("/chat/completions") {
+                if !url.ends_with("/v1") {
+                    url.push_str("/v1");
+                }
+                url.push_str("/chat/completions");
+            }
+        } else if config.api_format == "anthropic" {
+            if !url.ends_with("/messages") {
+                if !url.ends_with("/v1") {
+                    url.push_str("/v1");
+                }
+                url.push_str("/messages");
+            }
+        }
+        config.base_url = url;
+
+        config
     }
 }
 
@@ -115,6 +165,7 @@ pub fn load_config() -> AppConfig {
         println!("[Config] 检测到旧版配置，正在迁移...");
         return AppConfig {
             active_profile_id: "default".to_string(),
+            global_profile_id: "default".to_string(),
             profiles: vec![ModelProfile {
                 id: "default".to_string(),
                 name: "我的预设".to_string(),

@@ -1,0 +1,496 @@
+{
+  "_comment": "模型能力注册表 - 使用 include_str!() 编译时内嵌，无需运行时文件。数据来源于各厂商官方文档。",
+  "_lastUpdated": "2025-04-24",
+  "models": [
+    {
+      "id": "deepseek-v4-pro",
+      "provider": "DeepSeek",
+      "displayName": "DeepSeek V4 Pro",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "reasoning_effort",
+        "temperature": false,
+        "maxTokens": 32768,
+        "notes": "旗舰推理模型，支持 reasoning_effort 参数（high/max），思考模式下温度不可调",
+        "vision": false
+      }
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "provider": "DeepSeek",
+      "displayName": "DeepSeek V4 Flash",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "reasoning_effort",
+        "temperature": false,
+        "maxTokens": 32768,
+        "notes": "高速推理模型，支持 reasoning_effort 参数（high/max），思考模式下温度不可调",
+        "vision": false
+      }
+    },
+    {
+      "id": "deepseek-chat",
+      "provider": "DeepSeek",
+      "displayName": "DeepSeek V3 Chat",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 65536,
+        "notes": "通用对话模型，无思考模式",
+        "vision": false
+      }
+    },
+    {
+      "id": "deepseek-reasoner",
+      "provider": "DeepSeek",
+      "displayName": "DeepSeek R1 Reasoner",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": false,
+        "maxTokens": 65536,
+        "notes": "R1 推理模型，始终处于推理模式，无法通过参数控制开关，温度不可调",
+        "vision": false
+      }
+    },
+    {
+      "id": "claude-opus-4-5",
+      "provider": "Anthropic",
+      "displayName": "Claude Opus 4.5",
+      "apiFormat": "anthropic",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "thinking",
+        "temperature": false,
+        "maxTokens": 32768,
+        "notes": "旗舰级模型，原生支持扩展思考（Extended Thinking），开启后温度不可调",
+        "vision": true
+      }
+    },
+    {
+      "id": "claude-sonnet-4-5",
+      "provider": "Anthropic",
+      "displayName": "Claude Sonnet 4.5",
+      "apiFormat": "anthropic",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "thinking",
+        "temperature": false,
+        "maxTokens": 32768,
+        "notes": "平衡性能与成本，支持扩展思考",
+        "vision": true
+      }
+    },
+    {
+      "id": "claude-3-7-sonnet-20250219",
+      "provider": "Anthropic",
+      "displayName": "Claude 3.7 Sonnet",
+      "apiFormat": "anthropic",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "thinking",
+        "temperature": false,
+        "maxTokens": 16000,
+        "notes": "首个支持显式扩展思考参数的 Claude 模型",
+        "vision": true
+      }
+    },
+    {
+      "id": "claude-3-5-sonnet-20241022",
+      "provider": "Anthropic",
+      "displayName": "Claude 3.5 Sonnet",
+      "apiFormat": "anthropic",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 8096,
+        "notes": "经典高性能模型，不支持思考模式",
+        "vision": true
+      }
+    },
+    {
+      "id": "claude-3-5-haiku-20241022",
+      "provider": "Anthropic",
+      "displayName": "Claude 3.5 Haiku",
+      "apiFormat": "anthropic",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 8096,
+        "notes": "快速低成本模型，适合工具代理使用",
+        "vision": false
+      }
+    },
+    {
+      "id": "gpt-5.5",
+      "provider": "OpenAI",
+      "displayName": "GPT-5.5",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "reasoning_effort",
+        "thinkingEffortValues": ["none", "low", "medium", "high", "xhigh"],
+        "temperature": false,
+        "maxTokens": 131072,
+        "notes": "最新旗舰模型，reasoning_effort 可选 none/low/medium(默认)/high/xhigh，1.05M 上下文，128K 输出，思考模式下温度不可调",
+        "vision": true
+      }
+    },
+    {
+      "id": "gpt-5.5-pro",
+      "provider": "OpenAI",
+      "displayName": "GPT-5.5 Pro",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": false,
+        "thinking": true,
+        "thinkingParam": "reasoning_effort",
+        "thinkingEffortValues": ["none", "low", "medium", "high", "xhigh"],
+        "temperature": false,
+        "maxTokens": 131072,
+        "notes": "最新旗舰 Pro 版，更多算力深度思考，1.05M 上下文，128K 输出，仅支持 Responses API，不支持流式，思考模式下温度不可调",
+        "vision": true
+      }
+    },
+    {
+      "id": "gpt-5.4",
+      "provider": "OpenAI",
+      "displayName": "GPT-5.4",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "reasoning_effort",
+        "thinkingEffortValues": ["none", "low", "medium", "high", "xhigh"],
+        "temperature": false,
+        "maxTokens": 131072,
+        "notes": "前代旗舰推理模型，reasoning_effort 可选 none(默认)/low/medium/high/xhigh，1.05M 上下文，128K 输出，思考模式下温度不可调",
+        "vision": true
+      }
+    },
+    {
+      "id": "gpt-5.4-pro",
+      "provider": "OpenAI",
+      "displayName": "GPT-5.4 Pro",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "reasoning_effort",
+        "thinkingEffortValues": ["medium", "high", "xhigh"],
+        "temperature": false,
+        "maxTokens": 131072,
+        "notes": "前代旗舰 Pro 版，reasoning_effort 仅可选 medium/high/xhigh，1.05M 上下文，128K 输出，思考模式下温度不可调",
+        "vision": true
+      }
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "provider": "OpenAI",
+      "displayName": "GPT-5.4 mini",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "reasoning_effort",
+        "thinkingEffortValues": ["none", "low", "medium", "high", "xhigh"],
+        "temperature": false,
+        "maxTokens": 131072,
+        "notes": "最强 mini 模型，适合编码/计算机使用/子代理，400K 上下文，128K 输出，思考模式下温度不可调",
+        "vision": true
+      }
+    },
+    {
+      "id": "gpt-5.4-nano",
+      "provider": "OpenAI",
+      "displayName": "GPT-5.4 nano",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "reasoning_effort",
+        "thinkingEffortValues": ["none", "low", "medium", "high", "xhigh"],
+        "temperature": false,
+        "maxTokens": 131072,
+        "notes": "最便宜的 GPT-5.4 级模型，适合分类/数据提取/排序/子代理，400K 上下文，128K 输出，思考模式下温度不可调",
+        "vision": true
+      }
+    },
+    {
+      "id": "o3",
+      "provider": "OpenAI",
+      "displayName": "o3",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "reasoning_effort",
+        "thinkingEffortValues": ["low", "medium", "high"],
+        "temperature": false,
+        "maxTokens": 100000,
+        "notes": "推理模型，已被 GPT-5 接替，reasoning_effort 可选 low/medium/high，200K 上下文，温度不可调",
+        "vision": true
+      }
+    },
+    {
+      "id": "o4-mini",
+      "provider": "OpenAI",
+      "displayName": "o4-mini",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "reasoning_effort",
+        "thinkingEffortValues": ["low", "medium", "high"],
+        "temperature": false,
+        "maxTokens": 100000,
+        "notes": "高效推理模型，已被 GPT-5 mini 接替，reasoning_effort 可选 low/medium/high，200K 上下文，温度不可调",
+        "vision": true
+      }
+    },
+    {
+      "id": "o1",
+      "provider": "OpenAI",
+      "displayName": "o1",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": false,
+        "maxTokens": 100000,
+        "notes": "内置推理模型，始终处于推理模式，reasoning_effort 不可调，200K 上下文，温度不可调",
+        "vision": true
+      }
+    },
+    {
+      "id": "gpt-4.1",
+      "provider": "OpenAI",
+      "displayName": "GPT-4.1",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 32768,
+        "notes": "最强非推理模型，1M 上下文，擅长指令遵循和工具调用，不支持 reasoning_effort",
+        "vision": true
+      }
+    },
+    {
+      "id": "gpt-4.1-mini",
+      "provider": "OpenAI",
+      "displayName": "GPT-4.1 mini",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 32768,
+        "notes": "轻量版非推理模型，擅长指令遵循和工具调用，不支持 reasoning_effort",
+        "vision": true
+      }
+    },
+    {
+      "id": "gpt-4o",
+      "provider": "OpenAI",
+      "displayName": "GPT-4o",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 16384,
+        "notes": "经典通用模型，不支持 reasoning_effort",
+        "vision": true
+      }
+    },
+    {
+      "id": "gpt-4o-mini",
+      "provider": "OpenAI",
+      "displayName": "GPT-4o mini",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 16384,
+        "notes": "低成本通用模型，不支持 reasoning_effort，适合工具代理",
+        "vision": true
+      }
+    },
+    {
+      "id": "gemini-2.5-pro",
+      "provider": "Google",
+      "displayName": "Gemini 2.5 Pro",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "thinkingBudget",
+        "temperature": true,
+        "maxTokens": 65536,
+        "notes": "谷歌旗舰推理模型，使用 thinkingBudget 参数（128-32768），思考模式无法关闭",
+        "vision": true
+      }
+    },
+    {
+      "id": "gemini-2.5-flash",
+      "provider": "Google",
+      "displayName": "Gemini 2.5 Flash",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "thinkingBudget",
+        "temperature": true,
+        "maxTokens": 65536,
+        "notes": "高速推理模型，使用 thinkingBudget 参数（0-24576），0 表示关闭思考",
+        "vision": true
+      }
+    },
+    {
+      "id": "gemini-2.0-flash",
+      "provider": "Google",
+      "displayName": "Gemini 2.0 Flash",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 32768,
+        "notes": "高速通用模型，无思考参数",
+        "vision": true
+      }
+    },
+    {
+      "id": "qwen3-235b-a22b",
+      "provider": "Alibaba",
+      "displayName": "Qwen3-235B-A22B (MoE)",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "enable_thinking",
+        "temperature": true,
+        "maxTokens": 32768,
+        "notes": "阿里旗舰 MoE 推理模型，enable_thinking 参数控制",
+        "vision": false
+      }
+    },
+    {
+      "id": "qwen3-32b",
+      "provider": "Alibaba",
+      "displayName": "Qwen3-32B",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "enable_thinking",
+        "temperature": true,
+        "maxTokens": 32768,
+        "notes": "通义千问 3 稠密旗舰，支持思考模式",
+        "vision": false
+      }
+    },
+    {
+      "id": "qwen3-14b",
+      "provider": "Alibaba",
+      "displayName": "Qwen3-14B",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "enable_thinking",
+        "temperature": true,
+        "maxTokens": 32768,
+        "notes": "中量级推理模型",
+        "vision": false
+      }
+    },
+    {
+      "id": "qwen-plus",
+      "provider": "Alibaba",
+      "displayName": "Qwen Plus",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 32768,
+        "notes": "通用对话模型，无思考参数",
+        "vision": true
+      }
+    },
+    {
+      "id": "qwen-turbo",
+      "provider": "Alibaba",
+      "displayName": "Qwen Turbo",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 16384,
+        "notes": "高速低成本，适合工具代理",
+        "vision": true
+      }
+    },
+    {
+      "id": "doubao-seed-2-0",
+      "provider": "ByteDance",
+      "displayName": "豆包 Seed 2.0 Pro",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "thinking",
+        "temperature": true,
+        "maxTokens": 131072,
+        "notes": "字节跳动旗舰 Agent 模型，支持深度思考、多模态理解、工具调用，256k 上下文",
+        "vision": true
+      }
+    },
+    {
+      "id": "doubao-seed-2-0-lite-260215",
+      "provider": "ByteDance",
+      "displayName": "豆包 Seed 2.0 Lite",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "thinking",
+        "temperature": true,
+        "maxTokens": 131072,
+        "notes": "轻量版豆包，支持深度思考、多模态理解、结构化输出，256k 上下文",
+        "vision": true
+      }
+    },
+    {
+      "id": "mimo-v2-flash",
+      "provider": "XiaoMi",
+      "displayName": "MIMO V2 Flash",
+      "apiFormat": "anthropic",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 16384,
+        "notes": "小米 MIMO 模型，暂无官方思考参数支持",
+        "vision": false
+      }
+    }
+  ]
+}

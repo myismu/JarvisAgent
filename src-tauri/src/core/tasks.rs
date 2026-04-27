@@ -188,7 +188,7 @@ impl TaskManager {
         }
 
         if !ready_tasks.is_empty() {
-            report.push_str("✅ Ready to Start (No blocked_by):\n");
+            report.push_str("◈ Ready to Start (No blocked_by):\n");
             for t in ready_tasks.iter().take(3) {
                 report.push_str(&format!("  - Task #{}: {}\n", t.id, t.subject));
             }

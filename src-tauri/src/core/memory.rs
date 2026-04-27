@@ -8,8 +8,41 @@ use crate::get_agent_home;
 // --- 记忆压缩与上下文管理 (Context Compact) ---
 
 pub fn estimate_tokens(messages: &[Message]) -> usize {
-    let json_str = serde_json::to_string(messages).unwrap_or_default();
-    json_str.len() / 4
+    let mut total_chars = 0;
+    for msg in messages {
+        match msg {
+            Message::User { content } | Message::Assistant { content } => {
+                match content {
+                    Content::Single(text) => {
+                        total_chars += text.len();
+                    }
+                    Content::Multiple(blocks) => {
+                        for block in blocks {
+                            match block {
+                                ContentBlock::Text { text } => {
+                                    total_chars += text.len();
+                                }
+                                ContentBlock::Thinking { thinking, .. } => {
+                                    total_chars += thinking.len();
+                                }
+                                ContentBlock::ToolUse { name, input, .. } => {
+                                    total_chars += name.len();
+                                    total_chars += input.to_string().len();
+                                }
+                                ContentBlock::ToolResult { content, .. } => {
+                                    total_chars += content.len();
+                                }
+                                ContentBlock::Image { .. } => {
+                                    total_chars += 1000;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    total_chars / 4
 }
 
 pub fn micro_compact(messages: &mut Vec<Message>) {
@@ -92,6 +125,10 @@ pub async fn auto_compact(messages: &mut Vec<Message>, client: &reqwest::Client,
         messages: vec![Message::User { content: Content::Single(summary_prompt) }],
         tools: vec![],
         stream: false,
+        thinking: None,
+        temperature: None,
+        top_p: None,
+        top_k: None,
     };
     
     let (req_json, is_openai) = if api_format == "openai" {
@@ -105,6 +142,12 @@ pub async fn auto_compact(messages: &mut Vec<Message>, client: &reqwest::Client,
             tools: None,
             stream: false,
             stream_options: None,
+            reasoning_effort: None,
+            thinking: None,
+            thinking_budget: None,
+            enable_thinking: None,
+            temperature: request_body.temperature,
+            top_p: request_body.top_p,
         };
         (serde_json::to_value(openai_req).unwrap(), true)
     } else {
@@ -164,6 +207,96 @@ pub async fn auto_compact(messages: &mut Vec<Message>, client: &reqwest::Client,
     });
     
     Ok(())
+}
+
+pub async fn auto_compact_summary(
+    client: &reqwest::Client,
+    api_key: &str,
+    base_url: &str,
+    model_id: &str,
+    api_format: &str,
+    prompt: &str,
+) -> Result<String, String> {
+    let request_body = AnthropicRequest {
+        model: model_id.to_string(),
+        max_tokens: 1000,
+        system: "You are a summarizing agent. Respond in the same language as the user's prompt. Be concise and structured.".to_string(),
+        messages: vec![Message::User { content: Content::Single(prompt.to_string()) }],
+        tools: vec![],
+        stream: false,
+        thinking: None,
+        temperature: None,
+        top_p: None,
+        top_k: None,
+    };
+
+    let (req_json, is_openai) = if api_format == "openai" {
+        use crate::core::adapters::translate_messages_to_openai;
+        use crate::core::models::OpenAIRequest;
+        let openai_msgs = translate_messages_to_openai(&request_body.system, &request_body.messages);
+        let openai_req = OpenAIRequest {
+            model: model_id.to_string(),
+            max_tokens: Some(1000),
+            messages: openai_msgs,
+            tools: None,
+            stream: false,
+            stream_options: None,
+            reasoning_effort: None,
+            thinking: None,
+            thinking_budget: None,
+            enable_thinking: None,
+            temperature: request_body.temperature,
+            top_p: request_body.top_p,
+        };
+        (serde_json::to_value(openai_req).unwrap(), true)
+    } else {
+        (serde_json::to_value(request_body).unwrap(), false)
+    };
+
+    let mut req = client.post(base_url)
+        .header(CONTENT_TYPE, "application/json");
+
+    if is_openai {
+        req = req.header("Authorization", format!("Bearer {}", api_key));
+    } else {
+        req = req
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01");
+    }
+
+    let response = req.json(&req_json)
+        .send()
+        .await
+        .map_err(|e| format!("summary request failed: {}", e))?;
+
+    let body: serde_json::Value = response.json().await.map_err(|e| format!("summary response parse failed: {}", e))?;
+
+    let mut text = String::new();
+    if is_openai {
+        if let Some(choices) = body["choices"].as_array() {
+            if let Some(first) = choices.first() {
+                if let Some(content) = first["message"]["content"].as_str() {
+                    text = content.to_string();
+                }
+            }
+        }
+    } else {
+        if let Some(content_array) = body["content"].as_array() {
+            for block in content_array {
+                if block["type"] == "text" {
+                    if let Some(t) = block["text"].as_str() {
+                        text.push_str(t);
+                    }
+                }
+            }
+        }
+    }
+
+    if text.is_empty() {
+        return Err("Failed to get summary text".to_string());
+    }
+
+    Ok(text)
 }
 
 // --- 4. Memory System (Claude Style) ---
@@ -236,6 +369,10 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
         messages: vec![Message::User { content: Content::Single(user_content) }],
         tools,
         stream: false,
+        thinking: None,
+        temperature: config.temperature,
+        top_p: config.top_p,
+        top_k: config.top_k,
     };
 
     let (req_json, is_openai) = if config.api_format == "openai" {
@@ -250,11 +387,21 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
             tools: if openai_tools.is_empty() { None } else { Some(openai_tools) },
             stream: false,
             stream_options: None,
+            reasoning_effort: None,
+            thinking: None,
+            thinking_budget: None,
+            enable_thinking: None,
+            temperature: request_body.temperature,
+            top_p: request_body.top_p,
         };
         (serde_json::to_value(openai_req).unwrap(), true)
     } else {
         (serde_json::to_value(request_body).unwrap(), false)
     };
+
+    let request_json_str = serde_json::to_string_pretty(&req_json).unwrap_or_default();
+    let logger = crate::core::debug_logger::DebugLogger::new();
+    logger.log_request_to_terminal("MEMORY AGENT", 1, &request_json_str);
 
     let mut req = client.post(&base_url)
         .header(CONTENT_TYPE, "application/json");
@@ -284,6 +431,7 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
                                             if !content.is_empty() {
                                                 println!("[MEMORY] Updating {} memory (OpenAI)...", scope);
                                                 let _ = std::fs::write(target_path, content);
+                                                logger.log_memory_agent(&request_json_str, &format!("Updated {} memory", scope));
                                             }
                                         }
                                     }
@@ -303,6 +451,7 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
                             if !content.is_empty() {
                                 println!("[MEMORY] Updating {} memory (Anthropic)...", scope);
                                 let _ = std::fs::write(target_path, content);
+                                logger.log_memory_agent(&request_json_str, &format!("Updated {} memory", scope));
                             }
                         }
                     }
