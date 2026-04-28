@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use serde_json::json;
 use reqwest::header::CONTENT_TYPE;
+use crate::core::api_format::ApiFormat;
+use crate::core::error::MemoryError;
 use crate::core::models::*;
 use crate::core::prompts::*;
 use crate::get_agent_home;
@@ -86,19 +88,19 @@ pub fn micro_compact(messages: &mut Vec<Message>) {
     }
 }
 
-pub fn append_transcript(text: &str) -> Result<String, String> {
+pub fn append_transcript(text: &str) -> Result<String, MemoryError> {
     let transcript_dir = get_agent_home().join(crate::core::constants::DIR_TRANSCRIPTS);
     if !transcript_dir.exists() {
         let _ = std::fs::create_dir_all(&transcript_dir);
     }
-    
+
     let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let transcript_path = transcript_dir.join(format!("transcript_{}.jsonl", timestamp));
-    std::fs::write(&transcript_path, text).map_err(|e| e.to_string())?;
+    std::fs::write(&transcript_path, text).map_err(|e| MemoryError::FileRead(e.to_string()))?;
     Ok(transcript_path.to_string_lossy().to_string())
 }
 
-pub async fn auto_compact(messages: &mut Vec<Message>, client: &reqwest::Client, api_key: &str, base_url: &str, model_id: &str, api_format: &str) -> Result<(), String> {
+pub async fn auto_compact(messages: &mut Vec<Message>, client: &reqwest::Client, api_key: &str, base_url: &str, model_id: &str, api_format: ApiFormat) -> Result<(), MemoryError> {
     let mut json_content = String::new();
     for msg in messages.iter() {
         if let Ok(m) = serde_json::to_string(msg) {
@@ -131,46 +133,48 @@ pub async fn auto_compact(messages: &mut Vec<Message>, client: &reqwest::Client,
         top_k: None,
     };
     
-    let (req_json, is_openai) = if api_format == "openai" {
-        use crate::core::adapters::translate_messages_to_openai;
-        use crate::core::models::OpenAIRequest;
-        let openai_msgs = translate_messages_to_openai(&request_body.system, &request_body.messages);
-        let openai_req = OpenAIRequest {
-            model: model_id.to_string(),
-            max_tokens: Some(2000),
-            messages: openai_msgs,
-            tools: None,
-            stream: false,
-            stream_options: None,
-            reasoning_effort: None,
-            thinking: None,
-            thinking_budget: None,
-            enable_thinking: None,
-            temperature: request_body.temperature,
-            top_p: request_body.top_p,
-        };
-        (serde_json::to_value(openai_req).unwrap(), true)
-    } else {
-        (serde_json::to_value(request_body).unwrap(), false)
+    let (req_json, is_openai) = match api_format {
+        ApiFormat::OpenAI => {
+            use crate::core::adapters::translate_messages_to_openai;
+            use crate::core::models::OpenAIRequest;
+            let openai_msgs = translate_messages_to_openai(&request_body.system, &request_body.messages);
+            let openai_req = OpenAIRequest {
+                model: model_id.to_string(),
+                max_tokens: Some(2000),
+                messages: openai_msgs,
+                tools: None,
+                stream: false,
+                stream_options: None,
+                reasoning_effort: None,
+                thinking: None,
+                thinking_budget: None,
+                enable_thinking: None,
+                temperature: request_body.temperature,
+                top_p: request_body.top_p,
+            };
+            (serde_json::to_value(openai_req).unwrap(), true)
+        }
+        ApiFormat::Anthropic => {
+            (serde_json::to_value(request_body).unwrap(), false)
+        }
     };
 
+    let (auth_header, auth_value) = api_format.auth_header(api_key);
     let mut req = client.post(base_url)
-        .header(CONTENT_TYPE, "application/json");
+        .header(CONTENT_TYPE, "application/json")
+        .header(auth_header, &auth_value);
 
-    if is_openai {
-        req = req.header("Authorization", format!("Bearer {}", api_key));
-    } else {
-        req = req
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01");
+    if api_format.requires_anthropic_version() {
+        req = req.header("anthropic-version", "2023-06-01");
     }
     
     let response = req.json(&req_json)
         .send()
         .await
-        .map_err(|e| format!("auto_compact request failed: {}", e))?;
-        
-    let body: serde_json::Value = response.json().await.map_err(|e| format!("auto_compact response parse failed: {}", e))?;
+        .map_err(|e| MemoryError::CompactionFailed(format!("auto_compact request failed: {}", e)))?;
+
+    let body: serde_json::Value = response.json().await
+        .map_err(|e| MemoryError::CompactionFailed(format!("auto_compact response parse failed: {}", e)))?;
     
     let mut text = String::new();
     if is_openai {
@@ -194,10 +198,10 @@ pub async fn auto_compact(messages: &mut Vec<Message>, client: &reqwest::Client,
     }
 
     if text.is_empty() {
-        return Err("Failed to get summary text".to_string());
+        return Err(MemoryError::CompactionFailed("Failed to get summary text".to_string()));
     };
     let summary = text;
-    
+
     messages.clear();
     messages.push(Message::User {
         content: Content::Single(format!("[Conversation compressed. Transcript: {:?}]\n\n{}", transcript_path, summary))
@@ -214,9 +218,9 @@ pub async fn auto_compact_summary(
     api_key: &str,
     base_url: &str,
     model_id: &str,
-    api_format: &str,
+    api_format: ApiFormat,
     prompt: &str,
-) -> Result<String, String> {
+) -> Result<String, MemoryError> {
     let request_body = AnthropicRequest {
         model: model_id.to_string(),
         max_tokens: 1000,
@@ -230,46 +234,49 @@ pub async fn auto_compact_summary(
         top_k: None,
     };
 
-    let (req_json, is_openai) = if api_format == "openai" {
-        use crate::core::adapters::translate_messages_to_openai;
-        use crate::core::models::OpenAIRequest;
-        let openai_msgs = translate_messages_to_openai(&request_body.system, &request_body.messages);
-        let openai_req = OpenAIRequest {
-            model: model_id.to_string(),
-            max_tokens: Some(1000),
-            messages: openai_msgs,
-            tools: None,
-            stream: false,
-            stream_options: None,
-            reasoning_effort: None,
-            thinking: None,
-            thinking_budget: None,
-            enable_thinking: None,
-            temperature: request_body.temperature,
-            top_p: request_body.top_p,
-        };
-        (serde_json::to_value(openai_req).unwrap(), true)
-    } else {
-        (serde_json::to_value(request_body).unwrap(), false)
+    let is_openai = api_format.is_openai();
+    let (req_json, _) = match api_format {
+        ApiFormat::OpenAI => {
+            use crate::core::adapters::translate_messages_to_openai;
+            use crate::core::models::OpenAIRequest;
+            let openai_msgs = translate_messages_to_openai(&request_body.system, &request_body.messages);
+            let openai_req = OpenAIRequest {
+                model: model_id.to_string(),
+                max_tokens: Some(1000),
+                messages: openai_msgs,
+                tools: None,
+                stream: false,
+                stream_options: None,
+                reasoning_effort: None,
+                thinking: None,
+                thinking_budget: None,
+                enable_thinking: None,
+                temperature: request_body.temperature,
+                top_p: request_body.top_p,
+            };
+            (serde_json::to_value(openai_req).unwrap(), true)
+        }
+        ApiFormat::Anthropic => {
+            (serde_json::to_value(request_body).unwrap(), false)
+        }
     };
 
+    let (auth_header, auth_value) = api_format.auth_header(api_key);
     let mut req = client.post(base_url)
-        .header(CONTENT_TYPE, "application/json");
+        .header(CONTENT_TYPE, "application/json")
+        .header(auth_header, &auth_value);
 
-    if is_openai {
-        req = req.header("Authorization", format!("Bearer {}", api_key));
-    } else {
-        req = req
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01");
+    if api_format.requires_anthropic_version() {
+        req = req.header("anthropic-version", "2023-06-01");
     }
 
     let response = req.json(&req_json)
         .send()
         .await
-        .map_err(|e| format!("summary request failed: {}", e))?;
+        .map_err(|e| MemoryError::CompactionFailed(format!("summary request failed: {}", e)))?;
 
-    let body: serde_json::Value = response.json().await.map_err(|e| format!("summary response parse failed: {}", e))?;
+    let body: serde_json::Value = response.json().await
+        .map_err(|e| MemoryError::CompactionFailed(format!("summary response parse failed: {}", e)))?;
 
     let mut text = String::new();
     if is_openai {
@@ -293,7 +300,7 @@ pub async fn auto_compact_summary(
     }
 
     if text.is_empty() {
-        return Err("Failed to get summary text".to_string());
+        return Err(MemoryError::CompactionFailed("Failed to get summary text".to_string()));
     }
 
     Ok(text)
@@ -375,43 +382,46 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
         top_k: config.top_k,
     };
 
-    let (req_json, is_openai) = if config.api_format == "openai" {
-        use crate::core::adapters::{translate_messages_to_openai, translate_tools_to_openai};
-        use crate::core::models::OpenAIRequest;
-        let openai_msgs = translate_messages_to_openai(&request_body.system, &request_body.messages);
-        let openai_tools = translate_tools_to_openai(&request_body.tools);
-        let openai_req = OpenAIRequest {
-            model: model_id.clone(),
-            max_tokens: Some(crate::core::constants::MAX_TOKENS_CONTEXT),
-            messages: openai_msgs,
-            tools: if openai_tools.is_empty() { None } else { Some(openai_tools) },
-            stream: false,
-            stream_options: None,
-            reasoning_effort: None,
-            thinking: None,
-            thinking_budget: None,
-            enable_thinking: None,
-            temperature: request_body.temperature,
-            top_p: request_body.top_p,
-        };
-        (serde_json::to_value(openai_req).unwrap(), true)
-    } else {
-        (serde_json::to_value(request_body).unwrap(), false)
+    let api_format = ApiFormat::from_str(&config.api_format);
+    let is_openai = api_format.is_openai();
+    let (req_json, _) = match api_format {
+        ApiFormat::OpenAI => {
+            use crate::core::adapters::{translate_messages_to_openai, translate_tools_to_openai};
+            use crate::core::models::OpenAIRequest;
+            let openai_msgs = translate_messages_to_openai(&request_body.system, &request_body.messages);
+            let openai_tools = translate_tools_to_openai(&request_body.tools);
+            let openai_req = OpenAIRequest {
+                model: model_id.clone(),
+                max_tokens: Some(crate::core::constants::MAX_TOKENS_CONTEXT),
+                messages: openai_msgs,
+                tools: if openai_tools.is_empty() { None } else { Some(openai_tools) },
+                stream: false,
+                stream_options: None,
+                reasoning_effort: None,
+                thinking: None,
+                thinking_budget: None,
+                enable_thinking: None,
+                temperature: request_body.temperature,
+                top_p: request_body.top_p,
+            };
+            (serde_json::to_value(openai_req).unwrap(), true)
+        }
+        ApiFormat::Anthropic => {
+            (serde_json::to_value(request_body).unwrap(), false)
+        }
     };
 
     let request_json_str = serde_json::to_string_pretty(&req_json).unwrap_or_default();
     let logger = crate::core::debug_logger::DebugLogger::new();
     logger.log_request_to_terminal("MEMORY AGENT", 1, &request_json_str);
 
+    let (auth_header, auth_value) = api_format.auth_header(&api_key);
     let mut req = client.post(&base_url)
-        .header(CONTENT_TYPE, "application/json");
+        .header(CONTENT_TYPE, "application/json")
+        .header(auth_header, &auth_value);
 
-    if is_openai {
-        req = req.header("Authorization", format!("Bearer {}", api_key));
-    } else {
-        req = req
-            .header("x-api-key", &api_key)
-            .header("anthropic-version", "2023-06-01");
+    if api_format.requires_anthropic_version() {
+        req = req.header("anthropic-version", "2023-06-01");
     }
 
     if let Ok(response) = req.json(&req_json).send().await {

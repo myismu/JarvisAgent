@@ -305,3 +305,18 @@ body.dragging-active .editor-container {
 @keyframes toolStatusSpin {
   to { transform: rotate(360deg); }
 }
+
+/* 共享动画 */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}

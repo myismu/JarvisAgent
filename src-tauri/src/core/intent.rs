@@ -1,3 +1,4 @@
+use crate::core::api_format::ApiFormat;
 use crate::core::debug_logger;
 use crate::core::models::*;
 
@@ -6,7 +7,7 @@ pub async fn classify_intent(
     api_key: &str,
     base_url: &str,
     model_id: &str,
-    api_format: &str,
+    api_format: ApiFormat,
     msg: &str,
     history: &[Message],
 ) -> String {
@@ -67,7 +68,7 @@ async fn classify_intent_by_llm(
     api_key: &str,
     base_url: &str,
     model_id: &str,
-    api_format: &str,
+    api_format: ApiFormat,
     msg: &str,
     history: &[Message],
 ) -> String {
@@ -120,41 +121,43 @@ async fn classify_intent_by_llm(
         top_k: None,
     };
 
-    let (req_json, is_openai) = if api_format == "openai" {
-        use crate::core::adapters::translate_messages_to_openai;
-        use crate::core::models::OpenAIRequest;
-        let openai_msgs = translate_messages_to_openai(&system_prompt, &request_body.messages);
-        let openai_req = OpenAIRequest {
-            model: model_id.to_string(),
-            max_tokens: Some(30),
-            messages: openai_msgs,
-            tools: None,
-            stream: false,
-            stream_options: None,
-            reasoning_effort: None,
-            thinking: None,
-            thinking_budget: None,
-            enable_thinking: None,
-            temperature: request_body.temperature,
-            top_p: request_body.top_p,
-        };
-        (serde_json::to_value(openai_req).unwrap(), true)
-    } else {
-        (serde_json::to_value(request_body).unwrap(), false)
+    let is_openai = api_format.is_openai();
+    let (req_json, _) = match api_format {
+        ApiFormat::OpenAI => {
+            use crate::core::adapters::translate_messages_to_openai;
+            use crate::core::models::OpenAIRequest;
+            let openai_msgs = translate_messages_to_openai(&system_prompt, &request_body.messages);
+            let openai_req = OpenAIRequest {
+                model: model_id.to_string(),
+                max_tokens: Some(30),
+                messages: openai_msgs,
+                tools: None,
+                stream: false,
+                stream_options: None,
+                reasoning_effort: None,
+                thinking: None,
+                thinking_budget: None,
+                enable_thinking: None,
+                temperature: request_body.temperature,
+                top_p: request_body.top_p,
+            };
+            (serde_json::to_value(openai_req).unwrap(), true)
+        }
+        ApiFormat::Anthropic => {
+            (serde_json::to_value(request_body).unwrap(), false)
+        }
     };
 
     let request_json_str = serde_json::to_string_pretty(&req_json).unwrap_or_default();
 
+    let (auth_header, auth_value) = api_format.auth_header(api_key);
     let mut req = client
         .post(base_url)
-        .header(reqwest::header::CONTENT_TYPE, "application/json");
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(auth_header, &auth_value);
 
-    if is_openai {
-        req = req.header("Authorization", format!("Bearer {}", api_key));
-    } else {
-        req = req
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01");
+    if api_format.requires_anthropic_version() {
+        req = req.header("anthropic-version", "2023-06-01");
     }
 
     if let Ok(response) = req.json(&req_json).send().await {

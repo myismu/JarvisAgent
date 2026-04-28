@@ -48,6 +48,7 @@ thoughts_and_plans.md
 .jarvis_workspace
 .env
 src-tauri/test.rs
+package-lock.json
 
 # Excluded project folders
 agent/

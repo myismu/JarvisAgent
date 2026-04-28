@@ -12,6 +12,7 @@ import type {
   SnapshotNode,
 } from "../../types";
 import DiffViewer from "./DiffViewer.vue";
+import { formatRelativeTime, getFileOpIcon } from "../../utils/timeline";
 
 const props = defineProps<{
   sessionId: string | null;
@@ -34,32 +35,7 @@ const currentSnapshotId = computed(
   () => tree.value?.currentSnapshotId || ""
 );
 
-const formatTime = (timestamp: number) => {
-  const date = new Date(timestamp * 1000);
-  const now = new Date();
-  const diff = now.getTime() - date.getTime();
-
-  if (diff < 60000) return "刚刚";
-  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
-
-  return date.toLocaleDateString("zh-CN", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-};
-
-const getOperationIcon = (operation: string) => {
-  const icons: Record<string, string> = {
-    create: "📄",
-    delete: "🗑️",
-    update: "✏️",
-    rename: "📛",
-  };
-  return icons[operation] || "📁";
-};
+const formatTime = formatRelativeTime;
 
 const loadTree = async () => {
   if (!props.sessionId || !service) return;
@@ -338,7 +314,7 @@ onUnmounted(() => {
                     class="patch-item"
                   >
                     <span class="patch-icon">{{
-                      getOperationIcon(patch.operation)
+                      getFileOpIcon(patch.operation)
                     }}</span>
                     <span class="patch-path">{{ patch.path }}</span>
                     <span class="patch-stats">

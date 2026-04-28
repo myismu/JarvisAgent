@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use crate::core::api_format::ApiFormat;
 use crate::get_agent_home;
 
 /// Agent 配置结构体（代表单个模型的连接信息）
@@ -39,6 +40,13 @@ pub struct AgentConfig {
     /// [兼容旧配置] 旧版 sub_model 字段，读取后忽略（合并进 main_model）
     #[serde(default, skip_serializing)]
     pub sub_model: Option<String>,
+}
+
+impl AgentConfig {
+    /// 将 api_format 字符串转换为 ApiFormat 枚举
+    pub fn api_format_enum(&self) -> ApiFormat {
+        ApiFormat::from_str(&self.api_format)
+    }
 }
 
 impl Default for AgentConfig {
@@ -113,19 +121,22 @@ impl AppConfig {
 
         // 规范化 base_url
         let mut url = config.base_url.trim_end_matches('/').to_string();
-        if config.api_format == "openai" {
-            if !url.ends_with("/chat/completions") {
-                if !url.ends_with("/v1") {
-                    url.push_str("/v1");
+        match config.api_format_enum() {
+            ApiFormat::OpenAI => {
+                if !url.ends_with("/chat/completions") {
+                    if !url.ends_with("/v1") {
+                        url.push_str("/v1");
+                    }
+                    url.push_str("/chat/completions");
                 }
-                url.push_str("/chat/completions");
             }
-        } else if config.api_format == "anthropic" {
-            if !url.ends_with("/messages") {
-                if !url.ends_with("/v1") {
-                    url.push_str("/v1");
+            ApiFormat::Anthropic => {
+                if !url.ends_with("/messages") {
+                    if !url.ends_with("/v1") {
+                        url.push_str("/v1");
+                    }
+                    url.push_str("/messages");
                 }
-                url.push_str("/messages");
             }
         }
         config.base_url = url;

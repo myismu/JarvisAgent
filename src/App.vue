@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref, computed } from "vue";
-import { useJarvis } from "./composables/useJarvis";
+import { useAgentEvents } from "./composables/useAgentEvents";
+import { useSessionStore } from "./stores/session";
+import { useAgentStore } from "./stores/agent";
+import { usePermissionStore } from "./stores/permission";
 
 import TitleBar from "./components/layout/TitleBar.vue";
 import Sidebar from "./components/layout/Sidebar.vue";
@@ -14,12 +17,15 @@ import SettingsPanel from "./components/settings/SettingsPanel.vue";
 const showSettings = ref(false);
 const sidebarCollapsed = ref(false);
 
-const { initListeners, currentSessionStatus, isCurrentSessionRunning, agentSteps, currentSubAgentRuns, currentPlanDocuments, showAgentPanel } = useJarvis();
+const session = useSessionStore();
+const agent = useAgentStore();
+const perm = usePermissionStore();
+const { initListeners } = useAgentEvents();
 
 const displayStatus = computed(() => {
-  if (isCurrentSessionRunning.value) return 'running';
-  if (currentSessionStatus.value === 'ERROR') return 'error';
-  if (currentSessionStatus.value === 'FINISH') return 'finish';
+  if (session.isCurrentSessionRunning) return 'running';
+  if (session.currentSessionStatus === 'ERROR') return 'error';
+  if (session.currentSessionStatus === 'FINISH') return 'finish';
   return 'idle';
 });
 
@@ -52,11 +58,11 @@ onMounted(async () => {
               </div>
             </div>
             <button
-              v-if="agentSteps.length > 0 || currentSubAgentRuns.length > 0 || currentPlanDocuments.length > 0"
+              v-if="agent.agentSteps.length > 0 || agent.currentSubAgentRuns.length > 0 || perm.currentPlanDocuments.length > 0"
               class="agent-panel-toggle"
-              :class="{ active: showAgentPanel }"
-              @click="showAgentPanel = !showAgentPanel"
-              :title="showAgentPanel ? '隐藏执行流程' : '显示执行流程'"
+              :class="{ active: agent.showAgentPanel }"
+              @click="agent.showAgentPanel = !agent.showAgentPanel"
+              :title="agent.showAgentPanel ? '隐藏执行流程' : '显示执行流程'"
             >
               <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="22 12 18 12"></polyline>

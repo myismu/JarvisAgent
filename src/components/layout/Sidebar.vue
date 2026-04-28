@@ -3,7 +3,10 @@ import { ref, onMounted, onUnmounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { useJarvis, triggerRender, forceScrollToBottom } from '../../composables/useJarvis';
+import { useSessionStore } from '../../stores/session';
+import { useChatStore } from '../../stores/chat';
+import { useAgentStore } from '../../stores/agent';
+import { useAgentEvents } from '../../composables/useAgentEvents';
 import { useTheme } from '../../composables/useTheme';
 
 defineProps<{
@@ -14,7 +17,10 @@ const emit = defineEmits<{
   (e: 'open-settings'): void;
 }>();
 
-const { todos, jarvisResponse, toolBuffer, contentBuffer, tempBuffer, saveAgentStepsToBackend, loadAgentStepsFromBackend, loadPlanDocumentsFromBackend, loadAgentRunsFromBackend, loadAgentRunEventsFromBackend, activeSessionId, workingDirectory, setSessionUsageTotals, hasHydratedSessionView, replaceSessionHistory, sessionViews } = useJarvis();
+const sessionStore = useSessionStore();
+const chat = useChatStore();
+const agent = useAgentStore();
+const events = useAgentEvents();
 const { isDark, toggleTheme } = useTheme();
 
 // 会话管理状态
@@ -38,7 +44,7 @@ const sessionActionMessageKind = ref<'info' | 'error'>('info');
 let sessionActionTimer: ReturnType<typeof setTimeout> | null = null;
 
 const isSessionRunning = (sessionId: string): boolean => {
-  return sessionViews.value[sessionId]?.status === "RUNNING";
+  return sessionStore.sessionViews[sessionId]?.status === "RUNNING";
 };
 
 const showSessionActionMessage = (message: string, kind: 'info' | 'error' = 'info') => {
@@ -127,7 +133,7 @@ const submitRenameSession = async (sessionId: string) => {
 // 创建新会话
 const createNewSession = async (withSandbox: boolean = false) => {
   try {
-    await saveAgentStepsToBackend();
+    await chat.saveAgentStepsToBackend();
 
     let sandboxDir: string | null = null;
 
@@ -140,8 +146,8 @@ const createNewSession = async (withSandbox: boolean = false) => {
     }
 
     const meta = await invoke<any>('create_session', { workingDirectory: sandboxDir });
-    activeSessionId.value = meta.id;
-    workingDirectory.value = meta.workingDirectory || null;
+    sessionStore.activeSessionId = meta.id;
+    sessionStore.workingDirectory = meta.workingDirectory || null;
 
     const config = await invoke<any>('get_config');
     if (config.globalProfileId) {
@@ -150,21 +156,21 @@ const createNewSession = async (withSandbox: boolean = false) => {
       await invoke('update_session_profile', { id: meta.id, profileId: config.globalProfileId });
     }
 
-    jarvisResponse.value = 'Ready for input...';
-    toolBuffer.value = '';
-    contentBuffer.value = '';
-    tempBuffer.value = '';
-    setSessionUsageTotals(meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
-    triggerRender();
+    chat.jarvisResponse = 'Ready for input...';
+    chat.toolBuffer = '';
+    chat.contentBuffer = '';
+    chat.tempBuffer = '';
+    sessionStore.setSessionUsageTotals(meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
+    chat.triggerRender();
 
-    await loadAgentStepsFromBackend();
-    await loadPlanDocumentsFromBackend(meta.id);
-    await loadAgentRunsFromBackend(meta.id);
-    await loadAgentRunEventsFromBackend(meta.id);
+    await chat.loadAgentStepsFromBackend();
+    await events.loadPlanDocumentsFromBackend(meta.id);
+    await events.loadAgentRunsFromBackend(meta.id);
+    await events.loadAgentRunEventsFromBackend(meta.id);
 
     await loadSessions();
     showSessionActionMessage(withSandbox ? '已创建沙盒会话。' : '已创建新会话。');
-    requestAnimationFrame(() => forceScrollToBottom());
+    requestAnimationFrame(() => chat.forceScrollToBottom());
   } catch (err) {
     console.error('创建会话失败:', err);
     showSessionActionMessage(`创建会话失败：${formatErrorMessage(err)}`, 'error');
@@ -173,13 +179,13 @@ const createNewSession = async (withSandbox: boolean = false) => {
 
 // 切换会话
 const switchToSession = async (id: string) => {
-  if (id === activeSessionId.value) return;
+  if (id === sessionStore.activeSessionId) return;
   try {
-    await saveAgentStepsToBackend();
+    await chat.saveAgentStepsToBackend();
 
     const meta = await invoke<any>('switch_session', { id });
-    activeSessionId.value = id;
-    workingDirectory.value = meta.workingDirectory || null;
+    sessionStore.activeSessionId = id;
+    sessionStore.workingDirectory = meta.workingDirectory || null;
 
     const config = await invoke<any>('get_config');
     if (meta.profileId) {
@@ -189,20 +195,20 @@ const switchToSession = async (id: string) => {
     }
     await invoke('save_config_cmd', { newConfig: config });
 
-    setSessionUsageTotals(meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
+    sessionStore.setSessionUsageTotals(meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
 
-    if (!hasHydratedSessionView(id)) {
+    if (!sessionStore.hasHydratedSessionView(id)) {
       const history = await invoke<string>('get_session_history', { sessionId: id });
-      replaceSessionHistory(id, history || 'Ready for input...');
-      await loadAgentStepsFromBackend(id);
+      sessionStore.replaceSessionHistory(id, history || 'Ready for input...');
+      await chat.loadAgentStepsFromBackend(id);
     }
-    await loadPlanDocumentsFromBackend(id);
-    await loadAgentRunsFromBackend(id);
-    await loadAgentRunEventsFromBackend(id);
+    await events.loadPlanDocumentsFromBackend(id);
+    await events.loadAgentRunsFromBackend(id);
+    await events.loadAgentRunEventsFromBackend(id);
 
-    triggerRender();
+    chat.triggerRender();
     await loadSessions();
-    requestAnimationFrame(() => forceScrollToBottom());
+    requestAnimationFrame(() => chat.forceScrollToBottom());
   } catch (err) {
     console.error('切换会话失败:', err);
   }
@@ -211,7 +217,7 @@ const switchToSession = async (id: string) => {
 // 删除会话
 const deleteSession = async (id: string, event: Event) => {
   event.stopPropagation();
-  if (id === activeSessionId.value) return;
+  if (id === sessionStore.activeSessionId) return;
   if (isSessionRunning(id)) {
     showSessionActionMessage('该会话仍在执行，请停止或等待完成后再删除。', 'error');
     return;
@@ -235,40 +241,40 @@ onMounted(async () => {
     if (activeId) {
       try {
         await invoke('switch_session', { id: activeId });
-        activeSessionId.value = activeId;
+        sessionStore.activeSessionId = activeId;
         const meta = await invoke<any>('get_session_meta', { id: activeId });
-        workingDirectory.value = meta.workingDirectory || null;
-        setSessionUsageTotals(meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
+        sessionStore.workingDirectory = meta.workingDirectory || null;
+        sessionStore.setSessionUsageTotals(meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
 
         // 加载会话历史
         const history = await invoke<string>('get_session_history', { sessionId: activeId });
         if (history && history.trim()) {
-          jarvisResponse.value = history;
+          chat.jarvisResponse = history;
         } else {
-          jarvisResponse.value = 'Ready for input...';
+          chat.jarvisResponse = 'Ready for input...';
         }
       } catch (switchErr) {
         console.error('同步会话状态失败:', switchErr);
-        setSessionUsageTotals(0, 0);
+        sessionStore.setSessionUsageTotals(0, 0);
         if (sessions.value.length > 0) {
-          activeSessionId.value = sessions.value[0].id;
+          sessionStore.activeSessionId = sessions.value[0].id;
         }
       }
     } else if (sessions.value.length > 0) {
-      activeSessionId.value = sessions.value[0].id;
-      setSessionUsageTotals(sessions.value[0].totalInputTokens || 0, sessions.value[0].totalOutputTokens || 0);
+      sessionStore.activeSessionId = sessions.value[0].id;
+      sessionStore.setSessionUsageTotals(sessions.value[0].totalInputTokens || 0, sessions.value[0].totalOutputTokens || 0);
     }
   } catch (err) {
-    setSessionUsageTotals(0, 0);
+    sessionStore.setSessionUsageTotals(0, 0);
     if (sessions.value.length > 0) {
-      activeSessionId.value = sessions.value[0].id;
+      sessionStore.activeSessionId = sessions.value[0].id;
     }
   }
 
-  await loadAgentStepsFromBackend();
-  await loadPlanDocumentsFromBackend();
-  await loadAgentRunsFromBackend();
-  await loadAgentRunEventsFromBackend();
+  await chat.loadAgentStepsFromBackend();
+  await events.loadPlanDocumentsFromBackend();
+  await events.loadAgentRunsFromBackend();
+  await events.loadAgentRunEventsFromBackend();
 
   unlistenRenamed = await listen('session-renamed', () => {
     loadSessions();
@@ -318,7 +324,7 @@ onUnmounted(() => {
           <li
             v-for="session in sessions"
             :key="session.id"
-            :class="['session-item', { active: session.id === activeSessionId }]"
+            :class="['session-item', { active: session.id === sessionStore.activeSessionId }]"
             @click="editingSessionId !== session.id && switchToSession(session.id)"
           >
             <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none" class="session-icon">
@@ -354,7 +360,7 @@ onUnmounted(() => {
               </svg>
             </button>
             <button
-              v-if="session.id !== activeSessionId"
+              v-if="session.id !== sessionStore.activeSessionId"
               class="delete-btn"
               @click="deleteSession(session.id, $event)"
               title="删除会话"
@@ -368,10 +374,10 @@ onUnmounted(() => {
         </ul>
       </div>
 
-      <div class="sidebar-section" v-if="todos.length > 0">
+      <div class="sidebar-section" v-if="agent.todos.length > 0">
         <div class="sidebar-title"><span>TASKS</span></div>
         <ul class="todo-list">
-          <li v-for="todo in todos" :key="todo.id" :class="['todo-item', todo.status]">
+          <li v-for="todo in agent.todos" :key="todo.id" :class="['todo-item', todo.status]">
             <span class="todo-icon">
               <svg v-if="todo.status === 'completed'" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="20 6 9 17 4 12"></polyline>

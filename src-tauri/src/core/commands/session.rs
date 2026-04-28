@@ -97,7 +97,7 @@ pub async fn auto_name_session(
     let model_id = &agent_cfg.utility_model;
     let api_key = &agent_cfg.api_key;
     let base_url = &agent_cfg.base_url;
-    let api_format = &agent_cfg.api_format;
+    let api_format = agent_cfg.api_format_enum();
 
     let mut text_to_summarize = String::new();
     for msg in memory.messages.iter().take(4) {

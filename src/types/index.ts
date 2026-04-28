@@ -1,3 +1,5 @@
+// === 核心会话类型 ===
+
 export interface JarvisResult {
   status: string;
   content: string;
@@ -39,6 +41,8 @@ export interface PlanDocument {
   updatedAt: number;
   decidedAt?: number | null;
 }
+
+// === Agent 执行追踪类型 ===
 
 export type AgentStepType =
   | "thinking"
@@ -165,6 +169,8 @@ export interface SubAgentEvent {
   outputTokens: number;
   timestamp: number;
 }
+
+// === 检查点/快照类型（旧版） ===
 
 export type OpType = "edit" | "write" | "create" | "delete" | "rename";
 

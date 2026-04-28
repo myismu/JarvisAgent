@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted } from 'vue';
-import { useJarvis } from '../../composables/useJarvis';
+import { usePermissionStore } from '../../stores/permission';
+import { useChatStore } from '../../stores/chat';
 
-const { permissionRequest, resolvePermission } = useJarvis();
+const perm = usePermissionStore();
+const chat = useChatStore();
 
 // 智能解析消息，提取原因和命令内容
 const parsedData = computed(() => {
-  if (!permissionRequest.value) return { reason: '', command: '' };
+  if (!perm.permissionRequest) return { reason: '', command: '' };
   
-  const msg = permissionRequest.value.message;
+  const msg = perm.permissionRequest.message;
   let reason = msg;
   let command = '';
   
@@ -50,18 +52,18 @@ const parsedData = computed(() => {
 
 // 快捷键支持: A-Allow, S-Session, R-Reject
 const handleKeydown = (e: KeyboardEvent) => {
-  if (!permissionRequest.value) return;
+  if (!perm.permissionRequest) return;
   
   const key = e.key.toLowerCase();
   if (key === 'a') {
     e.preventDefault();
-    resolvePermission('allow_once');
+    chat.resolvePermission('allow_once');
   } else if (key === 's') {
     e.preventDefault();
-    resolvePermission('allow_session');
+    chat.resolvePermission('allow_session');
   } else if (key === 'r' || key === 'escape') {
     e.preventDefault();
-    resolvePermission('reject');
+    chat.resolvePermission('reject');
   }
 };
 
@@ -71,7 +73,7 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
 
 <template>
   <Transition name="fade">
-    <div v-if="permissionRequest" class="modal-overlay">
+    <div v-if="perm.permissionRequest" class="modal-overlay">
       <div class="modal-content glass-panel-heavy">
         <!-- 顶部的红色警示光晕 -->
         <div class="modal-glow"></div>
@@ -99,14 +101,14 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
           </div>
           
           <div class="modal-actions">
-            <button @click="resolvePermission('reject')" class="cmd-button danger" title="快捷键: R 或 Esc">
+            <button @click="chat.resolvePermission('reject')" class="cmd-button danger" title="快捷键: R 或 Esc">
               <span class="key-hint">R</span> 拒绝
             </button>
             <div class="allow-group">
-              <button @click="resolvePermission('allow_once')" class="cmd-button safe" title="快捷键: A">
+              <button @click="chat.resolvePermission('allow_once')" class="cmd-button safe" title="快捷键: A">
                 <span class="key-hint">A</span> 允许一次
               </button>
-              <button @click="resolvePermission('allow_session')" class="cmd-button warn" title="快捷键: S">
+              <button @click="chat.resolvePermission('allow_session')" class="cmd-button warn" title="快捷键: S">
                 <span class="key-hint">S</span> 本次会话始终允许
               </button>
             </div>

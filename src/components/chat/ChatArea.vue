@@ -1,22 +1,26 @@
 <script setup lang="ts">
 import { ref, onMounted, nextTick, computed, watch, onUnmounted } from 'vue';
-import { useJarvis, registerScrollCb, triggerRender } from '../../composables/useJarvis';
+import { useSessionStore } from '../../stores/session';
+import { useChatStore } from '../../stores/chat';
 import { invoke } from '@tauri-apps/api/core';
 import ConfirmModal from '../common/ConfirmModal.vue';
+import ThinkingStatus from './ThinkingStatus.vue';
+import WelcomeScreen from './WelcomeScreen.vue';
 
 interface CheckpointEntry {
   id: string;
   operations?: Array<unknown>;
 }
 
-const { parsedHistory, parsedCurrentTurnHtml, workingDirectory, isCurrentSessionRunning, activeSessionId, replaceSessionHistory, resetSessionView, loadAgentStepsFromBackend, rollbackRecalledMessage, getSessionView } = useJarvis();
+const session = useSessionStore();
+const chat = useChatStore();
 const responseAreaRef = ref<HTMLElement | null>(null);
 
 const thinkingElapsed = ref(0);
 let thinkingTimer: ReturnType<typeof setInterval> | null = null;
 
 const updateThinkingElapsed = () => {
-  const view = getSessionView(activeSessionId.value);
+  const view = session.getSessionView(session.activeSessionId);
   if (view.runStartTime) {
     thinkingElapsed.value = Math.floor((Date.now() - view.runStartTime) / 1000);
   } else {
@@ -24,7 +28,7 @@ const updateThinkingElapsed = () => {
   }
 };
 
-watch(isCurrentSessionRunning, (running) => {
+watch(() => session.isCurrentSessionRunning, (running) => {
   if (running) {
     updateThinkingElapsed();
     thinkingTimer = setInterval(updateThinkingElapsed, 1000);
@@ -34,8 +38,8 @@ watch(isCurrentSessionRunning, (running) => {
   }
 });
 
-watch(activeSessionId, () => {
-  if (isCurrentSessionRunning.value) {
+watch(() => session.activeSessionId, () => {
+  if (session.isCurrentSessionRunning) {
     updateThinkingElapsed();
     if (!thinkingTimer) {
       thinkingTimer = setInterval(updateThinkingElapsed, 1000);
@@ -49,12 +53,6 @@ watch(activeSessionId, () => {
 onUnmounted(() => {
   if (thinkingTimer) clearInterval(thinkingTimer);
 });
-
-const formatThinkingTime = (s: number): string => {
-  const m = Math.floor(s / 60);
-  const sec = s % 60;
-  return m > 0 ? `${m}:${sec.toString().padStart(2, '0')}` : `${sec}s`;
-};
 
 const rollbackMenu = ref<{
   visible: boolean;
@@ -80,8 +78,8 @@ const rollbackConfirm = ref<{
 } | null>(null);
 
 const displayWorkingDir = computed(() => {
-  if (!workingDirectory.value) return null;
-  const path = workingDirectory.value;
+  if (!session.workingDirectory) return null;
+  const path = session.workingDirectory;
   const parts = path.replace(/\\/g, '/').split('/');
   if (parts.length <= 3) return path;
   return '.../' + parts.slice(-3).join('/');
@@ -175,7 +173,7 @@ const getRollbackMenuPosition = (x: number, y: number, hasOperations: boolean) =
 
 const getRollbackHasOperations = async (checkpointId: string, fallback: boolean) => {
   try {
-    const sessionId = activeSessionId.value;
+    const sessionId = session.activeSessionId;
     if (!sessionId) return fallback;
 
     const checkpoints = await invoke<CheckpointEntry[]>('list_checkpoints', {
@@ -215,7 +213,7 @@ const confirmRollback = async () => {
 
   rollbackLoading.value = true;
   try {
-    const sessionId = activeSessionId.value;
+    const sessionId = session.activeSessionId;
     if (!sessionId) {
       alert('无法获取当前会话');
       return;
@@ -235,17 +233,17 @@ const confirmRollback = async () => {
     closeRollbackMenu();
 
     if (recalledText) {
-      rollbackRecalledMessage.value = recalledText;
+      chat.rollbackRecalledMessage = recalledText;
     }
 
     try {
       const history = await invoke<string>('get_session_history', { sessionId });
-      replaceSessionHistory(sessionId, history || 'Ready for input...');
-      await loadAgentStepsFromBackend(sessionId);
-      triggerRender();
+      session.replaceSessionHistory(sessionId, history || 'Ready for input...');
+      await chat.loadAgentStepsFromBackend(sessionId);
+      chat.triggerRender();
     } catch {
-      resetSessionView(sessionId);
-      triggerRender();
+      session.resetSessionView(sessionId);
+      chat.triggerRender();
     }
   } catch (err) {
     console.error('回滚失败:', err);
@@ -256,7 +254,7 @@ const confirmRollback = async () => {
 };
 
 onMounted(() => {
-  registerScrollCb(scrollToBottom);
+  chat.registerScrollCb(scrollToBottom);
   document.addEventListener('click', (e) => {
     const target = e.target as HTMLElement;
     if (target.closest('.rollback-trigger')) return;
@@ -269,138 +267,20 @@ onMounted(() => {
 
 <template>
   <div class="response-area" ref="responseAreaRef" @contextmenu="handleContextMenu" @click="handleRollbackClick">
-    <div class="working-dir-indicator" v-if="workingDirectory">
+    <div class="working-dir-indicator" v-if="session.workingDirectory">
       <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
         <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
       </svg>
       <span class="working-dir-label">沙盒</span>
-      <span class="working-dir-path" :title="workingDirectory || undefined">{{ displayWorkingDir }}</span>
+      <span class="working-dir-path" :title="session.workingDirectory || undefined">{{ displayWorkingDir }}</span>
     </div>
-    <div class="welcome-screen" v-if="!parsedHistory || parsedHistory === '<p>Ready for input...</p>\n'">
-      <div class="arc-reactor-container">
-        <svg class="arc-reactor" viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <radialGradient id="coreGlow" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stop-color="#ffffff" stop-opacity="1" />
-              <stop offset="20%" stop-color="#60a5fa" stop-opacity="0.9" />
-              <stop offset="50%" stop-color="#3b82f6" stop-opacity="0.4" />
-              <stop offset="100%" stop-color="#1e3a5f" stop-opacity="0" />
-            </radialGradient>
-            <radialGradient id="innerGlow" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stop-color="#93c5fd" stop-opacity="0.8" />
-              <stop offset="60%" stop-color="#3b82f6" stop-opacity="0.3" />
-              <stop offset="100%" stop-color="#1e40af" stop-opacity="0" />
-            </radialGradient>
-          </defs>
-
-          <circle cx="200" cy="200" r="195" fill="none" stroke="#1e3a5f" stroke-width="0.5" opacity="0.3" />
-          <circle cx="200" cy="200" r="185" fill="none" stroke="#2563eb" stroke-width="0.8" opacity="0.2" />
-
-          <g class="ring-outer">
-            <circle cx="200" cy="200" r="170" fill="none" stroke="#3b82f6" stroke-width="1.5" opacity="0.6" />
-            <circle cx="200" cy="200" r="165" fill="none" stroke="#60a5fa" stroke-width="0.5" opacity="0.3" stroke-dasharray="8 12" />
-          </g>
-
-          <g class="ring-segments">
-            <circle cx="200" cy="200" r="155" fill="none" stroke="#2563eb" stroke-width="2" opacity="0.5"
-              stroke-dasharray="20 15 10 15 20 15 10 15 20 15 10 15 20 15 10 15 20 15 10 15 20 15 10 15" />
-          </g>
-
-          <g class="ring-middle">
-            <circle cx="200" cy="200" r="140" fill="none" stroke="#3b82f6" stroke-width="1" opacity="0.4" />
-            <circle cx="200" cy="200" r="135" fill="none" stroke="#60a5fa" stroke-width="0.5" opacity="0.25" stroke-dasharray="4 8" />
-          </g>
-
-          <g class="triangles">
-            <polygon points="200,55 230,100 170,100" fill="none" stroke="#3b82f6" stroke-width="1.2" opacity="0.6" />
-            <polygon points="345,200 300,230 300,170" fill="none" stroke="#3b82f6" stroke-width="1.2" opacity="0.6" />
-            <polygon points="200,345 170,300 230,300" fill="none" stroke="#3b82f6" stroke-width="1.2" opacity="0.6" />
-            <polygon points="55,200 100,170 100,230" fill="none" stroke="#3b82f6" stroke-width="1.2" opacity="0.6" />
-            <polygon points="295,80 305,125 265,100" fill="none" stroke="#2563eb" stroke-width="0.8" opacity="0.4" />
-            <polygon points="320,295 275,305 300,265" fill="none" stroke="#2563eb" stroke-width="0.8" opacity="0.4" />
-            <polygon points="105,320 95,275 135,300" fill="none" stroke="#2563eb" stroke-width="0.8" opacity="0.4" />
-            <polygon points="80,105 125,95 100,135" fill="none" stroke="#2563eb" stroke-width="0.8" opacity="0.4" />
-          </g>
-
-          <g class="ring-inner-outer">
-            <circle cx="200" cy="200" r="110" fill="none" stroke="#3b82f6" stroke-width="1.5" opacity="0.5" />
-          </g>
-
-          <g class="hex-ring">
-            <polygon points="200,95 290,147 290,253 200,305 110,253 110,147" fill="none" stroke="#60a5fa" stroke-width="1" opacity="0.35" />
-          </g>
-
-          <g class="ring-inner">
-            <circle cx="200" cy="200" r="85" fill="none" stroke="#3b82f6" stroke-width="2" opacity="0.6" />
-            <circle cx="200" cy="200" r="80" fill="none" stroke="#60a5fa" stroke-width="0.5" opacity="0.3" stroke-dasharray="6 10" />
-          </g>
-
-          <g class="beam-lines">
-            <line x1="200" y1="115" x2="200" y2="80" stroke="#60a5fa" stroke-width="1" opacity="0.4" />
-            <line x1="272" y1="155" x2="300" y2="135" stroke="#60a5fa" stroke-width="1" opacity="0.4" />
-            <line x1="272" y1="245" x2="300" y2="265" stroke="#60a5fa" stroke-width="1" opacity="0.4" />
-            <line x1="200" y1="285" x2="200" y2="320" stroke="#60a5fa" stroke-width="1" opacity="0.4" />
-            <line x1="128" y1="245" x2="100" y2="265" stroke="#60a5fa" stroke-width="1" opacity="0.4" />
-            <line x1="128" y1="155" x2="100" y2="135" stroke="#60a5fa" stroke-width="1" opacity="0.4" />
-          </g>
-
-          <g class="ring-core-outer">
-            <circle cx="200" cy="200" r="60" fill="none" stroke="#3b82f6" stroke-width="2.5" opacity="0.7" />
-          </g>
-
-          <g class="ring-core-segments">
-            <path d="M 200 145 A 55 55 0 0 1 248 172" fill="none" stroke="#60a5fa" stroke-width="2" opacity="0.5" />
-            <path d="M 255 200 A 55 55 0 0 1 228 248" fill="none" stroke="#60a5fa" stroke-width="2" opacity="0.5" />
-            <path d="M 200 255 A 55 55 0 0 1 152 228" fill="none" stroke="#60a5fa" stroke-width="2" opacity="0.5" />
-            <path d="M 145 200 A 55 55 0 0 1 172 152" fill="none" stroke="#60a5fa" stroke-width="2" opacity="0.5" />
-          </g>
-
-          <g class="ring-core-inner">
-            <circle cx="200" cy="200" r="40" fill="none" stroke="#60a5fa" stroke-width="1.5" opacity="0.5" />
-          </g>
-
-          <g class="core-pulse">
-            <circle cx="200" cy="200" r="28" fill="url(#innerGlow)" />
-            <circle cx="200" cy="200" r="18" fill="url(#coreGlow)" />
-            <circle cx="200" cy="200" r="8" fill="#ffffff" opacity="0.9" />
-          </g>
-
-          <g class="hud-data" opacity="0.3">
-            <text x="200" y="42" text-anchor="middle" fill="#60a5fa" font-family="monospace" font-size="8">SYS.ONLINE</text>
-            <text x="358" y="204" text-anchor="middle" fill="#60a5fa" font-family="monospace" font-size="8">PWR.100%</text>
-            <text x="200" y="368" text-anchor="middle" fill="#60a5fa" font-family="monospace" font-size="8">NET.LINK</text>
-            <text x="42" y="204" text-anchor="middle" fill="#60a5fa" font-family="monospace" font-size="8">SEC.OK</text>
-          </g>
-
-          <g class="scan-line" opacity="0.15">
-            <line x1="200" y1="200" x2="200" y2="5" stroke="#60a5fa" stroke-width="0.5" />
-          </g>
-        </svg>
-
-        <div class="reactor-label">
-          <span class="label-char" style="--i:0">J</span><span class="label-dot">.</span>
-          <span class="label-char" style="--i:1">A</span><span class="label-dot">.</span>
-          <span class="label-char" style="--i:2">R</span><span class="label-dot">.</span>
-          <span class="label-char" style="--i:3">V</span><span class="label-dot">.</span>
-          <span class="label-char" style="--i:4">I</span><span class="label-dot">.</span>
-          <span class="label-char" style="--i:5">S</span>
-        </div>
-      </div>
-      <div class="welcome-text">随时准备为您效劳，先生。</div>
-    </div>
+    <WelcomeScreen v-if="!chat.parsedHistory || chat.parsedHistory === '<p>Ready for input...</p>\n'" />
     <div class="response-text markdown-body" v-else>
-      <div v-html="parsedHistory"></div>
-      <div v-if="parsedCurrentTurnHtml" class="chat-message agent-message current-turn-message">
+      <div v-html="chat.parsedHistory"></div>
+      <div v-if="chat.parsedCurrentTurnHtml" class="chat-message agent-message current-turn-message">
         <div class="message-content current-turn-content">
-          <div v-html="parsedCurrentTurnHtml"></div>
-          <div v-if="isCurrentSessionRunning" class="thinking-inline-status" aria-label="Jarvis is thinking">
-            <svg class="thinking-inline-spinner" viewBox="0 0 24 24" width="14" height="14">
-              <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" fill="none" stroke-dasharray="31.4 31.4" stroke-linecap="round">
-                <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/>
-              </circle>
-            </svg>
-            <span class="thinking-timer">{{ formatThinkingTime(thinkingElapsed) }}</span>
-          </div>
+          <div v-html="chat.parsedCurrentTurnHtml"></div>
+          <ThinkingStatus :running="session.isCurrentSessionRunning" :elapsed="thinkingElapsed" />
         </div>
       </div>
     </div>
@@ -828,26 +708,11 @@ onMounted(() => {
   padding-right: 78px;
 }
 
-.thinking-inline-status {
+.current-turn-content > :deep(.thinking-inline-status) {
   position: absolute;
   top: 12px;
   right: 14px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 24px;
-  padding: 2px 8px;
-  border: 1px solid color-mix(in srgb, var(--accent-yellow) 28%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--glass-bg-heavy) 86%, transparent);
-  color: var(--accent-yellow);
-  box-shadow: var(--shadow-sm);
-  pointer-events: none;
-}
-
-.thinking-inline-spinner {
-  flex: 0 0 auto;
-  color: var(--accent-yellow);
+  z-index: 1;
 }
 
 .response-text :deep(strong) {

@@ -2,17 +2,20 @@ pub mod adapters;
 pub mod agent;
 pub mod agent_runs;
 pub mod api_client;
+pub mod api_format;
 pub mod background;
 pub mod checkpoint;
 pub mod commands;
 pub mod config;
 pub mod constants;
 pub mod debug_logger;
+pub mod error;
 pub mod intent;
 pub mod intent_rules;
 pub mod memory;
 pub mod models;
 pub mod prompts;
+pub mod providers;
 pub mod registry;
 pub mod sessions;
 pub mod snapshot_engine;
@@ -21,6 +24,7 @@ pub mod state;
 pub mod subagents;
 pub mod tasks;
 pub mod tools;
+pub mod traits;
 
 pub use state::{
     WorkspaceState, SessionCleanupResult,

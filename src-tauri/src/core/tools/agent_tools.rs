@@ -84,6 +84,7 @@ pub async fn run_subagent(
         SubAgentMonitor::fail_run(&app, &run_id, "Missing API key".to_string(), 0, 0).await;
         return ("子代理启动失败：未配置 API Key".to_string(), 0, 0);
     }
+    let api_format_enum = cfg.api_format_enum();
     let api_key = cfg.api_key;
     let base_url = cfg.base_url;
     let model_id = cfg.main_model; // 子代理与主代理共用同一模型
@@ -120,7 +121,7 @@ pub async fn run_subagent(
     let mut sub_input_tokens: u64 = 0;
     let mut sub_output_tokens: u64 = 0;
 
-    let mut tools = get_tools_definition("SUBAGENT");
+    let mut tools = get_tools_definition("SUBAGENT", &[]);
 
     if read_only {
         let mutating_tools = [
@@ -196,7 +197,7 @@ pub async fn run_subagent(
             }
         }
 
-        let (req_json, is_openai) = if cfg.api_format == "openai" {
+        let (req_json, is_openai) = if api_format_enum.is_openai() {
             use crate::core::adapters::{
                 should_backfill_deepseek_reasoning_content,
                 translate_messages_to_openai_with_reasoning_backfill,
@@ -267,15 +268,13 @@ pub async fn run_subagent(
         logger.log_request_to_terminal("SUB AGENT", loop_count + 1, &request_json_str);
         logger.log_request_to_file("SUB AGENT", loop_count + 1, &request_json_str);
 
+        let (auth_header, auth_value) = api_format_enum.auth_header(&api_key);
         let mut req = client.post(&base_url)
-            .header(reqwest::header::CONTENT_TYPE, "application/json");
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(auth_header, &auth_value);
 
-        if is_openai {
-            req = req.header("Authorization", format!("Bearer {}", api_key));
-        } else {
-            req = req
-                .header("x-api-key", &api_key)
-                .header("anthropic-version", "2023-06-01");
+        if api_format_enum.requires_anthropic_version() {
+            req = req.header("anthropic-version", "2023-06-01");
         }
 
         let response_res = req.json(&req_json).send().await;
@@ -590,7 +589,7 @@ pub async fn run_subagent(
                             }),
                         );
 
-                        let output = handle_tool_call_inner(&app, name, input, &session_id).await;
+                        let output = handle_tool_call_inner(&app, name, input, &session_id, "SUBAGENT").await;
                         if SubAgentMonitor::is_cancelled(&app, &run_id).await {
                             SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
                             return ("子代理已取消。".to_string(), sub_input_tokens, sub_output_tokens);

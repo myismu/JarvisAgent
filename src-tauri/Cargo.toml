@@ -36,5 +36,6 @@ chrono = "0.4.44"
 tokio-util = "0.7"                               # 提供 CancellationToken 用于取消机制
 regex = "1"                                         # 用于意图分类规则匹配
 thiserror = "1"                                     # 用于派生 Error trait
+async-trait = "0.1"                                   # 用于 async trait 抽象
 
 

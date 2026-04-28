@@ -1,16 +1,21 @@
 use serde_json::json;
 use tauri::Emitter;
 
+use crate::core::api_format::ApiFormat;
+use crate::core::error::ApiError;
+
 pub async fn api_call_with_retry(
     client: &reqwest::Client,
     url: &str,
     body: &serde_json::Value,
     api_key: &str,
-    api_format: &str,
+    api_format: ApiFormat,
     max_retries: u32,
     app: &tauri::AppHandle,
     session_id: &str,
-) -> Result<reqwest::Response, String> {
+) -> Result<reqwest::Response, ApiError> {
+    let (auth_header_name, auth_header_value) = api_format.auth_header(api_key);
+
     let mut last_error = String::new();
     for attempt in 0..=max_retries {
         if attempt > 0 {
@@ -37,14 +42,11 @@ pub async fn api_call_with_retry(
 
         let mut req = client
             .post(url)
-            .header(reqwest::header::CONTENT_TYPE, "application/json");
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(auth_header_name, &auth_header_value);
 
-        if api_format == "openai" {
-            req = req.header("Authorization", format!("Bearer {}", api_key));
-        } else {
-            req = req
-                .header("x-api-key", api_key)
-                .header("anthropic-version", "2023-06-01");
+        if api_format.requires_anthropic_version() {
+            req = req.header("anthropic-version", "2023-06-01");
         }
 
         match req.json(body).send().await {
@@ -55,11 +57,10 @@ pub async fn api_call_with_retry(
                 }
                 if status.is_client_error() {
                     let err_body = response.text().await.unwrap_or_default();
-                    return Err(format!(
-                        "API 客户端错误 ({}): {}",
-                        status.as_u16(),
-                        err_body
-                    ));
+                    return Err(ApiError::HttpError {
+                        status: status.as_u16(),
+                        body: err_body,
+                    });
                 }
                 last_error = format!("API 服务端错误: {}", status.as_u16());
             }
@@ -68,10 +69,10 @@ pub async fn api_call_with_retry(
             }
         }
     }
-    Err(format!(
-        "API 调用在 {} 次重试后仍然失败: {}",
-        max_retries, last_error
-    ))
+    Err(ApiError::RetriesExhausted {
+        max_retries,
+        last_error,
+    })
 }
 
 pub async fn call_llm_simple(
@@ -79,11 +80,11 @@ pub async fn call_llm_simple(
     api_key: &str,
     base_url: &str,
     model_id: &str,
-    api_format: &str,
+    api_format: ApiFormat,
     system_prompt: &str,
     user_message: &str,
     max_tokens: i32,
-) -> Result<String, String> {
+) -> Result<String, ApiError> {
     use crate::core::models::*;
 
     let request_body = AnthropicRequest {
@@ -101,53 +102,56 @@ pub async fn call_llm_simple(
         top_k: None,
     };
 
-    let (req_json, is_openai) = if api_format == "openai" {
-        use crate::core::adapters::translate_messages_to_openai;
-        let openai_msgs = translate_messages_to_openai(system_prompt, &request_body.messages);
-        let openai_req = OpenAIRequest {
-            model: model_id.to_string(),
-            max_tokens: Some(max_tokens),
-            messages: openai_msgs,
-            tools: None,
-            stream: false,
-            stream_options: None,
-            reasoning_effort: None,
-            thinking: None,
-            thinking_budget: None,
-            enable_thinking: None,
-            temperature: None,
-            top_p: None,
-        };
-        (serde_json::to_value(openai_req).unwrap(), true)
-    } else {
-        (serde_json::to_value(request_body).unwrap(), false)
+    let (req_json, is_openai) = match api_format {
+        ApiFormat::OpenAI => {
+            use crate::core::adapters::translate_messages_to_openai;
+            let openai_msgs = translate_messages_to_openai(system_prompt, &request_body.messages);
+            let openai_req = OpenAIRequest {
+                model: model_id.to_string(),
+                max_tokens: Some(max_tokens),
+                messages: openai_msgs,
+                tools: None,
+                stream: false,
+                stream_options: None,
+                reasoning_effort: None,
+                thinking: None,
+                thinking_budget: None,
+                enable_thinking: None,
+                temperature: None,
+                top_p: None,
+            };
+            (serde_json::to_value(openai_req).unwrap(), true)
+        }
+        ApiFormat::Anthropic => {
+            (serde_json::to_value(request_body).unwrap(), false)
+        }
     };
 
+    let (auth_header_name, auth_header_value) = api_format.auth_header(api_key);
     let mut req = client
         .post(base_url)
-        .header(reqwest::header::CONTENT_TYPE, "application/json");
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(auth_header_name, &auth_header_value);
 
-    if is_openai {
-        req = req.header("Authorization", format!("Bearer {}", api_key));
-    } else {
-        req = req
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01");
+    if api_format.requires_anthropic_version() {
+        req = req.header("anthropic-version", "2023-06-01");
     }
 
     let res = req
         .json(&req_json)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| ApiError::Network(e.to_string()))?;
 
     if !res.status().is_success() {
-        return Err(format!("LLM Request failed: {}", res.status()));
+        let status = res.status().as_u16();
+        let err_body = res.text().await.unwrap_or_default();
+        return Err(ApiError::HttpError { status, body: err_body });
     }
 
-    let response_text = res.text().await.map_err(|e| e.to_string())?;
+    let response_text = res.text().await.map_err(|e| ApiError::Parse(e.to_string()))?;
     let parsed: serde_json::Value =
-        serde_json::from_str(&response_text).map_err(|e| e.to_string())?;
+        serde_json::from_str(&response_text).map_err(|e| ApiError::Parse(e.to_string()))?;
 
     let text = if is_openai {
         parsed["choices"][0]["message"]["content"]

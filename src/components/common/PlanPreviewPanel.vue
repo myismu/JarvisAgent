@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { useJarvis } from '../../composables/useJarvis';
+import { usePermissionStore } from '../../stores/permission';
+import { useChatStore } from '../../stores/chat';
 import { marked } from 'marked';
 
-const { planProposal, resolvePlan, updatePlanProposalContent } = useJarvis();
+const perm = usePermissionStore();
+const chat = useChatStore();
 
 const isEditing = ref(false);
 const editedContent = ref('');
 
-watch(planProposal, (newVal) => {
+watch(() => perm.planProposal, (newVal) => {
   if (newVal) {
     editedContent.value = newVal.content;
     isEditing.value = false;
@@ -16,12 +18,12 @@ watch(planProposal, (newVal) => {
 });
 
 const activeContent = computed(() => {
-  if (!planProposal.value) return '';
-  return isEditing.value ? editedContent.value : planProposal.value.content;
+  if (!perm.planProposal) return '';
+  return isEditing.value ? editedContent.value : perm.planProposal.content;
 });
 
 const renderedContent = computed(() => {
-  if (!planProposal.value) return '';
+  if (!perm.planProposal) return '';
   return marked.parse(activeContent.value) as string;
 });
 
@@ -35,37 +37,37 @@ const planStats = computed(() => {
 });
 
 const toggleEdit = () => {
-  if (!planProposal.value) return;
+  if (!perm.planProposal) return;
 
   if (isEditing.value) {
-    updatePlanProposalContent(editedContent.value);
+    perm.updatePlanProposalContent(editedContent.value);
   } else {
-    editedContent.value = planProposal.value.content;
+    editedContent.value = perm.planProposal.content;
   }
 
   isEditing.value = !isEditing.value;
 };
 
 const cancelEdit = () => {
-  if (planProposal.value) {
-    editedContent.value = planProposal.value.content;
+  if (perm.planProposal) {
+    editedContent.value = perm.planProposal.content;
   }
   isEditing.value = false;
 };
 
 const handleApprove = () => {
-  const contentToUse = isEditing.value ? editedContent.value : planProposal.value?.content;
-  resolvePlan('allow', contentToUse);
+  const contentToUse = isEditing.value ? editedContent.value : perm.planProposal?.content;
+  chat.resolvePlan('allow', contentToUse);
 };
 
 const handleReject = () => {
-  resolvePlan('reject');
+  chat.resolvePlan('reject');
 };
 </script>
 
 <template>
   <Transition name="plan-slide">
-    <div v-if="planProposal" class="plan-overlay" role="dialog" aria-modal="true" aria-labelledby="plan-review-heading">
+    <div v-if="perm.planProposal" class="plan-overlay" role="dialog" aria-modal="true" aria-labelledby="plan-review-heading">
       <aside class="plan-panel">
         <header class="plan-header">
           <div class="plan-header-main">
@@ -94,7 +96,7 @@ const handleReject = () => {
         <section class="plan-summary">
           <div class="plan-summary-copy">
             <span class="plan-label">待批阅方案</span>
-            <h3 class="plan-title">{{ planProposal.title }}</h3>
+            <h3 class="plan-title">{{ perm.planProposal.title }}</h3>
           </div>
           <div class="plan-status-stack">
             <span class="plan-status-pill">

@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted, watch, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { Checkpoint, Branch, CheckpointTree } from '../../types';
+import { formatRelativeTime, getFileOpIcon, getFileOpLabel } from '../../utils/timeline';
 
 const props = defineProps<{
   sessionId: string | null;
@@ -21,44 +22,7 @@ const sortedCheckpoints = computed(() => {
   return [...checkpoints.value].sort((a, b) => b.createdAt - a.createdAt);
 });
 
-const formatTime = (timestamp: number) => {
-  const date = new Date(timestamp * 1000);
-  const now = new Date();
-  const diff = now.getTime() - date.getTime();
-  
-  if (diff < 60000) return '刚刚';
-  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
-  
-  return date.toLocaleDateString('zh-CN', { 
-    month: 'short', 
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  });
-};
-
-const getOpTypeLabel = (opType: string) => {
-  const labels: Record<string, string> = {
-    edit: '编辑',
-    write: '写入',
-    create: '创建',
-    delete: '删除',
-    rename: '重命名'
-  };
-  return labels[opType] || opType;
-};
-
-const getOpTypeIcon = (opType: string) => {
-  const icons: Record<string, string> = {
-    edit: '✏️',
-    write: '📝',
-    create: '📄',
-    delete: '🗑️',
-    rename: '📛'
-  };
-  return icons[opType] || '📁';
-};
+const formatTime = formatRelativeTime;
 
 const loadCheckpointTree = async () => {
   if (!props.sessionId) return;
@@ -244,8 +208,8 @@ onUnmounted(() => {
         <div v-if="expandedCheckpoint === cp.id" class="checkpoint-details">
           <ul class="operation-list">
             <li v-for="(op, idx) in cp.operations" :key="idx" class="operation-item">
-              <span class="op-icon">{{ getOpTypeIcon(op.opType) }}</span>
-              <span class="op-type">{{ getOpTypeLabel(op.opType) }}</span>
+              <span class="op-icon">{{ getFileOpIcon(op.opType) }}</span>
+              <span class="op-type">{{ getFileOpLabel(op.opType) }}</span>
               <span class="op-path" :title="op.path">{{ op.path.split(/[\\/]/).pop() }}</span>
               <span v-if="op.diffSummary" class="op-diff">{{ op.diffSummary }}</span>
             </li>

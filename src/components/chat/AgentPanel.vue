@@ -1,20 +1,16 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { marked } from 'marked';
-import { useJarvis } from '../../composables/useJarvis';
+import { useSessionStore } from '../../stores/session';
+import { useChatStore } from '../../stores/chat';
+import { useAgentStore } from '../../stores/agent';
+import { usePermissionStore } from '../../stores/permission';
 import type { AgentStep, PlanDocument, SubAgentEvent, SubAgentRun } from '../../types';
 
-const {
-  agentSteps,
-  currentSubAgentRuns,
-  activeSubAgentRuns,
-  getSubAgentEvents,
-  cancelSubAgentRun,
-  focusTask,
-  showAgentPanel,
-  isCurrentSessionRunning,
-  currentPlanDocuments,
-} = useJarvis();
+const session = useSessionStore();
+const chat = useChatStore();
+const agent = useAgentStore();
+const perm = usePermissionStore();
 
 type PanelSection = 'subagents' | 'flow' | 'plans';
 type StepState = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -37,11 +33,10 @@ const openSections = ref<Record<PanelSection, boolean>>({
   plans: true,
 });
 
-const isRunning = isCurrentSessionRunning;
 const elapsed = ref(0);
 let timer: ReturnType<typeof setInterval> | null = null;
 
-watch(isRunning, (running) => {
+watch(() => session.isCurrentSessionRunning, (running) => {
   if (running) {
     elapsed.value = 0;
     timer = setInterval(() => { elapsed.value++; }, 1000);
@@ -106,7 +101,7 @@ const isRunExpanded = (run: SubAgentRun): boolean => {
 };
 
 const getVisibleEvents = (run: SubAgentRun): SubAgentEvent[] => {
-  const events = getSubAgentEvents(run.runId);
+  const events = agent.getSubAgentEvents(run.runId);
   return isRunExpanded(run) ? events.slice(-12) : events.slice(-3);
 };
 
@@ -164,7 +159,7 @@ const visibleSteps = computed<StepView[]>(() => {
     return null;
   };
 
-  agentSteps.value.forEach((step, index) => {
+  agent.agentSteps.forEach((step, index) => {
     if (step.type === 'tool_result') {
       const target = findOpenStep('tool_call', step.tool);
       if (target) {
@@ -201,13 +196,13 @@ const visibleSteps = computed<StepView[]>(() => {
 
   views.forEach((view, index) => {
     if (view.state !== 'pending') return;
-    view.state = isRunning.value && index === views.length - 1 ? 'running' : 'completed';
+    view.state = session.isCurrentSessionRunning && index === views.length - 1 ? 'running' : 'completed';
   });
 
   return views;
 });
 
-watch(() => agentSteps.value.length, async () => {
+watch(() => agent.agentSteps.length, async () => {
   await nextTick();
   if (stepsContainer.value) {
     stepsContainer.value.scrollTop = stepsContainer.value.scrollHeight;
@@ -287,7 +282,7 @@ const toggleSection = (section: PanelSection) => {
 };
 
 const closePanel = () => {
-  showAgentPanel.value = false;
+  agent.showAgentPanel = false;
 };
 
 const showTooltip = (index: number, event: MouseEvent) => {
@@ -314,15 +309,15 @@ const hideTooltip = () => {
 <template>
   <Transition name="panel-slide">
     <div
-      v-if="showAgentPanel && (agentSteps.length > 0 || currentSubAgentRuns.length > 0 || currentPlanDocuments.length > 0)"
+      v-if="agent.showAgentPanel && (agent.agentSteps.length > 0 || agent.currentSubAgentRuns.length > 0 || perm.currentPlanDocuments.length > 0)"
       class="agent-panel"
     >
       <div class="panel-header">
         <div class="panel-title">
           <span>监控</span>
-          <span v-if="isRunning" class="running-dot"></span>
-          <span v-if="isRunning" class="elapsed-time">{{ formatTime(elapsed) }}</span>
-          <span v-if="activeSubAgentRuns.length > 0" class="subagent-count">{{ activeSubAgentRuns.length }}</span>
+          <span v-if="session.isCurrentSessionRunning" class="running-dot"></span>
+          <span v-if="session.isCurrentSessionRunning" class="elapsed-time">{{ formatTime(elapsed) }}</span>
+          <span v-if="agent.activeSubAgentRuns.length > 0" class="subagent-count">{{ agent.activeSubAgentRuns.length }}</span>
         </div>
         <button class="close-btn" @click="closePanel" title="关闭">
           <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
@@ -339,12 +334,12 @@ const hideTooltip = () => {
               <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
             <span class="section-title">子 Agent</span>
-            <span class="section-count">{{ activeSubAgentRuns.length }}/{{ currentSubAgentRuns.length }}</span>
+            <span class="section-count">{{ agent.activeSubAgentRuns.length }}/{{ agent.currentSubAgentRuns.length }}</span>
           </button>
           <div v-if="openSections.subagents" class="section-body">
-            <div v-if="currentSubAgentRuns.length > 0" class="subagent-list">
+            <div v-if="agent.currentSubAgentRuns.length > 0" class="subagent-list">
               <div
-                v-for="run in currentSubAgentRuns"
+                v-for="run in agent.currentSubAgentRuns"
                 :key="run.runId"
                 class="subagent-run"
                 :class="[getRunClass(run), { stale: isRunStale(run) }]"
@@ -354,10 +349,10 @@ const hideTooltip = () => {
                 <div class="subagent-main">
                   <span class="subagent-status-dot"></span>
                   <span class="subagent-name">{{ run.label || run.runId }}</span>
-                  <button v-if="run.taskId" class="task-link" type="button" title="跳到关联任务" @click.stop="focusTask(run.taskId)">
+                  <button v-if="run.taskId" class="task-link" type="button" title="跳到关联任务" @click.stop="agent.focusTask(run.taskId)">
                     #{{ run.taskId }}
                   </button>
-                  <button v-if="run.status === 'running'" class="run-cancel-btn" type="button" title="取消此子 Agent" @click.stop="cancelSubAgentRun(run.runId)">
+                  <button v-if="run.status === 'running'" class="run-cancel-btn" type="button" title="取消此子 Agent" @click.stop="chat.cancelSubAgentRun(run.runId)">
                     停止
                   </button>
                   <span class="subagent-time">{{ getRunDuration(run) }}</span>
@@ -401,7 +396,7 @@ const hideTooltip = () => {
               v-for="(view, index) in visibleSteps"
               :key="`${view.sourceIndex}-${view.step.type}`"
               class="step-row"
-              :class="[getStepClass(view), { active: view.state === 'running' && isLastStep(index) && isRunning }]"
+              :class="[getStepClass(view), { active: view.state === 'running' && isLastStep(index) && session.isCurrentSessionRunning }]"
               @mouseenter="showTooltip(index, $event)"
               @mouseleave="hideTooltip"
             >
@@ -432,12 +427,12 @@ const hideTooltip = () => {
               <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
             <span class="section-title">任务计划</span>
-            <span class="section-count">{{ currentPlanDocuments.length }}</span>
+            <span class="section-count">{{ perm.currentPlanDocuments.length }}</span>
           </button>
           <div v-if="openSections.plans" class="section-body">
-            <div v-if="currentPlanDocuments.length > 0" class="plan-doc-list">
+            <div v-if="perm.currentPlanDocuments.length > 0" class="plan-doc-list">
               <section
-                v-for="plan in currentPlanDocuments"
+                v-for="plan in perm.currentPlanDocuments"
                 :key="plan.id"
                 class="plan-doc"
                 :class="getPlanStatusClass(plan.status)"

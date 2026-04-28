@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, nextTick, onUnmounted, onBeforeUnmount, watch } from 'vue';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { useJarvis } from '../../composables/useJarvis';
+import { useSessionStore } from '../../stores/session';
+import { useChatStore } from '../../stores/chat';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { readFile } from '@tauri-apps/plugin-fs';
@@ -12,7 +13,8 @@ const inputRef = ref<HTMLTextAreaElement | null>(null);
 const mediaFiles = ref<{path: string, type: 'image' | 'video', url: string, base64: string}[]>([]);
 const showVisionWarning = ref(false);
 
-const { sendToJarvis, isCurrentSessionRunning, cancelJarvis, rollbackRecalledMessage } = useJarvis();
+const session = useSessionStore();
+const chat = useChatStore();
 
 let unlistenDragDrop: (() => void) | null = null;
 let unlistenConfig: UnlistenFn | null = null;
@@ -242,7 +244,7 @@ const handleInput = () => {
 const handleKeydown = (e: KeyboardEvent) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
-    if (!isCurrentSessionRunning.value) {
+    if (!session.isCurrentSessionRunning) {
       handleSubmit();
     }
   }
@@ -254,7 +256,7 @@ const handleSubmit = () => {
     const imageBase64List = mediaFiles.value
       .filter(m => m.type === 'image' && m.base64)
       .map(m => m.base64);
-    sendToJarvis(msg, isThinkingActive.value, imageBase64List);
+    chat.sendToJarvis(msg, isThinkingActive.value, imageBase64List);
     userInput.value = '';
     mediaFiles.value.forEach(m => {
       if (m.url) URL.revokeObjectURL(m.url);
@@ -273,7 +275,7 @@ const handleCancel = async () => {
   if (isCancelling.value) return;
   isCancelling.value = true;
   try {
-    const recalled = await cancelJarvis();
+    const recalled = await chat.cancelJarvis();
     if (recalled) {
       userInput.value = recalled;
       nextTick(() => {
@@ -296,10 +298,10 @@ const removeMediaFile = (index: number) => {
   }
 };
 
-watch(rollbackRecalledMessage, (msg) => {
+watch(() => chat.rollbackRecalledMessage, (msg) => {
   if (msg) {
     userInput.value = msg;
-    rollbackRecalledMessage.value = "";
+    chat.rollbackRecalledMessage = "";
     nextTick(() => {
       inputRef.value?.focus();
       adjustHeight();
@@ -307,31 +309,31 @@ watch(rollbackRecalledMessage, (msg) => {
   }
 });
 
-// const handleRecallEdit = async () => {
-//   const text = await recallAndEdit();
-//   if (text) {
-//     userInput.value = text;
-//     nextTick(() => {
-//       inputRef.value?.focus();
-//       adjustHeight();
-//     });
-//   }
-// };
+const handleRecallEdit = async () => {
+  const text = await chat.recallAndEdit();
+  if (text) {
+    userInput.value = text;
+    nextTick(() => {
+      inputRef.value?.focus();
+      adjustHeight();
+    });
+  }
+};
 </script>
 
 <template>
   <div class="chat-input-container">
     <div class="chat-input-wrapper">
       
-      <!-- <div v-if="showRecallEdit" class="recall-edit-bar">
+      <div v-if="chat.showRecallEdit" class="recall-edit-bar">
         <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="1 4 1 10 7 10"></polyline>
           <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
         </svg>
         <span>已取消生成，可撤回上一条消息重新编辑</span>
         <button class="recall-edit-btn" @click="handleRecallEdit">撤回并编辑</button>
-        <button class="recall-dismiss-btn" @click="dismissRecallEdit">✕</button>
-      </div> -->
+        <button class="recall-dismiss-btn" @click="chat.dismissRecallEdit">✕</button>
+      </div>
 
       <div class="input-toolbar">
         <div class="profile-selector">
@@ -419,7 +421,7 @@ watch(rollbackRecalledMessage, (msg) => {
           @keydown="handleKeydown"
         ></textarea>
         
-        <button v-if="!isCurrentSessionRunning" class="send-btn" :class="{ active: userInput.trim() || mediaFiles.length > 0 }" @click="handleSubmit" title="发送 (Enter)">
+        <button v-if="!session.isCurrentSessionRunning" class="send-btn" :class="{ active: userInput.trim() || mediaFiles.length > 0 }" @click="handleSubmit" title="发送 (Enter)">
           <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <line x1="22" y1="2" x2="11" y2="13"></line>
             <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
