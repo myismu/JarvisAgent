@@ -290,6 +290,11 @@ cargo test             # Rust 测试
 └── global_memory.md      # 全局记忆
 ```
 
+### 🙏 致谢
+
+- **小米大模型团队** — 感谢小米模型的「创造者百万亿 Token 激励计划」与面向 Agent 框架团队的「Agent 生态共建计划」提供的小米模型 Standard Plan，助力本项目开发进度
+- **[learn-claude-code-main](https://github.com/anthropics/claude-code)** — 通过该 GitHub 开源项目入门学习了 Claude Code 基础架构，本项目基于该开源项目的架构讲解思路实现
+
 ### 🤝 贡献
 
 欢迎提交 Issue 和 Pull Request。
