@@ -1,9 +1,21 @@
 import { listen } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { useSessionStore } from "../stores/session";
+import type { SessionViewState } from "../stores/session";
 import { useChatStore } from "../stores/chat";
 import { useAgentStore } from "../stores/agent";
 import { usePermissionStore } from "../stores/permission";
+import {
+  appendAgentExecutionLog,
+  appendAgentText,
+  appendAgentThinking,
+  applyAgentStepToCurrentTurn,
+  beginAgentLoop,
+  finishAgentLoop,
+  markAgentToolActivity,
+  upsertAgentToolCall,
+} from "../utils/agentTurnState";
 import type {
   TodoItem,
   PermissionRequest,
@@ -21,11 +33,35 @@ interface SessionCleanupPayload {
   activeSessionId?: string | null;
 }
 
-// 模块级标志——确保事件监听器在整个应用生命周期内只注册一次
-let globalListenersInitialized = false;
-// 跟踪最近收到的内容 hash，防止重复追加相同内容
-let lastContentHash = "";
-let lastThinkingHash = "";
+function replacePlanTextWithNotice(source: string, planContent: string, notice: string) {
+  const content = planContent.trim();
+  if (!content || !source.includes(content)) {
+    return source;
+  }
+  return source.replace(content, notice);
+}
+
+function hideSubmittedPlanFromChat(view: SessionViewState, proposal: PlanProposal) {
+  const notice = `我已整理实施方案「${proposal.title}」，请在右侧方案审批面板中审阅。`;
+  const content = proposal.content || "";
+  view.contentBuffer = replacePlanTextWithNotice(view.contentBuffer, content, notice);
+  view.tempBuffer = replacePlanTextWithNotice(view.tempBuffer, content, notice);
+
+  for (const block of view.currentTurn.textBlocks) {
+    if (block.kind !== "assistant") continue;
+    block.content = replacePlanTextWithNotice(block.content, content, notice);
+  }
+  view.currentTurn.revision += 1;
+}
+
+// 将初始化标志和 unlisten 句柄挂在 window 上，跨 Vite HMR 生命周期持久化
+declare global {
+  interface Window {
+    __jarvisListenersInitialized?: boolean;
+    __jarvisListenersInitializing?: boolean;
+    __jarvisUnlisteners?: UnlistenFn[];
+  }
+}
 
 export function useAgentEvents() {
   const session = useSessionStore();
@@ -33,11 +69,33 @@ export function useAgentEvents() {
   const agent = useAgentStore();
   const perm = usePermissionStore();
 
-  function syncActiveSessionView(sessionId: string | null | undefined, scroll = false) {
+  function syncActiveSessionView(sessionId: string | null | undefined, followScroll = false) {
     if (sessionId === session.activeSessionId) {
       chat.triggerRender();
-      if (scroll) chat.forceScrollToBottom();
+      if (followScroll) chat.followScrollToBottom();
     }
+  }
+
+  function payloadLoop(payload: any): number | null {
+    const raw = payload?.loopCount ?? payload?.loop_count ?? payload?.loop;
+    const value = Number(raw);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+
+  function commitTempBuffer(view: { contentBuffer: string; tempBuffer: string }) {
+    if (!view.tempBuffer) return;
+    view.contentBuffer += view.tempBuffer;
+    view.tempBuffer = "";
+  }
+
+  function commitThinkingBuffer(
+    view: { thinkingBuffer: string; toolBuffer: string; agentSteps: AgentStep[] },
+    type: AgentStep["type"] = "thinking",
+  ) {
+    const thought = view.thinkingBuffer.trim();
+    if (!thought) return;
+    view.toolBuffer += `${thought}\n\n`;
+    view.agentSteps.push({ type, content: thought, timestamp: Date.now() });
   }
 
   async function loadSubAgentRunsFromBackend(sid?: string | null) {
@@ -141,20 +199,46 @@ export function useAgentEvents() {
   }
 
   const initListeners = async () => {
-    if (globalListenersInitialized) {
-      console.warn("[JarvisAgent] 事件监听器已全局注册，跳过重复注册");
+    // 跨 HMR 生命周期：如果当前 window 已有监听器，先全部清理再重新注册
+    if (window.__jarvisUnlisteners) {
+      console.warn("[JarvisAgent] HMR 检测：清理旧事件监听器，重新注册");
+      for (const unlisten of window.__jarvisUnlisteners) {
+        unlisten();
+      }
+      window.__jarvisUnlisteners = undefined;
+      window.__jarvisListenersInitialized = false;
+    }
+
+    if (window.__jarvisListenersInitializing) {
+      console.warn("[JarvisAgent] 事件监听器正在注册，跳过重复注册");
       return;
     }
-    globalListenersInitialized = true;
+
+    if (window.__jarvisListenersInitialized) {
+      if (window.__jarvisUnlisteners) {
+        console.warn("[JarvisAgent] 事件监听器已全局注册，跳过重复注册");
+        return;
+      }
+      console.warn("[JarvisAgent] 检测到过期监听器标志，重新注册");
+      window.__jarvisListenersInitialized = false;
+    }
+    window.__jarvisListenersInitializing = true;
+
+    const unlisteners: UnlistenFn[] = [];
+    // 辅助：注册事件监听器并收集 unlisten 句柄
+    async function on<T>(event: string, handler: (event: { payload: T }) => void) {
+      const unlisten = await listen<T>(event, handler);
+      unlisteners.push(unlisten);
+    }
 
     // todos
-    await listen<TodoItem[]>("todo-update", (event) => {
+    await on<TodoItem[]>("todo-update", (event) => {
       agent.todos = event.payload;
       chat.triggerRender();
     });
 
     // permission
-    await listen<PermissionRequest>("permission-request", (event) => {
+    await on<PermissionRequest>("permission-request", (event) => {
       const sid = event.payload.sessionId ?? session.activeSessionId;
       if (sid) {
         perm.permissionRequests[sid] = event.payload;
@@ -162,9 +246,11 @@ export function useAgentEvents() {
     });
 
     // plan proposal
-    await listen<PlanProposal>("plan-proposal", (event) => {
+    await on<PlanProposal>("plan-proposal", (event) => {
       const sid = event.payload.sessionId ?? session.activeSessionId;
       if (sid) {
+        const view = session.getSessionView(sid);
+        hideSubmittedPlanFromChat(view, event.payload);
         perm.planProposals[sid] = event.payload;
         perm.upsertPlanDocument(
           {
@@ -180,24 +266,23 @@ export function useAgentEvents() {
           },
           sid
         );
-        if (sid === session.activeSessionId) {
-          agent.showAgentPanel = true;
-        }
+        view.hydrated = true;
+        syncActiveSessionView(sid, true);
       }
     });
 
     // plan document updated
-    await listen<PlanDocument>("plan-document-updated", (event) => {
+    await on<PlanDocument>("plan-document-updated", (event) => {
       perm.upsertPlanDocument(event.payload);
     });
 
     // agent run
-    await listen<AgentRun>("agent-run-updated", (event) => {
+    await on<AgentRun>("agent-run-updated", (event) => {
       agent.upsertAgentRun(event.payload);
     });
 
     // agent run event
-    await listen<AgentRunEvent>("agent-run-event", (event) => {
+    await on<AgentRunEvent>("agent-run-event", (event) => {
       const item = event.payload;
       if (!item?.runId) return;
       const events = [...(agent.agentRunEventsByRun[item.runId] ?? []), item]
@@ -207,147 +292,141 @@ export function useAgentEvents() {
     });
 
     // chat turn start
-    await listen<any>("chat-turn-start", (event) => {
+    await on<any>("chat-turn-start", (event) => {
       const sessionId = event.payload?.sessionId ?? session.activeSessionId;
       if (!sessionId) return;
-      chat.resetRenderState();
       const view = session.getSessionView(sessionId);
-      const thought = view.thinkingBuffer.trim();
-      if (thought) {
-        view.toolBuffer += `${thought}\n\n`;
-        const summary = thought.length > 100 ? thought.substring(0, 100) + "..." : thought;
-        view.toolBuffer += `> 思考: ${summary}\n\n`;
-        view.agentSteps.push({ type: "thinking", content: summary, timestamp: Date.now() });
-      }
-      view.tempBuffer = "";
+      commitTempBuffer(view);
+      commitThinkingBuffer(view);
       view.thinkingBuffer = "";
-      view.hydrated = true;
-      syncActiveSessionView(sessionId);
-    });
-
-    // chat content — 带去重防护
-    await listen<any>("chat-content", (event) => {
-      const sessionId = event.payload?.sessionId ?? session.activeSessionId;
-      if (!sessionId) return;
-      const { content } = event.payload;
-      if (!content) return;
-      // 去重：相同内容不重复追加（防止监听器叠加或后端重复事件）
-      const contentKey = `${sessionId}:${content}`;
-      if (contentKey === lastContentHash) return;
-      lastContentHash = contentKey;
-      const view = session.getSessionView(sessionId);
-      view.tempBuffer += content;
+      beginAgentLoop(view, payloadLoop(event.payload));
+      view.streamActive = true;
       view.hydrated = true;
       syncActiveSessionView(sessionId, true);
     });
 
-    // chat thinking — 带去重防护
-    await listen<any>("chat-thinking", (event) => {
+    // chat content — 流式片段必须逐段追加，不能按文本内容去重。
+    await on<any>("chat-content", (event) => {
       const sessionId = event.payload?.sessionId ?? session.activeSessionId;
       if (!sessionId) return;
       const { content } = event.payload;
       if (!content) return;
-      // 去重：相同内容不重复追加
-      const contentKey = `${sessionId}:${content}`;
-      if (contentKey === lastThinkingHash) return;
-      lastThinkingHash = contentKey;
+      const view = session.getSessionView(sessionId);
+      view.tempBuffer += content;
+      appendAgentText(view, content, "assistant", payloadLoop(event.payload));
+      view.streamActive = true;
+      view.hydrated = true;
+      syncActiveSessionView(sessionId, true);
+    });
+
+    // chat thinking — 同样保留所有片段，避免重复词或重复标点被误删。
+    await on<any>("chat-thinking", (event) => {
+      if (event.payload?.isSubAgent) return; // 子代理事件不注入主聊天
+      const sessionId = event.payload?.sessionId ?? session.activeSessionId;
+      if (!sessionId) return;
+      const { content } = event.payload;
+      if (!content) return;
       const view = session.getSessionView(sessionId);
       view.thinkingBuffer += content;
+      appendAgentThinking(view, content, payloadLoop(event.payload));
+      view.streamActive = true;
       view.hydrated = true;
       syncActiveSessionView(sessionId, true);
     });
 
     // chat tool start
-    await listen<any>("chat-tool-start", (event) => {
+    await on<any>("chat-tool-start", (event) => {
       const sessionId = event.payload?.sessionId ?? session.activeSessionId;
       if (!sessionId) return;
       const view = session.getSessionView(sessionId);
-      const thought = view.thinkingBuffer.trim();
-      if (thought) {
-        view.toolBuffer += `${thought}\n\n`;
-        const summary = thought.length > 100 ? thought.substring(0, 100) + "..." : thought;
-        view.toolBuffer += `> 思考与计划: ${summary}\n\n`;
-        view.agentSteps.push({ type: "thinking", content: summary, timestamp: Date.now() });
-      }
+      commitTempBuffer(view);
+      commitThinkingBuffer(view);
       view.thinkingBuffer = "";
-      view.tempBuffer = "";
+      markAgentToolActivity(view, payloadLoop(event.payload));
+      if (event.payload?.toolCallId && event.payload?.tool) {
+        upsertAgentToolCall(
+          view,
+          String(event.payload.toolCallId),
+          String(event.payload.tool),
+          "pending",
+          payloadLoop(event.payload),
+        );
+      }
+      view.streamActive = true;
       view.hydrated = true;
-      syncActiveSessionView(sessionId);
+      syncActiveSessionView(sessionId, true);
     });
 
     // chat tool debug
-    await listen<any>("chat-tool-debug", (event) => {
+    await on<any>("chat-tool-debug", (event) => {
       const sessionId = event.payload?.sessionId ?? session.activeSessionId;
       if (!sessionId) return;
       const view = session.getSessionView(sessionId);
       const { content, kind, toolCallId, tool, status } = event.payload;
       if (kind === "tool_status" && toolCallId && tool && status) {
         chat.upsertToolStatusLine(view, String(toolCallId), String(tool), String(status));
+        upsertAgentToolCall(view, String(toolCallId), String(tool), String(status), payloadLoop(event.payload));
       } else if (content) {
         view.toolBuffer += content;
+        appendAgentExecutionLog(view, content, payloadLoop(event.payload));
       }
+      view.streamActive = true;
       view.hydrated = true;
       syncActiveSessionView(sessionId, true);
     });
 
-    // chat stream
-    await listen<any>("chat-stream", (event) => {
+    // chat stream — 工具/子代理输出
+    await on<any>("chat-stream", (event) => {
+      if (event.payload?.isSubAgent) return; // 子代理事件不注入主聊天
       const sessionId = event.payload?.sessionId ?? session.activeSessionId;
       if (!sessionId) return;
       const { content } = event.payload;
+      if (!content) return;
       const view = session.getSessionView(sessionId);
       view.toolBuffer += content;
+      appendAgentExecutionLog(view, content, payloadLoop(event.payload));
+      view.streamActive = true;
       view.hydrated = true;
       syncActiveSessionView(sessionId, true);
     });
 
     // chat turn end
-    await listen<any>("chat-turn-end", (event) => {
+    await on<any>("chat-turn-end", (event) => {
       const sessionId = event.payload?.sessionId ?? session.activeSessionId;
       if (!sessionId) return;
       const { has_tool } = event.payload;
       const view = session.getSessionView(sessionId);
-      const thought = view.thinkingBuffer.trim();
-      if (thought) {
-        view.toolBuffer += `${thought}\n\n`;
-        const summary = thought.length > 100 ? thought.substring(0, 100) + "..." : thought;
-        view.toolBuffer += has_tool ? `> 继续计划: ${summary}\n\n` : `> 思考摘要: ${summary}\n\n`;
-        view.agentSteps.push({ type: has_tool ? "plan" : "thinking", content: summary, timestamp: Date.now() });
-      }
-      if (!has_tool) {
-        view.contentBuffer += view.tempBuffer;
-      }
+      commitThinkingBuffer(view, has_tool ? "plan" : "thinking");
+      commitTempBuffer(view);
       view.thinkingBuffer = "";
-      view.tempBuffer = "";
+      finishAgentLoop(view, Boolean(has_tool));
+      view.streamActive = has_tool;
       view.hydrated = true;
       syncActiveSessionView(sessionId, true);
     });
 
     // agent step
-    await listen<any>("agent-step", (event) => {
+    await on<any>("agent-step", (event) => {
+      if (event.payload?.isSubAgent) return; // 子代理事件不注入主聊天
       const sessionId = event.payload?.sessionId ?? session.activeSessionId;
       if (!sessionId) return;
       const step = event.payload as Omit<AgentStep, "timestamp">;
       const view = session.getSessionView(sessionId);
-      view.agentSteps.push({ ...step, timestamp: Date.now() });
+      const fullStep = { ...step, timestamp: Date.now() } as AgentStep;
+      view.agentSteps.push(fullStep);
+      applyAgentStepToCurrentTurn(view, fullStep);
       view.hydrated = true;
-      if (sessionId === session.activeSessionId) {
-        agent.showAgentPanel = true;
-      }
     });
 
     // subagent updated
-    await listen<SubAgentRun>("subagent-updated", (event) => {
+    await on<SubAgentRun>("subagent-updated", (event) => {
       const run = event.payload;
       if (!run?.runId) return;
       agent.subAgentRuns = { ...agent.subAgentRuns, [run.runId]: run };
-      if (run.sessionId === session.activeSessionId) {
-        agent.showAgentPanel = true;
-      }
     });
 
     // subagent event
-    await listen<SubAgentEvent>("subagent-event", (event) => {
+    await on<SubAgentEvent>("subagent-event", (event) => {
       const item = event.payload;
       if (!item?.runId) return;
       const events = [...(agent.subAgentEventsByRun[item.runId] ?? []), item]
@@ -357,7 +436,7 @@ export function useAgentEvents() {
     });
 
     // checkpoint created
-    await listen<any>("checkpoint-created", (event) => {
+    await on<any>("checkpoint-created", (event) => {
       const sessionId = event.payload?.sessionId ?? session.activeSessionId;
       if (!sessionId) return;
       if (event.payload?.checkpointId) {
@@ -371,7 +450,7 @@ export function useAgentEvents() {
     });
 
     // active session changed
-    await listen<SessionCleanupPayload>("active-session-changed", async (event) => {
+    await on<SessionCleanupPayload>("active-session-changed", async (event) => {
       const deletedSessionId = event.payload?.deletedSessionId ?? null;
       const nextActiveSessionId = event.payload?.activeSessionId ?? null;
 
@@ -438,6 +517,25 @@ export function useAgentEvents() {
       chat.triggerRender();
       chat.forceScrollToBottom();
     });
+
+    // 保存所有 unlisten 句柄到 window 级别（跨 HMR 生命周期）
+    window.__jarvisUnlisteners = unlisteners;
+    window.__jarvisListenersInitialized = true;
+    window.__jarvisListenersInitializing = false;
+
+    // Vite HMR 清理：热更新时自动注销旧监听器
+    if (import.meta.hot) {
+      import.meta.hot.dispose(() => {
+        if (window.__jarvisUnlisteners) {
+          for (const unlisten of window.__jarvisUnlisteners) {
+            unlisten();
+          }
+          window.__jarvisUnlisteners = undefined;
+          window.__jarvisListenersInitialized = false;
+          window.__jarvisListenersInitializing = false;
+        }
+      });
+    }
   };
 
   return {

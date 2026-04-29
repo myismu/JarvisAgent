@@ -1,57 +1,69 @@
-use std::path::{Path, PathBuf};
-use serde_json::json;
-use reqwest::header::CONTENT_TYPE;
-use crate::core::api_format::ApiFormat;
+//! # 记忆压缩与上下文管理 (Memory & Context Compaction)
+//!
+//! 管理对话上下文长度和持久化记忆，包含三个核心能力：
+//!
+//! 1. **Token 估算** — 按字符数 / 4 近似计算 token 用量
+//! 2. **上下文压缩** — 三级压缩策略：
+//!    - `micro_compact`：清理旧的工具调用结果，保留最近 3 条
+//!    - `auto_compact`：调用 LLM 生成对话摘要，替换完整历史
+//!    - `auto_compact_summary`：独立摘要接口（用于外部调用）
+//! 3. **记忆系统** — 全局记忆 + 项目记忆的读写，由记忆 Agent 自动维护
+
+use crate::core::llm::api_format::ApiFormat;
 use crate::core::error::MemoryError;
 use crate::core::models::*;
-use crate::core::prompts::*;
+use crate::core::infra::prompts::*;
 use crate::get_agent_home;
+use reqwest::header::CONTENT_TYPE;
+use serde_json::json;
+use std::path::{Path, PathBuf};
 
-// --- 记忆压缩与上下文管理 (Context Compact) ---
-
+/// 粗略估算消息列表的 token 数（字符数 / 4）
 pub fn estimate_tokens(messages: &[Message]) -> usize {
     let mut total_chars = 0;
     for msg in messages {
         match msg {
-            Message::User { content } | Message::Assistant { content } => {
-                match content {
-                    Content::Single(text) => {
-                        total_chars += text.len();
-                    }
-                    Content::Multiple(blocks) => {
-                        for block in blocks {
-                            match block {
-                                ContentBlock::Text { text } => {
-                                    total_chars += text.len();
-                                }
-                                ContentBlock::Thinking { thinking, .. } => {
-                                    total_chars += thinking.len();
-                                }
-                                ContentBlock::ToolUse { name, input, .. } => {
-                                    total_chars += name.len();
-                                    total_chars += input.to_string().len();
-                                }
-                                ContentBlock::ToolResult { content, .. } => {
-                                    total_chars += content.len();
-                                }
-                                ContentBlock::Image { .. } => {
-                                    total_chars += 1000;
-                                }
+            Message::User { content } | Message::Assistant { content } => match content {
+                Content::Single(text) => {
+                    total_chars += text.len();
+                }
+                Content::Multiple(blocks) => {
+                    for block in blocks {
+                        match block {
+                            ContentBlock::Text { text } => {
+                                total_chars += text.len();
+                            }
+                            ContentBlock::Thinking { thinking, .. } => {
+                                total_chars += thinking.len();
+                            }
+                            ContentBlock::ToolUse { name, input, .. } => {
+                                total_chars += name.len();
+                                total_chars += input.to_string().len();
+                            }
+                            ContentBlock::ToolResult { content, .. } => {
+                                total_chars += content.len();
+                            }
+                            ContentBlock::Image { .. } => {
+                                total_chars += 1000;
                             }
                         }
                     }
                 }
-            }
+            },
         }
     }
     total_chars / 4
 }
 
+/// 轻量压缩：清理旧的工具结果，仅保留最近 keep_recent 条
 pub fn micro_compact(messages: &mut Vec<Message>) {
     let keep_recent = 3;
     let mut tool_results_pos = Vec::new();
     for (i, msg) in messages.iter().enumerate() {
-        if let Message::User { content: Content::Multiple(blocks) } = msg {
+        if let Message::User {
+            content: Content::Multiple(blocks),
+        } = msg
+        {
             for (j, block) in blocks.iter().enumerate() {
                 if let ContentBlock::ToolResult { .. } = block {
                     tool_results_pos.push((i, j));
@@ -59,14 +71,17 @@ pub fn micro_compact(messages: &mut Vec<Message>) {
             }
         }
     }
-    
+
     if tool_results_pos.len() <= keep_recent {
         return;
     }
-    
+
     let mut tool_name_map = std::collections::HashMap::new();
     for msg in messages.iter() {
-        if let Message::Assistant { content: Content::Multiple(blocks) } = msg {
+        if let Message::Assistant {
+            content: Content::Multiple(blocks),
+        } = msg
+        {
             for block in blocks {
                 if let ContentBlock::ToolUse { id, name, .. } = block {
                     tool_name_map.insert(id.clone(), name.clone());
@@ -74,13 +89,23 @@ pub fn micro_compact(messages: &mut Vec<Message>) {
             }
         }
     }
-    
+
     let to_clear_count = tool_results_pos.len() - keep_recent;
     for &(i, j) in tool_results_pos.iter().take(to_clear_count) {
-        if let Message::User { content: Content::Multiple(ref mut blocks) } = messages[i] {
-            if let ContentBlock::ToolResult { tool_use_id, content } = &mut blocks[j] {
+        if let Message::User {
+            content: Content::Multiple(ref mut blocks),
+        } = messages[i]
+        {
+            if let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+            } = &mut blocks[j]
+            {
                 if content.len() > 100 {
-                    let tool_name = tool_name_map.get(tool_use_id).cloned().unwrap_or_else(|| "unknown".to_string());
+                    let tool_name = tool_name_map
+                        .get(tool_use_id)
+                        .cloned()
+                        .unwrap_or_else(|| "unknown".to_string());
                     *content = format!("[Previous: used {}]", tool_name);
                 }
             }
@@ -88,19 +113,31 @@ pub fn micro_compact(messages: &mut Vec<Message>) {
     }
 }
 
+/// 将对话记录保存为 JSONL 转录文件（用于压缩前的备份）
 pub fn append_transcript(text: &str) -> Result<String, MemoryError> {
     let transcript_dir = get_agent_home().join(crate::core::constants::DIR_TRANSCRIPTS);
     if !transcript_dir.exists() {
         let _ = std::fs::create_dir_all(&transcript_dir);
     }
 
-    let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let transcript_path = transcript_dir.join(format!("transcript_{}.jsonl", timestamp));
     std::fs::write(&transcript_path, text).map_err(|e| MemoryError::FileRead(e.to_string()))?;
     Ok(transcript_path.to_string_lossy().to_string())
 }
 
-pub async fn auto_compact(messages: &mut Vec<Message>, client: &reqwest::Client, api_key: &str, base_url: &str, model_id: &str, api_format: ApiFormat) -> Result<(), MemoryError> {
+/// 自动压缩：调用 LLM 生成摘要，用摘要替换完整对话历史
+pub async fn auto_compact(
+    messages: &mut Vec<Message>,
+    client: &reqwest::Client,
+    api_key: &str,
+    base_url: &str,
+    model_id: &str,
+    api_format: ApiFormat,
+) -> Result<(), MemoryError> {
     let mut json_content = String::new();
     for msg in messages.iter() {
         if let Ok(m) = serde_json::to_string(msg) {
@@ -108,13 +145,16 @@ pub async fn auto_compact(messages: &mut Vec<Message>, client: &reqwest::Client,
             json_content.push('\n');
         }
     }
-    
+
     let summarized_text = if json_content.len() > 150000 {
-        format!("(truncated...){}", &json_content[json_content.len() - 150000..])
+        format!(
+            "(truncated...){}",
+            &json_content[json_content.len() - 150000..]
+        )
     } else {
         json_content.clone()
     };
-    
+
     let transcript_path = append_transcript(&json_content)?;
     println!("[auto_compact] Transcript saved to {}", transcript_path);
 
@@ -124,7 +164,9 @@ pub async fn auto_compact(messages: &mut Vec<Message>, client: &reqwest::Client,
         model: model_id.to_string(),
         max_tokens: 2000,
         system: "You are a summarizing agent.".to_string(),
-        messages: vec![Message::User { content: Content::Single(summary_prompt) }],
+        messages: vec![Message::User {
+            content: Content::Single(summary_prompt),
+        }],
         tools: vec![],
         stream: false,
         thinking: None,
@@ -132,12 +174,13 @@ pub async fn auto_compact(messages: &mut Vec<Message>, client: &reqwest::Client,
         top_p: None,
         top_k: None,
     };
-    
+
     let (req_json, is_openai) = match api_format {
         ApiFormat::OpenAI => {
-            use crate::core::adapters::translate_messages_to_openai;
+            use crate::core::llm::adapters::translate_messages_to_openai;
             use crate::core::models::OpenAIRequest;
-            let openai_msgs = translate_messages_to_openai(&request_body.system, &request_body.messages);
+            let openai_msgs =
+                translate_messages_to_openai(&request_body.system, &request_body.messages);
             let openai_req = OpenAIRequest {
                 model: model_id.to_string(),
                 max_tokens: Some(2000),
@@ -154,28 +197,29 @@ pub async fn auto_compact(messages: &mut Vec<Message>, client: &reqwest::Client,
             };
             (serde_json::to_value(openai_req).unwrap(), true)
         }
-        ApiFormat::Anthropic => {
-            (serde_json::to_value(request_body).unwrap(), false)
-        }
+        ApiFormat::Anthropic => (serde_json::to_value(request_body).unwrap(), false),
     };
 
     let (auth_header, auth_value) = api_format.auth_header(api_key);
-    let mut req = client.post(base_url)
+    let mut req = client
+        .post(base_url)
         .header(CONTENT_TYPE, "application/json")
         .header(auth_header, &auth_value);
 
     if api_format.requires_anthropic_version() {
         req = req.header("anthropic-version", "2023-06-01");
     }
-    
-    let response = req.json(&req_json)
-        .send()
-        .await
-        .map_err(|e| MemoryError::CompactionFailed(format!("auto_compact request failed: {}", e)))?;
 
-    let body: serde_json::Value = response.json().await
-        .map_err(|e| MemoryError::CompactionFailed(format!("auto_compact response parse failed: {}", e)))?;
-    
+    crate::core::llm::api_client::log_model_request(model_id, base_url, "记忆agent");
+
+    let response = req.json(&req_json).send().await.map_err(|e| {
+        MemoryError::CompactionFailed(format!("auto_compact request failed: {}", e))
+    })?;
+
+    let body: serde_json::Value = response.json().await.map_err(|e| {
+        MemoryError::CompactionFailed(format!("auto_compact response parse failed: {}", e))
+    })?;
+
     let mut text = String::new();
     if is_openai {
         if let Some(choices) = body["choices"].as_array() {
@@ -198,21 +242,29 @@ pub async fn auto_compact(messages: &mut Vec<Message>, client: &reqwest::Client,
     }
 
     if text.is_empty() {
-        return Err(MemoryError::CompactionFailed("Failed to get summary text".to_string()));
+        return Err(MemoryError::CompactionFailed(
+            "Failed to get summary text".to_string(),
+        ));
     };
     let summary = text;
 
     messages.clear();
     messages.push(Message::User {
-        content: Content::Single(format!("[Conversation compressed. Transcript: {:?}]\n\n{}", transcript_path, summary))
+        content: Content::Single(format!(
+            "[Conversation compressed. Transcript: {:?}]\n\n{}",
+            transcript_path, summary
+        )),
     });
     messages.push(Message::Assistant {
-        content: Content::Single("Understood. I have the context from the summary. Continuing.".to_string())
+        content: Content::Single(
+            "Understood. I have the context from the summary. Continuing.".to_string(),
+        ),
     });
-    
+
     Ok(())
 }
 
+/// 独立摘要接口：对任意 prompt 生成摘要文本（不替换消息）
 pub async fn auto_compact_summary(
     client: &reqwest::Client,
     api_key: &str,
@@ -237,9 +289,10 @@ pub async fn auto_compact_summary(
     let is_openai = api_format.is_openai();
     let (req_json, _) = match api_format {
         ApiFormat::OpenAI => {
-            use crate::core::adapters::translate_messages_to_openai;
+            use crate::core::llm::adapters::translate_messages_to_openai;
             use crate::core::models::OpenAIRequest;
-            let openai_msgs = translate_messages_to_openai(&request_body.system, &request_body.messages);
+            let openai_msgs =
+                translate_messages_to_openai(&request_body.system, &request_body.messages);
             let openai_req = OpenAIRequest {
                 model: model_id.to_string(),
                 max_tokens: Some(1000),
@@ -256,13 +309,12 @@ pub async fn auto_compact_summary(
             };
             (serde_json::to_value(openai_req).unwrap(), true)
         }
-        ApiFormat::Anthropic => {
-            (serde_json::to_value(request_body).unwrap(), false)
-        }
+        ApiFormat::Anthropic => (serde_json::to_value(request_body).unwrap(), false),
     };
 
     let (auth_header, auth_value) = api_format.auth_header(api_key);
-    let mut req = client.post(base_url)
+    let mut req = client
+        .post(base_url)
         .header(CONTENT_TYPE, "application/json")
         .header(auth_header, &auth_value);
 
@@ -270,13 +322,17 @@ pub async fn auto_compact_summary(
         req = req.header("anthropic-version", "2023-06-01");
     }
 
-    let response = req.json(&req_json)
+    crate::core::llm::api_client::log_model_request(model_id, base_url, "记忆agent");
+
+    let response = req
+        .json(&req_json)
         .send()
         .await
         .map_err(|e| MemoryError::CompactionFailed(format!("summary request failed: {}", e)))?;
 
-    let body: serde_json::Value = response.json().await
-        .map_err(|e| MemoryError::CompactionFailed(format!("summary response parse failed: {}", e)))?;
+    let body: serde_json::Value = response.json().await.map_err(|e| {
+        MemoryError::CompactionFailed(format!("summary response parse failed: {}", e))
+    })?;
 
     let mut text = String::new();
     if is_openai {
@@ -300,18 +356,22 @@ pub async fn auto_compact_summary(
     }
 
     if text.is_empty() {
-        return Err(MemoryError::CompactionFailed("Failed to get summary text".to_string()));
+        return Err(MemoryError::CompactionFailed(
+            "Failed to get summary text".to_string(),
+        ));
     }
 
     Ok(text)
 }
 
-// --- 4. Memory System (Claude Style) ---
+// --- 记忆系统：全局记忆 + 项目记忆 ---
 
+/// 全局记忆文件路径（agent_home/global_memory.md）
 pub fn get_global_memory_path() -> PathBuf {
     get_agent_home().join(crate::core::constants::FILE_GLOBAL_MEMORY)
 }
 
+/// 项目记忆文件路径（agent_home/memory/GEMINI.md）
 pub fn get_project_memory_path() -> PathBuf {
     let mut path = get_agent_home().clone();
     path.push("memory");
@@ -319,6 +379,7 @@ pub fn get_project_memory_path() -> PathBuf {
     path
 }
 
+/// 读取记忆文件，不存在则创建带默认头部的空文件
 pub fn read_memory_file(path: &Path, header: &str) -> String {
     if let Ok(content) = std::fs::read_to_string(path) {
         content
@@ -332,6 +393,7 @@ pub fn read_memory_file(path: &Path, header: &str) -> String {
 
 use crate::core::config::AgentConfig;
 
+/// 记忆 Agent：根据最新对话自动更新全局/项目记忆文件
 pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config: AgentConfig) {
     println!("\n[MEMORY] --- Memory Agent Started ---");
 
@@ -344,7 +406,7 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
 
     let global_path = get_global_memory_path();
     let project_path = get_project_memory_path();
-    
+
     let global_content = read_memory_file(&global_path, "Global Memory");
     let project_content = read_memory_file(&project_path, "Project Memory");
 
@@ -373,7 +435,9 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
         model: model_id.clone(),
         max_tokens: crate::core::constants::MAX_TOKENS_CONTEXT,
         system: MEMORY_AGENT_SYSTEM.to_string(),
-        messages: vec![Message::User { content: Content::Single(user_content) }],
+        messages: vec![Message::User {
+            content: Content::Single(user_content),
+        }],
         tools,
         stream: false,
         thinking: None,
@@ -386,15 +450,20 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
     let is_openai = api_format.is_openai();
     let (req_json, _) = match api_format {
         ApiFormat::OpenAI => {
-            use crate::core::adapters::{translate_messages_to_openai, translate_tools_to_openai};
+            use crate::core::llm::adapters::{translate_messages_to_openai, translate_tools_to_openai};
             use crate::core::models::OpenAIRequest;
-            let openai_msgs = translate_messages_to_openai(&request_body.system, &request_body.messages);
+            let openai_msgs =
+                translate_messages_to_openai(&request_body.system, &request_body.messages);
             let openai_tools = translate_tools_to_openai(&request_body.tools);
             let openai_req = OpenAIRequest {
                 model: model_id.clone(),
                 max_tokens: Some(crate::core::constants::MAX_TOKENS_CONTEXT),
                 messages: openai_msgs,
-                tools: if openai_tools.is_empty() { None } else { Some(openai_tools) },
+                tools: if openai_tools.is_empty() {
+                    None
+                } else {
+                    Some(openai_tools)
+                },
                 stream: false,
                 stream_options: None,
                 reasoning_effort: None,
@@ -406,23 +475,24 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
             };
             (serde_json::to_value(openai_req).unwrap(), true)
         }
-        ApiFormat::Anthropic => {
-            (serde_json::to_value(request_body).unwrap(), false)
-        }
+        ApiFormat::Anthropic => (serde_json::to_value(request_body).unwrap(), false),
     };
 
     let request_json_str = serde_json::to_string_pretty(&req_json).unwrap_or_default();
-    let logger = crate::core::debug_logger::DebugLogger::new();
+    let logger = crate::core::infra::debug_logger::DebugLogger::new();
     logger.log_request_to_terminal("MEMORY AGENT", 1, &request_json_str);
 
     let (auth_header, auth_value) = api_format.auth_header(&api_key);
-    let mut req = client.post(&base_url)
+    let mut req = client
+        .post(&base_url)
         .header(CONTENT_TYPE, "application/json")
         .header(auth_header, &auth_value);
 
     if api_format.requires_anthropic_version() {
         req = req.header("anthropic-version", "2023-06-01");
     }
+
+    crate::core::llm::api_client::log_model_request(&model_id, &base_url, "记忆agent");
 
     if let Ok(response) = req.json(&req_json).send().await {
         if let Ok(body) = response.json::<serde_json::Value>().await {
@@ -431,17 +501,32 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
                     if let Some(first) = choices.first() {
                         if let Some(tool_calls) = first["message"]["tool_calls"].as_array() {
                             for tc in tool_calls {
-                                if tc["type"] == "function" && tc["function"]["name"] == "update_memory" {
+                                if tc["type"] == "function"
+                                    && tc["function"]["name"] == "update_memory"
+                                {
                                     if let Some(args_str) = tc["function"]["arguments"].as_str() {
-                                        if let Ok(args_json) = serde_json::from_str::<serde_json::Value>(args_str) {
+                                        if let Ok(args_json) =
+                                            serde_json::from_str::<serde_json::Value>(args_str)
+                                        {
                                             let scope = args_json["scope"].as_str().unwrap_or("");
-                                            let content = args_json["content"].as_str().unwrap_or("");
-                                            let target_path = if scope == "global" { &global_path } else { &project_path };
-                                            
+                                            let content =
+                                                args_json["content"].as_str().unwrap_or("");
+                                            let target_path = if scope == "global" {
+                                                &global_path
+                                            } else {
+                                                &project_path
+                                            };
+
                                             if !content.is_empty() {
-                                                println!("[MEMORY] Updating {} memory (OpenAI)...", scope);
+                                                println!(
+                                                    "[MEMORY] Updating {} memory (OpenAI)...",
+                                                    scope
+                                                );
                                                 let _ = std::fs::write(target_path, content);
-                                                logger.log_memory_agent(&request_json_str, &format!("Updated {} memory", scope));
+                                                logger.log_memory_agent(
+                                                    &request_json_str,
+                                                    &format!("Updated {} memory", scope),
+                                                );
                                             }
                                         }
                                     }
@@ -456,12 +541,19 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
                         if block["type"] == "tool_use" && block["name"] == "update_memory" {
                             let scope = block["input"]["scope"].as_str().unwrap_or("");
                             let content = block["input"]["content"].as_str().unwrap_or("");
-                            let target_path = if scope == "global" { &global_path } else { &project_path };
-                            
+                            let target_path = if scope == "global" {
+                                &global_path
+                            } else {
+                                &project_path
+                            };
+
                             if !content.is_empty() {
                                 println!("[MEMORY] Updating {} memory (Anthropic)...", scope);
                                 let _ = std::fs::write(target_path, content);
-                                logger.log_memory_agent(&request_json_str, &format!("Updated {} memory", scope));
+                                logger.log_memory_agent(
+                                    &request_json_str,
+                                    &format!("Updated {} memory", scope),
+                                );
                             }
                         }
                     }

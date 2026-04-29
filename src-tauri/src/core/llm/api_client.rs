@@ -1,9 +1,26 @@
+//! LLM API 客户端
+//!
+//! 提供与大语言模型交互的 HTTP 客户端功能：
+//! - `api_call_with_retry`: 带指数退避重试的流式请求
+//! - `call_llm_simple`: 简单的非流式单轮调用
+//!
+//! 自动处理不同 API 格式的认证头和版本头。
+
 use serde_json::json;
 use tauri::Emitter;
 
-use crate::core::api_format::ApiFormat;
+use crate::core::llm::api_format::ApiFormat;
 use crate::core::error::ApiError;
 
+/// 记录模型请求日志
+pub fn log_model_request(model: &str, url: &str, agent_kind: &str) {
+    println!("请求【{}】，url：【{}】，【{}】", model, url, agent_kind);
+}
+
+/// 带指数退避重试的 API 调用
+///
+/// 重试策略：1s, 2s, 4s... 最多重试 max_retries 次
+/// 客户端错误（4xx）立即返回，不重试
 pub async fn api_call_with_retry(
     client: &reqwest::Client,
     url: &str,
@@ -27,12 +44,15 @@ pub async fn api_call_with_retry(
                     "sessionId": session_id
                 }),
             );
-            let _ = app.emit("agent-step", json!({
-                "type": "retry",
-                "attempt": attempt,
-                "max": max_retries,
-                "sessionId": session_id
-            }));
+            let _ = app.emit(
+                "agent-step",
+                json!({
+                    "type": "retry",
+                    "attempt": attempt,
+                    "max": max_retries,
+                    "sessionId": session_id
+                }),
+            );
             println!(
                 "[JARVIS] API 重试 {}/{}，等待 {}s...",
                 attempt, max_retries, wait_secs
@@ -48,6 +68,12 @@ pub async fn api_call_with_retry(
         if api_format.requires_anthropic_version() {
             req = req.header("anthropic-version", "2023-06-01");
         }
+
+        let model = body
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        log_model_request(model, url, "主agent");
 
         match req.json(body).send().await {
             Ok(response) => {
@@ -75,6 +101,9 @@ pub async fn api_call_with_retry(
     })
 }
 
+/// 简单的非流式单轮 LLM 调用
+///
+/// 用于意图分类等不需要流式输出的场景
 pub async fn call_llm_simple(
     client: &reqwest::Client,
     api_key: &str,
@@ -104,7 +133,7 @@ pub async fn call_llm_simple(
 
     let (req_json, is_openai) = match api_format {
         ApiFormat::OpenAI => {
-            use crate::core::adapters::translate_messages_to_openai;
+            use crate::core::llm::adapters::translate_messages_to_openai;
             let openai_msgs = translate_messages_to_openai(system_prompt, &request_body.messages);
             let openai_req = OpenAIRequest {
                 model: model_id.to_string(),
@@ -122,9 +151,7 @@ pub async fn call_llm_simple(
             };
             (serde_json::to_value(openai_req).unwrap(), true)
         }
-        ApiFormat::Anthropic => {
-            (serde_json::to_value(request_body).unwrap(), false)
-        }
+        ApiFormat::Anthropic => (serde_json::to_value(request_body).unwrap(), false),
     };
 
     let (auth_header_name, auth_header_value) = api_format.auth_header(api_key);
@@ -137,6 +164,8 @@ pub async fn call_llm_simple(
         req = req.header("anthropic-version", "2023-06-01");
     }
 
+    log_model_request(model_id, base_url, "主agent");
+
     let res = req
         .json(&req_json)
         .send()
@@ -146,10 +175,16 @@ pub async fn call_llm_simple(
     if !res.status().is_success() {
         let status = res.status().as_u16();
         let err_body = res.text().await.unwrap_or_default();
-        return Err(ApiError::HttpError { status, body: err_body });
+        return Err(ApiError::HttpError {
+            status,
+            body: err_body,
+        });
     }
 
-    let response_text = res.text().await.map_err(|e| ApiError::Parse(e.to_string()))?;
+    let response_text = res
+        .text()
+        .await
+        .map_err(|e| ApiError::Parse(e.to_string()))?;
     let parsed: serde_json::Value =
         serde_json::from_str(&response_text).map_err(|e| ApiError::Parse(e.to_string()))?;
 

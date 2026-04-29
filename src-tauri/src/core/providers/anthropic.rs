@@ -1,10 +1,18 @@
+//! # anthropic.rs — Anthropic Messages API 提供者
+//!
+//! 实现 `LlmProvider` trait，构建 Anthropic 原生格式的请求体。
+//! 支持扩展思考（extended thinking）模式。
+//!
+//! ## 关键导出
+//! - `AnthropicProvider`: Anthropic 格式的 `LlmProvider` 实现
+
 use serde_json::Value;
 
-use crate::core::api_format::ApiFormat;
+use crate::core::llm::api_format::ApiFormat;
 use crate::core::models::*;
 use crate::core::traits::LlmProvider;
 
-/// Anthropic API 提供者
+/// Anthropic Messages API 提供者
 pub struct AnthropicProvider;
 
 impl LlmProvider for AnthropicProvider {
@@ -37,11 +45,13 @@ impl LlmProvider for AnthropicProvider {
             top_k,
         };
 
+        // 启用扩展思考模式，预算 1024 tokens
         if should_think {
             body.thinking = Some(ThinkingConfig {
                 r#type: "enabled".to_string(),
                 budget_tokens: Some(1024),
             });
+            // thinking 模式需要更大的 max_tokens 空间
             if body.max_tokens <= 1024 {
                 body.max_tokens = 4096;
             }

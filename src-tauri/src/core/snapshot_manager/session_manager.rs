@@ -1,3 +1,11 @@
+//! 会话快照管理器
+//!
+//! 管理单个会话的完整快照生命周期：
+//! - 快照树维护（创建、查询、回滚）
+//! - 分支管理（创建、切换、合并）
+//! - 多 Agent 沙箱（隔离工作区、发布合并）
+//! - 日志记录与压缩
+
 use crate::get_agent_home;
 use crate::core::snapshot_engine::{
     Journal, JournalEntry, Patch, ReplayEngine, Snapshot, SnapshotTree,
@@ -13,8 +21,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// 快照存储根目录名
 const DIR_SNAPSHOTS: &str = ".snapshots";
 
+/// 会话快照管理器
+///
+/// 持有快照树、日志、沙箱管理器等核心组件，
+/// 提供线程安全的异步访问
 pub struct SessionManager {
     tree: RwLock<SnapshotTree>,
     journal: RwLock<Journal>,
@@ -26,6 +39,9 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
+    /// 创建新的会话管理器
+    ///
+    /// 初始化快照树、日志、沙箱管理器等组件
     pub async fn new(session_id: &str) -> Result<Self, String> {
         let base_dir = get_agent_home().join(DIR_SNAPSHOTS).join(session_id);
         std::fs::create_dir_all(&base_dir)
@@ -56,6 +72,9 @@ impl SessionManager {
         })
     }
     
+    /// 创建新快照
+    ///
+    /// 自动判断是否需要创建 checkpoint，checkpoint 会重建完整工作区
     pub async fn create_snapshot(
         &self,
         patches: Vec<Patch>,
@@ -66,6 +85,7 @@ impl SessionManager {
     ) -> Result<Snapshot, String> {
         let mut tree = self.tree.write().await;
 
+        // 检查是否需要创建 checkpoint（基于快照数量阈值）
         let is_checkpoint = tree.should_create_checkpoint();
 
         let snapshot = tree.create_snapshot(
@@ -229,8 +249,9 @@ impl SessionManager {
             .map_err(|e| format!("重建工作区失败: {}", e))
     }
     
-    // === P6: 多Agent沙箱方法 ===
-    
+    // === 多 Agent 沙箱方法 ===
+
+    /// 为指定 Agent 创建隔离沙箱
     pub async fn create_sandbox(
         &self,
         agent_id: String,
@@ -303,8 +324,9 @@ impl SessionManager {
         sandbox_mgr.compare_sandboxes(&tree)
     }
     
-    // === P7: 分支合并方法 ===
-    
+    // === 分支合并方法 ===
+
+    /// 预览分支合并结果
     pub async fn preview_merge(
         &self,
         source_branch: &str,
@@ -370,8 +392,12 @@ impl SessionManager {
     }
 }
 
+/// 会话管理器引用类型
 pub type SessionManagerRef = Arc<SessionManager>;
 
+/// 会话管理器注册表
+///
+/// 管理多个会话的 SessionManager 实例，支持按需创建和缓存
 pub struct SessionManagerRegistry {
     managers: RwLock<HashMap<String, SessionManagerRef>>,
 }
@@ -383,21 +409,27 @@ impl SessionManagerRegistry {
         }
     }
     
+    /// 获取或创建会话管理器
+    ///
+    /// 优先从缓存获取，不存在则创建新实例
     pub async fn get_or_create(&self, session_id: &str) -> Result<SessionManagerRef, String> {
+        // 先尝试读取缓存
         {
             let managers = self.managers.read().await;
             if let Some(manager) = managers.get(session_id) {
                 return Ok(manager.clone());
             }
         }
-        
+
+        // 缓存未命中，创建新实例
         let manager = Arc::new(SessionManager::new(session_id).await?);
-        
+
+        // 写入缓存
         {
             let mut managers = self.managers.write().await;
             managers.insert(session_id.to_string(), manager.clone());
         }
-        
+
         Ok(manager)
     }
     

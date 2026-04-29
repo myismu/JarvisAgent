@@ -1,6 +1,19 @@
+//! # snapshot.rs — 快照引擎 Tauri 命令
+//!
+//! 提供文件级快照的创建、查询、树形视图、分支管理、回滚等命令。
+//! 快照引擎独立于检查点系统，提供更细粒度的文件版本控制。
+//!
+//! ## 关键导出
+//! - `snapshot_create()`: 基于 patch 创建快照
+//! - `snapshot_get_tree_view()` / `snapshot_get_summaries()`: 快照查询
+//! - `snapshot_rollback()`: 回滚到指定快照（恢复文件到目标目录）
+//! - `snapshot_create_branch()` / `snapshot_switch_branch()`: 快照分支管理
+//! - `snapshot_get_current()`: 获取当前分支和快照 ID
+
 use crate::core::state::SnapshotRegistry;
 use crate::core::snapshot_engine::{Patch, Snapshot, SnapshotTreeView, SnapshotSummary, Workspace};
 
+/// 基于 patch 列表创建快照
 #[tauri::command]
 pub async fn snapshot_create(
     session_id: String,

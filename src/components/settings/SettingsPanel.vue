@@ -50,6 +50,50 @@
               </div>
             </div>
           </div>
+
+          <div class="sidebar-section-header" style="margin-top: 16px;">
+            <span>外观</span>
+          </div>
+          <div class="theme-toggle-section">
+            <button class="theme-toggle-btn" @click="toggleTheme">
+              <svg v-if="isDark" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="5"></circle>
+                <line x1="12" y1="1" x2="12" y2="3"></line>
+                <line x1="12" y1="21" x2="12" y2="23"></line>
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                <line x1="1" y1="12" x2="3" y2="12"></line>
+                <line x1="21" y1="12" x2="23" y2="12"></line>
+                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+              </svg>
+              <svg v-else viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+              </svg>
+              <span>{{ isDark ? '亮色模式' : '暗色模式' }}</span>
+            </button>
+          </div>
+          <div class="display-mode-section">
+            <div class="display-mode-label">回复视图</div>
+            <div class="display-mode-toggle" role="group" aria-label="Agent display mode">
+              <button
+                type="button"
+                :class="{ active: agentDisplayMode === 'user' }"
+                @click="setAgentDisplayMode('user')"
+                title="普通用户模式"
+              >
+                普通
+              </button>
+              <button
+                type="button"
+                :class="{ active: agentDisplayMode === 'developer' }"
+                @click="setAgentDisplayMode('developer')"
+                title="开发者模式"
+              >
+                开发者
+              </button>
+            </div>
+          </div>
         </div>
 
         <!-- 右侧编辑区域 -->
@@ -204,7 +248,15 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { useTheme } from '../../composables/useTheme'
+import { usePreferences } from '../../composables/usePreferences'
+import type { AgentDisplayMode } from '../../types'
 import ConfirmModal from '../common/ConfirmModal.vue'
+
+const { isDark, toggleTheme } = useTheme()
+const uiPrefs = usePreferences()
+const agentDisplayMode = uiPrefs.agentDisplayMode
+const setAgentDisplayMode = (mode: AgentDisplayMode) => uiPrefs.setAgentDisplayMode(mode)
 
 const props = defineProps<{
   modelValue: boolean
@@ -648,6 +700,75 @@ const save = async () => {
   transform: translateY(-1px);
 }
 
+.theme-toggle-section {
+  padding: 0 8px;
+}
+
+.theme-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  background: transparent;
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-main);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.theme-toggle-btn:hover {
+  background: var(--glass-bg-light);
+  border-color: var(--accent-blue);
+}
+
+.display-mode-section {
+  padding: 12px 8px 0;
+}
+
+.display-mode-label {
+  margin-bottom: 8px;
+  padding: 0 4px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.display-mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--glass-bg-light);
+}
+
+.display-mode-toggle button {
+  min-width: 0;
+  height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 600;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.display-mode-toggle button:hover {
+  color: var(--text-main);
+}
+
+.display-mode-toggle button.active {
+  background: var(--glass-bg-heavy);
+  color: var(--accent-blue);
+  box-shadow: var(--shadow-sm);
+}
+
 .profile-list {
   flex: 1;
   overflow-y: auto;
@@ -979,4 +1100,3 @@ const save = async () => {
   color: var(--text-main);
 }
 </style>
-

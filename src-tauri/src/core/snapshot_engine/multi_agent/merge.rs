@@ -1,7 +1,12 @@
+//! 分支合并模块
+//!
+//! 实现分支间的合并操作，包括冲突检测、自动/手动解决、合并快照生成。
+
 use crate::core::snapshot_engine::{Patch, Snapshot, SnapshotTree};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+/// 合并结果
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MergeResult {
@@ -14,6 +19,7 @@ pub struct MergeResult {
     pub manual_required: usize,
 }
 
+/// 合并冲突详情
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Conflict {
@@ -25,6 +31,7 @@ pub struct Conflict {
     pub resolution: Option<ConflictResolution>,
 }
 
+/// 冲突类型
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ConflictType {
@@ -35,6 +42,7 @@ pub enum ConflictType {
     BothRenamed,
 }
 
+/// 冲突解决策略
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ConflictResolution {
@@ -45,6 +53,7 @@ pub enum ConflictResolution {
     Custom { content: String },
 }
 
+/// 合并操作错误类型
 #[derive(Debug, thiserror::Error)]
 pub enum MergeError {
     #[error("Branch not found: {0}")]
@@ -57,6 +66,7 @@ pub enum MergeError {
     SameBranch,
 }
 
+/// 合并引擎
 pub struct MergeEngine {
     conflict_threshold: usize,
 }
@@ -68,6 +78,7 @@ impl MergeEngine {
         }
     }
     
+    /// 执行分支合并（带冲突解决）
     pub fn merge_branches(
         &self,
         tree: &SnapshotTree,
@@ -110,6 +121,7 @@ impl MergeEngine {
         })
     }
     
+    /// 预览合并结果（不实际执行）
     pub fn preview_merge(
         &self,
         tree: &SnapshotTree,
@@ -144,6 +156,7 @@ impl MergeEngine {
         })
     }
     
+    /// 查找两个分支的最近公共祖先
     fn find_common_ancestor(
         &self,
         tree: &SnapshotTree,
@@ -194,6 +207,7 @@ impl MergeEngine {
         patches
     }
     
+    /// 检测两个补丁集之间的冲突
     fn detect_conflicts(
         &self,
         source_patches: &[Patch],
@@ -364,6 +378,7 @@ impl MergeEngine {
         merged
     }
     
+    /// 创建合并快照
     pub fn create_merge_snapshot(
         &self,
         tree: &mut SnapshotTree,

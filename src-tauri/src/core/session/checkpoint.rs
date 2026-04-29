@@ -1,5 +1,21 @@
-// --- Checkpoint Module ---
-// 树状检查点系统，支持会话回滚、分支管理、多智能体沙箱隔离。
+//! # 检查点系统 (Checkpoint System)
+//!
+//! 树状检查点系统，支持文件级操作的记录、回滚和分支管理。
+//!
+//! 核心概念：
+//! - **Checkpoint** — 一次操作的快照，包含多个 `FileOperation`
+//! - **Branch** — 检查点链的分支，类似 Git 分支，默认为 `main`
+//! - **FileOperation** — 文件操作记录（编辑/创建/删除/重命名），含备份路径
+//!
+//! 存储结构：
+//! ```text
+//! .checkpoints/
+//!   └── <session_id>/
+//!       ├── branches.json          # 分支索引
+//!       └── <branch_name>/
+//!           ├── cp_xxxx.json       # 检查点文件
+//!           └── backups/           # 文件备份
+//! ```
 
 use crate::get_agent_home;
 use serde::{Deserialize, Serialize};
@@ -11,8 +27,9 @@ pub const DIR_CHECKPOINTS: &str = ".checkpoints";
 pub const FILE_BRANCHES: &str = "branches.json";
 pub const DEFAULT_BRANCH: &str = "main";
 
-// === 数据结构 ===
+// ==================== 数据结构 ====================
 
+/// 检查点：记录一次操作触发的所有文件变更
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Checkpoint {
@@ -28,6 +45,7 @@ pub struct Checkpoint {
     pub metadata: HashMap<String, String>,
 }
 
+/// 文件操作记录：操作类型、路径、内容哈希和备份路径
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct FileOperation {
@@ -49,6 +67,7 @@ pub enum OpType {
     Rename,
 }
 
+/// 分支：检查点链的命名指针，类似 Git 分支
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Branch {
@@ -67,6 +86,7 @@ pub struct BranchIndex {
     pub active_branch: String,
 }
 
+/// 检查点树：会话的完整检查点和分支视图
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckpointTree {
@@ -84,7 +104,7 @@ pub struct BranchInfo {
     pub is_active: bool,
 }
 
-// === 存储路径 ===
+// ==================== 存储路径 ====================
 
 fn checkpoints_dir() -> PathBuf {
     let dir = get_agent_home().join(DIR_CHECKPOINTS);
@@ -126,8 +146,9 @@ fn branches_file(session_id: &str) -> PathBuf {
     session_checkpoints_dir(session_id).join(FILE_BRANCHES)
 }
 
-// === 工具函数 ===
+// ==================== 工具函数 ====================
 
+/// 计算内容的哈希值（用于变更检测和备份去重）
 pub fn content_hash(content: &[u8]) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -149,8 +170,9 @@ fn generate_id() -> String {
     Uuid::new_v4().to_string()[..8].to_string()
 }
 
-// === 分支管理 ===
+// ==================== 分支管理 ====================
 
+/// 加载分支索引，不存在则创建默认的 main 分支
 pub fn load_branch_index(session_id: &str) -> BranchIndex {
     let path = branches_file(session_id);
     if path.exists() {
@@ -190,6 +212,7 @@ fn save_branch_index(session_id: &str, index: &BranchIndex) {
     }
 }
 
+/// 创建新分支（已存在则返回现有分支）
 pub fn create_branch(
     session_id: &str,
     branch_name: &str,
@@ -219,6 +242,7 @@ pub fn create_branch(
     branch
 }
 
+/// 切换活跃分支
 pub fn switch_branch(session_id: &str, branch_name: &str) -> Result<Branch, String> {
     let mut index = load_branch_index(session_id);
     
@@ -276,8 +300,9 @@ pub fn delete_branch(session_id: &str, branch_name: &str) -> Result<(), String> 
     Ok(())
 }
 
-// === 检查点管理 ===
+// ==================== 检查点管理 ====================
 
+/// 创建检查点并关联到当前活跃分支
 pub fn create_checkpoint(
     session_id: &str,
     parent_id: Option<&str>,
@@ -356,6 +381,7 @@ pub fn list_checkpoints(session_id: &str, branch_name: Option<&str>) -> Vec<Chec
     checkpoints
 }
 
+/// 获取从指定检查点到根的完整链（用于回滚范围计算）
 pub fn get_checkpoint_chain(session_id: &str, checkpoint_id: &str) -> Vec<Checkpoint> {
     let mut chain = Vec::new();
     let mut current_id = Some(checkpoint_id.to_string());
@@ -411,8 +437,9 @@ pub fn delete_checkpoint(session_id: &str, branch_name: &str, checkpoint_id: &st
     Ok(())
 }
 
-// === 文件备份 ===
+// ==================== 文件备份 ====================
 
+/// 备份文件内容（按内容哈希去重，相同内容只存一份）
 pub fn backup_file(
     session_id: &str,
     branch_name: &str,
@@ -450,8 +477,9 @@ pub fn restore_file(backup_path: &str, target_path: &str) -> Result<(), String> 
         .map_err(|e| format!("恢复文件失败: {}", e))
 }
 
-// === 回滚 ===
+// ==================== 回滚 ====================
 
+/// 回滚到指定检查点：逆序撤销该检查点及之后的所有操作
 pub fn rollback_to_checkpoint(session_id: &str, checkpoint_id: &str) -> Result<Vec<String>, String> {
     // 获取所有 checkpoints
     let all_checkpoints = list_checkpoints(session_id, None);
@@ -499,14 +527,16 @@ pub fn rollback_to_checkpoint(session_id: &str, checkpoint_id: &str) -> Result<V
     Ok(restored_files)
 }
 
-// === 辅助函数：获取最新检查点 ===
+// ==================== 辅助函数 ====================
 
+/// 获取当前活跃分支的最新检查点
 pub fn get_latest_checkpoint(session_id: &str) -> Option<Checkpoint> {
     let branch = get_active_branch(session_id);
     branch.head_checkpoint_id
         .and_then(|id| load_checkpoint(session_id, &branch.name, &id))
 }
 
+/// 获取当前活跃分支的头部检查点 ID
 pub fn get_head_checkpoint_id(session_id: &str) -> Option<String> {
     let branch = get_active_branch(session_id);
     branch.head_checkpoint_id

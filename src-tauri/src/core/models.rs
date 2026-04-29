@@ -1,3 +1,25 @@
+//! # models.rs — 数据模型定义模块
+//!
+//! 定义应用中所有核心数据结构，包括消息格式、API 请求/响应格式、会话记忆等。
+//! 支持 Anthropic 和 OpenAI 两种 API 格式。
+//!
+//! ## 关键导出
+//! - 消息格式: `Message`, `Content`, `ContentBlock`
+//! - Anthropic 格式: `AnthropicRequest`, `ThinkingConfig`, `ImageSource`
+//! - OpenAI 格式: `OpenAIRequest`, `OpenAIMessage`, `OpenAITool`, `OpenAIToolCall`
+//! - 会话数据: `SessionMemory`, `AgentStep`, `PlanDocument`
+//! - 任务管理: `Task`, `TaskStatus`
+//! - 工具定义: `Skill`
+//!
+//! ## 依赖
+//! - Internal: 无
+//! - External: `serde`, `serde_json`
+//!
+//! ## 约束
+//! - 所有结构体必须实现 `Serialize` 和 `Deserialize`
+//! - OpenAI 格式使用 `#[serde(tag = "role")]` 进行多态序列化
+//! - 字段命名使用 camelCase 以匹配 JSON 格式
+
 use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -252,4 +274,10 @@ pub struct Task {
     pub blocked_by: Vec<i32>,
     pub blocks: Vec<i32>,
     pub owner: String,
+    /// 进行中时显示的动态文本（如 "Fixing authentication bug"）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_form: Option<String>,
+    /// 任意附加元数据
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }

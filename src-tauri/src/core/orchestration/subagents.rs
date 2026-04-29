@@ -1,3 +1,9 @@
+//! 子Agent监控模块 - 子Agent生命周期与状态追踪
+//!
+//! 管理子Agent的运行状态、事件记录、取消控制。
+//! 通过 Tauri 事件系统向前端推送实时状态更新。
+//! 支持心跳检测、批量取消、事件历史记录。
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -7,25 +13,27 @@ use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+/// 子Agent运行状态
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubAgentStatus {
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
+    Running,    // 运行中
+    Completed,  // 已完成
+    Failed,     // 失败
+    Cancelled,  // 已取消
 }
 
+/// 子Agent执行阶段 - 用于实时状态展示
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubAgentPhase {
-    Starting,
-    WaitingModel,
-    Streaming,
-    Thinking,
-    CallingTool,
-    ProcessingToolResult,
-    Finalizing,
+    Starting,            // 启动中
+    WaitingModel,        // 等待模型响应
+    Streaming,           // 流式输出中
+    Thinking,            // 思考中
+    CallingTool,         // 调用工具中
+    ProcessingToolResult,// 处理工具结果
+    Finalizing,          // 收尾中
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -113,6 +121,10 @@ impl SubAgentMonitor {
         events
     }
 
+        /// 启动子Agent运行
+    ///
+    /// 创建运行记录、注册取消令牌、启动心跳检测。
+    /// 返回生成的 run_id。
     pub async fn start_run(
         app: &tauri::AppHandle,
         session_id: &str,
@@ -431,6 +443,7 @@ impl SubAgentMonitor {
         Ok(payload)
     }
 
+        /// 取消指定会话的所有运行中子Agent
     pub async fn cancel_session(app: &tauri::AppHandle, session_id: &str) -> Vec<SubAgentRun> {
         let Some(state) = app.try_state::<SubAgentMonitorState>() else {
             return Vec::new();

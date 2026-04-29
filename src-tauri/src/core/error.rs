@@ -1,3 +1,22 @@
+//! # error.rs — 错误类型定义模块
+//!
+//! 定义应用中所有错误类型，使用 `thiserror` 实现标准化错误处理。
+//! 包含 Agent 顶层错误、API 错误、工具错误和记忆系统错误。
+//!
+//! ## 关键导出
+//! - `AgentError`: 顶层错误枚举，用于 Tauri command 返回值
+//! - `ApiError`: API 调用相关错误（网络、认证、重试等）
+//! - `ToolError`: 工具执行相关错误（权限、解析、执行失败等）
+//! - `MemoryError`: 记忆/压缩相关错误
+//!
+//! ## 依赖
+//! - Internal: 无
+//! - External: `serde`, `thiserror`
+//!
+//! ## 约束
+//! - 所有错误类型必须实现 `Serialize`，用于 Tauri 前端通信
+//! - 使用 `#[error("...")]` 宏定义用户友好的错误消息（中文）
+
 use serde::Serialize;
 use thiserror::Error;
 

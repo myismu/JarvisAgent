@@ -1,7 +1,20 @@
-use crate::core::api_format::ApiFormat;
-use crate::core::debug_logger;
+//! # 意图分类模块 (Intent Classification)
+//!
+//! 采用三层分级策略将用户输入归类为预定义意图：
+//! 1. 规则层 — 关键词正则匹配（覆盖 ~90% 明确请求，零延迟）
+//! 2. 上下文层 — 结合上一轮对话特征解析短回复歧义
+//! 3. LLM 层 — 轻量模型兜底处理真正模糊的输入
+//!
+//! 返回值为意图字符串（如 `"CODE_READ"`、`"DANGEROUS"`），供下游
+//! 工具加载和 Agent 路由使用。
+
+pub mod rules;
+
+use crate::core::llm::api_format::ApiFormat;
+use crate::core::infra::debug_logger;
 use crate::core::models::*;
 
+/// 意图分类入口：依次尝试规则 → 上下文 → LLM 三层策略
 pub async fn classify_intent(
     client: &reqwest::Client,
     api_key: &str,
@@ -11,13 +24,14 @@ pub async fn classify_intent(
     msg: &str,
     history: &[Message],
 ) -> String {
-    use crate::core::intent_rules::{
+    use crate::core::intent::rules::{
         analyze_last_assistant_message, classify_by_rules, classify_with_context, Intent,
         LastAssistantAction,
     };
 
     let logger = debug_logger::DebugLogger::new();
 
+    // 第一层：纯规则匹配
     let rule_intent = classify_by_rules(msg);
     println!("[INTENT] Rule-based classification: {:?}", rule_intent);
 
@@ -28,10 +42,9 @@ pub async fn classify_intent(
         return result;
     }
 
-    let last_assistant_action: Option<LastAssistantAction> = history
-        .iter()
-        .rev()
-        .find_map(|m| match m {
+    // 第二层：从历史消息中提取上一轮助手行为特征
+    let last_assistant_action: Option<LastAssistantAction> =
+        history.iter().rev().find_map(|m| match m {
             Message::Assistant { content } => {
                 let text = match content {
                     Content::Single(s) => s.clone(),
@@ -59,10 +72,15 @@ pub async fn classify_intent(
         return result;
     }
 
+    // 第三层：规则和上下文均无法判定，调用轻量 LLM 兜底
     println!("[INTENT] Rules inconclusive, falling back to LLM...");
-    classify_intent_by_llm(client, api_key, base_url, model_id, api_format, msg, history).await
+    classify_intent_by_llm(
+        client, api_key, base_url, model_id, api_format, msg, history,
+    )
+    .await
 }
 
+/// LLM 兜底分类：构建精简 prompt 调用轻量模型，解析返回的 JSON 意图标签
 async fn classify_intent_by_llm(
     client: &reqwest::Client,
     api_key: &str,
@@ -72,8 +90,9 @@ async fn classify_intent_by_llm(
     msg: &str,
     history: &[Message],
 ) -> String {
-    let system_prompt = crate::core::prompts::INTENT_CLASSIFIER_PROMPT_LIGHT;
+    let system_prompt = crate::core::infra::prompts::INTENT_CLASSIFIER_PROMPT_LIGHT;
 
+    // 拼接最近 4 条对话作为上下文（每条截断至 100 字符以节省 token）
     let mut context_str = String::new();
     let recent: Vec<_> = history.iter().rev().take(4).rev().collect();
     for m in recent {
@@ -101,10 +120,7 @@ async fn classify_intent_by_llm(
         }
     }
 
-    let prompt_msg = format!(
-        "Context:\n{}\nInput: {}",
-        context_str, msg
-    );
+    let prompt_msg = format!("Context:\n{}\nInput: {}", context_str, msg);
 
     let request_body = AnthropicRequest {
         model: model_id.to_string(),
@@ -121,10 +137,11 @@ async fn classify_intent_by_llm(
         top_k: None,
     };
 
+    // 根据 API 格式（Anthropic / OpenAI）构建请求体
     let is_openai = api_format.is_openai();
     let (req_json, _) = match api_format {
         ApiFormat::OpenAI => {
-            use crate::core::adapters::translate_messages_to_openai;
+            use crate::core::llm::adapters::translate_messages_to_openai;
             use crate::core::models::OpenAIRequest;
             let openai_msgs = translate_messages_to_openai(&system_prompt, &request_body.messages);
             let openai_req = OpenAIRequest {
@@ -143,9 +160,7 @@ async fn classify_intent_by_llm(
             };
             (serde_json::to_value(openai_req).unwrap(), true)
         }
-        ApiFormat::Anthropic => {
-            (serde_json::to_value(request_body).unwrap(), false)
-        }
+        ApiFormat::Anthropic => (serde_json::to_value(request_body).unwrap(), false),
     };
 
     let request_json_str = serde_json::to_string_pretty(&req_json).unwrap_or_default();
@@ -160,8 +175,12 @@ async fn classify_intent_by_llm(
         req = req.header("anthropic-version", "2023-06-01");
     }
 
+    crate::core::llm::api_client::log_model_request(model_id, base_url, "意图分类器agent");
+
+    // 发送请求并解析响应
     if let Ok(response) = req.json(&req_json).send().await {
         if let Ok(json) = response.json::<serde_json::Value>().await {
+            // 根据 API 格式提取文本响应
             let mut text_resp = String::new();
             if is_openai {
                 if let Some(choices) = json["choices"].as_array() {
@@ -181,42 +200,56 @@ async fn classify_intent_by_llm(
                 }
             }
 
-            let detected_intent = match serde_json::from_str::<serde_json::Value>(text_resp.trim()) {
+            // 从 LLM 响应中提取意图标签，非法值回退到规则分类
+            let detected_intent = match serde_json::from_str::<serde_json::Value>(text_resp.trim())
+            {
                 Ok(val) => {
-                    let category = val["category"]
-                        .as_str()
-                        .unwrap_or("UNCLEAR")
-                        .to_uppercase();
+                    let category = val["category"].as_str().unwrap_or("UNCLEAR").to_uppercase();
                     match category.as_str() {
-                        "CODE_READ" | "CODE_WRITE" | "CODE_REVIEW"
-                        | "TASK_EXECUTE" | "TASK_PLAN" | "TASK_CONTINUE"
-                        | "QUESTION" | "MEMORY_QUERY" | "SETTINGS"
-                        | "CHAT" | "DANGEROUS" | "UNCLEAR" => category,
+                        "CODE_READ" | "CODE_WRITE" | "CODE_REVIEW" | "TASK_EXECUTE"
+                        | "TASK_PLAN" | "TASK_CONTINUE" | "QUESTION" | "MEMORY_QUERY"
+                        | "SETTINGS" | "CHAT" | "DANGEROUS" | "UNCLEAR" => category,
                         _ => {
-                            let rules = crate::core::intent_rules::classify_by_rules(msg);
+                            let rules = crate::core::intent::rules::classify_by_rules(msg);
                             rules.as_str().to_string()
                         }
                     }
                 }
                 Err(_) => {
                     let t = text_resp.trim().to_uppercase();
-                    if t.contains("DANGEROUS") { "DANGEROUS".to_string() }
-                    else if t.contains("MEMORY_QUERY") { "MEMORY_QUERY".to_string() }
-                    else if t.contains("QUESTION") { "QUESTION".to_string() }
-                    else if t.contains("CODE_READ") || t.contains("CODE_WRITE") || t.contains("CODE_REVIEW")
-                        || t.contains("TASK_EXECUTE") || t.contains("TASK_PLAN") || t.contains("TASK_CONTINUE") {
+                    if t.contains("DANGEROUS") {
+                        "DANGEROUS".to_string()
+                    } else if t.contains("MEMORY_QUERY") {
+                        "MEMORY_QUERY".to_string()
+                    } else if t.contains("QUESTION") {
+                        "QUESTION".to_string()
+                    } else if t.contains("CODE_READ")
+                        || t.contains("CODE_WRITE")
+                        || t.contains("CODE_REVIEW")
+                        || t.contains("TASK_EXECUTE")
+                        || t.contains("TASK_PLAN")
+                        || t.contains("TASK_CONTINUE")
+                    {
                         "CODE_WRITE".to_string()
-                    } else if t.contains("SETTINGS") { "SETTINGS".to_string() }
-                    else if t.contains("CHAT") { "CHAT".to_string() }
-                    else {
-                        let rules = crate::core::intent_rules::classify_by_rules(msg);
+                    } else if t.contains("SETTINGS") {
+                        "SETTINGS".to_string()
+                    } else if t.contains("CHAT") {
+                        "CHAT".to_string()
+                    } else {
+                        let rules = crate::core::intent::rules::classify_by_rules(msg);
                         rules.as_str().to_string()
                     }
                 }
             };
 
             let logger = debug_logger::DebugLogger::new();
-            logger.log_intent_classifier(msg, "LLM", &request_json_str, &text_resp, &detected_intent);
+            logger.log_intent_classifier(
+                msg,
+                "LLM",
+                &request_json_str,
+                &text_resp,
+                &detected_intent,
+            );
 
             println!("[INTENT] Final intent (by LLM): {}", detected_intent);
             return detected_intent;

@@ -1,48 +1,81 @@
-/// JarvisAgent 后端入口模块
-///
-/// 本文件是 Tauri 桌面应用的 Rust 后端入口点，负责：
-/// - 初始化运行时环境（工作目录、会话恢复等）
-/// - 配置并启动 Tauri 应用框架
-/// - 注册状态管理器与前端可调用的命令（invoke handler）
-/// - 加载各类 Tauri 官方插件（文件系统、对话框、窗口状态等）
+//! # lib.rs — Tauri 应用后端入口与初始化模块
+//!
+//! 这是 JarvisAgent 桌面应用的 Rust 后端核心入口文件。负责初始化运行时环境、
+//! 配置 Tauri 应用框架、注册状态管理器与前端可调用的命令（invoke handler），
+//! 以及加载各类 Tauri 官方插件。
+//!
+//! ## 关键导出
+//! - `run()`: Tauri 应用主入口函数，初始化并启动整个后端服务
+//! - `get_agent_home()`: 获取已初始化的 Agent 数据目录路径
+//! - `core`: 核心功能模块，包含所有业务逻辑和命令处理器
+//!
+//! ## 依赖
+//! - Internal: `crate::core::*` (状态管理、配置、会话、快照等模块)
+//! - External: `tauri`, `tokio`, `std::path`, `std::sync`
+//!
+//! ## 约束
+//! - `run()` 函数必须在 Tauri 应用启动时调用，且只能调用一次
+//! - `get_agent_home()` 必须在 `run()` 初始化后调用，否则会 panic
+//! - 所有前端可调用的命令都必须在 `invoke_handler` 中注册
+//! - 数据目录自动检测：开发模式指向项目根目录的 `data/`，打包后指向 exe 所在目录的 `data/`
+
 pub mod core;
 
-// ───────────────────────────────────────────────
-// 核心模块导入：状态管理器
-// ───────────────────────────────────────────────
+// 状态管理器
 use crate::core::state::{
-    WorkspaceState,           // 工作空间状态，记录当前工作目录
-    SnapshotRegistry,         // 快照注册表，管理会话级快照
-    SessionManager,           // 会话管理器，管理活跃会话生命周期
+    SessionManager,   // 会话管理器，管理活跃会话生命周期
+    SnapshotRegistry, // 快照注册表，管理会话级快照
+    WorkspaceState,   // 工作空间状态，记录当前工作目录
 };
 
-// ───────────────────────────────────────────────
-// 核心模块导入：背景任务、配置、子代理
-// ───────────────────────────────────────────────
-use crate::core::background::BackgroundState;       // 后台任务状态
-use crate::core::config::{ConfigState, load_config}; // 配置状态与加载函数
+// 后台任务、配置、子代理
+use crate::core::infra::background::BackgroundState; // 后台任务状态
+use crate::core::config::{load_config, ConfigState}; // 配置状态与加载函数
 use crate::core::snapshot_manager::session_manager::SessionManagerRegistry;
-use crate::core::subagents::SubAgentMonitorState;    // 子代理监控状态
+use crate::core::orchestration::subagents::SubAgentMonitorState; // 子代理监控状态
 
-// ───────────────────────────────────────────────
-// 标准库与异步运行时导入
-// ───────────────────────────────────────────────
-use tokio::sync::Mutex;      // 异步互斥锁，用于跨线程安全共享状态
-use std::path::PathBuf;      // 路径缓冲区，处理文件系统路径
-use std::sync::OnceLock;     // 线程安全的一次性初始化锁，用于全局静态路径
+// 标准库与异步运行时
+use std::path::PathBuf; // 路径缓冲区，处理文件系统路径
+use std::sync::OnceLock;
+use tokio::sync::Mutex; // 异步互斥锁，用于跨线程安全共享状态
 
-/// 全局静态变量：Agent 主目录路径
-///
-/// 在应用启动时通过 `get_agent_home` 初始化，后续所有模块可通过
-/// 该变量获取 JarvisAgent 的根目录，确保路径一致性。
+/// 全局静态变量：Agent 数据目录路径
 static AGENT_HOME_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-/// 获取已初始化的 Agent 主目录路径
+/// 获取已初始化的 Agent 数据目录路径
 ///
 /// # Panics
 /// 如果在 `AGENT_HOME_DIR` 初始化前调用，将触发 panic。
 pub fn get_agent_home() -> &'static PathBuf {
-    AGENT_HOME_DIR.get().expect("AGENT_HOME_DIR not initialized")
+    AGENT_HOME_DIR
+        .get()
+        .expect("AGENT_HOME_DIR not initialized")
+}
+
+/// 检测并返回专用数据目录
+///
+/// 自动判断运行环境：
+/// - 开发模式（`pnpm tauri dev`）：CWD = 项目根目录 → 返回 `<项目根>/data/`
+/// - 开发模式（`cargo run`）：CWD = src-tauri → 返回 `<项目根>/data/`
+/// - 打包后：返回 `<exe 所在目录>/data/`
+fn detect_data_dir() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+    if cwd.join("src-tauri").join("Cargo.toml").exists() {
+        // pnpm tauri dev 时 CWD = 项目根目录
+        cwd.join("data")
+    } else if cwd.join("Cargo.toml").exists() && cwd.join("src").join("lib.rs").exists() {
+        // 直接 cargo run，在 src-tauri 内，上跳一级到项目根目录
+        cwd.parent()
+            .map(|p| p.join("data"))
+            .unwrap_or_else(|| cwd.join("data"))
+    } else {
+        // 打包后：exe 所在目录的 data/
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("data")))
+            .unwrap_or_else(|| cwd.join("data"))
+    }
 }
 
 /// Tauri 应用入口函数
@@ -55,19 +88,36 @@ pub fn get_agent_home() -> &'static PathBuf {
 /// 5. 构建 Tauri 应用，注册状态与命令
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // ─── 环境变量初始化 ───
-    // 从 `.env` 文件加载环境变量，若不存在则静默忽略
-    dotenvy::dotenv().ok();
-
-    // ─── 锁定 Agent 主目录 ───
-    // 获取当前进程所在目录作为 Agent 根目录，并将其写入全局静态变量
+    // 锁定 Agent 数据目录
     let startup_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let _ = AGENT_HOME_DIR.set(startup_dir.clone());
-    println!("[System] Agent home directory locked to: {}", startup_dir.display());
+    let data_dir = detect_data_dir();
 
-    // ─── 恢复工作目录 ───
-    // 读取 `.jarvis_workspace` 文件中记录的上次工作目录，若目录有效则恢复
-    let workspace_file = startup_dir.join(core::constants::FILE_WORKSPACE);
+    // 兼容迁移：如果 data/ 不存在但旧位置有 .jarvis_workspace，迁移它
+    if !data_dir.exists() {
+        let old_ws = startup_dir.join(core::constants::FILE_WORKSPACE);
+        if old_ws.exists() {
+            let _ = std::fs::create_dir_all(&data_dir);
+            let new_ws = data_dir.join(core::constants::FILE_WORKSPACE);
+            let _ = std::fs::rename(&old_ws, &new_ws);
+            println!(
+                "[System] Migrated workspace file from {} to {}",
+                old_ws.display(),
+                new_ws.display()
+            );
+        }
+    }
+
+    // 确保数据目录存在
+    let _ = std::fs::create_dir_all(&data_dir);
+
+    let _ = AGENT_HOME_DIR.set(data_dir.clone());
+    println!(
+        "[System] Agent data directory locked to: {}",
+        data_dir.display()
+    );
+
+    // 恢复工作目录
+    let workspace_file = data_dir.join(core::constants::FILE_WORKSPACE);
     if let Ok(path) = std::fs::read_to_string(workspace_file) {
         let path = path.trim();
         if std::path::Path::new(path).exists() {
@@ -76,38 +126,35 @@ pub fn run() {
         }
     }
 
-    // ─── 会话恢复 ───
-    // 尝试获取上次活跃的会话 ID；若该会话元数据有效则恢复，否则新建会话
-    let startup_session_id = core::sessions::get_last_active_session_id()
-        .filter(|id| core::sessions::get_session_meta(id).is_ok())
-        .unwrap_or_else(|| core::sessions::create_session(None).id);
+    // 会话恢复
+    let startup_session_id = core::session::get_last_active_session_id()
+        .filter(|id| core::session::get_session_meta(id).is_ok())
+        .unwrap_or_else(|| core::session::create_session(None).id);
     println!("[System] 启动应用，恢复会话: {}", startup_session_id);
 
-    // ─── Tauri Builder 配置 ───
     // 构建 Tauri 应用实例，注册状态管理器与插件
     tauri::Builder::default()
-        // 注册各模块状态管理器，供命令处理器注入使用
         .manage(SessionManager::new())
         .manage(BackgroundState::default())
         .manage(SubAgentMonitorState::default())
         .manage(ConfigState(std::sync::Arc::new(Mutex::new(load_config()))))
         .manage(WorkspaceState(Mutex::new(None)))
-        .manage(SnapshotRegistry(tokio::sync::RwLock::new(SessionManagerRegistry::new())))
+        .manage(SnapshotRegistry(tokio::sync::RwLock::new(
+            SessionManagerRegistry::new(),
+        )))
         // 注册 Tauri 官方插件
-        .plugin(tauri_plugin_opener::init())       // 文件/URL 打开器
-        .plugin(tauri_plugin_dialog::init())       // 系统对话框
-        .plugin(tauri_plugin_fs::init())           // 文件系统操作
+        .plugin(tauri_plugin_opener::init()) // 文件/URL 打开器
+        .plugin(tauri_plugin_dialog::init()) // 系统对话框
+        .plugin(tauri_plugin_fs::init()) // 文件系统操作
         .plugin(tauri_plugin_window_state::Builder::new().build()) // 窗口状态持久化
-        // ─── 命令注册（前端 invoke 调用入口）───
+        // 命令注册（前端 invoke 调用入口）
         .invoke_handler(tauri::generate_handler![
             // 核心 AI 对话
             core::agent::ask_jarvis,
-
-            // ── 权限控制 ──
+            // 权限控制
             core::commands::permission::cancel_jarvis,
             core::commands::permission::resolve_permission,
-
-            // ── 会话管理 ──
+            // 会话管理
             core::commands::session::recall_last_message,
             core::commands::session::get_active_session_id,
             core::commands::session::list_sessions,
@@ -129,19 +176,17 @@ pub fn run() {
             core::commands::session::list_subagents,
             core::commands::session::list_subagent_events,
             core::commands::session::cancel_subagent_run,
-
-            // ── 配置管理 ──
+            // 配置管理
             core::commands::config::get_config,
             core::commands::config::save_config_cmd,
             core::commands::config::get_image_compress_config,
-
-            // ── 历史记录 ──
+            // 历史记录
             core::commands::history::get_session_history,
-
-            // ── 检查点与分支 ──
+            // 检查点与分支
             core::commands::checkpoint::list_checkpoints,
             core::commands::checkpoint::get_checkpoint_tree,
             core::commands::checkpoint::rollback_to_checkpoint,
+            core::commands::checkpoint::rollback_to_checkpoint_with_recall,
             core::commands::checkpoint::create_branch,
             core::commands::checkpoint::switch_branch,
             core::commands::checkpoint::list_branches,
@@ -149,8 +194,7 @@ pub fn run() {
             core::commands::checkpoint::get_active_branch,
             core::commands::checkpoint::commit_checkpoint,
             core::commands::checkpoint::clear_pending_operations,
-
-            // ── 快照管理 ──
+            // 快照管理
             core::commands::snapshot::snapshot_create,
             core::commands::snapshot::snapshot_get_tree_view,
             core::commands::snapshot::snapshot_get_summaries,
@@ -161,8 +205,7 @@ pub fn run() {
             core::commands::snapshot::snapshot_list,
             core::commands::snapshot::snapshot_list_branches,
             core::commands::snapshot::snapshot_get_current,
-
-            // ── 沙盒会话 ──
+            // 沙盒会话
             core::commands::sandbox::sandbox_create,
             core::commands::sandbox::sandbox_get,
             core::commands::sandbox::sandbox_list,
@@ -170,15 +213,13 @@ pub fn run() {
             core::commands::sandbox::sandbox_abandon,
             core::commands::sandbox::sandbox_publish,
             core::commands::sandbox::sandbox_compare,
-
-            // ── 合并冲突 ──
+            // 合并冲突
             core::commands::merge::merge_preview,
             core::commands::merge::merge_execute,
             core::commands::merge::merge_get_conflicts,
-
-            // ── 模型注册表 ──
-            core::registry::get_model_capabilities,
-            core::registry::list_model_registry,
+            // 模型注册表
+            core::llm::registry::get_model_capabilities,
+            core::llm::registry::list_model_registry,
         ])
         .run(tauri::generate_context!())
         .expect("运行失败");

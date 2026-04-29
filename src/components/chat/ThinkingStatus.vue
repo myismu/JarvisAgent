@@ -25,13 +25,8 @@ const formattedTime = computed(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 10px;
-  border-radius: var(--radius-full);
-  background: rgba(59, 130, 246, 0.08);
-  border: 1px solid rgba(59, 130, 246, 0.15);
   font-size: 12px;
   color: var(--accent-blue);
-  animation: fadeIn var(--transition-fast);
 }
 .thinking-spinner {
   width: 12px;

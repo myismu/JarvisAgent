@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { onMounted, ref, computed } from "vue";
+import { onMounted, ref, computed, watch } from "vue";
 import { useAgentEvents } from "./composables/useAgentEvents";
+import { usePreferences } from "./composables/usePreferences";
 import { useSessionStore } from "./stores/session";
 import { useAgentStore } from "./stores/agent";
-import { usePermissionStore } from "./stores/permission";
 
 import TitleBar from "./components/layout/TitleBar.vue";
 import Sidebar from "./components/layout/Sidebar.vue";
@@ -15,18 +15,31 @@ import PlanPreviewPanel from "./components/common/PlanPreviewPanel.vue";
 import SettingsPanel from "./components/settings/SettingsPanel.vue";
 
 const showSettings = ref(false);
-const sidebarCollapsed = ref(false);
+const prefs = usePreferences();
+const sidebarCollapsed = ref(prefs.sidebarCollapsed);
 
 const session = useSessionStore();
 const agent = useAgentStore();
-const perm = usePermissionStore();
 const { initListeners } = useAgentEvents();
+
+// 恢复持久化的 Agent 面板可见性
+agent.showAgentPanel = prefs.agentPanelVisible;
 
 const displayStatus = computed(() => {
   if (session.isCurrentSessionRunning) return 'running';
   if (session.currentSessionStatus === 'ERROR') return 'error';
   if (session.currentSessionStatus === 'FINISH') return 'finish';
   return 'idle';
+});
+
+// 持久化侧栏折叠状态
+watch(sidebarCollapsed, (val) => {
+  prefs.setSidebarCollapsed(val);
+});
+
+// 持久化 Agent 面板可见性
+watch(() => agent.showAgentPanel, (val) => {
+  prefs.setAgentPanelVisible(val);
 });
 
 onMounted(async () => {
@@ -58,7 +71,6 @@ onMounted(async () => {
               </div>
             </div>
             <button
-              v-if="agent.agentSteps.length > 0 || agent.currentSubAgentRuns.length > 0 || perm.currentPlanDocuments.length > 0"
               class="agent-panel-toggle"
               :class="{ active: agent.showAgentPanel }"
               @click="agent.showAgentPanel = !agent.showAgentPanel"

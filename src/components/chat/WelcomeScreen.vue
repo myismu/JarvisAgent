@@ -121,32 +121,26 @@
   justify-content: center;
   height: 100%;
   min-height: 400px;
-  gap: var(--space-lg);
+  gap: 16px;
   pointer-events: none;
   user-select: none;
 }
 
 .arc-reactor-container {
-  position: relative;
-  width: 240px;
-  height: 240px;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
+  gap: 4px;
 }
 
 .arc-reactor {
-  width: 100%;
-  height: 100%;
+  width: 240px;
+  height: 240px;
   filter: drop-shadow(0 0 20px rgba(59, 130, 246, 0.3));
   animation: reactorPulse 4s ease-in-out infinite;
 }
 
 .reactor-label {
-  position: absolute;
-  bottom: -10px;
-  left: 50%;
-  transform: translateX(-50%);
   display: flex;
   align-items: center;
   font-size: 16px;

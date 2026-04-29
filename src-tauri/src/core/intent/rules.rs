@@ -1,14 +1,17 @@
+//! # 意图分类规则 (Intent Classification Rules)
+//!
+//! 基于正则关键词的快速意图匹配引擎。
+//! 定义了 12 种意图类型及其匹配规则，按优先级依次匹配：
+//!
+//! `Dangerous > TaskPlan > MemoryQuery > CodeReview > CodeRead > CodeWrite > Question > TaskExecute > Settings > Affirmative > Chat > Unclear`
+//!
+//! 三种核心函数：
+//! - `classify_by_rules` — 纯规则匹配（第一层）
+//! - `classify_with_context` — 带上下文的匹配（第二层）
+//! - `analyze_last_assistant_message` — 上一轮助手消息特征提取
+
 use regex::Regex;
 use std::sync::LazyLock;
-
-// ============================================================================
-// 意图分类规则模块
-// 
-// 采用「规则前置 + 轻量模型兜底」架构：
-// 1. 第一层：关键词正则匹配（90%请求在此命中，不走LLM）
-// 2. 第二层：上下文规则（检查上一轮对话类型）
-// 3. 第三层：轻量LLM兜底（只处理真正模糊的输入）
-// ============================================================================
 
 // ----------------------------------------------------------------------------
 // 危险操作模式：匹配可能造成不可逆损害的操作
@@ -31,6 +34,22 @@ static DANGEROUS_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         .iter()
         .filter_map(|p| Regex::new(p).ok())
         .collect()
+});
+
+// ----------------------------------------------------------------------------
+// 复杂项目/方案审批关键词：匹配需要先规划再执行的项目级任务
+// ----------------------------------------------------------------------------
+static COMPLEX_TASK_KEYWORDS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    let patterns = [
+        r"(?i)(先|先不要|不要直接).*(方案|计划|审批|审阅)",
+        r"(?i)(提交|生成|制定|提出).*(方案|计划).*(审批|审阅|确认)",
+        r"(?i)(完整|最小可用|MVP).*(项目|系统|应用|app|project|system)",
+        r"(?i)(创建|新建|开发|实现|搭建).*(项目|系统|应用|前端|后端|API)",
+        r"(?i)(前端|后端).*(接口|API|REST|数据库|数据存储)",
+        r"(?i)(plan|proposal|approve|review).*(before|first|then)",
+        r"(?i)(create|build|implement|develop).*(project|system|app|frontend|backend|api)",
+    ];
+    patterns.iter().filter_map(|p| Regex::new(p).ok()).collect()
 });
 
 // ----------------------------------------------------------------------------
@@ -237,6 +256,7 @@ pub enum Intent {
 }
 
 impl Intent {
+    /// 转为字符串标签，用于日志和下游路由
     pub fn as_str(&self) -> &'static str {
         match self {
             Intent::CodeRead => "CODE_READ",
@@ -296,6 +316,7 @@ pub fn classify_by_rules(input: &str) -> Intent {
         return Intent::Unclear;
     }
 
+    // 短输入（纯数字/单字母/纯符号）无法独立判断，交给上下文层
     // 匹配纯数字/单字母/纯符号等短输入
     // 这些输入可能是有意义的（如"1"=同意，"666"=厉害），
     // 返回 NeedsContext 让上下文层或 LLM 层判断
@@ -310,63 +331,70 @@ pub fn classify_by_rules(input: &str) -> Intent {
         }
     }
 
-    // 优先级2：记忆查询
+    // 优先级2：复杂项目/方案审批
+    for pattern in COMPLEX_TASK_KEYWORDS.iter() {
+        if pattern.is_match(trimmed) {
+            return Intent::TaskPlan;
+        }
+    }
+
+    // 优先级3：记忆查询
     for pattern in MEMORY_QUERY_KEYWORDS.iter() {
         if pattern.is_match(trimmed) {
             return Intent::MemoryQuery;
         }
     }
 
-    // 优先级3：代码审查（"好像不对"、"有问题"等自然表达）
+    // 优先级4：代码审查（"好像不对"、"有问题"等自然表达）
     for pattern in CODE_REVIEW_KEYWORDS.iter() {
         if pattern.is_match(trimmed) {
             return Intent::CodeReview;
         }
     }
 
-    // 优先级4：代码读取
+    // 优先级5：代码读取
     for pattern in CODE_READ_KEYWORDS.iter() {
         if pattern.is_match(trimmed) {
             return Intent::CodeRead;
         }
     }
 
-    // 优先级5：代码写入
+    // 优先级6：代码写入
     for pattern in CODE_WRITE_KEYWORDS.iter() {
         if pattern.is_match(trimmed) {
             return Intent::CodeWrite;
         }
     }
 
-    // 优先级6：问题咨询（包括假设性问句，优先于任务执行）
+    // 优先级7：问题咨询（包括假设性问句，优先于任务执行）
     for pattern in QUESTION_KEYWORDS.iter() {
         if pattern.is_match(trimmed) {
             return Intent::Question;
         }
     }
 
-    // 优先级7：任务执行（命令/脚本）
+    // 优先级8：任务执行（命令/脚本）
     for pattern in TASK_EXECUTE_KEYWORDS.iter() {
         if pattern.is_match(trimmed) {
             return Intent::TaskExecute;
         }
     }
 
-    // 优先级8：设置配置
+    // 优先级9：设置配置
     for pattern in SETTINGS_KEYWORDS.iter() {
         if pattern.is_match(trimmed) {
             return Intent::Settings;
         }
     }
 
-    // 优先级9：肯定延续词（需要上下文才能确定）
+    // 优先级10：肯定延续词（需要上下文才能确定）
     for pattern in AFFIRMATIVE_CONTINUATION.iter() {
         if pattern.is_match(trimmed) {
             return Intent::NeedsContext;
         }
     }
 
-    // 优先级10：闲聊关键词
+    // 优先级11：闲聊关键词
     for pattern in GENERAL_CHAT_KEYWORDS.iter() {
         if pattern.is_match(trimmed) {
             return Intent::GeneralChat;
@@ -393,10 +421,12 @@ pub fn classify_with_context(
     last_assistant_action: Option<&LastAssistantAction>,
 ) -> Intent {
     if let Some(action) = last_assistant_action {
+        // 上一轮是提问且用户有回复 → 视为任务延续
         if action.was_asking_question && !input.trim().is_empty() {
             return Intent::TaskContinue;
         }
 
+        // 上一轮是项目操作或计划提议，且用户回复确认词 → 任务延续
         if action.was_project_action || action.was_proposing_plan {
             for pattern in AFFIRMATIVE_CONTINUATION.iter() {
                 if pattern.is_match(input.trim()) {
@@ -406,6 +436,7 @@ pub fn classify_with_context(
         }
     }
 
+    // 上下文未命中，回退到纯规则分类
     let base_intent = classify_by_rules(input);
 
     if base_intent != Intent::NeedsContext {
@@ -427,6 +458,7 @@ pub fn classify_with_context(
 pub fn analyze_last_assistant_message(message: &str) -> LastAssistantAction {
     let lower = message.to_lowercase();
 
+    // 关键词列表用于提取上一轮助手消息的行为特征
     // 项目操作指示词：创建、写入、修改、删除、运行等
     let project_action_indicators = [
         "创建", "写入", "修改", "删除", "运行", "执行", "构建", "安装",
@@ -509,6 +541,18 @@ mod tests {
         assert_eq!(classify_by_rules("帮我创建一个文件"), Intent::CodeWrite);
         assert_eq!(classify_by_rules("修改这个函数"), Intent::CodeWrite);
         assert_eq!(classify_by_rules("改一下这个逻辑"), Intent::CodeWrite);
+    }
+
+    #[test]
+    fn test_complex_task_plan() {
+        assert_eq!(
+            classify_by_rules("请先提交一份可审批的实施方案，然后创建一个完整最小可用项目"),
+            Intent::TaskPlan
+        );
+        assert_eq!(
+            classify_by_rules("在桌面创建一个包含前端和后端的任务管理系统"),
+            Intent::TaskPlan
+        );
     }
 
     #[test]

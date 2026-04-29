@@ -2,19 +2,47 @@
 import { ref, onMounted, nextTick, computed, watch, onUnmounted } from 'vue';
 import { useSessionStore } from '../../stores/session';
 import { useChatStore } from '../../stores/chat';
+import { usePermissionStore } from '../../stores/permission';
+import { usePreferences } from '../../composables/usePreferences';
 import { invoke } from '@tauri-apps/api/core';
 import ConfirmModal from '../common/ConfirmModal.vue';
-import ThinkingStatus from './ThinkingStatus.vue';
+import AgentTurn from './AgentTurn.vue';
 import WelcomeScreen from './WelcomeScreen.vue';
+import type { PlanDocument } from '../../types';
 
 interface CheckpointEntry {
   id: string;
   operations?: Array<unknown>;
 }
 
+interface RollbackRecallResult {
+  restoredFiles: string[];
+  recalledText: string;
+}
+
 const session = useSessionStore();
 const chat = useChatStore();
+const perm = usePermissionStore();
+const prefs = usePreferences();
 const responseAreaRef = ref<HTMLElement | null>(null);
+const shouldFollowStream = ref(true);
+const currentTurn = computed(() => session.currentSessionView.currentTurn);
+const hasCurrentTurnContent = computed(() => {
+  const turn = currentTurn.value;
+  return Boolean(
+    turn.textBlocks.some((block) => block.content.trim()) ||
+      turn.thinkingBlocks.some((block) => block.content.trim()) ||
+      turn.toolCalls.length > 0 ||
+      turn.logs.some((log) => log.content.trim())
+  );
+});
+const showInlineStatus = computed(() => {
+  const view = session.currentSessionView;
+  return Boolean(
+    view.runStartTime &&
+    (view.streamActive || (session.isCurrentSessionRunning && !hasCurrentTurnContent.value))
+  );
+});
 
 const thinkingElapsed = ref(0);
 let thinkingTimer: ReturnType<typeof setInterval> | null = null;
@@ -28,7 +56,7 @@ const updateThinkingElapsed = () => {
   }
 };
 
-watch(() => session.isCurrentSessionRunning, (running) => {
+watch(showInlineStatus, (running) => {
   if (running) {
     updateThinkingElapsed();
     thinkingTimer = setInterval(updateThinkingElapsed, 1000);
@@ -39,7 +67,7 @@ watch(() => session.isCurrentSessionRunning, (running) => {
 });
 
 watch(() => session.activeSessionId, () => {
-  if (session.isCurrentSessionRunning) {
+  if (showInlineStatus.value) {
     updateThinkingElapsed();
     if (!thinkingTimer) {
       thinkingTimer = setInterval(updateThinkingElapsed, 1000);
@@ -85,16 +113,37 @@ const displayWorkingDir = computed(() => {
   return '.../' + parts.slice(-3).join('/');
 });
 
-const scrollToBottom = async (force = false) => {
-  if (!responseAreaRef.value) return;
+const isResponseAtBottom = () => {
+  if (!responseAreaRef.value) return false;
   const { scrollTop, scrollHeight, clientHeight } = responseAreaRef.value;
-  const isAtBottom = scrollHeight - scrollTop - clientHeight <= 100;
+  return scrollHeight - scrollTop - clientHeight <= 100;
+};
+
+const scrollToBottom = async (force = false) => {
+  const shouldScroll = force || shouldFollowStream.value || isResponseAtBottom();
+  if (force) {
+    shouldFollowStream.value = true;
+  }
 
   await nextTick();
-  if (responseAreaRef.value && (isAtBottom || force)) {
+  if (responseAreaRef.value && shouldScroll) {
     responseAreaRef.value.scrollTop = responseAreaRef.value.scrollHeight;
   }
 };
+
+const handleResponseScroll = () => {
+  shouldFollowStream.value = Boolean(isResponseAtBottom());
+};
+
+const showScrollToBottom = computed(() => {
+  return !isResponseAtBottom() && (chat.parsedHistory || hasCurrentTurnContent.value);
+});
+
+watch(() => [chat.parsedCurrentTurnHtml, currentTurn.value.revision], () => {
+  if (shouldFollowStream.value) {
+    scrollToBottom();
+  }
+});
 
 const handleContextMenu = (e: MouseEvent) => {
   const target = e.target as HTMLElement;
@@ -219,14 +268,16 @@ const confirmRollback = async () => {
       return;
     }
 
-    const recalledText = await invoke<string | null>('recall_last_message', { sessionId });
-
+    let recalledText: string | null = null;
     if (rollbackConfirm.value.snapshotId) {
-      await invoke('rollback_to_checkpoint', {
+      const result = await invoke<RollbackRecallResult>('rollback_to_checkpoint_with_recall', {
         sessionId,
         checkpointId: rollbackConfirm.value.snapshotId,
         rollbackFiles: rollbackConfirm.value.mode === 'both',
       });
+      recalledText = result.recalledText;
+    } else {
+      recalledText = await invoke<string | null>('recall_last_message', { sessionId });
     }
 
     rollbackConfirm.value = null;
@@ -240,6 +291,12 @@ const confirmRollback = async () => {
       const history = await invoke<string>('get_session_history', { sessionId });
       session.replaceSessionHistory(sessionId, history || 'Ready for input...');
       await chat.loadAgentStepsFromBackend(sessionId);
+      const planDocuments = await invoke<PlanDocument[]>('list_plan_documents', { sessionId });
+      perm.planDocumentsBySession = {
+        ...perm.planDocumentsBySession,
+        [sessionId]: planDocuments,
+      };
+      delete perm.planProposals[sessionId];
       chat.triggerRender();
     } catch {
       session.resetSessionView(sessionId);
@@ -266,7 +323,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="response-area" ref="responseAreaRef" @contextmenu="handleContextMenu" @click="handleRollbackClick">
+  <div class="response-area" ref="responseAreaRef" @scroll="handleResponseScroll" @contextmenu="handleContextMenu" @click="handleRollbackClick">
     <div class="working-dir-indicator" v-if="session.workingDirectory">
       <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
         <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
@@ -276,11 +333,18 @@ onMounted(() => {
     </div>
     <WelcomeScreen v-if="!chat.parsedHistory || chat.parsedHistory === '<p>Ready for input...</p>\n'" />
     <div class="response-text markdown-body" v-else>
-      <div v-html="chat.parsedHistory"></div>
-      <div v-if="chat.parsedCurrentTurnHtml" class="chat-message agent-message current-turn-message">
-        <div class="message-content current-turn-content">
-          <div v-html="chat.parsedCurrentTurnHtml"></div>
-          <ThinkingStatus :running="session.isCurrentSessionRunning" :elapsed="thinkingElapsed" />
+      <div class="history-html" v-html="chat.parsedHistory"></div>
+      <div v-if="hasCurrentTurnContent || showInlineStatus" class="chat-message agent-message current-turn-message">
+        <div
+          class="message-content current-turn-content"
+          :class="{ 'waiting-only': !hasCurrentTurnContent && showInlineStatus }"
+        >
+          <AgentTurn
+            :turn="currentTurn"
+            :display-mode="prefs.agentDisplayMode.value"
+            :show-status="showInlineStatus"
+            :elapsed="thinkingElapsed"
+          />
         </div>
       </div>
     </div>
@@ -315,6 +379,19 @@ onMounted(() => {
       @cancel="rollbackConfirm = null"
       @confirm="confirmRollback"
     />
+
+    <Transition name="scroll-btn">
+      <button
+        v-if="showScrollToBottom"
+        class="scroll-to-bottom-btn"
+        @click="scrollToBottom(true)"
+        title="滚动到底部"
+      >
+        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9"></polyline>
+        </svg>
+      </button>
+    </Transition>
   </div>
 </template>
 
@@ -583,6 +660,10 @@ onMounted(() => {
   animation: slideIn var(--transition-normal) forwards;
 }
 
+.history-html :deep(.chat-message) {
+  animation: none;
+}
+
 @keyframes slideIn {
   from { opacity: 0; transform: translateY(8px) scale(0.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
@@ -655,6 +736,47 @@ onMounted(() => {
   color: var(--accent-blue-hover);
 }
 
+/* 长消息折叠 */
+:deep(.user-msg-collapsed) {
+  position: relative;
+  max-height: 180px;
+  overflow: hidden;
+  transition: max-height 0.3s ease;
+}
+:deep(.user-msg-collapsed[data-collapsed="false"]) {
+  max-height: none;
+}
+:deep(.user-msg-collapsed[data-collapsed="true"] .user-msg-fade) {
+  display: block;
+}
+:deep(.user-msg-collapsed[data-collapsed="false"] .user-msg-fade) {
+  display: none;
+}
+:deep(.user-msg-fade) {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 48px;
+  background: linear-gradient(transparent, var(--glass-bg-heavy));
+  pointer-events: none;
+}
+:deep(.user-msg-toggle) {
+  display: block;
+  margin-top: 6px;
+  padding: 2px 0;
+  background: none;
+  border: none;
+  color: var(--accent-blue);
+  font-size: 0.8rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+:deep(.user-msg-toggle:hover) {
+  color: var(--accent-blue-hover);
+  text-decoration: underline;
+}
+
 .response-text :deep(p) {
   margin-top: 0;
   margin-bottom: 0.75em;
@@ -695,24 +817,28 @@ onMounted(() => {
   border-left-color: var(--accent-blue);
 }
 
-.current-turn-content {
+.current-turn-content,
+.response-text :deep(.current-turn-content) {
   position: relative;
   min-width: min(560px, 85vw);
 }
 
-.current-turn-content :deep(details:first-child) {
+.current-turn-content.waiting-only {
+  min-width: auto;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.current-turn-content :deep(details:first-child),
+.response-text :deep(.current-turn-content details:first-child) {
   margin-top: 0;
 }
 
-.current-turn-content :deep(summary) {
-  padding-right: 78px;
-}
-
-.current-turn-content > :deep(.thinking-inline-status) {
-  position: absolute;
-  top: 12px;
-  right: 14px;
-  z-index: 1;
+.current-turn-content :deep(summary),
+.response-text :deep(.current-turn-content summary) {
+  padding-right: 0;
 }
 
 .response-text :deep(strong) {
@@ -879,5 +1005,47 @@ onMounted(() => {
   animation: none !important;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
+}
+
+/* 滚动到底部按钮 */
+.scroll-to-bottom-btn {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg-heavy);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: var(--accent-blue);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow-md);
+  transition: all var(--transition-fast);
+}
+.scroll-to-bottom-btn:hover {
+  background: var(--glass-bg);
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+  transform: translateX(-50%) scale(1.08);
+}
+.scroll-to-bottom-btn:active {
+  transform: translateX(-50%) scale(0.95);
+}
+
+.scroll-btn-enter-active,
+.scroll-btn-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.scroll-btn-enter-from,
+.scroll-btn-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(8px);
 }
 </style>

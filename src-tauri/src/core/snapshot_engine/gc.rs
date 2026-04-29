@@ -1,6 +1,11 @@
+//! 垃圾回收模块
+//!
+//! 清理过期快照和孤立分支，释放存储空间。
+
 use super::snapshot::SnapshotTree;
 use std::collections::HashSet;
 
+/// GC 配置参数
 #[derive(Clone, Debug)]
 pub struct GcConfig {
     pub max_checkpoints: usize,
@@ -20,6 +25,7 @@ impl Default for GcConfig {
     }
 }
 
+/// GC 执行结果统计
 #[derive(Default, Debug)]
 pub struct GcResult {
     pub removed_snapshots: usize,
@@ -27,6 +33,7 @@ pub struct GcResult {
     pub space_freed: u64,
 }
 
+/// 垃圾回收器
 pub struct GarbageCollector {
     config: GcConfig,
 }
@@ -36,6 +43,9 @@ impl GarbageCollector {
         Self { config }
     }
     
+    /// 执行垃圾回收
+    ///
+    /// 删除过期快照和孤立分支，保护分支头节点不被删除
     pub fn collect<F>(&self, tree: &mut SnapshotTree, mut delete_snapshot: F) -> GcResult
     where F: FnMut(&str, &str),
     {
@@ -76,6 +86,7 @@ impl GarbageCollector {
         result
     }
     
+    /// 判断快照是否应被删除（基于存活天数）
     fn should_remove(&self, snapshot: &super::snapshot::Snapshot) -> bool {
         let age_days = (current_timestamp() - snapshot.created_at) / (24 * 60 * 60);
         
@@ -86,6 +97,7 @@ impl GarbageCollector {
         false
     }
     
+    /// 查找孤立分支（头节点已被删除的分支）
     fn find_orphan_branches(&self, tree: &SnapshotTree) -> Vec<String> {
         tree.branches.keys()
             .filter(|name| {

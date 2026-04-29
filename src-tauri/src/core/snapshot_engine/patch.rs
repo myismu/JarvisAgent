@@ -1,7 +1,12 @@
+//! 补丁模块
+//!
+//! 定义文件变更的差异表示，支持创建、删除、更新、重命名四种操作类型。
+
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+/// 文件补丁（描述一次文件变更操作）
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Patch {
@@ -24,11 +29,13 @@ pub enum Patch {
     },
 }
 
+/// 文本差异（由多个 hunk 组成）
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct TextDiff {
     pub hunks: Vec<DiffHunk>,
 }
 
+/// 差异块（一个连续的变更区域）
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DiffHunk {
     pub old_start: u32,
@@ -38,6 +45,7 @@ pub struct DiffHunk {
     pub lines: Vec<DiffLine>,
 }
 
+/// 差异行类型
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum DiffLine {
@@ -46,6 +54,7 @@ pub enum DiffLine {
     Deletion { content: String },
 }
 
+/// 补丁摘要（用于统计展示）
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PatchSummary {
@@ -55,6 +64,7 @@ pub struct PatchSummary {
     pub lines_removed: usize,
 }
 
+/// 补丁操作错误类型
 #[derive(Debug, thiserror::Error)]
 pub enum PatchError {
     #[error("File not found: {0}")]
@@ -68,6 +78,7 @@ pub enum PatchError {
 }
 
 impl Patch {
+    /// 生成补丁摘要
     pub fn to_summary(&self) -> PatchSummary {
         match self {
             Patch::CreateFile { path, content } => PatchSummary {
@@ -97,6 +108,7 @@ impl Patch {
         }
     }
     
+    /// 计算内容哈希（用于变更检测）
     pub fn content_hash(content: &str) -> String {
         let mut hasher = DefaultHasher::new();
         content.hash(&mut hasher);

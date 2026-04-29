@@ -1,5 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
+import type { AgentCurrentTurn } from "../types";
+import { createEmptyAgentCurrentTurn, resetAgentCurrentTurn } from "../utils/agentTurnState";
 
 interface LatestCheckpoint {
   id: string;
@@ -21,7 +23,9 @@ export interface SessionViewState {
   currentTurnStepsStart: number;
   hydrated: boolean;
   runStartTime: number | null;
+  streamActive: boolean;
   cancelHandled: boolean;
+  currentTurn: AgentCurrentTurn;
 }
 
 const READY_TEXT = "Ready for input...";
@@ -43,7 +47,9 @@ function createEmptySessionView(initialHistory = READY_TEXT, hydrated = false): 
     currentTurnStepsStart: 0,
     hydrated,
     runStartTime: null,
+    streamActive: false,
     cancelHandled: false,
+    currentTurn: createEmptyAgentCurrentTurn(),
   };
 }
 
@@ -89,6 +95,8 @@ export const useSessionStore = defineStore("session", () => {
     view.contentBuffer = "";
     view.tempBuffer = "";
     view.thinkingBuffer = "";
+    view.streamActive = false;
+    resetAgentCurrentTurn(view);
   }
 
   function replaceSessionHistory(sessionId: string | null | undefined, history: string) {

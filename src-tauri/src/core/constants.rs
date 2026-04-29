@@ -1,5 +1,18 @@
-// --- Constants Module ---
-// Centralized definitions for directory names, file names, limits, and thresholds.
+//! # constants.rs — 常量定义模块
+//!
+//! 集中定义目录名、文件名、限制阈值等常量。确保整个应用使用一致的命名和限制。
+//!
+//! ## 关键导出
+//! - 目录常量: `DIR_SESSIONS`, `DIR_IMAGES`, `DIR_TASKS`, `DIR_LOGS` 等
+//! - 文件常量: `FILE_WORKSPACE`, `FILE_CONFIG`, `FILE_GLOBAL_MEMORY` 等
+//! - 限制常量: `MAX_TOKENS_CONTEXT`, `MAX_AGENT_LOOP_BEFORE_CONFIRM`, `MAX_SESSION_TITLE_LEN` 等
+//!
+//! ## 依赖
+//! - 无外部依赖
+//!
+//! ## 约束
+//! - 所有常量均为 `pub const`，可直接访问
+//! - 修改限制常量可能影响系统稳定性和性能
 
 // --- Directory Names ---
 pub const DIR_SESSIONS: &str = ".sessions";

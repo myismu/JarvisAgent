@@ -285,6 +285,94 @@ body.dragging-active .editor-container {
   color: var(--accent-red);
 }
 
+.agent-turn-render {
+  min-width: min(560px, 85vw);
+}
+
+.agent-turn-answer {
+  min-width: 0;
+}
+
+.agent-developer-timeline {
+  padding-bottom: 24px;
+}
+
+.agent-developer-text + .agent-thinking-block,
+.agent-developer-text + .agent-tool-call,
+.agent-thinking-block + .agent-tool-call,
+.agent-tool-call + .agent-developer-text,
+.agent-execution-logs + .agent-developer-text {
+  margin-top: 10px;
+}
+
+.agent-execution-panel {
+  margin: 10px 0;
+}
+
+.agent-execution-panel > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-tool-call {
+  margin: 6px 0;
+}
+
+.agent-tool-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  color: var(--text-muted);
+  font-size: 0.86rem;
+}
+
+.agent-tool-row.completed {
+  color: var(--accent-green);
+}
+
+.agent-tool-row.error {
+  color: var(--accent-red);
+}
+
+.agent-tool-row.running {
+  color: var(--accent-yellow);
+}
+
+.agent-tool-row code {
+  color: var(--text-main);
+  background: transparent;
+  padding: 0;
+  border: 0;
+}
+
+.agent-tool-field,
+.agent-tool-log,
+.agent-execution-log {
+  margin: 8px 0;
+  padding-left: 22px;
+  color: var(--text-muted);
+  font-size: 0.86rem;
+}
+
+.agent-tool-field > span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.agent-tool-field.error > span {
+  color: var(--accent-red);
+}
+
+.agent-thinking-block,
+.agent-execution-logs {
+  margin: 8px 0;
+}
+
 .tool-status-icon {
   flex: 0 0 auto;
 }

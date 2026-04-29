@@ -89,16 +89,44 @@ const isRunStale = (run: SubAgentRun): boolean => {
   return run.status === 'running' && Date.now() - run.updatedAt > 30000;
 };
 
-const toggleRunDetails = (runId: string) => {
-  expandedRunIds.value = {
-    ...expandedRunIds.value,
-    [runId]: !expandedRunIds.value[runId],
-  };
-};
-
 const isRunExpanded = (run: SubAgentRun): boolean => {
   return expandedRunIds.value[run.runId] ?? run.status === 'running';
 };
+
+const toggleRunDetails = (run: SubAgentRun) => {
+  expandedRunIds.value = {
+    ...expandedRunIds.value,
+    [run.runId]: !isRunExpanded(run),
+  };
+};
+
+watch(
+  () => agent.currentSubAgentRuns.map((run) => ({ runId: run.runId, status: run.status })),
+  (runs, previousRuns = []) => {
+    const previousStatusById = new Map(previousRuns.map((run) => [run.runId, run.status]));
+    const activeRunIds = new Set(runs.map((run) => run.runId));
+    let changed = false;
+    const nextExpanded = { ...expandedRunIds.value };
+
+    for (const run of runs) {
+      if (run.status !== 'running' && previousStatusById.get(run.runId) === 'running') {
+        nextExpanded[run.runId] = false;
+        changed = true;
+      }
+    }
+
+    for (const runId of Object.keys(nextExpanded)) {
+      if (!activeRunIds.has(runId)) {
+        delete nextExpanded[runId];
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      expandedRunIds.value = nextExpanded;
+    }
+  },
+);
 
 const getVisibleEvents = (run: SubAgentRun): SubAgentEvent[] => {
   const events = agent.getSubAgentEvents(run.runId);
@@ -309,7 +337,7 @@ const hideTooltip = () => {
 <template>
   <Transition name="panel-slide">
     <div
-      v-if="agent.showAgentPanel && (agent.agentSteps.length > 0 || agent.currentSubAgentRuns.length > 0 || perm.currentPlanDocuments.length > 0)"
+      v-if="agent.showAgentPanel"
       class="agent-panel"
     >
       <div class="panel-header">
@@ -328,6 +356,18 @@ const hideTooltip = () => {
       </div>
 
       <div class="panel-accordion">
+        <div
+          v-if="agent.currentSubAgentRuns.length === 0 && agent.agentSteps.length === 0 && perm.currentPlanDocuments.length === 0"
+          class="panel-empty"
+        >
+          <div class="panel-empty-icon">
+            <svg viewBox="0 0 24 24" width="32" height="32" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+            </svg>
+          </div>
+          <p class="panel-empty-text">暂无执行数据</p>
+          <p class="panel-empty-hint">发送消息后，此处将展示 Agent 执行流程、子 Agent 状态和任务计划</p>
+        </div>
         <section class="panel-section" :class="{ open: openSections.subagents }">
           <button class="section-header" type="button" @click="toggleSection('subagents')">
             <svg class="section-chevron" :class="{ open: openSections.subagents }" viewBox="0 0 16 16" width="12" height="12" fill="none">
@@ -342,9 +382,9 @@ const hideTooltip = () => {
                 v-for="run in agent.currentSubAgentRuns"
                 :key="run.runId"
                 class="subagent-run"
-                :class="[getRunClass(run), { stale: isRunStale(run) }]"
+                :class="[getRunClass(run), { stale: isRunStale(run), expanded: isRunExpanded(run) }]"
                 :title="run.promptPreview"
-                @click="toggleRunDetails(run.runId)"
+                @click="toggleRunDetails(run)"
               >
                 <div class="subagent-main">
                   <span class="subagent-status-dot"></span>
@@ -355,26 +395,29 @@ const hideTooltip = () => {
                   <button v-if="run.status === 'running'" class="run-cancel-btn" type="button" title="取消此子 Agent" @click.stop="chat.cancelSubAgentRun(run.runId)">
                     停止
                   </button>
+                  <span v-if="!isRunExpanded(run)" class="subagent-compact-phase">{{ getPhaseLabel(run) }}</span>
                   <span class="subagent-time">{{ getRunDuration(run) }}</span>
                 </div>
-                <div class="subagent-phase">{{ getPhaseLabel(run) }}</div>
-                <div class="subagent-meta">
-                  <span>{{ run.loopCount }}/{{ run.maxLoops }} 轮</span>
-                  <span>{{ run.inputTokens + run.outputTokens }} tok</span>
-                  <span v-if="run.readOnly">只读</span>
-                </div>
-                <div v-if="run.summary" class="subagent-summary">{{ run.summary }}</div>
-                <div v-if="run.error" class="subagent-error">{{ run.error }}</div>
-                <div v-if="getVisibleEvents(run).length > 0" class="subagent-events">
-                  <div
-                    v-for="event in getVisibleEvents(run)"
-                    :key="event.eventId"
-                    class="subagent-event"
-                    :class="`event-${event.eventType}`"
-                  >
-                    <span class="event-time">{{ formatEventTime(event.timestamp) }}</span>
-                    <span class="event-label">{{ getEventLabel(event) }}</span>
-                    <span class="event-detail">{{ getEventDetail(event) }}</span>
+                <div v-if="isRunExpanded(run)" class="subagent-details">
+                  <div class="subagent-phase">{{ getPhaseLabel(run) }}</div>
+                  <div class="subagent-meta">
+                    <span>{{ run.loopCount }}/{{ run.maxLoops }} 轮</span>
+                    <span>{{ run.inputTokens + run.outputTokens }} tok</span>
+                    <span v-if="run.readOnly">只读</span>
+                  </div>
+                  <div v-if="run.summary" class="subagent-summary">{{ run.summary }}</div>
+                  <div v-if="run.error" class="subagent-error">{{ run.error }}</div>
+                  <div v-if="getVisibleEvents(run).length > 0" class="subagent-events">
+                    <div
+                      v-for="event in getVisibleEvents(run)"
+                      :key="event.eventId"
+                      class="subagent-event"
+                      :class="`event-${event.eventType}`"
+                    >
+                      <span class="event-time">{{ formatEventTime(event.timestamp) }}</span>
+                      <span class="event-label">{{ getEventLabel(event) }}</span>
+                      <span class="event-detail">{{ getEventDetail(event) }}</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -463,6 +506,37 @@ const hideTooltip = () => {
   flex-direction: column;
   overflow: hidden;
   flex-shrink: 0;
+}
+
+.panel-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  text-align: center;
+  gap: 8px;
+}
+
+.panel-empty-icon {
+  color: var(--text-muted);
+  opacity: 0.4;
+  margin-bottom: 4px;
+}
+
+.panel-empty-text {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.panel-empty-hint {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  opacity: 0.6;
+  margin: 0;
+  line-height: 1.5;
 }
 
 .panel-header {
@@ -662,6 +736,16 @@ const hideTooltip = () => {
   color: var(--text-muted);
   font-size: 0.66rem;
   font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.subagent-compact-phase {
+  max-width: 86px;
+  color: var(--text-muted);
+  font-size: 0.64rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   flex-shrink: 0;
 }
 

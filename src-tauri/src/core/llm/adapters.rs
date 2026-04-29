@@ -1,10 +1,19 @@
+//! 消息格式转换适配器
+//!
+//! 负责 Anthropic 内部格式与 OpenAI 格式之间的双向转换：
+//! - 消息结构转换（含多模态内容、工具调用、思考块）
+//! - 工具定义格式转换
+//! - 流式工具输入的 JSON 规范化
+//!
+//! DeepSeek 模型的 reasoning_content 字段特殊处理也在此模块。
 
 use crate::core::models::{
     Message, Content, ContentBlock, OpenAIMessage, OpenAIUserContent, OpenAIContentPart, OpenAIImageUrl, OpenAITool, OpenAIFunctionDefinition, OpenAIToolCall, OpenAIFunctionCall
 };
-use crate::core::sessions;
+use crate::core::session;
 use serde_json::json;
 
+/// 规范化 JSON 字符串中的控制字符（换行、制表符等）
 fn normalize_json_string_control_chars(raw: &str) -> String {
     let mut normalized = String::with_capacity(raw.len());
     let mut in_string = false;
@@ -39,6 +48,9 @@ fn normalize_json_string_control_chars(raw: &str) -> String {
     normalized
 }
 
+/// 解析流式工具调用的输入 JSON
+///
+/// 返回 (解析结果, 是否经过规范化修正)
 pub fn parse_streamed_tool_input(
     raw: &str,
 ) -> Result<(serde_json::Value, bool), String> {
@@ -81,10 +93,12 @@ fn reasoning_content_from_thinking(thinking: &str) -> serde_json::Value {
     }
 }
 
+/// 将 Anthropic 消息格式转换为 OpenAI 格式
 pub fn translate_messages_to_openai(system: &str, messages: &[Message]) -> Vec<OpenAIMessage> {
     translate_messages_to_openai_with_reasoning_backfill(system, messages, false)
 }
 
+/// 将 Anthropic 消息格式转换为 OpenAI 格式（支持 DeepSeek reasoning_content 回填）
 pub fn translate_messages_to_openai_with_reasoning_backfill(
     system: &str,
     messages: &[Message],
@@ -123,7 +137,7 @@ pub fn translate_messages_to_openai_with_reasoning_backfill(
                                     let data = if !source.data.is_empty() {
                                         source.data.clone()
                                     } else if let Some(ref fp) = source.file_path {
-                                        sessions::load_image_data(fp).unwrap_or_default()
+                                        session::load_image_data(fp).unwrap_or_default()
                                     } else {
                                         String::new()
                                     };
@@ -223,6 +237,7 @@ pub fn translate_messages_to_openai_with_reasoning_backfill(
 }
 
 /// 将 Anthropic 内部格式的工具定义翻译为 OpenAI 格式
+/// 判断是否需要为 DeepSeek 模型回填 reasoning_content
 pub fn should_backfill_deepseek_reasoning_content(
     model_id: &str,
     base_url: &str,
@@ -237,6 +252,7 @@ pub fn should_backfill_deepseek_reasoning_content(
     model.contains("deepseek") || url.contains("deepseek")
 }
 
+/// 将 Anthropic 工具定义转换为 OpenAI 格式
 pub fn translate_tools_to_openai(tools: &[serde_json::Value]) -> Vec<OpenAITool> {
     tools
         .iter()

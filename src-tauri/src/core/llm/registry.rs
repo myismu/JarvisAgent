@@ -51,7 +51,7 @@ struct RegistryRoot {
 }
 
 /// 编译时内嵌注册表 JSON，确保打包后无需外部文件
-const REGISTRY_JSON: &str = include_str!("../../model_registry.json");
+const REGISTRY_JSON: &str = include_str!("../../../model_registry.json");
 
 /// 加载全量注册表列表
 pub fn load_registry() -> Vec<ModelRegistryEntry> {

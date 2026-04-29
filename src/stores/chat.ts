@@ -3,9 +3,18 @@ import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { JarvisResult, AgentStep } from "../types";
 import { useSessionStore } from "./session";
+import type { SessionViewState } from "./session";
 import { useAgentStore } from "./agent";
 import { usePermissionStore } from "./permission";
-import { renderMarkdown, renderToolDetails, renderTokenUsage, renderToolStatusLine, renderStoredHistory } from "../utils/markdown";
+import { usePreferences } from "../composables/usePreferences";
+import { renderMarkdown, renderToolDetails, renderTokenUsage, renderToolStatusLine } from "../utils/markdown";
+import { renderStoredHistory } from "../utils/historyRender";
+import { buildAgentTurnSnapshot } from "../utils/agentTurnState";
+import {
+  renderAgentTurnSnapshot,
+  serializeAgentTurnSnapshot,
+  stripPseudoToolCalls,
+} from "../utils/agentTurnRender";
 
 interface BackendAgentStep {
   type: string;
@@ -19,6 +28,25 @@ interface BackendAgentStep {
   content?: string;
   timestamp: number;
 }
+
+function buildFinalResponseParts(
+  view: { contentBuffer: string; tempBuffer: string; toolBuffer: string; thinkingBuffer: string },
+  fallbackContent?: string,
+) {
+  const streamedContent = stripPseudoToolCalls(`${view.contentBuffer}${view.tempBuffer}`);
+  const fallback = stripPseudoToolCalls(fallbackContent || "");
+  const finalContent = streamedContent.trim() ? streamedContent : fallback;
+  const liveThinking = view.thinkingBuffer.trim();
+  let finalToolBuffer = view.toolBuffer;
+
+  if (liveThinking && liveThinking !== finalContent.trim()) {
+    finalToolBuffer = finalToolBuffer ? `${liveThinking}\n\n${finalToolBuffer}` : liveThinking;
+  }
+
+  return { finalContent, finalToolBuffer };
+}
+
+const ASSISTANT_MESSAGE_CONTENT_CLASS = "message-content current-turn-content";
 
 function convertFrontendStep(step: AgentStep): BackendAgentStep {
   return {
@@ -44,8 +72,6 @@ export const useChatStore = defineStore("chat", () => {
   // 增量渲染状态——只渲染新到达的文本，避免每次全量 markdown 解析
   let renderedContentStableLen = 0;
   let cachedContentHtml = "";
-  let renderedToolStableLen = 0;
-  let cachedToolHtml = "";
 
   const rollbackRecalledMessage = ref("");
 
@@ -166,13 +192,31 @@ export const useChatStore = defineStore("chat", () => {
     },
   });
 
+  function buildStructuredAgentResponseHtml(
+    view: SessionViewState,
+    finalContent: string,
+    finalToolBuffer: string,
+    status: string,
+    tokens?: { input: number; output: number; sessionInput?: number; sessionOutput?: number },
+    notice?: string,
+  ) {
+    const prefs = usePreferences();
+    const snapshot = buildAgentTurnSnapshot(view.currentTurn, finalContent, finalToolBuffer, tokens, status);
+    if (notice) {
+      snapshot.notice = notice;
+    }
+    const rendered = renderAgentTurnSnapshot(snapshot, prefs.agentDisplayMode.value, false);
+    return `<div class="chat-message agent-message"><div class="${ASSISTANT_MESSAGE_CONTENT_CLASS}">\n\n${serializeAgentTurnSnapshot(snapshot)}\n${rendered}\n\n</div></div>\n\n`;
+  }
+
   function resetRenderState() {
     renderedContentStableLen = 0;
     cachedContentHtml = "";
-    renderedToolStableLen = 0;
-    cachedToolHtml = "";
     toolStatusMap.value = new Map();
     parsedCurrentTurnHtml.value = "";
+    // 重置节流状态，确保切换会话后 triggerRender 不会被跳过
+    throttlePending = false;
+    lastRenderTime = 0;
   }
 
   function registerScrollCb(cb: (force?: boolean) => void) {
@@ -183,64 +227,46 @@ export const useChatStore = defineStore("chat", () => {
     scrollToBottomCb?.(true);
   }
 
+  function followScrollToBottom() {
+    scrollToBottomCb?.(false);
+  }
+
   function flushCurrentTurnRender() {
     const session = useSessionStore();
     const view = session.getSessionView(session.activeSessionId);
     let html = "";
 
-    // === 增量渲染正文内容 (contentBuffer + tempBuffer) ===
-    const fullContent = `${view.contentBuffer}${view.tempBuffer}`;
-    // 防御：如果内容长度回退（缓冲区被外部清空），重置增量状态
+    // === 先渲染工具/思考缓冲区（在上方，与最终组装顺序一致） ===
+    const liveToolBuffer = `${renderToolStatusLines()}${view.toolBuffer}${view.thinkingBuffer}`;
+    if (liveToolBuffer.trim()) {
+      // 工具状态行、思考提交会改变内容前缀，不能使用按长度切片的增量缓存。
+      html += renderToolDetails(liveToolBuffer, view.streamActive ? "live" : "done", view.streamActive);
+    }
+
+    // === 再渲染正文内容（在下方） ===
+    const fullContent = stripPseudoToolCalls(`${view.contentBuffer}${view.tempBuffer}`);
     if (fullContent.length < renderedContentStableLen) {
       renderedContentStableLen = 0;
       cachedContentHtml = "";
     }
     if (fullContent.length > 0) {
-      // 找到最后一个完整行（以 \n 结尾的行是"稳定的"，不会因为后续字符改变渲染结果）
       const lastNewline = fullContent.lastIndexOf("\n");
       const stableLen = lastNewline >= 0 ? lastNewline + 1 : 0;
 
       if (stableLen > renderedContentStableLen) {
-        // 有新完成的完整行 → 只渲染新增的稳定部分
         const newStablePart = fullContent.slice(renderedContentStableLen, stableLen);
         cachedContentHtml += renderMarkdown(newStablePart);
         renderedContentStableLen = stableLen;
       }
 
       html += cachedContentHtml;
-      // 最后一行（可能不完整）总是重新渲染
       const tail = fullContent.slice(renderedContentStableLen);
       if (tail) {
         html += renderMarkdown(tail);
       }
     } else {
-      // 缓冲区被清空（新回合开始）
       renderedContentStableLen = 0;
       cachedContentHtml = "";
-    }
-
-    // === 增量渲染工具/思考缓冲区 ===
-    const toolStatusHtml = renderToolStatusLines();
-    const liveToolBuffer = `${toolStatusHtml}${view.thinkingBuffer}${view.toolBuffer}`;
-    if (liveToolBuffer.length < renderedToolStableLen) {
-      renderedToolStableLen = 0;
-      cachedToolHtml = "";
-    }
-    if (liveToolBuffer || view.status === "RUNNING") {
-      const lastNewline = liveToolBuffer.lastIndexOf("\n");
-      const stableLen = lastNewline >= 0 ? lastNewline + 1 : 0;
-
-      if (stableLen > renderedToolStableLen) {
-        const newStablePart = liveToolBuffer.slice(renderedToolStableLen, stableLen);
-        cachedToolHtml += newStablePart;
-        renderedToolStableLen = stableLen;
-      }
-
-      const fullToolContent = cachedToolHtml + liveToolBuffer.slice(renderedToolStableLen);
-      html += renderToolDetails(fullToolContent, "live", true);
-    } else {
-      renderedToolStableLen = 0;
-      cachedToolHtml = "";
     }
 
     parsedCurrentTurnHtml.value = html;
@@ -286,9 +312,10 @@ export const useChatStore = defineStore("chat", () => {
 
   const parsedHistory = computed(() => {
     const session = useSessionStore();
+    const prefs = usePreferences();
     const view = session.currentSessionView;
     if (view.messages.length === 0) {
-      return renderStoredHistory(view.jarvisResponse, session.READY_TEXT);
+      return renderStoredHistory(view.jarvisResponse, session.READY_TEXT, prefs.agentDisplayMode.value);
     }
     return view.messages
       .map((msg) => {
@@ -382,7 +409,6 @@ export const useChatStore = defineStore("chat", () => {
 
   async function sendToJarvis(msg: string, thinkingOverride?: boolean, imageBase64List?: string[]) {
     const session = useSessionStore();
-    const agent = useAgentStore();
 
     if (!msg && (!imageBase64List || imageBase64List.length === 0)) return;
     if (!session.activeSessionId) return;
@@ -396,10 +422,10 @@ export const useChatStore = defineStore("chat", () => {
     requestView.hydrated = true;
     requestView.status = "RUNNING";
     requestView.runStartTime = Date.now();
+    requestView.streamActive = false;
     requestView.cancelHandled = false;
     session.clearSessionBuffers(sessionIdAtStart);
     resetRenderState();
-    agent.showAgentPanel = true;
 
     let displayMsg = msg;
     if (imageBase64List && imageBase64List.length > 0) {
@@ -412,9 +438,18 @@ export const useChatStore = defineStore("chat", () => {
       displayMsg = imageHtml + (msg ? `\n\n${msg}` : "");
     }
 
+    // 长消息自动折叠：超过6行或500字符时折叠
+    const COLLAPSE_LINE_THRESHOLD = 6;
+    const COLLAPSE_CHAR_THRESHOLD = 500;
+    const plainText = msg.replace(/<[^>]*>/g, '').replace(/\n{3,}/g, '\n\n');
+    const lineCount = plainText.split('\n').length;
+    const shouldCollapse = lineCount > COLLAPSE_LINE_THRESHOLD || plainText.length > COLLAPSE_CHAR_THRESHOLD;
+    const userMsgHtml = shouldCollapse
+      ? `<div class="chat-message user-message" style="position: relative;"><div class="message-content"><div class="user-msg-collapsed" data-collapsed="true"><div class="user-msg-preview">\n\n${displayMsg}\n\n</div><div class="user-msg-fade"></div></div><button class="user-msg-toggle" onclick="this.previousElementSibling.dataset.collapsed=this.previousElementSibling.dataset.collapsed==='true'?'false':'true';this.textContent=this.previousElementSibling.dataset.collapsed==='true'?'展开全部':'收起'">展开全部</button></div></div>\n\n`
+      : `<div class="chat-message user-message" style="position: relative;"><div class="message-content">\n\n${displayMsg}\n\n</div></div>\n\n`;
     session.appendSessionHistory(
       sessionIdAtStart,
-      `<div class="chat-message user-message" style="position: relative;"><div class="message-content">\n\n${displayMsg}\n\n</div></div>\n\n`
+      userMsgHtml
     );
 
     requestView.lastUserMessage = msg;
@@ -451,30 +486,40 @@ export const useChatStore = defineStore("chat", () => {
 
       if (res.status === "CANCELLED") {
         if (!requestView.cancelHandled) {
-          const hasPartialContent =
-            requestView.contentBuffer || requestView.toolBuffer || requestView.tempBuffer;
+          const cancellationFallback = res.content && res.content !== "用户已取消执行。" ? res.content : "";
+          const { finalContent, finalToolBuffer } = buildFinalResponseParts(requestView, cancellationFallback);
+          const hasPartialContent = finalContent || finalToolBuffer;
           if (hasPartialContent) {
-            let partialResponse = `<div class="chat-message agent-message"><div class="message-content">\n\n`;
-            if (requestView.toolBuffer) {
-              partialResponse += renderToolDetails(requestView.toolBuffer, "done");
-            }
-            partialResponse += requestView.contentBuffer + requestView.tempBuffer;
-            partialResponse += `\n\n<div class="token-usage">用户已取消执行，以上为部分结果</div>\n\n`;
-            partialResponse += `\n\n</div></div>\n\n`;
-            session.appendSessionHistory(sessionIdAtStart, partialResponse);
-          } else if (res.content && res.content !== "用户已取消执行。") {
-            session.appendSessionHistory(
-              sessionIdAtStart,
-              `<div class="chat-message agent-message"><div class="message-content">\n\n${res.content}\n\n</div></div>\n\n`
+            const partialResponse = buildStructuredAgentResponseHtml(
+              requestView,
+              finalContent,
+              finalToolBuffer,
+              "CANCELLED",
+              undefined,
+              "用户已取消执行，以上为部分结果",
             );
+            session.appendSessionHistory(sessionIdAtStart, partialResponse);
+            parsedCurrentTurnHtml.value = "";
+          } else if (res.content && res.content !== "用户已取消执行。") {
+            const partialResponse = buildStructuredAgentResponseHtml(
+              requestView,
+              stripPseudoToolCalls(res.content),
+              "",
+              "CANCELLED",
+              undefined,
+              "用户已取消执行，以上为部分结果",
+            );
+            session.appendSessionHistory(sessionIdAtStart, partialResponse);
+            parsedCurrentTurnHtml.value = "";
           }
           session.clearSessionBuffers(sessionIdAtStart);
-          session.removeTrailingUserMessageFromView(sessionIdAtStart);
+          resetRenderState();
           requestView.lastUserMessage = msg;
           requestView.showRecallEdit = true;
           requestView.hydrated = true;
         }
         requestView.runStartTime = null;
+        requestView.streamActive = false;
         requestView.status = "IDLE";
         requestView.cancelHandled = false;
         if (!sessionSwitched) {
@@ -486,12 +531,22 @@ export const useChatStore = defineStore("chat", () => {
       }
 
       if (res.status === "CLARIFICATION_NEEDED") {
-        session.clearSessionBuffers(sessionIdAtStart);
-        session.appendSessionHistory(
-          sessionIdAtStart,
-          `<div class="chat-message agent-message"><div class="message-content">\n\n${res.content}\n\n${renderTokenUsage(res.input_tokens || 0, res.output_tokens || 0, res.session_input_tokens || 0, res.session_output_tokens || 0)}\n\n</div></div>\n\n`
+        const clarificationResponse = buildStructuredAgentResponseHtml(
+          requestView,
+          stripPseudoToolCalls(res.content || ""),
+          "",
+          res.status,
+          {
+            input: res.input_tokens || 0,
+            output: res.output_tokens || 0,
+            sessionInput: res.session_input_tokens || 0,
+            sessionOutput: res.session_output_tokens || 0,
+          },
         );
-        requestView.showRecallEdit = true;
+        session.clearSessionBuffers(sessionIdAtStart);
+        session.appendSessionHistory(sessionIdAtStart, clarificationResponse);
+        resetRenderState();
+        requestView.streamActive = false;
         requestView.status = "IDLE";
         if (!sessionSwitched) {
           triggerRender();
@@ -501,18 +556,26 @@ export const useChatStore = defineStore("chat", () => {
         return;
       }
 
-      let agentResponse = `<div class="chat-message agent-message"><div class="message-content">\n\n`;
-      if (requestView.toolBuffer) {
-        agentResponse += renderToolDetails(requestView.toolBuffer, "done");
-      }
-      agentResponse += requestView.contentBuffer;
-      agentResponse += `\n\n${renderTokenUsage(res.input_tokens || 0, res.output_tokens || 0, res.session_input_tokens || 0, res.session_output_tokens || 0)}\n\n`;
-      agentResponse += `\n\n</div></div>\n\n`;
+      const { finalContent, finalToolBuffer } = buildFinalResponseParts(requestView, res.content);
+      const agentResponse = buildStructuredAgentResponseHtml(
+        requestView,
+        finalContent,
+        finalToolBuffer,
+        res.status,
+        {
+          input: res.input_tokens || 0,
+          output: res.output_tokens || 0,
+          sessionInput: res.session_input_tokens || 0,
+          sessionOutput: res.session_output_tokens || 0,
+        },
+      );
 
       session.appendSessionHistory(sessionIdAtStart, agentResponse);
       session.clearSessionBuffers(sessionIdAtStart);
-      requestView.showRecallEdit = true;
+      resetRenderState();
+      // 成功时不显示撤回编辑栏——用户可通过右键菜单撤回
       requestView.status = res.status;
+      requestView.streamActive = false;
 
       if (!sessionSwitched) {
         triggerRender();
@@ -521,6 +584,7 @@ export const useChatStore = defineStore("chat", () => {
       await saveAgentStepsToBackend(sessionIdAtStart);
     } catch (err) {
       session.clearSessionBuffers(sessionIdAtStart);
+      resetRenderState();
 
       const btnHtml = `<button class="rollback-trigger" data-cp-id="" data-has-operations="false" title="撤回此消息"></button>`;
       const lastErrIdx = requestView.jarvisResponse.lastIndexOf("</div></div>\n\n");
@@ -532,6 +596,7 @@ export const useChatStore = defineStore("chat", () => {
       session.appendSessionHistory(sessionIdAtStart, `\n\n**Error:** ${err}`);
       requestView.showRecallEdit = true;
       requestView.status = "ERROR";
+      requestView.streamActive = false;
       if (sessionIdAtStart === session.activeSessionId) {
         triggerRender();
       }
@@ -641,6 +706,7 @@ export const useChatStore = defineStore("chat", () => {
     resetRenderState,
     registerScrollCb,
     forceScrollToBottom,
+    followScrollToBottom,
     triggerRender,
     upsertToolStatusLine,
     resolvePermission,

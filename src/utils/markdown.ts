@@ -114,8 +114,14 @@ function findMatchingDivClose(html: string, divStart: number) {
   return -1;
 }
 
+function findMessageContentDivStart(html: string) {
+  const divPattern = /<div\b[^>]*\bclass=(["'])(?=[^"']*\bmessage-content\b)[^"']*\1[^>]*>/gi;
+  const match = divPattern.exec(html);
+  return match?.index ?? -1;
+}
+
 function renderHistoryMessageBlock(block: string) {
-  const contentStart = block.indexOf('<div class="message-content"');
+  const contentStart = findMessageContentDivStart(block);
   if (contentStart === -1) return block;
 
   const openEnd = block.indexOf(">", contentStart);

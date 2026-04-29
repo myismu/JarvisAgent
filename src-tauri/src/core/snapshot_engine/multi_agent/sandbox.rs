@@ -1,3 +1,10 @@
+//! 沙箱管理模块
+//!
+//! 为每个代理创建独立的工作区，实现：
+//! - 隔离的文件操作空间
+//! - 沙箱生命周期管理（创建、完成、发布、放弃）
+//! - 多沙箱对比（统计变更量）
+
 use crate::core::snapshot_engine::{Snapshot, SnapshotTree};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -5,6 +12,7 @@ use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+/// 代理沙箱实例
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSandbox {
@@ -19,6 +27,7 @@ pub struct AgentSandbox {
     pub description: String,
 }
 
+/// 沙箱状态
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum SandboxStatus {
@@ -28,6 +37,7 @@ pub enum SandboxStatus {
     Abandoned,
 }
 
+/// 沙箱对比统计
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxComparison {
@@ -41,6 +51,7 @@ pub struct SandboxComparison {
     pub last_message: Option<String>,
 }
 
+/// 沙箱操作错误类型
 #[derive(Debug, thiserror::Error)]
 pub enum SandboxError {
     #[error("Sandbox not found: {0}")]
@@ -57,6 +68,7 @@ pub enum SandboxError {
     BranchError(String),
 }
 
+/// 沙箱管理器（管理所有代理沙箱的生命周期）
 pub struct SandboxManager {
     base_dir: PathBuf,
     sandboxes: HashMap<String, AgentSandbox>,
@@ -72,6 +84,7 @@ impl SandboxManager {
         }
     }
     
+    /// 创建新沙箱（分配独立工作目录和分支）
     pub fn create_sandbox(
         &mut self,
         agent_id: String,
@@ -125,6 +138,7 @@ impl SandboxManager {
             .collect()
     }
     
+    /// 标记沙箱完成（代理任务执行完毕）
     pub fn complete_sandbox(&mut self, sandbox_id: &str) -> Result<(), SandboxError> {
         let sandbox = self.sandboxes.get_mut(sandbox_id)
             .ok_or_else(|| SandboxError::NotFound(sandbox_id.to_string()))?;
@@ -137,6 +151,7 @@ impl SandboxManager {
         Ok(())
     }
     
+    /// 放弃沙箱（清理工作目录）
     pub fn abandon_sandbox(&mut self, sandbox_id: &str) -> Result<(), SandboxError> {
         let sandbox = self.sandboxes.get_mut(sandbox_id)
             .ok_or_else(|| SandboxError::NotFound(sandbox_id.to_string()))?;
@@ -150,6 +165,7 @@ impl SandboxManager {
         Ok(())
     }
     
+    /// 发布沙箱（准备合并到主分支）
     pub fn publish_sandbox(
         &mut self,
         sandbox_id: &str,
@@ -174,6 +190,7 @@ impl SandboxManager {
         Ok(merge_branch_name)
     }
     
+    /// 对比所有活跃沙箱的变更统计
     pub fn compare_sandboxes(
         &self,
         tree: &SnapshotTree,
@@ -209,6 +226,7 @@ impl SandboxManager {
             .collect()
     }
     
+    /// 从磁盘加载沙箱索引
     pub fn load(&mut self) -> Result<(), SandboxError> {
         let index_path = self.base_dir.join("sandboxes").join("index.json");
         
@@ -226,6 +244,7 @@ impl SandboxManager {
         Ok(())
     }
     
+    /// 保存沙箱索引到磁盘
     pub fn save(&self) -> Result<(), SandboxError> {
         let index_path = self.base_dir.join("sandboxes").join("index.json");
         fs::create_dir_all(index_path.parent().unwrap())?;

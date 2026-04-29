@@ -27,7 +27,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json", "stream"] } # 相当于 Java 的 HttpClient
 tokio = { version = "1", features = ["full"] }    # Rust 的异步运行时
-dotenvy = "0.15"                                 # 用于读取 .env 文件
 eventsource-stream = "0.2"                       # 用于解析 SSE (Server-Sent Events) 流
 futures-util = "0.3"                             # 用于处理异步 Stream
 uuid = { version = "1.23.1", features = ["v4"] }
@@ -37,5 +36,6 @@ tokio-util = "0.7"                               # 提供 CancellationToken 用�
 regex = "1"                                         # 用于意图分类规则匹配
 thiserror = "1"                                     # 用于派生 Error trait
 async-trait = "0.1"                                   # 用于 async trait 抽象
+similar = "2"                                          # 用于生成文本 diff
 
 

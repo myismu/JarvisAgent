@@ -1,9 +1,27 @@
-// --- 工具系统入口模块 ---
-// 模块注册、工具定义、路由分发
+//! # mod.rs — 工具系统入口模块
+//!
+//! 工具系统的中央枢纽：模块注册、技能加载、工具定义组装、路由分发。
+//! 根据意图（intent）筛选工具集，支持渐进式披露（核心工具始终携带，延迟工具按需激活）。
+//!
+//! ## 关键导出
+//! - `get_tools_definition()`: 按意图组装工具定义列表（含渐进式披露逻辑）
+//! - `handle_tool_call()` / `handle_tool_call_owned()`: 工具调用路由入口
+//! - `load_all_skills()`: 从 skills 目录加载所有 SKILL.md 技能文件
+//!
+//! ## 依赖
+//! - Internal: 各工具子模块（file_tools, shell_tools, task_tools, agent_tools, system_tools, tool_search）
+//! - External: `serde_json`, `tauri`
+//!
+//! ## 约束
+//! - CHAT 意图不返回任何工具
+//! - MEMORY_QUERY 意图只返回 read_file / compact / dream
+//! - 子代理（SUBAGENT）不能调用 task / dream / compact / run_tasks
 
+pub mod registry;
 pub mod permission;
 pub mod file_tools;
 pub mod shell_tools;
+pub mod shell_security;
 pub mod system_tools;
 pub mod task_tools;
 pub mod agent_tools;
@@ -24,7 +42,7 @@ pub use tool_search::{
     search_deferred_tools, get_deferred_tools_context, handle_search_tools,
 };
 
-// 加载所有技能（从 Agent 家目录下的 skills 文件夹加载）
+/// 递归扫描 skills 目录，解析所有 SKILL.md 文件
 pub fn load_all_skills() -> Vec<Skill> {
     let mut skills = Vec::new();
     let home = get_agent_home();
@@ -53,7 +71,7 @@ pub fn load_all_skills() -> Vec<Skill> {
     skills
 }
 
-// 解析技能文件
+/// 解析 SKILL.md 的 YAML frontmatter（name/description）和正文
 pub fn parse_skill(text: &str, path: &Path) -> Option<Skill> {
     if text.starts_with("---\n") || text.starts_with("---\r\n") {
         let parts: Vec<&str> = text.splitn(3, "---").collect();
@@ -138,6 +156,11 @@ pub fn get_tools_definition(intent: &str, activated_tools: &[String]) -> Vec<ser
 
     // PROJECT_ACTION / SUBAGENT: 渐进式披露
     let mut tools = get_core_tool_definitions();
+    if intent != "SUBAGENT" {
+        if let Some(schema) = get_deferred_tool_full_schema("propose_plan") {
+            tools.push(schema);
+        }
+    }
 
     // 添加已激活的延迟工具（完整 schema）
     let deferred_list = get_deferred_tool_list(intent);
@@ -145,6 +168,9 @@ pub fn get_tools_definition(intent: &str, activated_tools: &[String]) -> Vec<ser
 
     for tool_name in activated_tools {
         if deferred_names.contains(&tool_name.as_str()) {
+            if tool_name == "propose_plan" && intent != "SUBAGENT" {
+                continue;
+            }
             if let Some(schema) = get_deferred_tool_full_schema(tool_name) {
                 tools.push(schema);
             }
@@ -184,7 +210,31 @@ pub async fn handle_tool_call(
     }
 }
 
+/// 并行执行用的 owned 版本，所有参数为 owned 值，可安全 move 进 tokio::spawn
+pub async fn handle_tool_call_owned(
+    app: tauri::AppHandle,
+    name: String,
+    input: serde_json::Value,
+    session_id: String,
+    intent: String,
+) -> (String, u64, u64) {
+    handle_tool_call(&app, &name, &input, &session_id, &intent).await
+}
+
+/// 子Agent并行工具执行用的 owned 版本（不含 task 路由）
+pub async fn handle_tool_call_inner_owned(
+    app: tauri::AppHandle,
+    name: String,
+    input: serde_json::Value,
+    session_id: String,
+    intent: String,
+) -> String {
+    handle_tool_call_inner(&app, &name, &input, &session_id, &intent).await
+}
+
 /// 内部工具调用分发（非子代理工具）
+/// 路由策略：match 分发（Rust 惯用方式）
+/// 工具注册信息（schema、元数据）通过 registry::ToolRegistry 查询
 pub async fn handle_tool_call_inner(
     app: &tauri::AppHandle,
     name: &str,
@@ -214,6 +264,7 @@ pub async fn handle_tool_call_inner(
         // 任务工具
         "task_create" => task_tools::task_create(app, input, session_id).await,
         "task_update" => task_tools::task_update(app, input, session_id).await,
+        "task_delete" => task_tools::task_delete(app, input, session_id).await,
         "task_list" => task_tools::task_list(app, input, session_id).await,
         "task_get" => task_tools::task_get(app, input, session_id).await,
         "task_summary" => task_tools::task_summary(app, input, session_id).await,

@@ -68,6 +68,84 @@ export interface AgentStep {
   timestamp: number;
 }
 
+export type AgentDisplayMode = "user" | "developer";
+
+export type AgentTextBlockKind = "assistant" | "tool_stream" | "system";
+export type AgentBlockStatus = "streaming" | "done";
+export type AgentToolStatus = "pending" | "running" | "completed" | "error";
+
+export interface AgentTextBlock {
+  id: string;
+  loop: number;
+  kind: AgentTextBlockKind;
+  content: string;
+  status: AgentBlockStatus;
+  timestamp: number;
+}
+
+export interface AgentThinkingBlock {
+  id: string;
+  loop: number;
+  content: string;
+  status: AgentBlockStatus;
+  timestamp: number;
+}
+
+export interface AgentExecutionLog {
+  id: string;
+  loop: number;
+  content: string;
+  timestamp: number;
+}
+
+export interface AgentToolCallView {
+  id: string;
+  loop: number;
+  name: string;
+  status: AgentToolStatus;
+  inputSummary?: string;
+  outputSummary?: string;
+  error?: string;
+  logs: string[];
+  timestamp: number;
+  updatedAt: number;
+}
+
+export interface AgentCurrentTurn {
+  id: string;
+  loop: number;
+  revision: number;
+  isRunning: boolean;
+  hasToolActivity: boolean;
+  activeTextBlockId: string | null;
+  activeThinkingBlockId: string | null;
+  textBlocks: AgentTextBlock[];
+  thinkingBlocks: AgentThinkingBlock[];
+  toolCalls: AgentToolCallView[];
+  logs: AgentExecutionLog[];
+  startedAt: number | null;
+}
+
+export interface AgentTurnTokens {
+  input: number;
+  output: number;
+  sessionInput?: number;
+  sessionOutput?: number;
+}
+
+export interface AgentTurnSnapshot {
+  version: 1;
+  status: string;
+  textBlocks: AgentTextBlock[];
+  thinkingBlocks: AgentThinkingBlock[];
+  toolCalls: AgentToolCallView[];
+  logs: AgentExecutionLog[];
+  tokens?: AgentTurnTokens;
+  finalContent?: string;
+  notice?: string;
+  createdAt: number;
+}
+
 export type AgentRunStatus =
   | "running"
   | "completed"

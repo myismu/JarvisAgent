@@ -1,9 +1,20 @@
-// --- 系统信息工具模块 ---
-// get_system_info, set_workspace
+//! # system_tools.rs — 系统信息工具模块
+//!
+//! 提供系统信息查询和全局工作区设置工具。
+//!
+//! ## 关键导出
+//! - `get_system_info()`: 获取 OS、工作目录、Home 目录等系统信息
+//! - `set_workspace()`: 设置全局工作区目录（沙箱会话中禁用）
+//!
+//! ## 约束
+//! - 沙箱会话中禁止修改全局工作区
+//! - `set_workspace` 必须使用绝对路径，且需用户确认
 
+use serde_json::json;
 use super::permission::request_permission;
 use std::path::Path;
 use tauri::Manager;
+use crate::core::tools::registry::ToolDef;
 
 /// 获取当前会话的工作目录沙箱
 async fn get_workspace(app: &tauri::AppHandle, session_id: &str) -> Option<std::path::PathBuf> {
@@ -85,5 +96,45 @@ pub async fn set_workspace(
             format!("全局工作区成功切换到: {}", path_str)
         }
         Err(e) => format!("切换工作区失败: {}", e),
+    }
+}
+
+// --- 工具注册 ---
+crate::define_tools! {
+    pub fn register_tools(registry) {
+        ToolDef {
+            name: "set_workspace",
+            description: "设置或更改全局工作区目录",
+            search_hint: "set workspace directory working directory",
+            schema: json!({
+                "name": "set_workspace",
+                "description": "设置或更改大模型当前运作的全局工作区（Working Directory）目录。跨大项目切换或是初始化指定项目目录时使用。由于会改变全局环境且会被系统持久化记住，必须使用绝对路径。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "工作区目录的绝对路径"}
+                    },
+                    "required": ["path"]
+                }
+            }),
+            should_defer: true,
+            is_read_only: false,
+            is_concurrency_safe: false,
+            is_enabled: true,
+        },
+        ToolDef {
+            name: "get_system_info",
+            description: "获取系统关键信息",
+            search_hint: "system info environment config",
+            schema: json!({
+                "name": "get_system_info",
+                "description": "获取系统关键信息。",
+                "input_schema": { "type": "object", "properties": {} }
+            }),
+            should_defer: false,
+            is_read_only: true,
+            is_concurrency_safe: true,
+            is_enabled: true,
+        }
     }
 }

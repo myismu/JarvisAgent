@@ -1,11 +1,17 @@
+//! 操作日志模块
+//!
+//! 追加写入式日志，记录所有快照操作，支持崩溃恢复和状态重放。
+
 use super::snapshot::SnapshotTree;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
+/// 日志压缩阈值（超过此数量触发压缩）
 const JOURNAL_COMPACT_THRESHOLD: u64 = 1000;
 
+/// 日志条目类型
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JournalEntry {
@@ -34,6 +40,7 @@ pub enum JournalEntry {
     },
 }
 
+/// 日志操作错误类型
 #[derive(Debug, thiserror::Error)]
 pub enum JournalError {
     #[error("IO error: {0}")]
@@ -44,6 +51,7 @@ pub enum JournalError {
     JournalClosed,
 }
 
+/// 操作日志（JSONL 格式，每行一个条目）
 pub struct Journal {
     path: PathBuf,
     file: Option<File>,
@@ -51,6 +59,7 @@ pub struct Journal {
 }
 
 impl Journal {
+    /// 打开或创建日志文件
     pub fn open(path: &PathBuf) -> Result<Self, JournalError> {
         let file = OpenOptions::new()
             .create(true)
@@ -73,6 +82,7 @@ impl Journal {
         Ok(count)
     }
     
+    /// 追加日志条目并同步到磁盘
     pub fn append(&mut self, entry: &JournalEntry) -> Result<(), JournalError> {
         let json = serde_json::to_string(entry)?;
         let file = self.file.as_mut().ok_or(JournalError::JournalClosed)?;
@@ -82,6 +92,7 @@ impl Journal {
         Ok(())
     }
     
+    /// 重放日志（用于崩溃恢复）
     pub fn replay(&self) -> Result<Vec<JournalEntry>, JournalError> {
         let file = File::open(&self.path)?;
         let reader = BufReader::new(file);
@@ -99,10 +110,12 @@ impl Journal {
         Ok(entries)
     }
     
+    /// 判断是否需要压缩日志
     pub fn should_compact(&self) -> bool {
         self.sequence >= JOURNAL_COMPACT_THRESHOLD
     }
     
+    /// 压缩日志（保留当前状态，丢弃历史条目）
     pub fn compact(&mut self, tree: &SnapshotTree) -> Result<(), JournalError> {
         let compacted_path = self.path.with_extension("compact");
         let mut compacted = OpenOptions::new()

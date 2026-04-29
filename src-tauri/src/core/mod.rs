@@ -1,30 +1,42 @@
-pub mod adapters;
-pub mod agent;
-pub mod agent_runs;
-pub mod api_client;
-pub mod api_format;
-pub mod background;
-pub mod checkpoint;
-pub mod commands;
+//! # mod.rs — 核心模块入口
+//!
+//! 这是 JarvisAgent 核心功能的入口模块。组织并重导出所有子模块和关键类型。
+//! 分为基础模块（广泛依赖）和业务子目录（特定功能领域）。
+//!
+//! ## 关键导出
+//! - 基础模块: `config`, `constants`, `error`, `models`, `state`, `traits`
+//! - 业务模块: `agent`, `commands`, `infra`, `intent`, `llm`, `orchestration`, `providers`, `session`, `snapshot_engine`, `snapshot_manager`, `tools`
+//! - 重导出类型: `SessionManager`, `SessionContext`, `WorkspaceState`, `SnapshotRegistry`
+//! - 重导出函数: `ask_jarvis`, `resolve_permission`, `cancel_jarvis`, 以及所有命令函数
+//!
+//! ## 依赖
+//! - Internal: 所有子模块
+//! - External: 无直接依赖
+//!
+//! ## 约束
+//! - 新增模块必须在此处声明并重导出
+//! - 重导出的函数是前端可调用的 Tauri 命令
+
+// ===== 基础模块（广泛依赖，保留在根目录）=====
 pub mod config;
 pub mod constants;
-pub mod debug_logger;
 pub mod error;
-pub mod intent;
-pub mod intent_rules;
-pub mod memory;
 pub mod models;
-pub mod prompts;
+pub mod state;
+pub mod traits;
+
+// ===== 业务子目录 =====
+pub mod agent;
+pub mod commands;
+pub mod infra;
+pub mod intent;
+pub mod llm;
+pub mod orchestration;
 pub mod providers;
-pub mod registry;
-pub mod sessions;
+pub mod session;
 pub mod snapshot_engine;
 pub mod snapshot_manager;
-pub mod state;
-pub mod subagents;
-pub mod tasks;
 pub mod tools;
-pub mod traits;
 
 pub use state::{
     WorkspaceState, SessionCleanupResult,

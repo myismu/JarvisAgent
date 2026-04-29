@@ -1,3 +1,10 @@
+//! API 协议格式定义
+//!
+//! 提供 `ApiFormat` 枚举，统一处理 Anthropic 和 OpenAI 两种 API 格式的差异：
+//! - 认证头格式（x-api-key vs Bearer token）
+//! - 版本头要求
+//! - 请求/响应结构差异
+
 use serde::{Deserialize, Serialize};
 
 /// API 协议格式枚举，替换字符串比较
@@ -9,6 +16,7 @@ pub enum ApiFormat {
 }
 
 impl ApiFormat {
+    /// 从字符串解析 API 格式，默认为 Anthropic
     pub fn from_str(s: &str) -> Self {
         match s {
             "openai" => Self::OpenAI,

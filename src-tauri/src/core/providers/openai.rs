@@ -1,15 +1,27 @@
+//! # openai.rs — OpenAI-compatible API 提供者
+//!
+//! 实现 `LlmProvider` trait，构建 OpenAI Chat Completions 格式的请求体。
+//! 通过模型注册表动态适配不同厂商的思考模式参数（reasoning_effort / thinking / thinkingBudget / enable_thinking）。
+//!
+//! ## 关键导出
+//! - `OpenAIProvider`: OpenAI-compatible 格式的 `LlmProvider` 实现（需传入 `base_url`）
+//!
+//! ## 约束
+//! - DeepSeek 模型需要 backfill reasoning_content 到 thinking block
+//! - 思考模式参数通过 `registry::query_capabilities()` 动态查询
+
 use serde_json::Value;
 
-use crate::core::api_format::ApiFormat;
+use crate::core::llm::api_format::ApiFormat;
 use crate::core::models::*;
 use crate::core::traits::LlmProvider;
-use crate::core::adapters::{
+use crate::core::llm::adapters::{
     should_backfill_deepseek_reasoning_content,
     translate_messages_to_openai_with_reasoning_backfill,
     translate_tools_to_openai,
 };
 
-/// OpenAI-compatible API 提供者
+/// OpenAI-compatible API 提供者（兼容 DeepSeek、Qwen、Gemini 等）
 pub struct OpenAIProvider {
     pub base_url: String,
 }
@@ -37,8 +49,10 @@ impl LlmProvider for OpenAIProvider {
         top_p: Option<f32>,
         _top_k: Option<u32>,
     ) -> Value {
+        // DeepSeek 模型需要将 reasoning_content backfill 到 thinking block
         let backfill_reasoning =
             should_backfill_deepseek_reasoning_content(model_id, &self.base_url, should_think);
+        // 将 Anthropic 格式消息/工具转换为 OpenAI 格式
         let openai_msgs = translate_messages_to_openai_with_reasoning_backfill(
             system_prompt,
             messages,
@@ -67,7 +81,8 @@ impl LlmProvider for OpenAIProvider {
             top_p,
         };
 
-        let thinking_param = crate::core::registry::query_capabilities(model_id)
+        // 根据模型注册表的 thinking_param 字段，选择对应的思考模式参数
+        let thinking_param = crate::core::llm::registry::query_capabilities(model_id)
             .and_then(|c| c.thinking_param);
 
         match thinking_param.as_deref() {

@@ -7,7 +7,6 @@ import { useSessionStore } from '../../stores/session';
 import { useChatStore } from '../../stores/chat';
 import { useAgentStore } from '../../stores/agent';
 import { useAgentEvents } from '../../composables/useAgentEvents';
-import { useTheme } from '../../composables/useTheme';
 
 defineProps<{
   collapsed: boolean;
@@ -21,7 +20,6 @@ const sessionStore = useSessionStore();
 const chat = useChatStore();
 const agent = useAgentStore();
 const events = useAgentEvents();
-const { isDark, toggleTheme } = useTheme();
 
 // 会话管理状态
 interface SessionMeta {
@@ -160,7 +158,9 @@ const createNewSession = async (withSandbox: boolean = false) => {
     chat.toolBuffer = '';
     chat.contentBuffer = '';
     chat.tempBuffer = '';
+    sessionStore.clearSessionBuffers(meta.id);
     sessionStore.setSessionUsageTotals(meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
+    chat.resetRenderState();
     chat.triggerRender();
 
     await chat.loadAgentStepsFromBackend();
@@ -206,6 +206,7 @@ const switchToSession = async (id: string) => {
     await events.loadAgentRunsFromBackend(id);
     await events.loadAgentRunEventsFromBackend(id);
 
+    chat.resetRenderState();
     chat.triggerRender();
     await loadSessions();
     requestAnimationFrame(() => chat.forceScrollToBottom());
@@ -403,22 +404,6 @@ onUnmounted(() => {
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
           </svg>
           <span>设置</span>
-        </button>
-        <button type="button" class="footer-action icon-only" @click="toggleTheme" :title="isDark ? '切换到亮色模式' : '切换到暗色模式'">
-          <svg v-if="isDark" viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="5"></circle>
-            <line x1="12" y1="1" x2="12" y2="3"></line>
-            <line x1="12" y1="21" x2="12" y2="23"></line>
-            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
-            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
-            <line x1="1" y1="12" x2="3" y2="12"></line>
-            <line x1="21" y1="12" x2="23" y2="12"></line>
-            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
-            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
-          </svg>
-          <svg v-else viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
-          </svg>
         </button>
       </div>
 

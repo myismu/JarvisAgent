@@ -1,3 +1,10 @@
+//! 重放引擎模块
+//!
+//! 从快照链重建工作区状态，支持：
+//! - 全量重放（从头重建）
+//! - 增量重放（基于当前状态的 LCA 差异计算）
+//! - 原子回滚（带 undo 日志的文件级回滚）
+
 use super::patch::Patch;
 use super::snapshot::{Snapshot, SnapshotTree, Workspace, WorkspaceState};
 use serde::{Deserialize, Serialize};
@@ -6,6 +13,7 @@ use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+/// 重放操作错误类型
 #[derive(Debug, thiserror::Error)]
 pub enum ReplayError {
     #[error("Snapshot not found: {0}")]
@@ -20,6 +28,7 @@ pub enum ReplayError {
     JsonError(#[from] serde_json::Error),
 }
 
+/// 重放引擎（从快照链重建工作区）
 pub struct ReplayEngine {
     content_store_path: PathBuf,
 }
@@ -30,12 +39,14 @@ impl ReplayEngine {
     }
 }
 
+/// 撤销日志条目
 #[derive(Clone, Serialize, Deserialize)]
 pub struct UndoEntry {
     pub path: String,
     pub action: UndoAction,
 }
 
+/// 撤销动作类型
 #[derive(Clone, Serialize, Deserialize)]
 pub enum UndoAction {
     Create { content: String },
@@ -43,6 +54,7 @@ pub enum UndoAction {
     Update { old_content: String },
 }
 
+/// 原子文件回滚器（带 undo 日志，支持失败恢复）
 pub struct AtomicFileRollback {
     undo_log: Vec<UndoEntry>,
     temp_dir: PathBuf,
@@ -54,6 +66,7 @@ impl ReplayEngine {
         Self { content_store_path }
     }
     
+    /// 从快照链重建工作区（全量重放）
     pub fn rebuild_workspace(
         &self,
         tree: &SnapshotTree,
@@ -120,6 +133,7 @@ impl ReplayEngine {
         }
     }
     
+    /// 增量重建工作区（基于 LCA 计算差异，避免全量重放）
     pub fn rebuild_workspace_lazy(
         &self,
         tree: &SnapshotTree,
@@ -148,6 +162,7 @@ impl ReplayEngine {
         Ok(workspace)
     }
     
+    /// 查找两个快照的最近公共祖先
     pub fn find_lowest_common_ancestor(
         &self,
         tree: &SnapshotTree,
@@ -224,6 +239,7 @@ impl ReplayEngine {
         Ok(patches)
     }
     
+    /// 回滚到指定快照（原子操作）
     pub async fn rollback_to(
         &self,
         tree: &mut SnapshotTree,
@@ -246,6 +262,7 @@ impl ReplayEngine {
 }
 
 impl AtomicFileRollback {
+    /// 准备回滚（生成 undo 日志）
     pub fn prepare(workspace: &Workspace, target_dir: &PathBuf) -> Result<Self, ReplayError> {
         let temp_dir = target_dir.join(".rollback_temp");
         fs::create_dir_all(&temp_dir)?;
@@ -272,6 +289,7 @@ impl AtomicFileRollback {
         Ok(Self { undo_log, temp_dir, target_dir: target_dir.clone() })
     }
     
+    /// 执行原子回滚（先写入临时目录，再批量重命名）
     pub async fn execute(&self) -> Result<(), ReplayError> {
         let staging_dir = self.temp_dir.join(format!("staging-{}", Uuid::new_v4()));
         fs::create_dir_all(&staging_dir)?;

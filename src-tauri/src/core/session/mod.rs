@@ -1,5 +1,19 @@
-// --- 会话持久化模块 (Sessions) ---
-// 将对话历史持久化到磁盘，支持多会话管理（创建、切换、删除、重命名）。
+//! # 会话持久化模块 (Session Persistence)
+//!
+//! 将对话历史持久化到磁盘，支持多会话管理。
+//! 每个会话存储为独立 JSON 文件，包含元信息和消息体。
+//!
+//! 主要功能：
+//! - 会话 CRUD：创建、加载、保存、删除、重命名
+//! - 图片管理：base64 图片存入文件，保存时清理内联数据
+//! - 计划文档：会话级 PlanDocument 的增删改查
+//! - 自动标题：从首条用户消息截取标题
+//! - Token 统计：累计 input/output token 用量
+//!
+//! 存储结构：`<agent_home>/.sessions/<id>.json`
+
+pub mod checkpoint;
+pub mod memory;
 
 use crate::core::models::{SessionMemory, Message, Content, ContentBlock, ImageSource, PlanDocument};
 use crate::get_agent_home;
@@ -8,10 +22,12 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+/// 标题来源：默认（截取首条消息）、自动（LLM 生成）、手动（用户修改）
 const DEFAULT_TITLE_SOURCE: &str = "default";
 const AUTO_TITLE_SOURCE: &str = "auto";
 const MANUAL_TITLE_SOURCE: &str = "manual";
 
+/// 图片存储目录（agent_home/images/）
 fn images_dir() -> PathBuf {
     let dir = get_agent_home().join(crate::core::constants::DIR_IMAGES);
     if !dir.exists() {
@@ -20,6 +36,7 @@ fn images_dir() -> PathBuf {
     dir
 }
 
+/// 将 base64 图片数据解码并保存到文件，返回文件名
 pub fn save_image_to_file(session_id: &str, media_type: &str, data: &str) -> String {
     let ext = if media_type.contains("jpeg") || media_type.contains("jpg") {
         "jpg"
@@ -39,6 +56,7 @@ pub fn save_image_to_file(session_id: &str, media_type: &str, data: &str) -> Str
     filename
 }
 
+/// 从文件加载图片并返回 base64 编码
 pub fn load_image_data(filename: &str) -> Option<String> {
     let path = images_dir().join(filename);
     let bytes = fs::read(&path).ok()?;
@@ -159,6 +177,7 @@ fn extract_title(messages: &[Message]) -> String {
     "新会话".to_string()
 }
 
+/// 列出所有会话（按更新时间倒序），自动清理空会话
 pub fn list_sessions() -> Vec<SessionMeta> {
     let dir = sessions_dir();
     let mut sessions = Vec::new();
@@ -376,6 +395,7 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
     Ok(file.memory)
 }
 
+/// 列出会话关联的计划文档（按更新时间倒序）
 pub fn list_plan_documents(session_id: &str) -> Result<Vec<PlanDocument>, String> {
     let mut plans = load_session(session_id)?.plan_documents;
     plans.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));

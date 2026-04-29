@@ -1,3 +1,9 @@
+//! 主Agent执行记录模块 - 运行历史与检查点管理
+//!
+//! 记录主Agent每次执行的完整生命周期：启动、思考、工具调用、完成/失败。
+//! 支持检查点保存与恢复，用于断点续传和崩溃恢复。
+//! 事件以 JSONL 格式追加存储，运行状态以 JSON 文件持久化。
+
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -10,16 +16,18 @@ use tauri::Emitter;
 use crate::core::models::Message;
 use crate::get_agent_home;
 
+/// 运行记录过期阈值（毫秒），超过此时间未更新视为中断
 const RUN_STALE_MS: u64 = 15_000;
 
+/// 主Agent运行状态
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRunStatus {
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
-    Interrupted,
+    Running,     // 运行中
+    Completed,   // 已完成
+    Failed,      // 失败
+    Cancelled,   // 已取消
+    Interrupted, // 已中断（应用关闭等）
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -83,6 +91,10 @@ pub struct ResumeAgentRunPlan {
     pub prompt: String,
 }
 
+/// 开始一次新的Agent运行
+///
+/// 创建运行记录并向前端发送启动事件。
+/// 返回生成的 run_id，用于后续的状态更新。
 pub fn start_run(
     app: &tauri::AppHandle,
     session_id: &str,
@@ -130,6 +142,9 @@ pub fn start_run(
     run_id
 }
 
+/// 列出所有运行记录，可按 session_id 过滤
+///
+/// 自动将超时未更新的 Running 状态标记为 Interrupted
 pub fn list_runs(session_id: Option<&str>) -> Vec<AgentRun> {
     let mut runs = Vec::new();
     let root = runs_dir();
@@ -371,6 +386,9 @@ pub fn fail_run(app: &tauri::AppHandle, run_id: &str, error: String) {
     finish_run(app, run_id, AgentRunStatus::Failed, 0, 0, None, Some(error));
 }
 
+/// 准备恢复执行 - 加载检查点并生成恢复提示词
+///
+/// 返回检查点数据和恢复计划，用于断点续传
 pub fn prepare_resume(
     run_id: &str,
 ) -> Result<(AgentRunCheckpoint, ResumeAgentRunPlan), String> {

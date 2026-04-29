@@ -1,7 +1,17 @@
+//! # merge.rs — 分支合并 Tauri 命令
+//!
+//! 提供快照分支的合并预览、执行和冲突查询命令。
+//!
+//! ## 关键导出
+//! - `merge_preview()`: 预览两个分支的合并结果
+//! - `merge_execute()`: 执行合并（带冲突解决方案）
+//! - `merge_get_conflicts()`: 获取两个分支间的冲突列表
+
 use std::collections::HashMap as StdHashMap;
 use crate::core::state::SnapshotRegistry;
 use crate::core::snapshot_engine::{MergeResult, Conflict, ConflictResolution, Snapshot};
 
+/// 预览两个分支的合并结果
 #[tauri::command]
 pub async fn merge_preview(
     session_id: String,

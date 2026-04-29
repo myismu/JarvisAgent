@@ -1,3 +1,24 @@
+//! # state.rs — 状态管理模块
+//!
+//! 定义 Tauri 应用的全局状态管理器，包括会话管理、工作空间状态和快照注册表。
+//! 使用 `Arc<Mutex<T>>` 和 `RwLock` 实现线程安全的状态共享。
+//!
+//! ## 关键导出
+//! - `SessionManager`: 全局会话管理器，维护所有活跃会话的上下文
+//! - `SessionContext`: 单个会话的上下文，包含记忆、取消令牌、待处理权限等
+//! - `WorkspaceState`: 工作空间状态，记录当前工作目录
+//! - `SnapshotRegistry`: 快照注册表，管理会话级快照
+//! - `SessionCleanupResult`: 会话清理结果，用于返回删除和激活的会话 ID
+//!
+//! ## 依赖
+//! - Internal: `crate::core::models::SessionMemory`, `crate::core::snapshot_manager::session_manager::SessionManagerRegistry`
+//! - External: `tokio`, `std::sync::Arc`, `std::collections::HashMap`
+//!
+//! ## 约束
+//! - 所有状态必须通过 Tauri 的 `.manage()` 注册
+//! - 使用 `RwLock` 允许多读单写，`Mutex` 用于互斥访问
+//! - `SessionManager::get_or_create()` 会自动从磁盘加载历史数据
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
@@ -20,7 +41,7 @@ pub struct SessionContext {
     pub id: String,
     pub memory: Mutex<SessionMemory>,
     pub cancel_token: Mutex<Option<tokio_util::sync::CancellationToken>>,
-    pub pending_checkpoint: Mutex<Vec<crate::core::checkpoint::FileOperation>>,
+    pub pending_checkpoint: Mutex<Vec<crate::core::session::checkpoint::FileOperation>>,
     pub workspace: Mutex<Option<std::path::PathBuf>>,
     pub session_allowed: Mutex<bool>,
     pub pending_permissions: Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>,
@@ -63,10 +84,10 @@ impl SessionManager {
         
         let ctx = SessionContext::new(session_id.to_string());
         // 尝试从磁盘加载历史数据和工作目录
-        if let Ok(memory) = crate::core::sessions::load_session(session_id) {
+        if let Ok(memory) = crate::core::session::load_session(session_id) {
             *ctx.memory.lock().await = memory;
         }
-        if let Ok(meta) = crate::core::sessions::get_session_meta(session_id) {
+        if let Ok(meta) = crate::core::session::get_session_meta(session_id) {
             *ctx.workspace.lock().await = meta.working_directory.map(std::path::PathBuf::from);
         }
         

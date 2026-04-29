@@ -1,8 +1,17 @@
+//! 快照与快照树模块
+//!
+//! 定义快照数据结构和版本树管理逻辑，支持：
+//! - 线性快照链（parent_id 指针）
+//! - 多分支管理（main 分支 + 代理分支）
+//! - 检查点机制（定期保存完整工作区状态）
+//! - 树形视图（前端展示用）
+
 use super::patch::{Patch, PatchSummary};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// 单个快照，记录一次文件变更操作
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
@@ -19,22 +28,26 @@ pub struct Snapshot {
     pub metadata: HashMap<String, String>,
 }
 
+/// 工作区状态快照（用于检查点，记录文件哈希和大小）
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct WorkspaceState {
     pub files: HashMap<String, FileInfo>,
 }
 
+/// 文件元信息（哈希 + 大小）
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FileInfo {
     pub hash: String,
     pub size: u64,
 }
 
+/// 内存中的工作区（文件路径 -> 内容映射）
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Workspace {
     pub files: HashMap<String, String>,
 }
 
+/// 快照版本树，管理所有快照和分支
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotTree {
@@ -45,6 +58,7 @@ pub struct SnapshotTree {
     pub session_id: String,
 }
 
+/// 分支信息
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Branch {
@@ -57,6 +71,7 @@ pub struct Branch {
     pub is_active: bool,
 }
 
+/// 快照树视图（前端展示用）
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotTreeView {
@@ -75,6 +90,7 @@ pub struct BranchView {
     pub root: SnapshotNode,
 }
 
+/// 快照树节点（递归结构）
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotNode {
@@ -86,6 +102,7 @@ pub struct SnapshotNode {
     pub children: Vec<SnapshotNode>,
 }
 
+/// 快照摘要（精简信息，用于列表展示）
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotSummary {
@@ -105,6 +122,7 @@ impl Workspace {
         }
     }
     
+    /// 应用单个补丁到工作区
     pub fn apply_patch(&mut self, patch: &Patch) -> Result<(), super::patch::PatchError> {
         use super::patch::PatchError;
         
@@ -147,6 +165,7 @@ impl Workspace {
         }
     }
     
+    /// 批量应用补丁
     pub fn apply_patches(&mut self, patches: &[Patch]) -> Result<(), super::patch::PatchError> {
         for patch in patches {
             self.apply_patch(patch)?;
@@ -154,6 +173,7 @@ impl Workspace {
         Ok(())
     }
     
+    /// 撤销单个补丁（用于回滚）
     pub fn undo_patch(&mut self, patch: &Patch) -> Result<(), super::patch::PatchError> {
         match patch {
             Patch::CreateFile { path, .. } => {
@@ -192,6 +212,7 @@ impl Snapshot {
 }
 
 impl SnapshotTree {
+    /// 创建新的快照树（自动初始化 main 分支）
     pub fn new(session_id: &str) -> Self {
         let main_branch = Branch {
             name: "main".to_string(),
@@ -215,6 +236,7 @@ impl SnapshotTree {
         }
     }
     
+    /// 创建新快照并追加到当前分支
     pub fn create_snapshot(
         &mut self,
         patches: Vec<Patch>,
@@ -255,6 +277,7 @@ impl SnapshotTree {
         snapshot
     }
     
+    /// 判断是否需要创建检查点（基于补丁数量阈值）
     pub fn should_create_checkpoint(&self) -> bool {
         self.count_patches_since_last_checkpoint() >= CHECKPOINT_INTERVAL
     }
@@ -278,6 +301,7 @@ impl SnapshotTree {
         count
     }
     
+    /// 从指定快照创建新分支
     pub fn create_branch(
         &mut self,
         branch_name: String,
@@ -305,6 +329,7 @@ impl SnapshotTree {
         Ok(branch)
     }
     
+    /// 切换到指定分支
     pub fn switch_branch(&mut self, branch_name: &str) -> Result<(), String> {
         let _branch = self.branches.get(branch_name)
             .ok_or_else(|| format!("分支 '{}' 不存在", branch_name))?
@@ -320,6 +345,7 @@ impl SnapshotTree {
         Ok(())
     }
     
+    /// 生成前端展示用的树形视图
     pub fn to_view(&self) -> SnapshotTreeView {
         let branches: Vec<BranchView> = self.branches.values()
             .filter_map(|branch| {
@@ -387,6 +413,7 @@ impl SnapshotTree {
         }
     }
     
+    /// 获取所有受保护的快照 ID（分支头节点及其祖先，GC 不可删除）
     pub fn get_protected_ids(&self) -> HashSet<String> {
         let mut protected = HashSet::new();
         
@@ -409,6 +436,7 @@ impl SnapshotTree {
     }
 }
 
+/// 检查点创建间隔（每 10 个补丁自动创建一次）
 const CHECKPOINT_INTERVAL: usize = 10;
 
 fn current_timestamp() -> u64 {

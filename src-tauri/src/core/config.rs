@@ -1,12 +1,29 @@
-// --- 配置管理模块 (Config) ---
-// 持久化存储 Agent 的 API 密钥、模型选择等配置项。
-// 配置文件位于 Agent 家目录下的 config.json。
+//! # config.rs — 配置管理模块
+//!
+//! 持久化存储 Agent 的 API 密钥、模型选择等配置项。配置文件位于 Agent 家目录下的 config.json。
+//! 支持多预设配置管理，允许用户快速切换不同的模型配置。
+//!
+//! ## 关键导出
+//! - `AgentConfig`: 单个模型的连接配置结构体
+//! - `ModelProfile`: 模型预设配置（包含名称和配置）
+//! - `AppConfig`: 顶级应用配置，管理多个预设
+//! - `ConfigState`: Tauri 状态管理器，用于全局配置访问
+//! - `load_config()`: 从磁盘加载配置，支持旧版迁移
+//! - `save_config()`: 保存配置到磁盘
+//!
+//! ## 依赖
+//! - Internal: `crate::core::llm::api_format::ApiFormat`, `crate::get_agent_home`
+//! - External: `serde`, `tokio`, `std::sync::Arc`
+//!
+//! ## 约束
+//! - 配置文件路径由 `get_agent_home()` 决定，必须在应用初始化后使用
+//! - 旧版 `AgentConfig` 会自动迁移到新版 `AppConfig` 格式
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::core::api_format::ApiFormat;
+use crate::core::llm::api_format::ApiFormat;
 use crate::get_agent_home;
 
 /// Agent 配置结构体（代表单个模型的连接信息）

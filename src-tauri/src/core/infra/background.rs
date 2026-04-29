@@ -1,11 +1,21 @@
+//! 后台任务管理模块
+//!
+//! 提供异步进程执行能力，支持：
+//! - 非阻塞启动 shell 命令（避免阻塞主对话）
+//! - 自动检测服务端口和任务类型
+//! - stdout/stderr 实时捕获与缓冲
+//! - 任务状态追踪与通知队列
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::process::Stdio;
+use std::time::Duration;
 use tauri::Manager;
 use tokio::sync::Mutex;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use serde::{Serialize, Deserialize};
 
+/// 后台任务信息
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BackgroundTask {
     pub id: String,
@@ -16,6 +26,7 @@ pub struct BackgroundTask {
     pub task_type: Option<String>,
 }
 
+/// 任务完成通知（用于向前端推送状态变更）
 #[derive(Clone, Debug)]
 pub struct Notification {
     pub task_id: String,
@@ -26,6 +37,9 @@ pub struct Notification {
     pub task_type: Option<String>,
 }
 
+/// 后台任务管理器
+///
+/// 维护所有运行中任务的状态和通知队列
 pub struct BackgroundManager {
     pub tasks: HashMap<String, BackgroundTask>,
     pub notification_queue: Vec<Notification>,
@@ -39,6 +53,9 @@ impl BackgroundManager {
         }
     }
 
+    /// 从命令字符串中检测服务端口和任务类型
+    ///
+    /// 支持显式端口参数（`--port`/`-p`）和框架默认端口推断
     fn detect_port_and_type(command: &str) -> (Option<u16>, Option<String>) {
         let lower = command.to_lowercase();
         
@@ -92,6 +109,9 @@ impl BackgroundManager {
         (port, task_type)
     }
 
+    /// 启动后台任务
+    ///
+    /// 通过 PowerShell 执行命令，异步捕获输出，任务完成后推送通知
     pub async fn run(app: tauri::AppHandle, command: String, dir: Option<String>) -> String {
         let task_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
 
@@ -171,31 +191,44 @@ impl BackgroundManager {
                     }
                 };
 
-                let output_buffer = String::new();
-                
+                let output_buffer = Arc::new(tokio::sync::Mutex::new(String::new()));
+                let max_output = crate::core::constants::MAX_BACKGROUND_OUTPUT_LEN;
+
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
-                
+
                 if let Some(stdout) = stdout {
                     let reader = BufReader::new(stdout);
                     let mut lines = reader.lines();
                     let task_id_for_stdout = task_id_async.clone();
-                    
+                    let buf = output_buffer.clone();
+
                     tokio::spawn(async move {
                         while let Ok(Some(line)) = lines.next_line().await {
                             println!("[bg:{}] {}", task_id_for_stdout, line);
+                            let mut b = buf.lock().await;
+                            if b.len() < max_output {
+                                b.push_str(&line);
+                                b.push('\n');
+                            }
                         }
                     });
                 }
-                
+
                 if let Some(stderr) = stderr {
                     let reader = BufReader::new(stderr);
                     let mut lines = reader.lines();
                     let task_id_for_stderr = task_id_async.clone();
-                    
+                    let buf = output_buffer.clone();
+
                     tokio::spawn(async move {
                         while let Ok(Some(line)) = lines.next_line().await {
                             println!("[bg:{} ERR] {}", task_id_for_stderr, line);
+                            let mut b = buf.lock().await;
+                            if b.len() < max_output {
+                                b.push_str(&line);
+                                b.push('\n');
+                            }
                         }
                     });
                 }
@@ -207,22 +240,30 @@ impl BackgroundManager {
                     Err(_) => "error",
                 };
 
+                // 等待一小段时间让 stdout/stderr 任务完成写入
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                let final_output = {
+                    let buf = output_buffer.lock().await;
+                    if buf.is_empty() {
+                        "(process finished)".to_string()
+                    } else {
+                        buf.clone()
+                    }
+                };
+
                 if let Some(st) = app_handle.try_state::<BackgroundState>() {
                     let mut bg = st.0.lock().await;
                     if let Some(task) = bg.tasks.get_mut(&task_id_async) {
                         task.status = status.to_string();
-                        task.result = if output_buffer.is_empty() {
-                            Some("(process finished)".to_string())
-                        } else {
-                            Some(output_buffer)
-                        };
+                        task.result = Some(final_output.clone());
                     }
 
                     bg.notification_queue.push(Notification {
                         task_id: task_id_async,
                         status: status.to_string(),
                         command: cmd_async,
-                        result: "(process finished)".to_string(),
+                        result: final_output,
                         port: port_async,
                         task_type: type_async,
                     });
@@ -235,6 +276,9 @@ impl BackgroundManager {
         format!("Background task {} started{}{}: {}", task_id, type_info, port_info, short_cmd)
     }
 
+    /// 查询任务状态
+    ///
+    /// 提供 task_id 时返回单个任务详情，否则返回所有任务摘要
     pub async fn check(app: &tauri::AppHandle, task_id: Option<String>) -> String {
         if let Some(state) = app.try_state::<BackgroundState>() {
             let bg = state.0.lock().await;
@@ -275,6 +319,7 @@ impl BackgroundManager {
         }
     }
 
+    /// 取出并清空所有待处理通知（用于前端轮询）
     pub async fn drain_notifications(app: &tauri::AppHandle) -> Vec<Notification> {
         if let Some(state) = app.try_state::<BackgroundState>() {
             let mut bg = state.0.lock().await;
@@ -287,6 +332,7 @@ impl BackgroundManager {
     }
 }
 
+/// Tauri 状态包装器，用于注入到应用状态管理
 pub struct BackgroundState(pub Arc<Mutex<BackgroundManager>>);
 
 impl Default for BackgroundState {
