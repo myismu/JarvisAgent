@@ -9,8 +9,8 @@
 use serde_json::json;
 use tauri::Emitter;
 
-use crate::core::llm::api_format::ApiFormat;
 use crate::core::error::ApiError;
+use crate::core::llm::api_format::ApiFormat;
 
 /// 记录模型请求日志
 pub fn log_model_request(model: &str, url: &str, agent_kind: &str) {

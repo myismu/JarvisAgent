@@ -93,7 +93,12 @@ impl Patch {
                 lines_added: 0,
                 lines_removed: 0,
             },
-            Patch::UpdateFile { path, old_content, new_content, .. } => PatchSummary {
+            Patch::UpdateFile {
+                path,
+                old_content,
+                new_content,
+                ..
+            } => PatchSummary {
                 path: path.clone(),
                 operation: "update".to_string(),
                 lines_added: new_content.lines().count(),
@@ -107,7 +112,7 @@ impl Patch {
             },
         }
     }
-    
+
     /// 计算内容哈希（用于变更检测）
     pub fn content_hash(content: &str) -> String {
         let mut hasher = DefaultHasher::new();
@@ -119,7 +124,7 @@ impl Patch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_patch_summary() {
         let patch = Patch::CreateFile {

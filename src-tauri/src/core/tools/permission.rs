@@ -102,10 +102,7 @@ pub async fn request_permission(app: &tauri::AppHandle, session_id: &str, messag
     let id = REQ_ID.fetch_add(1, Ordering::SeqCst).to_string();
 
     let (tx, rx) = oneshot::channel();
-    ctx.pending_permissions
-        .lock()
-        .await
-        .insert(id.clone(), tx);
+    ctx.pending_permissions.lock().await.insert(id.clone(), tx);
 
     let _ = app.emit(
         "permission-request",

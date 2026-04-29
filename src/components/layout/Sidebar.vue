@@ -391,7 +391,11 @@ onUnmounted(() => {
                 <circle cx="12" cy="12" r="10"></circle>
               </svg>
             </span>
-            <span class="todo-text">{{ todo.text }}</span>
+            <span class="todo-text">
+              {{ todo.status === 'in_progress'
+                ? (todo.activeForm || todo.content || todo.text)
+                : (todo.content || todo.text) }}
+            </span>
           </li>
         </ul>
       </div>

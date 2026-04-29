@@ -13,11 +13,11 @@
 //! - `sandbox`: 多 Agent 沙箱会话
 //! - `merge`: 分支合并
 
-pub mod permission;
-pub mod config;
-pub mod session;
-pub mod history;
 pub mod checkpoint;
-pub mod snapshot;
-pub mod sandbox;
+pub mod config;
+pub mod history;
 pub mod merge;
+pub mod permission;
+pub mod sandbox;
+pub mod session;
+pub mod snapshot;

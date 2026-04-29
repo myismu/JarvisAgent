@@ -121,11 +121,11 @@ impl Workspace {
             files: HashMap::new(),
         }
     }
-    
+
     /// 应用单个补丁到工作区
     pub fn apply_patch(&mut self, patch: &Patch) -> Result<(), super::patch::PatchError> {
         use super::patch::PatchError;
-        
+
         match patch {
             Patch::CreateFile { path, content } => {
                 if self.files.contains_key(path) {
@@ -140,8 +140,15 @@ impl Workspace {
                 }
                 Ok(())
             }
-            Patch::UpdateFile { path, old_content, new_content, .. } => {
-                let current = self.files.get(path)
+            Patch::UpdateFile {
+                path,
+                old_content,
+                new_content,
+                ..
+            } => {
+                let current = self
+                    .files
+                    .get(path)
                     .ok_or_else(|| PatchError::FileNotFound(path.clone()))?;
                 if current != old_content {
                     return Err(PatchError::HashMismatch {
@@ -153,7 +160,9 @@ impl Workspace {
                 Ok(())
             }
             Patch::RenameFile { old_path, new_path } => {
-                let content = self.files.remove(old_path)
+                let content = self
+                    .files
+                    .remove(old_path)
                     .ok_or_else(|| PatchError::FileNotFound(old_path.clone()))?;
                 if self.files.contains_key(new_path) {
                     self.files.insert(old_path.clone(), content);
@@ -164,7 +173,7 @@ impl Workspace {
             }
         }
     }
-    
+
     /// 批量应用补丁
     pub fn apply_patches(&mut self, patches: &[Patch]) -> Result<(), super::patch::PatchError> {
         for patch in patches {
@@ -172,7 +181,7 @@ impl Workspace {
         }
         Ok(())
     }
-    
+
     /// 撤销单个补丁（用于回滚）
     pub fn undo_patch(&mut self, patch: &Patch) -> Result<(), super::patch::PatchError> {
         match patch {
@@ -180,10 +189,10 @@ impl Workspace {
                 self.files.remove(path);
                 Ok(())
             }
-            Patch::DeleteFile { path: _ } => {
-                Ok(())
-            }
-            Patch::UpdateFile { path, old_content, .. } => {
+            Patch::DeleteFile { path: _ } => Ok(()),
+            Patch::UpdateFile {
+                path, old_content, ..
+            } => {
                 self.files.insert(path.clone(), old_content.clone());
                 Ok(())
             }
@@ -223,10 +232,10 @@ impl SnapshotTree {
             description: "主分支".to_string(),
             is_active: true,
         };
-        
+
         let mut branches = HashMap::new();
         branches.insert("main".to_string(), main_branch);
-        
+
         Self {
             nodes: HashMap::new(),
             branches,
@@ -235,7 +244,7 @@ impl SnapshotTree {
             session_id: session_id.to_string(),
         }
     }
-    
+
     /// 创建新快照并追加到当前分支
     pub fn create_snapshot(
         &mut self,
@@ -276,7 +285,7 @@ impl SnapshotTree {
 
         snapshot
     }
-    
+
     /// 判断是否需要创建检查点（基于补丁数量阈值）
     pub fn should_create_checkpoint(&self) -> bool {
         self.count_patches_since_last_checkpoint() >= CHECKPOINT_INTERVAL
@@ -285,7 +294,7 @@ impl SnapshotTree {
     pub fn count_patches_since_last_checkpoint(&self) -> usize {
         let mut count = 0;
         let mut current_id = Some(self.current_snapshot_id.clone());
-        
+
         while let Some(id) = current_id {
             if let Some(snapshot) = self.nodes.get(&id) {
                 if snapshot.is_checkpoint {
@@ -297,10 +306,10 @@ impl SnapshotTree {
                 break;
             }
         }
-        
+
         count
     }
-    
+
     /// 从指定快照创建新分支
     pub fn create_branch(
         &mut self,
@@ -312,9 +321,9 @@ impl SnapshotTree {
         if self.branches.contains_key(&branch_name) {
             return Err(format!("分支 '{}' 已存在", branch_name));
         }
-        
+
         let head_id = from_snapshot_id.unwrap_or_else(|| self.current_snapshot_id.clone());
-        
+
         let branch = Branch {
             name: branch_name.clone(),
             session_id: self.session_id.clone(),
@@ -324,30 +333,34 @@ impl SnapshotTree {
             description: description.unwrap_or_else(|| "新分支".to_string()),
             is_active: false,
         };
-        
+
         self.branches.insert(branch_name, branch.clone());
         Ok(branch)
     }
-    
+
     /// 切换到指定分支
     pub fn switch_branch(&mut self, branch_name: &str) -> Result<(), String> {
-        let _branch = self.branches.get(branch_name)
+        let _branch = self
+            .branches
+            .get(branch_name)
             .ok_or_else(|| format!("分支 '{}' 不存在", branch_name))?
             .clone();
-        
+
         for b in self.branches.values_mut() {
             b.is_active = b.name == branch_name;
         }
-        
+
         self.current_branch = branch_name.to_string();
         self.current_snapshot_id = _branch.head_snapshot_id.clone();
-        
+
         Ok(())
     }
-    
+
     /// 生成前端展示用的树形视图
     pub fn to_view(&self) -> SnapshotTreeView {
-        let branches: Vec<BranchView> = self.branches.values()
+        let branches: Vec<BranchView> = self
+            .branches
+            .values()
             .filter_map(|branch| {
                 if branch.head_snapshot_id.is_empty() {
                     return Some(BranchView {
@@ -365,7 +378,7 @@ impl SnapshotTree {
                         },
                     });
                 }
-                
+
                 let root = self.build_tree_from(&branch.head_snapshot_id);
                 Some(BranchView {
                     name: branch.name.clone(),
@@ -376,33 +389,36 @@ impl SnapshotTree {
                 })
             })
             .collect();
-        
+
         SnapshotTreeView {
             branches,
             current_branch: self.current_branch.clone(),
             current_snapshot_id: self.current_snapshot_id.clone(),
         }
     }
-    
+
     fn build_tree_from(&self, snapshot_id: &str) -> SnapshotNode {
         let snapshot = match self.nodes.get(snapshot_id) {
             Some(s) => s,
-            None => return SnapshotNode {
-                id: snapshot_id.to_string(),
-                message: None,
-                timestamp: 0,
-                is_checkpoint: false,
-                agent_id: None,
-                children: vec![],
-            },
+            None => {
+                return SnapshotNode {
+                    id: snapshot_id.to_string(),
+                    message: None,
+                    timestamp: 0,
+                    is_checkpoint: false,
+                    agent_id: None,
+                    children: vec![],
+                }
+            }
         };
-        
-        let children: Vec<SnapshotNode> = self.nodes
+
+        let children: Vec<SnapshotNode> = self
+            .nodes
             .values()
             .filter(|s| s.parent_id.as_deref() == Some(snapshot_id))
             .map(|s| self.build_tree_from(&s.id))
             .collect();
-        
+
         SnapshotNode {
             id: snapshot.id.clone(),
             message: snapshot.message.clone(),
@@ -412,15 +428,15 @@ impl SnapshotTree {
             children,
         }
     }
-    
+
     /// 获取所有受保护的快照 ID（分支头节点及其祖先，GC 不可删除）
     pub fn get_protected_ids(&self) -> HashSet<String> {
         let mut protected = HashSet::new();
-        
+
         for branch in self.branches.values() {
             if !branch.head_snapshot_id.is_empty() {
                 protected.insert(branch.head_snapshot_id.clone());
-                
+
                 let mut current = Some(branch.head_snapshot_id.clone());
                 while let Some(id) = current {
                     if protected.contains(&id) {
@@ -431,7 +447,7 @@ impl SnapshotTree {
                 }
             }
         }
-        
+
         protected
     }
 }

@@ -10,11 +10,11 @@
 //! - 沙箱会话中禁止修改全局工作区
 //! - `set_workspace` 必须使用绝对路径，且需用户确认
 
-use serde_json::json;
 use super::permission::request_permission;
+use crate::core::tools::registry::ToolDef;
+use serde_json::json;
 use std::path::Path;
 use tauri::Manager;
-use crate::core::tools::registry::ToolDef;
 
 /// 获取当前会话的工作目录沙箱
 async fn get_workspace(app: &tauri::AppHandle, session_id: &str) -> Option<std::path::PathBuf> {
@@ -90,8 +90,7 @@ pub async fn set_workspace(
 
     match std::env::set_current_dir(path) {
         Ok(_) => {
-            let workspace_file =
-                crate::get_agent_home().join(crate::core::constants::FILE_WORKSPACE);
+            let workspace_file = crate::core::data_paths::workspace_file_path();
             let _ = std::fs::write(&workspace_file, path_str);
             format!("全局工作区成功切换到: {}", path_str)
         }

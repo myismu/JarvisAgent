@@ -421,6 +421,8 @@ export const useChatStore = defineStore("chat", () => {
     requestView.currentTurnStepsStart = requestView.agentSteps.length;
     requestView.hydrated = true;
     requestView.status = "RUNNING";
+    requestView.activeRunId = null;
+    requestView.resumableRunId = null;
     requestView.runStartTime = Date.now();
     requestView.streamActive = false;
     requestView.cancelHandled = false;
@@ -464,6 +466,7 @@ export const useChatStore = defineStore("chat", () => {
         msg,
         thinkingOverride: thinkingOverride ?? null,
         imageBase64List: imageBase64List ?? null,
+        agentDisplayMode: usePreferences().agentDisplayMode.value,
       });
 
       const sessionSwitched = sessionIdAtStart !== session.activeSessionId;
@@ -521,6 +524,7 @@ export const useChatStore = defineStore("chat", () => {
         requestView.runStartTime = null;
         requestView.streamActive = false;
         requestView.status = "IDLE";
+        requestView.activeRunId = null;
         requestView.cancelHandled = false;
         if (!sessionSwitched) {
           triggerRender();
@@ -548,6 +552,7 @@ export const useChatStore = defineStore("chat", () => {
         resetRenderState();
         requestView.streamActive = false;
         requestView.status = "IDLE";
+        requestView.activeRunId = null;
         if (!sessionSwitched) {
           triggerRender();
           scrollToBottomCb?.();
@@ -575,6 +580,8 @@ export const useChatStore = defineStore("chat", () => {
       resetRenderState();
       // 成功时不显示撤回编辑栏——用户可通过右键菜单撤回
       requestView.status = res.status;
+      requestView.activeRunId = null;
+      requestView.resumableRunId = null;
       requestView.streamActive = false;
 
       if (!sessionSwitched) {
@@ -596,6 +603,7 @@ export const useChatStore = defineStore("chat", () => {
       session.appendSessionHistory(sessionIdAtStart, `\n\n**Error:** ${err}`);
       requestView.showRecallEdit = true;
       requestView.status = "ERROR";
+      requestView.activeRunId = null;
       requestView.streamActive = false;
       if (sessionIdAtStart === session.activeSessionId) {
         triggerRender();

@@ -10,8 +10,8 @@
 //! - `snapshot_create_branch()` / `snapshot_switch_branch()`: 快照分支管理
 //! - `snapshot_get_current()`: 获取当前分支和快照 ID
 
+use crate::core::snapshot_engine::{Patch, Snapshot, SnapshotSummary, SnapshotTreeView, Workspace};
 use crate::core::state::SnapshotRegistry;
-use crate::core::snapshot_engine::{Patch, Snapshot, SnapshotTreeView, SnapshotSummary, Workspace};
 
 /// 基于 patch 列表创建快照
 #[tauri::command]
@@ -24,7 +24,9 @@ pub async fn snapshot_create(
     registry: tauri::State<'_, SnapshotRegistry>,
 ) -> Result<Snapshot, String> {
     let manager = registry.0.read().await.get_or_create(&session_id).await?;
-    manager.create_snapshot(patches, message, agent_id, workspace_id, None).await
+    manager
+        .create_snapshot(patches, message, agent_id, workspace_id, None)
+        .await
 }
 
 #[tauri::command]
@@ -66,7 +68,9 @@ pub async fn snapshot_create_branch(
     registry: tauri::State<'_, SnapshotRegistry>,
 ) -> Result<(), String> {
     let manager = registry.0.read().await.get_or_create(&session_id).await?;
-    manager.create_branch(branch_name, from_snapshot_id, agent_id, description).await
+    manager
+        .create_branch(branch_name, from_snapshot_id, agent_id, description)
+        .await
 }
 
 #[tauri::command]
@@ -116,5 +120,8 @@ pub async fn snapshot_get_current(
     registry: tauri::State<'_, SnapshotRegistry>,
 ) -> Result<(String, String), String> {
     let manager = registry.0.read().await.get_or_create(&session_id).await?;
-    Ok((manager.get_current_branch().await, manager.get_current_snapshot_id().await))
+    Ok((
+        manager.get_current_branch().await,
+        manager.get_current_snapshot_id().await,
+    ))
 }

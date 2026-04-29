@@ -8,7 +8,9 @@
 //! DeepSeek 模型的 reasoning_content 字段特殊处理也在此模块。
 
 use crate::core::models::{
-    Message, Content, ContentBlock, OpenAIMessage, OpenAIUserContent, OpenAIContentPart, OpenAIImageUrl, OpenAITool, OpenAIFunctionDefinition, OpenAIToolCall, OpenAIFunctionCall
+    Content, ContentBlock, Message, OpenAIContentPart, OpenAIFunctionCall,
+    OpenAIFunctionDefinition, OpenAIImageUrl, OpenAIMessage, OpenAITool, OpenAIToolCall,
+    OpenAIUserContent,
 };
 use crate::core::session;
 use serde_json::json;
@@ -51,9 +53,7 @@ fn normalize_json_string_control_chars(raw: &str) -> String {
 /// 解析流式工具调用的输入 JSON
 ///
 /// 返回 (解析结果, 是否经过规范化修正)
-pub fn parse_streamed_tool_input(
-    raw: &str,
-) -> Result<(serde_json::Value, bool), String> {
+pub fn parse_streamed_tool_input(raw: &str) -> Result<(serde_json::Value, bool), String> {
     match serde_json::from_str::<serde_json::Value>(raw) {
         Ok(value) => Ok((value, false)),
         Err(first_err) => {
@@ -114,122 +114,136 @@ pub fn translate_messages_to_openai_with_reasoning_backfill(
 
     for msg in messages {
         match msg {
-            Message::User { content } => {
-                match content {
-                    Content::Single(text) => {
+            Message::User { content } => match content {
+                Content::Single(text) => {
+                    openai_msgs.push(OpenAIMessage::User {
+                        content: OpenAIUserContent::Text(text.clone()),
+                    });
+                }
+                Content::Multiple(blocks) => {
+                    let mut has_complex_content = false;
+                    let mut text_parts = Vec::new();
+                    let mut content_parts: Vec<OpenAIContentPart> = Vec::new();
+
+                    for block in blocks {
+                        match block {
+                            ContentBlock::Text { text } => {
+                                text_parts.push(text.clone());
+                                content_parts.push(OpenAIContentPart::Text { text: text.clone() });
+                            }
+                            ContentBlock::Image { source } => {
+                                has_complex_content = true;
+                                let data = if !source.data.is_empty() {
+                                    source.data.clone()
+                                } else if let Some(ref fp) = source.file_path {
+                                    session::load_image_data(fp).unwrap_or_default()
+                                } else {
+                                    String::new()
+                                };
+                                let url = format!("data:{};base64,{}", source.media_type, data);
+                                content_parts.push(OpenAIContentPart::ImageUrl {
+                                    image_url: OpenAIImageUrl { url },
+                                });
+                            }
+                            ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                            } => {
+                                openai_msgs.push(OpenAIMessage::Tool {
+                                    content: content.clone(),
+                                    tool_call_id: tool_use_id.clone(),
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if has_complex_content {
                         openai_msgs.push(OpenAIMessage::User {
-                            content: OpenAIUserContent::Text(text.clone()),
+                            content: OpenAIUserContent::Parts(content_parts),
+                        });
+                    } else if !text_parts.is_empty() {
+                        openai_msgs.push(OpenAIMessage::User {
+                            content: OpenAIUserContent::Text(text_parts.join("\n")),
                         });
                     }
-                    Content::Multiple(blocks) => {
-                        let mut has_complex_content = false;
-                        let mut text_parts = Vec::new();
-                        let mut content_parts: Vec<OpenAIContentPart> = Vec::new();
+                }
+            },
+            Message::Assistant { content } => match content {
+                Content::Single(text) => {
+                    openai_msgs.push(OpenAIMessage::Assistant {
+                        content: Some(text.clone()),
+                        tool_calls: None,
+                        reasoning_content: if backfill_assistant_reasoning_content {
+                            Some(non_deepseek_reasoning_placeholder())
+                        } else {
+                            None
+                        },
+                    });
+                }
+                Content::Multiple(blocks) => {
+                    let mut text_content = String::new();
+                    let mut tool_calls = Vec::new();
+                    let mut thinking_segments = Vec::new();
 
-                        for block in blocks {
-                            match block {
-                                ContentBlock::Text { text } => {
-                                    text_parts.push(text.clone());
-                                    content_parts.push(OpenAIContentPart::Text { text: text.clone() });
-                                }
-                                ContentBlock::Image { source } => {
-                                    has_complex_content = true;
-                                    let data = if !source.data.is_empty() {
-                                        source.data.clone()
-                                    } else if let Some(ref fp) = source.file_path {
-                                        session::load_image_data(fp).unwrap_or_default()
-                                    } else {
-                                        String::new()
-                                    };
-                                    let url = format!("data:{};base64,{}", source.media_type, data);
-                                    content_parts.push(OpenAIContentPart::ImageUrl {
-                                        image_url: OpenAIImageUrl { url },
-                                    });
-                                }
-                                ContentBlock::ToolResult { tool_use_id, content } => {
-                                    openai_msgs.push(OpenAIMessage::Tool {
-                                        content: content.clone(),
-                                        tool_call_id: tool_use_id.clone(),
-                                    });
-                                }
-                                _ => {}
+                    for block in blocks {
+                        match block {
+                            ContentBlock::Text { text } => {
+                                text_content.push_str(text);
                             }
-                        }
-
-                        if has_complex_content {
-                            openai_msgs.push(OpenAIMessage::User {
-                                content: OpenAIUserContent::Parts(content_parts),
-                            });
-                        } else if !text_parts.is_empty() {
-                            openai_msgs.push(OpenAIMessage::User {
-                                content: OpenAIUserContent::Text(text_parts.join("\n")),
-                            });
+                            ContentBlock::Thinking { thinking, .. } => {
+                                if backfill_assistant_reasoning_content {
+                                    thinking_segments.push(thinking.clone());
+                                } else {
+                                    text_content.push_str(&format!(
+                                        "\n<thought>\n{}\n</thought>\n",
+                                        thinking
+                                    ));
+                                }
+                            }
+                            ContentBlock::ToolUse { id, name, input } => {
+                                tool_calls.push(OpenAIToolCall {
+                                    id: id.clone(),
+                                    r#type: "function".to_string(),
+                                    function: OpenAIFunctionCall {
+                                        name: name.clone(),
+                                        arguments: serde_json::to_string(&input)
+                                            .unwrap_or_else(|_| "{}".to_string()),
+                                    },
+                                });
+                            }
+                            _ => {}
                         }
                     }
-                }
-            }
-            Message::Assistant { content } => {
-                match content {
-                    Content::Single(text) => {
+
+                    if !text_content.is_empty()
+                        || !tool_calls.is_empty()
+                        || (backfill_assistant_reasoning_content && !thinking_segments.is_empty())
+                    {
                         openai_msgs.push(OpenAIMessage::Assistant {
-                            content: Some(text.clone()),
-                            tool_calls: None,
+                            content: if text_content.is_empty() {
+                                None
+                            } else {
+                                Some(text_content)
+                            },
+                            tool_calls: if tool_calls.is_empty() {
+                                None
+                            } else {
+                                Some(tool_calls)
+                            },
                             reasoning_content: if backfill_assistant_reasoning_content {
-                                Some(non_deepseek_reasoning_placeholder())
+                                Some(if thinking_segments.is_empty() {
+                                    non_deepseek_reasoning_placeholder()
+                                } else {
+                                    reasoning_content_from_thinking(&thinking_segments.join("\n"))
+                                })
                             } else {
                                 None
                             },
                         });
                     }
-                    Content::Multiple(blocks) => {
-                        let mut text_content = String::new();
-                        let mut tool_calls = Vec::new();
-                        let mut thinking_segments = Vec::new();
-
-                        for block in blocks {
-                            match block {
-                                ContentBlock::Text { text } => {
-                                    text_content.push_str(text);
-                                }
-                                ContentBlock::Thinking { thinking, .. } => {
-                                    if backfill_assistant_reasoning_content {
-                                        thinking_segments.push(thinking.clone());
-                                    } else {
-                                        text_content.push_str(&format!("\n<thought>\n{}\n</thought>\n", thinking));
-                                    }
-                                }
-                                ContentBlock::ToolUse { id, name, input } => {
-                                    tool_calls.push(OpenAIToolCall {
-                                        id: id.clone(),
-                                        r#type: "function".to_string(),
-                                        function: OpenAIFunctionCall {
-                                            name: name.clone(),
-                                            arguments: serde_json::to_string(&input).unwrap_or_else(|_| "{}".to_string()),
-                                        },
-                                    });
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        if !text_content.is_empty() || !tool_calls.is_empty() || (backfill_assistant_reasoning_content && !thinking_segments.is_empty()) {
-                            openai_msgs.push(OpenAIMessage::Assistant {
-                                content: if text_content.is_empty() { None } else { Some(text_content) },
-                                tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
-                                reasoning_content: if backfill_assistant_reasoning_content {
-                                    Some(if thinking_segments.is_empty() {
-                                        non_deepseek_reasoning_placeholder()
-                                    } else {
-                                        reasoning_content_from_thinking(&thinking_segments.join("\n"))
-                                    })
-                                } else {
-                                    None
-                                },
-                            });
-                        }
-                    }
                 }
-            }
+            },
         }
     }
 

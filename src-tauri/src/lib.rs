@@ -29,10 +29,10 @@ use crate::core::state::{
 };
 
 // 后台任务、配置、子代理
-use crate::core::infra::background::BackgroundState; // 后台任务状态
 use crate::core::config::{load_config, ConfigState}; // 配置状态与加载函数
-use crate::core::snapshot_manager::session_manager::SessionManagerRegistry;
-use crate::core::orchestration::subagents::SubAgentMonitorState; // 子代理监控状态
+use crate::core::infra::background::BackgroundState; // 后台任务状态
+use crate::core::orchestration::subagents::SubAgentMonitorState;
+use crate::core::snapshot_manager::session_manager::SessionManagerRegistry; // 子代理监控状态
 
 // 标准库与异步运行时
 use std::path::PathBuf; // 路径缓冲区，处理文件系统路径
@@ -89,23 +89,7 @@ fn detect_data_dir() -> PathBuf {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 锁定 Agent 数据目录
-    let startup_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let data_dir = detect_data_dir();
-
-    // 兼容迁移：如果 data/ 不存在但旧位置有 .jarvis_workspace，迁移它
-    if !data_dir.exists() {
-        let old_ws = startup_dir.join(core::constants::FILE_WORKSPACE);
-        if old_ws.exists() {
-            let _ = std::fs::create_dir_all(&data_dir);
-            let new_ws = data_dir.join(core::constants::FILE_WORKSPACE);
-            let _ = std::fs::rename(&old_ws, &new_ws);
-            println!(
-                "[System] Migrated workspace file from {} to {}",
-                old_ws.display(),
-                new_ws.display()
-            );
-        }
-    }
 
     // 确保数据目录存在
     let _ = std::fs::create_dir_all(&data_dir);
@@ -116,8 +100,10 @@ pub fn run() {
         data_dir.display()
     );
 
+    core::data_paths::ensure_base_layout();
+
     // 恢复工作目录
-    let workspace_file = data_dir.join(core::constants::FILE_WORKSPACE);
+    let workspace_file = core::data_paths::workspace_file_path();
     if let Ok(path) = std::fs::read_to_string(workspace_file) {
         let path = path.trim();
         if std::path::Path::new(path).exists() {

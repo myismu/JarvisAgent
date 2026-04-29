@@ -4,6 +4,7 @@
 //! 支持检查点保存与恢复，用于断点续传和崩溃恢复。
 //! 事件以 JSONL 格式追加存储，运行状态以 JSON 文件持久化。
 
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -14,10 +15,10 @@ use serde_json::json;
 use tauri::Emitter;
 
 use crate::core::models::Message;
-use crate::get_agent_home;
 
 /// 运行记录过期阈值（毫秒），超过此时间未更新视为中断
-const RUN_STALE_MS: u64 = 15_000;
+const RUN_STALE_MS: u64 = 120_000;
+const INTERRUPTED_SUMMARY: &str = "上次执行在应用关闭或进程结束时中断。";
 
 /// 主Agent运行状态
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -147,41 +148,43 @@ pub fn start_run(
 /// 自动将超时未更新的 Running 状态标记为 Interrupted
 pub fn list_runs(session_id: Option<&str>) -> Vec<AgentRun> {
     let mut runs = Vec::new();
-    let root = runs_dir();
-    if let Ok(session_dirs) = fs::read_dir(root) {
-        for session_dir in session_dirs.flatten() {
-            let path = session_dir.path();
-            if !path.is_dir() {
-                continue;
-            }
-            if let Some(target_session_id) = session_id {
-                if path.file_name().and_then(|name| name.to_str()) != Some(target_session_id) {
-                    continue;
-                }
-            }
-            if let Ok(run_dirs) = fs::read_dir(path) {
-                for run_dir in run_dirs.flatten() {
-                    let run_path = run_dir.path().join("run.json");
-                    if let Ok(content) = fs::read_to_string(&run_path) {
-                        if let Ok(mut run) = serde_json::from_str::<AgentRun>(&content) {
-                            if run.status == AgentRunStatus::Running
-                                && now_millis().saturating_sub(run.updated_at) > RUN_STALE_MS
-                            {
-                                run.status = AgentRunStatus::Interrupted;
-                                run.finished_at = Some(run.updated_at);
-                                run.summary = Some("上次执行在应用关闭或进程结束时中断。".to_string());
-                                run.resumable = checkpoint_path(&run.session_id, &run.run_id).exists();
-                                let _ = write_run(&run);
-                            }
-                            runs.push(run);
-                        }
-                    }
-                }
-            }
-        }
-    }
+    collect_new_runs(&mut runs, session_id);
     runs.sort_by_key(|run| run.started_at);
     runs
+}
+
+pub fn mark_active_run(app: &tauri::AppHandle, run_id: &str) -> Option<AgentRun> {
+    let run = update_run_by_id(run_id, |run| {
+        keep_run_active(run);
+    })
+    .ok()?;
+    emit_run(app, &run);
+    Some(run)
+}
+
+pub fn mark_stale_runs_interrupted(
+    app: &tauri::AppHandle,
+    session_id: Option<&str>,
+    active_run_ids: &HashSet<String>,
+) {
+    let runs = list_runs(session_id);
+    let now = now_millis();
+    for run in runs {
+        if run.status != AgentRunStatus::Running || active_run_ids.contains(&run.run_id) {
+            continue;
+        }
+        if now.saturating_sub(run.updated_at) <= RUN_STALE_MS {
+            continue;
+        }
+        if let Ok(run) = update_run_by_id(&run.run_id, |run| {
+            run.status = AgentRunStatus::Interrupted;
+            run.finished_at = Some(run.updated_at);
+            run.summary = Some(INTERRUPTED_SUMMARY.to_string());
+            run.resumable = checkpoint_path(&run.session_id, &run.run_id).exists();
+        }) {
+            emit_run(app, &run);
+        }
+    }
 }
 
 pub fn list_events(session_id: Option<&str>, run_id: Option<&str>) -> Vec<AgentRunEvent> {
@@ -205,6 +208,7 @@ pub fn list_events(session_id: Option<&str>, run_id: Option<&str>) -> Vec<AgentR
 
 pub fn append_thinking(app: &tauri::AppHandle, run_id: &str, content: &str, loop_count: usize) {
     let _ = update_run_by_id(run_id, |run| {
+        keep_run_active(run);
         run.live_thinking.push_str(content);
         run.loop_count = loop_count;
     })
@@ -229,6 +233,7 @@ pub fn append_thinking(app: &tauri::AppHandle, run_id: &str, content: &str, loop
 
 pub fn append_content(app: &tauri::AppHandle, run_id: &str, content: &str, loop_count: usize) {
     let _ = update_run_by_id(run_id, |run| {
+        keep_run_active(run);
         run.live_content.push_str(content);
         run.loop_count = loop_count;
     })
@@ -253,6 +258,7 @@ pub fn append_content(app: &tauri::AppHandle, run_id: &str, content: &str, loop_
 
 pub fn append_tool_log(app: &tauri::AppHandle, run_id: &str, content: &str, loop_count: usize) {
     let _ = update_run_by_id(run_id, |run| {
+        keep_run_active(run);
         run.live_tool_buffer.push_str(content);
         run.loop_count = loop_count;
     })
@@ -297,7 +303,11 @@ pub fn record_tool_result(
             app,
             run_id,
             &run.session_id,
-            if error.is_some() { "tool_error" } else { "tool_result" },
+            if error.is_some() {
+                "tool_error"
+            } else {
+                "tool_result"
+            },
             if error.is_some() {
                 format!("工具 {} 执行失败", tool)
             } else {
@@ -339,6 +349,7 @@ pub fn save_checkpoint(
         serde_json::to_string_pretty(&checkpoint).unwrap_or_default(),
     );
     let _ = update_run_by_id(run_id, |run| {
+        keep_run_active(run);
         run.loop_count = loop_count;
         run.input_tokens = input_tokens;
         run.output_tokens = output_tokens;
@@ -369,7 +380,15 @@ pub fn complete_run(
     output_tokens: u64,
     summary: Option<String>,
 ) {
-    finish_run(app, run_id, AgentRunStatus::Completed, input_tokens, output_tokens, summary, None);
+    finish_run(
+        app,
+        run_id,
+        AgentRunStatus::Completed,
+        input_tokens,
+        output_tokens,
+        summary,
+        None,
+    );
 }
 
 pub fn cancel_run(
@@ -379,7 +398,15 @@ pub fn cancel_run(
     output_tokens: u64,
     summary: Option<String>,
 ) {
-    finish_run(app, run_id, AgentRunStatus::Cancelled, input_tokens, output_tokens, summary, None);
+    finish_run(
+        app,
+        run_id,
+        AgentRunStatus::Cancelled,
+        input_tokens,
+        output_tokens,
+        summary,
+        None,
+    );
 }
 
 pub fn fail_run(app: &tauri::AppHandle, run_id: &str, error: String) {
@@ -389,13 +416,12 @@ pub fn fail_run(app: &tauri::AppHandle, run_id: &str, error: String) {
 /// 准备恢复执行 - 加载检查点并生成恢复提示词
 ///
 /// 返回检查点数据和恢复计划，用于断点续传
-pub fn prepare_resume(
-    run_id: &str,
-) -> Result<(AgentRunCheckpoint, ResumeAgentRunPlan), String> {
+pub fn prepare_resume(run_id: &str) -> Result<(AgentRunCheckpoint, ResumeAgentRunPlan), String> {
     let run = load_run_by_id(run_id).ok_or_else(|| format!("执行记录不存在: {}", run_id))?;
     let content = fs::read_to_string(checkpoint_path(&run.session_id, run_id))
         .map_err(|_| "没有可恢复的安全点".to_string())?;
-    let checkpoint: AgentRunCheckpoint = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    let checkpoint: AgentRunCheckpoint =
+        serde_json::from_str(&content).map_err(|e| e.to_string())?;
     let prompt = format!(
         "继续上次中断的执行。上次执行记录为 {}，最后安全点为「{}」，已完成 {} 轮。请基于已有上下文继续，不要重复已经完成且已有工具结果的操作；如果某个操作可能有副作用，请先说明并等待确认。",
         run_id, checkpoint.last_safe_point, checkpoint.loop_count
@@ -485,7 +511,11 @@ fn push_event(
     };
     let path = events_path(session_id, run_id);
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "{}", serde_json::to_string(&event).unwrap_or_default());
+        let _ = writeln!(
+            file,
+            "{}",
+            serde_json::to_string(&event).unwrap_or_default()
+        );
     }
     let _ = app.emit("agent-run-event", event);
 }
@@ -495,17 +525,7 @@ fn emit_run(app: &tauri::AppHandle, run: &AgentRun) {
 }
 
 fn load_run_by_id(run_id: &str) -> Option<AgentRun> {
-    let root = runs_dir();
-    let session_dirs = fs::read_dir(root).ok()?;
-    for session_dir in session_dirs.flatten() {
-        let run_path = session_dir.path().join(run_id).join("run.json");
-        if let Ok(content) = fs::read_to_string(run_path) {
-            if let Ok(run) = serde_json::from_str::<AgentRun>(&content) {
-                return Some(run);
-            }
-        }
-    }
-    None
+    load_run_by_id_from_new(run_id)
 }
 
 fn update_run_by_id<F>(run_id: &str, update: F) -> Result<AgentRun, String>
@@ -519,26 +539,79 @@ where
     Ok(run)
 }
 
+fn keep_run_active(run: &mut AgentRun) {
+    if matches!(
+        run.status,
+        AgentRunStatus::Completed | AgentRunStatus::Failed | AgentRunStatus::Cancelled
+    ) {
+        return;
+    }
+    run.status = AgentRunStatus::Running;
+    run.finished_at = None;
+    if run.summary.as_deref() == Some(INTERRUPTED_SUMMARY) {
+        run.summary = None;
+    }
+}
+
 fn write_run(run: &AgentRun) -> Result<(), String> {
     let dir = run_dir(&run.session_id, &run.run_id);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    fs::write(
+    let result = fs::write(
         dir.join("run.json"),
         serde_json::to_string_pretty(run).unwrap_or_else(|_| json!({}).to_string()),
     )
-    .map_err(|e| e.to_string())
-}
-
-fn runs_dir() -> PathBuf {
-    let dir = get_agent_home().join(crate::core::constants::DIR_AGENT_RUNS);
-    let _ = fs::create_dir_all(&dir);
-    dir
+    .map_err(|e| e.to_string());
+    if result.is_ok() {
+        crate::core::data_paths::refresh_session_manifest(&run.session_id, None, None, None);
+    }
+    result
 }
 
 fn run_dir(session_id: &str, run_id: &str) -> PathBuf {
-    let dir = runs_dir().join(session_id).join(run_id);
-    let _ = fs::create_dir_all(&dir);
-    dir
+    crate::core::data_paths::session_paths(session_id).agent_run_dir(run_id)
+}
+
+fn new_run_roots(session_id: Option<&str>) -> Vec<(String, PathBuf)> {
+    if let Some(session_id) = session_id {
+        return vec![(
+            session_id.to_string(),
+            crate::core::data_paths::session_paths(session_id).agent_runs_dir(),
+        )];
+    }
+    crate::core::data_paths::session_ids_from_storage()
+        .into_iter()
+        .map(|sid| {
+            let root = crate::core::data_paths::session_paths(&sid).agent_runs_dir();
+            (sid, root)
+        })
+        .collect()
+}
+
+fn collect_new_runs(runs: &mut Vec<AgentRun>, session_id: Option<&str>) {
+    for (_sid, root) in new_run_roots(session_id) {
+        if let Ok(run_dirs) = fs::read_dir(root) {
+            for run_dir in run_dirs.flatten() {
+                let run_path = run_dir.path().join("run.json");
+                if let Ok(content) = fs::read_to_string(&run_path) {
+                    if let Ok(run) = serde_json::from_str::<AgentRun>(&content) {
+                        runs.push(run);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn load_run_by_id_from_new(run_id: &str) -> Option<AgentRun> {
+    for (_sid, root) in new_run_roots(None) {
+        let run_path = root.join(run_id).join("run.json");
+        if let Ok(content) = fs::read_to_string(run_path) {
+            if let Ok(run) = serde_json::from_str::<AgentRun>(&content) {
+                return Some(run);
+            }
+        }
+    }
+    None
 }
 
 fn events_path(session_id: &str, run_id: &str) -> PathBuf {

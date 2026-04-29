@@ -84,5 +84,14 @@ pub const INTENT_CLASSIFIER_PROMPT_LIGHT: &str = r#"
 Classify user intent into one category as JSON:
 {"category": "CODE_READ|CODE_WRITE|CODE_REVIEW|TASK_EXECUTE|TASK_PLAN|TASK_CONTINUE|QUESTION|MEMORY_QUERY|SETTINGS|CHAT|DANGEROUS", "reasoning": "short why"}
 
-Consider conversation context for short replies like "继续"/"好的"/"yes" — they're TASK_CONTINUE if a task is active, otherwise CHAT. Dangerous operations like delete/rm/format take priority.
+Routing rules:
+- DANGEROUS takes priority for destructive local actions such as deleting many files, rm -rf, formatting disks, dropping databases.
+- CODE_READ/CODE_WRITE/CODE_REVIEW/TASK_EXECUTE/TASK_PLAN are for local files, code, software projects, commands, apps, websites, repos, databases, or other computer operations.
+- Everyday requests such as writing an email, polishing copy, translating, summarizing pasted text, brainstorming, roleplay, or casual conversation are CHAT unless they clearly require local file/project tools.
+- Knowledge questions, comparisons, explanations, and "how do I..." questions are QUESTION.
+- MEMORY_QUERY is only for asking about prior conversation, saved memory, or something said earlier.
+- SETTINGS is only for changing this app's configuration, model, theme, or preferences.
+- Short replies like "继续"/"好的"/"yes" are TASK_CONTINUE if a task is active in context, otherwise CHAT.
+- If the input is understandable but not tool-related, prefer CHAT or QUESTION over UNCLEAR.
+Return JSON only.
 "#;

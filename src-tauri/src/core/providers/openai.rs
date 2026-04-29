@@ -12,14 +12,13 @@
 
 use serde_json::Value;
 
+use crate::core::llm::adapters::{
+    should_backfill_deepseek_reasoning_content,
+    translate_messages_to_openai_with_reasoning_backfill, translate_tools_to_openai,
+};
 use crate::core::llm::api_format::ApiFormat;
 use crate::core::models::*;
 use crate::core::traits::LlmProvider;
-use crate::core::llm::adapters::{
-    should_backfill_deepseek_reasoning_content,
-    translate_messages_to_openai_with_reasoning_backfill,
-    translate_tools_to_openai,
-};
 
 /// OpenAI-compatible API 提供者（兼容 DeepSeek、Qwen、Gemini 等）
 pub struct OpenAIProvider {
@@ -82,8 +81,8 @@ impl LlmProvider for OpenAIProvider {
         };
 
         // 根据模型注册表的 thinking_param 字段，选择对应的思考模式参数
-        let thinking_param = crate::core::llm::registry::query_capabilities(model_id)
-            .and_then(|c| c.thinking_param);
+        let thinking_param =
+            crate::core::llm::registry::query_capabilities(model_id).and_then(|c| c.thinking_param);
 
         match thinking_param.as_deref() {
             Some("reasoning_effort") => {

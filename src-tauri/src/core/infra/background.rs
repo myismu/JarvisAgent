@@ -6,14 +6,14 @@
 //! - stdout/stderr 实时捕获与缓冲
 //! - 任务状态追踪与通知队列
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::Manager;
-use tokio::sync::Mutex;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use serde::{Serialize, Deserialize};
+use tokio::sync::Mutex;
 
 /// 后台任务信息
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -58,13 +58,21 @@ impl BackgroundManager {
     /// 支持显式端口参数（`--port`/`-p`）和框架默认端口推断
     fn detect_port_and_type(command: &str) -> (Option<u16>, Option<String>) {
         let lower = command.to_lowercase();
-        
-        let task_type = if lower.contains("npm run dev") || lower.contains("npm start") 
-            || lower.contains("vite") || lower.contains("vue-cli-service serve")
-            || lower.contains("next dev") || lower.contains("nuxt dev") {
+
+        let task_type = if lower.contains("npm run dev")
+            || lower.contains("npm start")
+            || lower.contains("vite")
+            || lower.contains("vue-cli-service serve")
+            || lower.contains("next dev")
+            || lower.contains("nuxt dev")
+        {
             Some("frontend".to_string())
-        } else if lower.contains("python") || lower.contains("flask") || lower.contains("uvicorn")
-            || lower.contains("node ") || lower.contains("cargo run") {
+        } else if lower.contains("python")
+            || lower.contains("flask")
+            || lower.contains("uvicorn")
+            || lower.contains("node ")
+            || lower.contains("cargo run")
+        {
             Some("backend".to_string())
         } else {
             None
@@ -235,7 +243,11 @@ impl BackgroundManager {
 
                 let status = match child.wait().await {
                     Ok(s) => {
-                        if s.success() { "completed" } else { "error" }
+                        if s.success() {
+                            "completed"
+                        } else {
+                            "error"
+                        }
                     }
                     Err(_) => "error",
                 };
@@ -271,9 +283,17 @@ impl BackgroundManager {
             });
         }
 
-        let type_info = task_type.as_ref().map(|t| format!(" [{}]", t)).unwrap_or_default();
-        let port_info = detected_port.map(|p| format!(" :{}", p)).unwrap_or_default();
-        format!("Background task {} started{}{}: {}", task_id, type_info, port_info, short_cmd)
+        let type_info = task_type
+            .as_ref()
+            .map(|t| format!(" [{}]", t))
+            .unwrap_or_default();
+        let port_info = detected_port
+            .map(|p| format!(" :{}", p))
+            .unwrap_or_default();
+        format!(
+            "Background task {} started{}{}: {}",
+            task_id, type_info, port_info, short_cmd
+        )
     }
 
     /// 查询任务状态

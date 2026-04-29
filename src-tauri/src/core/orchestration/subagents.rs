@@ -17,23 +17,23 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubAgentStatus {
-    Running,    // 运行中
-    Completed,  // 已完成
-    Failed,     // 失败
-    Cancelled,  // 已取消
+    Running,   // 运行中
+    Completed, // 已完成
+    Failed,    // 失败
+    Cancelled, // 已取消
 }
 
 /// 子Agent执行阶段 - 用于实时状态展示
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubAgentPhase {
-    Starting,            // 启动中
-    WaitingModel,        // 等待模型响应
-    Streaming,           // 流式输出中
-    Thinking,            // 思考中
-    CallingTool,         // 调用工具中
-    ProcessingToolResult,// 处理工具结果
-    Finalizing,          // 收尾中
+    Starting,             // 启动中
+    WaitingModel,         // 等待模型响应
+    Streaming,            // 流式输出中
+    Thinking,             // 思考中
+    CallingTool,          // 调用工具中
+    ProcessingToolResult, // 处理工具结果
+    Finalizing,           // 收尾中
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -43,6 +43,7 @@ pub struct SubAgentRun {
     pub session_id: String,
     pub task_id: Option<i32>,
     pub label: String,
+    pub agent_type: String,
     pub prompt_preview: String,
     pub read_only: bool,
     pub status: SubAgentStatus,
@@ -121,7 +122,7 @@ impl SubAgentMonitor {
         events
     }
 
-        /// 启动子Agent运行
+    /// 启动子Agent运行
     ///
     /// 创建运行记录、注册取消令牌、启动心跳检测。
     /// 返回生成的 run_id。
@@ -132,6 +133,8 @@ impl SubAgentMonitor {
         read_only: bool,
         task_id: Option<i32>,
         label: Option<String>,
+        agent_type: String,
+        max_loops: usize,
     ) -> String {
         let run_id = format!("sa_{}", uuid::Uuid::new_v4().to_string()[..8].to_string());
         let now = now_millis();
@@ -146,12 +149,13 @@ impl SubAgentMonitor {
             session_id: session_id.to_string(),
             task_id,
             label,
+            agent_type,
             prompt_preview,
             read_only,
             status: SubAgentStatus::Running,
             phase: SubAgentPhase::Starting,
             loop_count: 0,
-            max_loops: crate::core::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM,
+            max_loops,
             current_tool: None,
             current_tool_input: None,
             input_tokens: 0,
@@ -443,7 +447,7 @@ impl SubAgentMonitor {
         Ok(payload)
     }
 
-        /// 取消指定会话的所有运行中子Agent
+    /// 取消指定会话的所有运行中子Agent
     pub async fn cancel_session(app: &tauri::AppHandle, session_id: &str) -> Vec<SubAgentRun> {
         let Some(state) = app.try_state::<SubAgentMonitorState>() else {
             return Vec::new();
@@ -497,7 +501,8 @@ impl SubAgentMonitor {
             run.current_tool = None;
             run.current_tool_input = None;
             run.finished_at.get_or_insert_with(now_millis);
-            run.error.get_or_insert_with(|| "Cancelled by user".to_string());
+            run.error
+                .get_or_insert_with(|| "Cancelled by user".to_string());
             run.summary.get_or_insert_with(|| {
                 format!(
                     "已取消：{}。已运行 {} 轮，累计 {} tokens。",
@@ -567,11 +572,7 @@ impl SubAgentMonitor {
 
         format!(
             "完成：{}。运行 {} 轮，调用工具 {} 次{}，累计 {} tokens。",
-            answer_summary,
-            run.loop_count,
-            tool_count,
-            tool_part,
-            total_tokens
+            answer_summary, run.loop_count, tool_count, tool_part, total_tokens
         )
     }
 

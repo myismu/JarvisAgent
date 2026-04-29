@@ -42,12 +42,13 @@ impl GarbageCollector {
     pub fn new(config: GcConfig) -> Self {
         Self { config }
     }
-    
+
     /// 执行垃圾回收
     ///
     /// 删除过期快照和孤立分支，保护分支头节点不被删除
     pub fn collect<F>(&self, tree: &mut SnapshotTree, mut delete_snapshot: F) -> GcResult
-    where F: FnMut(&str, &str),
+    where
+        F: FnMut(&str, &str),
     {
         let mut result = GcResult::default();
 
@@ -85,24 +86,26 @@ impl GarbageCollector {
 
         result
     }
-    
+
     /// 判断快照是否应被删除（基于存活天数）
     fn should_remove(&self, snapshot: &super::snapshot::Snapshot) -> bool {
         let age_days = (current_timestamp() - snapshot.created_at) / (24 * 60 * 60);
-        
+
         if age_days > self.config.max_age_days {
             return true;
         }
-        
+
         false
     }
-    
+
     /// 查找孤立分支（头节点已被删除的分支）
     fn find_orphan_branches(&self, tree: &SnapshotTree) -> Vec<String> {
-        tree.branches.keys()
+        tree.branches
+            .keys()
             .filter(|name| {
                 let branch = &tree.branches[*name];
-                !branch.head_snapshot_id.is_empty() && !tree.nodes.contains_key(&branch.head_snapshot_id)
+                !branch.head_snapshot_id.is_empty()
+                    && !tree.nodes.contains_key(&branch.head_snapshot_id)
             })
             .cloned()
             .collect()

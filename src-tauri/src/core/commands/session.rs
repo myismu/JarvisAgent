@@ -12,10 +12,10 @@
 //! - `auto_name_session()`: 使用 LLM 自动生成会话名称（内部函数）
 //! - `list_agent_runs()` / `get_subagent_runs()`: Agent 运行记录查询
 
+use crate::core::llm::api_client;
 use crate::core::models::*;
 use crate::core::session;
 use crate::core::state::*;
-use crate::core::llm::api_client;
 use tauri::Emitter;
 
 #[tauri::command]
@@ -35,7 +35,10 @@ pub async fn create_session(
     session_manager: tauri::State<'_, SessionManager>,
     working_directory: Option<String>,
 ) -> Result<session::SessionMeta, String> {
-    println!("[DEBUG] create_session called with working_directory: {:?}", working_directory);
+    println!(
+        "[DEBUG] create_session called with working_directory: {:?}",
+        working_directory
+    );
 
     let validated_dir = if let Some(ref dir) = working_directory {
         let path = std::path::Path::new(dir);
@@ -48,7 +51,7 @@ pub async fn create_session(
     };
 
     let meta = session::create_session(validated_dir.clone());
-    
+
     // 初始化上下文
     let ctx = session_manager.get_or_create(&meta.id).await;
     *ctx.workspace.lock().await = validated_dir.map(std::path::PathBuf::from);
@@ -64,7 +67,10 @@ pub async fn switch_session(
     // 前端通知切换到了该 session，预加载到内存
     let _ = session_manager.get_or_create(&id).await;
     let meta = session::get_session_meta(&id)?;
-    println!("[DEBUG] switch_session: id={}, working_directory={:?}", id, meta.working_directory);
+    println!(
+        "[DEBUG] switch_session: id={}, working_directory={:?}",
+        id, meta.working_directory
+    );
     Ok(meta)
 }
 
@@ -168,7 +174,10 @@ pub async fn recall_last_message(
     {
         let mut session = ctx.memory.lock().await;
         // 从后往前找最后一条用户消息
-        let last_user_idx = session.messages.iter().rposition(|m| matches!(m, Message::User { .. }));
+        let last_user_idx = session
+            .messages
+            .iter()
+            .rposition(|m| matches!(m, Message::User { .. }));
         if let Some(idx) = last_user_idx {
             if let Message::User { content } = &session.messages[idx] {
                 recalled_text = match content {
@@ -207,9 +216,7 @@ pub async fn recall_last_message(
 }
 
 #[tauri::command]
-pub async fn delete_session(
-    id: String,
-) -> Result<(), String> {
+pub async fn delete_session(id: String) -> Result<(), String> {
     // Frontend is responsible for checking if it's the active one, or it just deletes it.
     // If it deletes the active one, it should call switch_away_and_delete_empty_session or similar.
     session::delete_session(&id)
@@ -283,8 +290,46 @@ pub async fn list_plan_documents(
 #[tauri::command]
 pub async fn list_agent_runs(
     session_id: Option<String>,
+    app: tauri::AppHandle,
+    session_manager: tauri::State<'_, SessionManager>,
 ) -> Result<Vec<crate::core::orchestration::agent_runs::AgentRun>, String> {
-    Ok(crate::core::orchestration::agent_runs::list_runs(session_id.as_deref()))
+    let contexts: Vec<_> = {
+        let sessions = session_manager.0.read().await;
+        sessions
+            .iter()
+            .filter(|(sid, _)| session_id.as_deref().map_or(true, |target| target == sid.as_str()))
+            .map(|(_, ctx)| ctx.clone())
+            .collect()
+    };
+
+    let mut active_run_ids = std::collections::HashSet::new();
+    for ctx in contexts {
+        let is_active = ctx
+            .cancel_token
+            .lock()
+            .await
+            .as_ref()
+            .map(|token| !token.is_cancelled())
+            .unwrap_or(false);
+        if is_active {
+            if let Some(run_id) = ctx.active_run_id.lock().await.clone() {
+                active_run_ids.insert(run_id);
+            }
+        }
+    }
+
+    for run_id in &active_run_ids {
+        let _ = crate::core::orchestration::agent_runs::mark_active_run(&app, run_id);
+    }
+    crate::core::orchestration::agent_runs::mark_stale_runs_interrupted(
+        &app,
+        session_id.as_deref(),
+        &active_run_ids,
+    );
+
+    Ok(crate::core::orchestration::agent_runs::list_runs(
+        session_id.as_deref(),
+    ))
 }
 
 #[tauri::command]
@@ -292,7 +337,10 @@ pub async fn list_agent_run_events(
     session_id: Option<String>,
     run_id: Option<String>,
 ) -> Result<Vec<crate::core::orchestration::agent_runs::AgentRunEvent>, String> {
-    Ok(crate::core::orchestration::agent_runs::list_events(session_id.as_deref(), run_id.as_deref()))
+    Ok(crate::core::orchestration::agent_runs::list_events(
+        session_id.as_deref(),
+        run_id.as_deref(),
+    ))
 }
 
 #[tauri::command]

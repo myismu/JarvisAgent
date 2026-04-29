@@ -1,5 +1,59 @@
 import { marked } from "marked";
 
+marked.use({
+  renderer: {
+    code(token: any) {
+      const language = String(token.lang || "").match(/\S+/)?.[0] || "";
+      const languageClass = language ? ` class="language-${escapeHtmlForAttr(language)}"` : "";
+      const languageLabel = language || "code";
+      const code = escapeHtml(String(token.text || "").replace(/\n$/, ""));
+
+      return `<div class="markdown-code-block">
+<div class="markdown-code-header">
+<span class="markdown-code-language">${escapeHtml(languageLabel)}</span>
+<button type="button" class="markdown-copy-btn code-copy-btn" title="复制代码" aria-label="复制代码">复制</button>
+</div>
+<pre><code${languageClass}>${code}</code></pre>
+</div>
+`;
+    },
+    table(this: any, token: any) {
+      const renderCell = (cell: any) => {
+        const tag = cell.header ? "th" : "td";
+        const align = cell.align ? ` align="${escapeHtmlForAttr(String(cell.align))}"` : "";
+        const content = this.parser.parseInline(cell.tokens || []);
+        return `<${tag}${align}>${content}</${tag}>
+`;
+      };
+      const header = token.header.map(renderCell).join("");
+      const rows = token.rows
+        .map((row: any[]) => `<tr>
+${row.map(renderCell).join("")}</tr>
+`)
+        .join("");
+      const body = rows ? `<tbody>
+${rows}</tbody>
+` : "";
+
+      return `<div class="markdown-table-wrap">
+<div class="markdown-table-header">
+<span>表格</span>
+<button type="button" class="markdown-copy-btn table-copy-btn" title="复制表格" aria-label="复制表格">复制</button>
+</div>
+<div class="markdown-table-scroll">
+<table>
+<thead>
+<tr>
+${header}</tr>
+</thead>
+${body}</table>
+</div>
+</div>
+`;
+    },
+  },
+});
+
 marked.setOptions({
   breaks: true,
   gfm: true,
@@ -43,6 +97,15 @@ function escapeHtmlForAttr(value: string) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 export function renderTokenUsage(

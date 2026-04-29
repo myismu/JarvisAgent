@@ -1,5 +1,5 @@
 <template>
-  <div v-if="modelValue" class="settings-overlay">
+  <div v-if="modelValue" class="settings-overlay" @click.self="close">
     <div class="settings-modal">
       <div class="settings-header">
         <h3>系统设置</h3>
@@ -78,17 +78,21 @@
             <div class="display-mode-toggle" role="group" aria-label="Agent display mode">
               <button
                 type="button"
+                class="display-mode-btn"
                 :class="{ active: agentDisplayMode === 'user' }"
                 @click="setAgentDisplayMode('user')"
-                title="普通用户模式"
+                data-tooltip="普通视图：只显示适合日常使用的回复内容"
+                aria-label="普通视图：只显示适合日常使用的回复内容"
               >
                 普通
               </button>
               <button
                 type="button"
+                class="display-mode-btn"
                 :class="{ active: agentDisplayMode === 'developer' }"
                 @click="setAgentDisplayMode('developer')"
-                title="开发者模式"
+                data-tooltip="开发者视图：显示更完整的执行过程和调试信息"
+                aria-label="开发者视图：显示更完整的执行过程和调试信息"
               >
                 开发者
               </button>
@@ -309,6 +313,25 @@ const createEmptyConfig = (): AppConfig => ({
   profiles: []
 })
 
+const createBlankProfile = (id: string): ModelProfile => ({
+  id,
+  name: '新预设',
+  config: {
+    apiFormat: 'openai',
+    apiKey: '',
+    baseUrl: '',
+    mainModel: '',
+    utilityModel: '',
+    enableThinking: false,
+    temperature: null,
+    topP: null,
+    topK: null,
+    imageMaxWidth: null,
+    imageMaxHeight: null,
+    imageQuality: null
+  }
+})
+
 const cloneConfig = <T>(value: T): T => JSON.parse(JSON.stringify(value))
 
 const normalizeProfileConfig = (config: AppConfig) => {
@@ -436,24 +459,7 @@ const selectProfile = (id: string) => {
 const addProfile = () => {
   resetStatus()
   const newId = `profile_${Date.now()}`
-  draftConfig.value.profiles.push({
-    id: newId,
-    name: '新预设',
-    config: {
-      apiFormat: 'openai',
-      apiKey: '',
-      baseUrl: '',
-      mainModel: '',
-      utilityModel: '',
-      enableThinking: false,
-      temperature: null,
-      topP: null,
-      topK: null,
-      imageMaxWidth: null,
-      imageMaxHeight: null,
-      imageQuality: null
-    }
-  })
+  draftConfig.value.profiles.push(createBlankProfile(newId))
   selectedProfileId.value = newId
 }
 
@@ -532,7 +538,62 @@ const confirmDeleteProfile = async () => {
   }
 }
 
-const close = () => {
+const hasMeaningfulDraftValue = (value: unknown): boolean => {
+  if (value === null || value === undefined || value === false) return false
+  if (typeof value === 'number') return Number.isFinite(value)
+  return String(value).trim().length > 0
+}
+
+const hasNewProfileContent = (profile: ModelProfile): boolean => {
+  const blank = createBlankProfile(profile.id)
+  if (profile.name.trim() && profile.name.trim() !== blank.name) return true
+  if (profile.config.apiFormat !== blank.config.apiFormat) return true
+  if ((profile.config.enableThinking ?? false) !== (blank.config.enableThinking ?? false)) return true
+
+  const contentKeys: Array<keyof AgentConfig> = [
+    'apiKey',
+    'baseUrl',
+    'mainModel',
+    'utilityModel',
+    'temperature',
+    'topP',
+    'topK',
+    'imageMaxWidth',
+    'imageMaxHeight',
+    'imageQuality'
+  ]
+
+  return contentKeys.some((key) => hasMeaningfulDraftValue(profile.config[key]))
+}
+
+const persistFilledNewProfilesBeforeClose = async () => {
+  const savedIds = new Set(savedConfig.value.profiles.map((profile) => profile.id))
+  const filledNewProfiles = draftConfig.value.profiles.filter((profile) => {
+    return !savedIds.has(profile.id) && hasNewProfileContent(profile)
+  })
+
+  if (filledNewProfiles.length === 0) return
+
+  const nextConfig = cloneConfig(savedConfig.value)
+  nextConfig.profiles.push(...filledNewProfiles.map((profile) => cloneConfig(profile)))
+  ensureValidSelection(nextConfig, selectedProfileId.value)
+  const normalized = normalizeProfileConfig(nextConfig)
+
+  await invoke('save_config_cmd', { newConfig: normalized })
+  syncConfigs(normalized, selectedProfileId.value)
+}
+
+const close = async () => {
+  if (isSaving.value || actionLoading.value) return
+
+  try {
+    await persistFilledNewProfilesBeforeClose()
+  } catch (e) {
+    console.error('保存已填写的新预设失败:', e)
+    setErrorStatus(`保存已填写的新预设失败: ${e}`)
+    return
+  }
+
   draftConfig.value = cloneConfig(savedConfig.value)
   ensureValidSelection(draftConfig.value, selectedProfileId.value)
   deleteConfirm.value = null
@@ -607,18 +668,18 @@ const save = async () => {
 }
 
 .settings-modal {
-  background: var(--glass-bg-heavy);
+  background: var(--surface-strong);
   backdrop-filter: blur(var(--glass-blur-heavy));
   -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-xl);
-  width: 850px;
-  max-width: 95%;
-  height: 600px;
+  width: min(1080px, calc(100vw - 48px));
+  max-width: 96vw;
+  height: min(760px, calc(100vh - 48px));
   max-height: 90vh;
   display: flex;
   flex-direction: column;
-  box-shadow: var(--glass-shadow);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22), var(--glass-shadow);
   animation: slideIn var(--transition-normal);
   overflow: hidden;
 }
@@ -632,9 +693,10 @@ const save = async () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 24px;
+  min-height: 58px;
+  padding: 14px 22px 14px 24px;
   border-bottom: 1px solid var(--glass-border);
-  background: var(--glass-bg);
+  background: var(--surface-strong);
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
 }
@@ -655,9 +717,10 @@ const save = async () => {
 
 /* 侧边栏样式 */
 .settings-sidebar {
-  width: 240px;
+  width: 260px;
+  flex: 0 0 260px;
   border-right: 1px solid var(--glass-border);
-  background: var(--glass-bg-light);
+  background: color-mix(in srgb, var(--surface-strong) 76%, var(--glass-bg-light));
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
   display: flex;
@@ -665,7 +728,7 @@ const save = async () => {
 }
 
 .sidebar-section-header {
-  padding: 16px 20px;
+  padding: 18px 18px 10px;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -701,7 +764,7 @@ const save = async () => {
 }
 
 .theme-toggle-section {
-  padding: 0 8px;
+  padding: 0 12px;
 }
 
 .theme-toggle-btn {
@@ -725,7 +788,7 @@ const save = async () => {
 }
 
 .display-mode-section {
-  padding: 12px 8px 0;
+  padding: 14px 12px 18px;
 }
 
 .display-mode-label {
@@ -744,9 +807,11 @@ const save = async () => {
   border: 1px solid var(--glass-border-subtle);
   border-radius: var(--radius-md);
   background: var(--glass-bg-light);
+  overflow: visible;
 }
 
 .display-mode-toggle button {
+  position: relative;
   min-width: 0;
   height: 30px;
   border: 0;
@@ -763,6 +828,83 @@ const save = async () => {
   color: var(--text-main);
 }
 
+.display-mode-btn::before,
+.display-mode-btn::after {
+  position: absolute;
+  left: 50%;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, -4px);
+  transition: opacity var(--transition-fast), transform var(--transition-fast), visibility var(--transition-fast);
+  z-index: 20;
+}
+
+.display-mode-btn::before {
+  content: attr(data-tooltip);
+  bottom: calc(100% + 10px);
+  width: max-content;
+  max-width: 220px;
+  padding: 8px 10px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: var(--surface-strong);
+  color: var(--text-main);
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.22), var(--shadow-sm);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  text-align: left;
+  white-space: normal;
+}
+
+.display-mode-btn:first-child::before {
+  left: 0;
+  transform: translate(0, -4px);
+}
+
+.display-mode-btn:last-child::before {
+  right: 0;
+  left: auto;
+  transform: translate(0, -4px);
+}
+
+.display-mode-btn::after {
+  content: "";
+  bottom: calc(100% + 5px);
+  width: 9px;
+  height: 9px;
+  border-right: 1px solid var(--glass-border);
+  border-bottom: 1px solid var(--glass-border);
+  background: var(--surface-strong);
+  transform: translate(-50%, -4px) rotate(45deg);
+}
+
+.display-mode-btn:hover::before,
+.display-mode-btn:hover::after,
+.display-mode-btn:focus-visible::before,
+.display-mode-btn:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+}
+
+.display-mode-btn:hover::before,
+.display-mode-btn:focus-visible::before {
+  transform: translate(-50%, 0);
+}
+
+.display-mode-btn:first-child:hover::before,
+.display-mode-btn:first-child:focus-visible::before,
+.display-mode-btn:last-child:hover::before,
+.display-mode-btn:last-child:focus-visible::before {
+  transform: translate(0, 0);
+}
+
+.display-mode-btn:hover::after,
+.display-mode-btn:focus-visible::after {
+  transform: translate(-50%, 0) rotate(45deg);
+}
+
 .display-mode-toggle button.active {
   background: var(--glass-bg-heavy);
   color: var(--accent-blue);
@@ -772,17 +914,19 @@ const save = async () => {
 .profile-list {
   flex: 1;
   overflow-y: auto;
-  padding: 8px 12px;
+  padding: 6px 12px 12px;
 }
 
 .profile-item {
-  padding: 10px 14px;
+  min-height: 38px;
+  padding: 8px 10px 8px 12px;
   border-radius: var(--radius-md);
   cursor: pointer;
-  margin-bottom: 4px;
+  margin-bottom: 3px;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   transition: all var(--transition-fast);
   color: var(--text-muted);
 }
@@ -796,6 +940,7 @@ const save = async () => {
   background: rgba(0, 102, 204, 0.12);
   color: var(--accent-blue);
   font-weight: 500;
+  box-shadow: inset 3px 0 0 var(--accent-blue);
 }
 
 .profile-name {
@@ -882,44 +1027,67 @@ const save = async () => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: var(--glass-bg-heavy);
+  min-width: 0;
+  background: color-mix(in srgb, var(--surface-strong) 88%, var(--glass-bg-heavy));
 }
 
 .settings-body {
-  padding: 24px 32px;
+  padding: 26px 34px 34px;
   overflow-y: auto;
 }
 
 .setting-group {
-  margin-bottom: 32px;
+  margin-bottom: 34px;
+  padding-bottom: 28px;
+  border-bottom: 1px solid color-mix(in srgb, var(--text-muted) 13%, transparent);
+}
+
+.setting-group:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: 0;
 }
 
 .setting-group h4 {
-  margin: 0 0 16px 0;
+  margin: 0 0 18px 0;
   font-size: 14px;
-  color: var(--accent-blue);
-  font-weight: 600;
-  border-left: 3px solid var(--accent-blue);
-  padding-left: 10px;
+  color: var(--text-main);
+  font-weight: 700;
+  border-left: 0;
+  padding-left: 0;
+  letter-spacing: 0;
 }
 
 .setting-item {
-  margin-bottom: 20px;
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  column-gap: 24px;
+  align-items: start;
+  margin-bottom: 18px;
+}
+
+.setting-item:last-child {
+  margin-bottom: 0;
 }
 
 .setting-item label {
-  display: block;
-  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  margin-bottom: 0;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--text-main);
+  line-height: 1.35;
 }
 
 .setting-item input, .setting-item select {
+  grid-column: 2;
   width: 100%;
-  padding: 10px 14px;
-  background: var(--glass-bg-light);
-  border: 1px solid var(--glass-border);
+  min-height: 38px;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--surface-strong) 70%, var(--glass-bg-light));
+  border: 1px solid color-mix(in srgb, var(--text-muted) 20%, transparent);
   border-radius: 8px;
   color: var(--text-main);
   font-family: var(--font-mono);
@@ -934,9 +1102,11 @@ const save = async () => {
   outline: none;
   border-color: var(--accent-blue);
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  background: var(--surface-strong);
 }
 
 .switch-container {
+  grid-column: 2;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -955,6 +1125,7 @@ const save = async () => {
 }
 
 .capability-badges {
+  grid-column: 2;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -964,6 +1135,7 @@ const save = async () => {
 .badge {
   display: inline-flex;
   align-items: center;
+  gap: 4px;
   padding: 4px 10px;
   border-radius: 20px;
   font-size: 11px;
@@ -1010,6 +1182,7 @@ const save = async () => {
 }
 
 .capability-note {
+  grid-column: 2;
   font-size: 11px;
   color: var(--text-muted);
   margin-top: 6px;
@@ -1023,28 +1196,41 @@ const save = async () => {
 }
 
 .setting-desc {
+  grid-column: 2;
   font-size: 12px;
   color: var(--text-muted);
   margin-top: 8px;
   line-height: 1.5;
+  max-width: 620px;
 }
 
 .settings-footer {
-  padding: 16px 24px;
+  min-height: 64px;
+  padding: 12px 24px;
   border-top: 1px solid var(--glass-border);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: var(--glass-bg);
+  gap: 18px;
+  background: var(--surface-strong);
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
+}
+
+.footer-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  flex-shrink: 0;
 }
 
 .save-btn {
   background: var(--accent-blue);
   color: var(--text-inverse);
   border: none;
-  padding: 10px 24px;
+  min-width: 148px;
+  min-height: 38px;
+  padding: 9px 22px;
   border-radius: var(--radius-md);
   cursor: pointer;
   font-size: 14px;
@@ -1069,8 +1255,14 @@ const save = async () => {
 }
 
 .status-msg {
+  min-width: 0;
+  flex: 1;
   font-size: 13px;
   font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .status-msg.error {
@@ -1098,5 +1290,40 @@ const save = async () => {
   background: var(--glass-bg);
   border-color: var(--glass-border);
   color: var(--text-main);
+}
+
+@media (max-width: 860px) {
+  .settings-modal {
+    width: calc(100vw - 24px);
+    height: calc(100vh - 24px);
+  }
+
+  .settings-sidebar {
+    width: 220px;
+    flex-basis: 220px;
+  }
+
+  .settings-body {
+    padding: 22px 24px 30px;
+  }
+
+  .setting-item {
+    grid-template-columns: 1fr;
+    row-gap: 8px;
+  }
+
+  .setting-item label,
+  .setting-item input,
+  .setting-item select,
+  .setting-desc,
+  .capability-badges,
+  .capability-note,
+  .switch-container {
+    grid-column: 1;
+  }
+
+  .setting-item label {
+    min-height: auto;
+  }
 }
 </style>

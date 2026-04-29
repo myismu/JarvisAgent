@@ -88,7 +88,10 @@ fn checkpoint_cutoff_before(session_id: &str, checkpoint_id: &str) -> u64 {
 }
 
 /// 清理检查点之后的 agent_steps 和 plan_documents（基于时间戳）
-fn prune_metadata_after_checkpoint(session: &mut crate::core::models::SessionMemory, cutoff_secs: u64) {
+fn prune_metadata_after_checkpoint(
+    session: &mut crate::core::models::SessionMemory,
+    cutoff_secs: u64,
+) {
     if cutoff_secs == 0 {
         // 无 cutoff（回滚到第一个检查点），清理全部
         session.agent_steps.clear();
@@ -96,7 +99,9 @@ fn prune_metadata_after_checkpoint(session: &mut crate::core::models::SessionMem
         return;
     }
 
-    session.plan_documents.retain(|plan| plan.created_at <= cutoff_secs);
+    session
+        .plan_documents
+        .retain(|plan| plan.created_at <= cutoff_secs);
     session.agent_steps.retain(|step| {
         // 兼容毫秒和秒两种时间戳格式
         let timestamp_secs = if step.timestamp > 10_000_000_000 {
@@ -152,7 +157,9 @@ pub async fn rollback_to_checkpoint(
     let is_empty;
     {
         let mut session = ctx.memory.lock().await;
-        if let Some((idx, _)) = find_checkpoint_user_message(&session.messages, &checkpoint.trigger_message) {
+        if let Some((idx, _)) =
+            find_checkpoint_user_message(&session.messages, &checkpoint.trigger_message)
+        {
             session.messages.truncate(idx);
         }
         prune_metadata_after_checkpoint(&mut session, metadata_cutoff);
@@ -199,8 +206,9 @@ pub async fn rollback_to_checkpoint_with_recall(
     let is_empty;
     {
         let mut session = ctx.memory.lock().await;
-        let (idx, recalled) = find_checkpoint_user_message(&session.messages, &checkpoint.trigger_message)
-            .ok_or_else(|| "无法在会话中找到该检查点对应的用户消息".to_string())?;
+        let (idx, recalled) =
+            find_checkpoint_user_message(&session.messages, &checkpoint.trigger_message)
+                .ok_or_else(|| "无法在会话中找到该检查点对应的用户消息".to_string())?;
         session.messages.truncate(idx);
         prune_metadata_after_checkpoint(&mut session, metadata_cutoff);
         recalled_text = recalled;

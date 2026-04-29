@@ -4,15 +4,15 @@
 //! 支持任务间依赖关系（blocked_by/blocks）和级联解锁机制。
 //! 任务以 JSON 文件形式持久化存储。
 
+use crate::core::models::{Task, TaskStatus};
 use std::fs;
 use std::path::PathBuf;
-use crate::core::models::{Task, TaskStatus};
-use crate::get_agent_home;
 
 /// 任务管理器 - 基于文件系统的任务持久化
 pub struct TaskManager {
     /// 任务文件存储目录
     pub dir: PathBuf,
+    session_id: Option<String>,
 }
 
 /// update() 的可选参数集合
@@ -28,26 +28,47 @@ pub struct TaskUpdateParams {
 }
 
 impl TaskManager {
-        /// 创建任务管理器实例
+    /// 创建任务管理器实例
     ///
-    /// 使用 Agent 启动时的家目录，而非 current_dir()，
-    /// 防止 set_workspace 后 .tasks 跑到用户项目中
+    /// 使用 Agent 启动时的数据目录，而非 current_dir()，
+    /// 防止 set_workspace 后 tasks 跑到用户项目中
     pub fn new() -> Self {
-        let dir = get_agent_home().join(crate::core::constants::DIR_TASKS);
-        if !dir.exists() {
-            let _ = fs::create_dir_all(&dir);
+        Self::with_dir(crate::core::data_paths::global_tasks_dir(), None)
+    }
+
+    pub fn for_session(session_id: &str) -> Self {
+        Self::with_dir(
+            crate::core::data_paths::session_paths(session_id).tasks_dir(),
+            Some(session_id.to_string()),
+        )
+    }
+
+    fn with_dir(dir: PathBuf, session_id: Option<String>) -> Self {
+        let _ = fs::create_dir_all(&dir);
+        Self { dir, session_id }
+    }
+
+    fn refresh_manifest(&self) {
+        if let Some(session_id) = &self.session_id {
+            crate::core::data_paths::refresh_session_manifest(session_id, None, None, None);
         }
-        Self { dir }
     }
 
     fn _max_id(&self) -> i32 {
         let mut max_id = 0;
         if let Ok(entries) = fs::read_dir(&self.dir) {
             for entry in entries.flatten() {
-                let stem = entry.path().file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                let stem = entry
+                    .path()
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
                 if stem.starts_with("task_") {
                     if let Ok(id) = stem[5..].parse::<i32>() {
-                        if id > max_id { max_id = id; }
+                        if id > max_id {
+                            max_id = id;
+                        }
                     }
                 }
             }
@@ -67,7 +88,9 @@ impl TaskManager {
     fn _save(&self, task: &Task) -> Result<(), String> {
         let path = self.dir.join(format!("task_{}.json", task.id));
         let content = serde_json::to_string_pretty(task).map_err(|e| e.to_string())?;
-        fs::write(path, content).map_err(|e| e.to_string())
+        fs::write(path, content).map_err(|e| e.to_string())?;
+        self.refresh_manifest();
+        Ok(())
     }
 
     fn _delete_file(&self, id: i32) -> Result<(), String> {
@@ -75,6 +98,7 @@ impl TaskManager {
         if path.exists() {
             fs::remove_file(path).map_err(|e| e.to_string())?;
         }
+        self.refresh_manifest();
         Ok(())
     }
 
@@ -212,7 +236,10 @@ impl TaskManager {
         self._save(&task)?;
 
         let status_change = if old_status != task.status {
-            Some(StatusChange { from: old_status, to: format!("{:?}", task.status).to_lowercase() })
+            Some(StatusChange {
+                from: old_status,
+                to: format!("{:?}", task.status).to_lowercase(),
+            })
         } else {
             None
         };
@@ -223,7 +250,11 @@ impl TaskManager {
             success: true,
             error: None,
             status_change,
-            cascade_message: if cascade_msg.is_empty() { None } else { Some(cascade_msg) },
+            cascade_message: if cascade_msg.is_empty() {
+                None
+            } else {
+                Some(cascade_msg)
+            },
         })
     }
 
@@ -239,10 +270,17 @@ impl TaskManager {
     fn _remove_all_references(&self, target_id: i32) -> Result<(), String> {
         if let Ok(entries) = fs::read_dir(&self.dir) {
             for entry in entries.flatten() {
-                let stem = entry.path().file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                let stem = entry
+                    .path()
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
                 if stem.starts_with("task_") {
                     if let Ok(id) = stem[5..].parse::<i32>() {
-                        if id == target_id { continue; }
+                        if id == target_id {
+                            continue;
+                        }
                         if let Ok(mut task) = self._load(id) {
                             let mut changed = false;
                             if task.blocked_by.contains(&target_id) {
@@ -268,7 +306,12 @@ impl TaskManager {
         let mut unblocked_tasks = Vec::new();
         if let Ok(entries) = fs::read_dir(&self.dir) {
             for entry in entries.flatten() {
-                let stem = entry.path().file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                let stem = entry
+                    .path()
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
                 if stem.starts_with("task_") {
                     if let Ok(id) = stem[5..].parse::<i32>() {
                         if let Ok(mut task) = self._load(id) {
@@ -294,29 +337,55 @@ impl TaskManager {
         }
 
         let total = tasks.len();
-        let completed = tasks.iter().filter(|t| t.status == TaskStatus::Completed).count();
-        let in_progress = tasks.iter().filter(|t| t.status == TaskStatus::InProgress).count();
-        let pending = tasks.iter().filter(|t| t.status == TaskStatus::Pending).count();
-        let percentage = if total > 0 { (completed as f32 / total as f32) * 100.0 } else { 0.0 };
+        let completed = tasks
+            .iter()
+            .filter(|t| t.status == TaskStatus::Completed)
+            .count();
+        let in_progress = tasks
+            .iter()
+            .filter(|t| t.status == TaskStatus::InProgress)
+            .count();
+        let pending = tasks
+            .iter()
+            .filter(|t| t.status == TaskStatus::Pending)
+            .count();
+        let percentage = if total > 0 {
+            (completed as f32 / total as f32) * 100.0
+        } else {
+            0.0
+        };
 
-        let mut ready_tasks: Vec<&Task> = tasks.iter()
+        let mut ready_tasks: Vec<&Task> = tasks
+            .iter()
             .filter(|t| t.status == TaskStatus::Pending && t.blocked_by.is_empty())
             .collect();
         ready_tasks.sort_by_key(|t| t.id);
 
-        let mut active_tasks: Vec<&Task> = tasks.iter()
+        let mut active_tasks: Vec<&Task> = tasks
+            .iter()
             .filter(|t| t.status != TaskStatus::Completed && !t.blocks.is_empty())
             .collect();
         active_tasks.sort_by_key(|t| std::cmp::Reverse(t.blocks.len()));
 
         let mut report = format!("### Task Summary\n");
-        report.push_str(&format!("Progress: {:.1}% ({}/{})\n", percentage, completed, total));
-        report.push_str(&format!("Status: {} Completed, {} In Progress, {} Pending\n\n", completed, in_progress, pending));
+        report.push_str(&format!(
+            "Progress: {:.1}% ({}/{})\n",
+            percentage, completed, total
+        ));
+        report.push_str(&format!(
+            "Status: {} Completed, {} In Progress, {} Pending\n\n",
+            completed, in_progress, pending
+        ));
 
         if !active_tasks.is_empty() {
             report.push_str("🔥 Bottlenecks (Blocking others):\n");
             for t in active_tasks.iter().take(3) {
-                report.push_str(&format!("  - Task #{} (Blocks {} tasks): {}\n", t.id, t.blocks.len(), t.subject));
+                report.push_str(&format!(
+                    "  - Task #{} (Blocks {} tasks): {}\n",
+                    t.id,
+                    t.blocks.len(),
+                    t.subject
+                ));
             }
             report.push_str("\n");
         }
@@ -340,7 +409,12 @@ impl TaskManager {
         let mut tasks = Vec::new();
         if let Ok(entries) = fs::read_dir(&self.dir) {
             for entry in entries.flatten() {
-                let stem = entry.path().file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                let stem = entry
+                    .path()
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
                 if stem.starts_with("task_") {
                     if let Ok(id) = stem[5..].parse::<i32>() {
                         if let Ok(task) = self._load(id) {
@@ -397,8 +471,15 @@ impl TaskManager {
             } else {
                 format!(" ({})", t.owner)
             };
+            let display_subject = if t.status == TaskStatus::InProgress {
+                t.active_form.as_deref().unwrap_or(&t.subject)
+            } else {
+                &t.subject
+            };
             // 智能过滤：只显示尚未完成的 blocker
-            let active_blockers: Vec<i32> = t.blocked_by.iter()
+            let active_blockers: Vec<i32> = t
+                .blocked_by
+                .iter()
                 .filter(|id| !completed_ids.contains(id))
                 .cloned()
                 .collect();
@@ -407,7 +488,10 @@ impl TaskManager {
             } else {
                 format!(" [blocked by {:?}]", active_blockers)
             };
-            lines.push(format!("{} #{} {}{}{}", marker, t.id, t.subject, owner_str, blocked));
+            lines.push(format!(
+                "{} #{} {}{}{}",
+                marker, t.id, display_subject, owner_str, blocked
+            ));
         }
         Ok(lines.join("\n"))
     }

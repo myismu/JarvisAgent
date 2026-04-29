@@ -36,36 +36,46 @@ impl SnapshotStore {
     pub fn save_snapshot(&self, snapshot: &Snapshot) -> Result<(), StoreError> {
         let branch_dir = self.base_dir.join(&snapshot.branch_name);
         fs::create_dir_all(&branch_dir)?;
-        
+
         let snapshot_path = branch_dir.join(format!("{}.json", snapshot.id));
         let json = serde_json::to_string_pretty(snapshot)?;
         fs::write(&snapshot_path, json)?;
-        
+
         Ok(())
     }
-    
-    pub fn load_snapshot(&self, branch_name: &str, snapshot_id: &str) -> Result<Option<Snapshot>, StoreError> {
-        let snapshot_path = self.base_dir.join(branch_name).join(format!("{}.json", snapshot_id));
-        
+
+    pub fn load_snapshot(
+        &self,
+        branch_name: &str,
+        snapshot_id: &str,
+    ) -> Result<Option<Snapshot>, StoreError> {
+        let snapshot_path = self
+            .base_dir
+            .join(branch_name)
+            .join(format!("{}.json", snapshot_id));
+
         if !snapshot_path.exists() {
             return Ok(None);
         }
-        
+
         let json = fs::read_to_string(&snapshot_path)?;
         let snapshot: Snapshot = serde_json::from_str(&json)?;
         Ok(Some(snapshot))
     }
-    
+
     pub fn delete_snapshot(&self, branch_name: &str, snapshot_id: &str) -> Result<(), StoreError> {
-        let snapshot_path = self.base_dir.join(branch_name).join(format!("{}.json", snapshot_id));
-        
+        let snapshot_path = self
+            .base_dir
+            .join(branch_name)
+            .join(format!("{}.json", snapshot_id));
+
         if snapshot_path.exists() {
             fs::remove_file(&snapshot_path)?;
         }
-        
+
         Ok(())
     }
-    
+
     /// 保存快照树结构
     pub fn save_tree(&self, tree: &SnapshotTree) -> Result<(), StoreError> {
         let tree_path = self.base_dir.join("tree.json");
@@ -74,22 +84,22 @@ impl SnapshotStore {
 
         Ok(())
     }
-    
+
     pub fn load_tree(&self) -> Result<SnapshotTree, StoreError> {
         let tree_path = self.base_dir.join("tree.json");
-        
+
         if !tree_path.exists() {
             return Err(StoreError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Tree file not found",
             )));
         }
-        
+
         let json = fs::read_to_string(&tree_path)?;
         let tree: SnapshotTree = serde_json::from_str(&json)?;
         Ok(tree)
     }
-    
+
     /// 列出指定分支的所有快照
     pub fn list_snapshots(&self, branch_name: &str) -> Result<Vec<Snapshot>, StoreError> {
         let branch_dir = self.base_dir.join(branch_name);

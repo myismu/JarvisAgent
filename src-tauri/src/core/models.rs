@@ -20,7 +20,7 @@
 //! - OpenAI 格式使用 `#[serde(tag = "role")]` 进行多态序列化
 //! - 字段命名使用 camelCase 以匹配 JSON 格式
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct JarvisResult {
@@ -102,9 +102,7 @@ pub enum OpenAIMessage {
     #[serde(rename = "system")]
     System { content: String },
     #[serde(rename = "user")]
-    User {
-        content: OpenAIUserContent,
-    },
+    User { content: OpenAIUserContent },
     #[serde(rename = "assistant")]
     Assistant {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -254,6 +252,25 @@ pub struct PlanDocument {
     pub created_at: u64,
     pub updated_at: u64,
     pub decided_at: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoItem {
+    pub id: String,
+    /// Imperative form describing what needs to be done.
+    pub content: String,
+    /// Present continuous form shown while the item is in progress.
+    pub active_form: String,
+    pub status: TodoStatus,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

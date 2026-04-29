@@ -14,6 +14,7 @@ import {
   beginAgentLoop,
   finishAgentLoop,
   markAgentToolActivity,
+  resetAgentCurrentTurn,
   upsertAgentToolCall,
 } from "../utils/agentTurnState";
 import type {
@@ -98,6 +99,87 @@ export function useAgentEvents() {
     view.agentSteps.push({ type, content: thought, timestamp: Date.now() });
   }
 
+  function hasCurrentTurnContent(view: SessionViewState) {
+    const turn = view.currentTurn;
+    return Boolean(
+      turn.textBlocks.some((block) => block.content.trim()) ||
+        turn.thinkingBlocks.some((block) => block.content.trim()) ||
+        turn.toolCalls.length > 0 ||
+        turn.logs.some((log) => log.content.trim())
+    );
+  }
+
+  function latestRun(runs: AgentRun[], predicate: (run: AgentRun) => boolean) {
+    return runs
+      .filter(predicate)
+      .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))[0] ?? null;
+  }
+
+  function hydrateCurrentTurnFromRun(view: SessionViewState, run: AgentRun) {
+    resetAgentCurrentTurn(view);
+    view.currentTurn.startedAt = run.startedAt || Date.now();
+    beginAgentLoop(view, run.loopCount || 1);
+    if (run.liveThinking) {
+      appendAgentThinking(view, run.liveThinking, run.loopCount || 1);
+    }
+    if (run.liveToolBuffer) {
+      appendAgentExecutionLog(view, run.liveToolBuffer, run.loopCount || 1);
+    }
+    if (run.liveContent) {
+      appendAgentText(view, run.liveContent, "assistant", run.loopCount || 1);
+    }
+    view.currentTurn.isRunning = run.status === "running";
+    view.currentTurn.revision += 1;
+  }
+
+  function applyAgentRunState(sessionId: string, runs: AgentRun[]) {
+    const view = session.getSessionView(sessionId);
+    const running = latestRun(runs, (run) => run.sessionId === sessionId && run.status === "running");
+    const interrupted = latestRun(
+      runs,
+      (run) => run.sessionId === sessionId && run.status === "interrupted" && run.resumable
+    );
+
+    if (running) {
+      const previousActiveRunId = view.activeRunId;
+      view.status = "RUNNING";
+      view.activeRunId = running.runId;
+      view.resumableRunId = null;
+      view.runStartTime = running.startedAt || Date.now();
+      view.streamActive = true;
+      view.cancelHandled = false;
+      if (!hasCurrentTurnContent(view) || previousActiveRunId !== running.runId) {
+        hydrateCurrentTurnFromRun(view, running);
+      }
+      view.hydrated = true;
+      return;
+    }
+
+    view.activeRunId = null;
+    view.streamActive = false;
+    view.runStartTime = null;
+
+    if (interrupted) {
+      view.resumableRunId = interrupted.runId;
+      if (view.status === "RUNNING" || view.status === "IDLE" || view.status === "INTERRUPTED") {
+        view.status = "INTERRUPTED";
+      }
+      if (!hasCurrentTurnContent(view)) {
+        hydrateCurrentTurnFromRun(view, interrupted);
+      }
+      view.currentTurn.isRunning = false;
+      view.hydrated = true;
+      return;
+    }
+
+    view.resumableRunId = null;
+    if (view.status === "RUNNING" || view.status === "INTERRUPTED") {
+      view.status = "IDLE";
+    }
+    view.currentTurn.isRunning = false;
+    view.hydrated = true;
+  }
+
   async function loadSubAgentRunsFromBackend(sid?: string | null) {
     try {
       const effectiveSid = sid ?? session.activeSessionId;
@@ -169,6 +251,8 @@ export function useAgentEvents() {
         ...otherRuns,
         ...Object.fromEntries(runs.map((run) => [run.runId, run])),
       };
+      applyAgentRunState(effectiveSid, runs);
+      syncActiveSessionView(effectiveSid, false);
     } catch (err) {
       console.error("加载主 Agent 执行记录失败:", err);
     }
@@ -278,7 +362,11 @@ export function useAgentEvents() {
 
     // agent run
     await on<AgentRun>("agent-run-updated", (event) => {
-      agent.upsertAgentRun(event.payload);
+      const run = event.payload;
+      agent.upsertAgentRun(run);
+      const runs = Object.values(agent.agentRuns).filter((item) => item.sessionId === run.sessionId);
+      applyAgentRunState(run.sessionId, runs);
+      syncActiveSessionView(run.sessionId, false);
     });
 
     // agent run event

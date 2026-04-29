@@ -4,8 +4,8 @@
 //! - `sandbox`: 沙箱管理（为每个代理创建独立的工作区）
 //! - `merge`: 分支合并（冲突检测与解决）
 
-pub mod sandbox;
 pub mod merge;
+pub mod sandbox;
 
-pub use sandbox::{AgentSandbox, SandboxManager, SandboxStatus, SandboxComparison};
-pub use merge::{MergeEngine, MergeResult, Conflict, ConflictResolution, ConflictType};
+pub use merge::{Conflict, ConflictResolution, ConflictType, MergeEngine, MergeResult};
+pub use sandbox::{AgentSandbox, SandboxComparison, SandboxManager, SandboxStatus};

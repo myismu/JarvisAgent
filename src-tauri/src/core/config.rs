@@ -24,7 +24,6 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::core::llm::api_format::ApiFormat;
-use crate::get_agent_home;
 
 /// Agent 配置结构体（代表单个模型的连接信息）
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -127,11 +126,14 @@ impl Default for AppConfig {
 impl AppConfig {
     /// 获取当前激活的配置
     pub fn active_config(&self) -> AgentConfig {
-        let mut config = self.profiles.iter()
+        let mut config = self
+            .profiles
+            .iter()
             .find(|p| p.id == self.active_profile_id)
             .map(|p| p.config.clone())
             .unwrap_or_else(|| {
-                self.profiles.first()
+                self.profiles
+                    .first()
                     .map(|p| p.config.clone())
                     .unwrap_or_default()
             });
@@ -167,10 +169,10 @@ pub struct ConfigState(pub Arc<Mutex<AppConfig>>);
 
 /// 获取配置文件路径
 fn config_path() -> std::path::PathBuf {
-    get_agent_home().join(crate::core::constants::FILE_CONFIG)
+    crate::core::data_paths::config_path()
 }
 
-/// 从磁盘加载配置，支持从旧版 AgentConfig 迁移
+/// 从磁盘加载配置，支持从单配置文件格式迁移
 pub fn load_config() -> AppConfig {
     let path = config_path();
 

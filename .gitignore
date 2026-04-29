@@ -52,5 +52,6 @@ src-tauri/test.rs
 package-lock.json
 
 # Excluded project folders
-agent/
-doc/
+/agent/
+/demo/
+/doc/

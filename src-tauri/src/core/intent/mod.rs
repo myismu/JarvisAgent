@@ -10,9 +10,25 @@
 
 pub mod rules;
 
-use crate::core::llm::api_format::ApiFormat;
 use crate::core::infra::debug_logger;
+use crate::core::llm::api_format::ApiFormat;
 use crate::core::models::*;
+
+fn fallback_intent_for_unresolved(msg: &str) -> String {
+    use crate::core::intent::rules::{classify_by_rules, Intent};
+
+    let rules = classify_by_rules(msg);
+    match rules {
+        Intent::NeedsContext => {
+            if msg.trim().is_empty() {
+                "UNCLEAR".to_string()
+            } else {
+                "CHAT".to_string()
+            }
+        }
+        _ => rules.as_str().to_string(),
+    }
+}
 
 /// 意图分类入口：依次尝试规则 → 上下文 → LLM 三层策略
 pub async fn classify_intent(
@@ -209,10 +225,7 @@ async fn classify_intent_by_llm(
                         "CODE_READ" | "CODE_WRITE" | "CODE_REVIEW" | "TASK_EXECUTE"
                         | "TASK_PLAN" | "TASK_CONTINUE" | "QUESTION" | "MEMORY_QUERY"
                         | "SETTINGS" | "CHAT" | "DANGEROUS" | "UNCLEAR" => category,
-                        _ => {
-                            let rules = crate::core::intent::rules::classify_by_rules(msg);
-                            rules.as_str().to_string()
-                        }
+                        _ => fallback_intent_for_unresolved(msg),
                     }
                 }
                 Err(_) => {
@@ -221,23 +234,26 @@ async fn classify_intent_by_llm(
                         "DANGEROUS".to_string()
                     } else if t.contains("MEMORY_QUERY") {
                         "MEMORY_QUERY".to_string()
+                    } else if t.contains("CODE_REVIEW") {
+                        "CODE_REVIEW".to_string()
+                    } else if t.contains("CODE_READ") {
+                        "CODE_READ".to_string()
+                    } else if t.contains("CODE_WRITE") {
+                        "CODE_WRITE".to_string()
+                    } else if t.contains("TASK_EXECUTE") {
+                        "TASK_EXECUTE".to_string()
+                    } else if t.contains("TASK_PLAN") {
+                        "TASK_PLAN".to_string()
+                    } else if t.contains("TASK_CONTINUE") {
+                        "TASK_CONTINUE".to_string()
                     } else if t.contains("QUESTION") {
                         "QUESTION".to_string()
-                    } else if t.contains("CODE_READ")
-                        || t.contains("CODE_WRITE")
-                        || t.contains("CODE_REVIEW")
-                        || t.contains("TASK_EXECUTE")
-                        || t.contains("TASK_PLAN")
-                        || t.contains("TASK_CONTINUE")
-                    {
-                        "CODE_WRITE".to_string()
                     } else if t.contains("SETTINGS") {
                         "SETTINGS".to_string()
                     } else if t.contains("CHAT") {
                         "CHAT".to_string()
                     } else {
-                        let rules = crate::core::intent::rules::classify_by_rules(msg);
-                        rules.as_str().to_string()
+                        fallback_intent_for_unresolved(msg)
                     }
                 }
             };
@@ -255,6 +271,7 @@ async fn classify_intent_by_llm(
             return detected_intent;
         }
     }
-    println!("[INTENT] LLM failed, defaulting to UNCLEAR");
-    "UNCLEAR".to_string()
+    let fallback = fallback_intent_for_unresolved(msg);
+    println!("[INTENT] LLM failed, fallback intent: {}", fallback);
+    fallback
 }

@@ -7,9 +7,9 @@
 //! - `merge_execute()`: 执行合并（带冲突解决方案）
 //! - `merge_get_conflicts()`: 获取两个分支间的冲突列表
 
-use std::collections::HashMap as StdHashMap;
+use crate::core::snapshot_engine::{Conflict, ConflictResolution, MergeResult, Snapshot};
 use crate::core::state::SnapshotRegistry;
-use crate::core::snapshot_engine::{MergeResult, Conflict, ConflictResolution, Snapshot};
+use std::collections::HashMap as StdHashMap;
 
 /// 预览两个分支的合并结果
 #[tauri::command]
@@ -33,7 +33,9 @@ pub async fn merge_execute(
     registry: tauri::State<'_, SnapshotRegistry>,
 ) -> Result<Snapshot, String> {
     let manager = registry.0.read().await.get_or_create(&session_id).await?;
-    manager.execute_merge(&source_branch, &target_branch, resolutions, message).await
+    manager
+        .execute_merge(&source_branch, &target_branch, resolutions, message)
+        .await
 }
 
 #[tauri::command]
@@ -44,5 +46,7 @@ pub async fn merge_get_conflicts(
     registry: tauri::State<'_, SnapshotRegistry>,
 ) -> Result<Vec<Conflict>, String> {
     let manager = registry.0.read().await.get_or_create(&session_id).await?;
-    manager.get_merge_conflicts(&source_branch, &target_branch).await
+    manager
+        .get_merge_conflicts(&source_branch, &target_branch)
+        .await
 }

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted, nextTick, onUnmounted, onBeforeUnmount, watch } from 'vue';
+import { computed, ref, onMounted, nextTick, onUnmounted, onBeforeUnmount, watch } from 'vue';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useSessionStore } from '../../stores/session';
 import { useChatStore } from '../../stores/chat';
+import { useAgentStore } from '../../stores/agent';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { readFile } from '@tauri-apps/plugin-fs';
@@ -15,6 +16,7 @@ const showVisionWarning = ref(false);
 
 const session = useSessionStore();
 const chat = useChatStore();
+const agent = useAgentStore();
 
 let unlistenDragDrop: (() => void) | null = null;
 let unlistenConfig: UnlistenFn | null = null;
@@ -26,6 +28,10 @@ const canModelThink = ref(true);
 const canModelVision = ref(true);
 
 const imageCompressConfig = ref({ maxWidth: 1920, maxHeight: 1080, quality: 0.8 });
+const resumableRun = computed(() => {
+  const runId = session.currentSessionView.resumableRunId;
+  return agent.currentAgentRuns.find((run) => run.runId === runId) ?? agent.interruptedAgentRuns[0] ?? null;
+});
 
 const loadImageCompressConfig = async () => {
   try {
@@ -319,6 +325,11 @@ const handleRecallEdit = async () => {
     });
   }
 };
+
+const handleResumeInterruptedRun = async () => {
+  if (!resumableRun.value || session.isCurrentSessionRunning) return;
+  await chat.resumeAgentRun(resumableRun.value.runId);
+};
 </script>
 
 <template>
@@ -333,6 +344,17 @@ const handleRecallEdit = async () => {
         <span>已取消生成，可撤回上一条消息重新编辑</span>
         <button class="recall-edit-btn" @click="handleRecallEdit">撤回并编辑</button>
         <button class="recall-dismiss-btn" @click="chat.dismissRecallEdit">✕</button>
+      </div>
+
+      <div v-if="resumableRun && !session.isCurrentSessionRunning" class="resume-run-bar">
+        <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 12a9 9 0 0 1 15.5-6.2"></path>
+          <polyline points="18 2 18 6 14 6"></polyline>
+          <path d="M21 12a9 9 0 0 1-15.5 6.2"></path>
+          <polyline points="6 22 6 18 10 18"></polyline>
+        </svg>
+        <span>上次执行已中断，可从最近安全点继续。</span>
+        <button class="resume-run-btn" @click="handleResumeInterruptedRun">继续执行</button>
       </div>
 
       <div class="input-toolbar">
@@ -520,12 +542,12 @@ const handleRecallEdit = async () => {
   position: absolute;
   bottom: calc(100% + 12px);
   left: 0;
-  background: var(--glass-bg-heavy);
+  background: var(--surface-strong);
   backdrop-filter: blur(var(--glass-blur-heavy));
   -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
-  border: 1px solid var(--glass-border);
+  border: 1px solid color-mix(in srgb, var(--text-muted) 22%, transparent);
   border-radius: var(--radius-lg);
-  box-shadow: var(--glass-shadow);
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.18), var(--glass-shadow);
   min-width: 240px;
   z-index: 100;
   overflow: hidden;
@@ -541,7 +563,7 @@ const handleRecallEdit = async () => {
 .profile-menu-item {
   padding: 10px 14px;
   cursor: pointer;
-  border-bottom: 1px solid var(--glass-border-subtle);
+  border-bottom: 1px solid color-mix(in srgb, var(--text-muted) 12%, transparent);
   transition: background var(--transition-fast);
   border-radius: var(--radius-md);
   margin-bottom: 2px;
@@ -553,7 +575,7 @@ const handleRecallEdit = async () => {
 }
 
 .profile-menu-item:hover {
-  background: var(--glass-bg-light);
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
 }
 
 .profile-menu-item.active {
@@ -839,6 +861,46 @@ const handleRecallEdit = async () => {
 
 .recall-edit-bar span {
   flex: 1;
+}
+
+.resume-run-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: rgba(245, 158, 11, 0.1);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.18);
+  color: var(--accent-yellow);
+  font-size: 0.8rem;
+  animation: slideDown 0.2s ease-out;
+}
+
+.resume-run-bar svg {
+  flex-shrink: 0;
+}
+
+.resume-run-bar span {
+  flex: 1;
+}
+
+.resume-run-btn {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--accent-yellow);
+  border: 1px solid rgba(245, 158, 11, 0.32);
+  border-radius: var(--radius-md);
+  padding: 4px 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.resume-run-btn:hover {
+  background: var(--accent-yellow);
+  color: var(--bg-dark);
+  border-color: transparent;
+  transform: translateY(-1px);
 }
 
 .recall-edit-btn {

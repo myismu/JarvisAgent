@@ -25,6 +25,8 @@ export interface SessionViewState {
   runStartTime: number | null;
   streamActive: boolean;
   cancelHandled: boolean;
+  activeRunId: string | null;
+  resumableRunId: string | null;
   currentTurn: AgentCurrentTurn;
 }
 
@@ -49,6 +51,8 @@ function createEmptySessionView(initialHistory = READY_TEXT, hydrated = false): 
     runStartTime: null,
     streamActive: false,
     cancelHandled: false,
+    activeRunId: null,
+    resumableRunId: null,
     currentTurn: createEmptyAgentCurrentTurn(),
   };
 }

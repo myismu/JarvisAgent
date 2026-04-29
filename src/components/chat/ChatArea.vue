@@ -119,11 +119,30 @@ const isResponseAtBottom = () => {
   return scrollHeight - scrollTop - clientHeight <= 100;
 };
 
+const setResponseScrollToBottom = () => {
+  if (!responseAreaRef.value) return;
+  responseAreaRef.value.scrollTop = responseAreaRef.value.scrollHeight;
+};
+
+const forceScrollToBottomAfterRender = async () => {
+  shouldFollowStream.value = true;
+
+  await nextTick();
+  setResponseScrollToBottom();
+
+  requestAnimationFrame(() => {
+    setResponseScrollToBottom();
+    requestAnimationFrame(setResponseScrollToBottom);
+  });
+};
+
 const scrollToBottom = async (force = false) => {
-  const shouldScroll = force || shouldFollowStream.value || isResponseAtBottom();
   if (force) {
-    shouldFollowStream.value = true;
+    await forceScrollToBottomAfterRender();
+    return;
   }
+
+  const shouldScroll = force || shouldFollowStream.value || isResponseAtBottom();
 
   await nextTick();
   if (responseAreaRef.value && shouldScroll) {
@@ -138,6 +157,30 @@ const handleResponseScroll = () => {
 const showScrollToBottom = computed(() => {
   return !isResponseAtBottom() && (chat.parsedHistory || hasCurrentTurnContent.value);
 });
+
+const pendingInitialScrollSessionKey = ref<string | null>(null);
+const currentSessionKey = computed(() => session.activeSessionId || '__default__');
+
+watch(currentSessionKey, (key) => {
+  pendingInitialScrollSessionKey.value = key;
+}, { immediate: true });
+
+watch(
+  () => [
+    currentSessionKey.value,
+    session.currentSessionView.hydrated,
+    chat.parsedHistory,
+    hasCurrentTurnContent.value,
+  ],
+  async ([key, hydrated, history, hasTurnContent]) => {
+    if (pendingInitialScrollSessionKey.value !== key) return;
+    if (!hydrated && !history && !hasTurnContent) return;
+
+    pendingInitialScrollSessionKey.value = null;
+    await forceScrollToBottomAfterRender();
+  },
+  { immediate: true, flush: 'post' }
+);
 
 watch(() => [chat.parsedCurrentTurnHtml, currentTurn.value.revision], () => {
   if (shouldFollowStream.value) {
@@ -193,6 +236,120 @@ const handleRollbackClick = async (e: MouseEvent) => {
     snapshotId: cpId,
     hasOperations,
   };
+};
+
+const copyText = async (text: string, html?: string) => {
+  if (html && navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          'text/html': new Blob([html], { type: 'text/html' }),
+          'text/plain': new Blob([text], { type: 'text/plain' }),
+        }),
+      ]);
+      return;
+    } catch {
+      // Fall back to plain text below when rich clipboard writes are unavailable.
+    }
+  }
+
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand('copy');
+  document.body.removeChild(textarea);
+};
+
+const showCopiedState = (button: HTMLButtonElement) => {
+  const previousText = button.textContent || '复制';
+  button.textContent = '已复制';
+  button.classList.add('copied');
+  window.setTimeout(() => {
+    button.textContent = previousText;
+    button.classList.remove('copied');
+  }, 1200);
+};
+
+const copyCodeBlock = async (button: HTMLButtonElement) => {
+  const block = button.closest('.markdown-code-block');
+  const code = block?.querySelector('pre code')?.textContent || '';
+  if (!code.trim()) return;
+  await copyText(code);
+  showCopiedState(button);
+};
+
+const normalizeMarkdownTableCell = (cell?: HTMLTableCellElement) => {
+  if (!cell) return '';
+  return cell.innerText
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\\/g, '\\\\')
+    .replace(/\|/g, '\\|');
+};
+
+const markdownAlignment = (cell?: HTMLTableCellElement) => {
+  const align = (cell?.getAttribute('align') || '').toLowerCase();
+  if (align === 'center') return ':---:';
+  if (align === 'right') return '---:';
+  return '---';
+};
+
+const tableToMarkdown = (table: HTMLTableElement) => {
+  const rows = Array.from(table.rows);
+  if (rows.length === 0) return '';
+
+  const headerRow = table.tHead?.rows[0] || rows[0];
+  const bodyRows = rows.filter((row) => row !== headerRow);
+  const columnCount = Math.max(...rows.map((row) => row.cells.length), 1);
+  const readRow = (row: HTMLTableRowElement) =>
+    Array.from({ length: columnCount }, (_, index) => normalizeMarkdownTableCell(row.cells[index]));
+
+  const header = readRow(headerRow);
+  const separator = Array.from({ length: columnCount }, (_, index) =>
+    markdownAlignment(headerRow.cells[index])
+  );
+  const body = bodyRows.map((row) => `| ${readRow(row).join(' | ')} |`);
+
+  return [`| ${header.join(' | ')} |`, `| ${separator.join(' | ')} |`, ...body].join('\n');
+};
+
+const copyTable = async (button: HTMLButtonElement) => {
+  const wrap = button.closest('.markdown-table-wrap');
+  const table = wrap?.querySelector('table');
+  if (!table) return;
+  await copyText(tableToMarkdown(table), table.outerHTML);
+  showCopiedState(button);
+};
+
+const handleResponseClick = (e: MouseEvent) => {
+  const target = e.target as HTMLElement;
+  const codeCopyButton = target.closest<HTMLButtonElement>('.code-copy-btn');
+  if (codeCopyButton) {
+    e.preventDefault();
+    e.stopPropagation();
+    copyCodeBlock(codeCopyButton);
+    return;
+  }
+
+  const tableCopyButton = target.closest<HTMLButtonElement>('.table-copy-btn');
+  if (tableCopyButton) {
+    e.preventDefault();
+    e.stopPropagation();
+    copyTable(tableCopyButton);
+    return;
+  }
+
+  handleRollbackClick(e);
 };
 
 const closeRollbackMenu = () => {
@@ -323,7 +480,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="response-area" ref="responseAreaRef" @scroll="handleResponseScroll" @contextmenu="handleContextMenu" @click="handleRollbackClick">
+  <div class="response-area" ref="responseAreaRef" @scroll="handleResponseScroll" @contextmenu="handleContextMenu" @click="handleResponseClick">
     <div class="working-dir-indicator" v-if="session.workingDirectory">
       <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
         <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
@@ -856,6 +1013,69 @@ onMounted(() => {
   border: 1px solid var(--glass-border-subtle);
 }
 
+.response-text :deep(.markdown-code-block),
+.response-text :deep(.markdown-table-wrap) {
+  margin: 12px 0 16px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--text-muted) 18%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-strong) 72%, var(--glass-bg-heavy));
+  box-shadow: var(--shadow-sm);
+}
+
+.response-text :deep(.markdown-code-header),
+.response-text :deep(.markdown-table-header) {
+  min-height: 34px;
+  padding: 6px 8px 6px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--text-muted) 14%, transparent);
+  background: color-mix(in srgb, var(--glass-bg-heavy) 72%, transparent);
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  font-weight: 650;
+}
+
+.response-text :deep(.markdown-code-language),
+.response-text :deep(.markdown-table-header span) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.response-text :deep(.markdown-copy-btn) {
+  height: 24px;
+  min-width: 48px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--text-muted) 18%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface-strong) 82%, transparent);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 650;
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.response-text :deep(.markdown-copy-btn:hover) {
+  color: var(--accent-blue);
+  border-color: color-mix(in srgb, var(--accent-blue) 38%, transparent);
+  background: color-mix(in srgb, var(--accent-blue) 9%, var(--surface-strong));
+}
+
+.response-text :deep(.markdown-copy-btn.copied) {
+  color: var(--accent-green);
+  border-color: color-mix(in srgb, var(--accent-green) 42%, transparent);
+  background: color-mix(in srgb, var(--accent-green) 10%, var(--surface-strong));
+}
+
 .response-text :deep(pre) {
   background: var(--bg-dark);
   padding: 12px;
@@ -866,12 +1086,60 @@ onMounted(() => {
   box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
 }
 
+.response-text :deep(.markdown-code-block pre) {
+  margin: 0;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--bg-dark) 82%, var(--surface-strong));
+  box-shadow: none;
+}
+
 .response-text :deep(pre code) {
   background-color: transparent;
   padding: 0;
   color: inherit;
   font-size: 0.85rem;
   border: none;
+}
+
+.response-text :deep(.markdown-table-scroll) {
+  overflow-x: auto;
+}
+
+.response-text :deep(table) {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.88rem;
+}
+
+.response-text :deep(th),
+.response-text :deep(td) {
+  padding: 9px 12px;
+  text-align: left;
+  vertical-align: top;
+  border-right: 1px solid color-mix(in srgb, var(--text-muted) 13%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--text-muted) 13%, transparent);
+}
+
+.response-text :deep(th:last-child),
+.response-text :deep(td:last-child) {
+  border-right: 0;
+}
+
+.response-text :deep(tr:last-child td) {
+  border-bottom: 0;
+}
+
+.response-text :deep(th) {
+  color: var(--text-main);
+  font-weight: 700;
+  background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
+}
+
+.response-text :deep(td code) {
+  white-space: nowrap;
 }
 
 .response-text :deep(ul), .response-text :deep(ol) {

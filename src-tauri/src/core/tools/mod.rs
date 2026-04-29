@@ -17,14 +17,17 @@
 //! - MEMORY_QUERY 意图只返回 read_file / compact / dream
 //! - 子代理（SUBAGENT）不能调用 task / dream / compact / run_tasks
 
-pub mod registry;
-pub mod permission;
+pub mod agent_registry;
+pub mod agent_tools;
+pub mod claude_code_tools;
 pub mod file_tools;
-pub mod shell_tools;
+pub mod notebook_tools;
+pub mod permission;
+pub mod registry;
 pub mod shell_security;
+pub mod shell_tools;
 pub mod system_tools;
 pub mod task_tools;
-pub mod agent_tools;
 pub mod tool_search;
 
 use serde_json::json;
@@ -34,12 +37,14 @@ use crate::core::models::Skill;
 use crate::get_agent_home;
 
 // Re-export 供外部使用的公开接口
-pub use permission::{is_path_safe, ensure_path_permission, request_permission};
-pub use file_tools::{generate_repo_map, search_in_dir};
+pub use agent_registry::{AgentRegistry, DEFAULT_AGENT_TYPE, IMPLEMENTATION_AGENT_TYPE};
 pub use agent_tools::run_subagent;
+pub use file_tools::{generate_repo_map, search_in_dir};
+pub use permission::{ensure_path_permission, is_path_safe, request_permission};
 pub use tool_search::{
-    get_core_tool_definitions, get_deferred_tool_list, get_deferred_tool_full_schema,
-    search_deferred_tools, get_deferred_tools_context, handle_search_tools,
+    get_core_tool_definitions, get_deferred_tool_full_schema, get_deferred_tool_list,
+    get_deferred_tool_search_entries, get_deferred_tools_context, handle_search_tools,
+    search_deferred_tools, DeferredToolSearchEntry,
 };
 
 /// 递归扫描 skills 目录，解析所有 SKILL.md 文件
@@ -190,12 +195,38 @@ pub async fn handle_tool_call(
 ) -> (String, u64, u64) {
     if name == "task" {
         let prompt = input["prompt"].as_str().unwrap_or("");
-        let read_only = input["read_only"].as_bool().unwrap_or(true);
+        let requested_agent_type = agent_registry::normalize_agent_type(
+            input["subagent_type"]
+                .as_str()
+                .or_else(|| input["agent_type"].as_str()),
+        );
+        let agent_registry = AgentRegistry::global();
+        let Some(agent) = agent_registry.get(requested_agent_type) else {
+            return (
+                format!(
+                    "Unknown subagent_type '{}'. Available types: {}",
+                    requested_agent_type,
+                    agent_registry.available_types().join(", ")
+                ),
+                0,
+                0,
+            );
+        };
+        let read_only = input["read_only"]
+            .as_bool()
+            .unwrap_or(agent.read_only_default);
         let task_id = input["task_id"]
             .as_i64()
             .or_else(|| input["taskId"].as_i64())
             .map(|id| id as i32);
-        let label = input["label"].as_str().map(|value| value.to_string());
+        let label = input["description"]
+            .as_str()
+            .or_else(|| input["label"].as_str())
+            .map(|value| value.to_string());
+        let model_override = input["model"]
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| value.to_string());
         let fut = run_subagent(
             app.clone(),
             prompt.to_string(),
@@ -203,10 +234,16 @@ pub async fn handle_tool_call(
             session_id.to_string(),
             task_id,
             label,
+            Some(agent.agent_type.to_string()),
+            model_override,
         );
         Box::pin(fut).await
     } else {
-        (handle_tool_call_inner(app, name, input, session_id, intent).await, 0, 0)
+        (
+            handle_tool_call_inner(app, name, input, session_id, intent).await,
+            0,
+            0,
+        )
     }
 }
 
@@ -250,6 +287,9 @@ pub async fn handle_tool_call_inner(
         // 文件工具
         "list_directory" => file_tools::list_directory(app, input, session_id).await,
         "search_repo" => file_tools::search_repo(app, input, session_id).await,
+        "glob" => claude_code_tools::glob(app, input, session_id).await,
+        "grep" => claude_code_tools::grep(app, input, session_id).await,
+        "notebook_edit" => notebook_tools::notebook_edit(app, input, session_id).await,
         "read_file" => file_tools::read_file(app, input, session_id).await,
         "read_file_skeleton" => file_tools::read_file_skeleton(app, input, session_id).await,
         "write_file" => file_tools::write_file(app, input, session_id).await,
@@ -262,6 +302,7 @@ pub async fn handle_tool_call_inner(
         "check_background" => shell_tools::check_background(app, input, session_id).await,
 
         // 任务工具
+        "todo_write" => task_tools::todo_write(app, input, session_id).await,
         "task_create" => task_tools::task_create(app, input, session_id).await,
         "task_update" => task_tools::task_update(app, input, session_id).await,
         "task_delete" => task_tools::task_delete(app, input, session_id).await,
@@ -278,9 +319,7 @@ pub async fn handle_tool_call_inner(
         "propose_plan" => agent_tools::propose_plan(app, input, session_id).await,
 
         // 工具搜索
-        "search_tools" => {
-            tool_search::handle_search_tools(input, intent).await
-        }
+        "search_tools" => tool_search::handle_search_tools(input, intent).await,
 
         _ => format!("未知工具: {}", name),
     }

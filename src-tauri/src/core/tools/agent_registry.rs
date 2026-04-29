@@ -1,0 +1,294 @@
+//! Lightweight subagent registry.
+//!
+//! This module keeps the agent-type contract separate from the tool registry:
+//! agent definitions decide which tools a subagent may see, while ToolRegistry
+//! remains the source of truth for tool schemas and read-only metadata.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
+
+use super::registry::ToolRegistry;
+
+pub const DEFAULT_AGENT_TYPE: &str = "general";
+pub const IMPLEMENTATION_AGENT_TYPE: &str = "implementation";
+
+const GENERAL_TOOLS: &[&str] = &[
+    "get_system_info",
+    "load_skill",
+    "list_directory",
+    "glob",
+    "grep",
+    "search_repo",
+    "read_file",
+    "read_file_skeleton",
+    "write_file",
+    "edit_file",
+    "notebook_edit",
+    "run_shell",
+    "git_command",
+    "background_run",
+    "check_background",
+];
+
+const READ_ONLY_RESEARCH_TOOLS: &[&str] = &[
+    "get_system_info",
+    "load_skill",
+    "list_directory",
+    "glob",
+    "grep",
+    "search_repo",
+    "read_file",
+    "read_file_skeleton",
+    "git_command",
+    "check_background",
+];
+
+const VERIFICATION_TOOLS: &[&str] = &[
+    "get_system_info",
+    "load_skill",
+    "list_directory",
+    "glob",
+    "grep",
+    "search_repo",
+    "read_file",
+    "read_file_skeleton",
+    "run_shell",
+    "git_command",
+    "check_background",
+];
+
+#[derive(Debug, Clone)]
+pub struct AgentDefinition {
+    pub agent_type: &'static str,
+    pub when_to_use: &'static str,
+    pub system_prompt: &'static str,
+    pub tools: &'static [&'static str],
+    pub disallowed_tools: &'static [&'static str],
+    pub model: Option<&'static str>,
+    pub read_only_default: bool,
+    pub max_turns: Option<usize>,
+}
+
+pub struct AgentRegistry {
+    agents: HashMap<&'static str, AgentDefinition>,
+    insertion_order: Vec<&'static str>,
+}
+
+static AGENT_REGISTRY: OnceLock<AgentRegistry> = OnceLock::new();
+
+impl AgentRegistry {
+    pub fn global() -> &'static AgentRegistry {
+        AGENT_REGISTRY.get_or_init(|| {
+            let mut registry = AgentRegistry {
+                agents: HashMap::new(),
+                insertion_order: Vec::new(),
+            };
+
+            registry.register(AgentDefinition {
+                agent_type: DEFAULT_AGENT_TYPE,
+                when_to_use: "General delegated work. Defaults to read-only unless the caller explicitly allows writes.",
+                system_prompt: "You are a general-purpose subagent. Complete the delegated task directly and report only the useful result.",
+                tools: GENERAL_TOOLS,
+                disallowed_tools: &[],
+                model: None,
+                read_only_default: true,
+                max_turns: None,
+            });
+
+            registry.register(AgentDefinition {
+                agent_type: "explore",
+                when_to_use: "Read-only codebase exploration, file discovery, and focused research.",
+                system_prompt: "You are an exploration subagent. Inspect the codebase, gather evidence, and return concise findings with file paths. Do not modify files.",
+                tools: READ_ONLY_RESEARCH_TOOLS,
+                disallowed_tools: &[],
+                model: None,
+                read_only_default: true,
+                max_turns: Some(8),
+            });
+
+            registry.register(AgentDefinition {
+                agent_type: "plan",
+                when_to_use: "Read-only planning before implementation. Produce an actionable plan, not code changes.",
+                system_prompt: "You are a planning subagent. Analyze the requested change and return a concrete implementation plan. Do not modify files.",
+                tools: READ_ONLY_RESEARCH_TOOLS,
+                disallowed_tools: &[],
+                model: None,
+                read_only_default: true,
+                max_turns: Some(8),
+            });
+
+            registry.register(AgentDefinition {
+                agent_type: "review",
+                when_to_use: "Independent read-only code review focused on bugs, risks, regressions, and missing tests.",
+                system_prompt: "You are a code review subagent. Prioritize concrete defects with file references. Do not modify files.",
+                tools: READ_ONLY_RESEARCH_TOOLS,
+                disallowed_tools: &[],
+                model: None,
+                read_only_default: true,
+                max_turns: Some(8),
+            });
+
+            registry.register(AgentDefinition {
+                agent_type: "verification",
+                when_to_use: "Verify behavior after changes by inspecting code and running targeted checks or tests.",
+                system_prompt: "You are a verification subagent. Run targeted checks when useful, inspect failures, and report pass/fail evidence. Do not edit files.",
+                tools: VERIFICATION_TOOLS,
+                disallowed_tools: &["write_file", "edit_file", "notebook_edit", "background_run"],
+                model: None,
+                read_only_default: false,
+                max_turns: Some(10),
+            });
+
+            registry.register(AgentDefinition {
+                agent_type: IMPLEMENTATION_AGENT_TYPE,
+                when_to_use: "Concrete implementation work that may edit files or run commands.",
+                system_prompt: "You are an implementation subagent. Make the requested changes, keep scope tight, and verify the result when practical.",
+                tools: GENERAL_TOOLS,
+                disallowed_tools: &[],
+                model: None,
+                read_only_default: false,
+                max_turns: None,
+            });
+
+            registry
+        })
+    }
+
+    fn register(&mut self, agent: AgentDefinition) {
+        if !self.agents.contains_key(agent.agent_type) {
+            self.insertion_order.push(agent.agent_type);
+        }
+        self.agents.insert(agent.agent_type, agent);
+    }
+
+    pub fn get(&self, agent_type: &str) -> Option<&AgentDefinition> {
+        self.agents.get(agent_type)
+    }
+
+    pub fn default_agent(&self) -> &AgentDefinition {
+        self.get(DEFAULT_AGENT_TYPE)
+            .expect("default subagent definition must exist")
+    }
+
+    pub fn available_types(&self) -> Vec<&'static str> {
+        self.insertion_order.clone()
+    }
+
+    pub fn prompt_listing(&self) -> String {
+        self.insertion_order
+            .iter()
+            .filter_map(|agent_type| self.agents.get(agent_type))
+            .map(|agent| format!("- {}: {}", agent.agent_type, agent.when_to_use))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    pub fn resolve_tools(
+        &self,
+        agent: &AgentDefinition,
+        read_only: bool,
+    ) -> Vec<serde_json::Value> {
+        let tool_registry = ToolRegistry::global();
+        let deny: HashSet<&str> = agent.disallowed_tools.iter().copied().collect();
+        let mut seen = HashSet::new();
+        let mut schemas = Vec::new();
+
+        for tool_name in agent.tools {
+            let tool_name = *tool_name;
+            if !seen.insert(tool_name) || deny.contains(tool_name) {
+                continue;
+            }
+            let Some(tool) = tool_registry.get(tool_name) else {
+                continue;
+            };
+            if !tool.is_enabled {
+                continue;
+            }
+            if read_only && !tool.is_read_only {
+                continue;
+            }
+            schemas.push(tool.schema.clone());
+        }
+
+        schemas
+    }
+}
+
+pub fn normalize_agent_type(value: Option<&str>) -> &str {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_AGENT_TYPE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_agent_exists() {
+        let registry = AgentRegistry::global();
+        assert_eq!(registry.default_agent().agent_type, DEFAULT_AGENT_TYPE);
+        assert!(registry.available_types().contains(&"implementation"));
+    }
+
+    #[test]
+    fn explore_agent_resolves_read_only_tools() {
+        let registry = AgentRegistry::global();
+        let agent = registry.get("explore").unwrap();
+        let tools = registry.resolve_tools(agent, agent.read_only_default);
+        let names: Vec<&str> = tools
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"grep"));
+        assert!(!names.contains(&"edit_file"));
+        assert!(!names.contains(&"run_shell"));
+    }
+
+    #[test]
+    fn implementation_agent_can_include_mutating_tools() {
+        let registry = AgentRegistry::global();
+        let agent = registry.get("implementation").unwrap();
+        let tools = registry.resolve_tools(agent, false);
+        let names: Vec<&str> = tools
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+
+        assert!(names.contains(&"edit_file"));
+        assert!(names.contains(&"notebook_edit"));
+        assert!(names.contains(&"run_shell"));
+    }
+
+    #[test]
+    fn read_only_filter_uses_tool_metadata() {
+        let registry = AgentRegistry::global();
+        let agent = registry.get("implementation").unwrap();
+        let tools = registry.resolve_tools(agent, true);
+        let names: Vec<&str> = tools
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"grep"));
+        assert!(!names.contains(&"edit_file"));
+        assert!(!names.contains(&"notebook_edit"));
+        assert!(!names.contains(&"background_run"));
+    }
+
+    #[test]
+    fn task_schema_exposes_typed_agent_fields() {
+        let tool_registry = ToolRegistry::global();
+        let task = tool_registry.get("task").unwrap();
+        let properties = &task.schema["input_schema"]["properties"];
+
+        assert!(properties["description"].is_object());
+        assert!(properties["subagent_type"].is_object());
+        assert!(properties["model"].is_object());
+        assert!(properties["read_only"].is_object());
+    }
+}

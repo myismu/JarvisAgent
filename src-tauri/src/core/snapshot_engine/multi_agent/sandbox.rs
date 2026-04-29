@@ -83,7 +83,7 @@ impl SandboxManager {
             _session_id: session_id,
         }
     }
-    
+
     /// 创建新沙箱（分配独立工作目录和分支）
     pub fn create_sandbox(
         &mut self,
@@ -94,14 +94,12 @@ impl SandboxManager {
         let sandbox_id = format!("sandbox-{}", Uuid::new_v4().to_string()[..8].to_string());
         let workspace_id = format!("ws-{}", Uuid::new_v4().to_string()[..8].to_string());
         let branch_name = format!("agent-{}", agent_id);
-        
-        let sandbox_dir = self.base_dir
-            .join("sandboxes")
-            .join(&sandbox_id);
-        
+
+        let sandbox_dir = self.base_dir.join("sandboxes").join(&sandbox_id);
+
         let workspace_path = sandbox_dir.join("workspace");
         fs::create_dir_all(&workspace_path)?;
-        
+
         let sandbox = AgentSandbox {
             sandbox_id: sandbox_id.clone(),
             agent_id: agent_id.clone(),
@@ -113,105 +111,119 @@ impl SandboxManager {
             created_at: current_timestamp(),
             description: description.unwrap_or_else(|| format!("Agent {} 的沙箱", agent_id)),
         };
-        
+
         self.sandboxes.insert(sandbox_id.clone(), sandbox.clone());
-        
+
         Ok(sandbox)
     }
-    
+
     pub fn get_sandbox(&self, sandbox_id: &str) -> Option<&AgentSandbox> {
         self.sandboxes.get(sandbox_id)
     }
-    
+
     pub fn get_sandbox_by_agent(&self, agent_id: &str) -> Option<&AgentSandbox> {
-        self.sandboxes.values()
+        self.sandboxes
+            .values()
             .find(|s| s.agent_id == agent_id && s.status == SandboxStatus::Active)
     }
-    
+
     pub fn list_sandboxes(&self) -> Vec<&AgentSandbox> {
         self.sandboxes.values().collect()
     }
-    
+
     pub fn list_active_sandboxes(&self) -> Vec<&AgentSandbox> {
-        self.sandboxes.values()
+        self.sandboxes
+            .values()
             .filter(|s| s.status == SandboxStatus::Active)
             .collect()
     }
-    
+
     /// 标记沙箱完成（代理任务执行完毕）
     pub fn complete_sandbox(&mut self, sandbox_id: &str) -> Result<(), SandboxError> {
-        let sandbox = self.sandboxes.get_mut(sandbox_id)
+        let sandbox = self
+            .sandboxes
+            .get_mut(sandbox_id)
             .ok_or_else(|| SandboxError::NotFound(sandbox_id.to_string()))?;
-        
+
         if sandbox.status != SandboxStatus::Active {
             return Err(SandboxError::InvalidStatus(format!("{:?}", sandbox.status)));
         }
-        
+
         sandbox.status = SandboxStatus::Completed;
         Ok(())
     }
-    
+
     /// 放弃沙箱（清理工作目录）
     pub fn abandon_sandbox(&mut self, sandbox_id: &str) -> Result<(), SandboxError> {
-        let sandbox = self.sandboxes.get_mut(sandbox_id)
+        let sandbox = self
+            .sandboxes
+            .get_mut(sandbox_id)
             .ok_or_else(|| SandboxError::NotFound(sandbox_id.to_string()))?;
-        
+
         sandbox.status = SandboxStatus::Abandoned;
-        
+
         if sandbox.workspace_path.exists() {
             fs::remove_dir_all(&sandbox.workspace_path)?;
         }
-        
+
         Ok(())
     }
-    
+
     /// 发布沙箱（准备合并到主分支）
     pub fn publish_sandbox(
         &mut self,
         sandbox_id: &str,
         tree: &mut SnapshotTree,
     ) -> Result<String, SandboxError> {
-        let sandbox = self.sandboxes.get(sandbox_id)
+        let sandbox = self
+            .sandboxes
+            .get(sandbox_id)
             .ok_or_else(|| SandboxError::NotFound(sandbox_id.to_string()))?
             .clone();
-        
+
         if sandbox.status != SandboxStatus::Completed {
             return Err(SandboxError::InvalidStatus(format!("{:?}", sandbox.status)));
         }
-        
-        let _main_branch = tree.branches.get("main")
+
+        let _main_branch = tree
+            .branches
+            .get("main")
             .ok_or_else(|| SandboxError::BranchError("main branch not found".to_string()))?;
-        
+
         let merge_branch_name = format!("merged-{}", sandbox.agent_id);
-        
+
         let sandbox_mut = self.sandboxes.get_mut(sandbox_id).unwrap();
         sandbox_mut.status = SandboxStatus::Published;
-        
+
         Ok(merge_branch_name)
     }
-    
+
     /// 对比所有活跃沙箱的变更统计
-    pub fn compare_sandboxes(
-        &self,
-        tree: &SnapshotTree,
-    ) -> Vec<SandboxComparison> {
-        self.sandboxes.values()
+    pub fn compare_sandboxes(&self, tree: &SnapshotTree) -> Vec<SandboxComparison> {
+        self.sandboxes
+            .values()
             .filter(|s| s.status == SandboxStatus::Active || s.status == SandboxStatus::Completed)
             .map(|sandbox| {
-                let snapshots: Vec<&Snapshot> = tree.nodes.values()
+                let snapshots: Vec<&Snapshot> = tree
+                    .nodes
+                    .values()
                     .filter(|s| s.branch_name == sandbox.branch_name)
                     .collect();
-                
-                let last_snapshot = snapshots.iter()
-                    .max_by_key(|s| s.created_at);
-                
-                let (lines_added, lines_removed, files_changed) = snapshots.iter()
+
+                let last_snapshot = snapshots.iter().max_by_key(|s| s.created_at);
+
+                let (lines_added, lines_removed, files_changed) = snapshots
+                    .iter()
                     .flat_map(|s| s.patches.iter())
                     .fold((0, 0, 0), |(added, removed, changed), patch| {
                         let summary = patch.to_summary();
-                        (added + summary.lines_added, removed + summary.lines_removed, changed + 1)
+                        (
+                            added + summary.lines_added,
+                            removed + summary.lines_removed,
+                            changed + 1,
+                        )
                     });
-                
+
                 SandboxComparison {
                     sandbox_id: sandbox.sandbox_id.clone(),
                     agent_id: sandbox.agent_id.clone(),
@@ -225,34 +237,35 @@ impl SandboxManager {
             })
             .collect()
     }
-    
+
     /// 从磁盘加载沙箱索引
     pub fn load(&mut self) -> Result<(), SandboxError> {
         let index_path = self.base_dir.join("sandboxes").join("index.json");
-        
+
         if !index_path.exists() {
             return Ok(());
         }
-        
+
         let json = fs::read_to_string(&index_path)?;
         let sandboxes: Vec<AgentSandbox> = serde_json::from_str(&json)?;
-        
-        self.sandboxes = sandboxes.into_iter()
+
+        self.sandboxes = sandboxes
+            .into_iter()
             .map(|s| (s.sandbox_id.clone(), s))
             .collect();
-        
+
         Ok(())
     }
-    
+
     /// 保存沙箱索引到磁盘
     pub fn save(&self) -> Result<(), SandboxError> {
         let index_path = self.base_dir.join("sandboxes").join("index.json");
         fs::create_dir_all(index_path.parent().unwrap())?;
-        
+
         let sandboxes: Vec<&AgentSandbox> = self.sandboxes.values().collect();
         let json = serde_json::to_string_pretty(&sandboxes)?;
         fs::write(&index_path, json)?;
-        
+
         Ok(())
     }
 }

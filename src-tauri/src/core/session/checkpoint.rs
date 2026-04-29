@@ -9,21 +9,19 @@
 //!
 //! 存储结构：
 //! ```text
-//! .checkpoints/
-//!   └── <session_id>/
-//!       ├── branches.json          # 分支索引
-//!       └── <branch_name>/
-//!           ├── cp_xxxx.json       # 检查点文件
-//!           └── backups/           # 文件备份
+//! sessions/<session_id>/checkpoints/
+//!   ├── branches.json          # 分支索引
+//!   └── <branch_name>/
+//!       ├── cp_xxxx.json       # 检查点文件
+//!       └── backups/           # 文件备份
 //! ```
 
-use crate::get_agent_home;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-pub const DIR_CHECKPOINTS: &str = ".checkpoints";
+pub const DIR_CHECKPOINTS: &str = "checkpoints";
 pub const FILE_BRANCHES: &str = "branches.json";
 pub const DEFAULT_BRANCH: &str = "main";
 
@@ -106,20 +104,8 @@ pub struct BranchInfo {
 
 // ==================== 存储路径 ====================
 
-fn checkpoints_dir() -> PathBuf {
-    let dir = get_agent_home().join(DIR_CHECKPOINTS);
-    if !dir.exists() {
-        let _ = fs::create_dir_all(&dir);
-    }
-    dir
-}
-
 fn session_checkpoints_dir(session_id: &str) -> PathBuf {
-    let dir = checkpoints_dir().join(session_id);
-    if !dir.exists() {
-        let _ = fs::create_dir_all(&dir);
-    }
-    dir
+    crate::core::data_paths::session_paths(session_id).checkpoints_dir()
 }
 
 fn branch_dir(session_id: &str, branch_name: &str) -> PathBuf {
@@ -209,6 +195,7 @@ fn save_branch_index(session_id: &str, index: &BranchIndex) {
     let path = branches_file(session_id);
     if let Ok(json) = serde_json::to_string_pretty(index) {
         let _ = fs::write(&path, json);
+        crate::core::data_paths::refresh_session_manifest(session_id, None, None, None);
     }
 }
 
@@ -221,11 +208,11 @@ pub fn create_branch(
     description: Option<&str>,
 ) -> Branch {
     let mut index = load_branch_index(session_id);
-    
+
     if index.branches.contains_key(branch_name) {
         return index.branches.get(branch_name).unwrap().clone();
     }
-    
+
     let branch = Branch {
         name: branch_name.to_string(),
         session_id: session_id.to_string(),
@@ -235,28 +222,32 @@ pub fn create_branch(
         description: description.unwrap_or("新分支").to_string(),
         is_active: false,
     };
-    
-    index.branches.insert(branch_name.to_string(), branch.clone());
+
+    index
+        .branches
+        .insert(branch_name.to_string(), branch.clone());
     save_branch_index(session_id, &index);
-    
+
     branch
 }
 
 /// 切换活跃分支
 pub fn switch_branch(session_id: &str, branch_name: &str) -> Result<Branch, String> {
     let mut index = load_branch_index(session_id);
-    
-    let branch = index.branches.get(branch_name)
+
+    let branch = index
+        .branches
+        .get(branch_name)
         .ok_or_else(|| format!("分支 '{}' 不存在", branch_name))?
         .clone();
-    
+
     for b in index.branches.values_mut() {
         b.is_active = b.name == branch_name;
     }
     index.active_branch = branch_name.to_string();
-    
+
     save_branch_index(session_id, &index);
-    
+
     Ok(branch)
 }
 
@@ -267,36 +258,41 @@ pub fn list_branches(session_id: &str) -> Vec<Branch> {
 
 pub fn get_active_branch(session_id: &str) -> Branch {
     let index = load_branch_index(session_id);
-    index.branches.get(&index.active_branch)
+    index
+        .branches
+        .get(&index.active_branch)
         .cloned()
-        .unwrap_or_else(|| create_default_branch_index(session_id)
-            .branches.get(DEFAULT_BRANCH)
-            .unwrap()
-            .clone())
+        .unwrap_or_else(|| {
+            create_default_branch_index(session_id)
+                .branches
+                .get(DEFAULT_BRANCH)
+                .unwrap()
+                .clone()
+        })
 }
 
 pub fn delete_branch(session_id: &str, branch_name: &str) -> Result<(), String> {
     if branch_name == DEFAULT_BRANCH {
         return Err("无法删除主分支".to_string());
     }
-    
+
     let mut index = load_branch_index(session_id);
-    
+
     if index.active_branch == branch_name {
         return Err("无法删除当前活跃分支，请先切换到其他分支".to_string());
     }
-    
+
     if index.branches.remove(branch_name).is_none() {
         return Err(format!("分支 '{}' 不存在", branch_name));
     }
-    
+
     save_branch_index(session_id, &index);
-    
+
     let branch_path = branch_dir(session_id, branch_name);
     if branch_path.exists() {
         let _ = fs::remove_dir_all(&branch_path);
     }
-    
+
     Ok(())
 }
 
@@ -313,7 +309,7 @@ pub fn create_checkpoint(
 ) -> Checkpoint {
     let branch = get_active_branch(session_id);
     let checkpoint_id = format!("cp_{}", generate_id());
-    
+
     let checkpoint = Checkpoint {
         id: checkpoint_id.clone(),
         session_id: session_id.to_string(),
@@ -326,15 +322,15 @@ pub fn create_checkpoint(
         operations,
         metadata: HashMap::new(),
     };
-    
+
     save_checkpoint(&checkpoint);
-    
+
     let mut index = load_branch_index(session_id);
     if let Some(b) = index.branches.get_mut(&branch.name) {
         b.head_checkpoint_id = Some(checkpoint_id);
     }
     save_branch_index(session_id, &index);
-    
+
     checkpoint
 }
 
@@ -346,10 +342,15 @@ fn save_checkpoint(checkpoint: &Checkpoint) {
     );
     if let Ok(json) = serde_json::to_string_pretty(checkpoint) {
         let _ = fs::write(&path, json);
+        crate::core::data_paths::refresh_session_manifest(&checkpoint.session_id, None, None, None);
     }
 }
 
-pub fn load_checkpoint(session_id: &str, branch_name: &str, checkpoint_id: &str) -> Option<Checkpoint> {
+pub fn load_checkpoint(
+    session_id: &str,
+    branch_name: &str,
+    checkpoint_id: &str,
+) -> Option<Checkpoint> {
     let path = checkpoint_file(session_id, branch_name, checkpoint_id);
     fs::read_to_string(&path)
         .ok()
@@ -357,13 +358,19 @@ pub fn load_checkpoint(session_id: &str, branch_name: &str, checkpoint_id: &str)
 }
 
 pub fn list_checkpoints(session_id: &str, branch_name: Option<&str>) -> Vec<Checkpoint> {
-    let branch = branch_name.map(|s| s.to_string())
+    let branch = branch_name
+        .map(|s| s.to_string())
         .unwrap_or_else(|| get_active_branch(session_id).name);
-    
-    let branch_path = branch_dir(session_id, &branch);
-    let mut checkpoints: Vec<Checkpoint> = Vec::new();
-    
-    if let Ok(entries) = fs::read_dir(&branch_path) {
+
+    let mut checkpoints = Vec::new();
+    collect_checkpoints_from_dir(&branch_dir(session_id, &branch), &mut checkpoints);
+
+    checkpoints.sort_by_key(|c| c.created_at);
+    checkpoints
+}
+
+fn collect_checkpoints_from_dir(dir: &PathBuf, checkpoints: &mut Vec<Checkpoint>) {
+    if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().map(|e| e == "json").unwrap_or(false) {
@@ -376,16 +383,13 @@ pub fn list_checkpoints(session_id: &str, branch_name: Option<&str>) -> Vec<Chec
             }
         }
     }
-    
-    checkpoints.sort_by_key(|c| c.created_at);
-    checkpoints
 }
 
 /// 获取从指定检查点到根的完整链（用于回滚范围计算）
 pub fn get_checkpoint_chain(session_id: &str, checkpoint_id: &str) -> Vec<Checkpoint> {
     let mut chain = Vec::new();
     let mut current_id = Some(checkpoint_id.to_string());
-    
+
     while let Some(ref id) = current_id {
         let mut found = false;
         for branch in list_branches(session_id) {
@@ -400,7 +404,7 @@ pub fn get_checkpoint_chain(session_id: &str, checkpoint_id: &str) -> Vec<Checkp
             break;
         }
     }
-    
+
     chain
 }
 
@@ -408,7 +412,7 @@ pub fn get_checkpoint_tree(session_id: &str) -> CheckpointTree {
     let branches = list_branches(session_id);
     let mut all_checkpoints = Vec::new();
     let mut branch_infos = Vec::new();
-    
+
     for branch in &branches {
         let checkpoints = list_checkpoints(session_id, Some(&branch.name));
         branch_infos.push(BranchInfo {
@@ -419,9 +423,9 @@ pub fn get_checkpoint_tree(session_id: &str) -> CheckpointTree {
         });
         all_checkpoints.extend(checkpoints);
     }
-    
+
     all_checkpoints.sort_by_key(|c| c.created_at);
-    
+
     CheckpointTree {
         session_id: session_id.to_string(),
         branches: branch_infos,
@@ -429,11 +433,16 @@ pub fn get_checkpoint_tree(session_id: &str) -> CheckpointTree {
     }
 }
 
-pub fn delete_checkpoint(session_id: &str, branch_name: &str, checkpoint_id: &str) -> Result<(), String> {
+pub fn delete_checkpoint(
+    session_id: &str,
+    branch_name: &str,
+    checkpoint_id: &str,
+) -> Result<(), String> {
     let path = checkpoint_file(session_id, branch_name, checkpoint_id);
     if path.exists() {
         let _ = fs::remove_file(&path);
     }
+    crate::core::data_paths::refresh_session_manifest(session_id, None, None, None);
     Ok(())
 }
 
@@ -448,13 +457,10 @@ pub fn backup_file(
 ) -> Option<String> {
     let hash = content_hash(content);
     let backup_dir = backups_dir(session_id, branch_name);
-    
-    let filename = format!("{}_{}", 
-        hash,
-        file_path.replace(['/', '\\', ':'], "_")
-    );
+
+    let filename = format!("{}_{}", hash, file_path.replace(['/', '\\', ':'], "_"));
     let backup_path = backup_dir.join(&filename);
-    
+
     if !backup_path.exists() {
         if fs::write(&backup_path, content).is_ok() {
             return Some(backup_path.to_string_lossy().to_string());
@@ -462,7 +468,7 @@ pub fn backup_file(
     } else {
         return Some(backup_path.to_string_lossy().to_string());
     }
-    
+
     None
 }
 
@@ -471,7 +477,7 @@ pub fn restore_file(backup_path: &str, target_path: &str) -> Result<(), String> 
     if !backup.exists() {
         return Err(format!("备份文件不存在: {}", backup_path));
     }
-    
+
     fs::copy(&backup, target_path)
         .map(|_| ())
         .map_err(|e| format!("恢复文件失败: {}", e))
@@ -480,7 +486,10 @@ pub fn restore_file(backup_path: &str, target_path: &str) -> Result<(), String> 
 // ==================== 回滚 ====================
 
 /// 回滚到指定检查点：逆序撤销该检查点及之后的所有操作
-pub fn rollback_to_checkpoint(session_id: &str, checkpoint_id: &str) -> Result<Vec<String>, String> {
+pub fn rollback_to_checkpoint(
+    session_id: &str,
+    checkpoint_id: &str,
+) -> Result<Vec<String>, String> {
     // 获取所有 checkpoints
     let all_checkpoints = list_checkpoints(session_id, None);
 
@@ -532,7 +541,8 @@ pub fn rollback_to_checkpoint(session_id: &str, checkpoint_id: &str) -> Result<V
 /// 获取当前活跃分支的最新检查点
 pub fn get_latest_checkpoint(session_id: &str) -> Option<Checkpoint> {
     let branch = get_active_branch(session_id);
-    branch.head_checkpoint_id
+    branch
+        .head_checkpoint_id
         .and_then(|id| load_checkpoint(session_id, &branch.name, &id))
 }
 

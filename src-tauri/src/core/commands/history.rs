@@ -12,9 +12,9 @@
 //! - 助手多轮回复合并显示，思考过程用 `<details>` 折叠
 //! - 用户消息关联检查点 ID，支持前端回滚按钮
 
-use crate::core::session::checkpoint;
 use crate::core::models::*;
 use crate::core::session;
+use crate::core::session::checkpoint;
 use crate::core::state::*;
 
 #[derive(Default)]
@@ -185,7 +185,8 @@ fn render_assistant_message(history: &mut String, assistant: &AssistantDisplay) 
         final_text
     };
 
-    history.push_str("<div class=\"chat-message agent-message\"><div class=\"message-content\">\n\n");
+    history
+        .push_str("<div class=\"chat-message agent-message\"><div class=\"message-content\">\n\n");
 
     if !assistant.thinking.trim().is_empty() {
         history.push_str(&format!(
@@ -223,7 +224,10 @@ pub async fn get_session_history(
                     .iter()
                     .any(|later_cp| !later_cp.operations.is_empty());
 
-                (cp.trigger_message.clone(), (cp.id.clone(), has_operations_after))
+                (
+                    cp.trigger_message.clone(),
+                    (cp.id.clone(), has_operations_after),
+                )
             })
             .collect()
     };

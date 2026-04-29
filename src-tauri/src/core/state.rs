@@ -41,7 +41,9 @@ pub struct SessionContext {
     pub id: String,
     pub memory: Mutex<SessionMemory>,
     pub cancel_token: Mutex<Option<tokio_util::sync::CancellationToken>>,
+    pub active_run_id: Mutex<Option<String>>,
     pub pending_checkpoint: Mutex<Vec<crate::core::session::checkpoint::FileOperation>>,
+    pub todos: Mutex<Vec<crate::core::models::TodoItem>>,
     pub workspace: Mutex<Option<std::path::PathBuf>>,
     pub session_allowed: Mutex<bool>,
     pub pending_permissions: Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>,
@@ -53,7 +55,9 @@ impl SessionContext {
             id,
             memory: Mutex::new(SessionMemory::default()),
             cancel_token: Mutex::new(None),
+            active_run_id: Mutex::new(None),
             pending_checkpoint: Mutex::new(Vec::new()),
+            todos: Mutex::new(Vec::new()),
             workspace: Mutex::new(None),
             session_allowed: Mutex::new(false),
             pending_permissions: Mutex::new(HashMap::new()),
@@ -81,7 +85,7 @@ impl SessionManager {
         if let Some(ctx) = write_guard.get(session_id) {
             return ctx.clone();
         }
-        
+
         let ctx = SessionContext::new(session_id.to_string());
         // 尝试从磁盘加载历史数据和工作目录
         if let Ok(memory) = crate::core::session::load_session(session_id) {
@@ -90,7 +94,7 @@ impl SessionManager {
         if let Ok(meta) = crate::core::session::get_session_meta(session_id) {
             *ctx.workspace.lock().await = meta.working_directory.map(std::path::PathBuf::from);
         }
-        
+
         let arc_ctx = Arc::new(ctx);
         write_guard.insert(session_id.to_string(), arc_ctx.clone());
         arc_ctx

@@ -67,7 +67,10 @@ pub enum ApiError {
     Network(String),
 
     #[error("重试耗尽 ({max_retries}次): {last_error}")]
-    RetriesExhausted { max_retries: u32, last_error: String },
+    RetriesExhausted {
+        max_retries: u32,
+        last_error: String,
+    },
 
     #[error("响应解析错误: {0}")]
     Parse(String),

@@ -66,22 +66,22 @@ impl Journal {
             .append(true)
             .read(true)
             .open(path)?;
-        
+
         let sequence = Self::count_lines(&file)?;
-        
+
         Ok(Self {
             path: path.clone(),
             file: Some(file),
             sequence,
         })
     }
-    
+
     fn count_lines(file: &File) -> Result<u64, JournalError> {
         let reader = BufReader::new(file);
         let count = reader.lines().filter_map(|r| r.ok()).count() as u64;
         Ok(count)
     }
-    
+
     /// 追加日志条目并同步到磁盘
     pub fn append(&mut self, entry: &JournalEntry) -> Result<(), JournalError> {
         let json = serde_json::to_string(entry)?;
@@ -91,13 +91,13 @@ impl Journal {
         self.sequence += 1;
         Ok(())
     }
-    
+
     /// 重放日志（用于崩溃恢复）
     pub fn replay(&self) -> Result<Vec<JournalEntry>, JournalError> {
         let file = File::open(&self.path)?;
         let reader = BufReader::new(file);
         let mut entries = Vec::new();
-        
+
         for line in reader.lines() {
             let line = line?;
             if line.trim().is_empty() {
@@ -106,15 +106,15 @@ impl Journal {
             let entry: JournalEntry = serde_json::from_str(&line)?;
             entries.push(entry);
         }
-        
+
         Ok(entries)
     }
-    
+
     /// 判断是否需要压缩日志
     pub fn should_compact(&self) -> bool {
         self.sequence >= JOURNAL_COMPACT_THRESHOLD
     }
-    
+
     /// 压缩日志（保留当前状态，丢弃历史条目）
     pub fn compact(&mut self, tree: &SnapshotTree) -> Result<(), JournalError> {
         let compacted_path = self.path.with_extension("compact");
@@ -123,13 +123,13 @@ impl Journal {
             .write(true)
             .truncate(true)
             .open(&compacted_path)?;
-        
+
         let entry = JournalEntry::Compact {
             snapshot_ids: tree.nodes.keys().cloned().collect(),
             branch_names: tree.branches.keys().cloned().collect(),
         };
         writeln!(compacted, "{}", serde_json::to_string(&entry)?)?;
-        
+
         for snapshot in tree.nodes.values() {
             let entry = JournalEntry::CreateSnapshot {
                 id: snapshot.id.clone(),
@@ -141,7 +141,7 @@ impl Journal {
             };
             writeln!(compacted, "{}", serde_json::to_string(&entry)?)?;
         }
-        
+
         for branch in tree.branches.values() {
             let entry = JournalEntry::CreateBranch {
                 name: branch.name.clone(),
@@ -150,19 +150,17 @@ impl Journal {
             };
             writeln!(compacted, "{}", serde_json::to_string(&entry)?)?;
         }
-        
+
         compacted.sync_all()?;
-        
+
         std::fs::rename(&compacted_path, &self.path)?;
-        
-        self.file = Some(OpenOptions::new()
-            .append(true)
-            .open(&self.path)?);
+
+        self.file = Some(OpenOptions::new().append(true).open(&self.path)?);
         self.sequence = tree.nodes.len() as u64 + tree.branches.len() as u64;
-        
+
         Ok(())
     }
-    
+
     pub fn sequence(&self) -> u64 {
         self.sequence
     }

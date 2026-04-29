@@ -4,7 +4,7 @@
 //! 各工具模块通过 `define_tools!` 宏注册自己的工具，tool_search 和路由层从 registry 查询。
 //!
 //! ## 关键导出
-//! - `ToolDef`: 工具定义结构体（名称、描述、Schema、是否延迟/只读/并发安全等）
+//! - `ToolDef`: 工具定义结构体（名称、描述、搜索提示、Schema、是否延迟/只读/并发安全等）
 //! - `ToolRegistry`: 全局注册表，支持按名称查找、核心/延迟工具过滤、意图筛选
 //! - `define_tools!`: 注册宏，自动将 ToolDef 列表注册到 registry
 //!
@@ -19,7 +19,7 @@ use std::sync::OnceLock;
 pub struct ToolDef {
     /// 工具唯一名称
     pub name: &'static str,
-    /// 简述（用于延迟工具列表展示 + 搜索评分）
+    /// 简述（用于完整 schema 描述 + search_tools 搜索评分）
     pub description: &'static str,
     /// 搜索提示词（供 search_tools 关键词匹配的补充短语）
     pub search_hint: &'static str,
@@ -55,6 +55,8 @@ impl ToolRegistry {
             // 各模块注册自己的工具（渐进迁移，已迁移的模块在此注册）
             super::task_tools::register_tools(&mut registry);
             super::file_tools::register_tools(&mut registry);
+            super::notebook_tools::register_tools(&mut registry);
+            super::claude_code_tools::register_tools(&mut registry);
             super::shell_tools::register_tools(&mut registry);
             super::system_tools::register_tools(&mut registry);
             super::agent_tools::register_tools(&mut registry);
@@ -78,7 +80,8 @@ impl ToolRegistry {
 
     /// 获取核心工具定义（should_defer == false && is_enabled）
     pub fn get_core_definitions(&self) -> Vec<serde_json::Value> {
-        self.insertion_order.iter()
+        self.insertion_order
+            .iter()
             .filter_map(|name| self.tools.get(name))
             .filter(|t| !t.should_defer && t.is_enabled)
             .map(|t| t.schema.clone())
@@ -87,7 +90,8 @@ impl ToolRegistry {
 
     /// 获取延迟工具列表 (name, description)，按意图筛选
     pub fn get_deferred_list(&self, intent: &str) -> Vec<(&'static str, &'static str)> {
-        self.insertion_order.iter()
+        self.insertion_order
+            .iter()
             .filter_map(|name| self.tools.get(name))
             .filter(|t| t.should_defer && t.is_enabled)
             .filter(|t| Self::is_available_for_intent(t, intent))
@@ -95,16 +99,32 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// 获取延迟工具搜索索引 (name, description, search_hint)，按意图筛选
+    pub fn get_deferred_search_entries(
+        &self,
+        intent: &str,
+    ) -> Vec<(&'static str, &'static str, &'static str)> {
+        self.insertion_order
+            .iter()
+            .filter_map(|name| self.tools.get(name))
+            .filter(|t| t.should_defer && t.is_enabled)
+            .filter(|t| Self::is_available_for_intent(t, intent))
+            .map(|t| (t.name, t.description, t.search_hint))
+            .collect()
+    }
+
     /// 获取延迟工具的完整 Schema
     pub fn get_deferred_full_schema(&self, name: &str) -> Option<serde_json::Value> {
-        self.tools.get(name)
+        self.tools
+            .get(name)
             .filter(|t| t.should_defer && t.is_enabled)
             .map(|t| t.schema.clone())
     }
 
     /// 获取所有延迟工具的名称列表（用于 search 时的全量展示）
     pub fn get_all_deferred_names(&self, intent: &str) -> Vec<&'static str> {
-        self.insertion_order.iter()
+        self.insertion_order
+            .iter()
             .filter_map(|name| self.tools.get(name))
             .filter(|t| t.should_defer && t.is_enabled)
             .filter(|t| Self::is_available_for_intent(t, intent))
@@ -114,7 +134,8 @@ impl ToolRegistry {
 
     /// 获取可写工具名列表（供子代理 read_only 模式过滤）
     pub fn get_writable_tools(&self) -> Vec<&'static str> {
-        self.insertion_order.iter()
+        self.insertion_order
+            .iter()
             .filter_map(|name| self.tools.get(name))
             .filter(|t| !t.is_read_only && t.is_enabled)
             .map(|t| t.name)
@@ -126,8 +147,11 @@ impl ToolRegistry {
         match intent {
             "CHAT" | "MEMORY_QUERY" | "QUESTION" => false,
             "SUBAGENT" => {
-                // 子代理不能调用 task/dream/compact/run_tasks
-                !matches!(tool.name, "task" | "dream" | "compact" | "run_tasks")
+                // 子代理不能调用主控/调度/主会话进度工具
+                !matches!(
+                    tool.name,
+                    "task" | "dream" | "compact" | "run_tasks" | "todo_write"
+                )
             }
             _ => true, // PROJECT_ACTION
         }
@@ -137,7 +161,7 @@ impl ToolRegistry {
 /// 注册宏：自动将 ToolDef 列表注册到 registry
 ///
 /// 用法：
-/// ```rust
+/// ```rust,ignore
 /// crate::define_tools! {
 ///     pub fn register_tools(registry) {
 ///         ToolDef { name: "task_create", ... },
@@ -145,6 +169,7 @@ impl ToolRegistry {
 ///     }
 /// }
 /// ```
+// 定义工具注册函数
 #[macro_export]
 macro_rules! define_tools {
     (pub fn register_tools($registry:ident) { $($tool:expr),* $(,)? }) => {

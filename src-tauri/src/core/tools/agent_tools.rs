@@ -20,20 +20,20 @@
 //! - 子代理循环次数受 `MAX_AGENT_LOOP_BEFORE_CONFIRM` 限制
 
 use eventsource_stream::Eventsource;
-use futures_util::StreamExt;
 use serde_json::json;
-use std::collections::HashMap;
 use tauri::{Emitter, Manager};
 
-use super::{get_tools_definition, handle_tool_call_inner_owned, load_all_skills};
-use crate::core::llm::adapters::parse_streamed_tool_input;
+use super::agent_registry::{normalize_agent_type, AgentRegistry};
+use super::{handle_tool_call_inner_owned, load_all_skills};
+use crate::core::agent::{process_stream, StreamConfig};
 use crate::core::config::ConfigState;
-use crate::core::models::{AnthropicRequest, Content, ContentBlock, Message, PlanDocument};
 use crate::core::infra::prompts::get_subagent_system_prompt;
+use crate::core::llm::adapters::parse_streamed_tool_input;
+use crate::core::models::{AnthropicRequest, Content, ContentBlock, Message, PlanDocument};
 use crate::core::orchestration::subagents::{SubAgentMonitor, SubAgentPhase};
 use crate::core::orchestration::tasks::TaskManager;
+use crate::core::session::memory::micro_compact;
 use crate::core::tools::registry::ToolDef;
-use crate::get_agent_home;
 
 /// 加载技能
 pub async fn load_skill(
@@ -68,9 +68,9 @@ pub async fn compact(
 pub async fn dream(
     _app: &tauri::AppHandle,
     _input: &serde_json::Value,
-    _session_id: &str,
+    session_id: &str,
 ) -> String {
-    let summary = TaskManager::new()
+    let summary = TaskManager::for_session(session_id)
         .summary()
         .unwrap_or_else(|e| format!("生成摘要失败: {}", e));
     format!("主动触发记忆整理（Dream Agent）已启动。\n\n[记忆归档与状态同步报告]\n当前项目的全局任务状态已更新：\n\n{}\n\n请根据上述进度报告，评估下一步需要启动的核心任务，或者判断是否可以进入休息/总结状态。", summary)
@@ -84,10 +84,31 @@ pub async fn run_subagent(
     session_id: String,
     task_id: Option<i32>,
     label: Option<String>,
+    subagent_type: Option<String>,
+    model_override: Option<String>,
 ) -> (String, u64, u64) {
+    let agent_registry = AgentRegistry::global();
+    let requested_agent_type = normalize_agent_type(subagent_type.as_deref());
+    let agent = agent_registry
+        .get(requested_agent_type)
+        .unwrap_or_else(|| agent_registry.default_agent());
+    let agent_type = agent.agent_type.to_string();
+    let max_loops = agent
+        .max_turns
+        .unwrap_or(crate::core::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM);
+
     // 注册子代理运行记录
-    let run_id =
-        SubAgentMonitor::start_run(&app, &session_id, &prompt, read_only, task_id, label).await;
+    let run_id = SubAgentMonitor::start_run(
+        &app,
+        &session_id,
+        &prompt,
+        read_only,
+        task_id,
+        label,
+        agent_type.clone(),
+        max_loops,
+    )
+    .await;
 
     // 从 ConfigState 读取配置
     let app_cfg = app.state::<ConfigState>().0.lock().await.clone();
@@ -99,7 +120,10 @@ pub async fn run_subagent(
     let api_format_enum = cfg.api_format_enum();
     let api_key = cfg.api_key;
     let base_url = cfg.base_url;
-    let model_id = cfg.main_model; // 子代理与主代理共用同一模型
+    let model_id = model_override
+        .filter(|model| !model.trim().is_empty())
+        .or_else(|| agent.model.map(|model| model.to_string()))
+        .unwrap_or(cfg.main_model);
 
     let client = reqwest::Client::new();
     // 优先使用会话工作目录，否则回退到进程 CWD
@@ -121,6 +145,10 @@ pub async fn run_subagent(
         });
     let ws_str = ws.as_ref().map(|p| p.to_string_lossy().to_string());
     let mut system_prompt = get_subagent_system_prompt(&cwd, ws_str.as_deref());
+    system_prompt.push_str(&format!(
+        "\n\n[Subagent type]\n- type: {}\n- when to use: {}\n\n[Role instructions]\n{}\n\n[Tool boundary]\nOnly use the tools provided in this run. Do not attempt to call parent-control tools such as task, run_tasks, todo_write, compact, or dream.",
+        agent.agent_type, agent.when_to_use, agent.system_prompt
+    ));
 
     let skills = load_all_skills();
     if !skills.is_empty() {
@@ -139,24 +167,14 @@ pub async fn run_subagent(
     let mut sub_input_tokens: u64 = 0;
     let mut sub_output_tokens: u64 = 0;
 
-    let mut tools = get_tools_definition("SUBAGENT", &[]);
-
-    // 只读模式：过滤掉所有写操作工具
-    if read_only {
-        let mutating_tools = [
-            "write_file",
-            "edit_file",
-            "run_shell",
-            "task_create",
-            "task_update",
-        ];
-        tools.retain(|t| {
-            if let Some(name) = t["name"].as_str() {
-                !mutating_tools.contains(&name)
-            } else {
-                true
-            }
-        });
+    let tools = agent_registry.resolve_tools(agent, read_only);
+    if tools.is_empty() {
+        let msg = format!(
+            "Subagent '{}' has no available tools after permission filtering.",
+            agent.agent_type
+        );
+        SubAgentMonitor::fail_run(&app, &run_id, msg.clone(), 0, 0).await;
+        return (msg, 0, 0);
     }
 
     let mode_str = if read_only {
@@ -167,7 +185,7 @@ pub async fn run_subagent(
     let _ = app.emit(
         "chat-stream",
         json!({
-            "content": format!("\n> ◆ **[启动子代理]** ({}) 任务: `{}`\n", mode_str, prompt),
+            "content": format!("\n> ◆ **[启动子代理]** ({}, {}) 任务: `{}`\n", agent_type, mode_str, prompt),
             "sessionId": session_id.clone(),
             "isSubAgent": true
         }),
@@ -176,13 +194,13 @@ pub async fn run_subagent(
         "agent-step",
         json!({
             "type": "subagent_start",
-            "task": format!("{} - {}", mode_str, prompt.chars().take(100).collect::<String>()),
+            "task": format!("{} {} - {}", agent_type, mode_str, prompt.chars().take(100).collect::<String>()),
             "sessionId": session_id.clone(),
             "isSubAgent": true
         }),
     );
 
-    while loop_count < crate::core::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM {
+    while loop_count < max_loops {
         if SubAgentMonitor::is_cancelled(&app, &run_id).await {
             SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
             return (
@@ -264,8 +282,8 @@ pub async fn run_subagent(
             };
 
             let should_think = cfg.enable_thinking.unwrap_or(false);
-            let thinking_param =
-                crate::core::llm::registry::query_capabilities(&model_id).and_then(|c| c.thinking_param);
+            let thinking_param = crate::core::llm::registry::query_capabilities(&model_id)
+                .and_then(|c| c.thinking_param);
 
             match thinking_param.as_deref() {
                 Some("reasoning_effort") => {
@@ -358,246 +376,52 @@ pub async fn run_subagent(
         .await;
 
         let mut stream = response.bytes_stream().eventsource();
-        let mut current_blocks: Vec<ContentBlock> = Vec::new();
-        let mut tool_input_buffers: HashMap<usize, String> = HashMap::new();
-        let mut openai_tool_block_map: HashMap<usize, usize> = HashMap::new();
-        let mut current_text_this_turn = String::new();
-        let mut current_thinking_this_turn = String::new();
-        let mut reported_thinking_this_turn = false;
         let sub_cancel_token = SubAgentMonitor::cancel_token(&app, &run_id).await;
+        let default_cancel = tokio_util::sync::CancellationToken::new();
+        let cancel_ref = sub_cancel_token.as_ref().unwrap_or(&default_cancel);
 
-        loop {
-            let event_result = if let Some(token) = sub_cancel_token.as_ref() {
-                tokio::select! {
-                    next = stream.next() => next,
-                    _ = token.cancelled() => {
-                        SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
-                        return ("子代理已取消。".to_string(), sub_input_tokens, sub_output_tokens);
-                    }
-                }
-            } else {
-                stream.next().await
-            };
-            let Some(event_result) = event_result else {
-                break;
-            };
-            if SubAgentMonitor::is_cancelled(&app, &run_id).await {
-                SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
-                return (
-                    "子代理已取消。".to_string(),
-                    sub_input_tokens,
-                    sub_output_tokens,
-                );
-            }
+        let stream_result = process_stream(
+            &mut stream,
+            is_openai,
+            &app,
+            &session_id,
+            &run_id,
+            loop_count + 1,
+            cancel_ref,
+            StreamConfig { is_subagent: true },
+        )
+        .await;
 
-            let event = match event_result {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            let data = event.data;
-            if data == "[DONE]" {
-                break;
-            }
-            let json: serde_json::Value = serde_json::from_str(&data).unwrap_or(json!({}));
-
-            if is_openai {
-                if let Some(usage) = json.get("usage") {
-                    if let Some(in_toks) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
-                        sub_input_tokens += in_toks;
-                    }
-                    if let Some(out_toks) = usage.get("completion_tokens").and_then(|v| v.as_u64())
-                    {
-                        sub_output_tokens += out_toks;
-                    }
-                }
-
-                if let Some(choices) = json["choices"].as_array() {
-                    if let Some(first) = choices.first() {
-                        if let Some(delta) = first.get("delta") {
-                            // Handle text content
-                            if let Some(t) = delta["content"].as_str() {
-                                let is_text = matches!(
-                                    current_blocks.last(),
-                                    Some(ContentBlock::Text { .. })
-                                );
-                                if !is_text {
-                                    current_blocks.push(ContentBlock::Text {
-                                        text: String::new(),
-                                    });
-                                }
-                                if let Some(ContentBlock::Text { text }) = current_blocks.last_mut()
-                                {
-                                    text.push_str(t);
-                                    current_text_this_turn.push_str(t);
-                                }
-                            }
-                            // Handle reasoning content (DeepSeek OpenAI format)
-                            if let Some(t) = delta["reasoning_content"].as_str() {
-                                let is_thinking = matches!(
-                                    current_blocks.last(),
-                                    Some(ContentBlock::Thinking { .. })
-                                );
-                                if !is_thinking {
-                                    current_blocks.push(ContentBlock::Thinking {
-                                        thinking: String::new(),
-                                        signature: String::new(),
-                                    });
-                                }
-                                if let Some(ContentBlock::Thinking { thinking, .. }) =
-                                    current_blocks.last_mut()
-                                {
-                                    thinking.push_str(t);
-                                    current_thinking_this_turn.push_str(t);
-                                    if !reported_thinking_this_turn {
-                                        SubAgentMonitor::update_phase(
-                                            &app,
-                                            &run_id,
-                                            SubAgentPhase::Thinking,
-                                            loop_count + 1,
-                                            sub_input_tokens,
-                                            sub_output_tokens,
-                                        )
-                                        .await;
-                                        reported_thinking_this_turn = true;
-                                    }
-                                    let _ = app.emit(
-                                        "chat-thinking",
-                                        json!({ "content": t, "sessionId": session_id.clone(), "isSubAgent": true }),
-                                    );
-                                }
-                            }
-                            // Handle tool calls
-                            if let Some(tool_calls) = delta["tool_calls"].as_array() {
-                                for tc in tool_calls {
-                                    let tool_call_index =
-                                        tc["index"].as_u64().unwrap_or(0) as usize;
-
-                                    // If first time seeing this index
-                                    if !openai_tool_block_map.contains_key(&tool_call_index) {
-                                        let id = tc["id"].as_str().unwrap_or("").to_string();
-                                        let name = tc["function"]["name"]
-                                            .as_str()
-                                            .unwrap_or("")
-                                            .to_string();
-                                        current_blocks.push(ContentBlock::ToolUse {
-                                            id,
-                                            name,
-                                            input: json!({}),
-                                        });
-                                        let block_index = current_blocks.len() - 1;
-                                        openai_tool_block_map.insert(tool_call_index, block_index);
-                                        tool_input_buffers.insert(block_index, String::new());
-                                    }
-
-                                    // Append arguments string
-                                    if let Some(args) = tc["function"]["arguments"].as_str() {
-                                        if let Some(block_index) =
-                                            openai_tool_block_map.get(&tool_call_index)
-                                        {
-                                            if let Some(buf) =
-                                                tool_input_buffers.get_mut(block_index)
-                                            {
-                                                buf.push_str(args);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                match json["type"].as_str().unwrap_or("") {
-                    "message_start" => {
-                        if let Some(usage) = json.get("message").and_then(|m| m.get("usage")) {
-                            sub_input_tokens += usage
-                                .get("input_tokens")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                        }
-                    }
-                    "message_delta" => {
-                        if let Some(usage) = json.get("usage") {
-                            if let Some(in_toks) =
-                                usage.get("input_tokens").and_then(|v| v.as_u64())
-                            {
-                                sub_input_tokens += in_toks;
-                            }
-                            if let Some(out_toks) =
-                                usage.get("output_tokens").and_then(|v| v.as_u64())
-                            {
-                                sub_output_tokens += out_toks;
-                            }
-                        }
-                    }
-                    "content_block_start" => {
-                        let _index = json["index"].as_u64().unwrap_or(0) as usize;
-                        let block = &json["content_block"];
-                        match block["type"].as_str().unwrap_or("") {
-                            "text" => current_blocks.push(ContentBlock::Text {
-                                text: String::new(),
-                            }),
-                            "thinking" => current_blocks.push(ContentBlock::Thinking {
-                                thinking: String::new(),
-                                signature: block["signature"].as_str().unwrap_or("").to_string(),
-                            }),
-                            "tool_use" => {
-                                let tool_name = block["name"].as_str().unwrap_or("").to_string();
-                                current_blocks.push(ContentBlock::ToolUse {
-                                    id: block["id"].as_str().unwrap_or("").to_string(),
-                                    name: tool_name.clone(),
-                                    input: json!({}),
-                                });
-                                tool_input_buffers.insert(current_blocks.len() - 1, String::new());
-                            }
-                            _ => {}
-                        }
-                    }
-                    "content_block_delta" => {
-                        let index = json["index"].as_u64().unwrap_or(0) as usize;
-                        let delta = &json["delta"];
-                        if let Some(block) = current_blocks.get_mut(index) {
-                            match block {
-                                ContentBlock::Text { text } => {
-                                    if let Some(t) = delta["text"].as_str() {
-                                        text.push_str(t);
-                                        current_text_this_turn.push_str(t);
-                                    }
-                                }
-                                ContentBlock::Thinking { thinking, .. } => {
-                                    if let Some(t) = delta["thinking"].as_str() {
-                                        thinking.push_str(t);
-                                        current_thinking_this_turn.push_str(t);
-                                        if !reported_thinking_this_turn {
-                                            SubAgentMonitor::update_phase(
-                                                &app,
-                                                &run_id,
-                                                SubAgentPhase::Thinking,
-                                                loop_count + 1,
-                                                sub_input_tokens,
-                                                sub_output_tokens,
-                                            )
-                                            .await;
-                                            reported_thinking_this_turn = true;
-                                        }
-                                        let _ = app.emit("chat-thinking", json!({ "content": t, "sessionId": session_id.clone(), "isSubAgent": true }));
-                                    }
-                                }
-                                ContentBlock::ToolUse { .. } => {
-                                    if let Some(partial) = delta["partial_json"].as_str() {
-                                        if let Some(buf) = tool_input_buffers.get_mut(&index) {
-                                            buf.push_str(partial);
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
+        // 检查流式接收期间是否被取消
+        if SubAgentMonitor::is_cancelled(&app, &run_id).await {
+            SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
+            return (
+                "子代理已取消。".to_string(),
+                stream_result.input_tokens,
+                stream_result.output_tokens,
+            );
         }
+
+        // 更新思考阶段
+        if !stream_result.thinking.is_empty() {
+            SubAgentMonitor::update_phase(
+                &app,
+                &run_id,
+                SubAgentPhase::Thinking,
+                loop_count + 1,
+                stream_result.input_tokens,
+                stream_result.output_tokens,
+            )
+            .await;
+        }
+
+        sub_input_tokens += stream_result.input_tokens;
+        sub_output_tokens += stream_result.output_tokens;
+
+        let mut current_blocks = stream_result.blocks;
+        let tool_input_buffers = stream_result.tool_input_buffers;
+        let current_text_this_turn = stream_result.text;
+        let current_thinking_this_turn = stream_result.thinking;
 
         let tool_calls: Vec<(String, String)> = tool_input_buffers
             .iter()
@@ -837,6 +661,8 @@ pub async fn run_subagent(
             messages.push(Message::User {
                 content: Content::Multiple(tool_results),
             });
+            // 轻量压缩：清理空内容块，避免上下文无限增长
+            micro_compact(&mut messages);
         }
         loop_count += 1;
     }
@@ -858,9 +684,7 @@ pub async fn run_subagent(
         }),
     );
 
-    if loop_count >= crate::core::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM
-        && final_answer.is_empty()
-    {
+    if loop_count >= max_loops && final_answer.is_empty() {
         SubAgentMonitor::fail_run(
             &app,
             &run_id,
@@ -870,10 +694,7 @@ pub async fn run_subagent(
         )
         .await;
         return (
-            format!(
-                "子代理执行达到 {} 轮上限，已停止。",
-                crate::core::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM
-            ),
+            format!("子代理执行达到 {} 轮上限，已停止。", max_loops),
             sub_input_tokens,
             sub_output_tokens,
         );
@@ -944,11 +765,8 @@ pub async fn propose_plan(
     let ctx = session_manager.get_or_create(session_id).await;
     ctx.pending_permissions.lock().await.insert(id.clone(), tx);
 
-    // 同时将方案文件保存到 .plans 目录以便持久化
-    let plans_dir = get_agent_home().join(crate::core::constants::DIR_PLANS);
-    if !plans_dir.exists() {
-        let _ = std::fs::create_dir_all(&plans_dir);
-    }
+    // 同时将方案文件保存到会话 plans 目录以便持久化
+    let plans_dir = crate::core::data_paths::session_paths(session_id).plans_dir();
     let safe_title: String = title
         .chars()
         .take(20)
@@ -1119,12 +937,17 @@ crate::define_tools! {
             search_hint: "task subagent delegate spawn worker",
             schema: json!({
                 "name": "task",
-                "description": "【真正执行】产生一个具有干净上下文环境的子代理 (Subagent) 去实际执行探索或具体操作任务。这是唯一能让子代理实际干活的工具！主 Agent 必须使用此工具来委派文件读取、代码搜索和修改等具体工作，避免污染主对话上下文。与父进程共享文件系统但不共享对话历史。支持与其他工具（包括其他 task）并行执行，可同时委派多个子代理。",
+                "description": format!("【真正执行】产生一个具有干净上下文环境的子代理 (Subagent) 去实际执行探索或具体操作任务。使用 description 提供短活动标签，使用 prompt 提供完整任务说明，使用 subagent_type 选择专用代理。与父进程共享文件系统但不共享对话历史。可用 subagent_type:\n{}", AgentRegistry::global().prompt_listing()),
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "prompt": {"type": "string", "description": "要子代理完成的任务说明，越详细越好。包括你想要子代理返回什么数据。"},
-                        "read_only": {"type": "boolean", "description": "是否以只读模式运行子代理。默认为 true。如果需要子代理修改文件、写代码或执行高风险命令，【必须】显式设置为 false，否则子代理将没有写入文件的权限！"}
+                        "description": {"type": "string", "description": "Short 3-8 word activity label shown in the UI, e.g. 'Review notebook edits'."},
+                        "subagent_type": {"type": "string", "enum": AgentRegistry::global().available_types(), "description": format!("Specialized agent profile. If omitted, uses general. Available profiles:\n{}", AgentRegistry::global().prompt_listing())},
+                        "model": {"type": "string", "description": "Optional model id override for this subagent. If omitted, inherits the active main model or the agent definition default."},
+                        "task_id": {"type": "integer", "description": "Optional persistent task id for scheduler/board integration."},
+                        "label": {"type": "string", "description": "Deprecated alias for description; prefer description."},
+                        "read_only": {"type": "boolean", "description": "Optional permission override. If omitted, the selected subagent_type default is used. true filters out every tool whose registry metadata is not read-only; false still respects the selected agent allowlist/denylist."}
                     },
                     "required": ["prompt"]
                 }

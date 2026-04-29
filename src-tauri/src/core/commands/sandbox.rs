@@ -9,8 +9,8 @@
 //! - `sandbox_publish()`: 将沙箱变更发布到主分支
 //! - `sandbox_compare()`: 比较所有沙箱与主分支的差异
 
-use crate::core::state::SnapshotRegistry;
 use crate::core::snapshot_engine::{AgentSandbox, SandboxComparison};
+use crate::core::state::SnapshotRegistry;
 
 /// 为指定 Agent 创建沙箱环境
 #[tauri::command]
@@ -22,7 +22,9 @@ pub async fn sandbox_create(
     registry: tauri::State<'_, SnapshotRegistry>,
 ) -> Result<AgentSandbox, String> {
     let manager = registry.0.read().await.get_or_create(&session_id).await?;
-    manager.create_sandbox(agent_id, base_snapshot_id, description).await
+    manager
+        .create_sandbox(agent_id, base_snapshot_id, description)
+        .await
 }
 
 #[tauri::command]

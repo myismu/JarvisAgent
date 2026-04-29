@@ -6,12 +6,11 @@
 //! - 意图分类日志（记录用户意图识别结果）
 //! - SSE 流式事件日志（调试流式响应）
 
-use std::fs::{self, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
 
-use crate::core::constants::{DIR_LOGS, FILE_AGENT_LOOP_DEBUG, FILE_THOUGHTS_LOG};
-use crate::get_agent_home;
+use crate::core::constants::{FILE_AGENT_LOOP_DEBUG, FILE_THOUGHTS_LOG};
 
 /// 调试日志记录器
 ///
@@ -28,10 +27,7 @@ impl DebugLogger {
     ///
     /// 自动创建日志目录（如果不存在）
     pub fn new() -> Self {
-        let log_dir = get_agent_home().join(DIR_LOGS);
-        if !log_dir.exists() {
-            let _ = fs::create_dir_all(&log_dir);
-        }
+        let log_dir = crate::core::data_paths::logs_dir();
         Self {
             thoughts_path: log_dir.join(FILE_THOUGHTS_LOG),
             debug_path: log_dir.join(FILE_AGENT_LOOP_DEBUG),

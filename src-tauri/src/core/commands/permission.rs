@@ -22,7 +22,11 @@ pub async fn resolve_permission(
 ) -> Result<(), String> {
     let ctx = session_manager.get_or_create(&session_id).await;
     if id.starts_with("plan_") {
-        let status = if decision == "allow" { "approved" } else { "rejected" };
+        let status = if decision == "allow" {
+            "approved"
+        } else {
+            "rejected"
+        };
         if let Ok(Some(document)) = crate::core::session::update_plan_document_status(
             &session_id,
             &id,
@@ -31,7 +35,11 @@ pub async fn resolve_permission(
         ) {
             {
                 let mut memory = ctx.memory.lock().await;
-                if let Some(existing) = memory.plan_documents.iter_mut().find(|item| item.id == document.id) {
+                if let Some(existing) = memory
+                    .plan_documents
+                    .iter_mut()
+                    .find(|item| item.id == document.id)
+                {
                     *existing = document.clone();
                 } else {
                     memory.plan_documents.push(document.clone());
@@ -66,13 +74,19 @@ pub async fn cancel_jarvis(
         token.cancel();
     }
     // 拒绝所有等待用户决策的权限请求
-    let pending = ctx.pending_permissions.lock().await.drain().collect::<Vec<_>>();
+    let pending = ctx
+        .pending_permissions
+        .lock()
+        .await
+        .drain()
+        .collect::<Vec<_>>();
     for (_, tx) in pending {
         let _ = tx.send("reject".to_string());
     }
     // 级联取消该会话下所有运行中的子 Agent
     let cancelled_subagents =
-        crate::core::orchestration::subagents::SubAgentMonitor::cancel_session(&app, &session_id).await;
+        crate::core::orchestration::subagents::SubAgentMonitor::cancel_session(&app, &session_id)
+            .await;
     if !cancelled_subagents.is_empty() {
         println!(
             "[JARVIS] Cancelled {} running subagent(s) for session {}",

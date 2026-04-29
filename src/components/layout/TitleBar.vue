@@ -5,6 +5,7 @@ const { closeWindow, minimizeWindow, maximizeWindow } = useWindow();
 
 defineProps<{
   sidebarCollapsed: boolean;
+  agentPanelVisible: boolean;
 }>()
 </script>
 
@@ -15,7 +16,14 @@ defineProps<{
       <span class="control minimize" @click="minimizeWindow"></span>
       <span class="control maximize" @click="maximizeWindow"></span>
     </div>
-    <div class="window-title" :class="{ 'sidebar-open': !sidebarCollapsed }" data-tauri-drag-region>
+    <div
+      class="window-title"
+      :class="{
+        'sidebar-open': !sidebarCollapsed,
+        'agent-panel-open': agentPanelVisible
+      }"
+      data-tauri-drag-region
+    >
       <div class="reactor-label">
         <span class="label-char" style="--i:0">J</span><span class="label-dot">.</span>
         <span class="label-char" style="--i:1">A</span><span class="label-dot">.</span>
@@ -75,7 +83,7 @@ defineProps<{
 .reactor-label {
   position: absolute;
   top: 50%;
-  left: calc(50% + var(--sidebar-offset, 0px));
+  left: calc(50% + var(--sidebar-offset, 0px) + var(--agent-panel-offset, 0px));
   transform: translate(-50%, -50%);
   display: inline-flex;
   align-items: center;
@@ -85,6 +93,9 @@ defineProps<{
 }
 .window-title.sidebar-open {
   --sidebar-offset: 125px;
+}
+.window-title.agent-panel-open {
+  --agent-panel-offset: -130px;
 }
 .label-char {
   display: inline-block;

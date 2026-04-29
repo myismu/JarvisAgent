@@ -19,14 +19,16 @@
 //! - 输出超过 50000 字符自动截断
 //! - exit code 含义自动解读（grep:1=无匹配, diff:1=不同 等）
 
+use super::permission::{is_within_workspace, request_permission};
+use super::shell_security::{
+    check_command_safety, get_destructive_warning, is_readonly_command, SafetyResult,
+};
+use crate::core::tools::registry::ToolDef;
 use serde_json::json;
 use std::process::Stdio;
 use std::time::Duration;
 use tauri::Manager;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use super::permission::{request_permission, is_within_workspace};
-use super::shell_security::{check_command_safety, is_readonly_command, get_destructive_warning, SafetyResult};
-use crate::core::tools::registry::ToolDef;
 
 /// Shell 输出最大字符数（截断阈值）
 const MAX_SHELL_OUTPUT_LEN: usize = 50000;
@@ -102,7 +104,13 @@ fn interpret_exit_code(cmd: &str, exit_code: i32) -> &'static str {
 }
 
 /// 格式化 shell 输出，包含 exit code 语义和截断
-fn format_shell_output(cmd: &str, stdout: &str, stderr: &str, exit_code: i32, max_chars: usize) -> String {
+fn format_shell_output(
+    cmd: &str,
+    stdout: &str,
+    stderr: &str,
+    exit_code: i32,
+    max_chars: usize,
+) -> String {
     let semantics = interpret_exit_code(cmd, exit_code);
     let mut result = if exit_code == 0 {
         format!("[exit code: 0 ({})]\n", semantics)
@@ -182,7 +190,15 @@ async fn run_shell_async(cmd: &str, exec_dir: &std::path::Path) -> (String, Stri
             "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; {}",
             cmd
         );
-        ("powershell".to_string(), vec!["-NoProfile".to_string(), "-NonInteractive".to_string(), "-Command".to_string(), ps_cmd])
+        (
+            "powershell".to_string(),
+            vec![
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                ps_cmd,
+            ],
+        )
     } else {
         ("bash".to_string(), vec!["-c".to_string(), cmd.to_string()])
     };
@@ -231,7 +247,9 @@ async fn run_shell_async(cmd: &str, exec_dir: &std::path::Path) -> (String, Stri
             let stdout_out = stdout_handle.await.unwrap_or_default();
             let stderr_out = stderr_handle.await.unwrap_or_default();
 
-            let exit_code = child.wait().await
+            let exit_code = child
+                .wait()
+                .await
                 .map(|s| s.code().unwrap_or(-1))
                 .unwrap_or(-1);
 
@@ -248,7 +266,8 @@ async fn background_run_internal(
     workspace: &Option<std::path::PathBuf>,
 ) -> String {
     let exec_dir = workspace.as_ref().map(|p| p.to_string_lossy().into_owned());
-    crate::core::infra::background::BackgroundManager::run(app.clone(), cmd.to_string(), exec_dir).await
+    crate::core::infra::background::BackgroundManager::run(app.clone(), cmd.to_string(), exec_dir)
+        .await
 }
 
 /// 执行 shell 命令（统一入口，支持同步/后台模式，按平台自动选择 PowerShell 或 bash）
@@ -259,7 +278,10 @@ pub async fn run_shell(
 ) -> String {
     let cmd = input["command"].as_str().unwrap_or("");
     let description = input["description"].as_str().unwrap_or("");
-    let timeout_secs = input["timeout"].as_u64().unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(5, 600);
+    let timeout_secs = input["timeout"]
+        .as_u64()
+        .unwrap_or(DEFAULT_TIMEOUT_SECS)
+        .clamp(5, 600);
     let run_in_bg = input["run_in_background"].as_bool().unwrap_or(false);
 
     // --- 1. 安全检查 ---
@@ -293,8 +315,15 @@ pub async fn run_shell(
     if !is_readonly_command(cmd) {
         let lower_cmd = cmd.to_lowercase();
         let dangerous_keywords = [
-            "del ", "rm ", "format ", "rd ", "rmdir ",
-            "remove-item", "clear-content", "stop-process", "kill ",
+            "del ",
+            "rm ",
+            "format ",
+            "rd ",
+            "rmdir ",
+            "remove-item",
+            "clear-content",
+            "stop-process",
+            "kill ",
         ];
         let needs_permission = dangerous_keywords.iter().any(|k| lower_cmd.contains(k));
 
@@ -334,11 +363,13 @@ pub async fn run_shell(
     let result = tokio::time::timeout(
         Duration::from_secs(timeout_secs),
         run_shell_async(cmd, &exec_dir),
-    ).await;
+    )
+    .await;
 
     match result {
         Ok((stdout, stderr, exit_code)) => {
-            let mut output = format_shell_output(cmd, &stdout, &stderr, exit_code, MAX_SHELL_OUTPUT_LEN);
+            let mut output =
+                format_shell_output(cmd, &stdout, &stderr, exit_code, MAX_SHELL_OUTPUT_LEN);
             if !warnings.is_empty() {
                 output.push_str(&format!("\n\n[警告]\n{}", warnings.join("\n")));
             }
@@ -381,9 +412,9 @@ pub async fn git_command(
     if let Some(ref workspace) = ws {
         for arg in &args {
             if arg.contains(":") || arg.contains("..") {
-                 if !is_within_workspace(arg, Some(workspace)) {
-                     return format!("沙箱限制：git 参数包含沙箱外路径 '{}'", arg);
-                 }
+                if !is_within_workspace(arg, Some(workspace)) {
+                    return format!("沙箱限制：git 参数包含沙箱外路径 '{}'", arg);
+                }
             }
         }
     }
@@ -435,11 +466,19 @@ pub async fn git_command(
             let stdout_out = stdout_handle.await.unwrap_or_default();
             let stderr_out = stderr_handle.await.unwrap_or_default();
 
-            let exit_code = child.wait().await
+            let exit_code = child
+                .wait()
+                .await
                 .map(|s| s.code().unwrap_or(-1))
                 .unwrap_or(-1);
 
-            format_shell_output(&format!("git {}", args.join(" ")), &stdout_out, &stderr_out, exit_code, MAX_SHELL_OUTPUT_LEN)
+            format_shell_output(
+                &format!("git {}", args.join(" ")),
+                &stdout_out,
+                &stderr_out,
+                exit_code,
+                MAX_SHELL_OUTPUT_LEN,
+            )
         }
         Err(e) => format!("[exit code: -1]\nGit 命令执行失败: {}", e),
     }
@@ -472,7 +511,8 @@ pub async fn background_run(
         ws.map(|p| p.to_string_lossy().into_owned())
     };
 
-    crate::core::infra::background::BackgroundManager::run(app.clone(), cmd.to_string(), exec_dir).await
+    crate::core::infra::background::BackgroundManager::run(app.clone(), cmd.to_string(), exec_dir)
+        .await
 }
 
 /// 检查后台任务状态

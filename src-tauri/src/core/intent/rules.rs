@@ -30,10 +30,7 @@ static DANGEROUS_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)把.*删(了|掉|除)",
         r"(?i)删(了|掉)\s*它",
     ];
-    patterns
-        .iter()
-        .filter_map(|p| Regex::new(p).ok())
-        .collect()
+    patterns.iter().filter_map(|p| Regex::new(p).ok()).collect()
 });
 
 // ----------------------------------------------------------------------------
@@ -57,12 +54,14 @@ static COMPLEX_TASK_KEYWORDS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 // ----------------------------------------------------------------------------
 static CODE_READ_KEYWORDS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     let patterns = [
+        r"(?i)(读|读取|查看|打开|显示|展示|浏览)\s+[\w\.\-]+\.[a-z0-9]{1,8}",
         r"(?i)(读|查看|看|打开|显示|展示|浏览|搜|找)\s*(文件|代码|目录|文件夹|日志|配置)",
         r"(?i)(read|view|show|display|open|browse|catalog)\s*(file|code|dir|folder|log|config)",
         r"(?i)(cat|less|head|tail|ls|dir|type)",
         r"(?i)让我看看|给我看看|看看.*代码|看看.*文件",
         r"(?i)怎么写的|怎么实现的|什么内容",
         r"(?i)(内容|结构|骨架|摘要|大纲)\s*(是|是什么|长什么样)",
+        r"(?i)(有哪些|哪些|什么|哪个)\s*(文件|目录|代码|模块)",
     ];
     patterns.iter().filter_map(|p| Regex::new(p).ok()).collect()
 });
@@ -120,6 +119,7 @@ static TASK_EXECUTE_KEYWORDS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 static QUESTION_KEYWORDS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     let patterns = [
         r"(?i)(什么是|什么叫|怎么用|怎么理解|为什么|如何|怎样|有没有|能不能)",
+        r"(?i)(是什么|啥是|啥叫)",
         r"(?i)(what is|how (to|do|does)|why does|can you explain|difference between)",
         r"(?i)(是什么意思|怎么工作|原理是什么|什么原理|怎么实现)",
         r"(?i)(区别|差异|对比|compare|difference|vs|versus)",
@@ -162,16 +162,10 @@ static MEMORY_QUERY_KEYWORDS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)(我们(之前|以前)讨论|我们(之前|以前)说)",
         r"(?i)(we discussed|we talked about|we said)",
         // 历史记录
-        r"(?i)(历史|记录|日志|对话记录)",
-        r"(?i)(history|record|log|conversation)",
-        // 询问句式
-        r"(?i)(什么|哪个|哪些)\s*(文件|项目|代码)",
-        r"(?i)(what|which)\s*(file|project|code)",
+        r"(?i)(历史记录|聊天记录|对话记录)",
+        r"(?i)(conversation history|chat history|conversation record|chat log)",
     ];
-    patterns
-        .iter()
-        .filter_map(|p| Regex::new(p).ok())
-        .collect()
+    patterns.iter().filter_map(|p| Regex::new(p).ok()).collect()
 });
 
 // ----------------------------------------------------------------------------
@@ -197,10 +191,7 @@ static GENERAL_CHAT_KEYWORDS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // 时间询问
         r"(?i)(今天|明天|昨天|this|next|yesterday|tomorrow)\s*(星期|周|几)",
     ];
-    patterns
-        .iter()
-        .filter_map(|p| Regex::new(p).ok())
-        .collect()
+    patterns.iter().filter_map(|p| Regex::new(p).ok()).collect()
 });
 
 // ----------------------------------------------------------------------------
@@ -219,10 +210,7 @@ static AFFIRMATIVE_CONTINUATION: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // 组合确认
         r"(?i)^(好的?[，,]?\s*(继续|改|换|加|删|做))",
     ];
-    patterns
-        .iter()
-        .filter_map(|p| Regex::new(p).ok())
-        .collect()
+    patterns.iter().filter_map(|p| Regex::new(p).ok()).collect()
 });
 
 // ----------------------------------------------------------------------------
@@ -233,6 +221,21 @@ static SHORT_UNCLEAR: LazyLock<Regex> = LazyLock::new(|| {
     // 匹配：纯数字/纯标点 | 单个字母 | 非中文非字母数字的符号串
     Regex::new(r"^[\d\s\.\,\-\+\*]+$|^[a-zA-Z]$|^[^\w\s\u4e00-\u9fff]+$").unwrap()
 });
+
+// ----------------------------------------------------------------------------
+// 开发/本地项目上下文：普通用户模式下用于收紧代码读写/审查规则。
+// 例如“写一封邮件”“这里有问题”不应仅因出现“写/问题”就进入项目工具链。
+// ----------------------------------------------------------------------------
+static DEVELOPMENT_CONTEXT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(代码|源码|文件|文件夹|目录|日志|函数|类|组件|项目|仓库|脚本|程序|应用|网站|网页|前端|后端|接口|数据库|依赖|测试|构建|编译|页面|界面|样式|逻辑|模块|终端|命令|工具|插件|软件|功能|code|source|file|folder|directory|log|function|class|component|project|repo|repository|script|program|app|application|website|webpage|frontend|backend|api|database|dependency|test|build|compile|page|ui|style|logic|module|terminal|command|tool|plugin|software|feature|\.[a-z0-9]{1,8}\b|[a-z]:\\|/[\w\.\-]+)",
+    )
+    .unwrap()
+});
+
+fn has_development_context(input: &str) -> bool {
+    DEVELOPMENT_CONTEXT.is_match(input)
+}
 
 // ============================================================================
 // 意图枚举类型
@@ -299,17 +302,18 @@ pub struct LastAssistantAction {
 // ============================================================================
 
 /// 纯规则分类（第一层）
-/// 
+///
 /// 仅基于关键词匹配，不考虑上下文。
 /// 适用于明确的操作请求，如"创建文件"、"删除所有"。
-/// 
+///
 /// # 参数
 /// - `input`: 用户输入文本
-/// 
+///
 /// # 返回
 /// - 意图分类结果
 pub fn classify_by_rules(input: &str) -> Intent {
     let trimmed = input.trim();
+    let has_dev_context = has_development_context(trimmed);
 
     // 空输入直接判定为不明确
     if trimmed.is_empty() {
@@ -346,23 +350,36 @@ pub fn classify_by_rules(input: &str) -> Intent {
     }
 
     // 优先级4：代码审查（"好像不对"、"有问题"等自然表达）
+    let mut matched_dev_rule_without_context = false;
     for pattern in CODE_REVIEW_KEYWORDS.iter() {
         if pattern.is_match(trimmed) {
-            return Intent::CodeReview;
+            if has_dev_context {
+                return Intent::CodeReview;
+            }
+            matched_dev_rule_without_context = true;
+            break;
         }
     }
 
     // 优先级5：代码读取
     for pattern in CODE_READ_KEYWORDS.iter() {
         if pattern.is_match(trimmed) {
-            return Intent::CodeRead;
+            if has_dev_context {
+                return Intent::CodeRead;
+            }
+            matched_dev_rule_without_context = true;
+            break;
         }
     }
 
     // 优先级6：代码写入
     for pattern in CODE_WRITE_KEYWORDS.iter() {
         if pattern.is_match(trimmed) {
-            return Intent::CodeWrite;
+            if has_dev_context {
+                return Intent::CodeWrite;
+            }
+            matched_dev_rule_without_context = true;
+            break;
         }
     }
 
@@ -401,19 +418,23 @@ pub fn classify_by_rules(input: &str) -> Intent {
         }
     }
 
+    if matched_dev_rule_without_context {
+        return Intent::NeedsContext;
+    }
+
     // 默认：需要上下文或LLM判断
     Intent::NeedsContext
 }
 
 /// 带上下文的分类（第二层）
-/// 
+///
 /// 在纯规则分类基础上，结合上一轮对话内容判断。
 /// 主要解决"好的"、"继续"等短回复的歧义问题。
-/// 
+///
 /// # 参数
 /// - `input`: 用户输入文本
 /// - `last_assistant_action`: 上一轮助手消息的分析结果
-/// 
+///
 /// # 返回
 /// - 意图分类结果
 pub fn classify_with_context(
@@ -447,12 +468,12 @@ pub fn classify_with_context(
 }
 
 /// 分析上一轮助手消息
-/// 
+///
 /// 提取消息中的特征，用于判断用户的短回复意图。
-/// 
+///
 /// # 参数
 /// - `message`: 助手消息文本
-/// 
+///
 /// # 返回
 /// - 分析结果结构体
 pub fn analyze_last_assistant_message(message: &str) -> LastAssistantAction {
@@ -461,24 +482,30 @@ pub fn analyze_last_assistant_message(message: &str) -> LastAssistantAction {
     // 关键词列表用于提取上一轮助手消息的行为特征
     // 项目操作指示词：创建、写入、修改、删除、运行等
     let project_action_indicators = [
-        "创建", "写入", "修改", "删除", "运行", "执行", "构建", "安装",
-        "create", "write", "modify", "delete", "run", "execute", "build", "install",
-        "文件", "代码", "项目", "file", "code", "project",
-        "命令", "终端", "command", "terminal",
+        "创建", "写入", "修改", "删除", "运行", "执行", "构建", "安装", "create", "write",
+        "modify", "delete", "run", "execute", "build", "install", "文件", "代码", "项目", "file",
+        "code", "project", "命令", "终端", "command", "terminal",
     ];
 
     // 提问指示词：需要、是否、确认、请问等
     let question_indicators = [
-        "需要", "是否", "确认", "请问", "想要",
-        "need", "whether", "confirm", "would you like",
-        "？", "?",
+        "需要",
+        "是否",
+        "确认",
+        "请问",
+        "想要",
+        "need",
+        "whether",
+        "confirm",
+        "would you like",
+        "？",
+        "?",
     ];
 
     // 计划指示词：计划、步骤、方案、建议等
     let plan_indicators = [
-        "计划", "步骤", "方案", "建议",
-        "plan", "step", "proposal", "suggest",
-        "首先", "然后", "最后", "first", "then", "finally",
+        "计划", "步骤", "方案", "建议", "plan", "step", "proposal", "suggest", "首先", "然后",
+        "最后", "first", "then", "finally",
     ];
 
     // 检测各类特征
@@ -515,18 +542,9 @@ mod tests {
 
     #[test]
     fn test_dangerous_action() {
-        assert_eq!(
-            classify_by_rules("删除所有文件"),
-            Intent::DangerousAction
-        );
-        assert_eq!(
-            classify_by_rules("清空数据库"),
-            Intent::DangerousAction
-        );
-        assert_eq!(
-            classify_by_rules("rm -rf /"),
-            Intent::DangerousAction
-        );
+        assert_eq!(classify_by_rules("删除所有文件"), Intent::DangerousAction);
+        assert_eq!(classify_by_rules("清空数据库"), Intent::DangerousAction);
+        assert_eq!(classify_by_rules("rm -rf /"), Intent::DangerousAction);
     }
 
     #[test]
@@ -558,7 +576,8 @@ mod tests {
     #[test]
     fn test_code_review() {
         assert_eq!(classify_by_rules("检查一下代码"), Intent::CodeReview);
-        assert_eq!(classify_by_rules("这里好像有问题"), Intent::CodeReview);
+        assert_eq!(classify_by_rules("这段代码好像有问题"), Intent::CodeReview);
+        assert_eq!(classify_by_rules("这里好像有问题"), Intent::NeedsContext);
     }
 
     #[test]
@@ -584,14 +603,19 @@ mod tests {
 
     #[test]
     fn test_memory_query() {
-        assert_eq!(
-            classify_by_rules("之前我们讨论了什么"),
-            Intent::MemoryQuery
-        );
+        assert_eq!(classify_by_rules("之前我们讨论了什么"), Intent::MemoryQuery);
         assert_eq!(
             classify_by_rules("上次说的那个文件是什么"),
             Intent::MemoryQuery
         );
+        assert_eq!(classify_by_rules("这个项目有哪些文件"), Intent::CodeRead);
+    }
+
+    #[test]
+    fn test_general_user_content_creation_is_not_code_write() {
+        assert_eq!(classify_by_rules("帮我写一封邮件"), Intent::NeedsContext);
+        assert_eq!(classify_by_rules("修改一下这段文案"), Intent::NeedsContext);
+        assert_eq!(classify_by_rules("帮我写一个脚本"), Intent::CodeWrite);
     }
 
     #[test]

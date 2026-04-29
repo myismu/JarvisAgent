@@ -10,7 +10,7 @@ use tauri::Emitter;
 
 use crate::core::models::TaskStatus;
 use crate::core::orchestration::tasks::{TaskManager, TaskUpdateParams};
-use crate::core::tools::run_subagent;
+use crate::core::tools::{run_subagent, IMPLEMENTATION_AGENT_TYPE};
 
 /// 任务调度器：基于依赖图自动调度可并行的任务
 pub struct TaskScheduler;
@@ -31,7 +31,7 @@ impl TaskScheduler {
         _run_id: &str,
         cancel_token: &tokio_util::sync::CancellationToken,
     ) -> (String, u64, u64) {
-        let tm = TaskManager::new();
+        let tm = TaskManager::for_session(session_id);
         let mut total_in: u64 = 0;
         let mut total_out: u64 = 0;
         let mut completed_count: usize = 0;
@@ -71,11 +71,19 @@ impl TaskScheduler {
 
             // 2. 将所有就绪任务标记为 InProgress
             for task in &ready_tasks {
-                let _ = tm.update(task.id, TaskUpdateParams {
-                    status: Some(TaskStatus::InProgress),
-                    subject: None, description: None, active_form: None,
-                    owner: None, add_blocked_by: None, add_blocks: None, metadata: None,
-                });
+                let _ = tm.update(
+                    task.id,
+                    TaskUpdateParams {
+                        status: Some(TaskStatus::InProgress),
+                        subject: None,
+                        description: None,
+                        active_form: None,
+                        owner: None,
+                        add_blocked_by: None,
+                        add_blocks: None,
+                        metadata: None,
+                    },
+                );
                 let _ = app.emit(
                     "agent-step",
                     serde_json::json!({
@@ -112,6 +120,8 @@ impl TaskScheduler {
                             sid,
                             Some(task_id),
                             Some(format!("Task #{}", task_id)),
+                            Some(IMPLEMENTATION_AGENT_TYPE.to_string()),
+                            None,
                         )
                         .await;
                         (task_id, answer, si, so)
@@ -140,11 +150,19 @@ impl TaskScheduler {
                         "完成"
                     };
 
-                    let _ = tm.update(task_id, TaskUpdateParams {
-                        status: Some(TaskStatus::Completed),
-                        subject: None, description: None, active_form: None,
-                        owner: None, add_blocked_by: None, add_blocks: None, metadata: None,
-                    });
+                    let _ = tm.update(
+                        task_id,
+                        TaskUpdateParams {
+                            status: Some(TaskStatus::Completed),
+                            subject: None,
+                            description: None,
+                            active_form: None,
+                            owner: None,
+                            add_blocked_by: None,
+                            add_blocks: None,
+                            metadata: None,
+                        },
+                    );
                     // _clear_dependency 在 update(Completed) 中自动调用，级联解锁下游任务
 
                     println!(
@@ -167,7 +185,9 @@ impl TaskScheduler {
         }
 
         // 生成汇总报告
-        let summary = tm.summary().unwrap_or_else(|e| format!("获取任务摘要失败: {}", e));
+        let summary = tm
+            .summary()
+            .unwrap_or_else(|e| format!("获取任务摘要失败: {}", e));
         let report = format!(
             "任务调度完成：{} 成功，{} 失败，共 {} 轮调度\n\n{}",
             completed_count, failed_count, round, summary

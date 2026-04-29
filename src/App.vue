@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, computed, watch } from "vue";
+import { onMounted, onBeforeUnmount, ref, computed, watch } from "vue";
 import { useAgentEvents } from "./composables/useAgentEvents";
 import { usePreferences } from "./composables/usePreferences";
 import { useSessionStore } from "./stores/session";
@@ -21,15 +21,65 @@ const sidebarCollapsed = ref(prefs.sidebarCollapsed);
 const session = useSessionStore();
 const agent = useAgentStore();
 const { initListeners } = useAgentEvents();
+const hasUnseenFinish = ref(false);
 
 // 恢复持久化的 Agent 面板可见性
 agent.showAgentPanel = prefs.agentPanelVisible;
 
-const displayStatus = computed(() => {
+const rawStatus = computed(() => {
   if (session.isCurrentSessionRunning) return 'running';
+  if (session.currentSessionStatus === 'INTERRUPTED') return 'interrupted';
   if (session.currentSessionStatus === 'ERROR') return 'error';
   if (session.currentSessionStatus === 'FINISH') return 'finish';
   return 'idle';
+});
+
+const displayStatus = computed(() => {
+  if (rawStatus.value === 'finish' && !hasUnseenFinish.value) return 'idle';
+  return rawStatus.value;
+});
+
+const acknowledgeFinish = () => {
+  if (rawStatus.value === 'finish') {
+    hasUnseenFinish.value = false;
+  }
+};
+
+const acknowledgeFinishOnVisible = () => {
+  if (!document.hidden) {
+    acknowledgeFinish();
+  }
+};
+
+const addFinishAcknowledgementListeners = () => {
+  window.addEventListener('focus', acknowledgeFinish);
+  document.addEventListener('visibilitychange', acknowledgeFinishOnVisible);
+  document.addEventListener('pointerdown', acknowledgeFinish);
+  document.addEventListener('pointermove', acknowledgeFinish, { passive: true });
+  document.addEventListener('wheel', acknowledgeFinish, { passive: true });
+  document.addEventListener('keydown', acknowledgeFinish);
+  document.addEventListener('touchstart', acknowledgeFinish, { passive: true });
+};
+
+const removeFinishAcknowledgementListeners = () => {
+  window.removeEventListener('focus', acknowledgeFinish);
+  document.removeEventListener('visibilitychange', acknowledgeFinishOnVisible);
+  document.removeEventListener('pointerdown', acknowledgeFinish);
+  document.removeEventListener('pointermove', acknowledgeFinish);
+  document.removeEventListener('wheel', acknowledgeFinish);
+  document.removeEventListener('keydown', acknowledgeFinish);
+  document.removeEventListener('touchstart', acknowledgeFinish);
+};
+
+watch([rawStatus, () => session.activeSessionId], ([status, activeSessionId], [prevStatus, prevActiveSessionId]) => {
+  const sessionChanged = activeSessionId !== prevActiveSessionId;
+  if (status === 'finish' && prevStatus === 'running' && !sessionChanged) {
+    hasUnseenFinish.value = true;
+    return;
+  }
+  if (status !== 'finish' || sessionChanged) {
+    hasUnseenFinish.value = false;
+  }
 });
 
 // 持久化侧栏折叠状态
@@ -43,14 +93,22 @@ watch(() => agent.showAgentPanel, (val) => {
 });
 
 onMounted(async () => {
+  addFinishAcknowledgementListeners();
   await initListeners();
+});
+
+onBeforeUnmount(() => {
+  removeFinishAcknowledgementListeners();
 });
 </script>
 
 <template>
   <main class="editor-container">
     <div class="editor-window">
-      <TitleBar :sidebar-collapsed="sidebarCollapsed" />
+      <TitleBar
+        :sidebar-collapsed="sidebarCollapsed"
+        :agent-panel-visible="agent.showAgentPanel"
+      />
 
       <div class="editor-body">
         <Sidebar :collapsed="sidebarCollapsed" @open-settings="showSettings = true" />
@@ -219,6 +277,11 @@ onMounted(async () => {
 .status-indicator.running .status-glow { animation: breatheYellow 1.5s ease-in-out infinite; }
 .status-indicator.running .status-core { animation: breatheCoreYellow 1.5s ease-in-out infinite; }
 .status-indicator.running .status-light { filter: drop-shadow(0 0 4px rgba(245, 158, 11, 0.5)); }
+
+.status-indicator.interrupted { color: var(--accent-yellow); }
+.status-indicator.interrupted .status-glow { animation: none; opacity: 0.2; }
+.status-indicator.interrupted .status-core { animation: none; opacity: 0.65; }
+.status-indicator.interrupted .status-light { filter: drop-shadow(0 0 4px rgba(245, 158, 11, 0.35)); }
 
 .status-indicator.cancelled { color: var(--text-muted); }
 .status-indicator.cancelled .status-glow { animation: none; opacity: 0.15; }

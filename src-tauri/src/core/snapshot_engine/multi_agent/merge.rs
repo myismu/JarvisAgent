@@ -77,7 +77,7 @@ impl MergeEngine {
             conflict_threshold: 10,
         }
     }
-    
+
     /// 执行分支合并（带冲突解决）
     pub fn merge_branches(
         &self,
@@ -89,38 +89,47 @@ impl MergeEngine {
         if source_branch == target_branch {
             return Err(MergeError::SameBranch);
         }
-        
-        let source = tree.branches.get(source_branch)
+
+        let source = tree
+            .branches
+            .get(source_branch)
             .ok_or_else(|| MergeError::BranchNotFound(source_branch.to_string()))?;
-        let target = tree.branches.get(target_branch)
+        let target = tree
+            .branches
+            .get(target_branch)
             .ok_or_else(|| MergeError::BranchNotFound(target_branch.to_string()))?;
-        
-        let lca_id = self.find_common_ancestor(tree, &source.head_snapshot_id, &target.head_snapshot_id)?;
-        
+
+        let lca_id =
+            self.find_common_ancestor(tree, &source.head_snapshot_id, &target.head_snapshot_id)?;
+
         let source_patches = self.collect_patches_since(tree, &lca_id, &source.head_snapshot_id);
         let target_patches = self.collect_patches_since(tree, &lca_id, &target.head_snapshot_id);
-        
+
         let conflicts = self.detect_conflicts(&source_patches, &target_patches);
-        
+
         let (resolved_conflicts, unresolved) = self.apply_resolutions(conflicts, resolutions);
-        
+
         if unresolved > self.conflict_threshold {
             return Err(MergeError::UnresolvedConflicts(unresolved));
         }
-        
-        let _merged_patches = self.merge_patches(&source_patches, &target_patches, &resolved_conflicts);
-        
+
+        let _merged_patches =
+            self.merge_patches(&source_patches, &target_patches, &resolved_conflicts);
+
         Ok(MergeResult {
             success: unresolved == 0,
             target_branch: target_branch.to_string(),
             source_branch: source_branch.to_string(),
             merged_snapshot_id: None,
             conflicts: resolved_conflicts.clone(),
-            auto_resolved: resolved_conflicts.iter().filter(|c| c.resolution.is_some()).count(),
+            auto_resolved: resolved_conflicts
+                .iter()
+                .filter(|c| c.resolution.is_some())
+                .count(),
             manual_required: unresolved,
         })
     }
-    
+
     /// 预览合并结果（不实际执行）
     pub fn preview_merge(
         &self,
@@ -131,20 +140,28 @@ impl MergeEngine {
         if source_branch == target_branch {
             return Err(MergeError::SameBranch);
         }
-        
-        let source = tree.branches.get(source_branch)
+
+        let source = tree
+            .branches
+            .get(source_branch)
             .ok_or_else(|| MergeError::BranchNotFound(source_branch.to_string()))?;
-        let target = tree.branches.get(target_branch)
+        let target = tree
+            .branches
+            .get(target_branch)
             .ok_or_else(|| MergeError::BranchNotFound(target_branch.to_string()))?;
-        
-        let lca_id = self.find_common_ancestor(tree, &source.head_snapshot_id, &target.head_snapshot_id)?;
-        
+
+        let lca_id =
+            self.find_common_ancestor(tree, &source.head_snapshot_id, &target.head_snapshot_id)?;
+
         let source_patches = self.collect_patches_since(tree, &lca_id, &source.head_snapshot_id);
         let target_patches = self.collect_patches_since(tree, &lca_id, &target.head_snapshot_id);
-        
+
         let conflicts = self.detect_conflicts(&source_patches, &target_patches);
-        let auto_resolvable = conflicts.iter().filter(|c| self.can_auto_resolve(c)).count();
-        
+        let auto_resolvable = conflicts
+            .iter()
+            .filter(|c| self.can_auto_resolve(c))
+            .count();
+
         Ok(MergeResult {
             success: conflicts.is_empty(),
             target_branch: target_branch.to_string(),
@@ -155,7 +172,7 @@ impl MergeEngine {
             manual_required: 0,
         })
     }
-    
+
     /// 查找两个分支的最近公共祖先
     fn find_common_ancestor(
         &self,
@@ -165,12 +182,12 @@ impl MergeEngine {
     ) -> Result<String, MergeError> {
         let mut ancestors: HashSet<String> = HashSet::new();
         let mut current = Some(id1.to_string());
-        
+
         while let Some(id) = current {
             ancestors.insert(id.clone());
             current = tree.nodes.get(&id).and_then(|s| s.parent_id.clone());
         }
-        
+
         current = Some(id2.to_string());
         while let Some(id) = current {
             if ancestors.contains(&id) {
@@ -178,10 +195,10 @@ impl MergeEngine {
             }
             current = tree.nodes.get(&id).and_then(|s| s.parent_id.clone());
         }
-        
+
         Err(MergeError::NoCommonAncestor)
     }
-    
+
     fn collect_patches_since(
         &self,
         tree: &SnapshotTree,
@@ -190,12 +207,12 @@ impl MergeEngine {
     ) -> Vec<Patch> {
         let mut patches = Vec::new();
         let mut current = Some(to_id.to_string());
-        
+
         while let Some(id) = current {
             if id == since_id {
                 break;
             }
-            
+
             if let Some(snapshot) = tree.nodes.get(&id) {
                 patches.splice(0..0, snapshot.patches.clone());
                 current = snapshot.parent_id.clone();
@@ -203,10 +220,10 @@ impl MergeEngine {
                 break;
             }
         }
-        
+
         patches
     }
-    
+
     /// 检测两个补丁集之间的冲突
     fn detect_conflicts(
         &self,
@@ -214,15 +231,17 @@ impl MergeEngine {
         target_patches: &[Patch],
     ) -> Vec<Conflict> {
         let mut conflicts = Vec::new();
-        
-        let source_paths: HashMap<String, &Patch> = source_patches.iter()
+
+        let source_paths: HashMap<String, &Patch> = source_patches
+            .iter()
             .map(|p| (self.get_patch_path(p), p))
             .collect();
-        
-        let target_paths: HashMap<String, &Patch> = target_patches.iter()
+
+        let target_paths: HashMap<String, &Patch> = target_patches
+            .iter()
             .map(|p| (self.get_patch_path(p), p))
             .collect();
-        
+
         for (path, source_patch) in &source_paths {
             if let Some(target_patch) = target_paths.get(path) {
                 if self.patches_conflict(source_patch, target_patch) {
@@ -237,22 +256,22 @@ impl MergeEngine {
                 }
             }
         }
-        
+
         for path in source_paths.keys() {
             if !target_paths.contains_key(path) {
                 // Source only
             }
         }
-        
+
         for path in target_paths.keys() {
             if !source_paths.contains_key(path) {
                 // Target only
             }
         }
-        
+
         conflicts
     }
-    
+
     fn get_patch_path(&self, patch: &Patch) -> String {
         match patch {
             Patch::CreateFile { path, .. } => path.clone(),
@@ -261,7 +280,7 @@ impl MergeEngine {
             Patch::RenameFile { old_path, .. } => old_path.clone(),
         }
     }
-    
+
     fn get_patch_content(&self, patch: &Patch) -> Option<String> {
         match patch {
             Patch::CreateFile { content, .. } => Some(content.clone()),
@@ -269,37 +288,40 @@ impl MergeEngine {
             _ => None,
         }
     }
-    
+
     fn patches_conflict(&self, patch1: &Patch, patch2: &Patch) -> bool {
         match (patch1, patch2) {
-            (Patch::UpdateFile { path: p1, new_content: c1, .. }, 
-             Patch::UpdateFile { path: p2, new_content: c2, .. }) => {
-                p1 == p2 && c1 != c2
-            }
-            (Patch::DeleteFile { path: p1 }, Patch::UpdateFile { path: p2, .. }) |
-            (Patch::UpdateFile { path: p1, .. }, Patch::DeleteFile { path: p2 }) => {
-                p1 == p2
-            }
-            (Patch::DeleteFile { path: p1 }, Patch::DeleteFile { path: p2 }) => {
-                p1 == p2
-            }
-            (Patch::CreateFile { path: p1, .. }, Patch::CreateFile { path: p2, .. }) => {
-                p1 == p2
-            }
+            (
+                Patch::UpdateFile {
+                    path: p1,
+                    new_content: c1,
+                    ..
+                },
+                Patch::UpdateFile {
+                    path: p2,
+                    new_content: c2,
+                    ..
+                },
+            ) => p1 == p2 && c1 != c2,
+            (Patch::DeleteFile { path: p1 }, Patch::UpdateFile { path: p2, .. })
+            | (Patch::UpdateFile { path: p1, .. }, Patch::DeleteFile { path: p2 }) => p1 == p2,
+            (Patch::DeleteFile { path: p1 }, Patch::DeleteFile { path: p2 }) => p1 == p2,
+            (Patch::CreateFile { path: p1, .. }, Patch::CreateFile { path: p2, .. }) => p1 == p2,
             _ => false,
         }
     }
-    
+
     fn can_auto_resolve(&self, conflict: &Conflict) -> bool {
         matches!(conflict.conflict_type, ConflictType::BothCreated)
     }
-    
+
     fn apply_resolutions(
         &self,
         conflicts: Vec<Conflict>,
         resolutions: HashMap<String, ConflictResolution>,
     ) -> (Vec<Conflict>, usize) {
-        let resolved: Vec<Conflict> = conflicts.into_iter()
+        let resolved: Vec<Conflict> = conflicts
+            .into_iter()
             .map(|mut c| {
                 if let Some(resolution) = resolutions.get(&c.path) {
                     c.resolution = Some(resolution.clone());
@@ -307,12 +329,12 @@ impl MergeEngine {
                 c
             })
             .collect();
-        
+
         let unresolved = resolved.iter().filter(|c| c.resolution.is_none()).count();
-        
+
         (resolved, unresolved)
     }
-    
+
     fn merge_patches(
         &self,
         source_patches: &[Patch],
@@ -320,25 +342,23 @@ impl MergeEngine {
         conflicts: &[Conflict],
     ) -> Vec<Patch> {
         let mut merged = Vec::new();
-        
-        let conflict_paths: HashSet<&str> = conflicts.iter()
-            .map(|c| c.path.as_str())
-            .collect();
-        
+
+        let conflict_paths: HashSet<&str> = conflicts.iter().map(|c| c.path.as_str()).collect();
+
         for patch in target_patches {
             let path = self.get_patch_path(patch);
             if !conflict_paths.contains(path.as_str()) {
                 merged.push(patch.clone());
             }
         }
-        
+
         for patch in source_patches {
             let path = self.get_patch_path(patch);
             if !conflict_paths.contains(path.as_str()) {
                 merged.push(patch.clone());
             }
         }
-        
+
         for conflict in conflicts {
             if let Some(resolution) = &conflict.resolution {
                 match resolution {
@@ -352,8 +372,7 @@ impl MergeEngine {
                             });
                         }
                     }
-                    ConflictResolution::KeepTarget => {
-                    }
+                    ConflictResolution::KeepTarget => {}
                     ConflictResolution::KeepBoth { new_path } => {
                         if let Some(content) = &conflict.source_content {
                             merged.push(Patch::CreateFile {
@@ -362,8 +381,10 @@ impl MergeEngine {
                             });
                         }
                     }
-                    ConflictResolution::Manual { resolved_content } |
-                    ConflictResolution::Custom { content: resolved_content } => {
+                    ConflictResolution::Manual { resolved_content }
+                    | ConflictResolution::Custom {
+                        content: resolved_content,
+                    } => {
                         merged.push(Patch::UpdateFile {
                             path: conflict.path.clone(),
                             old_content: conflict.target_content.clone().unwrap_or_default(),
@@ -374,10 +395,10 @@ impl MergeEngine {
                 }
             }
         }
-        
+
         merged
     }
-    
+
     /// 创建合并快照
     pub fn create_merge_snapshot(
         &self,
@@ -388,13 +409,18 @@ impl MergeEngine {
     ) -> Result<Snapshot, MergeError> {
         let snapshot = tree.create_snapshot(
             merged_patches,
-            message.or_else(|| Some(format!("Merge {} into {}", merge_result.source_branch, merge_result.target_branch))),
+            message.or_else(|| {
+                Some(format!(
+                    "Merge {} into {}",
+                    merge_result.source_branch, merge_result.target_branch
+                ))
+            }),
             None,
             None,
             false,
             None,
         );
-        
+
         Ok(snapshot)
     }
 }

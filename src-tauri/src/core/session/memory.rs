@@ -9,11 +9,10 @@
 //!    - `auto_compact_summary`：独立摘要接口（用于外部调用）
 //! 3. **记忆系统** — 全局记忆 + 项目记忆的读写，由记忆 Agent 自动维护
 
-use crate::core::llm::api_format::ApiFormat;
 use crate::core::error::MemoryError;
-use crate::core::models::*;
 use crate::core::infra::prompts::*;
-use crate::get_agent_home;
+use crate::core::llm::api_format::ApiFormat;
+use crate::core::models::*;
 use reqwest::header::CONTENT_TYPE;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -114,23 +113,21 @@ pub fn micro_compact(messages: &mut Vec<Message>) {
 }
 
 /// 将对话记录保存为 JSONL 转录文件（用于压缩前的备份）
-pub fn append_transcript(text: &str) -> Result<String, MemoryError> {
-    let transcript_dir = get_agent_home().join(crate::core::constants::DIR_TRANSCRIPTS);
-    if !transcript_dir.exists() {
-        let _ = std::fs::create_dir_all(&transcript_dir);
-    }
-
+pub fn append_transcript(session_id: &str, text: &str) -> Result<String, MemoryError> {
+    let transcript_dir = crate::core::data_paths::session_paths(session_id).transcripts_dir();
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
     let transcript_path = transcript_dir.join(format!("transcript_{}.jsonl", timestamp));
     std::fs::write(&transcript_path, text).map_err(|e| MemoryError::FileRead(e.to_string()))?;
+    crate::core::data_paths::refresh_session_manifest(session_id, None, None, None);
     Ok(transcript_path.to_string_lossy().to_string())
 }
 
 /// 自动压缩：调用 LLM 生成摘要，用摘要替换完整对话历史
 pub async fn auto_compact(
+    session_id: &str,
     messages: &mut Vec<Message>,
     client: &reqwest::Client,
     api_key: &str,
@@ -155,7 +152,7 @@ pub async fn auto_compact(
         json_content.clone()
     };
 
-    let transcript_path = append_transcript(&json_content)?;
+    let transcript_path = append_transcript(session_id, &json_content)?;
     println!("[auto_compact] Transcript saved to {}", transcript_path);
 
     let summary_prompt = format!("Summarize this conversation for continuity. Include: \n1) What was accomplished, 2) Current state, 3) Key decisions made. \nBe concise but preserve critical details.\n\n{}", summarized_text);
@@ -366,17 +363,14 @@ pub async fn auto_compact_summary(
 
 // --- 记忆系统：全局记忆 + 项目记忆 ---
 
-/// 全局记忆文件路径（agent_home/global_memory.md）
+/// 全局记忆文件路径（agent_home/global/global_memory.md）
 pub fn get_global_memory_path() -> PathBuf {
-    get_agent_home().join(crate::core::constants::FILE_GLOBAL_MEMORY)
+    crate::core::data_paths::global_memory_path()
 }
 
-/// 项目记忆文件路径（agent_home/memory/GEMINI.md）
+/// 项目记忆文件路径（agent_home/global/memory/GEMINI.md）
 pub fn get_project_memory_path() -> PathBuf {
-    let mut path = get_agent_home().clone();
-    path.push("memory");
-    path.push("GEMINI.md");
-    path
+    crate::core::data_paths::project_memory_path()
 }
 
 /// 读取记忆文件，不存在则创建带默认头部的空文件
@@ -384,11 +378,15 @@ pub fn read_memory_file(path: &Path, header: &str) -> String {
     if let Ok(content) = std::fs::read_to_string(path) {
         content
     } else {
-        let initial = format!("# {}\n\n(暂无记录)\n", header);
-        let _ = std::fs::create_dir_all(path.parent().unwrap());
-        let _ = std::fs::write(path, &initial);
-        initial
+        create_memory_file(path, header)
     }
+}
+
+fn create_memory_file(path: &Path, header: &str) -> String {
+    let initial = format!("# {}\n\n(暂无记录)\n", header);
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    let _ = std::fs::write(path, &initial);
+    initial
 }
 
 use crate::core::config::AgentConfig;
@@ -450,7 +448,9 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
     let is_openai = api_format.is_openai();
     let (req_json, _) = match api_format {
         ApiFormat::OpenAI => {
-            use crate::core::llm::adapters::{translate_messages_to_openai, translate_tools_to_openai};
+            use crate::core::llm::adapters::{
+                translate_messages_to_openai, translate_tools_to_openai,
+            };
             use crate::core::models::OpenAIRequest;
             let openai_msgs =
                 translate_messages_to_openai(&request_body.system, &request_body.messages);

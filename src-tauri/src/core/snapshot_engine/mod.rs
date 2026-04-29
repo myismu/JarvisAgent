@@ -8,16 +8,22 @@
 //! - `gc`: 垃圾回收（清理过期快照和孤立分支）
 //! - `multi_agent`: 多代理协作（沙箱隔离与分支合并）
 
-pub mod patch;
-pub mod snapshot;
-pub mod replay;
-pub mod journal;
 pub mod gc;
+pub mod journal;
 pub mod multi_agent;
+pub mod patch;
+pub mod replay;
+pub mod snapshot;
 
-pub use patch::{Patch, PatchError, PatchSummary, TextDiff, DiffHunk, DiffLine};
-pub use snapshot::{Snapshot, SnapshotTree, SnapshotNode, SnapshotTreeView, SnapshotSummary, Workspace, WorkspaceState, FileInfo, Branch};
-pub use replay::{ReplayEngine, AtomicFileRollback, UndoEntry, UndoAction};
-pub use journal::{Journal, JournalEntry};
 pub use gc::{GarbageCollector, GcConfig, GcResult};
-pub use multi_agent::{AgentSandbox, SandboxManager, SandboxStatus, SandboxComparison, MergeEngine, MergeResult, Conflict, ConflictResolution, ConflictType};
+pub use journal::{Journal, JournalEntry};
+pub use multi_agent::{
+    AgentSandbox, Conflict, ConflictResolution, ConflictType, MergeEngine, MergeResult,
+    SandboxComparison, SandboxManager, SandboxStatus,
+};
+pub use patch::{DiffHunk, DiffLine, Patch, PatchError, PatchSummary, TextDiff};
+pub use replay::{AtomicFileRollback, ReplayEngine, UndoAction, UndoEntry};
+pub use snapshot::{
+    Branch, FileInfo, Snapshot, SnapshotNode, SnapshotSummary, SnapshotTree, SnapshotTreeView,
+    Workspace, WorkspaceState,
+};

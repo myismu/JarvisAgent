@@ -11,7 +11,9 @@ export interface JarvisResult {
 
 export interface TodoItem {
   id: string;
-  text: string;
+  content: string;
+  activeForm: string;
+  text?: string;
   status: "pending" | "in_progress" | "completed";
 }
 
