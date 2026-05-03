@@ -1,5 +1,5 @@
 use crate::core::models::{TodoItem, TodoStatus};
-use crate::core::tools::registry::ToolDef;
+use crate::core::tools::framework::registry::ToolDef;
 use serde_json::json;
 use tauri::{Emitter, Manager};
 

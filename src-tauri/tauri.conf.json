@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "jarvisagent",
         "width": 1600,
         "height": 1000,

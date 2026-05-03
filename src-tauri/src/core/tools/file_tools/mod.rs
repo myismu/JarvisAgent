@@ -21,7 +21,7 @@ mod notebook_guard;
 mod read;
 mod registry;
 mod search;
-mod workspace;
+pub mod workspace;
 mod write;
 
 pub use directory::{generate_repo_map, list_directory};
@@ -29,4 +29,5 @@ pub use edit::edit_file;
 pub use read::{read_file, read_file_skeleton};
 pub use registry::register_tools;
 pub use search::{search_in_dir, search_repo};
+pub use workspace::{commit_checkpoint_snapshot, has_patches_since_last_checkpoint};
 pub use write::write_file;

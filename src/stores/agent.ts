@@ -3,6 +3,7 @@ import { ref, computed } from "vue";
 import type {
   AgentRun,
   AgentRunEvent,
+  SessionContextSnapshot,
   SubAgentRun,
   SubAgentEvent,
   TodoItem,
@@ -14,6 +15,7 @@ export const useAgentStore = defineStore("agent", () => {
   const agentRunEventsByRun = ref<Record<string, AgentRunEvent[]>>({});
   const subAgentRuns = ref<Record<string, SubAgentRun>>({});
   const subAgentEventsByRun = ref<Record<string, SubAgentEvent[]>>({});
+  const contextSnapshots = ref<Record<string, SessionContextSnapshot>>({});
   const todos = ref<TodoItem[]>([]);
   const focusedTaskId = ref<number | null>(null);
   const showAgentPanel = ref(false);
@@ -29,7 +31,12 @@ export const useAgentStore = defineStore("agent", () => {
     if (!sessionId) return [];
     return Object.values(subAgentRuns.value)
       .filter((run) => run.sessionId === sessionId)
-      .sort((a, b) => a.startedAt - b.startedAt);
+      .sort((a, b) => {
+        const aTask = a.taskId ?? Number.MAX_SAFE_INTEGER;
+        const bTask = b.taskId ?? Number.MAX_SAFE_INTEGER;
+        if (aTask !== bTask) return aTask - bTask;
+        return a.startedAt - b.startedAt;
+      });
   });
 
   const activeSubAgentRuns = computed(() => {
@@ -51,6 +58,13 @@ export const useAgentStore = defineStore("agent", () => {
     );
   });
 
+  const currentContextSnapshot = computed(() => {
+    const session = useSessionStore();
+    const sessionId = session.activeSessionId;
+    if (!sessionId) return null;
+    return contextSnapshots.value[sessionId] ?? null;
+  });
+
   function getSubAgentEvents(runId: string): SubAgentEvent[] {
     return subAgentEventsByRun.value[runId] ?? [];
   }
@@ -67,6 +81,21 @@ export const useAgentStore = defineStore("agent", () => {
     };
   }
 
+  function upsertContextSnapshot(snapshot: SessionContextSnapshot | null | undefined) {
+    if (!snapshot?.sessionId) return;
+    contextSnapshots.value = {
+      ...contextSnapshots.value,
+      [snapshot.sessionId]: snapshot,
+    };
+  }
+
+  function clearContextSnapshot(sessionId: string | null | undefined) {
+    if (!sessionId) return;
+    const next = { ...contextSnapshots.value };
+    delete next[sessionId];
+    contextSnapshots.value = next;
+  }
+
   function focusTask(taskId: number | null | undefined) {
     if (taskId === null || taskId === undefined) return;
     focusedTaskId.value = taskId;
@@ -80,15 +109,19 @@ export const useAgentStore = defineStore("agent", () => {
     agentRunEventsByRun,
     subAgentRuns,
     subAgentEventsByRun,
+    contextSnapshots,
     focusedTaskId,
     showAgentPanel,
     currentSubAgentRuns,
     activeSubAgentRuns,
     currentAgentRuns,
     interruptedAgentRuns,
+    currentContextSnapshot,
     getSubAgentEvents,
     getAgentRunEvents,
     upsertAgentRun,
+    upsertContextSnapshot,
+    clearContextSnapshot,
     focusTask,
   };
 });

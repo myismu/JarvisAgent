@@ -1,11 +1,13 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
-import type { AgentCurrentTurn } from "../types";
+import type { AgentCurrentTurn, SessionListFilter } from "../types";
 import { createEmptyAgentCurrentTurn, resetAgentCurrentTurn } from "../utils/agentTurnState";
 
 interface LatestCheckpoint {
   id: string;
   hasOperations: boolean;
+  hasPatches: boolean;
+  canRollback: boolean;
 }
 
 export interface SessionViewState {
@@ -66,9 +68,34 @@ export const useSessionStore = defineStore("session", () => {
     [DEFAULT_SESSION_KEY]: createEmptySessionView(READY_TEXT, true),
   });
   const activeSessionId = ref<string | null>(null);
+  const pendingWorkingDirectory = ref<string | null>(null);
   const workingDirectory = ref<string | null>(null);
   const totalInputTokens = ref(0);
   const totalOutputTokens = ref(0);
+  const sessionListFilter = ref<SessionListFilter>({});
+
+  function setSessionListFilter(filter: SessionListFilter) {
+    sessionListFilter.value = { ...filter };
+  }
+
+  function clearSessionListFilter() {
+    sessionListFilter.value = {};
+  }
+
+  function getSessionListFilterPayload(): SessionListFilter | null {
+    const filter = sessionListFilter.value;
+    const payload: SessionListFilter = {};
+    if (filter.keyword?.trim()) payload.keyword = filter.keyword.trim();
+    if (filter.fromTs) payload.fromTs = filter.fromTs;
+    if (filter.toTs) payload.toTs = filter.toTs;
+    if (filter.profileId?.trim()) payload.profileId = filter.profileId.trim();
+    if (filter.model?.trim()) payload.model = filter.model.trim();
+    if (filter.tool?.trim()) payload.tool = filter.tool.trim();
+    if (filter.hasToolCalls !== undefined && filter.hasToolCalls !== null) {
+      payload.hasToolCalls = filter.hasToolCalls;
+    }
+    return Object.keys(payload).length ? payload : null;
+  }
 
   function getSessionView(sessionId: string | null | undefined, initialHistory = READY_TEXT) {
     const key = getSessionKey(sessionId);
@@ -151,9 +178,14 @@ export const useSessionStore = defineStore("session", () => {
   return {
     sessionViews,
     activeSessionId,
+    pendingWorkingDirectory,
     workingDirectory,
     totalInputTokens,
     totalOutputTokens,
+    sessionListFilter,
+    setSessionListFilter,
+    clearSessionListFilter,
+    getSessionListFilterPayload,
     getSessionView,
     hasHydratedSessionView,
     resetSessionView,

@@ -7,12 +7,12 @@
 //! - `search_in_dir()`: 递归搜索目录并返回带文件路径和行号的结果
 //!
 //! ## Dependencies
-//! - Internal: `crate::core::tools::permission`, `super::workspace`, `super::common`
+//! - Internal: `crate::core::tools::framework::permission`, `super::workspace`, `super::common`
 //! - External: `regex`
 
 use std::path::Path;
 
-use crate::core::tools::permission::ensure_path_permission;
+use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{is_ignored_entry_name, is_search_skipped_extension};
 use super::workspace::get_workspace;

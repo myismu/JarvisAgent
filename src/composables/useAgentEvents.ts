@@ -1,3 +1,15 @@
+/**
+ * # useAgentEvents.ts — Agent 事件监听与历史恢复
+ *
+ * 统一注册 Tauri 事件监听器，并从后端恢复主 Agent、子 Agent、计划文档和上下文快照状态。
+ *
+ * ## Key Exports
+ * - `useAgentEvents()`: 提供事件初始化与会话运行态恢复方法
+ *
+ * ## Dependencies
+ * - Internal: `@/stores/session`, `@/stores/chat`, `@/stores/agent`, `@/stores/permission`
+ * - External: `@tauri-apps/api`
+ */
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -25,6 +37,7 @@ import type {
   AgentStep,
   AgentRun,
   AgentRunEvent,
+  SessionContextSnapshot,
   SubAgentRun,
   SubAgentEvent,
 } from "../types";
@@ -69,6 +82,7 @@ export function useAgentEvents() {
   const chat = useChatStore();
   const agent = useAgentStore();
   const perm = usePermissionStore();
+  const dismissedInterruptedRuns = new Set<string>();
 
   function syncActiveSessionView(sessionId: string | null | undefined, followScroll = false) {
     if (sessionId === session.activeSessionId) {
@@ -137,11 +151,18 @@ export function useAgentEvents() {
     const running = latestRun(runs, (run) => run.sessionId === sessionId && run.status === "running");
     const interrupted = latestRun(
       runs,
-      (run) => run.sessionId === sessionId && run.status === "interrupted" && run.resumable
+      (run) =>
+        run.sessionId === sessionId &&
+        run.status === "interrupted" &&
+        run.resumable &&
+        !dismissedInterruptedRuns.has(run.runId)
     );
 
     if (running) {
       const previousActiveRunId = view.activeRunId;
+      if (view.resumableRunId) {
+        dismissedInterruptedRuns.add(view.resumableRunId);
+      }
       view.status = "RUNNING";
       view.activeRunId = running.runId;
       view.resumableRunId = null;
@@ -178,6 +199,11 @@ export function useAgentEvents() {
     }
     view.currentTurn.isRunning = false;
     view.hydrated = true;
+  }
+
+  async function refreshSessionHistory(sessionId: string) {
+    const history = await invoke<string>("get_session_history", { sessionId });
+    session.replaceSessionHistory(sessionId, history);
   }
 
   async function loadSubAgentRunsFromBackend(sid?: string | null) {
@@ -239,10 +265,11 @@ export function useAgentEvents() {
     }
   }
 
-  async function loadAgentRunsFromBackend(sid?: string | null) {
+  async function loadAgentRunsFromBackend(sid?: string | null, options: { refreshHistory?: boolean } = {}) {
     try {
       const effectiveSid = sid ?? session.activeSessionId;
       if (!effectiveSid) return;
+      const beforeHistory = session.getSessionView(effectiveSid).jarvisResponse;
       const runs = await invoke<AgentRun[]>("list_agent_runs", { sessionId: effectiveSid });
       const otherRuns = Object.fromEntries(
         Object.entries(agent.agentRuns).filter(([, run]) => run.sessionId !== effectiveSid)
@@ -252,6 +279,13 @@ export function useAgentEvents() {
         ...Object.fromEntries(runs.map((run) => [run.runId, run])),
       };
       applyAgentRunState(effectiveSid, runs);
+      if (options.refreshHistory !== false) {
+        await refreshSessionHistory(effectiveSid);
+        applyAgentRunState(effectiveSid, runs);
+        if (session.getSessionView(effectiveSid).jarvisResponse !== beforeHistory) {
+          chat.triggerRender();
+        }
+      }
       syncActiveSessionView(effectiveSid, false);
     } catch (err) {
       console.error("加载主 Agent 执行记录失败:", err);
@@ -279,6 +313,23 @@ export function useAgentEvents() {
       agent.agentRunEventsByRun = { ...otherEvents, ...grouped };
     } catch (err) {
       console.error("加载主 Agent 事件历史失败:", err);
+    }
+  }
+
+  async function loadContextSnapshotFromBackend(sid?: string | null) {
+    try {
+      const effectiveSid = sid ?? session.activeSessionId;
+      if (!effectiveSid) return;
+      const snapshot = await invoke<SessionContextSnapshot | null>("get_session_context_snapshot", {
+        sessionId: effectiveSid,
+      });
+      if (snapshot) {
+        agent.upsertContextSnapshot(snapshot);
+      } else {
+        agent.clearContextSnapshot(effectiveSid);
+      }
+    } catch (err) {
+      console.error("加载上下文快照失败:", err);
     }
   }
 
@@ -379,11 +430,23 @@ export function useAgentEvents() {
       agent.agentRunEventsByRun = { ...agent.agentRunEventsByRun, [item.runId]: events };
     });
 
+    // context snapshot
+    await on<SessionContextSnapshot>("context-snapshot-updated", (event) => {
+      const snapshot = event.payload;
+      if (!snapshot?.sessionId) return;
+      agent.upsertContextSnapshot(snapshot);
+    });
+
     // chat turn start
     await on<any>("chat-turn-start", (event) => {
       const sessionId = event.payload?.sessionId ?? session.activeSessionId;
       if (!sessionId) return;
       const view = session.getSessionView(sessionId);
+      if (view.resumableRunId) {
+        dismissedInterruptedRuns.add(view.resumableRunId);
+      }
+      view.resumableRunId = null;
+      view.status = "RUNNING";
       commitTempBuffer(view);
       commitThinkingBuffer(view);
       view.thinkingBuffer = "";
@@ -527,14 +590,25 @@ export function useAgentEvents() {
     await on<any>("checkpoint-created", (event) => {
       const sessionId = event.payload?.sessionId ?? session.activeSessionId;
       if (!sessionId) return;
+      const view = session.getSessionView(sessionId);
       if (event.payload?.checkpointId) {
-        const view = session.getSessionView(sessionId);
+        // 有实快照的轮次
         view.latestCheckpoint = {
           id: event.payload.checkpointId,
           hasOperations: event.payload.hasOperations === true,
+          hasPatches: event.payload.hasPatches === true,
+          canRollback: true,
         };
-        view.hydrated = true;
+      } else if (event.payload?.canRollback) {
+        // 纯聊天轮次：没有 checkpointId，但可以回滚消息
+        view.latestCheckpoint = {
+          id: "",
+          hasOperations: false,
+          hasPatches: false,
+          canRollback: true,
+        };
       }
+      view.hydrated = true;
     });
 
     // active session changed
@@ -567,6 +641,7 @@ export function useAgentEvents() {
             return events.some((item) => item.sessionId !== deletedSessionId);
           })
         );
+        agent.clearContextSnapshot(deletedSessionId);
       }
 
       try {
@@ -578,13 +653,16 @@ export function useAgentEvents() {
           if (!session.hasHydratedSessionView(nextActiveSessionId)) {
             const history = await invoke<string>("get_session_history", { sessionId: nextActiveSessionId });
             session.replaceSessionHistory(nextActiveSessionId, history);
-            await chat.loadAgentStepsFromBackend(nextActiveSessionId);
           }
-          await loadSubAgentRunsFromBackend(nextActiveSessionId);
-          await loadSubAgentEventsFromBackend(nextActiveSessionId);
-          await loadPlanDocumentsFromBackend(nextActiveSessionId);
-          await loadAgentRunsFromBackend(nextActiveSessionId);
-          await loadAgentRunEventsFromBackend(nextActiveSessionId);
+          await Promise.all([
+            chat.loadAgentStepsFromBackend(nextActiveSessionId),
+            loadSubAgentRunsFromBackend(nextActiveSessionId),
+            loadSubAgentEventsFromBackend(nextActiveSessionId),
+            loadPlanDocumentsFromBackend(nextActiveSessionId),
+            loadAgentRunsFromBackend(nextActiveSessionId, { refreshHistory: false }),
+            loadAgentRunEventsFromBackend(nextActiveSessionId),
+            loadContextSnapshotFromBackend(nextActiveSessionId),
+          ]);
         } else {
           session.workingDirectory = null;
           session.setSessionUsageTotals(0, 0);
@@ -633,5 +711,6 @@ export function useAgentEvents() {
     loadPlanDocumentsFromBackend,
     loadAgentRunsFromBackend,
     loadAgentRunEventsFromBackend,
+    loadContextSnapshotFromBackend,
   };
 }

@@ -12,10 +12,21 @@
 //! - 助手多轮回复合并显示，思考过程用 `<details>` 折叠
 //! - 用户消息关联检查点 ID，支持前端回滚按钮
 
+use crate::core::commands::checkpoint::Checkpoint;
 use crate::core::models::*;
+use crate::core::orchestration::agent_runs;
 use crate::core::session;
-use crate::core::session::checkpoint;
 use crate::core::state::*;
+
+struct CheckpointRollbackInfo {
+    id: String,
+    has_operations_after: bool,
+}
+
+struct UserDisplayMessage {
+    memory_index: usize,
+    display: String,
+}
 
 #[derive(Default)]
 struct AssistantDisplay {
@@ -46,6 +57,16 @@ fn is_internal_user_text(value: &str) -> bool {
 
 fn is_internal_assistant_message(content: &Content) -> bool {
     matches!(content, Content::Single(s) if s.trim() == "Noted background results.")
+}
+
+fn checkpoint_matches_user_message(trigger: &str, message: &str) -> bool {
+    let trigger = trigger.trim();
+    let message = message.trim();
+    if trigger.is_empty() || message.is_empty() {
+        return false;
+    }
+
+    message == trigger || message.starts_with(trigger) || trigger.starts_with(message)
 }
 
 fn user_display_content(content: &Content) -> String {
@@ -120,48 +141,35 @@ fn append_assistant_content(target: &mut AssistantDisplay, content: &Content) {
 /// 渲染用户消息 HTML，关联检查点信息以支持撤回按钮
 fn render_user_message(
     history: &mut String,
-    display: &str,
-    checkpoint_map: &std::collections::HashMap<String, (String, bool)>,
+    message: &UserDisplayMessage,
+    checkpoint_info: Option<&CheckpointRollbackInfo>,
 ) {
+    let display = &message.display;
     if display.trim().is_empty() {
         return;
     }
-    // 多级模糊匹配：精确匹配 → 100 字符前缀 → 50 字符前缀 → 互为前缀
-    let preview_50 = display.chars().take(50).collect::<String>();
-    let preview_100 = display.chars().take(100).collect::<String>();
-    let cp_info = checkpoint_map
-        .get(display)
-        .or_else(|| checkpoint_map.get(&preview_100))
-        .or_else(|| checkpoint_map.get(&preview_50))
-        .cloned()
-        .or_else(|| {
-            checkpoint_map
-                .iter()
-                .find(|(trigger, _)| {
-                    let trigger = trigger.trim();
-                    let display = display.trim();
-                    !trigger.is_empty()
-                        && !display.is_empty()
-                        && (display.starts_with(trigger) || trigger.starts_with(display))
-                })
-                .map(|(_, value)| value.clone())
-        });
-    let cp_attr = cp_info
-        .as_ref()
-        .map(|(id, _)| format!(" data-checkpoint-id=\"{}\"", id))
+
+    let cp_attr = checkpoint_info
+        .map(|info| format!(" data-checkpoint-id=\"{}\"", info.id))
         .unwrap_or_default();
-    let btn_html = cp_info
-        .as_ref()
-        .map(|(id, has_ops)| {
-            format!(
-                "<button class=\"rollback-trigger\" data-cp-id=\"{}\" data-has-operations=\"{}\" title=\"撤回此消息及操作\"></button>",
-                id, has_ops
-            )
-        })
+    let cp_id = checkpoint_info
+        .map(|info| info.id.as_str())
         .unwrap_or_default();
+    let has_operations = checkpoint_info
+        .map(|info| info.has_operations_after)
+        .unwrap_or(false);
+    let btn_title = if has_operations {
+        "撤回此消息及操作"
+    } else {
+        "撤回此消息"
+    };
+    let btn_html = format!(
+        "<button class=\"rollback-trigger\" data-cp-id=\"{}\" data-has-operations=\"{}\" title=\"{}\"></button>",
+        cp_id, has_operations, btn_title
+    );
     history.push_str(&format!(
-        "<div class=\"chat-message user-message\" style=\"position:relative\"{}><div class=\"message-content\">\n\n{}\n\n</div>{}</div>\n\n",
-        cp_attr, display, btn_html
+        "<div class=\"chat-message user-message\" style=\"position: relative;\"><div class=\"message-content\"{} data-user-message-index=\"{}\">\n\n{}\n\n</div>{}</div>\n\n",
+        cp_attr, message.memory_index, display, btn_html
     ));
 }
 
@@ -205,35 +213,123 @@ fn render_assistant_message(history: &mut String, assistant: &AssistantDisplay) 
 pub async fn get_session_history(
     session_id: String,
     session_manager: tauri::State<'_, SessionManager>,
+    registry: tauri::State<'_, SnapshotRegistry>,
 ) -> Result<String, String> {
     let ctx = session_manager.get_or_create(&session_id).await;
-    let memory = ctx.memory.lock().await.clone();
+    let mut memory = session::load_session(&session_id)?;
+
+    // ── 中断恢复：检测并补回崩溃/中断时丢失的消息 ──
+    if let Some((extra_messages, partial_content, partial_thinking)) =
+        agent_runs::recover_interrupted_messages(&session_id, &memory.messages)
+    {
+        // 补回 checkpoint 中多出的消息（用户消息、工具结果等）
+        memory.messages.extend(extra_messages);
+
+        // 如果有半截助手回复，追加为一条助手消息
+        // 在半截文本末尾追加中断标记，让 LLM 知道自己的回复被中断了
+        let has_partial_content = !partial_content.trim().is_empty();
+        let has_partial_thinking = !partial_thinking.trim().is_empty();
+        if has_partial_content || has_partial_thinking {
+            let mut blocks = Vec::new();
+            if has_partial_thinking {
+                blocks.push(ContentBlock::Thinking {
+                    thinking: partial_thinking,
+                    signature: String::new(),
+                });
+            }
+            if has_partial_content {
+                // 在半截文本后追加中断标记
+                let marked_content = format!(
+                    "{}\n\n> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。",
+                    partial_content.trim_end()
+                );
+                blocks.push(ContentBlock::Text {
+                    text: marked_content,
+                });
+            }
+            memory.messages.push(Message::Assistant {
+                content: Content::Multiple(blocks),
+            });
+        }
+
+        // 将恢复后的内存同步回去，并保存到数据库
+        *ctx.memory.lock().await = memory.clone();
+        session::save_session(&session_id, &memory, None);
+
+        // 标记该 run 为已恢复，避免下次重复恢复
+        if let Some(interrupted_run) = agent_runs::find_interrupted_run(&session_id) {
+            let _ = agent_runs::mark_run_recovered(&interrupted_run.run_id);
+        }
+    } else {
+        *ctx.memory.lock().await = memory.clone();
+    }
 
     if memory.messages.is_empty() {
         return Ok(String::new());
     }
 
-    let checkpoint_map: std::collections::HashMap<String, (String, bool)> = {
-        let checkpoints = checkpoint::list_checkpoints(&session_id, None);
+    let manager = registry.0.read().await.get_or_create(&session_id).await?;
+    let snapshots = manager.list_snapshots(None).await;
+    let checkpoints: Vec<Checkpoint> = snapshots
+        .iter()
+        .filter(|s| s.is_checkpoint)
+        .map(|s| Checkpoint {
+            id: s.id.clone(),
+            session_id: session_id.clone(),
+            parent_id: s.parent_id.clone(),
+            branch_name: s.branch_name.clone(),
+            agent_id: s.agent_id.clone(),
+            workspace_id: s.workspace_id.clone(),
+            created_at: s.created_at,
+            trigger_message: s.message.clone().unwrap_or_default(),
+            operations: vec![],
+            metadata: s.metadata.clone(),
+        })
+        .collect();
+    let display_messages = memory
+        .messages
+        .iter()
+        .enumerate()
+        .filter_map(|(memory_index, msg)| {
+            if let Message::User { content } = msg {
+                let display = user_display_content(content);
+                if !is_internal_user_text(&display) && !display.trim().is_empty() {
+                    return Some(UserDisplayMessage {
+                        memory_index,
+                        display,
+                    });
+                }
+            }
+            None
+        })
+        .collect::<Vec<_>>();
 
-        checkpoints
-            .iter()
-            .enumerate()
-            .map(|(i, cp)| {
-                let has_operations_after = checkpoints[i..]
-                    .iter()
-                    .any(|later_cp| !later_cp.operations.is_empty());
-
-                (
-                    cp.trigger_message.clone(),
-                    (cp.id.clone(), has_operations_after),
-                )
-            })
-            .collect()
-    };
+    let mut checkpoint_by_user_index = std::collections::HashMap::new();
+    for checkpoint in &checkpoints {
+        let trigger_index = display_messages.iter().position(|message| {
+            checkpoint_matches_user_message(&checkpoint.trigger_message, &message.display)
+        });
+        if let Some(index) = trigger_index {
+            let target_index = index.saturating_sub(1);
+            let has_operations_after = !checkpoint.operations.is_empty()
+                || checkpoints.iter().any(|candidate| {
+                    candidate.created_at > checkpoint.created_at && !candidate.operations.is_empty()
+                });
+            let entry = checkpoint_by_user_index
+                .entry(target_index)
+                .or_insert_with(|| CheckpointRollbackInfo {
+                    id: checkpoint.id.clone(),
+                    has_operations_after,
+                });
+            if has_operations_after {
+                entry.has_operations_after = true;
+            }
+        }
+    }
 
     let mut history = String::new();
     let mut pending_assistant = AssistantDisplay::default();
+    let mut visible_user_index = 0usize;
 
     for msg in &memory.messages {
         match msg {
@@ -242,10 +338,18 @@ pub async fn get_session_history(
                 if is_internal_user_text(&display) {
                     continue;
                 }
+                let Some(message) = display_messages.get(visible_user_index) else {
+                    continue;
+                };
 
                 render_assistant_message(&mut history, &pending_assistant);
                 pending_assistant = AssistantDisplay::default();
-                render_user_message(&mut history, &display, &checkpoint_map);
+                render_user_message(
+                    &mut history,
+                    message,
+                    checkpoint_by_user_index.get(&visible_user_index),
+                );
+                visible_user_index += 1;
             }
             Message::Assistant { content } => {
                 if is_internal_assistant_message(content) {

@@ -11,6 +11,7 @@
 //! - `recall_last_message()`: 撤回最后一条用户消息
 //! - `auto_name_session()`: 使用 LLM 自动生成会话名称（内部函数）
 //! - `list_agent_runs()` / `get_subagent_runs()`: Agent 运行记录查询
+//! - `get_session_context_snapshot()`: 查询最近一次上下文 token 快照
 
 use crate::core::llm::api_client;
 use crate::core::models::*;
@@ -63,7 +64,14 @@ pub async fn create_session(
 pub async fn switch_session(
     id: String,
     session_manager: tauri::State<'_, SessionManager>,
+    snapshot_registry: tauri::State<'_, SnapshotRegistry>,
 ) -> Result<session::SessionMeta, String> {
+    // 切换会话时释放旧会话的快照管理器缓存
+    {
+        let registry = snapshot_registry.0.read().await;
+        registry.remove(&id).await;
+    }
+
     // 前端通知切换到了该 session，预加载到内存
     let _ = session_manager.get_or_create(&id).await;
     let meta = session::get_session_meta(&id)?;
@@ -216,6 +224,54 @@ pub async fn recall_last_message(
 }
 
 #[tauri::command]
+pub async fn recall_message_from_index(
+    session_id: String,
+    user_message_index: usize,
+    session_manager: tauri::State<'_, SessionManager>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let ctx = session_manager.get_or_create(&session_id).await;
+    let recalled_text;
+    let is_empty;
+    {
+        let mut session = ctx.memory.lock().await;
+        if user_message_index >= session.messages.len() {
+            return Err("撤回消息不存在".to_string());
+        }
+        if let Message::User { content } = &session.messages[user_message_index] {
+            recalled_text = match content {
+                Content::Single(s) => s.clone(),
+                Content::Multiple(blocks) => blocks
+                    .iter()
+                    .filter_map(|b| {
+                        if let ContentBlock::Text { text } = b {
+                            Some(text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            };
+        } else {
+            return Err("撤回目标不是用户消息".to_string());
+        }
+        session.messages.truncate(user_message_index);
+        is_empty = session.messages.is_empty();
+    }
+
+    if is_empty {
+        switch_away_and_delete_empty_session(&session_id, &app).await?;
+    } else {
+        let memory = ctx.memory.lock().await.clone();
+        session::save_session(&session_id, &memory, None);
+        let _ = app.emit("session-updated", ());
+    }
+
+    Ok(recalled_text)
+}
+
+#[tauri::command]
 pub async fn delete_session(id: String) -> Result<(), String> {
     // Frontend is responsible for checking if it's the active one, or it just deletes it.
     // If it deletes the active one, it should call switch_away_and_delete_empty_session or similar.
@@ -235,6 +291,13 @@ pub async fn update_session_profile(id: String, profile_id: String) -> Result<()
 #[tauri::command]
 pub async fn get_session_meta(id: String) -> Result<session::SessionMeta, String> {
     session::get_session_meta(&id)
+}
+
+#[tauri::command]
+pub async fn get_session_context_snapshot(
+    session_id: String,
+) -> Result<Option<crate::core::models::SessionContextSnapshot>, String> {
+    session::get_context_snapshot(&session_id)
 }
 
 #[tauri::command]
@@ -261,12 +324,10 @@ pub async fn save_agent_steps(
     let ctx = session_manager.get_or_create(&session_id).await;
     {
         let mut session = ctx.memory.lock().await;
-        session.agent_steps = steps.clone();
+        session.agent_steps = steps;
+        let memory = session.clone();
+        session::save_session(&session_id, &memory, None);
     }
-
-    let mut memory = session::load_session(&session_id).unwrap_or_default();
-    memory.agent_steps = steps;
-    session::save_session(&session_id, &memory, None);
     Ok(())
 }
 
@@ -297,12 +358,17 @@ pub async fn list_agent_runs(
         let sessions = session_manager.0.read().await;
         sessions
             .iter()
-            .filter(|(sid, _)| session_id.as_deref().map_or(true, |target| target == sid.as_str()))
+            .filter(|(sid, _)| {
+                session_id
+                    .as_deref()
+                    .map_or(true, |target| target == sid.as_str())
+            })
             .map(|(_, ctx)| ctx.clone())
             .collect()
     };
 
     let mut active_run_ids = std::collections::HashSet::new();
+    let mut active_session_ids = std::collections::HashSet::new();
     for ctx in contexts {
         let is_active = ctx
             .cancel_token
@@ -312,6 +378,7 @@ pub async fn list_agent_runs(
             .map(|token| !token.is_cancelled())
             .unwrap_or(false);
         if is_active {
+            active_session_ids.insert(ctx.id.clone());
             if let Some(run_id) = ctx.active_run_id.lock().await.clone() {
                 active_run_ids.insert(run_id);
             }
@@ -325,6 +392,7 @@ pub async fn list_agent_runs(
         &app,
         session_id.as_deref(),
         &active_run_ids,
+        &active_session_ids,
     );
 
     Ok(crate::core::orchestration::agent_runs::list_runs(
@@ -347,14 +415,120 @@ pub async fn list_agent_run_events(
 pub async fn prepare_resume_agent_run(
     run_id: String,
     session_manager: tauri::State<'_, SessionManager>,
+    app: tauri::AppHandle,
 ) -> Result<crate::core::orchestration::agent_runs::ResumeAgentRunPlan, String> {
     let (checkpoint, plan) = crate::core::orchestration::agent_runs::prepare_resume(&run_id)?;
     let ctx = session_manager.get_or_create(&checkpoint.session_id).await;
-    {
+    let should_mark_recovered = {
         let mut memory = ctx.memory.lock().await;
-        memory.messages = checkpoint.messages;
+        memory.messages = checkpoint.messages.clone();
+        recover_interrupted_into_memory(&checkpoint.session_id, &mut memory.messages)
+    };
+    if should_mark_recovered {
+        let memory = ctx.memory.lock().await.clone();
+        session::save_session(&checkpoint.session_id, &memory, None);
+        let _ = crate::core::orchestration::agent_runs::mark_run_recovered(&run_id);
+        let _ = app.emit("session-updated", ());
     }
     Ok(plan)
+}
+
+pub(crate) fn recover_interrupted_into_memory(
+    session_id: &str,
+    messages: &mut Vec<Message>,
+) -> bool {
+    let current_messages = messages.clone();
+    let Some((extra_messages, live_content, live_thinking)) =
+        crate::core::orchestration::agent_runs::recover_interrupted_messages(
+            session_id,
+            &current_messages,
+        )
+    else {
+        return false;
+    };
+    messages.extend(extra_messages);
+    if let Some(message) = recovered_assistant_message(&live_content, &live_thinking) {
+        if !assistant_message_exists_at_tail(messages, &message) {
+            messages.push(message);
+        }
+    }
+    true
+}
+
+fn recovered_assistant_message(live_content: &str, live_thinking: &str) -> Option<Message> {
+    let mut blocks = Vec::new();
+    let thinking = live_thinking.trim();
+    let content = live_content.trim();
+    if !thinking.is_empty() {
+        blocks.push(ContentBlock::Thinking {
+            thinking: thinking.to_string(),
+            signature: String::new(),
+        });
+    }
+    if !content.is_empty() {
+        blocks.push(ContentBlock::Text {
+            text: content.to_string(),
+        });
+    }
+    if blocks.is_empty() {
+        None
+    } else {
+        Some(Message::Assistant {
+            content: Content::Multiple(blocks),
+        })
+    }
+}
+
+fn assistant_message_exists_at_tail(messages: &[Message], target: &Message) -> bool {
+    let Some(last) = messages.last() else {
+        return false;
+    };
+    assistant_message_texts(last) == assistant_message_texts(target)
+}
+
+fn assistant_message_texts(message: &Message) -> Option<(String, String)> {
+    let Message::Assistant { content } = message else {
+        return None;
+    };
+    let mut thinking_parts = Vec::new();
+    let mut text_parts = Vec::new();
+    match content {
+        Content::Single(text) => text_parts.push(text.trim().to_string()),
+        Content::Multiple(blocks) => {
+            for block in blocks {
+                match block {
+                    ContentBlock::Thinking { thinking, .. } => {
+                        thinking_parts.push(thinking.trim().to_string())
+                    }
+                    ContentBlock::Text { text } => text_parts.push(text.trim().to_string()),
+                    _ => {}
+                }
+            }
+        }
+    }
+    Some((thinking_parts.join("\n\n"), text_parts.join("\n\n")))
+}
+
+#[tauri::command]
+pub async fn recover_interrupted_session_messages(
+    session_id: String,
+    session_manager: tauri::State<'_, SessionManager>,
+    app: tauri::AppHandle,
+) -> Result<bool, String> {
+    let ctx = session_manager.get_or_create(&session_id).await;
+    let recovered = {
+        let mut memory = ctx.memory.lock().await;
+        recover_interrupted_into_memory(&session_id, &mut memory.messages)
+    };
+    if recovered {
+        let memory = ctx.memory.lock().await.clone();
+        session::save_session(&session_id, &memory, None);
+        if let Some(interrupted_run) = crate::core::orchestration::agent_runs::find_interrupted_run(&session_id) {
+            let _ = crate::core::orchestration::agent_runs::mark_run_recovered(&interrupted_run.run_id);
+        }
+        let _ = app.emit("session-updated", ());
+    }
+    Ok(recovered)
 }
 
 #[tauri::command]

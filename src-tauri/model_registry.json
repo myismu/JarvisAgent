@@ -1,5 +1,5 @@
 {
-  "_comment": "模型能力注册表 - 使用 include_str!() 编译时内嵌，无需运行时文件。参数依据 doc/ai-models-guide.md 同步；当前 schema 未包含独立上下文/价格字段，相关信息写入 notes。",
+  "_comment": "模型能力注册表 - 使用 include_str!() 编译时内嵌，无需运行时文件。参数依据 doc/ai-models-guide.md 同步；maxTokens 表示最大输出，maxContextTokens 表示最大上下文窗口。",
   "_lastUpdated": "2026-04-29",
   "models": [
     {
@@ -14,7 +14,8 @@
         "temperature": false,
         "maxTokens": 384000,
         "notes": "最新旗舰，支持 thinking/non-thinking 切换，1M 上下文，384K 输出；输入 $1.74/1M tokens（缓存 $0.0145），输出 $3.48/1M tokens；当前 75% 折扣至 2026-05-31；暂不支持视觉",
-        "vision": false
+        "vision": false,
+        "maxContextTokens": 1000000
       }
     },
     {
@@ -29,7 +30,8 @@
         "temperature": false,
         "maxTokens": 384000,
         "notes": "轻量快速版，支持 thinking/non-thinking 切换，1M 上下文，384K 输出；输入 $0.14/1M tokens（缓存 $0.0028），输出 $0.28/1M tokens；暂不支持视觉",
-        "vision": false
+        "vision": false,
+        "maxContextTokens": 1000000
       }
     },
     {
@@ -43,7 +45,8 @@
         "temperature": true,
         "maxTokens": 8192,
         "notes": "旧版通用基础模型，128K 上下文，8K 输出；输入 $0.27/1M tokens（缓存 $0.07），输出 $1.10/1M tokens；deepseek-chat 即将弃用，对应 DeepSeek-V4-Flash non-thinking 模式",
-        "vision": false
+        "vision": false,
+        "maxContextTokens": 128000
       }
     },
     {
@@ -57,7 +60,8 @@
         "temperature": false,
         "maxTokens": 8192,
         "notes": "旧版专用推理模型，始终处于推理模式，128K 上下文，8K 输出；输入 $0.55/1M tokens（缓存 $0.14），输出 $2.19/1M tokens；deepseek-reasoner 即将弃用，对应 DeepSeek-V4-Flash thinking 模式",
-        "vision": false
+        "vision": false,
+        "maxContextTokens": 128000
       }
     },
     {
@@ -72,7 +76,8 @@
         "temperature": false,
         "maxTokens": 32768,
         "notes": "最强模型，适合 Agent 和编码；Extended Thinking，200K 上下文；输入 $5.00/1M tokens（缓存读 $0.50），输出 $25.00/1M tokens；参数表未给出最大输出，沿用 32K 注册上限",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 200000
       }
     },
     {
@@ -87,7 +92,8 @@
         "temperature": false,
         "maxTokens": 32768,
         "notes": "智能/成本/速度平衡模型；Extended Thinking，200K 上下文，可扩展至 1M；输入 $3.00/1M tokens（缓存读 $0.30），输出 $15.00/1M tokens；参数表未给出最大输出，沿用 32K 注册上限",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 200000
       }
     },
     {
@@ -102,7 +108,8 @@
         "temperature": false,
         "maxTokens": 32768,
         "notes": "快速低成本 Claude 4.x 模型；Extended Thinking，200K 上下文；输入 $1.00/1M tokens（缓存读 $0.10），输出 $5.00/1M tokens；参数表未给出最大输出，沿用 32K 注册上限",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 200000
       }
     },
     {
@@ -117,7 +124,8 @@
         "temperature": false,
         "maxTokens": 32768,
         "notes": "旧版旗舰 Claude 4.x 模型；Extended Thinking，200K 上下文；输入 $5.00/1M tokens，输出 $25.00/1M tokens；参数表未给出最大输出，沿用 32K 注册上限",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 200000
       }
     },
     {
@@ -132,7 +140,8 @@
         "temperature": false,
         "maxTokens": 32768,
         "notes": "Claude 4.x 旗舰模型；Extended Thinking，200K 上下文；输入 $5.00/1M tokens，输出 $25.00/1M tokens；参数表未给出最大输出，沿用 32K 注册上限",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 200000
       }
     },
     {
@@ -147,7 +156,8 @@
         "temperature": false,
         "maxTokens": 32768,
         "notes": "Claude 4.x 平衡型模型；Extended Thinking，200K 上下文；输入 $3.00/1M tokens，输出 $15.00/1M tokens；参数表未给出最大输出，沿用 32K 注册上限",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 200000
       }
     },
     {
@@ -202,7 +212,13 @@
         "streaming": true,
         "thinking": true,
         "thinkingParam": "reasoning_effort",
-        "thinkingEffortValues": ["none", "low", "medium", "high", "xhigh"],
+        "thinkingEffortValues": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
         "temperature": false,
         "maxTokens": 131072,
         "notes": "最新旗舰模型，适合编码和专业工作；reasoning_effort 可选 none/low/medium(默认)/high/xhigh；输入 $5.00/1M tokens（缓存 $0.50），输出 $30.00/1M tokens；参数表未给出上下文/最大输出，保留现有 128K 输出注册上限；思考模式下温度不可调",
@@ -218,7 +234,13 @@
         "streaming": false,
         "thinking": true,
         "thinkingParam": "reasoning_effort",
-        "thinkingEffortValues": ["none", "low", "medium", "high", "xhigh"],
+        "thinkingEffortValues": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
         "temperature": false,
         "maxTokens": 131072,
         "notes": "最新旗舰 Pro 版，更多算力深度思考；参数表未单列 Pro 版，保留现有 128K 输出注册上限；仅支持 Responses API，不支持流式，思考模式下温度不可调",
@@ -234,7 +256,13 @@
         "streaming": true,
         "thinking": true,
         "thinkingParam": "reasoning_effort",
-        "thinkingEffortValues": ["none", "low", "medium", "high", "xhigh"],
+        "thinkingEffortValues": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
         "temperature": false,
         "maxTokens": 131072,
         "notes": "专业推理模型，reasoning_effort 可选 none(默认)/low/medium/high/xhigh；输入 $2.50/1M tokens（缓存 $0.25），输出 $15.00/1M tokens；参数表未给出上下文/最大输出，保留现有 128K 输出注册上限；思考模式下温度不可调",
@@ -250,7 +278,11 @@
         "streaming": true,
         "thinking": true,
         "thinkingParam": "reasoning_effort",
-        "thinkingEffortValues": ["medium", "high", "xhigh"],
+        "thinkingEffortValues": [
+          "medium",
+          "high",
+          "xhigh"
+        ],
         "temperature": false,
         "maxTokens": 131072,
         "notes": "前代旗舰 Pro 版，reasoning_effort 仅可选 medium/high/xhigh；参数表未单列 Pro 版，保留现有 128K 输出注册上限；思考模式下温度不可调",
@@ -266,7 +298,13 @@
         "streaming": true,
         "thinking": true,
         "thinkingParam": "reasoning_effort",
-        "thinkingEffortValues": ["none", "low", "medium", "high", "xhigh"],
+        "thinkingEffortValues": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
         "temperature": false,
         "maxTokens": 131072,
         "notes": "最强 mini 模型，适合编码/计算机使用；reasoning_effort 可选 none/low/medium/high/xhigh；输入 $0.75/1M tokens（缓存 $0.075），输出 $4.50/1M tokens；参数表未给出上下文/最大输出，保留现有 128K 输出注册上限；思考模式下温度不可调",
@@ -282,7 +320,13 @@
         "streaming": true,
         "thinking": true,
         "thinkingParam": "reasoning_effort",
-        "thinkingEffortValues": ["none", "low", "medium", "high", "xhigh"],
+        "thinkingEffortValues": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
         "temperature": false,
         "maxTokens": 131072,
         "notes": "最便宜的 GPT-5.4 级模型，适合分类/数据提取/排序/子代理；参数表未单列 nano 版，保留现有 128K 输出注册上限；思考模式下温度不可调",
@@ -298,11 +342,16 @@
         "streaming": true,
         "thinking": true,
         "thinkingParam": "reasoning_effort",
-        "thinkingEffortValues": ["low", "medium", "high"],
+        "thinkingEffortValues": [
+          "low",
+          "medium",
+          "high"
+        ],
         "temperature": false,
         "maxTokens": 100000,
         "notes": "强推理模型，reasoning_effort 可选 low/medium/high；200K 上下文，100K 输出；输入约 $10.00/1M tokens，输出约 $40.00/1M tokens；支持工具调用和网页搜索；温度不可调",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 200000
       }
     },
     {
@@ -314,11 +363,16 @@
         "streaming": true,
         "thinking": true,
         "thinkingParam": "reasoning_effort",
-        "thinkingEffortValues": ["low", "medium", "high"],
+        "thinkingEffortValues": [
+          "low",
+          "medium",
+          "high"
+        ],
         "temperature": false,
         "maxTokens": 100000,
         "notes": "快速高性价比推理模型，reasoning_effort 可选 low/medium/high；200K 上下文，100K 输出；输入约 $1.10/1M tokens，输出约 $4.40/1M tokens；适合数学/编码/视觉；温度不可调",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 200000
       }
     },
     {
@@ -330,11 +384,16 @@
         "streaming": true,
         "thinking": true,
         "thinkingParam": "reasoning_effort",
-        "thinkingEffortValues": ["low", "medium", "high"],
+        "thinkingEffortValues": [
+          "low",
+          "medium",
+          "high"
+        ],
         "temperature": false,
         "maxTokens": 100000,
         "notes": "o4-mini 增强版，适合更深入技术回答；200K 上下文，100K 输出；输入约 $1.10/1M tokens，输出约 $4.40/1M tokens；温度不可调",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 200000
       }
     },
     {
@@ -348,7 +407,8 @@
         "temperature": false,
         "maxTokens": 100000,
         "notes": "内置推理模型，始终处于推理模式，reasoning_effort 不可调；200K 上下文，100K 输出；温度不可调",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 200000
       }
     },
     {
@@ -362,7 +422,8 @@
         "temperature": false,
         "maxTokens": 100000,
         "notes": "旧有高风险长文本分析推理模型；200K 上下文，100K 输出；参数表未给出价格；温度不可调",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 200000
       }
     },
     {
@@ -376,7 +437,8 @@
         "temperature": true,
         "maxTokens": 32768,
         "notes": "非推理长上下文模型，约 1.05M 上下文，32K 输出；输入约 $2.00/1M tokens，输出约 $8.00/1M tokens；擅长指令遵循和工具调用，不支持 reasoning_effort",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 1050000
       }
     },
     {
@@ -418,7 +480,8 @@
         "temperature": true,
         "maxTokens": 16384,
         "notes": "经典通用多模态模型，128K 上下文，16K 输出；输入 $2.50/1M tokens，输出 $10.00/1M tokens；不支持 reasoning_effort",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 128000
       }
     },
     {
@@ -432,7 +495,8 @@
         "temperature": true,
         "maxTokens": 16384,
         "notes": "低成本通用模型，128K 上下文，16K 输出；输入 $0.15/1M tokens，输出 $0.60/1M tokens；不支持 reasoning_effort，适合工具代理",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 128000
       }
     },
     {
@@ -447,7 +511,8 @@
         "temperature": true,
         "maxTokens": 65536,
         "notes": "谷歌旗舰推理模型，原生多模态；1M+ 上下文；使用 thinkingBudget 参数（128-32768），思考模式无法关闭；参数表未给出最大输出",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 1000000
       }
     },
     {
@@ -462,7 +527,8 @@
         "temperature": true,
         "maxTokens": 65536,
         "notes": "高速推理模型，原生多模态；1M+ 上下文；使用 thinkingBudget 参数（0-24576），0 表示关闭思考；参数表未给出最大输出",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 1000000
       }
     },
     {
@@ -477,7 +543,8 @@
         "temperature": true,
         "maxTokens": 65536,
         "notes": "Gemini 2.5 轻量版本，支持 Thinking 和视觉；1M+ 上下文；参数表未给出最大输出，沿用 Gemini 2.5 注册上限",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 1000000
       }
     },
     {
@@ -492,7 +559,8 @@
         "temperature": true,
         "maxTokens": 32768,
         "notes": "上一代快速模型，参数表标注支持 Thinking；1M 上下文；参数表未给出最大输出，沿用 32K 注册上限",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 1000000
       }
     },
     {
@@ -506,7 +574,8 @@
         "temperature": true,
         "maxTokens": 8192,
         "notes": "旧版超长上下文模型，2M 上下文，8K 输出；支持视觉，不支持 Thinking 参数",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 2000000
       }
     },
     {
@@ -520,7 +589,8 @@
         "temperature": true,
         "maxTokens": 8192,
         "notes": "旧版快速模型，1M 上下文，8K 输出；支持视觉，不支持 Thinking 参数",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 1000000
       }
     },
     {
@@ -534,7 +604,8 @@
         "temperature": true,
         "maxTokens": 32768,
         "notes": "通义千问旗舰通用模型，128K 上下文；支持视觉；参数表未给出最大输出，沿用 32K 注册上限",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 128000
       }
     },
     {
@@ -548,7 +619,8 @@
         "temperature": true,
         "maxTokens": 32768,
         "notes": "通义千问视觉专用模型，128K 上下文；参数表未给出最大输出，沿用 32K 注册上限",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 128000
       }
     },
     {
@@ -621,7 +693,8 @@
         "temperature": true,
         "maxTokens": 32768,
         "notes": "通义千问性价比通用模型，128K 上下文；支持视觉；参数表未给出最大输出，沿用 32K 注册上限；无思考参数",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 128000
       }
     },
     {
@@ -635,7 +708,8 @@
         "temperature": true,
         "maxTokens": 16384,
         "notes": "通义千问快速模型，128K 上下文；支持视觉；参数表未给出最大输出，沿用 16K 注册上限；无思考参数",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 128000
       }
     },
     {
@@ -650,7 +724,8 @@
         "temperature": true,
         "maxTokens": 131072,
         "notes": "字节跳动旗舰 Agent 模型，支持深度思考、多模态理解、工具调用；参数表记录豆包 1.5 深度思考具备多模态推理能力，本注册项保留当前 Seed 2.0 ID；256K 上下文，128K 输出注册上限",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 256000
       }
     },
     {
@@ -665,7 +740,8 @@
         "temperature": true,
         "maxTokens": 131072,
         "notes": "轻量版豆包，支持深度思考、多模态理解、结构化输出；参数表记录豆包通用/深度思考均支持视觉，本注册项保留当前 Seed 2.0 Lite ID；256K 上下文，128K 输出注册上限",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 256000
       }
     },
     {

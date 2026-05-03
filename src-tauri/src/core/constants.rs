@@ -3,7 +3,7 @@
 //! 集中定义目录名、文件名、限制阈值等常量。确保整个应用使用一致的命名和限制。
 //!
 //! ## 关键导出
-//! - 目录常量: `DIR_SESSIONS`, `DIR_IMAGES`, `DIR_TASKS`, `DIR_LOGS` 等
+//! - 目录常量: `DIR_IMAGES`, `DIR_TASKS`, `DIR_LOGS` 等
 //! - 文件常量: `FILE_WORKSPACE`, `FILE_CONFIG`, `FILE_GLOBAL_MEMORY` 等
 //! - 限制常量: `MAX_TOKENS_CONTEXT`, `MAX_AGENT_LOOP_BEFORE_CONFIRM`, `MAX_SESSION_TITLE_LEN` 等
 //!
@@ -15,7 +15,6 @@
 //! - 修改限制常量可能影响系统稳定性和性能
 
 // --- Directory Names ---
-pub const DIR_SESSIONS: &str = "sessions";
 pub const DIR_IMAGES: &str = "images";
 pub const DIR_TASKS: &str = "tasks";
 pub const DIR_LOGS: &str = "logs";

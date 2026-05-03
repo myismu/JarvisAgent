@@ -10,7 +10,7 @@
 //! - `snapshot_create_branch()` / `snapshot_switch_branch()`: 快照分支管理
 //! - `snapshot_get_current()`: 获取当前分支和快照 ID
 
-use crate::core::snapshot_engine::{Patch, Snapshot, SnapshotSummary, SnapshotTreeView, Workspace};
+use crate::core::rollback::{Patch, Snapshot, SnapshotSummary, SnapshotTreeView, Workspace};
 use crate::core::state::SnapshotRegistry;
 
 /// 基于 patch 列表创建快照
@@ -109,7 +109,7 @@ pub async fn snapshot_list(
 pub async fn snapshot_list_branches(
     session_id: String,
     registry: tauri::State<'_, SnapshotRegistry>,
-) -> Result<Vec<crate::core::snapshot_engine::snapshot::Branch>, String> {
+) -> Result<Vec<crate::core::rollback::snapshot::Branch>, String> {
     let manager = registry.0.read().await.get_or_create(&session_id).await?;
     Ok(manager.list_branches().await)
 }

@@ -32,7 +32,7 @@ use crate::core::state::{
 use crate::core::config::{load_config, ConfigState}; // 配置状态与加载函数
 use crate::core::infra::background::BackgroundState; // 后台任务状态
 use crate::core::orchestration::subagents::SubAgentMonitorState;
-use crate::core::snapshot_manager::session_manager::SessionManagerRegistry; // 子代理监控状态
+use crate::core::rollback::session_manager::SnapshotManagerRegistry;
 
 // 标准库与异步运行时
 use std::path::PathBuf; // 路径缓冲区，处理文件系统路径
@@ -101,7 +101,9 @@ pub fn run() {
     );
 
     core::data_paths::ensure_base_layout();
-
+    if let Err(err) = core::db::init() {
+        panic!("初始化 SQLite 数据库失败: {}", err);
+    }
     // 恢复工作目录
     let workspace_file = core::data_paths::workspace_file_path();
     if let Ok(path) = std::fs::read_to_string(workspace_file) {
@@ -126,7 +128,7 @@ pub fn run() {
         .manage(ConfigState(std::sync::Arc::new(Mutex::new(load_config()))))
         .manage(WorkspaceState(Mutex::new(None)))
         .manage(SnapshotRegistry(tokio::sync::RwLock::new(
-            SessionManagerRegistry::new(),
+            SnapshotManagerRegistry::new(),
         )))
         // 注册 Tauri 官方插件
         .plugin(tauri_plugin_opener::init()) // 文件/URL 打开器
@@ -142,6 +144,7 @@ pub fn run() {
             core::commands::permission::resolve_permission,
             // 会话管理
             core::commands::session::recall_last_message,
+            core::commands::session::recall_message_from_index,
             core::commands::session::get_active_session_id,
             core::commands::session::list_sessions,
             core::commands::session::create_session,
@@ -150,6 +153,7 @@ pub fn run() {
             core::commands::session::rename_session,
             core::commands::session::update_session_profile,
             core::commands::session::get_session_meta,
+            core::commands::session::get_session_context_snapshot,
             core::commands::session::get_workspace_dir,
             core::commands::session::save_agent_steps,
             core::commands::session::get_agent_steps,
@@ -157,6 +161,7 @@ pub fn run() {
             core::commands::session::list_agent_runs,
             core::commands::session::list_agent_run_events,
             core::commands::session::prepare_resume_agent_run,
+            core::commands::session::recover_interrupted_session_messages,
             core::commands::session::get_background_tasks,
             core::commands::session::get_subagent_runs,
             core::commands::session::list_subagents,
@@ -191,6 +196,11 @@ pub fn run() {
             core::commands::snapshot::snapshot_list,
             core::commands::snapshot::snapshot_list_branches,
             core::commands::snapshot::snapshot_get_current,
+            // 自定义窗口状态
+            core::commands::window_state::clear_custom_window_states,
+            core::commands::window_state::get_custom_window_state,
+            core::commands::window_state::list_custom_window_states,
+            core::commands::window_state::save_custom_window_state,
             // 沙盒会话
             core::commands::sandbox::sandbox_create,
             core::commands::sandbox::sandbox_get,

@@ -407,14 +407,50 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  async function ensureActiveSessionForSend() {
+    const session = useSessionStore();
+    if (session.activeSessionId) {
+      return session.activeSessionId;
+    }
+
+    const meta = await invoke<any>("create_session", {
+      workingDirectory: session.pendingWorkingDirectory,
+    });
+    session.activeSessionId = meta.id;
+    session.workingDirectory = meta.workingDirectory || null;
+    session.pendingWorkingDirectory = null;
+    session.resetSessionView(meta.id);
+    session.setSessionUsageTotals(meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
+
+    const config = await invoke<any>("get_config");
+    if (config.globalProfileId) {
+      config.activeProfileId = config.globalProfileId;
+      await invoke("save_config_cmd", { newConfig: config });
+      await invoke("update_session_profile", { id: meta.id, profileId: config.globalProfileId });
+    }
+    return meta.id as string;
+  }
+
   async function sendToJarvis(msg: string, thinkingOverride?: boolean, imageBase64List?: string[]) {
     const session = useSessionStore();
 
     if (!msg && (!imageBase64List || imageBase64List.length === 0)) return;
-    if (!session.activeSessionId) return;
-
-    const sessionIdAtStart = session.activeSessionId;
+    const sessionIdAtStart = await ensureActiveSessionForSend();
     const requestView = session.getSessionView(sessionIdAtStart);
+
+    try {
+      const recovered = await invoke<boolean>("recover_interrupted_session_messages", {
+        sessionId: sessionIdAtStart,
+      });
+      if (recovered) {
+        const history = await invoke<string>("get_session_history", { sessionId: sessionIdAtStart });
+        session.replaceSessionHistory(sessionIdAtStart, history);
+        session.clearSessionBuffers(sessionIdAtStart);
+        resetRenderState();
+      }
+    } catch (err) {
+      console.warn("恢复中断消息失败:", err);
+    }
 
     requestView.latestCheckpoint = null;
     requestView.showRecallEdit = false;
@@ -475,15 +511,31 @@ export const useChatStore = defineStore("chat", () => {
       }
       requestView.lastUserMessage = msg;
 
-      const checkpoint = requestView.latestCheckpoint as any;
-      const cpId = checkpoint?.id || "";
-      const hasOperations = checkpoint?.hasOperations || false;
-      const btnTitle = cpId ? "撤回此消息及操作" : "撤回此消息";
-      const btnHtml = `<button class="rollback-trigger" data-cp-id="${cpId}" data-has-operations="${hasOperations}" title="${btnTitle}"></button>`;
-      const lastIdx = requestView.jarvisResponse.lastIndexOf("</div></div>\n\n");
+      const checkpoint = requestView.latestCheckpoint as {
+        id: string;
+        hasOperations: boolean;
+        hasPatches: boolean;
+        canRollback: boolean;
+      } | null;
+      const hasPatches = Boolean(checkpoint?.hasPatches);
+      const canRollback = Boolean(checkpoint?.canRollback);
+      const cpId = hasPatches && checkpoint ? checkpoint.id : "";
+      const btnTitle = hasPatches
+        ? "撤回此消息及操作"
+        : canRollback
+          ? "撤回此消息"
+          : "撤回此消息";
+      const btnHtml = `<button class="rollback-trigger" data-cp-id="${cpId}" data-has-operations="${hasPatches}" title="${btnTitle}"></button>`;
+      const lastIdx = requestView.jarvisResponse.lastIndexOf('<div class="chat-message user-message"');
       if (lastIdx !== -1) {
-        requestView.jarvisResponse =
-          requestView.jarvisResponse.slice(0, lastIdx) + btnHtml + requestView.jarvisResponse.slice(lastIdx);
+        const closeIdx = requestView.jarvisResponse.indexOf("</div></div>\n\n", lastIdx);
+        if (closeIdx !== -1) {
+          requestView.jarvisResponse =
+            requestView.jarvisResponse.slice(0, lastIdx) +
+            requestView.jarvisResponse.slice(lastIdx, closeIdx) +
+            btnHtml +
+            requestView.jarvisResponse.slice(closeIdx);
+        }
       }
       requestView.latestCheckpoint = null;
 
@@ -589,15 +641,25 @@ export const useChatStore = defineStore("chat", () => {
         scrollToBottomCb?.();
       }
       await saveAgentStepsToBackend(sessionIdAtStart);
+      const sessionAfterSave = useSessionStore();
+      if (sessionIdAtStart === sessionAfterSave.activeSessionId) {
+        sessionAfterSave.setSessionUsageTotals(res.session_input_tokens || 0, res.session_output_tokens || 0);
+      }
     } catch (err) {
       session.clearSessionBuffers(sessionIdAtStart);
       resetRenderState();
 
       const btnHtml = `<button class="rollback-trigger" data-cp-id="" data-has-operations="false" title="撤回此消息"></button>`;
-      const lastErrIdx = requestView.jarvisResponse.lastIndexOf("</div></div>\n\n");
+      const lastErrIdx = requestView.jarvisResponse.lastIndexOf('<div class="chat-message user-message"');
       if (lastErrIdx !== -1) {
-        requestView.jarvisResponse =
-          requestView.jarvisResponse.slice(0, lastErrIdx) + btnHtml + requestView.jarvisResponse.slice(lastErrIdx);
+        const closeErrIdx = requestView.jarvisResponse.indexOf("</div></div>\n\n", lastErrIdx);
+        if (closeErrIdx !== -1) {
+          requestView.jarvisResponse =
+            requestView.jarvisResponse.slice(0, lastErrIdx) +
+            requestView.jarvisResponse.slice(lastErrIdx, closeErrIdx) +
+            btnHtml +
+            requestView.jarvisResponse.slice(closeErrIdx);
+        }
       }
 
       session.appendSessionHistory(sessionIdAtStart, `\n\n**Error:** ${err}`);
@@ -612,16 +674,15 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  async function cancelJarvis(): Promise<string> {
+  async function cancelJarvis(): Promise<void> {
     const session = useSessionStore();
     const perm = usePermissionStore();
     const runningSessionId = session.activeSessionId;
-    if (!runningSessionId) return "";
+    if (!runningSessionId) return;
 
     const view = session.getSessionView(runningSessionId);
-    const messageToRestore = view.lastUserMessage;
 
-    if (view.status !== "RUNNING") return messageToRestore;
+    if (view.status !== "RUNNING") return;
     view.cancelHandled = false;
     if (runningSessionId) {
       delete perm.permissionRequests[runningSessionId];
@@ -632,7 +693,6 @@ export const useChatStore = defineStore("chat", () => {
     } catch (err) {
       console.error("取消执行失败:", err);
     }
-    return messageToRestore;
   }
 
   async function recallAndEdit(): Promise<string> {
@@ -692,6 +752,11 @@ export const useChatStore = defineStore("chat", () => {
         console.warn("恢复执行的会话不是当前会话", plan.sessionId);
         return;
       }
+      const history = await invoke<string>("get_session_history", { sessionId: plan.sessionId });
+      session.replaceSessionHistory(plan.sessionId, history);
+      session.clearSessionBuffers(plan.sessionId);
+      resetRenderState();
+      triggerRender();
       await sendToJarvis(plan.prompt);
     } catch (err) {
       console.error("恢复执行失败:", err);

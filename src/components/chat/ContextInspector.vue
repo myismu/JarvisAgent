@@ -1,0 +1,627 @@
+<!--
+# ContextInspector.vue — 上下文 token 组成诊断面板
+
+展示当前会话最近一次请求的上下文快照，用总览卡、占比图、分段条和折叠明细帮助开发者定位 token 占用来源。
+
+## Key Exports
+- `ContextInspector`: 右侧 AgentPanel 内的上下文监控组件
+
+## Dependencies
+- Internal: `../../types`
+
+## Constraints
+- 只展示后端提供的估算值，不改变 Agent 请求或压缩策略
+-->
+<script setup lang="ts">
+import { computed } from 'vue';
+import type { ContextSectionSnapshot, SessionContextSnapshot } from '../../types';
+
+const props = defineProps<{
+  snapshot: SessionContextSnapshot | null;
+}>();
+
+interface SectionView extends ContextSectionSnapshot {
+  color: string;
+  percent: number;
+  dashOffset: number;
+}
+
+const palette = [
+  'var(--accent-blue)',
+  'var(--accent-green)',
+  '#8b5cf6',
+  'var(--accent-yellow)',
+  'var(--accent-red)',
+  'var(--text-muted)',
+];
+
+const formatNumber = (value?: number | null): string => {
+  const n = Number(value || 0);
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}m`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+};
+
+const formatToken = (value?: number | null): string => `${formatNumber(value)} tok`;
+
+const formatFullNumber = (value?: number | null): string => Number(value || 0).toLocaleString();
+
+const formatTime = (timestamp?: number | null): string => {
+  if (!timestamp) return '';
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+};
+
+const sectionContent = (section: ContextSectionSnapshot): string => section.content?.trim() || '（空）';
+
+const methodLabel = (method?: string | null): string => {
+  switch (method) {
+    case 'tokenizer': return 'tokenizer';
+    case 'estimate': return 'estimate';
+    default: return method || 'unknown';
+  }
+};
+
+const totalTokens = computed(() => Math.max(0, props.snapshot?.estimatedTokens || 0));
+const providerInputTokens = computed(() => props.snapshot?.providerInputTokens ?? null);
+const providerTotalTokens = computed(() => props.snapshot?.providerTotalTokens ?? null);
+const displayInputTokens = computed(() => providerInputTokens.value ?? totalTokens.value);
+const maxContextTokens = computed(() => props.snapshot?.maxContextTokens ?? null);
+const contextUsagePercent = computed(() => {
+  const max = maxContextTokens.value;
+  if (!max) return null;
+  return Math.min(999, Math.round((displayInputTokens.value / max) * 1000) / 10);
+});
+
+const sectionViews = computed<SectionView[]>(() => {
+  const total = totalTokens.value;
+  let cursor = 0;
+  const raw = (props.snapshot?.sections ?? [])
+    .filter((section) => section.estimatedTokens > 0 || section.chars > 0);
+  const rawTotal = raw.reduce((sum, section) => sum + Math.max(0, section.estimatedTokens), 0) || 1;
+
+  return raw.map((section, index) => {
+    const share = total > 0 ? Math.max(0, (section.estimatedTokens / rawTotal) * 100) : 0;
+    const view = {
+      ...section,
+      color: palette[index % palette.length],
+      percent: Math.round(share),
+      dashOffset: 100 - cursor,
+    };
+    cursor += share;
+    return view;
+  });
+});
+
+const dominantSection = computed(() => {
+  return [...sectionViews.value].sort((a, b) => b.estimatedTokens - a.estimatedTokens)[0] ?? null;
+});
+
+const usageTone = computed(() => {
+  const percent = contextUsagePercent.value;
+  if (percent !== null) {
+    if (percent >= 90) return 'critical';
+    if (percent >= 70) return 'warning';
+    return 'safe';
+  }
+  const tokens = totalTokens.value;
+  if (tokens >= 50_000) return 'critical';
+  if (tokens >= 30_000) return 'warning';
+  return 'safe';
+});
+
+const usageLabel = computed(() => {
+  switch (usageTone.value) {
+    case 'critical': return '需要关注';
+    case 'warning': return '接近阈值';
+    default: return '健康';
+  }
+});
+
+const driftText = computed(() => {
+  const drift = props.snapshot?.driftPercent;
+  if (drift === null || drift === undefined) return '等待 usage';
+  const sign = drift > 0 ? '+' : '';
+  return `${sign}${drift.toFixed(1)}%`;
+});
+</script>
+
+<template>
+  <div v-if="snapshot" class="context-inspector">
+    <div class="context-top-grid">
+      <div class="context-hero" :class="`tone-${usageTone}`">
+        <div>
+          <div class="context-kicker">Context Budget</div>
+          <div class="context-token-value">≈ {{ formatToken(snapshot.estimatedTokens) }}</div>
+          <div class="context-subtitle">
+            <template v-if="maxContextTokens">
+              / {{ formatNumber(maxContextTokens) }} 上下文 · {{ contextUsagePercent }}%
+            </template>
+            <template v-else>
+              / 未知上下文窗口
+            </template>
+            · {{ formatNumber(snapshot.totalChars) }} 字符 · {{ formatTime(snapshot.createdAt) }} 更新
+            <template v-if="providerInputTokens !== null">
+              · 实际输入 {{ formatToken(providerInputTokens) }}
+            </template>
+          </div>
+        </div>
+        <span class="context-health">{{ usageLabel }}</span>
+      </div>
+
+      <div class="context-overview-grid">
+        <div class="context-stat-card">
+          <span>模型</span>
+          <strong :title="snapshot.model">{{ snapshot.model }}</strong>
+        </div>
+        <div class="context-stat-card">
+          <span>上下文窗口</span>
+          <strong>{{ maxContextTokens ? formatNumber(maxContextTokens) : '未知' }}</strong>
+        </div>
+        <div class="context-stat-card">
+          <span>占用</span>
+          <strong>{{ contextUsagePercent !== null ? `${contextUsagePercent}%` : '未知' }}</strong>
+        </div>
+        <div class="context-stat-card">
+          <span>Provider 实际</span>
+          <strong>{{ providerTotalTokens !== null ? formatToken(providerTotalTokens) : '等待 usage' }}</strong>
+        </div>
+        <div class="context-stat-card">
+          <span>估算偏差</span>
+          <strong>{{ driftText }}</strong>
+        </div>
+      </div>
+    </div>
+
+    <div class="context-visual-grid">
+      <div class="context-chart-card">
+        <div class="donut" aria-hidden="true">
+          <svg viewBox="0 0 42 42">
+            <circle class="donut-track" cx="21" cy="21" r="15.9" />
+            <circle
+              v-for="section in sectionViews"
+              :key="section.key"
+              class="donut-segment"
+              cx="21"
+              cy="21"
+              r="15.9"
+              :stroke="section.color"
+              :stroke-dasharray="`${section.percent} ${100 - section.percent}`"
+              :stroke-dashoffset="section.dashOffset"
+            />
+          </svg>
+          <div class="donut-center">
+            <strong>{{ sectionViews.length }}</strong>
+            <span>来源</span>
+          </div>
+        </div>
+        <div class="context-chart-copy">
+          <span>最大来源</span>
+          <strong v-if="dominantSection">{{ dominantSection.label }}</strong>
+          <p v-if="dominantSection">
+            {{ formatToken(dominantSection.estimatedTokens) }}，占 {{ dominantSection.percent }}%
+          </p>
+          <p v-else>暂无可分析的上下文来源。</p>
+        </div>
+      </div>
+
+      <div class="context-bars">
+        <div v-for="section in sectionViews" :key="section.key" class="context-bar-row">
+          <div class="context-bar-head">
+            <span class="context-dot" :style="{ background: section.color }"></span>
+            <span class="context-bar-title">{{ section.label }}</span>
+            <strong>{{ formatToken(section.estimatedTokens) }}</strong>
+          </div>
+          <div class="context-bar-track" aria-hidden="true">
+            <span :style="{ width: Math.max(3, section.percent) + '%', background: section.color }"></span>
+          </div>
+          <div class="context-bar-meta">
+            <span>{{ Math.round(section.percent) }}%</span>
+            <span>{{ formatFullNumber(section.chars) }} 字符 · {{ section.itemCount }} 项 · {{ methodLabel(section.tokenCountMethod) }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="context-section-list">
+      <div class="context-detail-label">上下文明细</div>
+      <details
+        v-for="section in sectionViews"
+        :key="section.key"
+        class="context-section-item"
+      >
+        <summary>
+          <span class="context-section-head">
+            <span class="context-dot" :style="{ background: section.color }"></span>
+            <span class="context-section-title">{{ section.label }}</span>
+            <span class="context-section-count">{{ section.itemCount }}</span>
+          </span>
+          <span class="context-section-stat">
+            {{ formatToken(section.estimatedTokens) }}
+          </span>
+        </summary>
+        <div class="context-section-extra">
+          <span>{{ formatFullNumber(section.chars) }} 字符 · {{ methodLabel(section.tokenCountMethod) }}</span>
+          <span v-if="section.truncated">已截断显示</span>
+        </div>
+        <pre>{{ sectionContent(section) }}</pre>
+      </details>
+    </div>
+  </div>
+
+  <div v-else class="section-empty">暂无上下文快照，发送一条消息后会自动生成。</div>
+</template>
+
+<style scoped>
+.context-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.context-top-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(220px, 0.8fr);
+  gap: 12px;
+}
+
+.context-visual-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.85fr) minmax(0, 1.15fr);
+  gap: 12px;
+}
+
+.section-empty {
+  padding: 10px 2px;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
+
+.context-hero,
+.context-chart-card,
+.context-stat-card,
+.context-section-item,
+.context-bar-row {
+  border: 1px solid var(--border-color);
+  background: var(--glass-bg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.context-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--accent-blue) 22%, transparent), transparent 45%),
+    var(--glass-bg);
+}
+
+.context-hero.tone-warning {
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--accent-yellow) 24%, transparent), transparent 45%),
+    var(--glass-bg);
+}
+
+.context-hero.tone-critical {
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--accent-red) 24%, transparent), transparent 45%),
+    var(--glass-bg);
+}
+
+.context-kicker,
+.context-subtitle,
+.context-stat-card span,
+.context-chart-copy span,
+.context-chart-copy p,
+.context-bar-meta,
+.context-section-extra,
+.context-section-stat {
+  color: var(--text-muted);
+  font-size: 0.62rem;
+}
+
+.context-kicker {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 800;
+}
+
+.context-token-value {
+  margin-top: 4px;
+  color: var(--text-main);
+  font-size: 1.38rem;
+  font-weight: 850;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-subtitle {
+  margin-top: 3px;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-health {
+  flex-shrink: 0;
+  padding: 4px 7px;
+  border-radius: 999px;
+  color: var(--text-main);
+  background: color-mix(in srgb, var(--accent-green) 18%, transparent);
+  font-size: 0.62rem;
+  font-weight: 800;
+}
+
+.tone-warning .context-health {
+  background: color-mix(in srgb, var(--accent-yellow) 22%, transparent);
+}
+
+.tone-critical .context-health {
+  background: color-mix(in srgb, var(--accent-red) 22%, transparent);
+}
+
+.context-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.context-stat-card {
+  min-width: 0;
+  padding: 9px;
+  border-radius: 10px;
+}
+
+.context-stat-card span {
+  display: block;
+  margin-bottom: 3px;
+}
+
+.context-stat-card strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-main);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-chart-card {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  padding: 12px;
+  border-radius: 12px;
+}
+
+.donut {
+  position: relative;
+  width: 86px;
+  height: 86px;
+}
+
+.donut svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.donut-track,
+.donut-segment {
+  fill: none;
+  stroke-width: 4;
+}
+
+.donut-track {
+  stroke: color-mix(in srgb, var(--text-muted) 14%, transparent);
+}
+
+.donut-segment {
+  transition: stroke-dasharray 180ms ease-out;
+}
+
+.donut-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.donut-center strong {
+  color: var(--text-main);
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.donut-center span {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 0.58rem;
+}
+
+.context-chart-copy {
+  min-width: 0;
+}
+
+.context-chart-copy strong {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--text-main);
+  font-size: 0.86rem;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-chart-copy p {
+  margin: 4px 0 0;
+  line-height: 1.45;
+}
+
+.context-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.context-bar-row {
+  padding: 9px;
+  border-radius: 10px;
+}
+
+.context-bar-head,
+.context-section-head,
+.context-bar-meta,
+.context-section-extra {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.context-bar-head strong {
+  margin-left: auto;
+  color: var(--text-main);
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  box-shadow: 0 0 12px currentColor;
+}
+
+.context-bar-title,
+.context-section-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-main);
+  font-size: 0.7rem;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-bar-track {
+  height: 5px;
+  margin-top: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+}
+
+.context-bar-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.context-bar-meta {
+  justify-content: space-between;
+  margin-top: 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-section-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.context-detail-label {
+  color: var(--text-muted);
+  font-size: 0.58rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.context-section-item {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.context-section-item summary {
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.context-section-item summary::-webkit-details-marker {
+  display: none;
+}
+
+.context-section-item summary:hover {
+  background: var(--glass-bg-light);
+}
+
+.context-section-count {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  background: var(--glass-bg-light);
+  font-size: 0.58rem;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-section-stat {
+  white-space: nowrap;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-section-extra {
+  justify-content: space-between;
+  padding: 6px 8px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-section-item pre {
+  max-height: 220px;
+  margin: 6px 8px 8px;
+  padding: 8px;
+  overflow: auto;
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-dark) 78%, var(--surface-strong));
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 560px) {
+  .context-top-grid,
+  .context-visual-grid {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

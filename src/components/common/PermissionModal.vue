@@ -6,6 +6,9 @@ import { useChatStore } from '../../stores/chat';
 const perm = usePermissionStore();
 const chat = useChatStore();
 
+const canAllowSession = computed(() => perm.permissionRequest?.allowSession !== false);
+const isLoopContinuation = computed(() => perm.permissionRequest?.kind === 'loop_continuation');
+
 // 智能解析消息，提取原因和命令内容
 const parsedData = computed(() => {
   if (!perm.permissionRequest) return { reason: '', command: '' };
@@ -57,8 +60,8 @@ const handleKeydown = (e: KeyboardEvent) => {
   const key = e.key.toLowerCase();
   if (key === 'a') {
     e.preventDefault();
-    chat.resolvePermission('allow_once');
-  } else if (key === 's') {
+    chat.resolvePermission('allow');
+  } else if (key === 's' && canAllowSession.value) {
     e.preventDefault();
     chat.resolvePermission('allow_session');
   } else if (key === 'r' || key === 'escape') {
@@ -87,8 +90,8 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
             </svg>
           </div>
           <div class="header-text">
-            <h3>安全确认 / SECURITY REQUEST</h3>
-            <p>Jarvis 正在请求敏感权限</p>
+            <h3>{{ isLoopContinuation ? '继续执行确认' : '安全确认 / SECURITY REQUEST' }}</h3>
+            <p>{{ isLoopContinuation ? 'Agent 已达到回合上限，需要你手动确认' : 'Jarvis 正在请求敏感权限' }}</p>
           </div>
         </div>
 
@@ -105,10 +108,10 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
               <span class="key-hint">R</span> 拒绝
             </button>
             <div class="allow-group">
-              <button @click="chat.resolvePermission('allow_once')" class="cmd-button safe" title="快捷键: A">
+              <button @click="chat.resolvePermission('allow')" class="cmd-button safe" title="快捷键: A">
                 <span class="key-hint">A</span> 允许一次
               </button>
-              <button @click="chat.resolvePermission('allow_session')" class="cmd-button warn" title="快捷键: S">
+              <button v-if="canAllowSession" @click="chat.resolvePermission('allow_session')" class="cmd-button warn" title="快捷键: S">
                 <span class="key-hint">S</span> 本次会话始终允许
               </button>
             </div>

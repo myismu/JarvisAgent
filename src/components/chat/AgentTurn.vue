@@ -6,12 +6,18 @@ import type {
   AgentExecutionLog,
   AgentTextBlock,
   AgentThinkingBlock,
-  AgentToolCallView,
 } from "../../types";
-import { renderMarkdown, renderToolStatusIcon } from "../../utils/markdown";
+import { renderMarkdown } from "../../utils/markdown";
 import { stripPseudoToolCalls } from "../../utils/agentTurnRender";
+import {
+  canMergeToolGroups,
+  createToolCallGroup,
+  mergeToolGroups,
+  type ToolCallGroup,
+} from "../../utils/toolDisplay";
 import ExecutionPanel from "./ExecutionPanel.vue";
 import ThinkingStatus from "./ThinkingStatus.vue";
+import ToolCallGroupView from "./ToolCallGroup.vue";
 
 const props = defineProps<{
   turn: AgentCurrentTurn;
@@ -46,7 +52,7 @@ interface DeveloperSegment {
   order: number;
   textBlock?: AgentTextBlock;
   thinkingBlock?: AgentThinkingBlock;
-  toolCall?: AgentToolCallView;
+  toolGroup?: ToolCallGroup;
   log?: AgentExecutionLog;
   html?: string;
 }
@@ -83,12 +89,13 @@ const developerSegments = computed<DeveloperSegment[]>(() => {
   });
 
   props.turn.toolCalls.forEach((tool, index) => {
+    const group = createToolCallGroup([tool]);
     segments.push({
-      key: `tool-${tool.id}`,
+      key: `tool-${group.id}`,
       type: "tool",
-      timestamp: tool.timestamp,
+      timestamp: group.timestamp,
       order: index * 4 + 2,
-      toolCall: tool,
+      toolGroup: group,
     });
   });
 
@@ -104,30 +111,32 @@ const developerSegments = computed<DeveloperSegment[]>(() => {
     });
   });
 
-  return segments.sort((a, b) => a.timestamp - b.timestamp || a.order - b.order);
+  const merged: DeveloperSegment[] = [];
+  segments
+    .sort((a, b) => a.timestamp - b.timestamp || a.order - b.order)
+    .forEach((segment) => {
+      const previous = merged[merged.length - 1];
+      if (
+        segment.type === "tool" &&
+        segment.toolGroup &&
+        previous?.type === "tool" &&
+        previous.toolGroup &&
+        canMergeToolGroups(previous.toolGroup, segment.toolGroup)
+      ) {
+        const group = mergeToolGroups(previous.toolGroup, segment.toolGroup);
+        previous.key = `tool-${group.id}`;
+        previous.timestamp = group.timestamp;
+        previous.toolGroup = group;
+        return;
+      }
+
+      merged.push(segment);
+    });
+
+  return merged;
 });
 
 const hasDeveloperSegments = computed(() => developerSegments.value.length > 0);
-
-const statusLabel = (status: string) => {
-  if (status === "completed") return "调用结果";
-  if (status === "error") return "调用失败";
-  if (status === "running") return "工具调用中";
-  return "等待调用";
-};
-
-const hasToolDetails = (tool: AgentToolCallView) => {
-  return Boolean(tool.inputSummary || tool.outputSummary || tool.error || tool.logs.length);
-};
-
-const isSubAgentTool = (tool: AgentToolCallView) => {
-  const name = (tool.name || "").toLowerCase();
-  return name === "task" || name === "run_subagent" || name.includes("subagent");
-};
-
-const shouldOpenTool = (tool: AgentToolCallView) => {
-  return hasToolDetails(tool) && (tool.status === "running" || tool.status === "pending");
-};
 
 const isThinkingOpen = (block: AgentThinkingBlock) => {
   return block.status === "streaming" && props.turn.activeThinkingBlockId === block.id;
@@ -153,8 +162,6 @@ const thinkingLabel = (block: AgentThinkingBlock) => {
   const state = isThinkingOpen(block) ? "思考中" : "思考结果";
   return `${state} · ${describeThinking(block.content)}`;
 };
-
-const markdown = (content?: string) => renderMarkdown(content || "");
 </script>
 
 <template>
@@ -165,7 +172,7 @@ const markdown = (content?: string) => renderMarkdown(content || "");
     <div v-if="isDeveloperMode && hasDeveloperSegments" class="agent-developer-timeline">
       <template
         v-for="segment in developerSegments"
-        :key="`${segment.key}-${segment.thinkingBlock ? isThinkingOpen(segment.thinkingBlock) : segment.toolCall?.status || 'stable'}`"
+        :key="`${segment.key}-${segment.thinkingBlock ? isThinkingOpen(segment.thinkingBlock) : segment.toolGroup?.status || 'stable'}`"
       >
         <div
           v-if="segment.type === 'text'"
@@ -182,36 +189,11 @@ const markdown = (content?: string) => renderMarkdown(content || "");
           <div v-html="segment.html"></div>
         </details>
 
-        <details
-          v-else-if="segment.type === 'tool' && segment.toolCall"
-          class="agent-tool-call"
-          :class="{ 'agent-subagent-tool': isSubAgentTool(segment.toolCall) }"
-          :open="shouldOpenTool(segment.toolCall)"
-        >
-          <summary class="agent-tool-row" :class="segment.toolCall.status">
-            <span class="agent-tool-icon" v-html="renderToolStatusIcon(segment.toolCall.status)"></span>
-            <code>{{ segment.toolCall.name }}</code>
-            <span>{{ statusLabel(segment.toolCall.status) }}</span>
-          </summary>
-          <div v-if="segment.toolCall.inputSummary" class="agent-tool-field">
-            <span>参数</span>
-            <div v-html="markdown(segment.toolCall.inputSummary)"></div>
-          </div>
-          <div v-if="segment.toolCall.outputSummary" class="agent-tool-field">
-            <span>结果</span>
-            <div v-html="markdown(segment.toolCall.outputSummary)"></div>
-          </div>
-          <div v-if="segment.toolCall.error" class="agent-tool-field error">
-            <span>错误</span>
-            <div v-html="markdown(segment.toolCall.error)"></div>
-          </div>
-          <div
-            v-for="(log, index) in segment.toolCall.logs"
-            :key="`${segment.toolCall.id}_${index}`"
-            class="agent-tool-log"
-            v-html="markdown(log)"
-          ></div>
-        </details>
+        <ToolCallGroupView
+          v-else-if="segment.type === 'tool' && segment.toolGroup"
+          :group="segment.toolGroup"
+          mode="developer"
+        />
 
         <details
           v-else-if="segment.type === 'log' && segment.log"

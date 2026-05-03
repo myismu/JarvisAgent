@@ -1,6 +1,6 @@
 use super::common::optional_string;
 use crate::core::orchestration::tasks::TaskManager;
-use crate::core::tools::registry::ToolDef;
+use crate::core::tools::framework::registry::ToolDef;
 use serde_json::json;
 
 pub(super) fn tool_def() -> ToolDef {

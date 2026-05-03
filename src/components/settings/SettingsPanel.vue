@@ -98,6 +98,13 @@
               </button>
             </div>
           </div>
+          <div class="window-state-section">
+            <div class="display-mode-label">窗口状态</div>
+            <button class="window-reset-btn" :disabled="actionLoading" @click="resetDefaultWindows">
+              恢复默认窗口
+            </button>
+            <div class="window-reset-desc">清空 data/window-state.json，并将主窗口与监控窗口恢复到默认大小和位置。</div>
+          </div>
         </div>
 
         <!-- 右侧编辑区域 -->
@@ -169,7 +176,11 @@
                     </span>
                     <span class="badge badge-info">
                       <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h14a2 2 0 0 0 2-2V7.5L14.5 2H6a2 2 0 0 0-2 2v4"></path><polyline points="14 2 14 8 20 8"></polyline><path d="M2 15h10"></path><path d="M9 18l3-3-3-3"></path></svg>
-                      <span>Max {{ mainModelCaps.maxTokens.toLocaleString() }} tokens</span>
+                      <span>输出 {{ mainModelCaps.maxTokens.toLocaleString() }} tokens</span>
+                    </span>
+                    <span class="badge badge-info">
+                      <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M7 8h10"></path><path d="M7 12h6"></path><path d="M7 16h8"></path></svg>
+                      <span>上下文 {{ mainModelCaps.maxContextTokens ? mainModelCaps.maxContextTokens.toLocaleString() : '未知' }} tokens</span>
                     </span>
                   </template>
                   <span class="badge badge-warn" v-else>手动确认是否支持各功能</span>
@@ -254,11 +265,13 @@ import { ref, watch, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useTheme } from '../../composables/useTheme'
 import { usePreferences } from '../../composables/usePreferences'
+import { useWindow } from '../../composables/useWindow'
 import type { AgentDisplayMode } from '../../types'
 import ConfirmModal from '../common/ConfirmModal.vue'
 
 const { isDark, toggleTheme } = useTheme()
 const uiPrefs = usePreferences()
+const { resetWindowStates } = useWindow()
 const agentDisplayMode = uiPrefs.agentDisplayMode
 const setAgentDisplayMode = (mode: AgentDisplayMode) => uiPrefs.setAgentDisplayMode(mode)
 
@@ -292,6 +305,7 @@ interface ModelCapabilities {
   temperature: boolean
   vision: boolean
   maxTokens: number
+  maxContextTokens?: number | null
   notes: string
 }
 
@@ -409,6 +423,22 @@ const setSuccessStatus = (message: string) => {
   statusMsg.value = message
   isError.value = false
   isSuccess.value = true
+}
+
+const resetDefaultWindows = async () => {
+  if (actionLoading.value) return
+
+  actionLoading.value = true
+  resetStatus()
+  try {
+    await resetWindowStates()
+    setSuccessStatus('窗口布局已恢复默认')
+  } catch (e) {
+    console.error('恢复默认窗口失败:', e)
+    setErrorStatus(`恢复默认窗口失败: ${e}`)
+  } finally {
+    actionLoading.value = false
+  }
 }
 
 const onMainModelInput = () => {
@@ -788,7 +818,11 @@ const save = async () => {
 }
 
 .display-mode-section {
-  padding: 14px 12px 18px;
+  padding: 14px 12px 12px;
+}
+
+.window-state-section {
+  padding: 0 12px 18px;
 }
 
 .display-mode-label {
@@ -826,6 +860,37 @@ const save = async () => {
 
 .display-mode-toggle button:hover {
   color: var(--text-main);
+}
+
+.window-reset-btn {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-main);
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: all var(--transition-fast);
+}
+
+.window-reset-btn:hover:not(:disabled) {
+  background: var(--glass-bg-light);
+  border-color: var(--accent-blue);
+}
+
+.window-reset-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.window-reset-desc {
+  margin-top: 8px;
+  padding: 0 4px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
 }
 
 .display-mode-btn::before,

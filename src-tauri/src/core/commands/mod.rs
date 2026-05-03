@@ -21,3 +21,4 @@ pub mod permission;
 pub mod sandbox;
 pub mod session;
 pub mod snapshot;
+pub mod window_state;

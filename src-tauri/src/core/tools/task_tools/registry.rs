@@ -1,4 +1,4 @@
-use crate::core::tools::registry::ToolRegistry;
+use crate::core::tools::framework::registry::ToolRegistry;
 
 pub fn register_tools(registry: &mut ToolRegistry) {
     registry.register(super::todo_write::tool_def());

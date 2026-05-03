@@ -29,4 +29,12 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**", "**/memory.jsonl"],
     },
   },
+  build: {
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        monitor: "monitor.html",
+      },
+    },
+  },
 }));

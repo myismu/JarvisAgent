@@ -5,7 +5,7 @@
 //!
 //! ## 关键导出
 //! - 基础模块: `config`, `constants`, `error`, `models`, `state`, `traits`
-//! - 业务模块: `agent`, `commands`, `infra`, `intent`, `llm`, `orchestration`, `providers`, `session`, `snapshot_engine`, `snapshot_manager`, `tools`
+//! - 业务模块: `agent`, `commands`, `infra`, `intent`, `llm`, `orchestration`, `providers`, `session`, `rollback`, `tools`
 //! - 重导出类型: `SessionManager`, `SessionContext`, `WorkspaceState`, `SnapshotRegistry`
 //! - 重导出函数: `ask_jarvis`, `resolve_permission`, `cancel_jarvis`, 以及所有命令函数
 //!
@@ -21,6 +21,7 @@
 pub mod config;
 pub mod constants;
 pub mod data_paths;
+pub mod db;
 pub mod error;
 pub mod models;
 pub mod state;
@@ -35,9 +36,15 @@ pub mod llm;
 pub mod orchestration;
 pub mod providers;
 pub mod session;
-pub mod snapshot_engine;
-pub mod snapshot_manager;
+pub mod rollback;
 pub mod tools;
+
+#[macro_export]
+macro_rules! jarvis_debug { ($tag:expr, $($arg:tt)*) => { println!($($arg)*); } }
+#[macro_export]
+macro_rules! jarvis_info { ($tag:expr, $($arg:tt)*) => { println!($($arg)*); } }
+#[macro_export]
+macro_rules! jarvis_warn { ($tag:expr, $($arg:tt)*) => { eprintln!($($arg)*); } }
 
 pub use state::{
     SessionCleanupResult, SessionContext, SessionManager, SnapshotRegistry, WorkspaceState,
@@ -58,7 +65,7 @@ pub use commands::sandbox::{
 };
 pub use commands::session::{
     cancel_subagent_run, create_session, delete_session, get_active_session_id, get_agent_steps,
-    get_background_tasks, get_session_meta, get_subagent_runs, get_workspace_dir,
+    get_background_tasks, get_session_context_snapshot, get_session_meta, get_subagent_runs, get_workspace_dir,
     list_agent_run_events, list_agent_runs, list_plan_documents, list_sessions,
     list_subagent_events, list_subagents, prepare_resume_agent_run, recall_last_message,
     rename_session, save_agent_steps, switch_session, update_session_profile,
@@ -67,4 +74,8 @@ pub use commands::snapshot::{
     snapshot_create, snapshot_create_branch, snapshot_get_current, snapshot_get_detail,
     snapshot_get_summaries, snapshot_get_tree_view, snapshot_list, snapshot_list_branches,
     snapshot_rollback, snapshot_switch_branch,
+};
+pub use commands::window_state::{
+    clear_custom_window_states, get_custom_window_state, list_custom_window_states,
+    save_custom_window_state,
 };

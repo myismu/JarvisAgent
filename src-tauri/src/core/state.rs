@@ -11,20 +11,20 @@
 //! - `SessionCleanupResult`: 会话清理结果，用于返回删除和激活的会话 ID
 //!
 //! ## 依赖
-//! - Internal: `crate::core::models::SessionMemory`, `crate::core::snapshot_manager::session_manager::SessionManagerRegistry`
+//! - Internal: `crate::core::models::SessionMemory`, `crate::core::session`, `crate::core::rollback::session_manager::SnapshotManagerRegistry`
 //! - External: `tokio`, `std::sync::Arc`, `std::collections::HashMap`
 //!
 //! ## 约束
 //! - 所有状态必须通过 Tauri 的 `.manage()` 注册
 //! - 使用 `RwLock` 允许多读单写，`Mutex` 用于互斥访问
-//! - `SessionManager::get_or_create()` 会自动从磁盘加载历史数据
+//! - `SessionManager::get_or_create()` 会自动从 SQLite 加载历史数据
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::core::models::SessionMemory;
-use crate::core::snapshot_manager::session_manager::SessionManagerRegistry;
+use crate::core::rollback::session_manager::SnapshotManagerRegistry;
 
 pub struct WorkspaceState(pub Mutex<Option<std::path::PathBuf>>);
 
@@ -35,18 +35,37 @@ pub struct SessionCleanupResult {
     pub active_session_id: Option<String>,
 }
 
-pub struct SnapshotRegistry(pub RwLock<SessionManagerRegistry>);
+pub struct SnapshotRegistry(pub RwLock<SnapshotManagerRegistry>);
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ToolDedupeCacheEntry {
+    pub display: String,
+    pub running: bool,
+    pub suppressed_count: usize,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PendingPlanCacheEntry {
+    pub display: String,
+    pub title: String,
+    pub id: String,
+    pub suppressed_count: usize,
+}
 
 pub struct SessionContext {
     pub id: String,
     pub memory: Mutex<SessionMemory>,
     pub cancel_token: Mutex<Option<tokio_util::sync::CancellationToken>>,
     pub active_run_id: Mutex<Option<String>>,
-    pub pending_checkpoint: Mutex<Vec<crate::core::session::checkpoint::FileOperation>>,
     pub todos: Mutex<Vec<crate::core::models::TodoItem>>,
     pub workspace: Mutex<Option<std::path::PathBuf>>,
     pub session_allowed: Mutex<bool>,
     pub pending_permissions: Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>,
+    pub compact_state: Mutex<HashMap<String, ToolDedupeCacheEntry>>,
+    pub dream_state: Mutex<HashMap<String, ToolDedupeCacheEntry>>,
+    pub pending_plan_state: Mutex<HashMap<String, PendingPlanCacheEntry>>,
+    pub loaded_skill_state: Mutex<HashMap<String, ToolDedupeCacheEntry>>,
+    pub subagent_invocation_state: Mutex<HashMap<String, ToolDedupeCacheEntry>>,
 }
 
 impl SessionContext {
@@ -56,11 +75,15 @@ impl SessionContext {
             memory: Mutex::new(SessionMemory::default()),
             cancel_token: Mutex::new(None),
             active_run_id: Mutex::new(None),
-            pending_checkpoint: Mutex::new(Vec::new()),
             todos: Mutex::new(Vec::new()),
             workspace: Mutex::new(None),
             session_allowed: Mutex::new(false),
             pending_permissions: Mutex::new(HashMap::new()),
+            compact_state: Mutex::new(HashMap::new()),
+            dream_state: Mutex::new(HashMap::new()),
+            pending_plan_state: Mutex::new(HashMap::new()),
+            loaded_skill_state: Mutex::new(HashMap::new()),
+            subagent_invocation_state: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -99,4 +122,36 @@ impl SessionManager {
         write_guard.insert(session_id.to_string(), arc_ctx.clone());
         arc_ctx
     }
+}
+
+use tauri::Manager;
+
+pub async fn active_run_scope_key(app: &tauri::AppHandle, session_id: &str) -> String {
+    if let Some(manager) = app.try_state::<SessionManager>() {
+        let ctx = manager.get_or_create(session_id).await;
+        let run_id_lock = ctx.active_run_id.lock().await;
+        if let Some(run_id) = run_id_lock.as_ref() {
+            return format!("{}:{}", session_id, run_id);
+        }
+    }
+    session_id.to_string()
+}
+
+pub fn stable_hash(text: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
+pub async fn effective_workspace(
+    app: &tauri::AppHandle,
+    session_id: &str,
+) -> Option<std::path::PathBuf> {
+    if let Some(manager) = app.try_state::<SessionManager>() {
+        let ctx = manager.get_or_create(session_id).await;
+        return ctx.workspace.lock().await.clone();
+    }
+    None
 }

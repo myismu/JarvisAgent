@@ -1,27 +1,26 @@
 //! # 会话持久化模块 (Session Persistence)
 //!
-//! 将对话历史持久化到磁盘，支持多会话管理。
-//! 每个会话存储为独立 JSON 文件，包含元信息和消息体。
+//! 将对话历史持久化到 SQLite，支持多会话管理。
+//! 会话元数据、消息、步骤和计划文档由 `crate::core::session::repository` 统一读写。
 //!
 //! 主要功能：
 //! - 会话 CRUD：创建、加载、保存、删除、重命名
-//! - 图片管理：base64 图片存入文件，保存时清理内联数据
+//! - 图片管理：base64 图片存入附件目录，保存时清理内联数据
 //! - 计划文档：会话级 PlanDocument 的增删改查
 //! - 自动标题：从首条用户消息截取标题
 //! - Token 统计：累计 input/output token 用量
 //!
-//! 存储结构：`<agent_home>/sessions/<id>/session.json`
+//! 存储结构：`<agent_home>/jarvis.sqlite3`
 
-pub mod checkpoint;
 pub mod memory;
+pub mod repository;
+pub mod resource_repository;
 
 use crate::core::models::{
     Content, ContentBlock, ImageSource, Message, PlanDocument, SessionMemory,
 };
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::PathBuf;
 
 /// 标题来源：默认（截取首条消息）、自动（LLM 生成）、手动（用户修改）
 const DEFAULT_TITLE_SOURCE: &str = "default";
@@ -42,47 +41,22 @@ pub fn save_image_to_file(session_id: &str, media_type: &str, data: &str) -> Str
     };
     let id = uuid::Uuid::new_v4().to_string()[..8].to_string();
     let filename = format!("{}_{}.{}", session_id, id, ext);
-    let path = crate::core::data_paths::session_paths(session_id)
-        .images_dir()
-        .join(&filename);
     if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(data) {
-        let _ = fs::write(&path, decoded);
+        let _ = resource_repository::save_attachment(session_id, &filename, media_type, &decoded);
     }
     filename
 }
 
 /// 从文件加载图片并返回 base64 编码
 pub fn load_image_data(filename: &str) -> Option<String> {
-    let path = image_path_candidates(filename)
-        .into_iter()
-        .find(|path| path.exists())?;
-    let bytes = fs::read(&path).ok()?;
+    let (_, bytes) = resource_repository::load_attachment(filename)
+        .ok()
+        .flatten()?;
     Some(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
 
 pub fn delete_image_file(filename: &str) {
-    for path in image_path_candidates(filename) {
-        if path.exists() {
-            let _ = fs::remove_file(&path);
-        }
-    }
-}
-
-fn image_path_candidates(filename: &str) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    let raw = PathBuf::from(filename);
-    if raw.is_absolute() {
-        paths.push(raw);
-        return paths;
-    }
-    if let Some(session_id) = crate::core::data_paths::session_id_from_prefixed_filename(filename) {
-        paths.push(
-            crate::core::data_paths::session_paths(&session_id)
-                .images_dir()
-                .join(filename),
-        );
-    }
-    paths
+    let _ = resource_repository::delete_attachment(filename);
 }
 
 /// 会话元信息（用于列表展示，不含完整消息体）
@@ -107,22 +81,6 @@ pub struct SessionMeta {
     /// 会话级工作目录沙箱，None 表示无限制
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_directory: Option<String>,
-}
-
-/// 完整会话数据（含消息体，用于存储和加载）
-#[derive(Serialize, Deserialize, Debug)]
-struct SessionFile {
-    meta: SessionMeta,
-    memory: SessionMemory,
-}
-
-fn session_file_path(id: &str) -> PathBuf {
-    crate::core::data_paths::session_paths(id).session_file()
-}
-
-/// 获取最后活跃会话 ID 的记录文件路径
-fn last_active_path() -> PathBuf {
-    crate::core::data_paths::last_active_session_path()
 }
 
 /// 获取当前时间戳（秒）
@@ -194,38 +152,19 @@ fn extract_title(messages: &[Message]) -> String {
     "新会话".to_string()
 }
 
-/// 列出所有会话（按更新时间倒序），自动清理空会话
+/// 列出所有会话（按更新时间倒序）
 pub fn list_sessions() -> Vec<SessionMeta> {
-    let mut sessions = Vec::new();
-    let last_active = get_last_active_session_id();
-
-    for id in crate::core::data_paths::session_ids_from_storage() {
-        let path = session_file_path(&id);
-        if let Ok(content) = fs::read_to_string(&path) {
-            if let Ok(file) = serde_json::from_str::<SessionFile>(&content) {
-                if file.meta.message_count == 0 {
-                    if Some(&file.meta.id) != last_active.as_ref() {
-                        let _ = delete_session(&file.meta.id);
-                    }
-                    continue;
-                }
-                sessions.push(file.meta);
-            }
-        }
-    }
-    // 按更新时间倒序排列
-    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    sessions
+    repository::list_sessions(None).unwrap_or_default()
 }
 
 /// 创建新会话，返回元信息
 pub fn create_session(working_directory: Option<String>) -> SessionMeta {
-    let id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+    let now = now_ts();
     let meta = SessionMeta {
-        id: id.clone(),
+        id: uuid::Uuid::new_v4().to_string()[..8].to_string(),
         title: "新会话".to_string(),
-        created_at: now_ts(),
-        updated_at: now_ts(),
+        created_at: now,
+        updated_at: now,
         message_count: 0,
         is_smart_named: false,
         profile_id: None,
@@ -234,71 +173,34 @@ pub fn create_session(working_directory: Option<String>) -> SessionMeta {
         title_source: default_title_source(),
         working_directory,
     };
-    let file = SessionFile {
-        meta: meta.clone(),
-        memory: SessionMemory::default(),
-    };
-    let path = session_file_path(&id);
-    let _ = fs::write(
-        &path,
-        serde_json::to_string_pretty(&file).unwrap_or_default(),
-    );
-    crate::core::data_paths::refresh_session_manifest(
-        &id,
-        Some(meta.title.clone()),
-        Some(meta.created_at),
-        Some(meta.updated_at),
-    );
-    // 记录为最后活跃会话
-    let _ = fs::write(last_active_path(), &id);
+    let memory = SessionMemory::default();
+    let _ = repository::upsert_session(&meta, &memory);
+    let _ = repository::set_last_active_session_id(&meta.id);
     meta
 }
 
-/// 保存会话数据到磁盘
+/// 保存会话数据到 SQLite。
 /// 保存时会过滤掉工具调用和工具结果，仅保留用户输入和助手文本回复，
-/// 大幅减少文件体积。
+/// 大幅减少存储体积。
 pub fn save_session(
     id: &str,
     memory: &SessionMemory,
     token_usage_delta: Option<(u64, u64)>,
 ) -> SessionMeta {
-    let path = session_file_path(id);
-    // 尝试加载已有元信息，保留 created_at
-    let mut meta = if let Ok(content) = fs::read_to_string(&path) {
-        if let Ok(file) = serde_json::from_str::<SessionFile>(&content) {
-            file.meta
-        } else {
-            SessionMeta {
-                id: id.to_string(),
-                title: "新会话".to_string(),
-                created_at: now_ts(),
-                updated_at: now_ts(),
-                message_count: memory.messages.len(),
-                is_smart_named: false,
-                profile_id: None,
-                total_input_tokens: 0,
-                total_output_tokens: 0,
-                title_source: default_title_source(),
-                working_directory: None,
-            }
-        }
-    } else {
-        SessionMeta {
-            id: id.to_string(),
-            title: "新会话".to_string(),
-            created_at: now_ts(),
-            updated_at: now_ts(),
-            message_count: memory.messages.len(),
-            is_smart_named: false,
-            profile_id: None,
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            title_source: default_title_source(),
-            working_directory: None,
-        }
-    };
+    let mut meta = repository::get_session_meta(id).unwrap_or_else(|_| SessionMeta {
+        id: id.to_string(),
+        title: "新会话".to_string(),
+        created_at: now_ts(),
+        updated_at: now_ts(),
+        message_count: memory.messages.len(),
+        is_smart_named: false,
+        profile_id: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        title_source: default_title_source(),
+        working_directory: None,
+    });
 
-    // --- 过滤工具消息，仅保留有意义的对话内容 ---
     let filtered_messages: Vec<Message> = memory
         .messages
         .iter()
@@ -396,7 +298,6 @@ pub fn save_session(
         meta.total_output_tokens = meta.total_output_tokens.saturating_add(output_delta);
     }
 
-    // 更新元信息：仅在有新消息时才更新时间戳
     let new_count = filtered_messages.len();
     if new_count > meta.message_count {
         meta.updated_at = now_ts();
@@ -413,36 +314,41 @@ pub fn save_session(
         plan_documents: memory.plan_documents.clone(),
     };
 
-    let file = SessionFile {
-        meta: meta.clone(),
-        memory: filtered_memory,
-    };
-    let _ = fs::write(
-        &path,
-        serde_json::to_string_pretty(&file).unwrap_or_default(),
-    );
-    crate::core::data_paths::refresh_session_manifest(
-        id,
-        Some(meta.title.clone()),
-        Some(meta.created_at),
-        Some(meta.updated_at),
-    );
-    // 更新最后活跃会话
-    let _ = fs::write(last_active_path(), id);
+    repository::upsert_session(&meta, &filtered_memory)
+        .unwrap_or_else(|err| panic!("保存 SQLite 会话 {} 失败: {}", id, err));
+    let _ = repository::set_last_active_session_id(id);
     meta
 }
 
 /// 加载指定会话的完整数据
 pub fn load_session(id: &str) -> Result<SessionMemory, String> {
-    let path = session_file_path(id);
-    if !path.exists() {
-        return Err(format!("会话 {} 不存在", id));
-    }
-    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let file: SessionFile = serde_json::from_str(&content).map_err(|e| e.to_string())?;
-    // 更新最后活跃会话
-    let _ = fs::write(last_active_path(), id);
-    Ok(file.memory)
+    let memory = repository::load_session(id)?;
+    repository::set_last_active_session_id(id)?;
+    Ok(memory)
+}
+
+pub fn save_context_snapshot(snapshot: &crate::core::models::SessionContextSnapshot) -> Result<(), String> {
+    repository::upsert_context_snapshot(snapshot)
+}
+
+pub fn update_context_snapshot_usage(
+    session_id: &str,
+    provider_input_tokens: u64,
+    provider_output_tokens: u64,
+    provider_total_tokens: u64,
+    drift_percent: Option<f32>,
+) -> Result<Option<crate::core::models::SessionContextSnapshot>, String> {
+    repository::update_context_snapshot_usage(
+        session_id,
+        provider_input_tokens,
+        provider_output_tokens,
+        provider_total_tokens,
+        drift_percent,
+    )
+}
+
+pub fn get_context_snapshot(session_id: &str) -> Result<Option<crate::core::models::SessionContextSnapshot>, String> {
+    repository::get_context_snapshot(session_id)
 }
 
 /// 列出会话关联的计划文档（按更新时间倒序）
@@ -512,26 +418,12 @@ pub fn update_plan_document_status(
 
 /// 获取单个会话的元信息（不受 message_count 过滤影响）
 pub fn get_session_meta(id: &str) -> Result<SessionMeta, String> {
-    let path = session_file_path(id);
-    if !path.exists() {
-        return Err(format!("会话 {} 不存在", id));
-    }
-    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let file: SessionFile = serde_json::from_str(&content).map_err(|e| e.to_string())?;
-    println!(
-        "[DEBUG] get_session_meta: id={}, working_directory={:?}",
-        id, file.meta.working_directory
-    );
-    Ok(file.meta)
+    repository::get_session_meta(id)
 }
 
-/// 删除会话（同时清理关联的图片文件）
+/// 删除会话
 pub fn delete_session(id: &str) -> Result<(), String> {
-    let paths = crate::core::data_paths::session_paths(id);
-    if paths.root.exists() {
-        let _ = fs::remove_dir_all(&paths.root);
-    }
-    Ok(())
+    repository::delete_session(id)
 }
 
 /// 重命名会话
@@ -540,56 +432,21 @@ pub fn rename_session(
     new_title: &str,
     is_auto_generated: bool,
 ) -> Result<SessionMeta, String> {
-    let path = session_file_path(id);
-    if !path.exists() {
-        return Err(format!("会话 {} 不存在", id));
-    }
-    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let mut file: SessionFile = serde_json::from_str(&content).map_err(|e| e.to_string())?;
-    file.meta.title = new_title.to_string();
+    let mut meta = repository::get_session_meta(id)?;
     if is_auto_generated {
-        set_auto_title_source(&mut file.meta);
+        set_auto_title_source(&mut meta);
     } else {
-        set_manual_title_source(&mut file.meta);
+        set_manual_title_source(&mut meta);
     }
-    let _ = fs::write(
-        &path,
-        serde_json::to_string_pretty(&file).unwrap_or_default(),
-    );
-    crate::core::data_paths::refresh_session_manifest(
-        id,
-        Some(file.meta.title.clone()),
-        Some(file.meta.created_at),
-        Some(file.meta.updated_at),
-    );
-    Ok(file.meta)
+    repository::rename_session(id, new_title, meta.is_smart_named, &meta.title_source)
 }
 
 /// 更新会话的模型预设
 pub fn update_session_profile(id: &str, profile_id: &str) -> Result<(), String> {
-    let path = session_file_path(id);
-    if !path.exists() {
-        return Err(format!("会话 {} 不存在", id));
-    }
-    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let mut file: SessionFile = serde_json::from_str(&content).map_err(|e| e.to_string())?;
-    file.meta.profile_id = Some(profile_id.to_string());
-    let _ = fs::write(
-        &path,
-        serde_json::to_string_pretty(&file).unwrap_or_default(),
-    );
-    crate::core::data_paths::refresh_session_manifest(
-        id,
-        Some(file.meta.title.clone()),
-        Some(file.meta.created_at),
-        Some(file.meta.updated_at),
-    );
-    Ok(())
+    repository::update_session_profile(id, profile_id)
 }
 
 /// 获取最后活跃的会话 ID
 pub fn get_last_active_session_id() -> Option<String> {
-    fs::read_to_string(last_active_path())
-        .ok()
-        .map(|s| s.trim().to_string())
+    repository::get_last_active_session_id()
 }

@@ -8,8 +8,23 @@ import type {
   AgentTurnSnapshot,
 } from "../types";
 import { renderMarkdown, renderTokenUsage, renderToolStatusIcon } from "./markdown";
+import {
+  canMergeToolGroups,
+  createToolCallGroup,
+  groupAdjacentToolCalls,
+  hasToolDetails,
+  isSubAgentToolGroup,
+  mergeToolGroups,
+  shouldOpenToolGroup,
+  summarizeToolGroupsForPanel,
+  toolActionCountLabel,
+  toolActionLabel,
+  toolGroupActionLabel,
+  toolGroupTitle,
+  type ToolCallGroup,
+} from "./toolDisplay";
 
-export const PSEUDO_TOOL_CALL_RE = /<function=[\s\S]*$/;
+export const PSEUDO_TOOL_CALL_RE = /(?:<tool_call>\s*)?<function=[\s\S]*$/;
 
 export function stripPseudoToolCalls(content: string) {
   return content.replace(PSEUDO_TOOL_CALL_RE, "").trimEnd();
@@ -22,18 +37,6 @@ function escapeHtml(value: string) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
-}
-
-function statusLabel(status: string) {
-  if (status === "completed") return "调用结果";
-  if (status === "error") return "调用失败";
-  if (status === "running") return "工具调用中";
-  return "等待调用";
-}
-
-function isSubAgentTool(tool: AgentToolCallView) {
-  const name = (tool.name || "").toLowerCase();
-  return name === "task" || name === "run_subagent" || name.includes("subagent");
 }
 
 function describeThinking(content: string) {
@@ -91,30 +94,78 @@ ${renderMarkdown(content)}
 </details>`;
 }
 
-function renderToolCall(tool: AgentToolCallView, mode: AgentDisplayMode) {
-  const hasDetails = Boolean(tool.inputSummary || tool.outputSummary || tool.error || tool.logs.length);
-  const open = mode === "developer" && (tool.status === "running" || tool.status === "pending");
-  const detailHtml = [
+function renderToolDetailHtml(tool: AgentToolCallView) {
+  return [
     tool.inputSummary
       ? `<div class="agent-tool-field"><span>参数</span>${renderMarkdown(tool.inputSummary)}</div>`
       : "",
     tool.outputSummary
-      ? `<div class="agent-tool-field"><span>结果</span>${renderMarkdown(tool.outputSummary)}</div>`
+      ? `<div class="agent-tool-field"><span>输出</span>${renderMarkdown(tool.outputSummary)}</div>`
       : "",
     tool.error ? `<div class="agent-tool-field error"><span>错误</span>${renderMarkdown(tool.error)}</div>` : "",
     ...tool.logs.map((log) => `<div class="agent-tool-log">${renderMarkdown(log)}</div>`),
   ].join("");
+}
 
-  const row = `<span class="agent-tool-row ${escapeHtml(tool.status)}">
+function renderToolRow(tool: AgentToolCallView) {
+  return `<span class="agent-tool-child-row ${escapeHtml(tool.status)}">
 ${renderToolStatusIcon(tool.status)}
+<span>${escapeHtml(toolActionLabel(tool.name, tool.status, tool))}</span>
 <code>${escapeHtml(tool.name || "")}</code>
-<span>${statusLabel(tool.status)}</span>
 </span>`;
+}
 
-  if (!hasDetails) return row;
-  return `<details class="agent-tool-call${isSubAgentTool(tool) ? " agent-subagent-tool" : ""}" ${open ? "open" : ""}>
-<summary>${row}</summary>
+function renderToolGroupRow(group: ToolCallGroup) {
+  return `<span class="agent-tool-row ${escapeHtml(group.status)}">
+${renderToolStatusIcon(group.status)}
+<span class="agent-tool-title">${escapeHtml(toolGroupTitle(group))}</span>
+<span>${escapeHtml(toolGroupActionLabel(group))}</span>
+</span>`;
+}
+
+function renderToolActionRows(group: ToolCallGroup) {
+  return `<div class="agent-tool-action-list">
+${group.actions
+  .map(
+    (action) => `<div class="agent-tool-action-row ${escapeHtml(action.status)}">
+${renderToolStatusIcon(action.status)}
+<span>${escapeHtml(toolActionCountLabel(action))}</span>
+<span class="agent-tool-action-summary">${escapeHtml(action.summary)}</span>
+</div>`,
+  )
+  .join("")}
+</div>`;
+}
+
+function renderToolGroup(group: ToolCallGroup, mode: AgentDisplayMode) {
+  const open = shouldOpenToolGroup(group, mode);
+  const groupClass = [
+    "agent-tool-call",
+    group.count > 1 ? "agent-tool-group" : "",
+    isSubAgentToolGroup(group) ? "agent-subagent-tool" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const children = group.tools
+    .map((tool) => {
+      const detailHtml = renderToolDetailHtml(tool);
+      return `<div class="agent-tool-child${hasToolDetails(tool) ? " has-details" : ""}">
+${renderToolRow(tool)}
 ${detailHtml}
+</div>`;
+    })
+    .join("");
+
+  return `<details class="${groupClass}" ${open ? "open" : ""}>
+<summary>${renderToolGroupRow(group)}</summary>
+${renderToolActionRows(group)}
+<details class="agent-tool-technical" ${group.status === "error" ? "open" : ""}>
+<summary>技术详情 · ${group.count} 步</summary>
+<div class="agent-tool-group-items">
+${children}
+</div>
+</details>
 </details>`;
 }
 
@@ -136,7 +187,9 @@ ${logs.map((log) => `<div class="agent-execution-log">${renderMarkdown(log.conte
 
 function renderExecutionBody(snapshot: AgentTurnSnapshot, mode: AgentDisplayMode) {
   const thinkingOpen = mode === "developer";
-  const toolHtml = snapshot.toolCalls.map((tool) => renderToolCall(tool, mode)).join("");
+  const toolHtml = groupAdjacentToolCalls(snapshot.toolCalls)
+    .map((group) => renderToolGroup(group, mode))
+    .join("");
   const thinkingHtml = snapshot.thinkingBlocks.map((block) => renderThinkingBlock(block, thinkingOpen)).join("");
   const logsHtml = renderExecutionLogs(snapshot.logs, mode === "developer");
   return [toolHtml, thinkingHtml, logsHtml].filter(Boolean).join("");
@@ -145,6 +198,7 @@ function renderExecutionBody(snapshot: AgentTurnSnapshot, mode: AgentDisplayMode
 function renderExecutionPanel(snapshot: AgentTurnSnapshot, mode: AgentDisplayMode, live: boolean) {
   const thinkingCount = snapshot.thinkingBlocks.filter((block) => block.content.trim()).length;
   const toolCount = snapshot.toolCalls.length;
+  const toolGroups = groupAdjacentToolCalls(snapshot.toolCalls);
   const logCount = snapshot.logs.filter((log) => log.content.trim()).length;
   if (thinkingCount + toolCount + logCount === 0) return "";
 
@@ -153,11 +207,15 @@ function renderExecutionPanel(snapshot: AgentTurnSnapshot, mode: AgentDisplayMod
       ? "处理中"
       : snapshot.status === "CANCELLED"
         ? "已取消"
-        : "已完成";
+        : snapshot.status === "INTERRUPTED"
+          ? "已中断"
+          : snapshot.status === "ERROR"
+            ? "失败"
+            : "已完成";
   const summary =
     mode === "developer"
-      ? `${state} · ${thinkingCount} 段思考 · ${toolCount} 个工具 · ${logCount} 条日志`
-      : `${state} · ${toolCount > 0 ? `${toolCount} 个工具` : "无工具调用"}${thinkingCount > 0 ? ` · ${thinkingCount} 段思考` : ""}`;
+      ? `${state} · ${toolCount > 0 ? summarizeToolGroupsForPanel(toolGroups, toolCount) : "无工具活动"} · ${thinkingCount} 段思考 · ${logCount} 条日志`
+      : `${state} · ${toolCount > 0 ? summarizeToolGroupsForPanel(toolGroups, toolCount) : "无工具活动"}${thinkingCount > 0 ? ` · ${thinkingCount} 段思考` : ""}`;
 
   const body = renderExecutionBody(snapshot, mode);
   return `<details class="agent-execution-panel ${mode}" ${mode === "developer" || live ? "open" : ""}>
@@ -170,36 +228,59 @@ ${body}
 }
 
 function renderDeveloperTimeline(snapshot: AgentTurnSnapshot) {
-  const segments: Array<{ timestamp: number; order: number; html: string }> = [];
+  const segments: Array<{
+    timestamp: number;
+    order: number;
+    html?: string;
+    group?: ToolCallGroup;
+    type: "html" | "tool";
+  }> = [];
 
   snapshot.textBlocks.forEach((block, index) => {
     if (block.kind !== "assistant") return;
     const html = renderTextBlock(block);
     if (!html) return;
-    segments.push({ timestamp: block.timestamp, order: index * 4, html });
+    segments.push({ timestamp: block.timestamp, order: index * 4, html, type: "html" });
   });
 
   snapshot.thinkingBlocks.forEach((block, index) => {
     const html = renderThinkingBlock(block, block.status === "streaming");
     if (!html) return;
-    segments.push({ timestamp: block.timestamp, order: index * 4 + 1, html });
+    segments.push({ timestamp: block.timestamp, order: index * 4 + 1, html, type: "html" });
   });
 
   snapshot.toolCalls.forEach((tool, index) => {
-    const html = renderToolCall(tool, "developer");
-    if (!html) return;
-    segments.push({ timestamp: tool.timestamp, order: index * 4 + 2, html });
+    const group = createToolCallGroup([tool]);
+    segments.push({ timestamp: group.timestamp, order: index * 4 + 2, group, type: "tool" });
   });
 
   snapshot.logs.forEach((log, index) => {
     const html = renderExecutionLog(log);
     if (!html) return;
-    segments.push({ timestamp: log.timestamp, order: index * 4 + 3, html });
+    segments.push({ timestamp: log.timestamp, order: index * 4 + 3, html, type: "html" });
   });
 
-  const body = segments
+  const merged: typeof segments = [];
+  segments
     .sort((a, b) => a.timestamp - b.timestamp || a.order - b.order)
-    .map((segment) => segment.html)
+    .forEach((segment) => {
+      const previous = merged[merged.length - 1];
+      if (
+        segment.type === "tool" &&
+        segment.group &&
+        previous?.type === "tool" &&
+        previous.group &&
+        canMergeToolGroups(previous.group, segment.group)
+      ) {
+        previous.group = mergeToolGroups(previous.group, segment.group);
+        previous.timestamp = previous.group.timestamp;
+        return;
+      }
+      merged.push(segment);
+    });
+
+  const body = merged
+    .map((segment) => (segment.type === "tool" && segment.group ? renderToolGroup(segment.group, "developer") : segment.html || ""))
     .join("");
 
   return body ? `<div class="agent-developer-timeline">${body}</div>` : "";

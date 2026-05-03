@@ -9,7 +9,7 @@
 //! - `sandbox_publish()`: 将沙箱变更发布到主分支
 //! - `sandbox_compare()`: 比较所有沙箱与主分支的差异
 
-use crate::core::snapshot_engine::{AgentSandbox, SandboxComparison};
+use crate::core::rollback::{AgentSandbox, SandboxComparison};
 use crate::core::state::SnapshotRegistry;
 
 /// 为指定 Agent 创建沙箱环境

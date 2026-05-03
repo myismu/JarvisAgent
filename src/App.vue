@@ -2,6 +2,7 @@
 import { onMounted, onBeforeUnmount, ref, computed, watch } from "vue";
 import { useAgentEvents } from "./composables/useAgentEvents";
 import { usePreferences } from "./composables/usePreferences";
+import { useWindow } from "./composables/useWindow";
 import { useSessionStore } from "./stores/session";
 import { useAgentStore } from "./stores/agent";
 
@@ -9,7 +10,6 @@ import TitleBar from "./components/layout/TitleBar.vue";
 import Sidebar from "./components/layout/Sidebar.vue";
 import ChatArea from "./components/chat/ChatArea.vue";
 import TerminalInput from "./components/chat/TerminalInput.vue";
-import AgentPanel from "./components/chat/AgentPanel.vue";
 import PermissionModal from "./components/common/PermissionModal.vue";
 import PlanPreviewPanel from "./components/common/PlanPreviewPanel.vue";
 import SettingsPanel from "./components/settings/SettingsPanel.vue";
@@ -21,10 +21,28 @@ const sidebarCollapsed = ref(prefs.sidebarCollapsed);
 const session = useSessionStore();
 const agent = useAgentStore();
 const { initListeners } = useAgentEvents();
+const {
+  openMonitorWindow,
+  toggleMonitorWindow,
+  onMonitorWindowClosed,
+  restoreCurrentWindowState,
+  watchCurrentWindowState,
+} = useWindow();
 const hasUnseenFinish = ref(false);
+let unlistenMonitorWindowClosed: (() => void) | null = null;
+let unwatchWindowState: (() => void) | null = null;
 
 // 恢复持久化的 Agent 面板可见性
 agent.showAgentPanel = prefs.agentPanelVisible;
+
+const toggleAgentMonitor = async () => {
+  try {
+    agent.showAgentPanel = await toggleMonitorWindow(agent.showAgentPanel);
+  } catch (err) {
+    console.error('切换监控窗口失败:', err);
+    agent.showAgentPanel = false;
+  }
+};
 
 const rawStatus = computed(() => {
   if (session.isCurrentSessionRunning) return 'running';
@@ -93,22 +111,34 @@ watch(() => agent.showAgentPanel, (val) => {
 });
 
 onMounted(async () => {
+  await restoreCurrentWindowState();
+  unwatchWindowState = await watchCurrentWindowState();
   addFinishAcknowledgementListeners();
+  unlistenMonitorWindowClosed = await onMonitorWindowClosed(() => {
+    agent.showAgentPanel = false;
+  });
   await initListeners();
+  if (agent.showAgentPanel) {
+    try {
+      await openMonitorWindow();
+    } catch (err) {
+      console.error('恢复监控窗口失败:', err);
+      agent.showAgentPanel = false;
+    }
+  }
 });
 
 onBeforeUnmount(() => {
   removeFinishAcknowledgementListeners();
+  unlistenMonitorWindowClosed?.();
+  unwatchWindowState?.();
 });
 </script>
 
 <template>
   <main class="editor-container">
     <div class="editor-window">
-      <TitleBar
-        :sidebar-collapsed="sidebarCollapsed"
-        :agent-panel-visible="agent.showAgentPanel"
-      />
+      <TitleBar :sidebar-collapsed="sidebarCollapsed" />
 
       <div class="editor-body">
         <Sidebar :collapsed="sidebarCollapsed" @open-settings="showSettings = true" />
@@ -131,7 +161,7 @@ onBeforeUnmount(() => {
             <button
               class="agent-panel-toggle"
               :class="{ active: agent.showAgentPanel }"
-              @click="agent.showAgentPanel = !agent.showAgentPanel"
+              @click="toggleAgentMonitor"
               :title="agent.showAgentPanel ? '隐藏执行流程' : '显示执行流程'"
             >
               <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
@@ -147,7 +177,6 @@ onBeforeUnmount(() => {
           <TerminalInput />
         </div>
 
-        <AgentPanel />
       </div>
     </div>
 
@@ -183,6 +212,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex: 1;
   overflow: hidden;
+  position: relative;
 }
 
 .main-content {
@@ -194,6 +224,8 @@ onBeforeUnmount(() => {
   -webkit-backdrop-filter: blur(var(--glass-blur));
   min-width: 0;
   min-height: 0;
+  position: relative;
+  z-index: 1;
 }
 
 .tab-bar {

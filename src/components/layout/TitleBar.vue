@@ -5,7 +5,6 @@ const { closeWindow, minimizeWindow, maximizeWindow } = useWindow();
 
 defineProps<{
   sidebarCollapsed: boolean;
-  agentPanelVisible: boolean;
 }>()
 </script>
 
@@ -19,8 +18,7 @@ defineProps<{
     <div
       class="window-title"
       :class="{
-        'sidebar-open': !sidebarCollapsed,
-        'agent-panel-open': agentPanelVisible
+        'sidebar-open': !sidebarCollapsed
       }"
       data-tauri-drag-region
     >
@@ -83,7 +81,7 @@ defineProps<{
 .reactor-label {
   position: absolute;
   top: 50%;
-  left: calc(50% + var(--sidebar-offset, 0px) + var(--agent-panel-offset, 0px));
+  left: calc(50% + var(--sidebar-offset, 0px));
   transform: translate(-50%, -50%);
   display: inline-flex;
   align-items: center;
@@ -93,9 +91,6 @@ defineProps<{
 }
 .window-title.sidebar-open {
   --sidebar-offset: 125px;
-}
-.window-title.agent-panel-open {
-  --agent-panel-offset: -130px;
 }
 .label-char {
   display: inline-block;

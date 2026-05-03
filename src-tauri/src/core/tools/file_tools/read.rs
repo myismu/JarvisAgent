@@ -7,9 +7,9 @@
 //! - `read_file_skeleton()`: 提取 import、类型、函数等结构签名
 //!
 //! ## Dependencies
-//! - Internal: `crate::core::tools::permission`, `super::workspace`, `super::common`
+//! - Internal: `crate::core::tools::framework::permission`, `super::workspace`, `super::common`
 
-use crate::core::tools::permission::ensure_path_permission;
+use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{is_locked_file_error, MAX_FILE_SIZE_BYTES, MAX_LINES_DEFAULT};
 use super::workspace::get_workspace;

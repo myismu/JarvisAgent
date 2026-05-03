@@ -1,26 +1,25 @@
 //! # edit.rs — 执行安全的文本搜索替换文件编辑
 //!
-//! 实现 agent 可调用的 `edit_file` 工具，在权限校验后进行唯一匹配替换，并记录检查点与快照；同时拒绝 Notebook 文本编辑、归一化行尾并执行 TOCTOU 防护。
+//! 实现 agent 可调用的 `edit_file` 工具，在权限校验后进行唯一匹配替换，并记录快照；同时拒绝 Notebook 文本编辑、归一化行尾并执行 TOCTOU 防护。
 //!
 //! ## Key Exports
 //! - `edit_file()`: 基于唯一 old_text 匹配编辑普通文本文件
 //!
 //! ## Dependencies
-//! - Internal: `crate::core::session::checkpoint`, `crate::core::snapshot_engine`, `crate::core::tools::permission`, `super::notebook_guard`
+//! - Internal: `crate::core::rollback`, `crate::core::tools::framework::permission`, `super::notebook_guard`
 //!
 //! ## Constraints
 //! - 不得用于 `.ipynb` 或 notebook-shaped JSON，Notebook 必须通过 cell 级工具修改
 
-use crate::core::session::checkpoint::{self, FileOperation, OpType};
-use crate::core::snapshot_engine::Patch;
-use crate::core::tools::permission::ensure_path_permission;
+use crate::core::rollback::Patch;
+use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{is_locked_file_error, normalize_line_endings, normalize_quotes};
 use super::diff::compute_diff;
 use super::notebook_guard::{
     is_notebook_path, looks_like_notebook_json, notebook_text_edit_rejection,
 };
-use super::workspace::{get_workspace, record_operation, record_patch_to_snapshot};
+use super::workspace::{get_workspace, record_patch_to_snapshot};
 
 /// 基于搜索替换编辑文件（唯一性检查 + 引号归一化 + TOCTOU 防护 + 自动快照）
 pub async fn edit_file(
@@ -38,9 +37,6 @@ pub async fn edit_file(
     if is_notebook_path(path) {
         return notebook_text_edit_rejection(path);
     }
-
-    let branch = checkpoint::get_active_branch(session_id);
-    let branch_name = branch.name;
 
     // 记录读取时的 mtime，用于 TOCTOU 防护
     let read_mtime = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
@@ -105,37 +101,7 @@ pub async fn edit_file(
             }
 
             // match_count == 1，安全替换
-            let old_content_bytes = content.as_bytes().to_vec();
-            let old_content_hash = Some(checkpoint::content_hash(&old_content_bytes));
-
-            let backup_path =
-                checkpoint::backup_file(session_id, &branch_name, path, &old_content_bytes);
-
             let updated_content = content.replacen(old_text, &new_text, 1);
-            let new_content_hash = Some(checkpoint::content_hash(updated_content.as_bytes()));
-
-            let diff_summary = Some(format!(
-                "替换: \"{}\" -> \"{}\"",
-                if old_text.len() > 50 {
-                    old_text.chars().take(50).collect::<String>()
-                } else {
-                    old_text.to_string()
-                },
-                if new_text.len() > 50 {
-                    new_text.chars().take(50).collect::<String>()
-                } else {
-                    new_text.to_string()
-                }
-            ));
-
-            let operation = FileOperation {
-                op_type: OpType::Edit,
-                path: path.to_string(),
-                old_content_hash,
-                backup_path,
-                new_content_hash,
-                diff_summary,
-            };
 
             // TOCTOU 防护：写入前检查文件是否在读取后被外部修改
             if let (Some(orig_mtime), Ok(current_meta)) = (read_mtime, std::fs::metadata(path)) {
@@ -151,8 +117,6 @@ pub async fn edit_file(
 
             match std::fs::write(path, &updated_content) {
                 Ok(_) => {
-                    record_operation(app, session_id, operation).await;
-
                     let patch = Patch::UpdateFile {
                         path: path.to_string(),
                         old_content: content.clone(),

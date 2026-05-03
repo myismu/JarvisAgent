@@ -2,19 +2,16 @@
 //!
 //! 记录主Agent每次执行的完整生命周期：启动、思考、工具调用、完成/失败。
 //! 支持检查点保存与恢复，用于断点续传和崩溃恢复。
-//! 事件以 JSONL 格式追加存储，运行状态以 JSON 文件持久化。
+//! 运行状态、事件和可恢复检查点持久化到 SQLite。
 
 use std::collections::HashSet;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use tauri::Emitter;
 
 use crate::core::models::Message;
+use crate::core::orchestration::agent_run_repository;
 
 /// 运行记录过期阈值（毫秒），超过此时间未更新视为中断
 const RUN_STALE_MS: u64 = 120_000;
@@ -147,10 +144,7 @@ pub fn start_run(
 ///
 /// 自动将超时未更新的 Running 状态标记为 Interrupted
 pub fn list_runs(session_id: Option<&str>) -> Vec<AgentRun> {
-    let mut runs = Vec::new();
-    collect_new_runs(&mut runs, session_id);
-    runs.sort_by_key(|run| run.started_at);
-    runs
+    agent_run_repository::list_runs(session_id).unwrap_or_default()
 }
 
 pub fn mark_active_run(app: &tauri::AppHandle, run_id: &str) -> Option<AgentRun> {
@@ -166,6 +160,7 @@ pub fn mark_stale_runs_interrupted(
     app: &tauri::AppHandle,
     session_id: Option<&str>,
     active_run_ids: &HashSet<String>,
+    active_session_ids: &HashSet<String>,
 ) {
     let runs = list_runs(session_id);
     let now = now_millis();
@@ -173,14 +168,18 @@ pub fn mark_stale_runs_interrupted(
         if run.status != AgentRunStatus::Running || active_run_ids.contains(&run.run_id) {
             continue;
         }
-        if now.saturating_sub(run.updated_at) <= RUN_STALE_MS {
+        let session_has_active_task = active_session_ids.contains(&run.session_id);
+        if session_has_active_task && now.saturating_sub(run.updated_at) <= RUN_STALE_MS {
             continue;
         }
         if let Ok(run) = update_run_by_id(&run.run_id, |run| {
             run.status = AgentRunStatus::Interrupted;
             run.finished_at = Some(run.updated_at);
             run.summary = Some(INTERRUPTED_SUMMARY.to_string());
-            run.resumable = checkpoint_path(&run.session_id, &run.run_id).exists();
+            run.resumable = agent_run_repository::load_checkpoint(&run.run_id)
+                .ok()
+                .flatten()
+                .is_some();
         }) {
             emit_run(app, &run);
         }
@@ -188,24 +187,13 @@ pub fn mark_stale_runs_interrupted(
 }
 
 pub fn list_events(session_id: Option<&str>, run_id: Option<&str>) -> Vec<AgentRunEvent> {
-    let mut events = Vec::new();
-    for run in list_runs(session_id) {
-        if run_id.map_or(false, |target| target != run.run_id) {
-            continue;
-        }
-        let path = events_path(&run.session_id, &run.run_id);
-        if let Ok(content) = fs::read_to_string(path) {
-            for line in content.lines() {
-                if let Ok(event) = serde_json::from_str::<AgentRunEvent>(line) {
-                    events.push(event);
-                }
-            }
-        }
-    }
-    events.sort_by_key(|event| event.timestamp);
-    events
+    agent_run_repository::list_events(session_id, run_id).unwrap_or_default()
 }
 
+/// 追加思考内容（流式 delta）
+///
+/// 只更新 `agent_runs.live_thinking` 字段，不往 `agent_run_events` 插入碎片事件。
+/// 思考内容在 turn 结束时通过 `flush_thinking_event()` 一次性写入事件表。
 pub fn append_thinking(app: &tauri::AppHandle, run_id: &str, content: &str, loop_count: usize) {
     let _ = update_run_by_id(run_id, |run| {
         keep_run_active(run);
@@ -213,24 +201,12 @@ pub fn append_thinking(app: &tauri::AppHandle, run_id: &str, content: &str, loop
         run.loop_count = loop_count;
     })
     .map(|run| emit_run(app, &run));
-    if let Some(run) = load_run_by_id(run_id) {
-        push_event(
-            app,
-            run_id,
-            &run.session_id,
-            "thinking",
-            content.to_string(),
-            None,
-            None,
-            None,
-            None,
-            loop_count,
-            run.input_tokens,
-            run.output_tokens,
-        );
-    }
 }
 
+/// 追加回复内容（流式 delta）
+///
+/// 只更新 `agent_runs.live_content` 字段，不往 `agent_run_events` 插入碎片事件。
+/// 回复内容在 turn 结束时通过 `flush_content_event()` 一次性写入事件表。
 pub fn append_content(app: &tauri::AppHandle, run_id: &str, content: &str, loop_count: usize) {
     let _ = update_run_by_id(run_id, |run| {
         keep_run_active(run);
@@ -238,21 +214,53 @@ pub fn append_content(app: &tauri::AppHandle, run_id: &str, content: &str, loop_
         run.loop_count = loop_count;
     })
     .map(|run| emit_run(app, &run));
+}
+
+/// 将当前累积的回复内容作为一条完整事件写入 agent_run_events
+///
+/// 在每轮 turn 结束时调用（而非每个 delta 都调用），大幅减少事件数量。
+pub fn flush_content_event(app: &tauri::AppHandle, run_id: &str, loop_count: usize) {
     if let Some(run) = load_run_by_id(run_id) {
-        push_event(
-            app,
-            run_id,
-            &run.session_id,
-            "content",
-            content.to_string(),
-            None,
-            None,
-            None,
-            None,
-            loop_count,
-            run.input_tokens,
-            run.output_tokens,
-        );
+        if !run.live_content.is_empty() {
+            push_event(
+                app,
+                run_id,
+                &run.session_id,
+                "content",
+                run.live_content.clone(),
+                None,
+                None,
+                None,
+                None,
+                loop_count,
+                run.input_tokens,
+                run.output_tokens,
+            );
+        }
+    }
+}
+
+/// 将当前累积的思考内容作为一条完整事件写入 agent_run_events
+///
+/// 在每轮 turn 结束时调用（而非每个 delta 都调用），大幅减少事件数量。
+pub fn flush_thinking_event(app: &tauri::AppHandle, run_id: &str, loop_count: usize) {
+    if let Some(run) = load_run_by_id(run_id) {
+        if !run.live_thinking.is_empty() {
+            push_event(
+                app,
+                run_id,
+                &run.session_id,
+                "thinking",
+                run.live_thinking.clone(),
+                None,
+                None,
+                None,
+                None,
+                loop_count,
+                run.input_tokens,
+                run.output_tokens,
+            );
+        }
     }
 }
 
@@ -344,10 +352,7 @@ pub fn save_checkpoint(
         last_safe_point: last_safe_point.to_string(),
         updated_at: now_millis(),
     };
-    let _ = fs::write(
-        checkpoint_path(session_id, run_id),
-        serde_json::to_string_pretty(&checkpoint).unwrap_or_default(),
-    );
+    let _ = agent_run_repository::upsert_checkpoint(&checkpoint);
     let _ = update_run_by_id(run_id, |run| {
         keep_run_active(run);
         run.loop_count = loop_count;
@@ -417,11 +422,9 @@ pub fn fail_run(app: &tauri::AppHandle, run_id: &str, error: String) {
 ///
 /// 返回检查点数据和恢复计划，用于断点续传
 pub fn prepare_resume(run_id: &str) -> Result<(AgentRunCheckpoint, ResumeAgentRunPlan), String> {
-    let run = load_run_by_id(run_id).ok_or_else(|| format!("执行记录不存在: {}", run_id))?;
-    let content = fs::read_to_string(checkpoint_path(&run.session_id, run_id))
-        .map_err(|_| "没有可恢复的安全点".to_string())?;
-    let checkpoint: AgentRunCheckpoint =
-        serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    load_run_by_id(run_id).ok_or_else(|| format!("执行记录不存在: {}", run_id))?;
+    let checkpoint = agent_run_repository::load_checkpoint(run_id)?
+        .ok_or_else(|| "没有可恢复的安全点".to_string())?;
     let prompt = format!(
         "继续上次中断的执行。上次执行记录为 {}，最后安全点为「{}」，已完成 {} 轮。请基于已有上下文继续，不要重复已经完成且已有工具结果的操作；如果某个操作可能有副作用，请先说明并等待确认。",
         run_id, checkpoint.last_safe_point, checkpoint.loop_count
@@ -433,6 +436,94 @@ pub fn prepare_resume(run_id: &str) -> Result<(AgentRunCheckpoint, ResumeAgentRu
             prompt,
         },
     ))
+}
+
+/// 查找指定会话最近一个中断的 run
+///
+/// 同时查找 Interrupted 和 Running 状态的 run，
+/// 因为程序崩溃时 run 的状态仍然是 Running，还没来得及标记为 Interrupted
+pub fn find_interrupted_run(session_id: &str) -> Option<AgentRun> {
+    let runs = agent_run_repository::list_runs(Some(session_id)).ok()?;
+    runs.into_iter()
+        .filter(|r| {
+            r.status == AgentRunStatus::Interrupted
+                || r.status == AgentRunStatus::Running
+        })
+        .max_by_key(|r| r.updated_at)
+}
+
+/// 从中断的 run 中恢复消息，补回 session_memory 缺失的部分
+///
+/// 核心逻辑：
+/// 1. 从 checkpoint 加载中断时的完整消息列表
+/// 2. 与当前 session_memory 中的消息做对比，找出 checkpoint 中多出的部分
+/// 3. 返回需要追加的消息 + 半截助手回复（live_content/live_thinking）
+///
+/// 返回 (需要追加的消息, 半截助手文本, 半截思考文本)
+pub fn recover_interrupted_messages(
+    session_id: &str,
+    current_messages: &[Message],
+) -> Option<(Vec<Message>, String, String)> {
+    let run = find_interrupted_run(session_id)?;
+
+    // 如果 run 状态是 Running，需要判断它是否真的已经中断
+    // 条件：updated_at 超过 STALE 阈值（2分钟），才认为是崩溃导致的
+    if run.status == AgentRunStatus::Running {
+        let now = now_millis();
+        if now.saturating_sub(run.updated_at) <= RUN_STALE_MS {
+            // 还在活跃期内，可能是正在执行的 run，不要恢复
+            return None;
+        }
+    }
+
+    // 加载检查点的消息
+    let checkpoint = agent_run_repository::load_checkpoint(&run.run_id)
+        .ok()
+        .flatten()?;
+
+    // 如果 checkpoint 的消息数 <= 当前 session_memory 的消息数，
+    // 说明 session_memory 已经是最新的，不需要恢复
+    if checkpoint.messages.len() <= current_messages.len() {
+        // 但可能仍有半截助手回复（live_content 比 checkpoint 更新）
+        if run.live_content.trim().is_empty() && run.live_thinking.trim().is_empty() {
+            return None;
+        }
+        // checkpoint 和 session_memory 消息一致，但 live_content 有半截回复
+        return Some((
+            vec![],  // 不需要追加消息
+            run.live_content.clone(),
+            run.live_thinking.clone(),
+        ));
+    }
+
+    // 取出 checkpoint 中多出的消息（从 current_messages.len() 开始）
+    let extra_messages: Vec<Message> = checkpoint
+        .messages
+        .into_iter()
+        .skip(current_messages.len())
+        .collect();
+
+    if extra_messages.is_empty() && run.live_content.is_empty() && run.live_thinking.is_empty() {
+        return None;
+    }
+
+    Some((
+        extra_messages,
+        run.live_content.clone(),
+        run.live_thinking.clone(),
+    ))
+}
+
+/// 将中断 run 标记为已恢复，避免下次加载时重复恢复
+pub fn mark_run_recovered(run_id: &str) -> Result<(), String> {
+    update_run_by_id(run_id, |run| {
+        run.status = AgentRunStatus::Completed;
+        run.finished_at = Some(now_millis());
+        if run.summary.is_none() || run.summary.as_deref() == Some(INTERRUPTED_SUMMARY) {
+            run.summary = Some("已从中断恢复".to_string());
+        }
+    })?;
+    Ok(())
 }
 
 fn finish_run(
@@ -509,14 +600,7 @@ fn push_event(
         output_tokens,
         timestamp: now_millis(),
     };
-    let path = events_path(session_id, run_id);
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(
-            file,
-            "{}",
-            serde_json::to_string(&event).unwrap_or_default()
-        );
-    }
+    let _ = agent_run_repository::append_event(&event);
     let _ = app.emit("agent-run-event", event);
 }
 
@@ -525,7 +609,7 @@ fn emit_run(app: &tauri::AppHandle, run: &AgentRun) {
 }
 
 fn load_run_by_id(run_id: &str) -> Option<AgentRun> {
-    load_run_by_id_from_new(run_id)
+    agent_run_repository::load_run(run_id).ok().flatten()
 }
 
 fn update_run_by_id<F>(run_id: &str, update: F) -> Result<AgentRun, String>
@@ -554,72 +638,7 @@ fn keep_run_active(run: &mut AgentRun) {
 }
 
 fn write_run(run: &AgentRun) -> Result<(), String> {
-    let dir = run_dir(&run.session_id, &run.run_id);
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let result = fs::write(
-        dir.join("run.json"),
-        serde_json::to_string_pretty(run).unwrap_or_else(|_| json!({}).to_string()),
-    )
-    .map_err(|e| e.to_string());
-    if result.is_ok() {
-        crate::core::data_paths::refresh_session_manifest(&run.session_id, None, None, None);
-    }
-    result
-}
-
-fn run_dir(session_id: &str, run_id: &str) -> PathBuf {
-    crate::core::data_paths::session_paths(session_id).agent_run_dir(run_id)
-}
-
-fn new_run_roots(session_id: Option<&str>) -> Vec<(String, PathBuf)> {
-    if let Some(session_id) = session_id {
-        return vec![(
-            session_id.to_string(),
-            crate::core::data_paths::session_paths(session_id).agent_runs_dir(),
-        )];
-    }
-    crate::core::data_paths::session_ids_from_storage()
-        .into_iter()
-        .map(|sid| {
-            let root = crate::core::data_paths::session_paths(&sid).agent_runs_dir();
-            (sid, root)
-        })
-        .collect()
-}
-
-fn collect_new_runs(runs: &mut Vec<AgentRun>, session_id: Option<&str>) {
-    for (_sid, root) in new_run_roots(session_id) {
-        if let Ok(run_dirs) = fs::read_dir(root) {
-            for run_dir in run_dirs.flatten() {
-                let run_path = run_dir.path().join("run.json");
-                if let Ok(content) = fs::read_to_string(&run_path) {
-                    if let Ok(run) = serde_json::from_str::<AgentRun>(&content) {
-                        runs.push(run);
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn load_run_by_id_from_new(run_id: &str) -> Option<AgentRun> {
-    for (_sid, root) in new_run_roots(None) {
-        let run_path = root.join(run_id).join("run.json");
-        if let Ok(content) = fs::read_to_string(run_path) {
-            if let Ok(run) = serde_json::from_str::<AgentRun>(&content) {
-                return Some(run);
-            }
-        }
-    }
-    None
-}
-
-fn events_path(session_id: &str, run_id: &str) -> PathBuf {
-    run_dir(session_id, run_id).join("events.jsonl")
-}
-
-fn checkpoint_path(session_id: &str, run_id: &str) -> PathBuf {
-    run_dir(session_id, run_id).join("checkpoint.json")
+    agent_run_repository::upsert_run(run)
 }
 
 fn now_millis() -> u64 {

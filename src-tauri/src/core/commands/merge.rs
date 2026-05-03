@@ -7,7 +7,7 @@
 //! - `merge_execute()`: 执行合并（带冲突解决方案）
 //! - `merge_get_conflicts()`: 获取两个分支间的冲突列表
 
-use crate::core::snapshot_engine::{Conflict, ConflictResolution, MergeResult, Snapshot};
+use crate::core::rollback::{Conflict, ConflictResolution, MergeResult, Snapshot};
 use crate::core::state::SnapshotRegistry;
 use std::collections::HashMap as StdHashMap;
 

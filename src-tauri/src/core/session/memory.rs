@@ -114,15 +114,15 @@ pub fn micro_compact(messages: &mut Vec<Message>) {
 
 /// 将对话记录保存为 JSONL 转录文件（用于压缩前的备份）
 pub fn append_transcript(session_id: &str, text: &str) -> Result<String, MemoryError> {
-    let transcript_dir = crate::core::data_paths::session_paths(session_id).transcripts_dir();
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let transcript_path = transcript_dir.join(format!("transcript_{}.jsonl", timestamp));
-    std::fs::write(&transcript_path, text).map_err(|e| MemoryError::FileRead(e.to_string()))?;
-    crate::core::data_paths::refresh_session_manifest(session_id, None, None, None);
-    Ok(transcript_path.to_string_lossy().to_string())
+    let filename = format!("transcript_{}.jsonl", timestamp);
+    crate::core::session::resource_repository::save_transcript(
+        session_id, &filename, text, timestamp,
+    )
+    .map_err(MemoryError::FileRead)
 }
 
 /// 自动压缩：调用 LLM 生成摘要，用摘要替换完整对话历史

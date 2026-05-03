@@ -6,7 +6,7 @@ mod list;
 mod summary;
 mod update;
 
-use crate::core::tools::registry::ToolDef;
+use crate::core::tools::framework::registry::ToolDef;
 
 pub use create::task_create;
 pub use delete::task_delete;

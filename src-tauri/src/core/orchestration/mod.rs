@@ -7,6 +7,7 @@
 //! - `SubAgentMonitor`: 子Agent运行状态监控
 //! - `AgentRun`: 主Agent执行记录与检查点
 
+pub mod agent_run_repository;
 pub mod agent_runs;
 pub mod scheduler;
 pub mod subagents;

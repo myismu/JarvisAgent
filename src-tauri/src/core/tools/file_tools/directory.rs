@@ -7,11 +7,11 @@
 //! - `generate_repo_map()`: 递归生成仓库目录树文本
 //!
 //! ## Dependencies
-//! - Internal: `crate::core::tools::permission`, `super::workspace`, `super::common`
+//! - Internal: `crate::core::tools::framework::permission`, `super::workspace`, `super::common`
 
 use std::path::Path;
 
-use crate::core::tools::permission::ensure_path_permission;
+use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{is_ignored_entry_name, is_static_asset_extension};
 use super::workspace::get_workspace;

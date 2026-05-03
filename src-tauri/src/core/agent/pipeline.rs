@@ -15,6 +15,7 @@
 //! - 取消令牌（`CancellationToken`）贯穿全流程，支持用户随时中断
 
 use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
 
 use eventsource_stream::Eventsource;
@@ -245,7 +246,6 @@ impl PipelineState {
                 "当前会话已有任务正在执行，请等待完成或先停止当前任务。".to_string(),
             ));
         }
-        ctx.pending_checkpoint.lock().await.clear();
         *ctx.session_allowed.lock().await = false;
 
         let cancel_token = tokio_util::sync::CancellationToken::new();
@@ -406,6 +406,17 @@ impl PipelineState {
 
         let memory_after_user_message = {
             let mut session = self.ctx.memory.lock().await;
+            if crate::core::commands::session::recover_interrupted_into_memory(
+                &self.sid,
+                &mut session.messages,
+            ) {
+                let recovered_memory = session.clone();
+                crate::core::session::save_session(&self.sid, &recovered_memory, None);
+                if let Some(interrupted_run) = agent_runs::find_interrupted_run(&self.sid) {
+                    let _ = agent_runs::mark_run_recovered(&interrupted_run.run_id);
+                }
+                let _ = self.app.emit("session-updated", ());
+            }
             let mut active_sid = Some(self.sid.clone());
             self.initial_msg_index = inject_user_message(
                 &mut session,
@@ -465,7 +476,7 @@ impl PipelineState {
             // 历史快照准备
             let history_snapshot = self.prepare_history_snapshot().await;
 
-            // 构建请求
+            // 构建请求并更新上下文快照
             let (req_json, is_openai) = self.build_llm_request(history_snapshot);
 
             // 调试日志
@@ -518,6 +529,9 @@ impl PipelineState {
 
             self.req_input_tokens += turn_in_tokens;
             self.req_output_tokens += turn_out_tokens;
+            if turn_in_tokens > 0 || turn_out_tokens > 0 {
+                self.update_provider_usage_snapshot(turn_in_tokens, turn_out_tokens);
+            }
 
             if recover_textual_propose_plan_call(
                 &mut current_blocks,
@@ -690,31 +704,44 @@ impl PipelineState {
     async fn finalize(self) -> JarvisResult {
         let was_cancelled = self.cancel_token.is_cancelled();
 
-        // 创建检查点
+        // 创建检查点快照（仅在有文件编辑时创建实快照，纯聊天轮次不创建）
         {
-            let operations: Vec<crate::core::session::checkpoint::FileOperation> =
-                self.ctx.pending_checkpoint.lock().await.drain(..).collect();
-            let has_operations = !operations.is_empty();
-            let parent_id = crate::core::session::checkpoint::get_head_checkpoint_id(&self.sid);
-            let cp = crate::core::session::checkpoint::create_checkpoint(
+            let has_operations = self.ctx.memory.lock().await.agent_steps.len() > 0;
+            // 检查自上次 checkpoint 以来是否有新的文件补丁
+            let has_patches = crate::core::tools::file_tools::has_patches_since_last_checkpoint(
+                &self.app,
                 &self.sid,
-                parent_id.as_deref(),
-                &self.user_msg_preview,
-                None,
-                None,
-                operations,
-            );
-            println!(
-                "[JARVIS] 已创建检查点: {} (操作数: {})",
-                cp.id,
-                cp.operations.len()
-            );
+            )
+            .await;
+
+            let checkpoint_id = if has_patches {
+                // 有文件编辑 → 创建实 checkpoint 快照
+                crate::core::tools::file_tools::commit_checkpoint_snapshot(
+                    &self.app,
+                    &self.sid,
+                    self.user_msg_preview.clone(),
+                )
+                .await
+            } else {
+                // 纯聊天轮次 → 不创建快照，仅记录日志
+                println!("[JARVIS] 纯聊天轮次，跳过检查点快照创建");
+                None
+            };
+
+            if let Some(id) = &checkpoint_id {
+                println!(
+                    "[JARVIS] 已创建检查点快照: {} (来自快照引擎)",
+                    id
+                );
+            }
             let _ = self.app.emit(
                 "checkpoint-created",
                 serde_json::json!({
                     "sessionId": self.sid,
-                    "checkpointId": cp.id,
+                    "checkpointId": checkpoint_id,
                     "hasOperations": has_operations,
+                    "hasPatches": has_patches,
+                    "canRollback": true,
                     "message": self.user_msg_preview
                 }),
             );
@@ -1010,14 +1037,205 @@ impl PipelineState {
         history_snapshot
     }
 
+    /// 更新本轮请求的上下文 token 快照
+    fn update_context_snapshot(&self, history_snapshot: &[Message], tools: &[serde_json::Value]) {
+        fn now_ms() -> u64 {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64
+        }
+
+        fn section(
+            model_id: &str,
+            key: &str,
+            label: &str,
+            content: String,
+            item_count: usize,
+        ) -> ContextSectionSnapshot {
+            const MAX_PREVIEW_CHARS: usize = 6000;
+            let chars = content.chars().count();
+            let token_count = crate::core::llm::token_count::count_text(model_id, &content);
+            let truncated = chars > MAX_PREVIEW_CHARS;
+            let content = if truncated {
+                let preview: String = content.chars().take(MAX_PREVIEW_CHARS).collect();
+                format!("{}\n\n…已截断，仅展示前 {} 字符", preview, MAX_PREVIEW_CHARS)
+            } else {
+                content
+            };
+            ContextSectionSnapshot {
+                key: key.to_string(),
+                label: label.to_string(),
+                chars,
+                estimated_tokens: token_count.tokens,
+                token_count_method: token_count.method.as_str().to_string(),
+                item_count,
+                content,
+                truncated,
+            }
+        }
+
+        fn strip_dynamic_context(messages: &[Message], initial_msg_index: usize, dynamic_context: &str) -> Vec<Message> {
+            let mut cleaned = messages.to_vec();
+            if dynamic_context.is_empty() {
+                return cleaned;
+            }
+            if let Some(Message::User { content }) = cleaned.get_mut(initial_msg_index) {
+                match content {
+                    Content::Single(text) => {
+                        let prefix = format!("{}\n\n[User Input]:\n", dynamic_context);
+                        if let Some(rest) = text.strip_prefix(&prefix) {
+                            *text = rest.to_string();
+                        }
+                    }
+                    Content::Multiple(blocks) => {
+                        if let Some(ContentBlock::Text { text }) = blocks.first() {
+                            if text.trim() == dynamic_context.trim() {
+                                blocks.remove(0);
+                            }
+                        }
+                    }
+                }
+            }
+            cleaned
+        }
+
+        fn count_blocks(messages: &[Message]) -> (usize, usize, usize, usize) {
+            let mut tool_calls = 0;
+            let mut tool_results = 0;
+            let mut images = 0;
+            let mut thinking = 0;
+            for message in messages {
+                let Content::Multiple(blocks) = (match message {
+                    Message::User { content } | Message::Assistant { content } => content,
+                }) else {
+                    continue;
+                };
+                for block in blocks {
+                    match block {
+                        ContentBlock::ToolUse { .. } => tool_calls += 1,
+                        ContentBlock::ToolResult { .. } => tool_results += 1,
+                        ContentBlock::Image { .. } => images += 1,
+                        ContentBlock::Thinking { .. } => thinking += 1,
+                        ContentBlock::Text { .. } => {}
+                    }
+                }
+            }
+            (tool_calls, tool_results, images, thinking)
+        }
+
+        let cleaned_messages = strip_dynamic_context(
+            history_snapshot,
+            self.initial_msg_index,
+            &self.dynamic_context_str,
+        );
+        let (tool_call_count, tool_result_count, image_count, thinking_count) = count_blocks(history_snapshot);
+        let messages_json = serde_json::to_string_pretty(&cleaned_messages).unwrap_or_default();
+        let tools_json = serde_json::to_string_pretty(tools).unwrap_or_default();
+        let mut sections = vec![
+            section(&self.model_id, "system", "System Prompt", self.system_prompt.clone(), 1),
+            section(
+                &self.model_id,
+                "dynamic",
+                "Dynamic Context",
+                self.dynamic_context_str.clone(),
+                1,
+            ),
+            section(
+                &self.model_id,
+                "messages",
+                "Session Messages",
+                messages_json,
+                cleaned_messages.len(),
+            ),
+            section(&self.model_id, "tools", "Tools Schema", tools_json, tools.len()),
+        ];
+        if image_count > 0 {
+            sections.push(section(
+                &self.model_id,
+                "attachments",
+                "Attachments / Images",
+                format!("当前请求中包含 {} 个图片块。近期图片会恢复为 base64，远期图片会折叠为文本摘要。", image_count),
+                image_count,
+            ));
+        }
+        if tool_result_count > 0 || thinking_count > 0 {
+            sections.push(section(
+                &self.model_id,
+                "runtime",
+                "Tool Results / Thinking",
+                format!("tool_result: {}\nthinking: {}", tool_result_count, thinking_count),
+                tool_result_count + thinking_count,
+            ));
+        }
+
+        let total_chars = sections.iter().map(|item| item.chars).sum();
+        let estimated_tokens = sections.iter().map(|item| item.estimated_tokens).sum();
+        let snapshot = SessionContextSnapshot {
+            session_id: self.sid.clone(),
+            run_id: Some(self.run_id.clone()),
+            loop_count: self.total_loop_count + 1,
+            model: self.model_id.clone(),
+            intent: self.detected_intent.clone(),
+            api_format: self.api_format.as_str().to_string(),
+            created_at: now_ms(),
+            total_chars,
+            estimated_tokens,
+            provider_input_tokens: None,
+            provider_output_tokens: None,
+            provider_total_tokens: None,
+            drift_percent: None,
+            max_context_tokens: crate::core::llm::registry::query_capabilities(&self.model_id)
+                .and_then(|capabilities| capabilities.max_context_tokens),
+            max_output_tokens: crate::core::constants::MAX_TOKENS_CONTEXT,
+            message_count: cleaned_messages.len(),
+            tool_schema_count: tools.len(),
+            tool_call_count,
+            tool_result_count,
+            sections,
+        };
+
+        if let Err(err) = crate::core::session::save_context_snapshot(&snapshot) {
+            eprintln!("[JARVIS] 保存上下文快照失败: {}", err);
+        }
+        let _ = self.app.emit("context-snapshot-updated", &snapshot);
+    }
+
+    fn update_provider_usage_snapshot(&self, input_tokens: u64, output_tokens: u64) {
+        let total_tokens = input_tokens.saturating_add(output_tokens);
+        let drift = crate::core::session::get_context_snapshot(&self.sid)
+            .ok()
+            .flatten()
+            .and_then(|snapshot| {
+                crate::core::llm::token_count::drift_percent(snapshot.estimated_tokens, input_tokens)
+            });
+
+        match crate::core::session::update_context_snapshot_usage(
+            &self.sid,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            drift,
+        ) {
+            Ok(Some(snapshot)) => {
+                let _ = self.app.emit("context-snapshot-updated", &snapshot);
+            }
+            Ok(None) => {}
+            Err(err) => eprintln!("[JARVIS] 更新上下文 usage 失败: {}", err),
+        }
+    }
+
     /// 构建 LLM API 请求体
     fn build_llm_request(&self, history_snapshot: Vec<Message>) -> (serde_json::Value, bool) {
+        let tools = get_tools_definition(&self.detected_intent, &self.activated_tools);
+        self.update_context_snapshot(&history_snapshot, &tools);
+
         let mut request_body = AnthropicRequest {
             model: self.model_id.clone(),
             max_tokens: crate::core::constants::MAX_TOKENS_CONTEXT,
             system: self.system_prompt.clone(),
             messages: history_snapshot,
-            tools: get_tools_definition(&self.detected_intent, &self.activated_tools),
+            tools,
             stream: true,
             thinking: None,
             temperature: self.cfg.temperature,

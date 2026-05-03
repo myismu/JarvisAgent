@@ -7,7 +7,7 @@
 //! - 消息格式: `Message`, `Content`, `ContentBlock`
 //! - Anthropic 格式: `AnthropicRequest`, `ThinkingConfig`, `ImageSource`
 //! - OpenAI 格式: `OpenAIRequest`, `OpenAIMessage`, `OpenAITool`, `OpenAIToolCall`
-//! - 会话数据: `SessionMemory`, `AgentStep`, `PlanDocument`
+//! - 会话数据: `SessionMemory`, `SessionContextSnapshot`, `AgentStep`, `PlanDocument`
 //! - 任务管理: `Task`, `TaskStatus`
 //! - 工具定义: `Skill`
 //!
@@ -211,6 +211,44 @@ pub struct Skill {
     pub name: String,
     pub description: String,
     pub body: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextSectionSnapshot {
+    pub key: String,
+    pub label: String,
+    pub chars: usize,
+    pub estimated_tokens: usize,
+    pub token_count_method: String,
+    pub item_count: usize,
+    pub content: String,
+    pub truncated: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionContextSnapshot {
+    pub session_id: String,
+    pub run_id: Option<String>,
+    pub loop_count: usize,
+    pub model: String,
+    pub intent: String,
+    pub api_format: String,
+    pub created_at: u64,
+    pub total_chars: usize,
+    pub estimated_tokens: usize,
+    pub provider_input_tokens: Option<u64>,
+    pub provider_output_tokens: Option<u64>,
+    pub provider_total_tokens: Option<u64>,
+    pub drift_percent: Option<f32>,
+    pub max_context_tokens: Option<u32>,
+    pub max_output_tokens: i32,
+    pub message_count: usize,
+    pub tool_schema_count: usize,
+    pub tool_call_count: usize,
+    pub tool_result_count: usize,
+    pub sections: Vec<ContextSectionSnapshot>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

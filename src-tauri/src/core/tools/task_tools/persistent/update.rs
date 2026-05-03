@@ -1,7 +1,7 @@
 use super::common::{optional_i32_vec, optional_string, task_delete_inner, task_id};
 use crate::core::models::TaskStatus;
 use crate::core::orchestration::tasks::{TaskManager, TaskUpdateParams};
-use crate::core::tools::registry::ToolDef;
+use crate::core::tools::framework::registry::ToolDef;
 use serde_json::json;
 
 pub(super) fn tool_def() -> ToolDef {

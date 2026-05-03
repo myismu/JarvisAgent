@@ -6,7 +6,9 @@ import type {
   AgentThinkingBlock,
   AgentToolCallView,
 } from "../../types";
-import { renderMarkdown, renderToolStatusIcon } from "../../utils/markdown";
+import { renderMarkdown } from "../../utils/markdown";
+import { groupAdjacentToolCalls, summarizeToolGroupsForPanel } from "../../utils/toolDisplay";
+import ToolCallGroup from "./ToolCallGroup.vue";
 
 const props = defineProps<{
   mode: AgentDisplayMode;
@@ -18,6 +20,7 @@ const props = defineProps<{
 
 const thinkingItems = computed(() => props.thinkingBlocks.filter((item) => item.content.trim()));
 const logItems = computed(() => props.logs.filter((item) => item.content.trim()));
+const toolGroups = computed(() => groupAdjacentToolCalls(props.toolCalls));
 const hasExecution = computed(
   () => thinkingItems.value.length > 0 || props.toolCalls.length > 0 || logItems.value.length > 0,
 );
@@ -25,31 +28,14 @@ const isDeveloperMode = computed(() => props.mode === "developer");
 
 const summaryText = computed(() => {
   const state = props.running ? "处理中" : "已完成";
-  const toolPart = props.toolCalls.length > 0 ? `${props.toolCalls.length} 个工具` : "无工具调用";
+  const toolPart =
+    props.toolCalls.length > 0
+      ? summarizeToolGroupsForPanel(toolGroups.value, props.toolCalls.length)
+      : "无工具活动";
   const thinkingPart = thinkingItems.value.length > 0 ? ` · ${thinkingItems.value.length} 段思考` : "";
   const logPart = props.mode === "developer" && logItems.value.length > 0 ? ` · ${logItems.value.length} 条日志` : "";
   return `${state} · ${toolPart}${thinkingPart}${logPart}`;
 });
-
-const statusLabel = (status: string) => {
-  if (status === "completed") return "已完成";
-  if (status === "error") return "失败";
-  if (status === "running") return "执行中";
-  return "等待中";
-};
-
-const hasToolDetails = (tool: AgentToolCallView) => {
-  return Boolean(tool.inputSummary || tool.outputSummary || tool.error || tool.logs.length);
-};
-
-const isSubAgentTool = (tool: AgentToolCallView) => {
-  const name = (tool.name || "").toLowerCase();
-  return name === "task" || name === "run_subagent" || name.includes("subagent");
-};
-
-const shouldOpenTool = (tool: AgentToolCallView) => {
-  return isDeveloperMode.value && hasToolDetails(tool) && (tool.status === "running" || tool.status === "pending");
-};
 
 const markdown = (content?: string) => renderMarkdown(content || "");
 </script>
@@ -76,33 +62,13 @@ const markdown = (content?: string) => renderMarkdown(content || "");
       <span>{{ summaryText }}</span>
     </summary>
 
-    <div v-if="toolCalls.length" class="agent-tool-list">
-      <details
-        v-for="tool in toolCalls"
-        :key="tool.id"
-        class="agent-tool-call"
-        :class="{ 'agent-subagent-tool': isSubAgentTool(tool) }"
-        :open="shouldOpenTool(tool)"
-      >
-        <summary class="agent-tool-row" :class="tool.status">
-          <span class="agent-tool-icon" v-html="renderToolStatusIcon(tool.status)"></span>
-          <code>{{ tool.name }}</code>
-          <span>{{ statusLabel(tool.status) }}</span>
-        </summary>
-        <div v-if="tool.inputSummary" class="agent-tool-field">
-          <span>参数</span>
-          <div v-html="markdown(tool.inputSummary)"></div>
-        </div>
-        <div v-if="tool.outputSummary" class="agent-tool-field">
-          <span>结果</span>
-          <div v-html="markdown(tool.outputSummary)"></div>
-        </div>
-        <div v-if="tool.error" class="agent-tool-field error">
-          <span>错误</span>
-          <div v-html="markdown(tool.error)"></div>
-        </div>
-        <div v-for="(log, index) in tool.logs" :key="`${tool.id}_${index}`" class="agent-tool-log" v-html="markdown(log)"></div>
-      </details>
+    <div v-if="toolGroups.length" class="agent-tool-list">
+      <ToolCallGroup
+        v-for="group in toolGroups"
+        :key="`${group.id}-${group.status}-${group.count}`"
+        :group="group"
+        :mode="mode"
+      />
     </div>
 
     <details

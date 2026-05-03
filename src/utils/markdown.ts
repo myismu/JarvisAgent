@@ -1,4 +1,6 @@
 import { marked } from "marked";
+import type { AgentToolStatus } from "../types";
+import { toolActionLabel, toolCategoryLabel } from "./toolDisplay";
 
 marked.use({
   renderer: {
@@ -86,9 +88,18 @@ export function renderToolStatusIcon(status: string) {
 
 export function renderToolStatusLine(toolCallId: string, tool: string, status: string) {
   const safeId = escapeHtmlForAttr(toolCallId);
-  const safeTool = escapeHtmlForAttr(tool);
-  const title = status === "completed" ? "工具执行完成" : status === "error" ? "工具执行失败" : "工具执行中";
-  return `<div class="tool-status-line ${escapeHtmlForAttr(status)}" data-tool-call-id="${safeId}" title="${title}">${renderToolStatusIcon(status)}<code>${safeTool}</code></div>`;
+  const safeStatus = normalizeToolStatus(status);
+  const title = safeStatus === "completed" ? "已完成" : safeStatus === "error" ? "执行失败" : "正在执行";
+  const safeCategory = escapeHtml(toolCategoryLabel(tool));
+  const safeAction = escapeHtml(toolActionLabel(tool, safeStatus));
+  return `<div class="tool-status-line ${escapeHtmlForAttr(safeStatus)}" data-tool-call-id="${safeId}" title="${title}">${renderToolStatusIcon(safeStatus)}<span class="tool-status-title">${safeCategory}</span><span>${safeAction}</span></div>`;
+}
+
+function normalizeToolStatus(status: string): AgentToolStatus {
+  if (status === "pending" || status === "running" || status === "completed" || status === "error") {
+    return status;
+  }
+  return "running";
 }
 
 function escapeHtmlForAttr(value: string) {

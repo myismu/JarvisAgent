@@ -10,3 +10,4 @@ pub mod adapters;
 pub mod api_client;
 pub mod api_format;
 pub mod registry;
+pub mod token_count;

@@ -1,5 +1,36 @@
 // === 核心会话类型 ===
 
+export interface SessionMeta {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  messageCount: number;
+  isSmartNamed?: boolean;
+  profileId?: string | null;
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  titleSource?: string;
+  workingDirectory?: string | null;
+  lastModel?: string | null;
+  lastTool?: string | null;
+  toolCallCount?: number;
+  runCount?: number;
+  checkpointCount?: number;
+}
+
+export interface SessionListFilter {
+  keyword?: string | null;
+  fromTs?: number | null;
+  toTs?: number | null;
+  profileId?: string | null;
+  model?: string | null;
+  tool?: string | null;
+  hasToolCalls?: boolean | null;
+  limit?: number | null;
+  offset?: number | null;
+}
+
 export interface JarvisResult {
   status: string;
   content: string;
@@ -7,6 +38,40 @@ export interface JarvisResult {
   output_tokens: number;
   session_input_tokens: number;
   session_output_tokens: number;
+}
+
+export interface ContextSectionSnapshot {
+  key: string;
+  label: string;
+  chars: number;
+  estimatedTokens: number;
+  tokenCountMethod: "tokenizer" | "estimate" | string;
+  itemCount: number;
+  content: string;
+  truncated: boolean;
+}
+
+export interface SessionContextSnapshot {
+  sessionId: string;
+  runId?: string | null;
+  loopCount: number;
+  model: string;
+  intent: string;
+  apiFormat: string;
+  createdAt: number;
+  totalChars: number;
+  estimatedTokens: number;
+  providerInputTokens?: number | null;
+  providerOutputTokens?: number | null;
+  providerTotalTokens?: number | null;
+  driftPercent?: number | null;
+  maxContextTokens?: number | null;
+  maxOutputTokens: number;
+  messageCount: number;
+  toolSchemaCount: number;
+  toolCallCount: number;
+  toolResultCount: number;
+  sections: ContextSectionSnapshot[];
 }
 
 export interface TodoItem {
@@ -21,6 +86,8 @@ export interface PermissionRequest {
   id: string;
   message: string;
   sessionId?: string;
+  kind?: "tool" | "loop_continuation" | string;
+  allowSession?: boolean;
 }
 
 export interface PlanProposal {
@@ -42,6 +109,16 @@ export interface PlanDocument {
   createdAt: number;
   updatedAt: number;
   decidedAt?: number | null;
+}
+
+export interface BackgroundTask {
+  id: string;
+  command: string;
+  status: string;
+  result?: string | null;
+  port?: number | null;
+  taskType?: string | null;
+  task_type?: string | null;
 }
 
 // === Agent 执行追踪类型 ===
@@ -208,6 +285,7 @@ export interface SubAgentRun {
   sessionId: string;
   taskId?: number | null;
   label: string;
+  prompt?: string | null;
   promptPreview: string;
   readOnly: boolean;
   status: SubAgentStatus;

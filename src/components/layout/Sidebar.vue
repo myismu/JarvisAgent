@@ -1,5 +1,17 @@
+<!--
+# Sidebar.vue — 应用侧边栏与会话列表
+
+提供导航入口、延迟创建会话、历史会话检索筛选、会话切换/重命名/删除等交互。
+
+## Key Exports
+- `Sidebar`: 左侧导航与会话管理组件
+
+## Dependencies
+- Internal: `@/stores/session`, `@/stores/chat`, `@/composables/useAgentEvents`
+-->
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
+import type { SessionMeta } from '../../types';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -7,6 +19,7 @@ import { useSessionStore } from '../../stores/session';
 import { useChatStore } from '../../stores/chat';
 import { useAgentStore } from '../../stores/agent';
 import { useAgentEvents } from '../../composables/useAgentEvents';
+import { useWindow } from '../../composables/useWindow';
 
 defineProps<{
   collapsed: boolean;
@@ -20,21 +33,15 @@ const sessionStore = useSessionStore();
 const chat = useChatStore();
 const agent = useAgentStore();
 const events = useAgentEvents();
+const { notifyMonitorSessionChanged } = useWindow();
 
 // 会话管理状态
-interface SessionMeta {
-  id: string;
-  title: string;
-  createdAt: number;
-  updatedAt: number;
-  messageCount: number;
-  totalInputTokens?: number;
-  totalOutputTokens?: number;
-  titleSource?: string;
-  workingDirectory?: string;
-}
-
 const sessions = ref<SessionMeta[]>([]);
+const sessionSearchKeyword = ref('');
+const sessionFilterTool = ref('');
+const sessionFilterHasTools = ref(false);
+const sessionFilterRange = ref<'all' | '24h' | '7d' | '30d'>('all');
+const showSessionFilters = ref(false);
 const sessionActionMessage = ref('');
 const editingSessionId = ref<string | null>(null);
 const editingTitle = ref('');
@@ -43,6 +50,43 @@ let sessionActionTimer: ReturnType<typeof setTimeout> | null = null;
 
 const isSessionRunning = (sessionId: string): boolean => {
   return sessionStore.sessionViews[sessionId]?.status === "RUNNING";
+};
+
+const sessionFilterFromTs = () => {
+  const now = Date.now();
+  switch (sessionFilterRange.value) {
+    case '24h': return now - 24 * 60 * 60 * 1000;
+    case '7d': return now - 7 * 24 * 60 * 60 * 1000;
+    case '30d': return now - 30 * 24 * 60 * 60 * 1000;
+    default: return null;
+  }
+};
+
+const hasActiveSessionFilters = () => Boolean(
+  sessionSearchKeyword.value.trim()
+  || sessionFilterTool.value.trim()
+  || sessionFilterHasTools.value
+  || sessionFilterRange.value !== 'all'
+);
+
+const clearSessionFilters = async () => {
+  sessionSearchKeyword.value = '';
+  sessionFilterTool.value = '';
+  sessionFilterHasTools.value = false;
+  sessionFilterRange.value = 'all';
+  await loadSessions();
+};
+
+const formatSessionTime = (timestamp: number) => {
+  const date = new Date(timestamp);
+  return `${date.getMonth() + 1}/${date.getDate()} ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
+};
+
+const formatSessionTokens = (session: SessionMeta) => {
+  const total = (session.totalInputTokens || 0) + (session.totalOutputTokens || 0);
+  if (!total) return '';
+  if (total >= 1000) return `${(total / 1000).toFixed(1)}k tok`;
+  return `${total} tok`;
 };
 
 const showSessionActionMessage = (message: string, kind: 'info' | 'error' = 'info') => {
@@ -94,7 +138,15 @@ const requestWorkingDirectory = async () => {
 // 加载会话列表
 const loadSessions = async () => {
   try {
-    sessions.value = await invoke<SessionMeta[]>('list_sessions');
+    sessionStore.setSessionListFilter({
+      keyword: sessionSearchKeyword.value || null,
+      tool: sessionFilterTool.value || null,
+      hasToolCalls: sessionFilterHasTools.value ? true : null,
+      fromTs: sessionFilterFromTs(),
+    });
+    sessions.value = await invoke<SessionMeta[]>('list_sessions', {
+      filter: sessionStore.getSessionListFilterPayload(),
+    });
   } catch (err) {
     console.error('加载会话列表失败:', err);
   }
@@ -143,37 +195,20 @@ const createNewSession = async (withSandbox: boolean = false) => {
       sandboxDir = selected;
     }
 
-    const meta = await invoke<any>('create_session', { workingDirectory: sandboxDir });
-    sessionStore.activeSessionId = meta.id;
-    sessionStore.workingDirectory = meta.workingDirectory || null;
-
-    const config = await invoke<any>('get_config');
-    if (config.globalProfileId) {
-      config.activeProfileId = config.globalProfileId;
-      await invoke('save_config_cmd', { newConfig: config });
-      await invoke('update_session_profile', { id: meta.id, profileId: config.globalProfileId });
-    }
-
-    chat.jarvisResponse = 'Ready for input...';
-    chat.toolBuffer = '';
-    chat.contentBuffer = '';
-    chat.tempBuffer = '';
-    sessionStore.clearSessionBuffers(meta.id);
-    sessionStore.setSessionUsageTotals(meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
+    sessionStore.activeSessionId = null;
+    sessionStore.pendingWorkingDirectory = sandboxDir;
+    sessionStore.workingDirectory = sandboxDir;
+    sessionStore.resetSessionView(null);
+    sessionStore.setSessionUsageTotals(0, 0);
     chat.resetRenderState();
     chat.triggerRender();
+    await notifyMonitorSessionChanged(null);
 
-    await chat.loadAgentStepsFromBackend();
-    await events.loadPlanDocumentsFromBackend(meta.id);
-    await events.loadAgentRunsFromBackend(meta.id);
-    await events.loadAgentRunEventsFromBackend(meta.id);
-
-    await loadSessions();
-    showSessionActionMessage(withSandbox ? '已创建沙盒会话。' : '已创建新会话。');
+    showSessionActionMessage(withSandbox ? '已准备沙盒会话，发送首条消息后保存。' : '已准备新会话，发送首条消息后保存。');
     requestAnimationFrame(() => chat.forceScrollToBottom());
   } catch (err) {
-    console.error('创建会话失败:', err);
-    showSessionActionMessage(`创建会话失败：${formatErrorMessage(err)}`, 'error');
+    console.error('准备新会话失败:', err);
+    showSessionActionMessage(`准备新会话失败：${formatErrorMessage(err)}`, 'error');
   }
 };
 
@@ -200,14 +235,21 @@ const switchToSession = async (id: string) => {
     if (!sessionStore.hasHydratedSessionView(id)) {
       const history = await invoke<string>('get_session_history', { sessionId: id });
       sessionStore.replaceSessionHistory(id, history || 'Ready for input...');
-      await chat.loadAgentStepsFromBackend(id);
     }
-    await events.loadPlanDocumentsFromBackend(id);
-    await events.loadAgentRunsFromBackend(id);
-    await events.loadAgentRunEventsFromBackend(id);
+
+    await Promise.all([
+      chat.loadAgentStepsFromBackend(id),
+      events.loadPlanDocumentsFromBackend(id),
+      events.loadAgentRunsFromBackend(id, { refreshHistory: false }),
+      events.loadAgentRunEventsFromBackend(id),
+      events.loadSubAgentRunsFromBackend(id),
+      events.loadSubAgentEventsFromBackend(id),
+      events.loadContextSnapshotFromBackend(id),
+    ]);
 
     chat.resetRenderState();
     chat.triggerRender();
+    await notifyMonitorSessionChanged(id);
     await loadSessions();
     requestAnimationFrame(() => chat.forceScrollToBottom());
   } catch (err) {
@@ -272,10 +314,15 @@ onMounted(async () => {
     }
   }
 
-  await chat.loadAgentStepsFromBackend();
-  await events.loadPlanDocumentsFromBackend();
-  await events.loadAgentRunsFromBackend();
-  await events.loadAgentRunEventsFromBackend();
+  await Promise.all([
+    chat.loadAgentStepsFromBackend(),
+    events.loadPlanDocumentsFromBackend(),
+    events.loadAgentRunsFromBackend(undefined, { refreshHistory: false }),
+    events.loadAgentRunEventsFromBackend(),
+    events.loadSubAgentRunsFromBackend(),
+    events.loadSubAgentEventsFromBackend(),
+    events.loadContextSnapshotFromBackend(),
+  ]);
 
   unlistenRenamed = await listen('session-renamed', () => {
     loadSessions();
@@ -321,56 +368,98 @@ onUnmounted(() => {
         >
           {{ sessionActionMessage }}
         </div>
-        <ul class="session-list">
+        <div class="session-filter-toggle-row">
+          <button type="button" class="session-filter-toggle" :class="{ active: hasActiveSessionFilters() }" @click="showSessionFilters = !showSessionFilters">
+            高级筛选<span v-if="hasActiveSessionFilters()">已启用</span>
+          </button>
+          <button v-if="hasActiveSessionFilters()" type="button" class="session-filter-clear" @click="clearSessionFilters">清除</button>
+        </div>
+        <div v-if="showSessionFilters" class="session-filters">
+          <input
+            v-model="sessionSearchKeyword"
+            class="session-filter-input"
+            placeholder="搜索会话"
+            @keydown.enter.prevent="loadSessions"
+            @blur="loadSessions"
+          />
+          <input
+            v-model="sessionFilterTool"
+            class="session-filter-input"
+            placeholder="工具名筛选"
+            @keydown.enter.prevent="loadSessions"
+            @blur="loadSessions"
+          />
+          <select v-model="sessionFilterRange" class="session-filter-input" @change="loadSessions">
+            <option value="all">全部时间</option>
+            <option value="24h">最近 24 小时</option>
+            <option value="7d">最近 7 天</option>
+            <option value="30d">最近 30 天</option>
+          </select>
+          <label class="session-filter-check">
+            <input v-model="sessionFilterHasTools" type="checkbox" @change="loadSessions" />
+            <span>有工具调用</span>
+          </label>
+        </div>
+        <div v-if="sessions.length === 0" class="session-empty-state">
+          {{ hasActiveSessionFilters() ? '无匹配会话' : '暂无会话' }}
+        </div>
+        <ul v-else class="session-list">
           <li
             v-for="session in sessions"
             :key="session.id"
             :class="['session-item', { active: session.id === sessionStore.activeSessionId }]"
             @click="editingSessionId !== session.id && switchToSession(session.id)"
           >
-            <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none" class="session-icon">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-            </svg>
-            <span v-if="isSessionRunning(session.id)" class="session-running-dot"></span>
-            <input
-              v-if="editingSessionId === session.id"
-              v-model="editingTitle"
-              class="session-title-input"
-              maxlength="30"
-              @click.stop
-              @keydown.enter.prevent="submitRenameSession(session.id)"
-              @keydown.esc.prevent="cancelRenameSession"
-              @blur="submitRenameSession(session.id)"
-            />
-            <span v-else class="session-title">{{ session.title }}</span>
-            <span v-if="session.workingDirectory" class="sandbox-badge" :title="'沙箱: ' + session.workingDirectory">
-              <svg viewBox="0 0 24 24" width="10" height="10" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-                <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+            <div class="session-main-row">
+              <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none" class="session-icon">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
               </svg>
-            </span>
-            <span class="session-count" v-if="session.messageCount > 0">{{ session.messageCount }}</span>
-            <button
-              class="rename-btn"
-              @click="startRenameSession(session, $event)"
-              title="重命名会话"
-            >
-              <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" stroke-width="2" fill="none">
-                <path d="M12 20h9"></path>
-                <path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path>
-              </svg>
-            </button>
-            <button
-              v-if="session.id !== sessionStore.activeSessionId"
-              class="delete-btn"
-              @click="deleteSession(session.id, $event)"
-              title="删除会话"
-            >
-              <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" stroke-width="2" fill="none">
-                <line x1="18" y1="6" x2="6" y2="18"></line>
-                <line x1="6" y1="6" x2="18" y2="18"></line>
-              </svg>
-            </button>
+              <span v-if="isSessionRunning(session.id)" class="session-running-dot"></span>
+              <input
+                v-if="editingSessionId === session.id"
+                v-model="editingTitle"
+                class="session-title-input"
+                maxlength="30"
+                @click.stop
+                @keydown.enter.prevent="submitRenameSession(session.id)"
+                @keydown.esc.prevent="cancelRenameSession"
+                @blur="submitRenameSession(session.id)"
+              />
+              <span v-else class="session-title">{{ session.title }}</span>
+              <span v-if="session.workingDirectory" class="sandbox-badge" :title="'沙箱: ' + session.workingDirectory">
+                <svg viewBox="0 0 24 24" width="10" height="10" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                </svg>
+              </span>
+              <span class="session-count" v-if="session.messageCount > 0">{{ session.messageCount }}</span>
+              <button
+                class="rename-btn"
+                @click="startRenameSession(session, $event)"
+                title="重命名会话"
+              >
+                <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" stroke-width="2" fill="none">
+                  <path d="M12 20h9"></path>
+                  <path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path>
+                </svg>
+              </button>
+              <button
+                v-if="session.id !== sessionStore.activeSessionId"
+                class="delete-btn"
+                @click="deleteSession(session.id, $event)"
+                title="删除会话"
+              >
+                <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" stroke-width="2" fill="none">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+            </div>
+            <div class="session-meta-row">
+              <span>{{ formatSessionTime(session.updatedAt) }}</span>
+              <span v-if="formatSessionTokens(session)">{{ formatSessionTokens(session) }}</span>
+              <span v-if="session.workingDirectory">沙盒</span>
+            </div>
           </li>
         </ul>
       </div>
@@ -585,6 +674,86 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
+.session-filter-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 12px 8px;
+}
+
+.session-filter-toggle,
+.session-filter-clear {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--glass-bg-light);
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+.session-filter-toggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.session-filter-toggle.active {
+  color: var(--accent-blue);
+  border-color: var(--accent-blue);
+}
+
+.session-filter-clear:hover,
+.session-filter-toggle:hover {
+  color: var(--text-main);
+}
+
+.session-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 12px 8px;
+  padding: 8px;
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--glass-bg);
+}
+
+.session-empty-state {
+  margin: 4px 12px 8px;
+  padding: 10px;
+  color: var(--text-muted);
+  border: 1px dashed var(--glass-border-subtle);
+  border-radius: var(--radius-md);
+  font-size: 0.74rem;
+  text-align: center;
+}
+
+.session-filter-input {
+  width: 100%;
+  border: 1px solid var(--glass-border-subtle);
+  background: var(--glass-bg-light);
+  color: var(--text-main);
+  border-radius: var(--radius-md);
+  padding: 6px 8px;
+  font-size: 0.75rem;
+  outline: none;
+}
+
+.session-filter-input:focus {
+  border-color: var(--accent-blue);
+}
+
+.session-filter-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
 .session-list {
   list-style: none;
   padding: 0;
@@ -600,13 +769,37 @@ onUnmounted(() => {
   font-weight: 500;
   border-radius: var(--radius-md);
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: 4px;
+  align-items: stretch;
   cursor: pointer;
   color: var(--text-muted);
   transition: all var(--transition-fast);
   position: relative;
   background: transparent;
   border: 1px solid transparent;
+}
+
+.session-main-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.session-meta-row {
+  display: flex;
+  gap: 8px;
+  padding-left: 23px;
+  color: var(--text-muted);
+  font-size: 0.62rem;
+  font-weight: 400;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.session-meta-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .session-item:hover {
   background: var(--glass-bg-light);

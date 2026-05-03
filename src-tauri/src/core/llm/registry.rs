@@ -23,6 +23,9 @@ pub struct ModelCapabilities {
     /// 最大输出 token 数
     #[serde(default)]
     pub max_tokens: u32,
+    /// 最大上下文窗口 token 数
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context_tokens: Option<u32>,
     /// 备注说明
     #[serde(default)]
     pub notes: String,

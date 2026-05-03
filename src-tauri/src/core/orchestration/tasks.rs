@@ -5,14 +5,12 @@
 //! 任务以 JSON 文件形式持久化存储。
 
 use crate::core::models::{Task, TaskStatus};
-use std::fs;
-use std::path::PathBuf;
+use crate::core::session::resource_repository;
 
 /// 任务管理器 - 基于文件系统的任务持久化
 pub struct TaskManager {
     /// 任务文件存储目录
-    pub dir: PathBuf,
-    session_id: Option<String>,
+    session_id: String,
 }
 
 /// update() 的可选参数集合
@@ -32,74 +30,27 @@ impl TaskManager {
     ///
     /// 使用 Agent 启动时的数据目录，而非 current_dir()，
     /// 防止 set_workspace 后 tasks 跑到用户项目中
-    pub fn new() -> Self {
-        Self::with_dir(crate::core::data_paths::global_tasks_dir(), None)
-    }
-
     pub fn for_session(session_id: &str) -> Self {
-        Self::with_dir(
-            crate::core::data_paths::session_paths(session_id).tasks_dir(),
-            Some(session_id.to_string()),
-        )
-    }
-
-    fn with_dir(dir: PathBuf, session_id: Option<String>) -> Self {
-        let _ = fs::create_dir_all(&dir);
-        Self { dir, session_id }
-    }
-
-    fn refresh_manifest(&self) {
-        if let Some(session_id) = &self.session_id {
-            crate::core::data_paths::refresh_session_manifest(session_id, None, None, None);
+        Self {
+            session_id: session_id.to_string(),
         }
     }
 
     fn _max_id(&self) -> i32 {
-        let mut max_id = 0;
-        if let Ok(entries) = fs::read_dir(&self.dir) {
-            for entry in entries.flatten() {
-                let stem = entry
-                    .path()
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned();
-                if stem.starts_with("task_") {
-                    if let Ok(id) = stem[5..].parse::<i32>() {
-                        if id > max_id {
-                            max_id = id;
-                        }
-                    }
-                }
-            }
-        }
-        max_id
+        resource_repository::max_task_id(&self.session_id).unwrap_or_default()
     }
 
     fn _load(&self, id: i32) -> Result<Task, String> {
-        let path = self.dir.join(format!("task_{}.json", id));
-        if !path.exists() {
-            return Err(format!("Task {} not found", id));
-        }
-        let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
-        serde_json::from_str(&content).map_err(|e| e.to_string())
+        resource_repository::load_task(&self.session_id, id)?
+            .ok_or_else(|| format!("Task {} not found", id))
     }
 
     fn _save(&self, task: &Task) -> Result<(), String> {
-        let path = self.dir.join(format!("task_{}.json", task.id));
-        let content = serde_json::to_string_pretty(task).map_err(|e| e.to_string())?;
-        fs::write(path, content).map_err(|e| e.to_string())?;
-        self.refresh_manifest();
-        Ok(())
+        resource_repository::save_task(&self.session_id, task)
     }
 
     fn _delete_file(&self, id: i32) -> Result<(), String> {
-        let path = self.dir.join(format!("task_{}.json", id));
-        if path.exists() {
-            fs::remove_file(path).map_err(|e| e.to_string())?;
-        }
-        self.refresh_manifest();
-        Ok(())
+        resource_repository::delete_task(&self.session_id, id)
     }
 
     /// 创建任务，支持 activeForm、metadata、owner
@@ -268,35 +219,21 @@ impl TaskManager {
 
     /// 清理所有对指定任务 ID 的引用（blocked_by 和 blocks）
     fn _remove_all_references(&self, target_id: i32) -> Result<(), String> {
-        if let Ok(entries) = fs::read_dir(&self.dir) {
-            for entry in entries.flatten() {
-                let stem = entry
-                    .path()
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned();
-                if stem.starts_with("task_") {
-                    if let Ok(id) = stem[5..].parse::<i32>() {
-                        if id == target_id {
-                            continue;
-                        }
-                        if let Ok(mut task) = self._load(id) {
-                            let mut changed = false;
-                            if task.blocked_by.contains(&target_id) {
-                                task.blocked_by.retain(|&x| x != target_id);
-                                changed = true;
-                            }
-                            if task.blocks.contains(&target_id) {
-                                task.blocks.retain(|&x| x != target_id);
-                                changed = true;
-                            }
-                            if changed {
-                                self._save(&task)?;
-                            }
-                        }
-                    }
-                }
+        for mut task in self._load_all_tasks() {
+            if task.id == target_id {
+                continue;
+            }
+            let mut changed = false;
+            if task.blocked_by.contains(&target_id) {
+                task.blocked_by.retain(|&x| x != target_id);
+                changed = true;
+            }
+            if task.blocks.contains(&target_id) {
+                task.blocks.retain(|&x| x != target_id);
+                changed = true;
+            }
+            if changed {
+                self._save(&task)?;
             }
         }
         Ok(())
@@ -304,26 +241,12 @@ impl TaskManager {
 
     fn _clear_dependency(&self, completed_id: i32) -> Result<Vec<i32>, String> {
         let mut unblocked_tasks = Vec::new();
-        if let Ok(entries) = fs::read_dir(&self.dir) {
-            for entry in entries.flatten() {
-                let stem = entry
-                    .path()
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned();
-                if stem.starts_with("task_") {
-                    if let Ok(id) = stem[5..].parse::<i32>() {
-                        if let Ok(mut task) = self._load(id) {
-                            if task.blocked_by.contains(&completed_id) {
-                                task.blocked_by.retain(|&x| x != completed_id);
-                                self._save(&task)?;
-                                if task.blocked_by.is_empty() {
-                                    unblocked_tasks.push(id);
-                                }
-                            }
-                        }
-                    }
+        for mut task in self._load_all_tasks() {
+            if task.blocked_by.contains(&completed_id) {
+                task.blocked_by.retain(|&x| x != completed_id);
+                self._save(&task)?;
+                if task.blocked_by.is_empty() {
+                    unblocked_tasks.push(task.id);
                 }
             }
         }
@@ -406,24 +329,7 @@ impl TaskManager {
 
     /// 获取所有非删除任务（返回 Task 结构体列表，内部用）
     fn _load_all_tasks(&self) -> Vec<Task> {
-        let mut tasks = Vec::new();
-        if let Ok(entries) = fs::read_dir(&self.dir) {
-            for entry in entries.flatten() {
-                let stem = entry
-                    .path()
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned();
-                if stem.starts_with("task_") {
-                    if let Ok(id) = stem[5..].parse::<i32>() {
-                        if let Ok(task) = self._load(id) {
-                            tasks.push(task);
-                        }
-                    }
-                }
-            }
-        }
+        let mut tasks = resource_repository::list_tasks(&self.session_id).unwrap_or_default();
         tasks.sort_by_key(|t| t.id);
         tasks
     }

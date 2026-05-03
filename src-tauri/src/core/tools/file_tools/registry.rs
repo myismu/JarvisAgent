@@ -6,12 +6,12 @@
 //! - `register_tools()`: 向工具注册表加入 file_tools 的可调用工具定义
 //!
 //! ## Dependencies
-//! - Internal: `crate::core::tools::registry::ToolDef`, `crate::define_tools!`
+//! - Internal: `crate::core::tools::framework::registry::ToolDef`, `crate::define_tools!`
 //! - External: `serde_json`
 
 use serde_json::json;
 
-use crate::core::tools::registry::ToolDef;
+use crate::core::tools::framework::registry::ToolDef;
 
 // --- 工具注册 ---
 crate::define_tools! {
