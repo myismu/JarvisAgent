@@ -12,31 +12,94 @@
 //! - 助手多轮回复合并显示，思考过程用 `<details>` 折叠
 //! - 用户消息关联检查点 ID，支持前端回滚按钮
 
-use crate::core::commands::checkpoint::Checkpoint;
 use crate::core::models::*;
 use crate::core::orchestration::agent_runs;
 use crate::core::session;
 use crate::core::state::*;
+use std::collections::HashMap;
 
-struct CheckpointRollbackInfo {
-    id: String,
-    has_operations_after: bool,
+#[derive(Clone)]
+struct RollbackInfo {
+    checkpoint_id: String,
+    has_file_edits: bool,
 }
 
 struct UserDisplayMessage {
     memory_index: usize,
     display: String,
+    rollback_info: Option<RollbackInfo>,
 }
 
-#[derive(Default)]
-struct AssistantDisplay {
-    thinking: String,
-    text_parts: Vec<String>,
+
+use serde::Serialize;
+
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+struct AgentTurnSnapshot {
+    version: u32,
+    status: String,
+    text_blocks: Vec<AgentTextBlock>,
+    thinking_blocks: Vec<AgentThinkingBlock>,
+    tool_calls: Vec<AgentToolCallView>,
+    logs: Vec<AgentExecutionLog>,
+    created_at: u64,
 }
 
-impl AssistantDisplay {
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AgentTextBlock {
+    id: String,
+    #[serde(rename = "loop")]
+    loop_: u32,
+    kind: String,
+    content: String,
+    status: String,
+    timestamp: u64,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AgentThinkingBlock {
+    id: String,
+    #[serde(rename = "loop")]
+    loop_: u32,
+    content: String,
+    status: String,
+    timestamp: u64,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AgentToolCallView {
+    id: String,
+    #[serde(rename = "loop")]
+    loop_: u32,
+    name: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    logs: Vec<String>,
+    timestamp: u64,
+    updated_at: u64,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AgentExecutionLog {
+    id: String,
+    #[serde(rename = "loop")]
+    loop_: u32,
+    content: String,
+    timestamp: u64,
+}
+
+impl AgentTurnSnapshot {
     fn is_empty(&self) -> bool {
-        self.thinking.trim().is_empty() && self.text_parts.iter().all(|s| s.trim().is_empty())
+        self.text_blocks.is_empty() && self.thinking_blocks.is_empty() && self.tool_calls.is_empty()
     }
 }
 
@@ -57,16 +120,6 @@ fn is_internal_user_text(value: &str) -> bool {
 
 fn is_internal_assistant_message(content: &Content) -> bool {
     matches!(content, Content::Single(s) if s.trim() == "Noted background results.")
-}
-
-fn checkpoint_matches_user_message(trigger: &str, message: &str) -> bool {
-    let trigger = trigger.trim();
-    let message = message.trim();
-    if trigger.is_empty() || message.is_empty() {
-        return false;
-    }
-
-    message == trigger || message.starts_with(trigger) || trigger.starts_with(message)
 }
 
 fn user_display_content(content: &Content) -> String {
@@ -105,31 +158,67 @@ fn user_display_content(content: &Content) -> String {
     }
 }
 
-fn append_assistant_content(target: &mut AssistantDisplay, content: &Content) {
+
+fn append_assistant_content(target: &mut AgentTurnSnapshot, content: &Content, loop_idx: u32, timestamp: u64) {
     match content {
         Content::Single(s) => {
             let trimmed = s.trim();
             if !trimmed.is_empty() {
-                target.text_parts.push(trimmed.to_string());
+                target.text_blocks.push(AgentTextBlock {
+                    id: format!("text_{}", timestamp),
+                    loop_: loop_idx,
+                    kind: "assistant".to_string(),
+                    content: trimmed.to_string(),
+                    status: "done".to_string(),
+                    timestamp,
+                });
             }
         }
         Content::Multiple(blocks) => {
-            for block in blocks {
+            for (i, block) in blocks.iter().enumerate() {
+                let ts = timestamp + i as u64;
                 match block {
                     ContentBlock::Text { text } => {
                         let trimmed = text.trim();
                         if !trimmed.is_empty() {
-                            target.text_parts.push(trimmed.to_string());
+                            target.text_blocks.push(AgentTextBlock {
+                                id: format!("text_{}", ts),
+                                loop_: loop_idx,
+                                kind: "assistant".to_string(),
+                                content: trimmed.to_string(),
+                                status: "done".to_string(),
+                                timestamp: ts,
+                            });
                         }
                     }
                     ContentBlock::Thinking { thinking, .. } => {
                         let trimmed = thinking.trim();
                         if !trimmed.is_empty() {
-                            if !target.thinking.is_empty() {
-                                target.thinking.push_str("\n\n");
-                            }
-                            target.thinking.push_str(trimmed);
+                            target.thinking_blocks.push(AgentThinkingBlock {
+                                id: format!("thinking_{}", ts),
+                                loop_: loop_idx,
+                                content: trimmed.to_string(),
+                                status: "done".to_string(),
+                                timestamp: ts,
+                            });
                         }
+                    }
+                    ContentBlock::ToolUse { id, name, input } => {
+                        let input_summary = serde_json::to_string_pretty(input).unwrap_or_default();
+                        target.tool_calls.push(AgentToolCallView {
+                            id: id.clone(),
+                            loop_: loop_idx,
+                            name: name.clone(),
+                            status: "running".to_string(),
+                            input_summary: Some(format!("`json
+{}
+`", input_summary)),
+                            output_summary: None,
+                            error: None,
+                            logs: vec![],
+                            timestamp: ts,
+                            updated_at: ts,
+                        });
                     }
                     _ => {}
                 }
@@ -138,76 +227,156 @@ fn append_assistant_content(target: &mut AssistantDisplay, content: &Content) {
     }
 }
 
-/// 渲染用户消息 HTML，关联检查点信息以支持撤回按钮
-fn render_user_message(
-    history: &mut String,
-    message: &UserDisplayMessage,
-    checkpoint_info: Option<&CheckpointRollbackInfo>,
-) {
+fn append_tool_result(target: &mut AgentTurnSnapshot, tool_use_id: &str, content: &str, timestamp: u64) {
+    if let Some(tool) = target.tool_calls.iter_mut().find(|t| t.id == tool_use_id) {
+        tool.status = "completed".to_string();
+        tool.output_summary = Some(format!("`
+{}
+`", content.trim()));
+        tool.updated_at = timestamp;
+    }
+}
+
+
+fn build_linked_rollbacks(session_id: &str) -> HashMap<usize, RollbackInfo> {
+    crate::core::db::list_checkpoint_user_message_links(session_id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|link| link.has_file_edits && !link.checkpoint_id.is_empty())
+        .map(|link| {
+            (
+                link.user_message_index,
+                RollbackInfo {
+                    checkpoint_id: link.checkpoint_id,
+                    has_file_edits: true,
+                },
+            )
+        })
+        .collect()
+}
+
+fn parse_snapshot_usize(snapshot: &crate::core::rollback::Snapshot, key: &str) -> Option<usize> {
+    snapshot
+        .metadata
+        .get(key)
+        .and_then(|value| value.parse::<usize>().ok())
+}
+
+fn find_rollback_info(
+    linked_rollbacks: &HashMap<usize, RollbackInfo>,
+    metadata_rollbacks: &[(usize, u64, String)],
+    memory_index: usize,
+) -> Option<RollbackInfo> {
+    if let Some(info) = linked_rollbacks.get(&memory_index) {
+        return Some(info.clone());
+    }
+
+    metadata_rollbacks
+        .iter()
+        .filter(|(trigger_index, _, _)| *trigger_index >= memory_index)
+        .min_by_key(|(trigger_index, created_at, _)| (*trigger_index, *created_at))
+        .map(|(_, _, id)| RollbackInfo {
+            checkpoint_id: id.clone(),
+            has_file_edits: true,
+        })
+}
+
+/// 渲染用户消息 HTML，撤回按钮由前端统一补齐
+fn render_user_message(history: &mut String, message: &UserDisplayMessage) {
     let display = &message.display;
     if display.trim().is_empty() {
         return;
     }
 
-    let cp_attr = checkpoint_info
-        .map(|info| format!(" data-checkpoint-id=\"{}\"", info.id))
-        .unwrap_or_default();
-    let cp_id = checkpoint_info
-        .map(|info| info.id.as_str())
-        .unwrap_or_default();
-    let has_operations = checkpoint_info
-        .map(|info| info.has_operations_after)
-        .unwrap_or(false);
-    let btn_title = if has_operations {
-        "撤回此消息及操作"
+    let rollback_mode = if message
+        .rollback_info
+        .as_ref()
+        .map(|info| info.has_file_edits)
+        .unwrap_or(false)
+    {
+        "both"
     } else {
-        "撤回此消息"
+        "session"
     };
-    let btn_html = format!(
-        "<button class=\"rollback-trigger\" data-cp-id=\"{}\" data-has-operations=\"{}\" title=\"{}\"></button>",
-        cp_id, has_operations, btn_title
-    );
+    let rollback_checkpoint_id = message
+        .rollback_info
+        .as_ref()
+        .map(|info| info.checkpoint_id.as_str())
+        .unwrap_or("");
+
     history.push_str(&format!(
-        "<div class=\"chat-message user-message\" style=\"position: relative;\"><div class=\"message-content\"{} data-user-message-index=\"{}\">\n\n{}\n\n</div>{}</div>\n\n",
-        cp_attr, message.memory_index, display, btn_html
+        "<div class=\"chat-message user-message\" style=\"position: relative;\"><div class=\"message-content\" data-user-message-index=\"{}\" data-rollback-mode=\"{}\" data-rollback-checkpoint-id=\"{}\">\n\n{}\n\n</div></div>\n\n",
+        message.memory_index, rollback_mode, rollback_checkpoint_id, display
     ));
 }
 
 /// 渲染助手消息 HTML，思考过程用 details 折叠，取最后一段非空文本作为可见回复
-fn render_assistant_message(history: &mut String, assistant: &AssistantDisplay) {
+
+fn render_assistant_message(history: &mut String, assistant: &mut AgentTurnSnapshot) {
     if assistant.is_empty() {
         return;
     }
 
-    // 取最后一段非空文本作为最终回复（早期会话每个 agent loop 一条助手消息）
+    assistant.status = "FINISH".to_string();
+    assistant.version = 1;
+    if assistant.created_at == 0 {
+        assistant.created_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    }
+
+    let json_data = serde_json::to_string(assistant).unwrap_or_default().replace("<", "\u003c");
+
+    // Fetch the final visible text for fallback
     let final_text = assistant
-        .text_parts
-        .iter()
-        .rev()
-        .find(|s| !s.trim().is_empty())
-        .map(|s| s.trim())
+        .text_blocks
+        .last()
+        .map(|b| b.content.as_str())
         .unwrap_or("");
     let visible_text = if final_text.is_empty() {
-        assistant.thinking.trim()
+        assistant.thinking_blocks.last().map(|b| b.content.as_str()).unwrap_or("")
     } else {
         final_text
     };
 
     history
-        .push_str("<div class=\"chat-message agent-message\"><div class=\"message-content\">\n\n");
+        .push_str("<div class=\"chat-message agent-message\"><div class=\"message-content current-turn-content\">
 
-    if !assistant.thinking.trim().is_empty() {
+");
+
+    history.push_str(&format!(
+        "<script type=\"application/json\" class=\"agent-turn-data\">{}</script>
+",
+        json_data
+    ));
+
+    // Fallback rendering
+    if !assistant.thinking_blocks.is_empty() {
+        let thinking_all = assistant.thinking_blocks.iter().map(|b| b.content.as_str()).collect::<Vec<_>>().join("
+
+");
         history.push_str(&format!(
-            "\n\n<details><summary><svg viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\" style=\"vertical-align: text-bottom; margin-right: 4px;\"><circle cx=\"12\" cy=\"12\" r=\"3\"></circle><path d=\"M12 2v3\"></path><path d=\"M12 19v3\"></path><path d=\"M4.93 4.93l2.12 2.12\"></path><path d=\"M16.95 16.95l2.12 2.12\"></path><path d=\"M2 12h3\"></path><path d=\"M19 12h3\"></path><path d=\"M4.93 19.07l2.12-2.12\"></path><path d=\"M16.95 7.05l2.12-2.12\"></path></svg> 贾维斯已完成思考与操作（点击查看完整决策链）</summary>\n\n{}\n\n</details>\n\n",
-            assistant.thinking
+            "
+
+<details><summary><svg viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\" style=\"vertical-align: text-bottom; margin-right: 4px;\"><circle cx=\"12\" cy=\"12\" r=\"3\"></circle><path d=\"M12 2v3\"></path><path d=\"M12 19v3\"></path><path d=\"M4.93 4.93l2.12 2.12\"></path><path d=\"M16.95 16.95l2.12 2.12\"></path><path d=\"M2 12h3\"></path><path d=\"M19 12h3\"></path><path d=\"M4.93 19.07l2.12-2.12\"></path><path d=\"M16.95 7.05l2.12-2.12\"></path></svg> 贾维斯已完成思考与操作（点击查看完整决策链）</summary>
+
+{}
+
+</details>
+
+",
+            thinking_all
         ));
     }
 
     if !visible_text.is_empty() {
         history.push_str(visible_text);
     }
-    history.push_str("\n\n</div></div>\n\n");
+    history.push_str("
+
+</div></div>
+
+");
 }
+
 
 #[tauri::command]
 pub async fn get_session_history(
@@ -268,24 +437,27 @@ pub async fn get_session_history(
         return Ok(String::new());
     }
 
-    let manager = registry.0.read().await.get_or_create(&session_id).await?;
-    let snapshots = manager.list_snapshots(None).await;
-    let checkpoints: Vec<Checkpoint> = snapshots
-        .iter()
-        .filter(|s| s.is_checkpoint)
-        .map(|s| Checkpoint {
-            id: s.id.clone(),
-            session_id: session_id.clone(),
-            parent_id: s.parent_id.clone(),
-            branch_name: s.branch_name.clone(),
-            agent_id: s.agent_id.clone(),
-            workspace_id: s.workspace_id.clone(),
-            created_at: s.created_at,
-            trigger_message: s.message.clone().unwrap_or_default(),
-            operations: vec![],
-            metadata: s.metadata.clone(),
-        })
-        .collect();
+    let linked_rollbacks = build_linked_rollbacks(&session_id);
+    let metadata_rollbacks = {
+        let manager = registry.0.read().await.get_or_create(&session_id).await?;
+        let mut items = manager
+            .list_snapshots(None)
+            .await
+            .into_iter()
+            .filter(|snapshot| snapshot.is_checkpoint)
+            .filter_map(|snapshot| {
+                let trigger_index = parse_snapshot_usize(&snapshot, "trigger_user_memory_index")?;
+                let patch_count = parse_snapshot_usize(&snapshot, "patch_count").unwrap_or(0);
+                if patch_count == 0 {
+                    return None;
+                }
+                Some((trigger_index, snapshot.created_at, snapshot.id))
+            })
+            .collect::<Vec<_>>();
+        items.sort_by_key(|(trigger_index, created_at, _)| (*trigger_index, *created_at));
+        items
+    };
+
     let display_messages = memory
         .messages
         .iter()
@@ -297,6 +469,11 @@ pub async fn get_session_history(
                     return Some(UserDisplayMessage {
                         memory_index,
                         display,
+                        rollback_info: find_rollback_info(
+                            &linked_rollbacks,
+                            &metadata_rollbacks,
+                            memory_index,
+                        ),
                     });
                 }
             }
@@ -304,37 +481,28 @@ pub async fn get_session_history(
         })
         .collect::<Vec<_>>();
 
-    let mut checkpoint_by_user_index = std::collections::HashMap::new();
-    for checkpoint in &checkpoints {
-        let trigger_index = display_messages.iter().position(|message| {
-            checkpoint_matches_user_message(&checkpoint.trigger_message, &message.display)
-        });
-        if let Some(index) = trigger_index {
-            let target_index = index.saturating_sub(1);
-            let has_operations_after = !checkpoint.operations.is_empty()
-                || checkpoints.iter().any(|candidate| {
-                    candidate.created_at > checkpoint.created_at && !candidate.operations.is_empty()
-                });
-            let entry = checkpoint_by_user_index
-                .entry(target_index)
-                .or_insert_with(|| CheckpointRollbackInfo {
-                    id: checkpoint.id.clone(),
-                    has_operations_after,
-                });
-            if has_operations_after {
-                entry.has_operations_after = true;
-            }
-        }
-    }
 
     let mut history = String::new();
-    let mut pending_assistant = AssistantDisplay::default();
+    let mut pending_assistant = AgentTurnSnapshot::default();
     let mut visible_user_index = 0usize;
+    let mut loop_idx = 1;
+    let mut current_ts = 1000u64;
 
     for msg in &memory.messages {
+        current_ts += 1;
         match msg {
             Message::User { content } => {
                 let display = user_display_content(content);
+                
+                // Process ToolResults inside User messages before checking if we should skip
+                if let Content::Multiple(blocks) = content {
+                    for block in blocks {
+                        if let ContentBlock::ToolResult { tool_use_id, content: res_content } = block {
+                            append_tool_result(&mut pending_assistant, tool_use_id, res_content, current_ts);
+                        }
+                    }
+                }
+
                 if is_internal_user_text(&display) {
                     continue;
                 }
@@ -342,13 +510,26 @@ pub async fn get_session_history(
                     continue;
                 };
 
-                render_assistant_message(&mut history, &pending_assistant);
+                render_assistant_message(&mut history, &mut pending_assistant);
+                pending_assistant = AgentTurnSnapshot::default();
+                loop_idx = 1;
+                render_user_message(&mut history, message);
+                visible_user_index += 1;
+            }
+            Message::Assistant { content } => {
+                if is_internal_assistant_message(content) {
+                    continue;
+                }
+                append_assistant_content(&mut pending_assistant, content, loop_idx, current_ts);
+                loop_idx += 1;
+            }
+        }
+    }
+
+    render_assistant_message(&mut history, &mut pending_assistant);
+
                 pending_assistant = AssistantDisplay::default();
-                render_user_message(
-                    &mut history,
-                    message,
-                    checkpoint_by_user_index.get(&visible_user_index),
-                );
+                render_user_message(&mut history, message);
                 visible_user_index += 1;
             }
             Message::Assistant { content } => {

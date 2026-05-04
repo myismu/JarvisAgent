@@ -230,6 +230,16 @@ pub async fn get_checkpoint_tree(
     })
 }
 
+fn checkpoint_id_for_user_message(session_id: &str, user_message_index: Option<usize>) -> Option<String> {
+    user_message_index.and_then(|index| {
+        crate::core::db::find_checkpoint_user_message_link(session_id, index)
+            .ok()
+            .flatten()
+            .filter(|link| link.has_file_edits && !link.checkpoint_id.is_empty())
+            .map(|link| link.checkpoint_id)
+    })
+}
+
 /// 回滚到指定检查点：可选恢复文件、截断消息历史、清理后续元数据
 ///
 /// 支持"向前追溯"：当 checkpoint_id 为空或指向纯聊天轮次（无实快照）时，
@@ -355,6 +365,8 @@ pub async fn rollback_to_checkpoint_with_recall(
     // 决定实际用于文件回滚的快照 ID
     let effective_checkpoint_id = if !checkpoint_id.is_empty() {
         Some(checkpoint_id.clone())
+    } else if let Some(id) = checkpoint_id_for_user_message(&session_id, user_message_index) {
+        Some(id)
     } else {
         let mgr = registry.0.read().await.get_or_create(&session_id).await?;
         mgr.find_nearest_checkpoint_before().await
@@ -534,6 +546,26 @@ pub async fn get_active_branch(
         .ok_or_else(|| "无活跃分支".to_string())
 }
 
+fn find_user_message_index_by_display(
+    session: &crate::core::models::SessionMemory,
+    trigger_message: &str,
+) -> Option<usize> {
+    session
+        .messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, message)| {
+            if let crate::core::models::Message::User { content } = message {
+                let text = message_text(content);
+                if checkpoint_matches_user_message(trigger_message, &text) {
+                    return Some(index);
+                }
+            }
+            None
+        })
+}
+
 /// 手动提交检查点（创建显式 checkpoint 快照）
 #[tauri::command]
 pub async fn commit_checkpoint(
@@ -544,8 +576,11 @@ pub async fn commit_checkpoint(
     registry: tauri::State<'_, SnapshotRegistry>,
 ) -> Result<Checkpoint, String> {
     let manager = registry.0.read().await.get_or_create(&session_id).await?;
+    let trigger_user_memory_index = crate::core::session::load_session(&session_id)
+        .ok()
+        .and_then(|session| find_user_message_index_by_display(&session, &trigger_message));
     let snapshot = manager
-        .create_checkpoint_snapshot(Some(trigger_message), None, None)
+        .create_checkpoint_snapshot(Some(trigger_message), None, None, trigger_user_memory_index)
         .await?;
     Ok(snapshot_to_checkpoint(&session_id, &snapshot, vec![]))
 }

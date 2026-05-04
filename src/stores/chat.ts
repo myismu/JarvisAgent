@@ -511,34 +511,6 @@ export const useChatStore = defineStore("chat", () => {
       }
       requestView.lastUserMessage = msg;
 
-      const checkpoint = requestView.latestCheckpoint as {
-        id: string;
-        hasOperations: boolean;
-        hasPatches: boolean;
-        canRollback: boolean;
-      } | null;
-      const hasPatches = Boolean(checkpoint?.hasPatches);
-      const canRollback = Boolean(checkpoint?.canRollback);
-      const cpId = hasPatches && checkpoint ? checkpoint.id : "";
-      const btnTitle = hasPatches
-        ? "撤回此消息及操作"
-        : canRollback
-          ? "撤回此消息"
-          : "撤回此消息";
-      const btnHtml = `<button class="rollback-trigger" data-cp-id="${cpId}" data-has-operations="${hasPatches}" title="${btnTitle}"></button>`;
-      const lastIdx = requestView.jarvisResponse.lastIndexOf('<div class="chat-message user-message"');
-      if (lastIdx !== -1) {
-        const closeIdx = requestView.jarvisResponse.indexOf("</div></div>\n\n", lastIdx);
-        if (closeIdx !== -1) {
-          requestView.jarvisResponse =
-            requestView.jarvisResponse.slice(0, lastIdx) +
-            requestView.jarvisResponse.slice(lastIdx, closeIdx) +
-            btnHtml +
-            requestView.jarvisResponse.slice(closeIdx);
-        }
-      }
-      requestView.latestCheckpoint = null;
-
       if (res.status === "CANCELLED") {
         if (!requestView.cancelHandled) {
           const cancellationFallback = res.content && res.content !== "用户已取消执行。" ? res.content : "";
@@ -567,6 +539,7 @@ export const useChatStore = defineStore("chat", () => {
             session.appendSessionHistory(sessionIdAtStart, partialResponse);
             parsedCurrentTurnHtml.value = "";
           }
+          requestView.latestCheckpoint = null;
           session.clearSessionBuffers(sessionIdAtStart);
           resetRenderState();
           requestView.lastUserMessage = msg;
@@ -599,6 +572,7 @@ export const useChatStore = defineStore("chat", () => {
             sessionOutput: res.session_output_tokens || 0,
           },
         );
+        requestView.latestCheckpoint = null;
         session.clearSessionBuffers(sessionIdAtStart);
         session.appendSessionHistory(sessionIdAtStart, clarificationResponse);
         resetRenderState();
@@ -627,6 +601,7 @@ export const useChatStore = defineStore("chat", () => {
         },
       );
 
+      requestView.latestCheckpoint = null;
       session.appendSessionHistory(sessionIdAtStart, agentResponse);
       session.clearSessionBuffers(sessionIdAtStart);
       resetRenderState();
@@ -648,19 +623,6 @@ export const useChatStore = defineStore("chat", () => {
     } catch (err) {
       session.clearSessionBuffers(sessionIdAtStart);
       resetRenderState();
-
-      const btnHtml = `<button class="rollback-trigger" data-cp-id="" data-has-operations="false" title="撤回此消息"></button>`;
-      const lastErrIdx = requestView.jarvisResponse.lastIndexOf('<div class="chat-message user-message"');
-      if (lastErrIdx !== -1) {
-        const closeErrIdx = requestView.jarvisResponse.indexOf("</div></div>\n\n", lastErrIdx);
-        if (closeErrIdx !== -1) {
-          requestView.jarvisResponse =
-            requestView.jarvisResponse.slice(0, lastErrIdx) +
-            requestView.jarvisResponse.slice(lastErrIdx, closeErrIdx) +
-            btnHtml +
-            requestView.jarvisResponse.slice(closeErrIdx);
-        }
-      }
 
       session.appendSessionHistory(sessionIdAtStart, `\n\n**Error:** ${err}`);
       requestView.showRecallEdit = true;

@@ -297,10 +297,10 @@ impl SnapshotTree {
 
         while let Some(id) = current_id {
             if let Some(snapshot) = self.nodes.get(&id) {
+                count += snapshot.patches.len();
                 if snapshot.is_checkpoint {
                     break;
                 }
-                count += snapshot.patches.len();
                 current_id = snapshot.parent_id.clone();
             } else {
                 break;

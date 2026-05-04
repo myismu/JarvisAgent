@@ -17,7 +17,7 @@
 
 pub mod schema;
 
-use rusqlite::{Connection, Transaction};
+use rusqlite::{params, Connection, Transaction};
 use std::sync::{Mutex, OnceLock};
 
 static DB: OnceLock<Mutex<Connection>> = OnceLock::new();
@@ -63,6 +63,121 @@ where
     let result = f(&tx)?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(result)
+}
+
+#[derive(Debug, Clone)]
+pub struct CheckpointUserMessageLink {
+    pub user_message_index: usize,
+    pub checkpoint_id: String,
+    pub has_file_edits: bool,
+    pub created_at: u64,
+}
+
+pub fn upsert_checkpoint_user_message_link(
+    session_id: &str,
+    user_message_index: usize,
+    checkpoint_id: &str,
+    has_file_edits: bool,
+    created_at: u64,
+) -> Result<(), String> {
+    with_connection(|conn| {
+        conn.execute(
+            "INSERT INTO checkpoint_user_message_links(
+                session_id, user_message_index, checkpoint_id, has_file_edits, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(session_id, user_message_index) DO UPDATE SET
+                checkpoint_id = excluded.checkpoint_id,
+                has_file_edits = excluded.has_file_edits,
+                created_at = excluded.created_at",
+            params![
+                session_id,
+                user_message_index as i64,
+                checkpoint_id,
+                if has_file_edits { 1 } else { 0 },
+                created_at as i64,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+pub fn list_checkpoint_user_message_links(
+    session_id: &str,
+) -> Result<Vec<CheckpointUserMessageLink>, String> {
+    with_connection(|conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT user_message_index, checkpoint_id, has_file_edits, created_at
+                 FROM checkpoint_user_message_links
+                 WHERE session_id = ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([session_id], |row| {
+                let index: i64 = row.get(0)?;
+                let has_file_edits: i64 = row.get(2)?;
+                let created_at: i64 = row.get(3)?;
+                Ok(CheckpointUserMessageLink {
+                    user_message_index: index.max(0) as usize,
+                    checkpoint_id: row.get(1)?,
+                    has_file_edits: has_file_edits != 0,
+                    created_at: created_at.max(0) as u64,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+
+        let mut links = Vec::new();
+        for row in rows {
+            links.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(links)
+    })
+}
+
+pub fn find_checkpoint_user_message_link(
+    session_id: &str,
+    user_message_index: usize,
+) -> Result<Option<CheckpointUserMessageLink>, String> {
+    with_connection(|conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT user_message_index, checkpoint_id, has_file_edits, created_at
+                 FROM checkpoint_user_message_links
+                 WHERE session_id = ?1 AND user_message_index = ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query(params![session_id, user_message_index as i64])
+            .map_err(|e| e.to_string())?;
+
+        if let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let index: i64 = row.get(0).map_err(|e| e.to_string())?;
+            let has_file_edits: i64 = row.get(2).map_err(|e| e.to_string())?;
+            let created_at: i64 = row.get(3).map_err(|e| e.to_string())?;
+            return Ok(Some(CheckpointUserMessageLink {
+                user_message_index: index.max(0) as usize,
+                checkpoint_id: row.get(1).map_err(|e| e.to_string())?,
+                has_file_edits: has_file_edits != 0,
+                created_at: created_at.max(0) as u64,
+            }));
+        }
+        Ok(None)
+    })
+}
+
+pub fn delete_checkpoint_user_message_link_by_checkpoint(
+    session_id: &str,
+    checkpoint_id: &str,
+) -> Result<(), String> {
+    with_connection(|conn| {
+        conn.execute(
+            "DELETE FROM checkpoint_user_message_links WHERE session_id = ?1 AND checkpoint_id = ?2",
+            params![session_id, checkpoint_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
 }
 
 fn configure_connection(conn: &Connection) -> Result<(), String> {

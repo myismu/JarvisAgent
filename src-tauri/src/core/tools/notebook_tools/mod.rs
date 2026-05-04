@@ -11,6 +11,7 @@ use tauri::{Emitter, Manager};
 
 use super::framework::permission::ensure_path_permission;
 use super::framework::registry::ToolDef;
+use crate::core::models::Message;
 use crate::core::rollback::Patch;
 use crate::core::SnapshotRegistry;
 
@@ -32,6 +33,27 @@ async fn get_workspace(app: &tauri::AppHandle, session_id: &str) -> Option<PathB
     None
 }
 
+fn latest_user_message_index(messages: &[Message]) -> Option<usize> {
+    messages.iter().enumerate().rev().find_map(|(index, message)| {
+        if matches!(message, Message::User { .. }) {
+            Some(index)
+        } else {
+            None
+        }
+    })
+}
+
+async fn active_user_message_index(app: &tauri::AppHandle, session_id: &str) -> Option<usize> {
+    if let Some(manager) = app.try_state::<crate::core::state::SessionManager>() {
+        let ctx = manager.get_or_create(session_id).await;
+        let session = ctx.memory.lock().await;
+        return latest_user_message_index(&session.messages);
+    }
+    crate::core::session::load_session(session_id)
+        .ok()
+        .and_then(|session| latest_user_message_index(&session.messages))
+}
+
 async fn record_patch_to_snapshot(
     app: &tauri::AppHandle,
     session_id: &str,
@@ -41,8 +63,9 @@ async fn record_patch_to_snapshot(
     if let Some(registry) = app.try_state::<SnapshotRegistry>() {
         let mgr_result = registry.0.read().await.get_or_create(session_id).await;
         if let Ok(mgr) = mgr_result {
+            let trigger_user_memory_index = active_user_message_index(app, session_id).await;
             if let Ok(snapshot) = mgr
-                .create_snapshot(vec![patch], message, None, None, None)
+                .create_snapshot(vec![patch], message, None, None, None, trigger_user_memory_index)
                 .await
             {
                 let _ = app.emit(

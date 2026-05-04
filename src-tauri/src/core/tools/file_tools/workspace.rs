@@ -13,6 +13,7 @@
 
 use tauri::{Emitter, Manager};
 
+use crate::core::models::Message;
 use crate::core::rollback::Patch;
 use crate::core::SnapshotRegistry;
 
@@ -29,6 +30,42 @@ pub(super) async fn get_workspace(
     None
 }
 
+/// 查找最后一条"真正的用户输入"消息（跳过工具结果等内部消息）
+fn latest_user_message_index(messages: &[Message]) -> Option<usize> {
+    use crate::core::models::{Content, ContentBlock};
+
+    messages.iter().enumerate().rev().find_map(|(index, message)| {
+        if let Message::User { content } = message {
+            // 跳过仅包含 ToolResult 的内部消息
+            let is_tool_result_only = match content {
+                Content::Multiple(blocks) => blocks.iter().all(|b| matches!(b, ContentBlock::ToolResult { .. })),
+                Content::Single(text) => {
+                    // 跳过后台通知消息
+                    let trimmed = text.trim();
+                    trimmed.starts_with("<background-results>") || trimmed.starts_with("<background-results")
+                }
+            };
+            if is_tool_result_only {
+                return None;
+            }
+            Some(index)
+        } else {
+            None
+        }
+    })
+}
+
+async fn active_user_message_index(app: &tauri::AppHandle, session_id: &str) -> Option<usize> {
+    if let Some(manager) = app.try_state::<crate::core::state::SessionManager>() {
+        let ctx = manager.get_or_create(session_id).await;
+        let session = ctx.memory.lock().await;
+        return latest_user_message_index(&session.messages);
+    }
+    crate::core::session::load_session(session_id)
+        .ok()
+        .and_then(|session| latest_user_message_index(&session.messages))
+}
+
 /// 将文件变更记录为快照
 pub(super) async fn record_patch_to_snapshot(
     app: &tauri::AppHandle,
@@ -40,8 +77,9 @@ pub(super) async fn record_patch_to_snapshot(
     if let Some(registry) = app.try_state::<SnapshotRegistry>() {
         let mgr_result = registry.0.read().await.get_or_create(&sid).await;
         if let Ok(mgr) = mgr_result {
+            let trigger_user_memory_index = active_user_message_index(app, sid).await;
             let result = mgr
-                .create_snapshot(vec![patch], message, None, None, None)
+                .create_snapshot(vec![patch], message, None, None, None, trigger_user_memory_index)
                 .await;
             if let Ok(snapshot) = result {
                 let _ = app.emit(
@@ -75,12 +113,13 @@ pub async fn commit_checkpoint_snapshot(
     app: &tauri::AppHandle,
     session_id: &str,
     message: String,
+    trigger_user_memory_index: Option<usize>,
 ) -> Option<String> {
     if let Some(registry) = app.try_state::<SnapshotRegistry>() {
         let mgr_result = registry.0.read().await.get_or_create(session_id).await;
         if let Ok(mgr) = mgr_result {
             let result = mgr
-                .create_checkpoint_snapshot(Some(message), None, None)
+                .create_checkpoint_snapshot(Some(message), None, None, trigger_user_memory_index)
                 .await;
             if let Ok(snapshot) = result {
                 let snapshot_id = snapshot.id.clone();

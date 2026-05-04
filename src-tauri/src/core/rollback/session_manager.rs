@@ -78,13 +78,14 @@ impl SessionSnapshotManager {
         agent_id: Option<String>,
         workspace_id: Option<String>,
         _target_dir: Option<PathBuf>,
+        trigger_user_memory_index: Option<usize>,
     ) -> Result<Snapshot, String> {
         let mut tree = self.tree.write().await;
 
         // 检查是否需要创建 checkpoint（基于快照数量阈值）
         let is_checkpoint = tree.should_create_checkpoint();
 
-        let snapshot = tree.create_snapshot(
+        let mut snapshot = tree.create_snapshot(
             patches.clone(),
             message.clone(),
             agent_id,
@@ -92,6 +93,18 @@ impl SessionSnapshotManager {
             is_checkpoint,
             None,
         );
+
+        if let Some(index) = trigger_user_memory_index {
+            snapshot
+                .metadata
+                .insert("trigger_user_memory_index".to_string(), index.to_string());
+        }
+
+        // 将 metadata 同步回 tree.nodes（create_snapshot 返回的是 clone 前的原始对象，
+        // tree.nodes 中存的是 metadata 为空的旧副本，必须手动同步）
+        if let Some(node) = tree.nodes.get_mut(&snapshot.id) {
+            node.metadata = snapshot.metadata.clone();
+        }
 
         if is_checkpoint {
             let workspace = self
@@ -127,6 +140,16 @@ impl SessionSnapshotManager {
         self.store
             .save_tree(&tree)
             .map_err(|e| format!("保存树失败: {}", e))?;
+        if let Some(index) = trigger_user_memory_index {
+            crate::core::db::upsert_checkpoint_user_message_link(
+                &self.session_id,
+                index,
+                &snapshot.id,
+                !patches.is_empty(),
+                snapshot.created_at,
+            )
+            .map_err(|e| format!("写入消息快照关联失败: {}", e))?;
+        }
         crate::core::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
 
         let mut journal = self.journal.write().await;
@@ -160,6 +183,7 @@ impl SessionSnapshotManager {
         message: Option<String>,
         agent_id: Option<String>,
         workspace_id: Option<String>,
+        trigger_user_memory_index: Option<usize>,
     ) -> Result<Snapshot, String> {
         let mut tree = self.tree.write().await;
 
@@ -173,6 +197,17 @@ impl SessionSnapshotManager {
             None,
         );
         snapshot.metadata.insert("patch_count".to_string(), patch_count.to_string());
+        if let Some(index) = trigger_user_memory_index {
+            snapshot
+                .metadata
+                .insert("trigger_user_memory_index".to_string(), index.to_string());
+        }
+
+        // 将 metadata 同步回 tree.nodes（create_snapshot 返回的是 clone 前的原始对象，
+        // tree.nodes 中存的是 metadata 为空的旧副本，必须手动同步）
+        if let Some(node) = tree.nodes.get_mut(&snapshot.id) {
+            node.metadata = snapshot.metadata.clone();
+        }
 
         let workspace = self
             .replay_engine
@@ -206,6 +241,16 @@ impl SessionSnapshotManager {
         self.store
             .save_tree(&tree)
             .map_err(|e| format!("保存树失败: {}", e))?;
+        if let Some(index) = trigger_user_memory_index {
+            crate::core::db::upsert_checkpoint_user_message_link(
+                &self.session_id,
+                index,
+                &snapshot.id,
+                patch_count > 0,
+                snapshot.created_at,
+            )
+            .map_err(|e| format!("写入消息快照关联失败: {}", e))?;
+        }
         crate::core::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
 
         let mut journal = self.journal.write().await;

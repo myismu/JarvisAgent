@@ -8,7 +8,7 @@ import { invoke } from '@tauri-apps/api/core';
 import ConfirmModal from '../common/ConfirmModal.vue';
 import AgentTurn from './AgentTurn.vue';
 import WelcomeScreen from './WelcomeScreen.vue';
-import type { PlanDocument, Snapshot } from '../../types';
+import type { PlanDocument } from '../../types';
 
 interface RollbackRecallResult {
   restoredFiles: string[];
@@ -84,6 +84,7 @@ const rollbackMenu = ref<{
   snapshotId: string | null;
   hasOperations: boolean;
   userMessageIndex: number | null;
+  fallbackSnapshotId: string;
 }>({
   visible: false,
   x: 0,
@@ -91,17 +92,64 @@ const rollbackMenu = ref<{
   snapshotId: null,
   hasOperations: false,
   userMessageIndex: null,
+  fallbackSnapshotId: '',
 });
 
 const rollbackLoading = ref(false);
 const rollbackConfirm = ref<{
   mode: 'both' | 'session';
   snapshotId: string;
+  fallbackSnapshotId: string;
   userMessageIndex: number | null;
   title: string;
   message: string;
   warning?: string;
 } | null>(null);
+
+function ensureRollbackButtons() {
+  const root = responseAreaRef.value?.querySelector('.history-html');
+  if (!root) return;
+
+  root.querySelectorAll('.user-message').forEach((messageEl, index) => {
+    const existingButtons = Array.from(messageEl.querySelectorAll('.rollback-trigger'));
+    existingButtons.slice(1).forEach((button) => button.remove());
+
+    const contentEl = messageEl.querySelector('.message-content');
+    if (contentEl && !contentEl.getAttribute('data-user-message-index')) {
+      contentEl.setAttribute('data-user-message-index', String(index));
+    }
+
+    // 从后端渲染的 message-content 属性中读取回滚信息
+    const rollbackMode = contentEl?.getAttribute('data-rollback-mode') || 'session';
+    const rollbackCheckpointId = contentEl?.getAttribute('data-rollback-checkpoint-id') || '';
+    const hasOps = rollbackMode === 'both';
+
+    if (existingButtons.length > 0) {
+      // 已有按钮时同步最新的回滚属性（后端刷新历史后属性可能更新）
+      const existingBtn = existingButtons[0] as HTMLElement;
+      existingBtn.setAttribute('data-cp-id', rollbackCheckpointId);
+      existingBtn.setAttribute('data-has-operations', hasOps ? 'true' : 'false');
+      return;
+    }
+
+    const button = document.createElement('button');
+    button.className = 'rollback-trigger';
+    button.setAttribute('data-cp-id', rollbackCheckpointId);
+    button.setAttribute('data-has-operations', hasOps ? 'true' : 'false');
+    button.setAttribute('data-latest-snapshot-id', '');
+    button.setAttribute('title', '撤回此消息');
+    messageEl.appendChild(button);
+  });
+}
+
+watch(
+  () => chat.parsedHistory,
+  async () => {
+    await nextTick();
+    ensureRollbackButtons();
+  },
+  { immediate: true, flush: 'post' }
+);
 
 const displayWorkingDir = computed(() => {
   if (!session.workingDirectory) return null;
@@ -203,6 +251,7 @@ const handleContextMenu = (e: MouseEvent) => {
     snapshotId,
     hasOperations: false,
     userMessageIndex: null,
+    fallbackSnapshotId: '',
   };
 };
 
@@ -211,52 +260,26 @@ const handleRollbackClick = async (e: MouseEvent) => {
   const target = e.target as HTMLElement;
   const btn = target.closest('.rollback-trigger');
   if (!btn) return;
-  const cpId = btn.getAttribute('data-cp-id');
-  const fallbackHasOperations = btn.getAttribute('data-has-operations') === 'true';
   const userMessageEl = btn.closest('.user-message');
-  const userMessageIndexAttr = userMessageEl?.querySelector('.message-content')?.getAttribute('data-user-message-index');
+  const contentEl = userMessageEl?.querySelector('.message-content');
+  const userMessageIndexAttr = contentEl?.getAttribute('data-user-message-index');
   const userMessageIndex = userMessageIndexAttr ? Number(userMessageIndexAttr) : null;
   const rollbackTarget = Number.isInteger(userMessageIndex) ? userMessageIndex : null;
-
-  if (!cpId) {
-    // 纯聊天轮次：没有自己的 checkpointId，但可能之后的轮次有快照
-    // 检查是否有更早的 checkpoint 可以向前追溯
-    const hasPriorCheckpoint = await checkPriorCheckpointExists();
-    if (hasPriorCheckpoint) {
-      // 有更早的实快照，可以提供"会话和代码撤回"选项
-      const position = getRollbackMenuPosition(e.clientX, e.clientY, true);
-      rollbackMenu.value = {
-        visible: true,
-        x: position.left,
-        y: position.top,
-        snapshotId: '',
-        hasOperations: true,
-        userMessageIndex: rollbackTarget,
-      };
-    } else {
-      // 没有任何快照，仅能撤回会话
-      rollbackConfirm.value = {
-        mode: 'session',
-        snapshotId: '',
-        userMessageIndex: rollbackTarget,
-        title: '确认撤回',
-        message: '此操作没有相关联的文件检查点，仅会撤回此消息记录。确定要撤回并重新编辑吗？',
-        warning: '',
-      };
-    }
-    return;
-  }
-
-  const hasOperations = await getRollbackHasOperations(cpId, fallbackHasOperations);
+  const rollbackMode = contentEl?.getAttribute('data-rollback-mode') || 'session';
+  const rollbackCheckpointId = contentEl?.getAttribute('data-rollback-checkpoint-id') || '';
+  // rollbackMode 为 'both' 表示该消息或其后的消息产生了文件编辑，
+  // 即使 checkpointId 为空（纯聊天轮次），后端也能向前追溯找到最近的快照来回滚。
+  const hasOperations = rollbackMode === 'both';
   const position = getRollbackMenuPosition(e.clientX, e.clientY, hasOperations);
 
   rollbackMenu.value = {
     visible: true,
     x: position.left,
     y: position.top,
-    snapshotId: cpId,
+    snapshotId: rollbackCheckpointId,
     hasOperations,
     userMessageIndex: rollbackTarget,
+    fallbackSnapshotId: '',
   };
 };
 
@@ -399,51 +422,12 @@ const getRollbackMenuPosition = (x: number, y: number, hasOperations: boolean) =
   return { left, top };
 };
 
-const getRollbackHasOperations = async (checkpointId: string, fallback: boolean) => {
-  try {
-    const sessionId = session.activeSessionId;
-    if (!sessionId) return fallback;
-
-    const snapshots = await invoke<Snapshot[]>('snapshot_list', {
-      sessionId,
-      branchName: null,
-    });
-    const target = snapshots.find((s) => s.id === checkpointId);
-    if (!target) return fallback;
-
-    // 检查从目标快照之后是否有任何补丁（文件变更）
-    return snapshots.some((s) => {
-      if (s.createdAt <= target.createdAt) return false;
-      return s.patches.length > 0;
-    });
-  } catch (err) {
-    console.error('获取撤回操作信息失败:', err);
-    return fallback;
-  }
-};
-
-/// 检查当前会话是否有任何 checkpoint 快照（用于纯聊天轮次的向前追溯判断）
-const checkPriorCheckpointExists = async (): Promise<boolean> => {
-  try {
-    const sessionId = session.activeSessionId;
-    if (!sessionId) return false;
-
-    const snapshots = await invoke<Snapshot[]>('snapshot_list', {
-      sessionId,
-      branchName: null,
-    });
-    return snapshots.some((s) => s.isCheckpoint);
-  } catch (err) {
-    console.error('检查快照存在失败:', err);
-    return false;
-  }
-};
-
 const executeRollback = (mode: 'both' | 'session') => {
   // snapshotId 可能为空（纯聊天轮次），此时仍允许回滚
   rollbackConfirm.value = {
     mode,
     snapshotId: rollbackMenu.value.snapshotId || '',
+    fallbackSnapshotId: rollbackMenu.value.fallbackSnapshotId,
     userMessageIndex: rollbackMenu.value.userMessageIndex,
     title: mode === 'both' ? '确认撤回会话与代码' : '确认撤回会话',
     message:
@@ -472,11 +456,11 @@ const confirmRollback = async () => {
 
     let recalledText: string | null = null;
     const rollbackUserMessageIndex = rollbackConfirm.value.userMessageIndex;
-    if (rollbackConfirm.value.snapshotId || rollbackConfirm.value.mode === 'both') {
-      // 有 checkpointId 或需要回滚代码（后端会向前追溯最近的快照）
+    if (rollbackConfirm.value.snapshotId || rollbackConfirm.value.fallbackSnapshotId || rollbackConfirm.value.mode === 'both') {
+      // 有 checkpointId 或需要回滚代码（后端会按传入快照恢复文件）
       const result = await invoke<RollbackRecallResult>('rollback_to_checkpoint_with_recall', {
         sessionId,
-        checkpointId: rollbackConfirm.value.snapshotId || '',
+        checkpointId: rollbackConfirm.value.snapshotId || rollbackConfirm.value.fallbackSnapshotId || '',
         rollbackFiles: rollbackConfirm.value.mode === 'both',
         userMessageIndex: rollbackUserMessageIndex,
       });

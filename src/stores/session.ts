@@ -133,6 +133,7 @@ export const useSessionStore = defineStore("session", () => {
   function replaceSessionHistory(sessionId: string | null | undefined, history: string) {
     const view = getSessionView(sessionId);
     view.jarvisResponse = history && history.trim() ? history : READY_TEXT;
+    view.messages = [];
     view.hydrated = true;
   }
 

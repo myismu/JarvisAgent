@@ -25,7 +25,7 @@ pub async fn snapshot_create(
 ) -> Result<Snapshot, String> {
     let manager = registry.0.read().await.get_or_create(&session_id).await?;
     manager
-        .create_snapshot(patches, message, agent_id, workspace_id, None)
+        .create_snapshot(patches, message, agent_id, workspace_id, None, None)
         .await
 }
 

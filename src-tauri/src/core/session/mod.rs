@@ -310,6 +310,7 @@ pub fn save_session(
     let filtered_memory = SessionMemory {
         messages: filtered_messages,
         context: memory.context.clone(),
+        activated_tools: memory.activated_tools.clone(),
         agent_steps: memory.agent_steps.clone(),
         plan_documents: memory.plan_documents.clone(),
     };

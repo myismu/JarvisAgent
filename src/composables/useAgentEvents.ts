@@ -587,7 +587,7 @@ export function useAgentEvents() {
     });
 
     // checkpoint created
-    await on<any>("checkpoint-created", (event) => {
+    await on<any>("checkpoint-created", async (event) => {
       const sessionId = event.payload?.sessionId ?? session.activeSessionId;
       if (!sessionId) return;
       const view = session.getSessionView(sessionId);
@@ -609,6 +609,8 @@ export function useAgentEvents() {
         };
       }
       view.hydrated = true;
+      await refreshSessionHistory(sessionId);
+      syncActiveSessionView(sessionId, false);
     });
 
     // active session changed

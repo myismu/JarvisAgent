@@ -88,6 +88,11 @@ impl SnapshotStore {
     pub fn delete_snapshot(&self, branch_name: &str, snapshot_id: &str) -> Result<(), StoreError> {
         crate::core::db::with_connection(|conn| {
             conn.execute(
+                "DELETE FROM checkpoint_user_message_links WHERE session_id = ?1 AND checkpoint_id = ?2",
+                params![self.session_id.as_str(), snapshot_id],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
                 "DELETE FROM snapshots WHERE session_id = ?1 AND branch_name = ?2 AND snapshot_id = ?3",
                 params![self.session_id.as_str(), branch_name, snapshot_id],
             )

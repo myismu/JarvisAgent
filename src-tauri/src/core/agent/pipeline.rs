@@ -310,6 +310,8 @@ impl PipelineState {
         };
         println!("[JARVIS] Detected intent: {}", detected_intent);
 
+        let activated_tools = ctx.memory.lock().await.activated_tools.clone();
+
         Ok(Self {
             app,
             sid,
@@ -339,7 +341,7 @@ impl PipelineState {
             req_input_tokens: 0,
             req_output_tokens: 0,
             final_answer: String::new(),
-            activated_tools: Vec::new(),
+            activated_tools,
         })
     }
 
@@ -606,11 +608,22 @@ impl PipelineState {
                                 as usize;
                             let deferred = get_deferred_tool_search_entries(&self.detected_intent);
                             let matches = search_deferred_tools(query, &deferred, max_results);
+                            let mut activated_this_turn = Vec::new();
                             for tool_name in matches {
                                 if !self.activated_tools.contains(&tool_name) {
                                     println!("[JARVIS] 激活延迟工具: {}", tool_name);
-                                    self.activated_tools.push(tool_name);
+                                    self.activated_tools.push(tool_name.clone());
+                                    activated_this_turn.push(tool_name);
                                 }
+                            }
+                            if !activated_this_turn.is_empty() {
+                                let mut session = self.ctx.memory.lock().await;
+                                for tool_name in activated_this_turn {
+                                    if !session.activated_tools.contains(&tool_name) {
+                                        session.activated_tools.push(tool_name);
+                                    }
+                                }
+                                crate::core::session::save_session(&self.sid, &session, None);
                             }
                         }
                     }
@@ -720,6 +733,7 @@ impl PipelineState {
                     &self.app,
                     &self.sid,
                     self.user_msg_preview.clone(),
+                    Some(self.initial_msg_index),
                 )
                 .await
             } else {
