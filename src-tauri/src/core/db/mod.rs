@@ -165,17 +165,15 @@ pub fn list_pending_snapshot_patches(
     })
 }
 
-fn pending_snapshot_patch_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PendingSnapshotPatchRecord> {
+fn pending_snapshot_patch_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<PendingSnapshotPatchRecord> {
     let seq: i64 = row.get(1)?;
     let patch_json: String = row.get(2)?;
     let trigger_index: Option<i64> = row.get(4)?;
     let created_at: i64 = row.get(5)?;
     let patch = serde_json::from_str(&patch_json).map_err(|err| {
-        rusqlite::Error::FromSqlConversionFailure(
-            2,
-            rusqlite::types::Type::Text,
-            Box::new(err),
-        )
+        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(err))
     })?;
     Ok(PendingSnapshotPatchRecord {
         run_id: row.get(0)?,
@@ -187,7 +185,10 @@ fn pending_snapshot_patch_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<
     })
 }
 
-pub fn delete_pending_snapshot_patches(session_id: &str, run_id: Option<&str>) -> Result<(), String> {
+pub fn delete_pending_snapshot_patches(
+    session_id: &str,
+    run_id: Option<&str>,
+) -> Result<(), String> {
     with_connection(|conn| {
         if let Some(run_id) = run_id {
             conn.execute(

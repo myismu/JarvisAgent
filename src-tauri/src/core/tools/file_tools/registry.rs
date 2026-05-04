@@ -17,11 +17,11 @@ use crate::core::tools::framework::registry::ToolDef;
 crate::define_tools! {
     pub fn register_tools(registry) {
         ToolDef {
-            name: "read_file",
+            name: "ReadFile",
             description: "读取文件内容，支持按行号精确读取",
             search_hint: "read file content view",
             schema: json!({
-                "name": "read_file",
+                "name": "ReadFile",
                 "description": "读取文件内容。支持语义化点读技术，可通过 start_line 和 end_line 获取特定代码块，避免 Context 过长。",
                 "input_schema": {
                     "type": "object",
@@ -39,11 +39,11 @@ crate::define_tools! {
             is_enabled: true,
         },
         ToolDef {
-            name: "read_file_skeleton",
+            name: "ReadFileSkeleton",
             description: "提取文件结构骨架（类、函数签名及行号）",
             search_hint: "skeleton structure class function signature",
             schema: json!({
-                "name": "read_file_skeleton",
+                "name": "ReadFileSkeleton",
                 "description": "提取文件结构骨架（Skeleton）。快速扫描并返回文件的类、函数签名及其行号，结合 read_file 进行精确片段阅读。",
                 "input_schema": {
                     "type": "object",
@@ -57,11 +57,11 @@ crate::define_tools! {
             is_enabled: true,
         },
         ToolDef {
-            name: "write_file",
+            name: "WriteFile",
             description: "写入普通文本文件内容；不得用于 .ipynb/Jupyter Notebook JSON",
             search_hint: "write file create new",
             schema: json!({
-                "name": "write_file",
+                "name": "WriteFile",
                 "description": "写入普通文本文件内容。不要用于 .ipynb/Jupyter Notebook 或 notebook-shaped JSON；Notebook 必须使用 notebook_edit 进行 cell 级 replace/insert/delete。",
                 "input_schema": {
                     "type": "object",
@@ -78,11 +78,11 @@ crate::define_tools! {
             is_enabled: true,
         },
         ToolDef {
-            name: "edit_file",
+            name: "EditFile",
             description: "基于搜索与替换修改普通文本；不得用于 .ipynb/Jupyter Notebook JSON",
             search_hint: "edit file replace search modify",
             schema: json!({
-                "name": "edit_file",
+                "name": "EditFile",
                 "description": "基于搜索与替换修改普通文本文件中的特定文本片段。不要用于 .ipynb/Jupyter Notebook 或 notebook-shaped JSON；Notebook 必须使用 notebook_edit 按 cell_id 修改，避免破坏 cells、metadata、outputs。",
                 "input_schema": {
                     "type": "object",
@@ -100,11 +100,11 @@ crate::define_tools! {
             is_enabled: true,
         },
         ToolDef {
-            name: "search_repo",
+            name: "SearchRepo",
             description: "在指定目录下全局搜索包含关键词的文本",
             search_hint: "search find grep text pattern",
             schema: json!({
-                "name": "search_repo",
+                "name": "SearchRepo",
                 "description": "在指定目录下全局搜索包含特定关键词或正则表达式的文本内容。自动忽略编译产物和静态资源。",
                 "input_schema": {
                     "type": "object",
@@ -123,11 +123,11 @@ crate::define_tools! {
             is_enabled: true,
         },
         ToolDef {
-            name: "list_directory",
+            name: "ListDirectory",
             description: "列出指定目录下的所有文件和文件夹",
             search_hint: "list directory folder files ls",
             schema: json!({
-                "name": "list_directory",
+                "name": "ListDirectory",
                 "description": "列出指定目录下的所有文件和文件夹。",
                 "input_schema": {
                     "type": "object",

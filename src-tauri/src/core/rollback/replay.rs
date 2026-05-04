@@ -47,9 +47,16 @@ pub struct UndoEntry {
 /// 撤销动作类型
 #[derive(Clone, Serialize, Deserialize)]
 pub enum UndoAction {
-    Create { content: String },
-    Delete { backup_path: String },
-    Update { old_content: String, new_content: String },
+    Create {
+        content: String,
+    },
+    Delete {
+        backup_path: String,
+    },
+    Update {
+        old_content: String,
+        new_content: String,
+    },
 }
 
 /// 原子文件回滚器（带 undo 日志，支持失败恢复）
@@ -420,7 +427,9 @@ fn apply_default_session_redo_patch(
 
 fn validate_absolute_patch_path(raw: &str) -> Result<PathBuf, ReplayError> {
     if raw.trim().is_empty() {
-        return Err(ReplayError::InvalidPath("默认会话文件回滚拒绝空路径".to_string()));
+        return Err(ReplayError::InvalidPath(
+            "默认会话文件回滚拒绝空路径".to_string(),
+        ));
     }
 
     let path = PathBuf::from(raw);
@@ -431,7 +440,10 @@ fn validate_absolute_patch_path(raw: &str) -> Result<PathBuf, ReplayError> {
         )));
     }
 
-    if path.components().any(|component| matches!(component, Component::ParentDir)) {
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
         return Err(ReplayError::InvalidPath(format!(
             "默认会话文件回滚拒绝包含上级目录的路径: {}",
             raw
@@ -476,7 +488,9 @@ impl AbsoluteFileRollback {
     }
 }
 
-fn apply_absolute_restore_entry(entry: &AbsoluteRestoreEntry) -> Result<AbsoluteUndoEntry, ReplayError> {
+fn apply_absolute_restore_entry(
+    entry: &AbsoluteRestoreEntry,
+) -> Result<AbsoluteUndoEntry, ReplayError> {
     let original_content = if entry.path.exists() {
         Some(fs::read_to_string(&entry.path)?)
     } else {

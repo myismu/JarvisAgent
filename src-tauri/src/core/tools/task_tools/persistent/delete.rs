@@ -4,11 +4,11 @@ use serde_json::json;
 
 pub(super) fn tool_def() -> ToolDef {
     ToolDef {
-        name: "task_delete",
+        name: "DeleteTask",
         description: "永久删除一个任务",
         search_hint: "delete remove task 删除 任务",
         schema: json!({
-            "name": "task_delete",
+            "name": "DeleteTask",
             "description": "Permanently delete one task and clean up dependency references to it.",
             "input_schema": {
                 "type": "object",

@@ -70,11 +70,7 @@ impl GarbageCollector {
     /// 阶段 1：清理快照树中脱离链路且超期的快照节点
     /// 阶段 2：清理 snapshots 表中不在 tree.nodes 中的孤儿记录
     /// 阶段 3：清理 snapshot_content 表中未被任何 workspaceState 引用的孤儿内容
-    pub fn collect(
-        &self,
-        tree: &mut SnapshotTree,
-        session_id: &str,
-    ) -> GcResult {
+    pub fn collect(&self, tree: &mut SnapshotTree, session_id: &str) -> GcResult {
         let mut result = GcResult::default();
 
         // ═══ 阶段 1：清理快照树中脱离链路且超期的快照 ═══
@@ -154,11 +150,7 @@ impl GarbageCollector {
     ///
     /// 扫描 snapshots 表中的所有 snapshot_id，与 tree.nodes 做差集，
     /// 不在 tree.nodes 中的即为孤儿，直接删除。
-    fn cleanup_orphan_snapshots(
-        &self,
-        session_id: &str,
-        tree: &SnapshotTree,
-    ) -> usize {
+    fn cleanup_orphan_snapshots(&self, session_id: &str, tree: &SnapshotTree) -> usize {
         let tree_node_ids: HashSet<String> = tree.nodes.keys().cloned().collect();
 
         crate::core::db::with_connection(|conn| {
@@ -197,11 +189,7 @@ impl GarbageCollector {
     ///
     /// 收集 tree.nodes 中所有 workspaceState 引用的 hash，
     /// 然后删除 snapshot_content 表中不在该集合中的记录。
-    fn cleanup_orphan_contents(
-        &self,
-        session_id: &str,
-        tree: &SnapshotTree,
-    ) -> usize {
+    fn cleanup_orphan_contents(&self, session_id: &str, tree: &SnapshotTree) -> usize {
         // 收集所有被 workspaceState 引用的 hash
         let mut referenced_hashes: HashSet<String> = HashSet::new();
         for snapshot in tree.nodes.values() {

@@ -10,10 +10,16 @@ import AgentTurn from './AgentTurn.vue';
 import WelcomeScreen from './WelcomeScreen.vue';
 import type { PlanDocument } from '../../types';
 
+interface RollbackPreviewFile {
+  path: string;
+  linesAdded: number;
+  linesRemoved: number;
+}
+
 interface RollbackPreviewResult {
   targetCheckpointId: string;
   checkpointLabel: string;
-  files: string[];
+  files: RollbackPreviewFile[];
 }
 
 interface RollbackRecallResult {
@@ -24,7 +30,7 @@ interface RollbackRecallResult {
 interface RollbackPreviewState {
   loading: boolean;
   checkpointId: string;
-  files: string[];
+  files: RollbackPreviewFile[];
   targetCheckpointId: string;
   checkpointLabel: string;
   error: string;
@@ -117,6 +123,7 @@ const rollbackConfirm = ref<{
   userMessageIndex: number | null;
   title: string;
   message: string;
+  files: RollbackPreviewFile[];
   warning?: string;
 } | null>(null);
 
@@ -477,15 +484,7 @@ const executeRollback = async (mode: 'both' | 'session') => {
   }
 
   const previewMessage = mode === 'both'
-    ? [
-        rollbackMenu.value.snapshotId
-          ? '确认撤回这条消息以及其后的代码改动吗？'
-          : '确认撤回这条消息以及其后的代码改动吗？将回滚到最近的文件快照状态。',
-        `文件将恢复到：${rollbackPreview.value.checkpointLabel || '初始状态'}`,
-        rollbackPreview.value.files.length > 0
-          ? `将影响 ${rollbackPreview.value.files.length} 个文件：\n${rollbackPreview.value.files.map((file) => `- ${file}`).join('\n')}`
-          : '未检测到需要恢复的文件。',
-      ].join('\n\n')
+    ? '确认撤回这条消息以及其后的代码改动吗？'
     : '确认仅撤回这条消息对应的会话内容吗？';
 
   rollbackConfirm.value = {
@@ -495,6 +494,7 @@ const executeRollback = async (mode: 'both' | 'session') => {
     userMessageIndex: rollbackMenu.value.userMessageIndex,
     title: mode === 'both' ? '确认撤回会话与代码' : '确认撤回会话',
     message: previewMessage,
+    files: mode === 'both' ? rollbackPreview.value.files : [],
     warning:
       mode === 'both'
         ? '此操作会恢复文件状态，当前未保存修改可能丢失。'
@@ -649,7 +649,26 @@ onMounted(() => {
       :loading="rollbackLoading"
       @cancel="rollbackConfirm = null"
       @confirm="confirmRollback"
-    />
+    >
+      <template v-if="rollbackConfirm?.mode === 'both'" #message>
+        <div class="rollback-preview-modal">
+          <p class="rollback-preview-message">{{ rollbackConfirm.message }}</p>
+          <div v-if="rollbackConfirm.files.length > 0" class="rollback-preview-files">
+            <div class="rollback-preview-summary">将影响 {{ rollbackConfirm.files.length }} 个文件</div>
+            <div class="rollback-preview-file-list">
+              <div v-for="file in rollbackConfirm.files" :key="file.path" class="rollback-preview-file">
+                <span class="rollback-preview-path" :title="file.path">{{ file.path }}</span>
+                <span class="rollback-preview-stats">
+                  <span class="rollback-preview-added">+{{ file.linesAdded }}</span>
+                  <span class="rollback-preview-removed">-{{ file.linesRemoved }}</span>
+                </span>
+              </div>
+            </div>
+          </div>
+          <p v-else class="rollback-preview-empty">未检测到需要恢复的文件。</p>
+        </div>
+      </template>
+    </ConfirmModal>
 
     <Transition name="scroll-btn">
       <button
@@ -1326,6 +1345,82 @@ onMounted(() => {
 .rollback-menu-item.cancel:hover {
   color: var(--accent-red);
   background: rgba(239, 68, 68, 0.1);
+}
+
+.rollback-preview-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rollback-preview-message,
+.rollback-preview-empty {
+  margin: 0;
+  color: var(--text-main);
+  line-height: 1.7;
+  font-size: 0.95rem;
+}
+
+.rollback-preview-empty {
+  color: var(--text-muted);
+}
+
+.rollback-preview-files {
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--glass-bg-light);
+  overflow: hidden;
+}
+
+.rollback-preview-summary {
+  padding: 9px 12px;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+  border-bottom: 1px solid var(--glass-border-subtle);
+}
+
+.rollback-preview-file-list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.rollback-preview-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  border-bottom: 1px solid var(--glass-border-subtle);
+}
+
+.rollback-preview-file:last-child {
+  border-bottom: none;
+}
+
+.rollback-preview-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-main);
+}
+
+.rollback-preview-stats {
+  display: inline-flex;
+  gap: 8px;
+  flex-shrink: 0;
+  font-weight: 700;
+}
+
+.rollback-preview-added {
+  color: var(--accent-green);
+}
+
+.rollback-preview-removed {
+  color: var(--accent-red);
 }
 
 /* 撤回触发按钮：位于用户消息气泡左侧外部 */

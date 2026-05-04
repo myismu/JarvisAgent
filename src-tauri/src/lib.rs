@@ -84,7 +84,7 @@ fn detect_data_dir() -> PathBuf {
 /// 1. 加载环境变量
 /// 2. 锁定并记录 Agent 主目录
 /// 3. 恢复上次工作目录
-/// 4. 恢复或创建启动会话
+/// 4. 恢复启动会话（不存在则保持空状态）
 /// 5. 构建 Tauri 应用，注册状态与命令
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -116,9 +116,12 @@ pub fn run() {
 
     // 会话恢复
     let startup_session_id = core::session::get_last_active_session_id()
-        .filter(|id| core::session::get_session_meta(id).is_ok())
-        .unwrap_or_else(|| core::session::create_session(None).id);
-    println!("[System] 启动应用，恢复会话: {}", startup_session_id);
+        .filter(|id| core::session::get_session_meta(id).is_ok());
+    if let Some(id) = startup_session_id {
+        println!("[System] 启动应用，恢复会话: {}", id);
+    } else {
+        println!("[System] 启动应用，暂无可恢复会话");
+    }
 
     // 构建 Tauri 应用实例，注册状态管理器与插件
     tauri::Builder::default()

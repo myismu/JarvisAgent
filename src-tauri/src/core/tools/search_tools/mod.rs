@@ -588,7 +588,7 @@ pub async fn grep(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
         Err(e) => return format!("正则表达式无效: {}", e),
     };
 
-    let glob_patterns = input["glob"]
+    let glob_patterns = input["FindFiles"]
         .as_str()
         .map(split_glob_patterns)
         .unwrap_or_default();
@@ -734,11 +734,11 @@ pub async fn grep(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
 crate::define_tools! {
     pub fn register_tools(registry) {
         ToolDef {
-            name: "glob",
+            name: "FindFiles",
             description: "按 glob 模式快速查找文件路径",
             search_hint: "glob wildcard filename file pattern find match",
             schema: json!({
-                "name": "glob",
+                "name": "FindFiles",
                 "description": "Fast file pattern matching tool. Supports glob patterns like \"**/*.js\" or \"src/**/*.ts\". Returns matching file paths sorted by modification time. Use this when you need to find files by name patterns.",
                 "input_schema": {
                     "type": "object",
@@ -761,11 +761,11 @@ crate::define_tools! {
             is_enabled: true,
         },
         ToolDef {
-            name: "grep",
+            name: "SearchText",
             description: "使用正则表达式搜索文件内容",
             search_hint: "grep ripgrep regex search file contents text pattern",
             schema: json!({
-                "name": "grep",
+                "name": "SearchText",
                 "description": "A powerful search tool for file contents, modeled after Claude Code Grep. Supports regex syntax, glob/type filters, output modes, context lines, case-insensitive search, multiline search, and pagination.",
                 "input_schema": {
                     "type": "object",

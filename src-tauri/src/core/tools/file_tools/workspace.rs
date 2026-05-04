@@ -36,25 +36,32 @@ pub(super) async fn get_workspace(
 fn latest_user_message_index(messages: &[Message]) -> Option<usize> {
     use crate::core::models::{Content, ContentBlock};
 
-    messages.iter().enumerate().rev().find_map(|(index, message)| {
-        if let Message::User { content } = message {
-            // 跳过仅包含 ToolResult 的内部消息
-            let is_tool_result_only = match content {
-                Content::Multiple(blocks) => blocks.iter().all(|b| matches!(b, ContentBlock::ToolResult { .. })),
-                Content::Single(text) => {
-                    // 跳过后台通知消息
-                    let trimmed = text.trim();
-                    trimmed.starts_with("<background-results>") || trimmed.starts_with("<background-results")
+    messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, message)| {
+            if let Message::User { content } = message {
+                // 跳过仅包含 ToolResult 的内部消息
+                let is_tool_result_only = match content {
+                    Content::Multiple(blocks) => blocks
+                        .iter()
+                        .all(|b| matches!(b, ContentBlock::ToolResult { .. })),
+                    Content::Single(text) => {
+                        // 跳过后台通知消息
+                        let trimmed = text.trim();
+                        trimmed.starts_with("<background-results>")
+                            || trimmed.starts_with("<background-results")
+                    }
+                };
+                if is_tool_result_only {
+                    return None;
                 }
-            };
-            if is_tool_result_only {
-                return None;
+                Some(index)
+            } else {
+                None
             }
-            Some(index)
-        } else {
-            None
-        }
-    })
+        })
 }
 
 async fn active_user_message_index(app: &tauri::AppHandle, session_id: &str) -> Option<usize> {
@@ -170,16 +177,16 @@ pub async fn commit_pending_snapshot(
     let pending = {
         let mut guard = ctx.pending_patches.lock().await;
         if guard.is_empty() {
-            let records = crate::core::db::list_pending_snapshot_patches(session_id, run_id.as_deref())
-                .unwrap_or_else(|err| {
-                    eprintln!("[Snapshot] 读取 pending patch 失败: {}", err);
-                    Vec::new()
-                });
+            let records =
+                crate::core::db::list_pending_snapshot_patches(session_id, run_id.as_deref())
+                    .unwrap_or_else(|err| {
+                        eprintln!("[Snapshot] 读取 pending patch 失败: {}", err);
+                        Vec::new()
+                    });
             records_to_pending(records)
         } else if let Some(run_id) = run_id.as_ref() {
-            let (current_run, remaining): (Vec<_>, Vec<_>) = guard
-                .drain(..)
-                .partition(|item| item.run_id == *run_id);
+            let (current_run, remaining): (Vec<_>, Vec<_>) =
+                guard.drain(..).partition(|item| item.run_id == *run_id);
             *guard = remaining;
             current_run
         } else {
@@ -216,7 +223,14 @@ pub async fn commit_pending_snapshot(
         let mgr_result = registry.0.read().await.get_or_create(session_id).await;
         if let Ok(mgr) = mgr_result {
             match mgr
-                .create_snapshot(patches, snapshot_message.clone(), None, None, None, user_index)
+                .create_snapshot(
+                    patches,
+                    snapshot_message.clone(),
+                    None,
+                    None,
+                    None,
+                    user_index,
+                )
                 .await
             {
                 Ok(snapshot) => {

@@ -23,7 +23,7 @@ pub async fn load_skill(
         if let Some(entry) = state.get_mut(&key) {
             entry.suppressed_count += 1;
             return format!(
-                "Repeated load_skill blocked: skill '{}' was already loaded in this agent run. Use the previous skill content instead of loading it again. Suppressed duplicate #{}.",
+                "Repeated LoadSkill blocked: skill '{}' was already loaded in this agent run. Use the previous skill content instead of loading it again. Suppressed duplicate #{}.",
                 entry.display, entry.suppressed_count
             );
         }

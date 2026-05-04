@@ -36,7 +36,7 @@ pub async fn git_command(
         .any(|arg| dangerous_git_args.contains(&arg.to_lowercase().as_str()))
     {
         return format!(
-            "安全拦截：git_command 工具仅用于只读操作，禁止执行 '{}'。",
+            "安全拦截：RunGitCommand 工具仅用于只读操作，禁止执行 '{}'。",
             args.join(" ")
         );
     }

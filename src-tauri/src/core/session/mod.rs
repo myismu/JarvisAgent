@@ -334,7 +334,9 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
     Ok(memory)
 }
 
-pub fn save_context_snapshot(snapshot: &crate::core::models::SessionContextSnapshot) -> Result<(), String> {
+pub fn save_context_snapshot(
+    snapshot: &crate::core::models::SessionContextSnapshot,
+) -> Result<(), String> {
     repository::upsert_context_snapshot(snapshot)
 }
 
@@ -354,7 +356,9 @@ pub fn update_context_snapshot_usage(
     )
 }
 
-pub fn get_context_snapshot(session_id: &str) -> Result<Option<crate::core::models::SessionContextSnapshot>, String> {
+pub fn get_context_snapshot(
+    session_id: &str,
+) -> Result<Option<crate::core::models::SessionContextSnapshot>, String> {
     repository::get_context_snapshot(session_id)
 }
 

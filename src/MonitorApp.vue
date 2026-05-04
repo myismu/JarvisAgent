@@ -14,10 +14,13 @@ import { onBeforeUnmount, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentEvents } from "./composables/useAgentEvents";
 import { useWindow } from "./composables/useWindow";
+import { useTheme } from "./composables/useTheme";
 import { useAgentStore } from "./stores/agent";
 import { useSessionStore } from "./stores/session";
 import type { SessionMeta } from "./types";
 import AgentPanel from "./components/chat/AgentPanel.vue";
+
+useTheme(); // 初始化主题并监听同步
 
 const agent = useAgentStore();
 const session = useSessionStore();

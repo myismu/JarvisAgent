@@ -27,7 +27,9 @@ const emit = defineEmits<{
     <div v-if="open" class="confirm-modal-overlay" @click="!loading && emit('cancel')">
       <div class="confirm-modal" @click.stop>
         <h3>{{ title }}</h3>
-        <p class="confirm-message">{{ message }}</p>
+        <slot name="message">
+          <p class="confirm-message">{{ message }}</p>
+        </slot>
         <p v-if="warning" class="confirm-warning" role="alert">{{ warning }}</p>
         <div class="modal-actions">
           <button class="cancel-btn" :disabled="loading" @click="emit('cancel')">{{ cancelText }}</button>

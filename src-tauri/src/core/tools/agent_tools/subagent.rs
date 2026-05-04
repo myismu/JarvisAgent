@@ -90,13 +90,13 @@ pub async fn run_subagent(
     let ws_str = ws.as_ref().map(|p| p.to_string_lossy().to_string());
     let mut system_prompt = get_subagent_system_prompt(&cwd, ws_str.as_deref());
     system_prompt.push_str(&format!(
-        "\n\n[Subagent type]\n- type: {}\n- when to use: {}\n\n[Role instructions]\n{}\n\n[Tool boundary]\nOnly use the tools provided in this run. Do not attempt to call parent-control tools such as task, run_tasks, todo_write, compact, or dream.",
+        "\n\n[Subagent type]\n- type: {}\n- when to use: {}\n\n[Role instructions]\n{}\n\n[Tool boundary]\nOnly use the tools provided in this run. Do not attempt to call parent-control tools such as RunSubagent, RunSubagentsSequentially, UpdateTodos, CompactConversation, or ConsolidateMemory.",
         agent.agent_type, agent.when_to_use, agent.system_prompt
     ));
 
     let skills = load_all_skills();
     if !skills.is_empty() {
-        system_prompt.push_str("\n\n可用技能 (使用 load_skill 工具获取完整内容)：\n");
+        system_prompt.push_str("\n\n可用技能 (使用 LoadSkill 工具获取完整内容)：\n");
         for skill in &skills {
             system_prompt.push_str(&format!("  - {}: {}\n", skill.name, skill.description));
         }

@@ -72,13 +72,13 @@ pub fn build_dynamic_context(
                     skills.len(),
                     skills.iter().map(|s| &s.name).collect::<Vec<_>>()
                 );
-                ctx.push_str("\n\n【可用技能】 (使用 load_skill 工具获取完整内容)：\n");
+                ctx.push_str("\n\n【可用技能】 (使用 LoadSkill 工具获取完整内容)：\n");
                 for skill in &skills {
                     ctx.push_str(&format!("  - {}: {}\n", skill.name, skill.description));
                 }
             }
 
-            ctx.push_str("\n\n【重要提醒】对于复杂任务（涉及多步骤修改、架构变更等），必须使用 propose_plan 工具提交实施方案，等待用户在预览面板中审批通过后，才能使用 task_create 创建持久化任务。严禁跳过 propose_plan 直接创建任务！\n");
+            ctx.push_str("\n\n【重要提醒】对于复杂任务（涉及多步骤修改、架构变更等），必须使用 ProposePlan 工具提交实施方案，等待用户在预览面板中审批通过后，才能使用 CreateTask 创建持久化任务。严禁跳过 ProposePlan 直接创建任务！\n");
 
             if let Some(ref ws_path) = workspace {
                 ctx.push_str(&format!(

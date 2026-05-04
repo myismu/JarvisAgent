@@ -13,48 +13,48 @@ pub const DEFAULT_AGENT_TYPE: &str = "general";
 pub const IMPLEMENTATION_AGENT_TYPE: &str = "implementation";
 
 const GENERAL_TOOLS: &[&str] = &[
-    "get_system_info",
-    "load_skill",
-    "list_directory",
-    "glob",
-    "grep",
-    "search_repo",
-    "read_file",
-    "read_file_skeleton",
-    "write_file",
-    "edit_file",
-    "notebook_edit",
-    "run_shell",
-    "git_command",
-    "background_run",
-    "check_background",
+    "GetSystemInfo",
+    "LoadSkill",
+    "ListDirectory",
+    "FindFiles",
+    "SearchText",
+    "SearchRepo",
+    "ReadFile",
+    "ReadFileSkeleton",
+    "WriteFile",
+    "EditFile",
+    "EditNotebook",
+    "RunCommand",
+    "RunGitCommand",
+    "StartBackgroundCommand",
+    "CheckBackgroundCommand",
 ];
 
 const READ_ONLY_RESEARCH_TOOLS: &[&str] = &[
-    "get_system_info",
-    "load_skill",
-    "list_directory",
-    "glob",
-    "grep",
-    "search_repo",
-    "read_file",
-    "read_file_skeleton",
-    "git_command",
-    "check_background",
+    "GetSystemInfo",
+    "LoadSkill",
+    "ListDirectory",
+    "FindFiles",
+    "SearchText",
+    "SearchRepo",
+    "ReadFile",
+    "ReadFileSkeleton",
+    "RunGitCommand",
+    "CheckBackgroundCommand",
 ];
 
 const VERIFICATION_TOOLS: &[&str] = &[
-    "get_system_info",
-    "load_skill",
-    "list_directory",
-    "glob",
-    "grep",
-    "search_repo",
-    "read_file",
-    "read_file_skeleton",
-    "run_shell",
-    "git_command",
-    "check_background",
+    "GetSystemInfo",
+    "LoadSkill",
+    "ListDirectory",
+    "FindFiles",
+    "SearchText",
+    "SearchRepo",
+    "ReadFile",
+    "ReadFileSkeleton",
+    "RunCommand",
+    "RunGitCommand",
+    "CheckBackgroundCommand",
 ];
 
 #[derive(Debug, Clone)]
@@ -133,7 +133,7 @@ impl AgentRegistry {
                 when_to_use: "Verify behavior after changes by inspecting code and running targeted checks or tests.",
                 system_prompt: "You are a verification subagent. Run targeted checks when useful, inspect failures, and report pass/fail evidence. Do not edit files.",
                 tools: VERIFICATION_TOOLS,
-                disallowed_tools: &["write_file", "edit_file", "notebook_edit", "background_run"],
+                disallowed_tools: &["WriteFile", "EditFile", "EditNotebook", "StartBackgroundCommand"],
                 model: None,
                 read_only_default: false,
                 max_turns: Some(10),
@@ -242,10 +242,10 @@ mod tests {
             .filter_map(|tool| tool["name"].as_str())
             .collect();
 
-        assert!(names.contains(&"read_file"));
-        assert!(names.contains(&"grep"));
-        assert!(!names.contains(&"edit_file"));
-        assert!(!names.contains(&"run_shell"));
+        assert!(names.contains(&"ReadFile"));
+        assert!(names.contains(&"SearchText"));
+        assert!(!names.contains(&"EditFile"));
+        assert!(!names.contains(&"RunCommand"));
     }
 
     #[test]
@@ -258,9 +258,9 @@ mod tests {
             .filter_map(|tool| tool["name"].as_str())
             .collect();
 
-        assert!(names.contains(&"edit_file"));
-        assert!(names.contains(&"notebook_edit"));
-        assert!(names.contains(&"run_shell"));
+        assert!(names.contains(&"EditFile"));
+        assert!(names.contains(&"EditNotebook"));
+        assert!(names.contains(&"RunCommand"));
     }
 
     #[test]
@@ -273,17 +273,17 @@ mod tests {
             .filter_map(|tool| tool["name"].as_str())
             .collect();
 
-        assert!(names.contains(&"read_file"));
-        assert!(names.contains(&"grep"));
-        assert!(!names.contains(&"edit_file"));
-        assert!(!names.contains(&"notebook_edit"));
-        assert!(!names.contains(&"background_run"));
+        assert!(names.contains(&"ReadFile"));
+        assert!(names.contains(&"SearchText"));
+        assert!(!names.contains(&"EditFile"));
+        assert!(!names.contains(&"EditNotebook"));
+        assert!(!names.contains(&"StartBackgroundCommand"));
     }
 
     #[test]
     fn task_schema_exposes_typed_agent_fields() {
         let tool_registry = ToolRegistry::global();
-        let task = tool_registry.get("task").unwrap();
+        let task = tool_registry.get("RunSubagent").unwrap();
         let properties = &task.schema["input_schema"]["properties"];
 
         assert!(properties["description"].is_object());

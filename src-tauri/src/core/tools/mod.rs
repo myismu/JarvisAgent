@@ -14,8 +14,8 @@
 //!
 //! ## 约束
 //! - CHAT 意图不返回任何工具
-//! - MEMORY_QUERY 意图只返回 read_file / compact / dream
-//! - 子代理（SUBAGENT）不能调用 task / dream / compact / run_tasks
+//! - MEMORY_QUERY 意图只返回 ReadFile / CompactConversation / ConsolidateMemory
+//! - 子代理（SUBAGENT）不能调用 RunSubagent / ConsolidateMemory / CompactConversation / RunSubagentsSequentially
 
 pub mod agent_tools;
 pub mod file_tools;
@@ -111,7 +111,7 @@ pub fn parse_skill(text: &str, path: &Path) -> Option<Skill> {
 }
 
 // 获取工具定义（按意图筛选 + 渐进式披露）
-// activated_tools: 由 search_tools 激活的延迟工具名称列表
+// activated_tools: 由 SearchTools 激活的延迟工具名称列表
 pub fn get_tools_definition(intent: &str, activated_tools: &[String]) -> Vec<serde_json::Value> {
     if intent == "CHAT" {
         return vec![];
@@ -120,11 +120,11 @@ pub fn get_tools_definition(intent: &str, activated_tools: &[String]) -> Vec<ser
     // MEMORY_QUERY / QUESTION 工具集小，直接返回完整 schema
     if intent == "MEMORY_QUERY" {
         let mut tools = get_core_tool_definitions();
-        // 核心工具中移除 search_tools（记忆查询不需要渐进式披露）
-        tools.retain(|t| t["name"] != "search_tools");
+        // 核心工具中移除 SearchTools（记忆查询不需要渐进式披露）
+        tools.retain(|t| t["name"] != "SearchTools");
         tools.extend(vec![
             json!({
-                "name": "read_file",
+                "name": "ReadFile",
                 "description": "读取文件内容。支持语义化点读技术，可通过 start_line 和 end_line 获取特定代码块，避免 Context 过长。",
                 "input_schema": {
                     "type": "object",
@@ -137,7 +137,7 @@ pub fn get_tools_definition(intent: &str, activated_tools: &[String]) -> Vec<ser
                 }
             }),
             json!({
-                "name": "compact",
+                "name": "CompactConversation",
                 "description": "手动触发对话上下文压缩。当对话上下文过长觉得需要清理或重置记忆时使用该工具。",
                 "input_schema": {
                     "type": "object",
@@ -147,7 +147,7 @@ pub fn get_tools_definition(intent: &str, activated_tools: &[String]) -> Vec<ser
                 }
             }),
             json!({
-                "name": "dream",
+                "name": "ConsolidateMemory",
                 "description": "主动触发记忆整理（Dream Agent）。将当前的零散碎片记忆提炼并合并进结构化用户画像中。",
                 "input_schema": { "type": "object", "properties": {} }
             })
@@ -158,7 +158,7 @@ pub fn get_tools_definition(intent: &str, activated_tools: &[String]) -> Vec<ser
     // PROJECT_ACTION / SUBAGENT: 渐进式披露
     let mut tools = get_core_tool_definitions();
     if intent != "SUBAGENT" {
-        if let Some(schema) = get_deferred_tool_full_schema("propose_plan") {
+        if let Some(schema) = get_deferred_tool_full_schema("ProposePlan") {
             tools.push(schema);
         }
     }
@@ -169,7 +169,7 @@ pub fn get_tools_definition(intent: &str, activated_tools: &[String]) -> Vec<ser
 
     for tool_name in activated_tools {
         if deferred_names.contains(&tool_name.as_str()) {
-            if tool_name == "propose_plan" && intent != "SUBAGENT" {
+            if tool_name == "ProposePlan" && intent != "SUBAGENT" {
                 continue;
             }
             if let Some(schema) = get_deferred_tool_full_schema(tool_name) {
@@ -189,7 +189,7 @@ pub async fn handle_tool_call(
     session_id: &str,
     intent: &str,
 ) -> (String, u64, u64) {
-    if name == "task" {
+    if name == "RunSubagent" {
         let prompt = input["prompt"].as_str().unwrap_or("");
         let requested_agent_type = framework::agent_registry::normalize_agent_type(
             input["subagent_type"]
@@ -277,45 +277,45 @@ pub async fn handle_tool_call_inner(
 ) -> String {
     match name {
         // 系统工具
-        "set_workspace" => system_tools::set_workspace(app, input, session_id).await,
-        "get_system_info" => system_tools::get_system_info(app, input, session_id).await,
+        "SetWorkspace" => system_tools::set_workspace(app, input, session_id).await,
+        "GetSystemInfo" => system_tools::get_system_info(app, input, session_id).await,
 
         // 文件工具
-        "list_directory" => file_tools::list_directory(app, input, session_id).await,
-        "search_repo" => file_tools::search_repo(app, input, session_id).await,
-        "glob" => search_tools::glob(app, input, session_id).await,
-        "grep" => search_tools::grep(app, input, session_id).await,
-        "notebook_edit" => notebook_tools::notebook_edit(app, input, session_id).await,
-        "read_file" => file_tools::read_file(app, input, session_id).await,
-        "read_file_skeleton" => file_tools::read_file_skeleton(app, input, session_id).await,
-        "write_file" => file_tools::write_file(app, input, session_id).await,
-        "edit_file" => file_tools::edit_file(app, input, session_id).await,
+        "ListDirectory" => file_tools::list_directory(app, input, session_id).await,
+        "SearchRepo" => file_tools::search_repo(app, input, session_id).await,
+        "FindFiles" => search_tools::glob(app, input, session_id).await,
+        "SearchText" => search_tools::grep(app, input, session_id).await,
+        "EditNotebook" => notebook_tools::notebook_edit(app, input, session_id).await,
+        "ReadFile" => file_tools::read_file(app, input, session_id).await,
+        "ReadFileSkeleton" => file_tools::read_file_skeleton(app, input, session_id).await,
+        "WriteFile" => file_tools::write_file(app, input, session_id).await,
+        "EditFile" => file_tools::edit_file(app, input, session_id).await,
 
         // Shell 工具
-        "git_command" => shell_tools::git_command(app, input, session_id).await,
-        "run_shell" => shell_tools::run_shell(app, input, session_id).await,
-        "background_run" => shell_tools::background_run(app, input, session_id).await,
-        "check_background" => shell_tools::check_background(app, input, session_id).await,
+        "RunGitCommand" => shell_tools::git_command(app, input, session_id).await,
+        "RunCommand" => shell_tools::run_shell(app, input, session_id).await,
+        "StartBackgroundCommand" => shell_tools::background_run(app, input, session_id).await,
+        "CheckBackgroundCommand" => shell_tools::check_background(app, input, session_id).await,
 
         // 任务工具
-        "todo_write" => task_tools::todo_write(app, input, session_id).await,
-        "task_create" => task_tools::task_create(app, input, session_id).await,
-        "task_update" => task_tools::task_update(app, input, session_id).await,
-        "task_delete" => task_tools::task_delete(app, input, session_id).await,
-        "task_list" => task_tools::task_list(app, input, session_id).await,
-        "task_get" => task_tools::task_get(app, input, session_id).await,
-        "task_summary" => task_tools::task_summary(app, input, session_id).await,
+        "UpdateTodos" => task_tools::todo_write(app, input, session_id).await,
+        "CreateTask" => task_tools::task_create(app, input, session_id).await,
+        "UpdateTask" => task_tools::task_update(app, input, session_id).await,
+        "DeleteTask" => task_tools::task_delete(app, input, session_id).await,
+        "ListTasks" => task_tools::task_list(app, input, session_id).await,
+        "GetTask" => task_tools::task_get(app, input, session_id).await,
+        "SummarizeTasks" => task_tools::task_summary(app, input, session_id).await,
 
         // Agent 工具
-        "load_skill" => agent_tools::load_skill(app, input, session_id).await,
-        "compact" => agent_tools::compact(app, input, session_id).await,
-        "dream" => agent_tools::dream(app, input, session_id).await,
+        "LoadSkill" => agent_tools::load_skill(app, input, session_id).await,
+        "CompactConversation" => agent_tools::compact(app, input, session_id).await,
+        "ConsolidateMemory" => agent_tools::dream(app, input, session_id).await,
 
         // 方案审批工具
-        "propose_plan" => agent_tools::propose_plan(app, input, session_id).await,
+        "ProposePlan" => agent_tools::propose_plan(app, input, session_id).await,
 
         // 工具搜索
-        "search_tools" => framework::tool_search::handle_search_tools(input, intent).await,
+        "SearchTools" => framework::tool_search::handle_search_tools(input, intent).await,
 
         _ => format!("未知工具: {}", name),
     }

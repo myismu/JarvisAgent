@@ -19,13 +19,13 @@ use std::sync::OnceLock;
 pub struct ToolDef {
     /// 工具唯一名称
     pub name: &'static str,
-    /// 简述（用于完整 schema 描述 + search_tools 搜索评分）
+    /// 简述（用于完整 schema 描述 + SearchTools 搜索评分）
     pub description: &'static str,
-    /// 搜索提示词（供 search_tools 关键词匹配的补充短语）
+    /// 搜索提示词（供 SearchTools 关键词匹配的补充短语）
     pub search_hint: &'static str,
     /// 完整 JSON Schema（符合 Anthropic tool_use 规范）
     pub schema: serde_json::Value,
-    /// 是否延迟加载（true = 需通过 search_tools 获取后才能调用）
+    /// 是否延迟加载（true = 需通过 SearchTools 获取后才能调用）
     pub should_defer: bool,
     /// 是否只读（read_only 子代理会过滤掉非只读工具）
     pub is_read_only: bool,
@@ -150,7 +150,11 @@ impl ToolRegistry {
                 // 子代理不能调用主控/调度/主会话进度工具
                 !matches!(
                     tool.name,
-                    "task" | "dream" | "compact" | "run_tasks" | "todo_write"
+                    "RunSubagent"
+                        | "ConsolidateMemory"
+                        | "CompactConversation"
+                        | "RunSubagentsSequentially"
+                        | "UpdateTodos"
                 )
             }
             _ => true, // PROJECT_ACTION
@@ -164,8 +168,8 @@ impl ToolRegistry {
 /// ```rust,ignore
 /// crate::define_tools! {
 ///     pub fn register_tools(registry) {
-///         ToolDef { name: "task_create", ... },
-///         ToolDef { name: "task_update", ... },
+///         ToolDef { name: "CreateTask", ... },
+///         ToolDef { name: "UpdateTask", ... },
 ///     }
 /// }
 /// ```

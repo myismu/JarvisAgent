@@ -140,7 +140,11 @@ pub fn upsert_context_snapshot(snapshot: &SessionContextSnapshot) -> Result<(), 
              ON CONFLICT(session_id) DO UPDATE SET
                 snapshot_json = excluded.snapshot_json,
                 updated_at = excluded.updated_at",
-            params![snapshot.session_id, snapshot_json, snapshot.created_at as i64],
+            params![
+                snapshot.session_id,
+                snapshot_json,
+                snapshot.created_at as i64
+            ],
         )
         .map_err(|e| e.to_string())?;
         Ok(())

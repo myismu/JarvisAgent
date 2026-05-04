@@ -1,7 +1,7 @@
 //! # tool_search.rs — 渐进式工具披露模块
 //!
 //! 核心工具始终携带完整 schema，延迟工具仅先暴露名称，
-//! LLM 通过 `search_tools` 按需获取完整参数定义后再调用。
+//! LLM 通过 `SearchTools` 按需获取完整参数定义后再调用。
 //!
 //! 所有工具的 schema 和元数据已迁移到各模块的 `define_tools!` 注册，
 //! 本模块从 `ToolRegistry` 统一查询，不再维护硬编码的 JSON Schema。
@@ -13,7 +13,7 @@
 //! - `get_deferred_tool_full_schema()`: 按名称获取延迟工具的完整 Schema
 //! - `search_deferred_tools()`: 关键词搜索延迟工具（支持 `select:` 精确选择）
 //! - `get_deferred_tools_context()`: 生成延迟工具名称列表（注入 system prompt）
-//! - `handle_search_tools()`: search_tools 工具的处理函数
+//! - `handle_SearchTools()`: SearchTools 工具的处理函数
 //!
 //! ## 依赖
 //! - Internal: `registry::ToolRegistry`
@@ -30,7 +30,7 @@ use serde_json::json;
 /// 延迟工具搜索索引项。
 ///
 /// `description` 和 `search_hint` 不直接暴露在首轮 prompt 中，只作为
-/// search_tools 的内部召回语义索引使用。
+/// SearchTools 的内部召回语义索引使用。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeferredToolSearchEntry {
     pub name: String,
@@ -149,12 +149,12 @@ pub fn get_deferred_tools_context(intent: &str) -> String {
     let rendered: Vec<String> = names.iter().map(|name| format!("- **{}**", name)).collect();
 
     format!(
-        "\n\n【延迟加载工具】（使用 search_tools 获取完整参数定义后才能调用）:\n{}\n",
+        "\n\n【延迟加载工具】（使用 SearchTools 获取完整参数定义后才能调用）:\n{}\n",
         rendered.join("\n")
     )
 }
 
-/// search_tools 工具的处理函数
+/// SearchTools 工具的处理函数
 pub async fn handle_search_tools(input: &serde_json::Value, intent: &str) -> String {
     let query = input["query"].as_str().unwrap_or("");
     let max_results = input["max_results"].as_u64().unwrap_or(5).clamp(1, 20) as usize;
@@ -194,11 +194,11 @@ pub async fn handle_search_tools(input: &serde_json::Value, intent: &str) -> Str
 crate::define_tools! {
     pub fn register_tools(registry) {
         ToolDef {
-            name: "search_tools",
+            name: "SearchTools",
             description: "搜索并获取延迟加载工具的完整参数定义",
             search_hint: "search tools find discover lookup",
             schema: json!({
-                "name": "search_tools",
+                "name": "SearchTools",
                 "description": "搜索并获取延迟加载工具的完整参数定义。在使用任何名称已知但参数未知的工具前，必须先调用此工具获取其完整 JSON Schema。支持 'select:ToolName1,ToolName2' 精确选择，或关键词搜索（如 'file read write'）。",
                 "input_schema": {
                     "type": "object",
@@ -230,37 +230,37 @@ mod tests {
     #[test]
     fn test_search_select_exact() {
         let deferred = get_deferred_tool_search_entries("PROJECT_ACTION");
-        let result = search_deferred_tools("select:read_file,write_file", &deferred, 5);
-        assert_eq!(result, vec!["read_file", "write_file"]);
+        let result = search_deferred_tools("select:ReadFile,WriteFile", &deferred, 5);
+        assert_eq!(result, vec!["ReadFile", "WriteFile"]);
     }
 
     #[test]
     fn test_search_select_case_insensitive() {
         let deferred = get_deferred_tool_search_entries("PROJECT_ACTION");
-        let result = search_deferred_tools("select:Read_File", &deferred, 5);
-        assert_eq!(result, vec!["read_file"]);
+        let result = search_deferred_tools("select:readfile", &deferred, 5);
+        assert_eq!(result, vec!["ReadFile"]);
     }
 
     #[test]
     fn test_search_keyword() {
         let deferred = get_deferred_tool_search_entries("PROJECT_ACTION");
         let result = search_deferred_tools("git command", &deferred, 5);
-        // git_command should score highest
-        assert!(result.contains(&"git_command".to_string()));
+        // RunGitCommand should score highest
+        assert!(result.contains(&"RunGitCommand".to_string()));
     }
 
     #[test]
     fn test_search_hint_matches_dev_server() {
         let deferred = get_deferred_tool_search_entries("PROJECT_ACTION");
         let result = search_deferred_tools("dev server", &deferred, 5);
-        assert_eq!(result.first(), Some(&"background_run".to_string()));
+        assert_eq!(result.first(), Some(&"StartBackgroundCommand".to_string()));
     }
 
     #[test]
     fn test_search_description_still_matches_chinese_query() {
         let deferred = get_deferred_tool_search_entries("PROJECT_ACTION");
         let result = search_deferred_tools("函数签名", &deferred, 5);
-        assert!(result.contains(&"read_file_skeleton".to_string()));
+        assert!(result.contains(&"ReadFileSkeleton".to_string()));
     }
 
     #[test]
@@ -274,9 +274,9 @@ mod tests {
     fn test_deferred_list_subagent_excludes_task() {
         let deferred = get_deferred_tool_list("SUBAGENT");
         let names: Vec<&str> = deferred.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(!names.contains(&"task"));
-        assert!(!names.contains(&"dream"));
-        assert!(!names.contains(&"compact"));
+        assert!(!names.contains(&"RunSubagent"));
+        assert!(!names.contains(&"ConsolidateMemory"));
+        assert!(!names.contains(&"CompactConversation"));
     }
 
     #[test]
@@ -288,27 +288,27 @@ mod tests {
     #[test]
     fn test_deferred_context_exposes_names_without_descriptions() {
         let context = get_deferred_tools_context("PROJECT_ACTION");
-        assert!(context.contains("read_file"));
-        assert!(context.contains("background_run"));
+        assert!(context.contains("ReadFile"));
+        assert!(context.contains("StartBackgroundCommand"));
         assert!(!context.contains("读取文件内容"));
         assert!(!context.contains("在后台执行长时间运行的命令"));
     }
 
     #[test]
     fn test_get_full_schema_returns_valid_json() {
-        let schema = get_deferred_tool_full_schema("read_file");
+        let schema = get_deferred_tool_full_schema("ReadFile");
         assert!(schema.is_some());
         let s = schema.unwrap();
-        assert_eq!(s["name"], "read_file");
+        assert_eq!(s["name"], "ReadFile");
         assert!(s["input_schema"]["properties"]["path"].is_object());
     }
 
     #[test]
-    fn test_core_tools_include_search_tools() {
+    fn test_core_tools_include_SearchTools() {
         let core = get_core_tool_definitions();
         let names: Vec<&str> = core.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert!(names.contains(&"search_tools"));
-        assert!(names.contains(&"get_system_info"));
-        assert!(names.contains(&"load_skill"));
+        assert!(names.contains(&"SearchTools"));
+        assert!(names.contains(&"GetSystemInfo"));
+        assert!(names.contains(&"LoadSkill"));
     }
 }

@@ -43,7 +43,9 @@ pub fn count_text(model_id: &str, text: &str) -> TokenCount {
         };
     }
 
-    if let Ok(bpe) = tiktoken_rs::get_bpe_from_model(model_id).or_else(|_| tiktoken_rs::cl100k_base()) {
+    if let Ok(bpe) =
+        tiktoken_rs::get_bpe_from_model(model_id).or_else(|_| tiktoken_rs::cl100k_base())
+    {
         return TokenCount {
             tokens: bpe.encode_with_special_tokens(text).len(),
             method: TokenCountMethod::Tokenizer,
@@ -60,7 +62,9 @@ pub fn drift_percent(estimated_tokens: usize, actual_tokens: u64) -> Option<f32>
     if estimated_tokens == 0 || actual_tokens == 0 {
         return None;
     }
-    Some(((actual_tokens as f64 - estimated_tokens as f64) / estimated_tokens as f64 * 100.0) as f32)
+    Some(
+        ((actual_tokens as f64 - estimated_tokens as f64) / estimated_tokens as f64 * 100.0) as f32,
+    )
 }
 
 fn estimate_text_tokens(text: &str) -> usize {

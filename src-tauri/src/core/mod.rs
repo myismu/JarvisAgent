@@ -35,8 +35,8 @@ pub mod intent;
 pub mod llm;
 pub mod orchestration;
 pub mod providers;
-pub mod session;
 pub mod rollback;
+pub mod session;
 pub mod tools;
 
 #[macro_export]
@@ -53,8 +53,9 @@ pub use state::{
 pub use agent::ask_jarvis;
 pub use commands::checkpoint::{
     clear_pending_operations, commit_checkpoint, create_branch, delete_branch, get_active_branch,
-    get_checkpoint_tree, list_branches, list_checkpoints, preview_rollback_to_checkpoint_with_recall,
-    rollback_to_checkpoint, rollback_to_checkpoint_with_recall, switch_branch,
+    get_checkpoint_tree, list_branches, list_checkpoints,
+    preview_rollback_to_checkpoint_with_recall, rollback_to_checkpoint,
+    rollback_to_checkpoint_with_recall, switch_branch,
 };
 pub use commands::config::{get_config, get_image_compress_config, save_config_cmd};
 pub use commands::history::get_session_history;
@@ -66,8 +67,8 @@ pub use commands::sandbox::{
 };
 pub use commands::session::{
     cancel_subagent_run, create_session, delete_session, get_active_session_id, get_agent_steps,
-    get_background_tasks, get_session_context_snapshot, get_session_meta, get_subagent_runs, get_workspace_dir,
-    list_agent_run_events, list_agent_runs, list_plan_documents, list_sessions,
+    get_background_tasks, get_session_context_snapshot, get_session_meta, get_subagent_runs,
+    get_workspace_dir, list_agent_run_events, list_agent_runs, list_plan_documents, list_sessions,
     list_subagent_events, list_subagents, prepare_resume_agent_run, recall_last_message,
     rename_session, save_agent_steps, switch_session, update_session_profile,
 };

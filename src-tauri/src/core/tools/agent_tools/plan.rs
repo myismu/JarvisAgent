@@ -69,7 +69,7 @@ pub async fn propose_plan(
             .find(|item| item.status == "pending" && item.title == title && item.content == content)
         {
             return format!(
-                "Duplicate propose_plan blocked: pending plan '{}' already exists as {}. Reuse the existing pending plan instead of creating another approval request.",
+                "Duplicate ProposePlan blocked: pending plan '{}' already exists as {}. Reuse the existing pending plan instead of creating another approval request.",
                 existing.title, existing.id
             );
         }
@@ -79,7 +79,7 @@ pub async fn propose_plan(
         if let Some(entry) = pending.get_mut(&plan_fingerprint) {
             entry.suppressed_count += 1;
             return format!(
-                "Duplicate propose_plan blocked: pending plan '{}' already exists as {}. Do not open another identical approval panel. Suppressed duplicate #{}.",
+                "Duplicate ProposePlan blocked: pending plan '{}' already exists as {}. Do not open another identical approval panel. Suppressed duplicate #{}.",
                 entry.title, entry.id, entry.suppressed_count
             );
         }
@@ -212,13 +212,13 @@ pub async fn propose_plan(
 
     if final_decision == "reject" {
         crate::jarvis_info!("JARVIS", "[JARVIS] 用户拒绝了方案: {}", title);
-        format!("用户已拒绝此方案「{}」。请根据用户意见进行调整，或询问用户想要修改的部分。严禁继续创建 task_create 任务！", title)
+        format!("用户已拒绝此方案「{}」。请根据用户意见进行调整，或询问用户想要修改的部分。严禁继续创建 CreateTask 任务！", title)
     } else {
         crate::jarvis_info!("JARVIS", "[JARVIS] 用户同意了方案: {}", title);
         if let Some(content) = modified_content {
-            format!("用户已同意方案「{}」并做了修改！修改后的方案内容：\n\n{}\n\n现在请使用 task_create 创建完整持久化任务图，使用 task_update 设置真实依赖关系，最后调用 run_tasks 一次性启动调度器。只有单个临时委派才直接使用 task。", title, content)
+            format!("用户已同意方案「{}」并做了修改！修改后的方案内容：\n\n{}\n\n现在请使用 CreateTask 创建完整持久化任务图，使用 UpdateTask 设置真实依赖关系，最后调用 RunSubagentsSequentially 一次性启动调度器。只有单个临时委派才直接使用 RunSubagent。", title, content)
         } else {
-            format!("用户已同意方案「{}」！现在请使用 task_create 创建完整持久化任务图，使用 task_update 设置真实依赖关系，最后调用 run_tasks 一次性启动调度器。只有单个临时委派才直接使用 task。", title)
+            format!("用户已同意方案「{}」！现在请使用 CreateTask 创建完整持久化任务图，使用 UpdateTask 设置真实依赖关系，最后调用 RunSubagentsSequentially 一次性启动调度器。只有单个临时委派才直接使用 RunSubagent。", title)
         }
     }
 }

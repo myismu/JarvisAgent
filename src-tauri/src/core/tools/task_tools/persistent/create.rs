@@ -5,12 +5,12 @@ use serde_json::json;
 
 pub(super) fn tool_def() -> ToolDef {
     ToolDef {
-        name: "task_create",
+        name: "CreateTask",
         description: "创建持久化任务条目到任务看板",
         search_hint: "create task todo 创建 任务",
         schema: json!({
-            "name": "task_create",
-            "description": "Create one persistent task entry on the task board. Use this for complex workflows that need persistence, dependency graph tracking, or subagent scheduling.\n\nUse for:\n- Complex work that should persist on the task board.\n- Work that needs blockedBy/blocks dependency relationships.\n- Work that should be delegated through task/run_tasks.\n\nDo not use for:\n- A short checklist that the main agent will execute directly; use todo_write instead.\n- A single trivial task.\n- Purely conversational work.\n\nNotes:\n- After creating tasks, use task_update to add dependency relationships with add_blocked_by/add_blocks.\n- Use task_list or task_get first when needed to avoid duplicate tasks.\n- This tool creates records only; it does not execute the task.",
+            "name": "CreateTask",
+            "description": "Create one persistent task entry on the task board. Use this for complex workflows that need persistence, dependency graph tracking, or subagent scheduling.\n\nUse for:\n- Complex work that should persist on the task board.\n- Work that needs blockedBy/blocks dependency relationships.\n- Work that should be delegated through RunSubagent/RunSubagentsSequentially.\n\nDo not use for:\n- A short checklist that the main agent will execute directly; use UpdateTodos instead.\n- A single trivial task.\n- Purely conversational work.\n\nNotes:\n- After creating tasks, use UpdateTask to add dependency relationships with add_blocked_by/add_blocks.\n- Use ListTasks or GetTask first when needed to avoid duplicate tasks.\n- This tool creates records only; it does not execute the task.",
             "input_schema": {
                 "type": "object",
                 "properties": {

@@ -21,10 +21,7 @@ fn migrate_v3_drop_deprecated_tables(conn: &Connection) -> Result<(), rusqlite::
         "checkpoint_branches",
     ];
     for table in &tables_to_drop {
-        conn.execute(
-            &format!("DROP TABLE IF EXISTS {}", table),
-            [],
-        )?;
+        conn.execute(&format!("DROP TABLE IF EXISTS {}", table), [])?;
     }
     Ok(())
 }
@@ -41,8 +38,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
 
     // 执行迁移
     if current_version < 3 {
-        migrate_v3_drop_deprecated_tables(conn)
-            .map_err(|e| format!("v3 迁移失败: {}", e))?;
+        migrate_v3_drop_deprecated_tables(conn).map_err(|e| format!("v3 迁移失败: {}", e))?;
     }
 
     conn.execute_batch(

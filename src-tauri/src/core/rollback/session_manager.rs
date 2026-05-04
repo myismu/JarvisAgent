@@ -6,8 +6,8 @@
 //! - 多 Agent 沙箱（隔离工作区、发布合并）
 //! - 日志记录与压缩
 
-use super::store::SnapshotStore;
 use super::snapshot::Branch;
+use super::store::SnapshotStore;
 use super::{
     AgentSandbox, Conflict, ConflictResolution, FileInfo, Journal, JournalEntry, MergeEngine,
     MergeResult, Patch, ReplayEngine, SandboxComparison, SandboxManager, Snapshot, SnapshotSummary,
@@ -158,15 +158,11 @@ impl SessionSnapshotManager {
         let mut tree = self.tree.write().await;
 
         let patch_count = tree.count_patches_since_last_checkpoint();
-        let mut snapshot = tree.create_snapshot(
-            vec![],
-            message.clone(),
-            agent_id,
-            workspace_id,
-            true,
-            None,
-        );
-        snapshot.metadata.insert("patch_count".to_string(), patch_count.to_string());
+        let mut snapshot =
+            tree.create_snapshot(vec![], message.clone(), agent_id, workspace_id, true, None);
+        snapshot
+            .metadata
+            .insert("patch_count".to_string(), patch_count.to_string());
         if let Some(index) = trigger_user_memory_index {
             snapshot
                 .metadata
@@ -200,7 +196,9 @@ impl SessionSnapshotManager {
             }
 
             if let Some(node) = tree.nodes.get_mut(&snapshot.id) {
-                node.workspace_state = Some(WorkspaceState { files: files.clone() });
+                node.workspace_state = Some(WorkspaceState {
+                    files: files.clone(),
+                });
             }
             snapshot.workspace_state = Some(WorkspaceState { files });
         }
@@ -636,7 +634,10 @@ impl SnapshotManagerRegistry {
     /// 获取或创建会话快照管理器
     ///
     /// 优先从缓存获取，不存在则创建新实例
-    pub async fn get_or_create(&self, session_id: &str) -> Result<SessionSnapshotManagerRef, String> {
+    pub async fn get_or_create(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionSnapshotManagerRef, String> {
         // 先尝试读取缓存
         {
             let managers = self.managers.read().await;

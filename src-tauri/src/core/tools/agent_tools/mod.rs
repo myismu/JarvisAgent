@@ -31,7 +31,7 @@ use super::framework::agent_registry::AgentRegistry;
 crate::define_tools! {
     pub fn register_tools(registry) {
         crate::tool_def!(
-            "load_skill",
+            "LoadSkill",
             desc: "按名称加载专业技能知识",
             hint: "load skill knowledge domain",
             schema_desc: "按名称加载专业技能知识。在你需要处理特定领域（如查阅API、审查代码）的不熟悉知识时使用。",
@@ -43,7 +43,7 @@ crate::define_tools! {
             concurrency_safe: true,
         ),
         crate::tool_def!(
-            "compact",
+            "CompactConversation",
             desc: "手动触发对话上下文压缩",
             hint: "compact context compress summarize",
             schema_desc: "手动触发对话上下文压缩。当对话上下文过长觉得需要清理或重置记忆时使用该工具。",
@@ -53,14 +53,14 @@ crate::define_tools! {
             defer: true,
         ),
         crate::tool_def!(
-            "dream",
+            "ConsolidateMemory",
             desc: "主动触发记忆整理（Dream Agent）",
             hint: "dream memory organize consolidate",
             schema_desc: "主动触发记忆整理（Dream Agent）。将当前的零散碎片记忆提炼并合并进结构化用户画像中。",
             defer: true,
         ),
         crate::tool_def!(
-            "propose_plan",
+            "ProposePlan",
             desc: "提交复杂任务实施方案给用户审阅",
             hint: "propose plan review approval",
             schema_desc: "【方案审批工具】将实施方案提交给用户审阅。当面对复杂任务（涉及多步骤修改、架构变更等），必须使用此工具提交方案文档，等待用户确认后才能继续执行。方案内容使用 Markdown 格式。前端会以专门的预览面板展示方案，用户可以选择同意或拒绝。",
@@ -72,10 +72,10 @@ crate::define_tools! {
             defer: true,
         ),
         crate::tool_def!(
-            "task",
+            "RunSubagent",
             desc: "产生具有干净上下文的子代理执行具体操作",
             hint: "task subagent delegate spawn worker",
-            schema_desc: format!("【真正执行】产生一个具有干净上下文环境的子代理 (Subagent) 去实际执行探索或具体操作任务。适合单个临时委派；复杂任务应优先使用 task_create/task_update 构建依赖图，再调用 run_tasks 统一调度，避免手动连续 task 串行执行。使用 description 提供短活动标签，使用 prompt 提供完整任务说明，使用 subagent_type 选择专用代理。与父进程共享文件系统但不共享对话历史。可用 subagent_type:\n{}", AgentRegistry::global().prompt_listing()),
+            schema_desc: format!("【真正执行】产生一个具有干净上下文环境的子代理 (Subagent) 去实际执行探索或具体操作任务。适合单个临时委派；复杂任务应优先使用 CreateTask/UpdateTask 构建依赖图，再调用 RunSubagentsSequentially 统一调度，避免手动连续 RunSubagent 串行执行。使用 description 提供短活动标签，使用 prompt 提供完整任务说明，使用 subagent_type 选择专用代理。与父进程共享文件系统但不共享对话历史。可用 subagent_type:\n{}", AgentRegistry::global().prompt_listing()),
             props: {
                 prompt: string => "要子代理完成的任务说明，越详细越好。包括你想要子代理返回什么数据。",
                 description: string => "Short 3-8 word activity label shown in the UI, e.g. 'Review notebook edits'.",
@@ -90,10 +90,10 @@ crate::define_tools! {
             concurrency_safe: true,
         ),
         crate::tool_def!(
-            "run_tasks",
+            "RunSubagentsSequentially",
             desc: "启动任务调度器，根据依赖关系自动并行执行任务",
             hint: "run tasks scheduler execute parallel",
-            schema_desc: "【任务调度器】启动自动任务调度。系统将根据任务依赖关系（blocked_by）自动执行：无依赖的任务并行运行，阻塞任务等待前置完成后自动启动。创建完所有任务和依赖关系后调用此工具一次性调度执行。不要用于简单启动项目/运行命令；这类任务应直接用 background_run/run_shell。若调度返回失败，禁止继续创建重复任务，应复用现有任务 ID 修复或报告阻塞。",
+            schema_desc: "【任务调度器】启动自动任务调度。系统将根据任务依赖关系（blocked_by）自动执行：无依赖的任务并行运行，阻塞任务等待前置完成后自动启动。创建完所有任务和依赖关系后调用此工具一次性调度执行。不要用于简单启动项目/运行命令；这类任务应直接用 StartBackgroundCommand/RunCommand。若调度返回失败，禁止继续创建重复任务，应复用现有任务 ID 修复或报告阻塞。",
             defer: true,
         )
     }

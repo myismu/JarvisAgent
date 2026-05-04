@@ -4,11 +4,11 @@ use serde_json::json;
 
 pub(super) fn tool_def() -> ToolDef {
     ToolDef {
-        name: "task_summary",
+        name: "SummarizeTasks",
         description: "生成任务全景报告（进度、瓶颈、下一步）",
         search_hint: "summary report progress 总结 报告 进度",
         schema: json!({
-            "name": "task_summary",
+            "name": "SummarizeTasks",
             "description": "Generate a task overview report, including progress, critical path, bottlenecks, and recommended next work. Use this before starting a new work batch or after completing significant tasks.",
             "input_schema": { "type": "object", "properties": {} }
         }),

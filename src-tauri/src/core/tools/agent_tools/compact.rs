@@ -21,7 +21,7 @@ pub async fn compact(
         if let Some(entry) = state.get_mut(&scope) {
             entry.suppressed_count += 1;
             return format!(
-                "Repeated compact blocked: compact was already requested in this agent run. Continue using the existing context and answer or proceed. Suppressed duplicate #{}.",
+                "Repeated CompactConversation blocked: CompactConversation was already requested in this agent run. Continue using the existing context and answer or proceed. Suppressed duplicate #{}.",
                 entry.suppressed_count
             );
         }
@@ -46,7 +46,7 @@ pub async fn dream(app: &tauri::AppHandle, _input: &serde_json::Value, session_i
         if let Some(entry) = state.get_mut(&scope) {
             entry.suppressed_count += 1;
             return format!(
-                "Repeated dream blocked: dream was already requested in this agent run. Use the existing task summary or answer the user now. Suppressed duplicate #{}.",
+                "Repeated ConsolidateMemory blocked: ConsolidateMemory was already requested in this agent run. Use the existing task summary or answer the user now. Suppressed duplicate #{}.",
                 entry.suppressed_count
             );
         }

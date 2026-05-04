@@ -30,7 +30,6 @@ struct UserDisplayMessage {
     rollback_info: Option<RollbackInfo>,
 }
 
-
 use serde::Serialize;
 
 #[derive(Serialize, Clone, Default)]
@@ -158,8 +157,12 @@ fn user_display_content(content: &Content) -> String {
     }
 }
 
-
-fn append_assistant_content(target: &mut AgentTurnSnapshot, content: &Content, loop_idx: u32, timestamp: u64) {
+fn append_assistant_content(
+    target: &mut AgentTurnSnapshot,
+    content: &Content,
+    loop_idx: u32,
+    timestamp: u64,
+) {
     match content {
         Content::Single(s) => {
             let trimmed = s.trim();
@@ -210,9 +213,12 @@ fn append_assistant_content(target: &mut AgentTurnSnapshot, content: &Content, l
                             loop_: loop_idx,
                             name: name.clone(),
                             status: "running".to_string(),
-                            input_summary: Some(format!("`json
+                            input_summary: Some(format!(
+                                "`json
 {}
-`", input_summary)),
+`",
+                                input_summary
+                            )),
                             output_summary: None,
                             error: None,
                             logs: vec![],
@@ -227,16 +233,23 @@ fn append_assistant_content(target: &mut AgentTurnSnapshot, content: &Content, l
     }
 }
 
-fn append_tool_result(target: &mut AgentTurnSnapshot, tool_use_id: &str, content: &str, timestamp: u64) {
+fn append_tool_result(
+    target: &mut AgentTurnSnapshot,
+    tool_use_id: &str,
+    content: &str,
+    timestamp: u64,
+) {
     if let Some(tool) = target.tool_calls.iter_mut().find(|t| t.id == tool_use_id) {
         tool.status = "completed".to_string();
-        tool.output_summary = Some(format!("`
+        tool.output_summary = Some(format!(
+            "`
 {}
-`", content.trim()));
+`",
+            content.trim()
+        ));
         tool.updated_at = timestamp;
     }
 }
-
 
 fn build_linked_rollbacks(session_id: &str) -> Vec<(usize, RollbackInfo)> {
     let mut links = crate::core::db::list_checkpoint_user_message_links(session_id)
@@ -332,10 +345,15 @@ fn render_assistant_message(history: &mut String, assistant: &mut AgentTurnSnaps
     assistant.status = "FINISH".to_string();
     assistant.version = 1;
     if assistant.created_at == 0 {
-        assistant.created_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        assistant.created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
     }
 
-    let json_data = serde_json::to_string(assistant).unwrap_or_default().replace('<', "\\u003c");
+    let json_data = serde_json::to_string(assistant)
+        .unwrap_or_default()
+        .replace('<', "\\u003c");
 
     // Fetch the final visible text for fallback
     let final_text = assistant
@@ -344,7 +362,11 @@ fn render_assistant_message(history: &mut String, assistant: &mut AgentTurnSnaps
         .map(|b| b.content.as_str())
         .unwrap_or("");
     let visible_text = if final_text.is_empty() {
-        assistant.thinking_blocks.last().map(|b| b.content.as_str()).unwrap_or("")
+        assistant
+            .thinking_blocks
+            .last()
+            .map(|b| b.content.as_str())
+            .unwrap_or("")
     } else {
         final_text
     };
@@ -362,9 +384,16 @@ fn render_assistant_message(history: &mut String, assistant: &mut AgentTurnSnaps
 
     // Fallback rendering
     if !assistant.thinking_blocks.is_empty() {
-        let thinking_all = assistant.thinking_blocks.iter().map(|b| b.content.as_str()).collect::<Vec<_>>().join("
+        let thinking_all = assistant
+            .thinking_blocks
+            .iter()
+            .map(|b| b.content.as_str())
+            .collect::<Vec<_>>()
+            .join(
+                "
 
-");
+",
+            );
         history.push_str(&format!(
             "
 
@@ -382,13 +411,14 @@ fn render_assistant_message(history: &mut String, assistant: &mut AgentTurnSnaps
     if !visible_text.is_empty() {
         history.push_str(visible_text);
     }
-    history.push_str("
+    history.push_str(
+        "
 
 </div></div>
 
-");
+",
+    );
 }
-
 
 #[tauri::command]
 pub async fn get_session_history(
@@ -493,7 +523,6 @@ pub async fn get_session_history(
         })
         .collect::<Vec<_>>();
 
-
     let mut history = String::new();
     let mut pending_assistant = AgentTurnSnapshot::default();
     let mut visible_user_index = 0usize;
@@ -505,12 +534,21 @@ pub async fn get_session_history(
         match msg {
             Message::User { content } => {
                 let display = user_display_content(content);
-                
+
                 // Process ToolResults inside User messages before checking if we should skip
                 if let Content::Multiple(blocks) = content {
                     for block in blocks {
-                        if let ContentBlock::ToolResult { tool_use_id, content: res_content } = block {
-                            append_tool_result(&mut pending_assistant, tool_use_id, res_content, current_ts);
+                        if let ContentBlock::ToolResult {
+                            tool_use_id,
+                            content: res_content,
+                        } = block
+                        {
+                            append_tool_result(
+                                &mut pending_assistant,
+                                tool_use_id,
+                                res_content,
+                                current_ts,
+                            );
                         }
                     }
                 }

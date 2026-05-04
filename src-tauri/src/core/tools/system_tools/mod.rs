@@ -102,11 +102,11 @@ pub async fn set_workspace(
 crate::define_tools! {
     pub fn register_tools(registry) {
         ToolDef {
-            name: "set_workspace",
+            name: "SetWorkspace",
             description: "设置或更改全局工作区目录",
             search_hint: "set workspace directory working directory",
             schema: json!({
-                "name": "set_workspace",
+                "name": "SetWorkspace",
                 "description": "设置或更改大模型当前运作的全局工作区（Working Directory）目录。跨大项目切换或是初始化指定项目目录时使用。由于会改变全局环境且会被系统持久化记住，必须使用绝对路径。",
                 "input_schema": {
                     "type": "object",
@@ -122,11 +122,11 @@ crate::define_tools! {
             is_enabled: true,
         },
         ToolDef {
-            name: "get_system_info",
+            name: "GetSystemInfo",
             description: "获取系统关键信息",
             search_hint: "system info environment config",
             schema: json!({
-                "name": "get_system_info",
+                "name": "GetSystemInfo",
                 "description": "获取系统关键信息。",
                 "input_schema": { "type": "object", "properties": {} }
             }),

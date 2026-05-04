@@ -1,7 +1,7 @@
 //! # tools_runner.rs — 工具调用并行执行引擎
 //!
 //! 实现工具调用的三阶段流水线：预处理（串行解析参数）→ 并行执行（tokio::spawn）→ 排序汇总。
-//! 支持参数自动修复、取消检查、`run_tasks` 调度器特殊处理等。
+//! 支持参数自动修复、取消检查、`RunSubagentsSequentially` 调度器特殊处理等。
 //!
 //! ## 关键导出
 //! - `execute_tool_calls()`: 执行所有工具调用，返回结果块、手动压缩标记和子 agent token 统计
@@ -12,7 +12,7 @@
 //!
 //! ## 约束
 //! - 工具结果按原始 index 排序，确保与 `tool_use_id` 一一对应
-//! - `run_tasks` 工具走独立调度路径，不进入通用并行执行
+//! - `RunSubagentsSequentially` 工具走独立调度路径，不进入通用并行执行
 
 use serde_json::json;
 use tauri::Emitter;
@@ -75,7 +75,7 @@ pub async fn execute_tool_calls(
             match parse_streamed_tool_input(&buf) {
                 Ok((parsed_input, recovered)) => {
                     *input = parsed_input;
-                    if name == "compact" {
+                    if name == "CompactConversation" {
                         manual_compact = true;
                     }
                     if recovered {
@@ -135,9 +135,9 @@ pub async fn execute_tool_calls(
                         loop_count,
                     );
 
-                    // run_tasks 工具特殊处理：直接调用 TaskScheduler（内部已有并行机制）
-                    if name == "run_tasks" {
-                        println!("[JARVIS] 检测到 run_tasks，启动任务调度器");
+                    // RunSubagentsSequentially 工具特殊处理：直接调用 TaskScheduler（内部已有并行机制）
+                    if name == "RunSubagentsSequentially" {
+                        println!("[JARVIS] 检测到 RunSubagentsSequentially，启动任务调度器");
                         let (output, si, so) =
                             TaskScheduler::run_schedule(app, sid, run_id, cancel_token).await;
                         immediate_results.push(ToolTaskResult {

@@ -68,7 +68,10 @@ pub async fn clear_custom_window_states() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn save_custom_window_state(label: String, state: CustomWindowState) -> Result<(), String> {
+pub async fn save_custom_window_state(
+    label: String,
+    state: CustomWindowState,
+) -> Result<(), String> {
     let mut states = read_states();
     states.insert(label, state);
     write_states(&states)

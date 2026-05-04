@@ -5,12 +5,12 @@ use tauri::{Emitter, Manager};
 
 pub(super) fn tool_def() -> ToolDef {
     ToolDef {
-        name: "todo_write",
+        name: "UpdateTodos",
         description: "更新当前会话的轻量待办清单，用于主 Agent 自己执行时展示进度",
         search_hint: "todo checklist progress lightweight task list activeForm 待办 进度",
         schema: json!({
-            "name": "todo_write",
-            "description": "Update the lightweight todo list for the current session. Use this for main-agent progress tracking on non-trivial work such as editing several files, running tests, or following a short checklist. This does not create persistent tasks, does not delegate to subagents, and does not participate in dependency scheduling. For complex work needing persistence, dependencies, or subagent execution, use task_create/task_update/task/run_tasks instead.\n\nRules:\n- Use proactively for tasks with roughly 3+ meaningful steps or multiple files.\n- Do not use for a single trivial task or purely conversational answers.\n- Keep exactly one item in_progress while actively working, unless the list is empty or all work is done.\n- Mark items completed immediately after finishing them.\n- Each item must include both content (imperative form, e.g. \"Run tests\") and activeForm (present continuous form, e.g. \"Running tests\").",
+            "name": "UpdateTodos",
+            "description": "Update the lightweight todo list for the current session. Use this for main-agent progress tracking on non-trivial work such as editing several files, running tests, or following a short checklist. This does not create persistent tasks, does not delegate to subagents, and does not participate in dependency scheduling. For complex work needing persistence, dependencies, or subagent execution, use CreateTask/UpdateTask/RunSubagent/RunSubagentsSequentially instead.\n\nRules:\n- Use proactively for tasks with roughly 3+ meaningful steps or multiple files.\n- Do not use for a single trivial task or purely conversational answers.\n- Keep exactly one item in_progress while actively working, unless the list is empty or all work is done.\n- Mark items completed immediately after finishing them.\n- Each item must include both content (imperative form, e.g. \"Run tests\") and activeForm (present continuous form, e.g. \"Running tests\").",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -86,7 +86,7 @@ fn todo_id_for(item: &serde_json::Value, index: usize, content: &str) -> String 
 fn parse_todos(input: &serde_json::Value) -> Result<Vec<TodoItem>, String> {
     let todos = input["todos"]
         .as_array()
-        .ok_or_else(|| "todo_write requires a todos array.".to_string())?;
+        .ok_or_else(|| "UpdateTodos requires a todos array.".to_string())?;
 
     let mut parsed = Vec::new();
     let mut in_progress_count = 0usize;
@@ -168,7 +168,7 @@ pub async fn todo_write(
         "oldTodos": old_todos,
         "newTodos": todos,
         "visibleTodos": visible_todos,
-        "result": "Todos have been modified successfully. Continue using todo_write to track progress for this session."
+        "result": "Todos have been modified successfully. Continue using UpdateTodos to track progress for this session."
     })
     .to_string()
 }

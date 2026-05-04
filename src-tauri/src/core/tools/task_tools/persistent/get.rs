@@ -5,11 +5,11 @@ use serde_json::json;
 
 pub(super) fn tool_def() -> ToolDef {
     ToolDef {
-        name: "task_get",
+        name: "GetTask",
         description: "获取单个任务的完整详细信息",
         search_hint: "get task detail info 获取 任务 详情",
         schema: json!({
-            "name": "task_get",
+            "name": "GetTask",
             "description": "Get full details for one task, including description, dependency relationships, activeForm, metadata, and owner.\n\nUse when:\n- Starting work and needing the complete task requirements.\n- Inspecting task dependencies.\n- Reviewing a task assigned to a specific agent.\n\nAfter fetching, confirm blockedBy is empty before starting the work.",
             "input_schema": {
                 "type": "object",

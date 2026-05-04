@@ -445,10 +445,7 @@ pub fn prepare_resume(run_id: &str) -> Result<(AgentRunCheckpoint, ResumeAgentRu
 pub fn find_interrupted_run(session_id: &str) -> Option<AgentRun> {
     let runs = agent_run_repository::list_runs(Some(session_id)).ok()?;
     runs.into_iter()
-        .filter(|r| {
-            r.status == AgentRunStatus::Interrupted
-                || r.status == AgentRunStatus::Running
-        })
+        .filter(|r| r.status == AgentRunStatus::Interrupted || r.status == AgentRunStatus::Running)
         .max_by_key(|r| r.updated_at)
 }
 
@@ -490,7 +487,7 @@ pub fn recover_interrupted_messages(
         }
         // checkpoint 和 session_memory 消息一致，但 live_content 有半截回复
         return Some((
-            vec![],  // 不需要追加消息
+            vec![], // 不需要追加消息
             run.live_content.clone(),
             run.live_thinking.clone(),
         ));

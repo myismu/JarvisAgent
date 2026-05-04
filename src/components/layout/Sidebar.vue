@@ -41,6 +41,7 @@ const sessionSearchKeyword = ref('');
 const sessionFilterTool = ref('');
 const sessionFilterHasTools = ref(false);
 const sessionFilterRange = ref<'all' | '24h' | '7d' | '30d'>('all');
+const showAdvancedSessionFilters = false;
 const showSessionFilters = ref(false);
 const sessionActionMessage = ref('');
 const editingSessionId = ref<string | null>(null);
@@ -346,7 +347,7 @@ onUnmounted(() => {
       <div class="sidebar-main">
       <div class="sidebar-section">
         <div class="sidebar-title">
-          <span>SESSIONS</span>
+          <span>会话</span>
           <div class="session-btn-group">
             <button type="button" class="new-session-btn" @click.stop="createNewSession(false)" title="新建会话">
               <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none">
@@ -368,13 +369,13 @@ onUnmounted(() => {
         >
           {{ sessionActionMessage }}
         </div>
-        <div class="session-filter-toggle-row">
+        <div v-if="showAdvancedSessionFilters" class="session-filter-toggle-row">
           <button type="button" class="session-filter-toggle" :class="{ active: hasActiveSessionFilters() }" @click="showSessionFilters = !showSessionFilters">
             高级筛选<span v-if="hasActiveSessionFilters()">已启用</span>
           </button>
           <button v-if="hasActiveSessionFilters()" type="button" class="session-filter-clear" @click="clearSessionFilters">清除</button>
         </div>
-        <div v-if="showSessionFilters" class="session-filters">
+        <div v-if="showAdvancedSessionFilters && showSessionFilters" class="session-filters">
           <input
             v-model="sessionSearchKeyword"
             class="session-filter-input"

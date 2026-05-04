@@ -1,4 +1,4 @@
-import type { AgentDisplayMode, AgentToolCallView, AgentToolStatus } from "../types";
+﻿import type { AgentDisplayMode, AgentToolCallView, AgentToolStatus } from "../types";
 
 type ToolActionLabels = Record<AgentToolStatus, string>;
 
@@ -98,7 +98,7 @@ const TASK_DEPENDENCY_DESCRIPTOR: ToolDescriptor = {
 };
 
 const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
-  task_create: {
+  createtask: {
     category: "task",
     action: "创建任务",
     unit: "个任务",
@@ -107,8 +107,8 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已创建",
     errorVerb: "创建失败",
   },
-  task_update: TASK_UPDATE_DESCRIPTOR,
-  task_delete: {
+  updatetask: TASK_UPDATE_DESCRIPTOR,
+  deletetask: {
     category: "task",
     action: "删除任务",
     unit: "个任务",
@@ -117,7 +117,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已删除",
     errorVerb: "删除失败",
   },
-  task_list: {
+  listtasks: {
     category: "task",
     action: "查看任务",
     unit: "次",
@@ -126,7 +126,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已查看",
     errorVerb: "查看失败",
   },
-  task_get: {
+  gettask: {
     category: "task",
     action: "读取任务",
     unit: "个任务",
@@ -135,7 +135,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已读取",
     errorVerb: "读取失败",
   },
-  task_summary: {
+  summarizetasks: {
     category: "task",
     action: "汇总任务",
     unit: "次",
@@ -144,7 +144,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已汇总",
     errorVerb: "汇总失败",
   },
-  todo_write: {
+  updatetodos: {
     category: "task",
     action: "更新待办",
     unit: "次",
@@ -153,7 +153,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已更新",
     errorVerb: "更新失败",
   },
-  run_tasks: {
+  runsubagentssequentially: {
     category: "task",
     action: "调度任务",
     unit: "次",
@@ -162,7 +162,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已调度",
     errorVerb: "调度失败",
   },
-  task: {
+  runsubagent: {
     category: "subagent",
     action: "启动子代理",
     unit: "个任务",
@@ -171,16 +171,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已完成",
     errorVerb: "执行失败",
   },
-  run_subagent: {
-    category: "subagent",
-    action: "启动子代理",
-    unit: "个任务",
-    pendingVerb: "等待启动",
-    runningVerb: "正在执行",
-    completedVerb: "已完成",
-    errorVerb: "执行失败",
-  },
-  propose_plan: {
+  proposeplan: {
     category: "planning",
     action: "提交方案",
     unit: "份方案",
@@ -189,7 +180,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已提交",
     errorVerb: "提交失败",
   },
-  read_file: {
+  readfile: {
     category: "file",
     action: "读取文件",
     unit: "个文件",
@@ -198,7 +189,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已读取",
     errorVerb: "读取失败",
   },
-  read_file_skeleton: {
+  readfileskeleton: {
     category: "file",
     action: "读取结构",
     unit: "个文件",
@@ -207,7 +198,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已读取",
     errorVerb: "读取失败",
   },
-  write_file: {
+  writefile: {
     category: "file",
     action: "写入文件",
     unit: "个文件",
@@ -216,7 +207,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已写入",
     errorVerb: "写入失败",
   },
-  edit_file: {
+  editfile: {
     category: "file",
     action: "修改文件",
     unit: "个文件",
@@ -225,7 +216,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已修改",
     errorVerb: "修改失败",
   },
-  notebook_edit: {
+  editnotebook: {
     category: "file",
     action: "编辑 Notebook",
     unit: "个单元",
@@ -234,7 +225,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已编辑",
     errorVerb: "编辑失败",
   },
-  list_directory: {
+  listdirectory: {
     category: "file",
     action: "查看目录",
     unit: "个目录",
@@ -243,7 +234,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已查看",
     errorVerb: "查看失败",
   },
-  search_repo: {
+  searchrepo: {
     category: "search",
     action: "搜索代码",
     unit: "次",
@@ -252,7 +243,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已搜索",
     errorVerb: "搜索失败",
   },
-  grep: {
+  searchtext: {
     category: "search",
     action: "搜索文本",
     unit: "次",
@@ -261,7 +252,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已搜索",
     errorVerb: "搜索失败",
   },
-  glob: {
+  findfiles: {
     category: "search",
     action: "匹配文件",
     unit: "次",
@@ -270,7 +261,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已匹配",
     errorVerb: "匹配失败",
   },
-  tool_search: {
+  searchtools: {
     category: "search",
     action: "查找工具",
     unit: "次",
@@ -279,7 +270,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已查找",
     errorVerb: "查找失败",
   },
-  run_shell: {
+  runcommand: {
     category: "command",
     action: "运行命令",
     unit: "条命令",
@@ -288,7 +279,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "运行成功",
     errorVerb: "运行失败",
   },
-  background_run: {
+  startbackgroundcommand: {
     category: "command",
     action: "启动后台命令",
     unit: "条命令",
@@ -297,7 +288,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已启动",
     errorVerb: "启动失败",
   },
-  check_background: {
+  checkbackgroundcommand: {
     category: "command",
     action: "检查后台任务",
     unit: "次",
@@ -306,7 +297,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已检查",
     errorVerb: "检查失败",
   },
-  git_command: {
+  rungitcommand: {
     category: "command",
     action: "运行 Git",
     unit: "条命令",
@@ -315,7 +306,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "运行成功",
     errorVerb: "运行失败",
   },
-  load_skill: {
+  loadskill: {
     category: "memory",
     action: "加载技能",
     unit: "个技能",
@@ -324,7 +315,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已加载",
     errorVerb: "加载失败",
   },
-  compact: {
+  compactconversation: {
     category: "memory",
     action: "压缩上下文",
     unit: "次",
@@ -333,7 +324,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已压缩",
     errorVerb: "压缩失败",
   },
-  dream: {
+  consolidatememory: {
     category: "memory",
     action: "整理记忆",
     unit: "次",
@@ -342,7 +333,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已整理",
     errorVerb: "整理失败",
   },
-  set_workspace: {
+  setworkspace: {
     category: "system",
     action: "设置工作区",
     unit: "个目录",
@@ -351,7 +342,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
     completedVerb: "已设置",
     errorVerb: "设置失败",
   },
-  get_system_info: {
+  getsysteminfo: {
     category: "system",
     action: "读取系统信息",
     unit: "次",
@@ -388,7 +379,7 @@ function hasDependencyUpdate(tools: AgentToolCallView[]) {
 
 function descriptorForTools(name: string, tools: AgentToolCallView[] = []): ToolDescriptor {
   const key = toolKey(name);
-  if (key === "task_update" && hasDependencyUpdate(tools)) {
+  if (key === "updatetask" && hasDependencyUpdate(tools)) {
     return TASK_DEPENDENCY_DESCRIPTOR;
   }
   return TOOL_DESCRIPTORS[key] ?? DEFAULT_DESCRIPTOR;
@@ -684,7 +675,7 @@ export function hasToolGroupDetails(group: ToolCallGroup) {
 
 export function isSubAgentToolName(name: string) {
   const normalized = toolKey(name);
-  return normalized === "task" || normalized === "run_subagent" || normalized.includes("subagent");
+  return normalized === "runsubagent" || normalized.includes("subagent");
 }
 
 export function isSubAgentToolGroup(group: ToolCallGroup) {
@@ -696,3 +687,5 @@ export function shouldOpenToolGroup(group: ToolCallGroup, mode: AgentDisplayMode
   if (group.status === "error") return true;
   return mode === "developer" && ["running", "pending"].includes(group.status);
 }
+
+

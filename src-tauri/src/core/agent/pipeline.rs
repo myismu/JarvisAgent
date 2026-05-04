@@ -15,8 +15,8 @@
 //! - 取消令牌（`CancellationToken`）贯穿全流程，支持用户随时中断
 
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use eventsource_stream::Eventsource;
 use serde_json::json;
@@ -67,11 +67,11 @@ struct PipelineState {
     req_input_tokens: u64,
     req_output_tokens: u64,
     final_answer: String,
-    /// 渐进式工具披露：已通过 search_tools 激活的工具名
+    /// 渐进式工具披露：已通过 SearchTools 激活的工具名
     activated_tools: Vec<String>,
 }
 
-const TEXTUAL_PROPOSE_PLAN_MARKER: &str = "<function=propose_plan>";
+const TEXTUAL_PROPOSE_PLAN_MARKER: &str = "<function=ProposePlan>";
 const DIRECT_DEVELOPER_INTENT: &str = "PROJECT_ACTION";
 
 fn normalize_agent_display_mode(mode: Option<&str>) -> &'static str {
@@ -203,12 +203,12 @@ fn recover_textual_propose_plan_call(
     let tool_index = current_blocks.len();
     current_blocks.push(ContentBlock::ToolUse {
         id: format!("textual_propose_plan_{}", loop_count),
-        name: "propose_plan".to_string(),
+        name: "ProposePlan".to_string(),
         input: json!({}),
     });
     let input_text = serde_json::to_string(&input).unwrap_or_else(|_| "{}".to_string());
     tool_input_buffers.insert(tool_index, input_text);
-    println!("[JARVIS] Recovered textual propose_plan call as a real tool call");
+    println!("[JARVIS] Recovered textual ProposePlan call as a real tool call");
     true
 }
 
@@ -596,10 +596,10 @@ impl PipelineState {
             self.req_input_tokens += sub_in;
             self.req_output_tokens += sub_out;
 
-            // 检测 search_tools 调用，激活匹配的延迟工具到下一轮请求中
+            // 检测 SearchTools 调用，激活匹配的延迟工具到下一轮请求中
             for block in current_blocks.iter() {
                 if let ContentBlock::ToolUse { name, input, .. } = block {
-                    if name == "search_tools" {
+                    if name == "SearchTools" {
                         if let Some(query) = input.get("query").and_then(|v| v.as_str()) {
                             let max_results = input
                                 .get("max_results")
@@ -721,11 +721,8 @@ impl PipelineState {
         {
             let has_operations = self.ctx.memory.lock().await.agent_steps.len() > 0;
             // 检查自上次 checkpoint 以来是否有新的文件补丁
-            let has_patches = crate::core::tools::file_tools::has_pending_patches(
-                &self.app,
-                &self.sid,
-            )
-            .await;
+            let has_patches =
+                crate::core::tools::file_tools::has_pending_patches(&self.app, &self.sid).await;
 
             let checkpoint_id = if has_patches {
                 crate::core::tools::file_tools::commit_pending_snapshot(
@@ -742,10 +739,7 @@ impl PipelineState {
             };
 
             if let Some(id) = &checkpoint_id {
-                println!(
-                    "[JARVIS] 已创建本轮文件快照: {} (来自快照引擎)",
-                    id
-                );
+                println!("[JARVIS] 已创建本轮文件快照: {} (来自快照引擎)", id);
             }
             let _ = self.app.emit(
                 "checkpoint-created",
@@ -1072,7 +1066,10 @@ impl PipelineState {
             let truncated = chars > MAX_PREVIEW_CHARS;
             let content = if truncated {
                 let preview: String = content.chars().take(MAX_PREVIEW_CHARS).collect();
-                format!("{}\n\n…已截断，仅展示前 {} 字符", preview, MAX_PREVIEW_CHARS)
+                format!(
+                    "{}\n\n…已截断，仅展示前 {} 字符",
+                    preview, MAX_PREVIEW_CHARS
+                )
             } else {
                 content
             };
@@ -1088,7 +1085,11 @@ impl PipelineState {
             }
         }
 
-        fn strip_dynamic_context(messages: &[Message], initial_msg_index: usize, dynamic_context: &str) -> Vec<Message> {
+        fn strip_dynamic_context(
+            messages: &[Message],
+            initial_msg_index: usize,
+            dynamic_context: &str,
+        ) -> Vec<Message> {
             let mut cleaned = messages.to_vec();
             if dynamic_context.is_empty() {
                 return cleaned;
@@ -1142,11 +1143,18 @@ impl PipelineState {
             self.initial_msg_index,
             &self.dynamic_context_str,
         );
-        let (tool_call_count, tool_result_count, image_count, thinking_count) = count_blocks(history_snapshot);
+        let (tool_call_count, tool_result_count, image_count, thinking_count) =
+            count_blocks(history_snapshot);
         let messages_json = serde_json::to_string_pretty(&cleaned_messages).unwrap_or_default();
         let tools_json = serde_json::to_string_pretty(tools).unwrap_or_default();
         let mut sections = vec![
-            section(&self.model_id, "system", "System Prompt", self.system_prompt.clone(), 1),
+            section(
+                &self.model_id,
+                "system",
+                "System Prompt",
+                self.system_prompt.clone(),
+                1,
+            ),
             section(
                 &self.model_id,
                 "dynamic",
@@ -1161,7 +1169,13 @@ impl PipelineState {
                 messages_json,
                 cleaned_messages.len(),
             ),
-            section(&self.model_id, "tools", "Tools Schema", tools_json, tools.len()),
+            section(
+                &self.model_id,
+                "tools",
+                "Tools Schema",
+                tools_json,
+                tools.len(),
+            ),
         ];
         if image_count > 0 {
             sections.push(section(
@@ -1177,7 +1191,10 @@ impl PipelineState {
                 &self.model_id,
                 "runtime",
                 "Tool Results / Thinking",
-                format!("tool_result: {}\nthinking: {}", tool_result_count, thinking_count),
+                format!(
+                    "tool_result: {}\nthinking: {}",
+                    tool_result_count, thinking_count
+                ),
                 tool_result_count + thinking_count,
             ));
         }
@@ -1220,7 +1237,10 @@ impl PipelineState {
             .ok()
             .flatten()
             .and_then(|snapshot| {
-                crate::core::llm::token_count::drift_percent(snapshot.estimated_tokens, input_tokens)
+                crate::core::llm::token_count::drift_percent(
+                    snapshot.estimated_tokens,
+                    input_tokens,
+                )
             });
 
         match crate::core::session::update_context_snapshot_usage(

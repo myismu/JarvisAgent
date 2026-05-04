@@ -31,11 +31,11 @@ use utils::shell_tool_description;
 crate::define_tools! {
     pub fn register_tools(registry) {
         ToolDef {
-            name: "run_shell",
+            name: "RunCommand",
             description: if cfg!(target_os = "windows") { "执行 Windows PowerShell 命令（统一入口）" } else { "执行 Unix bash 命令（统一入口）" },
             search_hint: "shell powershell bash command execute run background",
             schema: json!({
-                "name": "run_shell",
+                "name": "RunCommand",
                 "description": shell_tool_description(),
                 "input_schema": {
                     "type": "object",
@@ -54,11 +54,11 @@ crate::define_tools! {
             is_enabled: true,
         },
         ToolDef {
-            name: "git_command",
+            name: "RunGitCommand",
             description: "执行低风险的 git 操作（status/diff/log 等）",
             search_hint: "git status diff log version control",
             schema: json!({
-                "name": "git_command",
+                "name": "RunGitCommand",
                 "description": "执行低风险的 git 操作（如 status, diff, log）。禁止执行修改历史或推送的操作。",
                 "input_schema": {
                     "type": "object",
@@ -78,12 +78,12 @@ crate::define_tools! {
             is_enabled: true,
         },
         ToolDef {
-            name: "background_run",
+            name: "StartBackgroundCommand",
             description: "在后台执行长时间运行的命令（独立入口）",
             search_hint: "background long running server dev",
             schema: json!({
-                "name": "background_run",
-                "description": "在后台执行长时间运行的命令（如启动前端 npm run dev、后端服务器等）。执行后立刻返回任务ID，不阻塞对话。推荐优先使用 run_shell 的 run_in_background 参数。",
+                "name": "StartBackgroundCommand",
+                "description": "在后台执行长时间运行的命令（如启动前端 npm run dev、后端服务器等）。执行后立刻返回任务ID，不阻塞对话。推荐优先使用 RunCommand 的 run_in_background 参数。",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -99,11 +99,11 @@ crate::define_tools! {
             is_enabled: true,
         },
         ToolDef {
-            name: "check_background",
+            name: "CheckBackgroundCommand",
             description: "检查后台任务的执行状态和输出",
             search_hint: "check background task status output",
             schema: json!({
-                "name": "check_background",
+                "name": "CheckBackgroundCommand",
                 "description": "检查后台任务的执行状态和输出。仅当用户主动询问后台任务状态时才使用，严禁在自己的思考循环中连续轮询此工具！",
                 "input_schema": {
                     "type": "object",

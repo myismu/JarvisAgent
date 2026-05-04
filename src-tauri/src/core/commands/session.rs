@@ -523,8 +523,11 @@ pub async fn recover_interrupted_session_messages(
     if recovered {
         let memory = ctx.memory.lock().await.clone();
         session::save_session(&session_id, &memory, None);
-        if let Some(interrupted_run) = crate::core::orchestration::agent_runs::find_interrupted_run(&session_id) {
-            let _ = crate::core::orchestration::agent_runs::mark_run_recovered(&interrupted_run.run_id);
+        if let Some(interrupted_run) =
+            crate::core::orchestration::agent_runs::find_interrupted_run(&session_id)
+        {
+            let _ =
+                crate::core::orchestration::agent_runs::mark_run_recovered(&interrupted_run.run_id);
         }
         let _ = app.emit("session-updated", ());
     }

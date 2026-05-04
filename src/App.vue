@@ -3,6 +3,7 @@ import { onMounted, onBeforeUnmount, ref, computed, watch } from "vue";
 import { useAgentEvents } from "./composables/useAgentEvents";
 import { usePreferences } from "./composables/usePreferences";
 import { useWindow } from "./composables/useWindow";
+import { useTheme } from "./composables/useTheme";
 import { useSessionStore } from "./stores/session";
 import { useAgentStore } from "./stores/agent";
 
@@ -17,6 +18,7 @@ import SettingsPanel from "./components/settings/SettingsPanel.vue";
 const showSettings = ref(false);
 const prefs = usePreferences();
 const sidebarCollapsed = ref(prefs.sidebarCollapsed);
+useTheme(); // 初始化主题
 
 const session = useSessionStore();
 const agent = useAgentStore();
@@ -174,7 +176,7 @@ onBeforeUnmount(() => {
           </div>
           
           <ChatArea />
-          <TerminalInput />
+          <TerminalInput class="terminal-input-wrapper" :class="{ 'sidebar-expanded': !sidebarCollapsed }" />
         </div>
 
       </div>

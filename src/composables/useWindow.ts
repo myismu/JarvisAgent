@@ -24,6 +24,7 @@ const MONITOR_WINDOW_HEIGHT = 760;
 const MONITOR_WINDOW_GAP = 12;
 const MONITOR_WINDOW_CLOSED_EVENT = "monitor-window-closed";
 const MONITOR_SESSION_CHANGED_EVENT = "monitor-session-changed";
+const MONITOR_THEME_CHANGED_EVENT = "monitor-theme-changed";
 const MAIN_WINDOW_WIDTH = 1600;
 const MAIN_WINDOW_HEIGHT = 1000;
 const MAIN_WINDOW_X = 80;
@@ -216,6 +217,16 @@ export function useWindow() {
     });
   };
 
+  const notifyMonitorThemeChanged = async (isDark: boolean) => {
+    await emit(MONITOR_THEME_CHANGED_EVENT, { isDark });
+  };
+
+  const onMonitorThemeChanged = async (handler: (isDark: boolean) => void) => {
+    return listen<{ isDark: boolean }>(MONITOR_THEME_CHANGED_EVENT, (event) => {
+      handler(event.payload.isDark);
+    });
+  };
+
   const toggleMonitorWindow = async (visible: boolean): Promise<boolean> => {
     if (visible) {
       await closeMonitorWindow();
@@ -308,6 +319,8 @@ export function useWindow() {
     onMonitorWindowClosed,
     notifyMonitorSessionChanged,
     onMonitorSessionChanged,
+    notifyMonitorThemeChanged,
+    onMonitorThemeChanged,
     toggleMonitorWindow,
     resetWindowStates,
     restoreCurrentWindowState,

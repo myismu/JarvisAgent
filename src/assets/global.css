@@ -71,46 +71,46 @@
 
 /* --- 2. 暗色模式变量 (Glassmorphism) --- */
 body.dark-mode {
-  --bg-dark: #07080d;
-  --bg-panel: rgba(15, 17, 25, 0.6);
-  --bg-sidebar: rgba(20, 22, 35, 0.55);
-  --border-color: rgba(55, 60, 80, 0.5);
+  --bg-dark: #18181b;
+  --bg-panel: rgba(39, 39, 42, 0.65);
+  --bg-sidebar: rgba(24, 24, 27, 0.8);
+  --border-color: rgba(63, 63, 70, 0.6);
 
-  --text-main: #f1f5f9;
-  --text-muted: #94a3b8;
-  --text-inverse: #0f172a;
+  --text-main: #f4f4f5;
+  --text-muted: #a1a1aa;
+  --text-inverse: #09090b;
 
-  --accent-blue: #60a5fa;
-  --accent-blue-hover: #3b82f6;
-  --accent-green: #34d399;
-  --accent-red: #f87171;
-  --accent-yellow: #fbbf24;
-  --text-soft: #dbe4ee;
-  --text-warning: #fef3c7;
+  --accent-blue: #3b82f6;
+  --accent-blue-hover: #60a5fa;
+  --accent-green: #22c55e;
+  --accent-red: #ef4444;
+  --accent-yellow: #eab308;
+  --text-soft: #d4d4d8;
+  --text-warning: #fef08a;
   --text-on-danger: #ffffff;
-  --surface-strong: rgba(11, 15, 24, 0.96);
-  --surface-danger: rgba(185, 28, 28, 0.94);
-  --surface-danger-hover: rgba(153, 27, 27, 0.98);
-  --border-danger: rgba(252, 165, 165, 0.42);
-  --surface-warning: rgba(120, 53, 15, 0.94);
-  --border-warning: rgba(252, 211, 77, 0.36);
+  --surface-strong: rgba(39, 39, 42, 0.96);
+  --surface-danger: rgba(153, 27, 27, 0.94);
+  --surface-danger-hover: rgba(127, 29, 29, 0.98);
+  --border-danger: rgba(248, 113, 113, 0.42);
+  --surface-warning: rgba(133, 77, 14, 0.94);
+  --border-warning: rgba(253, 224, 71, 0.36);
 
-  --glass-bg: rgba(15, 17, 25, 0.45);
-  --glass-bg-heavy: rgba(15, 17, 25, 0.65);
-  --glass-bg-light: rgba(15, 17, 25, 0.25);
-  --glass-border: rgba(255, 255, 255, 0.08);
-  --glass-border-subtle: rgba(255, 255, 255, 0.04);
+  --glass-bg: rgba(39, 39, 42, 0.45);
+  --glass-bg-heavy: rgba(39, 39, 42, 0.65);
+  --glass-bg-light: rgba(39, 39, 42, 0.25);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-border-subtle: rgba(255, 255, 255, 0.05);
   --glass-blur: 20px;
   --glass-blur-heavy: 28px;
-  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
 
-  --glow-blue: rgba(59, 130, 246, 0.2);
-  --glow-purple: rgba(139, 92, 246, 0.18);
-  --glow-cyan: rgba(6, 182, 212, 0.12);
+  --glow-blue: rgba(59, 130, 246, 0.08);
+  --glow-purple: rgba(139, 92, 246, 0.06);
+  --glow-cyan: rgba(6, 182, 212, 0.05);
 
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.15);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.4), 0 4px 6px -2px rgba(0, 0, 0, 0.2);
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 0, 0, 0.3);
 }
 
 /* --- 3. 基础重置 --- */
@@ -299,174 +299,199 @@ body.dragging-active .editor-container {
 }
 
 .agent-developer-timeline {
-  padding-bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: relative;
+  padding-left: 12px;
+  padding-bottom: 16px;
 }
 
-.agent-developer-text + .agent-thinking-block,
-.agent-developer-text + .agent-tool-call,
-.agent-thinking-block + .agent-tool-call,
-.agent-tool-call + .agent-developer-text,
-.agent-execution-logs + .agent-developer-text {
-  margin-top: 10px;
+.agent-developer-timeline::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 6px;
+  bottom: 16px;
+  width: 1px;
+  background-color: var(--glass-border-subtle);
+  z-index: 0;
 }
 
+.agent-developer-timeline > * {
+  position: relative;
+  z-index: 1;
+}
+
+.agent-developer-timeline::after {
+  /* No more specific margin clearing needed because gap handles it */
+}
+
+.agent-thinking-block,
+.agent-tool-call,
+.agent-execution-logs,
 .agent-execution-panel {
-  margin: 10px 0;
+  margin: 2px 0;
 }
 
-.agent-execution-panel > summary {
+.agent-execution-panel > summary,
+.agent-thinking-block > summary,
+.agent-execution-logs > summary {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  min-height: 22px;
+  transition: color var(--transition-fast);
 }
 
-.agent-tool-call {
-  margin: 6px 0;
+.agent-execution-panel > summary:hover,
+.agent-thinking-block > summary:hover,
+.agent-execution-logs > summary:hover {
+  color: var(--text-main);
+}
+
+.agent-thinking-block > div,
+.agent-execution-logs > div {
+  padding-left: 14px;
+  margin-left: 3px;
+  margin-top: 2px;
+  margin-bottom: 6px;
+  border-left: 1px solid var(--glass-border-subtle);
+  font-size: 0.8rem;
+  color: var(--text-muted);
 }
 
 .agent-tool-row {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  min-height: 24px;
+  gap: 6px;
+  min-height: 22px;
   color: var(--text-muted);
-  font-size: 0.86rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+  user-select: none;
 }
 
-.agent-tool-row.completed {
-  color: var(--accent-green);
+.agent-tool-row:hover {
+  color: var(--text-main);
 }
 
-.agent-tool-row.error {
-  color: var(--accent-red);
-}
-
-.agent-tool-row.running {
-  color: var(--accent-yellow);
-}
+.agent-tool-row.completed { color: var(--accent-green); }
+.agent-tool-row.error { color: var(--accent-red); }
+.agent-tool-row.running { color: var(--accent-yellow); }
 
 .agent-tool-title {
   color: var(--text-main);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .agent-tool-summary {
   color: var(--text-muted);
+  font-size: 0.75rem;
 }
 
-.agent-tool-row code {
+.agent-tool-row code,
+.agent-tool-child-row code {
   color: var(--text-main);
   background: transparent;
   padding: 0;
   border: 0;
+  font-size: 0.75rem;
 }
 
 .agent-tool-action-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-top: 8px;
-  padding-left: 22px;
+  gap: 4px;
+  margin-top: 4px;
+  padding-left: 14px;
+  margin-left: 3px;
+  border-left: 1px solid var(--glass-border-subtle);
 }
 
 .agent-tool-action-row {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  min-height: 22px;
+  gap: 6px;
+  min-height: 20px;
   color: var(--text-muted);
-  font-size: 0.82rem;
+  font-size: 0.75rem;
 }
 
-.agent-tool-action-row.completed {
-  color: var(--accent-green);
-}
-
-.agent-tool-action-row.error {
-  color: var(--accent-red);
-}
-
-.agent-tool-action-row.running {
-  color: var(--accent-yellow);
-}
+.agent-tool-action-row.completed { color: var(--accent-green); }
+.agent-tool-action-row.error { color: var(--accent-red); }
+.agent-tool-action-row.running { color: var(--accent-yellow); }
 
 .agent-tool-action-summary {
   color: var(--text-muted);
 }
 
 .agent-tool-technical {
-  margin-top: 8px;
+  margin-top: 4px;
+  padding-left: 14px;
+  margin-left: 3px;
+  border-left: 1px solid var(--glass-border-subtle);
+}
+
+.agent-tool-technical > summary {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  margin-bottom: 4px;
 }
 
 .agent-tool-group-items {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
-  padding-left: 22px;
+  gap: 6px;
 }
 
 .agent-tool-child {
-  padding-left: 10px;
+  padding-left: 6px;
+  border-left: 1px solid transparent;
+}
+
+.agent-tool-child.has-details {
+  border-left-color: rgba(255,255,255,0.05);
 }
 
 .agent-tool-child-row {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  min-height: 22px;
+  gap: 6px;
+  min-height: 20px;
   color: var(--text-muted);
-  font-size: 0.82rem;
+  font-size: 0.75rem;
 }
 
-.agent-tool-child-row.completed {
-  color: var(--accent-green);
-}
-
-.agent-tool-child-row.error {
-  color: var(--accent-red);
-}
-
-.agent-tool-child-row.running {
-  color: var(--accent-yellow);
-}
-
-.agent-tool-child-row code {
-  color: var(--text-main);
-  background: transparent;
-  padding: 0;
-  border: 0;
-}
-
-.agent-tool-child .agent-tool-field,
-.agent-tool-child .agent-tool-log {
-  padding-left: 22px;
-}
+.agent-tool-child-row.completed { color: var(--accent-green); }
+.agent-tool-child-row.error { color: var(--accent-red); }
+.agent-tool-child-row.running { color: var(--accent-yellow); }
 
 .agent-tool-field,
 .agent-tool-log,
 .agent-execution-log {
-  margin: 8px 0;
-  padding-left: 22px;
+  margin: 4px 0;
+  padding-left: 12px;
   color: var(--text-muted);
-  font-size: 0.86rem;
+  font-size: 0.75rem;
 }
 
 .agent-tool-field > span {
   display: block;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
   color: var(--text-muted);
-  font-size: 0.75rem;
+  font-size: 0.65rem;
   font-weight: 600;
+  text-transform: uppercase;
 }
 
 .agent-tool-field.error > span {
   color: var(--accent-red);
-}
-
-.agent-thinking-block,
-.agent-execution-logs {
-  margin: 8px 0;
 }
 
 .tool-status-icon {

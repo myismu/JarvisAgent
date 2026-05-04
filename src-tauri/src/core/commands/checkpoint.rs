@@ -164,7 +164,9 @@ fn checkpoint_id_before_user_message(
         .ok()?
         .into_iter()
         .filter(|link| {
-            link.has_file_edits && !link.checkpoint_id.is_empty() && link.user_message_index < target_index
+            link.has_file_edits
+                && !link.checkpoint_id.is_empty()
+                && link.user_message_index < target_index
         })
         .max_by_key(|link| (link.user_message_index, link.created_at))
         .map(|link| link.checkpoint_id)
@@ -210,21 +212,29 @@ async fn resolve_rollback_target(
             _ => String::new(),
         };
         if snapshot_message.is_empty() {
-            return Err(log_rollback_abort(session_id, "无法定位撤回目标：快照消息为空"));
+            return Err(log_rollback_abort(
+                session_id,
+                "无法定位撤回目标：快照消息为空",
+            ));
         }
-        find_checkpoint_user_message(messages, &snapshot_message)
-            .ok_or_else(|| log_rollback_abort(session_id, "无法在会话中找到该检查点对应的用户消息"))?
+        find_checkpoint_user_message(messages, &snapshot_message).ok_or_else(|| {
+            log_rollback_abort(session_id, "无法在会话中找到该检查点对应的用户消息")
+        })?
     } else {
-        return Err(log_rollback_abort(session_id, "无法定位撤回目标：既没有 checkpoint_id 也没有 user_message_index"));
+        return Err(log_rollback_abort(
+            session_id,
+            "无法定位撤回目标：既没有 checkpoint_id 也没有 user_message_index",
+        ));
     };
 
-    let effective_checkpoint_id = if let Some(id) = checkpoint_id_before_user_message(session_id, Some(truncate_index)) {
-        id
-    } else if let Some(id) = checkpoint_parent_id(session_id, checkpoint_id, registry).await? {
-        id
-    } else {
-        String::new()
-    };
+    let effective_checkpoint_id =
+        if let Some(id) = checkpoint_id_before_user_message(session_id, Some(truncate_index)) {
+            id
+        } else if let Some(id) = checkpoint_parent_id(session_id, checkpoint_id, registry).await? {
+            id
+        } else {
+            String::new()
+        };
 
     Ok(RollbackTarget {
         truncate_index,
@@ -353,7 +363,10 @@ pub async fn get_checkpoint_tree(
         .map(|b| BranchInfo {
             name: b.name.clone(),
             head_checkpoint_id: Some(b.root.id.clone()).filter(|id| !id.is_empty()),
-            checkpoint_count: snapshots.iter().filter(|s| s.branch_name == b.name && s.is_checkpoint).count(),
+            checkpoint_count: snapshots
+                .iter()
+                .filter(|s| s.branch_name == b.name && s.is_checkpoint)
+                .count(),
             is_active: b.is_active,
         })
         .collect();
@@ -401,7 +414,8 @@ pub async fn rollback_to_checkpoint(
 
     if rollback_files.unwrap_or(false) {
         if let Some(effective_id) = &effective_checkpoint_id {
-            restored_files = rollback_files_to_snapshot(&app, &registry, &session_id, effective_id).await?;
+            restored_files =
+                rollback_files_to_snapshot(&app, &registry, &session_id, effective_id).await?;
         }
         // 如果 effective_checkpoint_id 为 None，说明从未有过文件编辑，
         // 无需恢复文件（工作区本身就是初始状态）
@@ -477,18 +491,36 @@ pub async fn preview_rollback_to_checkpoint_with_recall(
             if index >= session.messages.len() {
                 return Err(log_rollback_abort(&session_id, "撤回消息不存在"));
             }
-            if !matches!(session.messages[index], crate::core::models::Message::User { .. }) {
+            if !matches!(
+                session.messages[index],
+                crate::core::models::Message::User { .. }
+            ) {
                 return Err(log_rollback_abort(&session_id, "撤回目标不是用户消息"));
             }
         }
-        resolve_rollback_target(&session_id, &checkpoint_id, user_message_index, &session.messages, &registry).await?
+        resolve_rollback_target(
+            &session_id,
+            &checkpoint_id,
+            user_message_index,
+            &session.messages,
+            &registry,
+        )
+        .await?
     };
 
     let manager = registry.0.read().await.get_or_create(&session_id).await?;
-    if !target.effective_checkpoint_id.is_empty() && manager.get_snapshot(&target.effective_checkpoint_id).await?.is_none() {
+    if !target.effective_checkpoint_id.is_empty()
+        && manager
+            .get_snapshot(&target.effective_checkpoint_id)
+            .await?
+            .is_none()
+    {
         return Err(log_rollback_abort(
             &session_id,
-            &format!("文件回滚失败：目标快照 {} 不存在", target.effective_checkpoint_id),
+            &format!(
+                "文件回滚失败：目标快照 {} 不存在",
+                target.effective_checkpoint_id
+            ),
         ));
     }
 
@@ -530,7 +562,14 @@ pub async fn rollback_to_checkpoint_with_recall(
     let ctx = session_manager.get_or_create(&session_id).await;
     let target = {
         let session = ctx.memory.lock().await;
-        resolve_rollback_target(&session_id, &checkpoint_id, user_message_index, &session.messages, &registry).await?
+        resolve_rollback_target(
+            &session_id,
+            &checkpoint_id,
+            user_message_index,
+            &session.messages,
+            &registry,
+        )
+        .await?
     };
     let truncate_index = target.truncate_index;
     let recalled_text = target.recalled_text.clone();
@@ -556,7 +595,9 @@ pub async fn rollback_to_checkpoint_with_recall(
             checkpoint_id,
             if effective_checkpoint_id.is_empty() { "初始状态" } else { &effective_checkpoint_id }
         );
-        restored_files = rollback_files_to_snapshot(&app, &registry, &session_id, &effective_checkpoint_id).await?;
+        restored_files =
+            rollback_files_to_snapshot(&app, &registry, &session_id, &effective_checkpoint_id)
+                .await?;
     }
 
     let is_empty;
@@ -617,7 +658,12 @@ pub async fn create_branch(
 ) -> Result<Branch, String> {
     let manager = registry.0.read().await.get_or_create(&session_id).await?;
     manager
-        .create_branch(branch_name.clone(), from_checkpoint_id, agent_id, description)
+        .create_branch(
+            branch_name.clone(),
+            from_checkpoint_id,
+            agent_id,
+            description,
+        )
         .await?;
     let branches = manager.list_branches().await;
     branches
@@ -723,9 +769,7 @@ pub async fn commit_checkpoint(
 }
 
 #[tauri::command]
-pub async fn clear_pending_operations(
-    _session_id: String,
-) -> Result<(), String> {
+pub async fn clear_pending_operations(_session_id: String) -> Result<(), String> {
     // pending_checkpoint 队列已移除，此命令不再执行任何操作
     Ok(())
 }

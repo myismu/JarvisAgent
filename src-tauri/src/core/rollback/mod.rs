@@ -27,7 +27,9 @@ pub use multi_agent::{
 };
 pub use patch::{DiffHunk, DiffLine, Patch, PatchError, PatchSummary, TextDiff};
 pub use replay::{AtomicFileRollback, ReplayEngine, UndoAction, UndoEntry};
-pub use session_manager::{SessionSnapshotManager, SessionSnapshotManagerRef, SnapshotManagerRegistry};
+pub use session_manager::{
+    SessionSnapshotManager, SessionSnapshotManagerRef, SnapshotManagerRegistry,
+};
 pub use snapshot::{
     Branch, FileInfo, Snapshot, SnapshotNode, SnapshotSummary, SnapshotTree, SnapshotTreeView,
     Workspace, WorkspaceState,
