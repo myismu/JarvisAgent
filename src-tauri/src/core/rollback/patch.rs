@@ -78,6 +78,16 @@ pub enum PatchError {
 }
 
 impl Patch {
+    /// 返回该补丁实际涉及的路径
+    pub fn touched_paths(&self) -> Vec<&str> {
+        match self {
+            Patch::CreateFile { path, .. } => vec![path.as_str()],
+            Patch::DeleteFile { path } => vec![path.as_str()],
+            Patch::UpdateFile { path, .. } => vec![path.as_str()],
+            Patch::RenameFile { old_path, new_path } => vec![old_path.as_str(), new_path.as_str()],
+        }
+    }
+
     /// 生成补丁摘要
     pub fn to_summary(&self) -> PatchSummary {
         match self {

@@ -16,12 +16,12 @@ use crate::core::models::*;
 use crate::core::orchestration::agent_runs;
 use crate::core::session;
 use crate::core::state::*;
-use std::collections::HashMap;
 
 #[derive(Clone)]
 struct RollbackInfo {
     checkpoint_id: String,
     has_file_edits: bool,
+    created_at: u64,
 }
 
 struct UserDisplayMessage {
@@ -238,8 +238,8 @@ fn append_tool_result(target: &mut AgentTurnSnapshot, tool_use_id: &str, content
 }
 
 
-fn build_linked_rollbacks(session_id: &str) -> HashMap<usize, RollbackInfo> {
-    crate::core::db::list_checkpoint_user_message_links(session_id)
+fn build_linked_rollbacks(session_id: &str) -> Vec<(usize, RollbackInfo)> {
+    let mut links = crate::core::db::list_checkpoint_user_message_links(session_id)
         .unwrap_or_default()
         .into_iter()
         .filter(|link| link.has_file_edits && !link.checkpoint_id.is_empty())
@@ -249,10 +249,13 @@ fn build_linked_rollbacks(session_id: &str) -> HashMap<usize, RollbackInfo> {
                 RollbackInfo {
                     checkpoint_id: link.checkpoint_id,
                     has_file_edits: true,
+                    created_at: link.created_at,
                 },
             )
         })
-        .collect()
+        .collect::<Vec<_>>();
+    links.sort_by_key(|(trigger_index, info)| (*trigger_index, info.created_at));
+    links
 }
 
 fn parse_snapshot_usize(snapshot: &crate::core::rollback::Snapshot, key: &str) -> Option<usize> {
@@ -263,22 +266,31 @@ fn parse_snapshot_usize(snapshot: &crate::core::rollback::Snapshot, key: &str) -
 }
 
 fn find_rollback_info(
-    linked_rollbacks: &HashMap<usize, RollbackInfo>,
+    linked_rollbacks: &[(usize, RollbackInfo)],
     metadata_rollbacks: &[(usize, u64, String)],
     memory_index: usize,
 ) -> Option<RollbackInfo> {
-    if let Some(info) = linked_rollbacks.get(&memory_index) {
-        return Some(info.clone());
-    }
-
-    metadata_rollbacks
+    let linked = linked_rollbacks
+        .iter()
+        .filter(|(trigger_index, _)| *trigger_index >= memory_index)
+        .min_by_key(|(trigger_index, info)| (*trigger_index, info.created_at))
+        .map(|(_, info)| info.clone());
+    let metadata = metadata_rollbacks
         .iter()
         .filter(|(trigger_index, _, _)| *trigger_index >= memory_index)
         .min_by_key(|(trigger_index, created_at, _)| (*trigger_index, *created_at))
-        .map(|(_, _, id)| RollbackInfo {
+        .map(|(_, created_at, id)| RollbackInfo {
             checkpoint_id: id.clone(),
             has_file_edits: true,
-        })
+            created_at: *created_at,
+        });
+
+    match (linked, metadata) {
+        (Some(linked), Some(metadata)) if metadata.created_at < linked.created_at => Some(metadata),
+        (Some(linked), _) => Some(linked),
+        (None, Some(metadata)) => Some(metadata),
+        (None, None) => None,
+    }
 }
 
 /// 渲染用户消息 HTML，撤回按钮由前端统一补齐
@@ -323,7 +335,7 @@ fn render_assistant_message(history: &mut String, assistant: &mut AgentTurnSnaps
         assistant.created_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
     }
 
-    let json_data = serde_json::to_string(assistant).unwrap_or_default().replace("<", "\u003c");
+    let json_data = serde_json::to_string(assistant).unwrap_or_default().replace('<', "\\u003c");
 
     // Fetch the final visible text for fallback
     let final_text = assistant
@@ -503,7 +515,7 @@ pub async fn get_session_history(
                     }
                 }
 
-                if is_internal_user_text(&display) {
+                if is_internal_user_text(&display) || display.trim().is_empty() {
                     continue;
                 }
                 let Some(message) = display_messages.get(visible_user_index) else {
@@ -527,20 +539,5 @@ pub async fn get_session_history(
     }
 
     render_assistant_message(&mut history, &mut pending_assistant);
-
-                pending_assistant = AssistantDisplay::default();
-                render_user_message(&mut history, message);
-                visible_user_index += 1;
-            }
-            Message::Assistant { content } => {
-                if is_internal_assistant_message(content) {
-                    continue;
-                }
-                append_assistant_content(&mut pending_assistant, content);
-            }
-        }
-    }
-
-    render_assistant_message(&mut history, &pending_assistant);
     Ok(history)
 }

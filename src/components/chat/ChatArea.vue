@@ -10,9 +10,24 @@ import AgentTurn from './AgentTurn.vue';
 import WelcomeScreen from './WelcomeScreen.vue';
 import type { PlanDocument } from '../../types';
 
+interface RollbackPreviewResult {
+  targetCheckpointId: string;
+  checkpointLabel: string;
+  files: string[];
+}
+
 interface RollbackRecallResult {
   restoredFiles: string[];
   recalledText: string;
+}
+
+interface RollbackPreviewState {
+  loading: boolean;
+  checkpointId: string;
+  files: string[];
+  targetCheckpointId: string;
+  checkpointLabel: string;
+  error: string;
 }
 
 const session = useSessionStore();
@@ -82,7 +97,7 @@ const rollbackMenu = ref<{
   x: number;
   y: number;
   snapshotId: string | null;
-  hasOperations: boolean;
+  rollbackMode: 'both' | 'session';
   userMessageIndex: number | null;
   fallbackSnapshotId: string;
 }>({
@@ -90,12 +105,11 @@ const rollbackMenu = ref<{
   x: 0,
   y: 0,
   snapshotId: null,
-  hasOperations: false,
+  rollbackMode: 'session',
   userMessageIndex: null,
   fallbackSnapshotId: '',
 });
 
-const rollbackLoading = ref(false);
 const rollbackConfirm = ref<{
   mode: 'both' | 'session';
   snapshotId: string;
@@ -106,6 +120,16 @@ const rollbackConfirm = ref<{
   warning?: string;
 } | null>(null);
 
+const rollbackPreview = ref<RollbackPreviewState>({
+  loading: false,
+  checkpointId: '',
+  files: [],
+  targetCheckpointId: '',
+  checkpointLabel: '',
+  error: '',
+});
+const rollbackLoading = ref(false);
+const rollbackError = ref('');
 function ensureRollbackButtons() {
   const root = responseAreaRef.value?.querySelector('.history-html');
   if (!root) return;
@@ -120,22 +144,18 @@ function ensureRollbackButtons() {
     }
 
     // 从后端渲染的 message-content 属性中读取回滚信息
-    const rollbackMode = contentEl?.getAttribute('data-rollback-mode') || 'session';
     const rollbackCheckpointId = contentEl?.getAttribute('data-rollback-checkpoint-id') || '';
-    const hasOps = rollbackMode === 'both';
 
     if (existingButtons.length > 0) {
       // 已有按钮时同步最新的回滚属性（后端刷新历史后属性可能更新）
       const existingBtn = existingButtons[0] as HTMLElement;
       existingBtn.setAttribute('data-cp-id', rollbackCheckpointId);
-      existingBtn.setAttribute('data-has-operations', hasOps ? 'true' : 'false');
       return;
     }
 
     const button = document.createElement('button');
     button.className = 'rollback-trigger';
     button.setAttribute('data-cp-id', rollbackCheckpointId);
-    button.setAttribute('data-has-operations', hasOps ? 'true' : 'false');
     button.setAttribute('data-latest-snapshot-id', '');
     button.setAttribute('title', '撤回此消息');
     messageEl.appendChild(button);
@@ -243,13 +263,13 @@ const handleContextMenu = (e: MouseEvent) => {
   if (!snapshotId) return;
 
   e.preventDefault();
-  const position = getRollbackMenuPosition(e.clientX, e.clientY, false);
+  const position = getRollbackMenuPosition(e.clientX, e.clientY, 'session');
   rollbackMenu.value = {
     visible: true,
     x: position.left,
     y: position.top,
     snapshotId,
-    hasOperations: false,
+    rollbackMode: 'session',
     userMessageIndex: null,
     fallbackSnapshotId: '',
   };
@@ -265,19 +285,16 @@ const handleRollbackClick = async (e: MouseEvent) => {
   const userMessageIndexAttr = contentEl?.getAttribute('data-user-message-index');
   const userMessageIndex = userMessageIndexAttr ? Number(userMessageIndexAttr) : null;
   const rollbackTarget = Number.isInteger(userMessageIndex) ? userMessageIndex : null;
-  const rollbackMode = contentEl?.getAttribute('data-rollback-mode') || 'session';
+  const rollbackMode = contentEl?.getAttribute('data-rollback-mode') === 'both' ? 'both' : 'session';
   const rollbackCheckpointId = contentEl?.getAttribute('data-rollback-checkpoint-id') || '';
-  // rollbackMode 为 'both' 表示该消息或其后的消息产生了文件编辑，
-  // 即使 checkpointId 为空（纯聊天轮次），后端也能向前追溯找到最近的快照来回滚。
-  const hasOperations = rollbackMode === 'both';
-  const position = getRollbackMenuPosition(e.clientX, e.clientY, hasOperations);
+  const position = getRollbackMenuPosition(e.clientX, e.clientY, rollbackMode);
 
   rollbackMenu.value = {
     visible: true,
     x: position.left,
     y: position.top,
     snapshotId: rollbackCheckpointId,
-    hasOperations,
+    rollbackMode,
     userMessageIndex: rollbackTarget,
     fallbackSnapshotId: '',
   };
@@ -401,9 +418,9 @@ const closeRollbackMenu = () => {
   rollbackMenu.value.visible = false;
 };
 
-const getRollbackMenuPosition = (x: number, y: number, hasOperations: boolean) => {
+const getRollbackMenuPosition = (x: number, y: number, rollbackMode: 'both' | 'session') => {
   const menuWidth = 220;
-  const menuHeight = hasOperations ? 118 : 74;
+  const menuHeight = rollbackMode === 'both' ? 118 : 74;
   const margin = 12;
 
   let left = x;
@@ -422,20 +439,62 @@ const getRollbackMenuPosition = (x: number, y: number, hasOperations: boolean) =
   return { left, top };
 };
 
-const executeRollback = (mode: 'both' | 'session') => {
-  // snapshotId 可能为空（纯聊天轮次），此时仍允许回滚
+const executeRollback = async (mode: 'both' | 'session') => {
+  rollbackError.value = '';
+  rollbackPreview.value.error = '';
+  if (mode === 'both') {
+    rollbackLoading.value = true;
+    rollbackPreview.value.loading = true;
+    try {
+      const sessionId = session.activeSessionId;
+      if (!sessionId) {
+        alert('无法获取当前会话');
+        return;
+      }
+      const result = await invoke<RollbackPreviewResult>('preview_rollback_to_checkpoint_with_recall', {
+        sessionId,
+        checkpointId: rollbackMenu.value.snapshotId || rollbackMenu.value.fallbackSnapshotId || '',
+        userMessageIndex: rollbackMenu.value.userMessageIndex,
+      });
+      rollbackPreview.value = {
+        loading: false,
+        checkpointId: result.targetCheckpointId,
+        files: result.files,
+        targetCheckpointId: result.targetCheckpointId,
+        checkpointLabel: result.checkpointLabel,
+        error: '',
+      };
+    } catch (err) {
+      const message = normalizeRollbackError(err);
+      rollbackPreview.value.loading = false;
+      rollbackPreview.value.error = message;
+      rollbackError.value = message;
+      return;
+    } finally {
+      rollbackPreview.value.loading = false;
+      rollbackLoading.value = false;
+    }
+  }
+
+  const previewMessage = mode === 'both'
+    ? [
+        rollbackMenu.value.snapshotId
+          ? '确认撤回这条消息以及其后的代码改动吗？'
+          : '确认撤回这条消息以及其后的代码改动吗？将回滚到最近的文件快照状态。',
+        `文件将恢复到：${rollbackPreview.value.checkpointLabel || '初始状态'}`,
+        rollbackPreview.value.files.length > 0
+          ? `将影响 ${rollbackPreview.value.files.length} 个文件：\n${rollbackPreview.value.files.map((file) => `- ${file}`).join('\n')}`
+          : '未检测到需要恢复的文件。',
+      ].join('\n\n')
+    : '确认仅撤回这条消息对应的会话内容吗？';
+
   rollbackConfirm.value = {
     mode,
     snapshotId: rollbackMenu.value.snapshotId || '',
     fallbackSnapshotId: rollbackMenu.value.fallbackSnapshotId,
     userMessageIndex: rollbackMenu.value.userMessageIndex,
     title: mode === 'both' ? '确认撤回会话与代码' : '确认撤回会话',
-    message:
-      mode === 'both'
-        ? rollbackMenu.value.snapshotId
-          ? '确认撤回这条消息以及其后的代码改动吗？'
-          : '确认撤回这条消息以及其后的代码改动吗？将回滚到最近的文件快照状态。'
-        : '确认仅撤回这条消息对应的会话内容吗？',
+    message: previewMessage,
     warning:
       mode === 'both'
         ? '此操作会恢复文件状态，当前未保存修改可能丢失。'
@@ -443,10 +502,19 @@ const executeRollback = (mode: 'both' | 'session') => {
   };
 };
 
+const normalizeRollbackError = (err: unknown) => {
+  const raw = typeof err === 'string' ? err : err instanceof Error ? err.message : String(err || '未知错误');
+  if (raw.includes('已保留会话历史')) {
+    return raw;
+  }
+  return `${raw}。为避免会话与文件状态不一致，已保留当前会话历史。`;
+};
+
 const confirmRollback = async () => {
   if (!rollbackConfirm.value) return;
 
   rollbackLoading.value = true;
+  rollbackError.value = '';
   try {
     const sessionId = session.activeSessionId;
     if (!sessionId) {
@@ -475,6 +543,14 @@ const confirmRollback = async () => {
     }
 
     rollbackConfirm.value = null;
+    rollbackPreview.value = {
+      loading: false,
+      checkpointId: '',
+      files: [],
+      targetCheckpointId: '',
+      checkpointLabel: '',
+      error: '',
+    };
     closeRollbackMenu();
 
     if (recalledText) {
@@ -497,8 +573,9 @@ const confirmRollback = async () => {
       chat.triggerRender();
     }
   } catch (err) {
+    const message = normalizeRollbackError(err);
     console.error('回滚失败:', err);
-    alert(`回滚失败: ${err}`);
+    rollbackError.value = message;
   } finally {
     rollbackLoading.value = false;
   }
@@ -550,7 +627,7 @@ onMounted(() => {
         :style="{ left: rollbackMenu.x + 'px', top: rollbackMenu.y + 'px' }"
       >
         <div class="rollback-menu-title">选择撤回方式</div>
-        <button v-if="rollbackMenu.hasOperations" class="rollback-menu-item" @click="executeRollback('both')" :disabled="rollbackLoading">
+        <button v-if="rollbackMenu.rollbackMode === 'both'" class="rollback-menu-item" @click="executeRollback('both')" :disabled="rollbackLoading">
           <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
           会话和代码撤回
         </button>
@@ -565,7 +642,7 @@ onMounted(() => {
       :open="!!rollbackConfirm"
       :title="rollbackConfirm?.title || ''"
       :message="rollbackConfirm?.message || ''"
-      :warning="rollbackConfirm?.warning || ''"
+      :warning="rollbackError || rollbackConfirm?.warning || ''"
       confirm-text="确认撤回"
       cancel-text="取消"
       confirm-kind="danger"

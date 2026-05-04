@@ -52,6 +52,15 @@ pub struct PendingPlanCacheEntry {
     pub suppressed_count: usize,
 }
 
+#[derive(Clone, Debug)]
+pub struct PendingSnapshotPatch {
+    pub run_id: String,
+    pub seq: usize,
+    pub patch: crate::core::rollback::Patch,
+    pub message: Option<String>,
+    pub trigger_user_memory_index: Option<usize>,
+}
+
 pub struct SessionContext {
     pub id: String,
     pub memory: Mutex<SessionMemory>,
@@ -61,6 +70,7 @@ pub struct SessionContext {
     pub workspace: Mutex<Option<std::path::PathBuf>>,
     pub session_allowed: Mutex<bool>,
     pub pending_permissions: Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>,
+    pub pending_patches: Mutex<Vec<PendingSnapshotPatch>>,
     pub compact_state: Mutex<HashMap<String, ToolDedupeCacheEntry>>,
     pub dream_state: Mutex<HashMap<String, ToolDedupeCacheEntry>>,
     pub pending_plan_state: Mutex<HashMap<String, PendingPlanCacheEntry>>,
@@ -79,6 +89,7 @@ impl SessionContext {
             workspace: Mutex::new(None),
             session_allowed: Mutex::new(false),
             pending_permissions: Mutex::new(HashMap::new()),
+            pending_patches: Mutex::new(Vec::new()),
             compact_state: Mutex::new(HashMap::new()),
             dream_state: Mutex::new(HashMap::new()),
             pending_plan_state: Mutex::new(HashMap::new()),

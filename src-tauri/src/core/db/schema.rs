@@ -204,6 +204,18 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             FOREIGN KEY(session_id, checkpoint_id) REFERENCES snapshots(session_id, snapshot_id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS pending_snapshot_patches (
+            session_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            patch_json TEXT NOT NULL,
+            message TEXT,
+            trigger_user_memory_index INTEGER,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(session_id, run_id, seq),
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS snapshot_content (
             session_id TEXT NOT NULL,
             content_hash TEXT NOT NULL,
@@ -243,6 +255,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_session_transcripts_session_time ON session_transcripts(session_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_snapshots_session_branch_time ON snapshots(session_id, branch_name, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_checkpoint_user_message_links_session ON checkpoint_user_message_links(session_id, user_message_index);
+        CREATE INDEX IF NOT EXISTS idx_pending_snapshot_patches_session_run ON pending_snapshot_patches(session_id, run_id, seq);
         CREATE INDEX IF NOT EXISTS idx_snapshot_journal_session ON snapshot_journal(session_id, id);
         "#,
     )

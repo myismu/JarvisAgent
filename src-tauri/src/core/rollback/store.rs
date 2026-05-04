@@ -102,6 +102,43 @@ impl SnapshotStore {
         .map_err(StoreError::DbError)
     }
 
+    pub fn delete_all_for_session(&self) -> Result<(), StoreError> {
+        crate::core::db::with_transaction(|tx| {
+            tx.execute(
+                "DELETE FROM checkpoint_user_message_links WHERE session_id = ?1",
+                [self.session_id.as_str()],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "DELETE FROM snapshot_journal WHERE session_id = ?1",
+                [self.session_id.as_str()],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "DELETE FROM snapshot_content WHERE session_id = ?1",
+                [self.session_id.as_str()],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "DELETE FROM pending_snapshot_patches WHERE session_id = ?1",
+                [self.session_id.as_str()],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "DELETE FROM snapshots WHERE session_id = ?1",
+                [self.session_id.as_str()],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "DELETE FROM snapshot_trees WHERE session_id = ?1",
+                [self.session_id.as_str()],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .map_err(StoreError::DbError)
+    }
+
     pub fn save_tree(&self, tree: &SnapshotTree) -> Result<(), StoreError> {
         ensure_session_record(&self.session_id).map_err(StoreError::DbError)?;
         let json = serde_json::to_string(tree)?;

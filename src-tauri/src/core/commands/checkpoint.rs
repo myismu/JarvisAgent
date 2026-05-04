@@ -88,6 +88,21 @@ pub struct RollbackRecallResult {
     pub recalled_text: String,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RollbackPreviewResult {
+    pub target_checkpoint_id: String,
+    pub checkpoint_label: String,
+    pub files: Vec<String>,
+}
+
+#[derive(Clone)]
+struct RollbackTarget {
+    truncate_index: usize,
+    recalled_text: String,
+    effective_checkpoint_id: String,
+}
+
 fn message_text(content: &crate::core::models::Content) -> String {
     use crate::core::models::{Content, ContentBlock};
 
@@ -107,7 +122,6 @@ fn message_text(content: &crate::core::models::Content) -> String {
     }
 }
 
-/// 模糊匹配检查点触发消息与用户消息（精确匹配或互为前缀）
 fn checkpoint_matches_user_message(trigger: &str, message: &str) -> bool {
     let trigger = trigger.trim();
     let message = message.trim();
@@ -133,6 +147,133 @@ fn find_checkpoint_user_message(
         }
         None
     })
+}
+
+fn log_rollback_abort(session_id: &str, reason: &str) -> String {
+    let message = format!("{}，已保留会话历史", reason);
+    eprintln!("[Rollback] 会话 {} 撤回中止: {}", session_id, message);
+    message
+}
+
+fn checkpoint_id_before_user_message(
+    session_id: &str,
+    user_message_index: Option<usize>,
+) -> Option<String> {
+    let target_index = user_message_index?;
+    crate::core::db::list_checkpoint_user_message_links(session_id)
+        .ok()?
+        .into_iter()
+        .filter(|link| {
+            link.has_file_edits && !link.checkpoint_id.is_empty() && link.user_message_index < target_index
+        })
+        .max_by_key(|link| (link.user_message_index, link.created_at))
+        .map(|link| link.checkpoint_id)
+}
+
+async fn checkpoint_parent_id(
+    session_id: &str,
+    checkpoint_id: &str,
+    registry: &tauri::State<'_, SnapshotRegistry>,
+) -> Result<Option<String>, String> {
+    if checkpoint_id.is_empty() {
+        return Ok(None);
+    }
+    let manager = registry.0.read().await.get_or_create(session_id).await?;
+    Ok(manager
+        .get_snapshot(checkpoint_id)
+        .await?
+        .and_then(|snapshot| snapshot.parent_id))
+}
+
+async fn resolve_rollback_target(
+    session_id: &str,
+    checkpoint_id: &str,
+    user_message_index: Option<usize>,
+    messages: &[crate::core::models::Message],
+    registry: &tauri::State<'_, SnapshotRegistry>,
+) -> Result<RollbackTarget, String> {
+    let (truncate_index, recalled_text) = if let Some(index) = user_message_index {
+        if index >= messages.len() {
+            return Err(log_rollback_abort(session_id, "撤回消息不存在"));
+        }
+        if let crate::core::models::Message::User { content } = &messages[index] {
+            (index, message_text(content))
+        } else {
+            return Err(log_rollback_abort(session_id, "撤回目标不是用户消息"));
+        }
+    } else if !checkpoint_id.is_empty() {
+        let snapshot_message = match registry.0.read().await.get_or_create(session_id).await {
+            Ok(mgr) => match mgr.get_snapshot(checkpoint_id).await {
+                Ok(Some(snap)) => snap.message.clone().unwrap_or_default(),
+                _ => String::new(),
+            },
+            _ => String::new(),
+        };
+        if snapshot_message.is_empty() {
+            return Err(log_rollback_abort(session_id, "无法定位撤回目标：快照消息为空"));
+        }
+        find_checkpoint_user_message(messages, &snapshot_message)
+            .ok_or_else(|| log_rollback_abort(session_id, "无法在会话中找到该检查点对应的用户消息"))?
+    } else {
+        return Err(log_rollback_abort(session_id, "无法定位撤回目标：既没有 checkpoint_id 也没有 user_message_index"));
+    };
+
+    let effective_checkpoint_id = if let Some(id) = checkpoint_id_before_user_message(session_id, Some(truncate_index)) {
+        id
+    } else if let Some(id) = checkpoint_parent_id(session_id, checkpoint_id, registry).await? {
+        id
+    } else {
+        String::new()
+    };
+
+    Ok(RollbackTarget {
+        truncate_index,
+        recalled_text,
+        effective_checkpoint_id,
+    })
+}
+
+async fn rollback_files_to_snapshot(
+    app: &tauri::AppHandle,
+    registry: &tauri::State<'_, SnapshotRegistry>,
+    session_id: &str,
+    snapshot_id: &str,
+) -> Result<Vec<String>, String> {
+    let manager = registry.0.read().await.get_or_create(session_id).await?;
+    if !snapshot_id.is_empty() && manager.get_snapshot(snapshot_id).await?.is_none() {
+        return Err(log_rollback_abort(
+            session_id,
+            &format!("文件回滚失败：目标快照 {} 不存在", snapshot_id),
+        ));
+    }
+
+    let target_label = if snapshot_id.is_empty() {
+        "初始状态"
+    } else {
+        snapshot_id
+    };
+
+    if let Some(workspace) = crate::core::state::effective_workspace(app, session_id).await {
+        manager
+            .rollback_to(snapshot_id, &workspace)
+            .await
+            .map_err(|e| log_rollback_abort(session_id, &format!("文件回滚失败: {}", e)))?;
+        println!(
+            "[Rollback] 会话 {} 已按 workspace 恢复到 {}",
+            session_id, target_label
+        );
+    } else {
+        manager
+            .rollback_touched_files_to(snapshot_id)
+            .await
+            .map_err(|e| log_rollback_abort(session_id, &format!("文件回滚失败: {}", e)))?;
+        println!(
+            "[Rollback] 会话 {} 已按 patch 记录路径恢复到 {}",
+            session_id, target_label
+        );
+    }
+
+    Ok(vec!["文件已恢复到检查点状态".to_string()])
 }
 
 /// 将快照映射为兼容的检查点类型（operations 由补丁链聚合而来）
@@ -230,16 +371,6 @@ pub async fn get_checkpoint_tree(
     })
 }
 
-fn checkpoint_id_for_user_message(session_id: &str, user_message_index: Option<usize>) -> Option<String> {
-    user_message_index.and_then(|index| {
-        crate::core::db::find_checkpoint_user_message_link(session_id, index)
-            .ok()
-            .flatten()
-            .filter(|link| link.has_file_edits && !link.checkpoint_id.is_empty())
-            .map(|link| link.checkpoint_id)
-    })
-}
-
 /// 回滚到指定检查点：可选恢复文件、截断消息历史、清理后续元数据
 ///
 /// 支持"向前追溯"：当 checkpoint_id 为空或指向纯聊天轮次（无实快照）时，
@@ -270,19 +401,7 @@ pub async fn rollback_to_checkpoint(
 
     if rollback_files.unwrap_or(false) {
         if let Some(effective_id) = &effective_checkpoint_id {
-            let workspace = crate::core::state::effective_workspace(&app, &session_id).await;
-            if let Some(ws) = workspace {
-                let manager = registry.0.read().await.get_or_create(&session_id).await?;
-                match manager.rollback_to(effective_id, &ws).await {
-                    Ok(_) => {
-                        restored_files.push("文件已恢复到检查点状态".to_string());
-                    }
-                    Err(e) => {
-                        eprintln!("[Rollback] 快照回滚失败: {}", e);
-                        return Err(format!("文件回滚失败: {}", e));
-                    }
-                }
-            }
+            restored_files = rollback_files_to_snapshot(&app, &registry, &session_id, effective_id).await?;
         }
         // 如果 effective_checkpoint_id 为 None，说明从未有过文件编辑，
         // 无需恢复文件（工作区本身就是初始状态）
@@ -343,6 +462,52 @@ pub async fn rollback_to_checkpoint(
     Ok(restored_files)
 }
 
+#[tauri::command]
+pub async fn preview_rollback_to_checkpoint_with_recall(
+    session_id: String,
+    checkpoint_id: String,
+    user_message_index: Option<usize>,
+    session_manager: tauri::State<'_, SessionManager>,
+    registry: tauri::State<'_, SnapshotRegistry>,
+) -> Result<RollbackPreviewResult, String> {
+    let ctx = session_manager.get_or_create(&session_id).await;
+    let target = {
+        let session = ctx.memory.lock().await;
+        if let Some(index) = user_message_index {
+            if index >= session.messages.len() {
+                return Err(log_rollback_abort(&session_id, "撤回消息不存在"));
+            }
+            if !matches!(session.messages[index], crate::core::models::Message::User { .. }) {
+                return Err(log_rollback_abort(&session_id, "撤回目标不是用户消息"));
+            }
+        }
+        resolve_rollback_target(&session_id, &checkpoint_id, user_message_index, &session.messages, &registry).await?
+    };
+
+    let manager = registry.0.read().await.get_or_create(&session_id).await?;
+    if !target.effective_checkpoint_id.is_empty() && manager.get_snapshot(&target.effective_checkpoint_id).await?.is_none() {
+        return Err(log_rollback_abort(
+            &session_id,
+            &format!("文件回滚失败：目标快照 {} 不存在", target.effective_checkpoint_id),
+        ));
+    }
+
+    let files = manager
+        .preview_touched_files_to(&target.effective_checkpoint_id)
+        .await
+        .map_err(|e| log_rollback_abort(&session_id, &e))?;
+
+    Ok(RollbackPreviewResult {
+        checkpoint_label: if target.effective_checkpoint_id.is_empty() {
+            "初始状态".to_string()
+        } else {
+            target.effective_checkpoint_id.clone()
+        },
+        target_checkpoint_id: target.effective_checkpoint_id,
+        files,
+    })
+}
+
 /// 回滚并返回被撤回的用户消息文本（供前端重新填入输入框）
 ///
 /// 支持"向前追溯"：当 checkpoint_id 为空或指向纯聊天轮次时，
@@ -362,82 +527,45 @@ pub async fn rollback_to_checkpoint_with_recall(
 
     let mut restored_files = Vec::new();
 
-    // 决定实际用于文件回滚的快照 ID
-    let effective_checkpoint_id = if !checkpoint_id.is_empty() {
-        Some(checkpoint_id.clone())
-    } else if let Some(id) = checkpoint_id_for_user_message(&session_id, user_message_index) {
-        Some(id)
+    let ctx = session_manager.get_or_create(&session_id).await;
+    let target = {
+        let session = ctx.memory.lock().await;
+        resolve_rollback_target(&session_id, &checkpoint_id, user_message_index, &session.messages, &registry).await?
+    };
+    let truncate_index = target.truncate_index;
+    let recalled_text = target.recalled_text.clone();
+    let effective_checkpoint_id = target.effective_checkpoint_id.clone();
+
+    let cutoff = if !checkpoint_id.is_empty() {
+        match registry.0.read().await.get_or_create(&session_id).await {
+            Ok(mgr) => match mgr.get_snapshot(&checkpoint_id).await {
+                Ok(Some(snap)) => snap.created_at,
+                _ => 0,
+            },
+            _ => 0,
+        }
     } else {
-        let mgr = registry.0.read().await.get_or_create(&session_id).await?;
-        mgr.find_nearest_checkpoint_before().await
+        0
     };
 
     if rollback_files.unwrap_or(false) {
-        if let Some(effective_id) = &effective_checkpoint_id {
-            let workspace = crate::core::state::effective_workspace(&app, &session_id).await;
-            if let Some(ws) = workspace {
-                let manager = registry.0.read().await.get_or_create(&session_id).await?;
-                match manager.rollback_to(effective_id, &ws).await {
-                    Ok(_) => {
-                        restored_files.push("文件已恢复到检查点状态".to_string());
-                    }
-                    Err(e) => {
-                        eprintln!("[Rollback] 快照回滚失败: {}", e);
-                        return Err(format!("文件回滚失败: {}", e));
-                    }
-                }
-            }
-        }
+        println!(
+            "[Rollback] 会话 {} 准备执行文件回滚: user_message_index={}, checkpoint_id={}, effective_target={}",
+            session_id,
+            truncate_index,
+            checkpoint_id,
+            if effective_checkpoint_id.is_empty() { "初始状态" } else { &effective_checkpoint_id }
+        );
+        restored_files = rollback_files_to_snapshot(&app, &registry, &session_id, &effective_checkpoint_id).await?;
     }
 
-    let snapshot_message = if !checkpoint_id.is_empty() {
-        match registry.0.read().await.get_or_create(&session_id).await {
-            Ok(mgr) => match mgr.get_snapshot(&checkpoint_id).await {
-                Ok(Some(snap)) => snap.message.clone().unwrap_or_default(),
-                _ => String::new(),
-            },
-            _ => String::new(),
-        }
-    } else {
-        String::new()
-    };
-
-    let ctx = session_manager.get_or_create(&session_id).await;
-    let recalled_text;
     let is_empty;
     {
         let mut session = ctx.memory.lock().await;
-        let (idx, recalled) = if let Some(index) = user_message_index {
-            if index >= session.messages.len() {
-                return Err("撤回消息不存在".to_string());
-            }
-            if let crate::core::models::Message::User { content } = &session.messages[index] {
-                (index, message_text(content))
-            } else {
-                return Err("撤回目标不是用户消息".to_string());
-            }
-        } else if !snapshot_message.is_empty() {
-            find_checkpoint_user_message(&session.messages, &snapshot_message)
-                .ok_or_else(|| "无法在会话中找到该检查点对应的用户消息".to_string())?
-        } else {
-            return Err("无法定位撤回目标：既没有 checkpoint_id 也没有 user_message_index".to_string());
-        };
-        session.messages.truncate(idx);
-        let cutoff = if !checkpoint_id.is_empty() {
-            match registry.0.read().await.get_or_create(&session_id).await {
-                Ok(mgr) => match mgr.get_snapshot(&checkpoint_id).await {
-                    Ok(Some(snap)) => snap.created_at,
-                    _ => 0,
-                },
-                _ => 0,
-            }
-        } else {
-            0
-        };
+        session.messages.truncate(truncate_index);
         if cutoff > 0 {
             prune_metadata_after_checkpoint(&mut session, cutoff);
         }
-        recalled_text = recalled;
         is_empty = session.messages.is_empty();
     }
 
@@ -447,6 +575,15 @@ pub async fn rollback_to_checkpoint_with_recall(
         let memory = ctx.memory.lock().await.clone();
         crate::core::session::save_session(&session_id, &memory, None);
         let _ = app.emit("session-updated", ());
+
+        if rollback_files.unwrap_or(false) && effective_checkpoint_id.is_empty() {
+            let manager = registry.0.read().await.get_or_create(&session_id).await?;
+            manager.clear_snapshots_for_initial_state().await?;
+            println!(
+                "[Rollback] 会话 {} 已撤回到初始状态并清理快照记录",
+                session_id
+            );
+        }
     }
 
     Ok(RollbackRecallResult {

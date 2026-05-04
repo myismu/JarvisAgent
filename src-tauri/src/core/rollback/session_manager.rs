@@ -70,7 +70,7 @@ impl SessionSnapshotManager {
 
     /// 创建新快照
     ///
-    /// 自动判断是否需要创建 checkpoint，checkpoint 会重建完整工作区
+    /// 普通快照只记录一轮 Agent 累积的补丁，不在这里自动升级为 checkpoint。
     pub async fn create_snapshot(
         &self,
         patches: Vec<Patch>,
@@ -82,15 +82,12 @@ impl SessionSnapshotManager {
     ) -> Result<Snapshot, String> {
         let mut tree = self.tree.write().await;
 
-        // 检查是否需要创建 checkpoint（基于快照数量阈值）
-        let is_checkpoint = tree.should_create_checkpoint();
-
         let mut snapshot = tree.create_snapshot(
             patches.clone(),
             message.clone(),
             agent_id,
             workspace_id,
-            is_checkpoint,
+            false,
             None,
         );
 
@@ -104,33 +101,6 @@ impl SessionSnapshotManager {
         // tree.nodes 中存的是 metadata 为空的旧副本，必须手动同步）
         if let Some(node) = tree.nodes.get_mut(&snapshot.id) {
             node.metadata = snapshot.metadata.clone();
-        }
-
-        if is_checkpoint {
-            let workspace = self
-                .replay_engine
-                .rebuild_workspace(&tree, &snapshot.id)
-                .map_err(|e| format!("为 checkpoint 重建工作区失败: {}", e))?;
-
-            if !workspace.files.is_empty() {
-                let mut files: HashMap<String, FileInfo> = HashMap::new();
-                for (path, content) in &workspace.files {
-                    let hash = Patch::content_hash(content);
-                    super::store::save_content(&self.session_id, &hash, content)
-                        .map_err(|e| format!("保存快照内容失败: {}", e))?;
-                    files.insert(
-                        path.clone(),
-                        FileInfo {
-                            hash,
-                            size: content.len() as u64,
-                        },
-                    );
-                }
-
-                if let Some(node) = tree.nodes.get_mut(&snapshot.id) {
-                    node.workspace_state = Some(WorkspaceState { files });
-                }
-            }
         }
 
         self.store
@@ -230,8 +200,9 @@ impl SessionSnapshotManager {
             }
 
             if let Some(node) = tree.nodes.get_mut(&snapshot.id) {
-                node.workspace_state = Some(WorkspaceState { files });
+                node.workspace_state = Some(WorkspaceState { files: files.clone() });
             }
+            snapshot.workspace_state = Some(WorkspaceState { files });
         }
 
         self.store
@@ -241,16 +212,6 @@ impl SessionSnapshotManager {
         self.store
             .save_tree(&tree)
             .map_err(|e| format!("保存树失败: {}", e))?;
-        if let Some(index) = trigger_user_memory_index {
-            crate::core::db::upsert_checkpoint_user_message_link(
-                &self.session_id,
-                index,
-                &snapshot.id,
-                patch_count > 0,
-                snapshot.created_at,
-            )
-            .map_err(|e| format!("写入消息快照关联失败: {}", e))?;
-        }
         crate::core::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
 
         let mut journal = self.journal.write().await;
@@ -360,6 +321,40 @@ impl SessionSnapshotManager {
         Ok(workspace)
     }
 
+    pub async fn preview_touched_files_to(&self, snapshot_id: &str) -> Result<Vec<String>, String> {
+        let tree = self.tree.read().await;
+        self.replay_engine
+            .preview_touched_files(&tree, snapshot_id)
+            .map_err(|e| format!("预览回滚文件失败: {}", e))
+    }
+
+    pub async fn rollback_touched_files_to(&self, snapshot_id: &str) -> Result<Workspace, String> {
+        let mut tree = self.tree.write().await;
+
+        let workspace = self
+            .replay_engine
+            .rollback_touched_files_to(&mut tree, snapshot_id)
+            .await
+            .map_err(|e| format!("回滚失败: {}", e))?;
+
+        self.store
+            .save_tree(&tree)
+            .map_err(|e| format!("保存树失败: {}", e))?;
+        crate::core::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
+
+        Ok(workspace)
+    }
+
+    pub async fn clear_snapshots_for_initial_state(&self) -> Result<(), String> {
+        let mut tree = self.tree.write().await;
+        *tree = SnapshotTree::new(&self.session_id);
+        self.store
+            .delete_all_for_session()
+            .map_err(|e| format!("清理快照记录失败: {}", e))?;
+        crate::core::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
+        Ok(())
+    }
+
     pub async fn list_snapshots(&self, branch_name: Option<&str>) -> Vec<Snapshot> {
         let tree = self.tree.read().await;
         let branch = branch_name.unwrap_or(&tree.current_branch);
@@ -390,6 +385,11 @@ impl SessionSnapshotManager {
     pub async fn count_patches_since_last_checkpoint(&self) -> usize {
         let tree = self.tree.read().await;
         tree.count_patches_since_last_checkpoint()
+    }
+
+    pub async fn should_create_checkpoint(&self) -> bool {
+        let tree = self.tree.read().await;
+        tree.should_create_checkpoint()
     }
 
     /// 从当前快照位置向前追溯，找到最近的 checkpoint 快照 ID

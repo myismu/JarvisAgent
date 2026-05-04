@@ -29,5 +29,5 @@ pub use edit::edit_file;
 pub use read::{read_file, read_file_skeleton};
 pub use registry::register_tools;
 pub use search::{search_in_dir, search_repo};
-pub use workspace::{commit_checkpoint_snapshot, has_patches_since_last_checkpoint};
+pub use workspace::{commit_pending_snapshot, has_pending_patches};
 pub use write::write_file;

@@ -721,15 +721,14 @@ impl PipelineState {
         {
             let has_operations = self.ctx.memory.lock().await.agent_steps.len() > 0;
             // 检查自上次 checkpoint 以来是否有新的文件补丁
-            let has_patches = crate::core::tools::file_tools::has_patches_since_last_checkpoint(
+            let has_patches = crate::core::tools::file_tools::has_pending_patches(
                 &self.app,
                 &self.sid,
             )
             .await;
 
             let checkpoint_id = if has_patches {
-                // 有文件编辑 → 创建实 checkpoint 快照
-                crate::core::tools::file_tools::commit_checkpoint_snapshot(
+                crate::core::tools::file_tools::commit_pending_snapshot(
                     &self.app,
                     &self.sid,
                     self.user_msg_preview.clone(),
@@ -738,13 +737,13 @@ impl PipelineState {
                 .await
             } else {
                 // 纯聊天轮次 → 不创建快照，仅记录日志
-                println!("[JARVIS] 纯聊天轮次，跳过检查点快照创建");
+                println!("[JARVIS] 纯聊天轮次，跳过快照创建");
                 None
             };
 
             if let Some(id) = &checkpoint_id {
                 println!(
-                    "[JARVIS] 已创建检查点快照: {} (来自快照引擎)",
+                    "[JARVIS] 已创建本轮文件快照: {} (来自快照引擎)",
                     id
                 );
             }

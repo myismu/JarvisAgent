@@ -178,6 +178,7 @@ pub fn run() {
             core::commands::checkpoint::get_checkpoint_tree,
             core::commands::checkpoint::rollback_to_checkpoint,
             core::commands::checkpoint::rollback_to_checkpoint_with_recall,
+            core::commands::checkpoint::preview_rollback_to_checkpoint_with_recall,
             core::commands::checkpoint::create_branch,
             core::commands::checkpoint::switch_branch,
             core::commands::checkpoint::list_branches,

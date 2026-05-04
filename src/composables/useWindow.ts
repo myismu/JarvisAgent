@@ -24,6 +24,13 @@ const MONITOR_WINDOW_HEIGHT = 760;
 const MONITOR_WINDOW_GAP = 12;
 const MONITOR_WINDOW_CLOSED_EVENT = "monitor-window-closed";
 const MONITOR_SESSION_CHANGED_EVENT = "monitor-session-changed";
+const MAIN_WINDOW_WIDTH = 1600;
+const MAIN_WINDOW_HEIGHT = 1000;
+const MAIN_WINDOW_X = 80;
+const MAIN_WINDOW_Y = 60;
+const MIN_VALID_WINDOW_WIDTH = 480;
+const MIN_VALID_WINDOW_HEIGHT = 360;
+const MINIMIZED_WINDOW_POSITION = -30000;
 
 type CustomWindowState = {
   width: number;
@@ -40,11 +47,24 @@ const readCustomWindowState = async (label: string): Promise<CustomWindowState |
   return invoke<CustomWindowState | null>("get_custom_window_state", { label });
 };
 
+const isValidWindowState = (state: CustomWindowState | null): state is CustomWindowState => {
+  if (!state) return false;
+  if (state.x <= MINIMIZED_WINDOW_POSITION || state.y <= MINIMIZED_WINDOW_POSITION) return false;
+  if (state.width < MIN_VALID_WINDOW_WIDTH || state.height < MIN_VALID_WINDOW_HEIGHT) return false;
+  return true;
+};
+
+const readValidCustomWindowState = async (label: string): Promise<CustomWindowState | null> => {
+  const state = await readCustomWindowState(label);
+  return isValidWindowState(state) ? state : null;
+};
+
 const applyCustomWindowState = async (window: Window | WebviewWindow, state: CustomWindowState | null) => {
-  if (!state) return;
+  if (!isValidWindowState(state)) return false;
 
   await window.setSize(new PhysicalSize(state.width, state.height));
   await window.setPosition(new PhysicalPosition(state.x, state.y));
+  return true;
 };
 
 const captureCustomWindowState = async (window: Window | WebviewWindow): Promise<CustomWindowState> => {
@@ -69,7 +89,11 @@ const captureCustomWindowState = async (window: Window | WebviewWindow): Promise
 };
 
 const saveCustomWindowState = async (label: string, window: Window | WebviewWindow) => {
+  if (await window.isMinimized()) return;
+
   const state = await captureCustomWindowState(window);
+  if (!isValidWindowState(state)) return;
+
   await invoke("save_custom_window_state", { label, state });
 };
 
@@ -117,12 +141,10 @@ export function useWindow() {
   };
 
   const positionMonitorNextToMain = async (monitorWindow: WebviewWindow) => {
-    const savedState = await readCustomWindowState(MONITOR_WINDOW_LABEL);
-    if (savedState) {
-      await applyCustomWindowState(monitorWindow, savedState);
-      return;
-    }
+    const savedState = await readValidCustomWindowState(MONITOR_WINDOW_LABEL);
+    if (await applyCustomWindowState(monitorWindow, savedState)) return;
 
+    await monitorWindow.setSize(new PhysicalSize(MONITOR_WINDOW_WIDTH, MONITOR_WINDOW_HEIGHT));
     await monitorWindow.setPosition(await defaultMonitorPosition());
   };
 
@@ -142,7 +164,7 @@ export function useWindow() {
     const existingWindow = await focusMonitorWindow();
     if (existingWindow) return existingWindow;
 
-    const savedState = await readCustomWindowState(MONITOR_WINDOW_LABEL);
+    const savedState = await readValidCustomWindowState(MONITOR_WINDOW_LABEL);
     const monitorWindow = new WebviewWindow(MONITOR_WINDOW_LABEL, {
       url: monitorUrl(),
       title: "执行监控",
@@ -208,8 +230,8 @@ export function useWindow() {
     await invoke("clear_custom_window_states");
 
     const mainWindow = await getMainWindow();
-    await mainWindow.setSize(new PhysicalSize(1600, 1000));
-    await mainWindow.setPosition(new PhysicalPosition(80, 60));
+    await mainWindow.setSize(new PhysicalSize(MAIN_WINDOW_WIDTH, MAIN_WINDOW_HEIGHT));
+    await mainWindow.setPosition(new PhysicalPosition(MAIN_WINDOW_X, MAIN_WINDOW_Y));
 
     const monitorWindow = await getMonitorWindow();
     if (monitorWindow) {
@@ -220,7 +242,13 @@ export function useWindow() {
 
   const restoreCurrentWindowState = async () => {
     const currentWindow = getCurrentWindow();
-    await applyCustomWindowState(currentWindow, await readCustomWindowState(currentWindow.label));
+    const savedState = await readValidCustomWindowState(currentWindow.label);
+    if (await applyCustomWindowState(currentWindow, savedState)) return;
+
+    if (currentWindow.label === MAIN_WINDOW_LABEL) {
+      await currentWindow.setSize(new PhysicalSize(MAIN_WINDOW_WIDTH, MAIN_WINDOW_HEIGHT));
+      await currentWindow.setPosition(new PhysicalPosition(MAIN_WINDOW_X, MAIN_WINDOW_Y));
+    }
   };
 
   const persistCurrentWindowState = async () => {

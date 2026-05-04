@@ -53,7 +53,8 @@ pub use state::{
 pub use agent::ask_jarvis;
 pub use commands::checkpoint::{
     clear_pending_operations, commit_checkpoint, create_branch, delete_branch, get_active_branch,
-    get_checkpoint_tree, list_branches, list_checkpoints, rollback_to_checkpoint, switch_branch,
+    get_checkpoint_tree, list_branches, list_checkpoints, preview_rollback_to_checkpoint_with_recall,
+    rollback_to_checkpoint, rollback_to_checkpoint_with_recall, switch_branch,
 };
 pub use commands::config::{get_config, get_image_compress_config, save_config_cmd};
 pub use commands::history::get_session_history;

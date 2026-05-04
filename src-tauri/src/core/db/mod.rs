@@ -73,6 +73,138 @@ pub struct CheckpointUserMessageLink {
     pub created_at: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct PendingSnapshotPatchRecord {
+    pub run_id: String,
+    pub seq: usize,
+    pub patch: crate::core::rollback::Patch,
+    pub message: Option<String>,
+    pub trigger_user_memory_index: Option<usize>,
+    pub created_at: u64,
+}
+
+fn now_ts() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+pub fn insert_pending_snapshot_patch(
+    session_id: &str,
+    run_id: &str,
+    seq: usize,
+    patch: &crate::core::rollback::Patch,
+    message: Option<&str>,
+    trigger_user_memory_index: Option<usize>,
+) -> Result<(), String> {
+    let patch_json = serde_json::to_string(patch).map_err(|e| e.to_string())?;
+    with_connection(|conn| {
+        conn.execute(
+            "INSERT INTO pending_snapshot_patches(
+                session_id, run_id, seq, patch_json, message, trigger_user_memory_index, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(session_id, run_id, seq) DO UPDATE SET
+                patch_json = excluded.patch_json,
+                message = excluded.message,
+                trigger_user_memory_index = excluded.trigger_user_memory_index,
+                created_at = excluded.created_at",
+            params![
+                session_id,
+                run_id,
+                seq as i64,
+                patch_json,
+                message,
+                trigger_user_memory_index.map(|value| value as i64),
+                now_ts() as i64,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+pub fn list_pending_snapshot_patches(
+    session_id: &str,
+    run_id: Option<&str>,
+) -> Result<Vec<PendingSnapshotPatchRecord>, String> {
+    with_connection(|conn| {
+        let mut patches = Vec::new();
+        if let Some(run_id) = run_id {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT run_id, seq, patch_json, message, trigger_user_memory_index, created_at
+                     FROM pending_snapshot_patches
+                     WHERE session_id = ?1 AND run_id = ?2
+                     ORDER BY seq",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![session_id, run_id], pending_snapshot_patch_from_row)
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                patches.push(row.map_err(|e| e.to_string())?);
+            }
+        } else {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT run_id, seq, patch_json, message, trigger_user_memory_index, created_at
+                     FROM pending_snapshot_patches
+                     WHERE session_id = ?1
+                     ORDER BY created_at, seq",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([session_id], pending_snapshot_patch_from_row)
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                patches.push(row.map_err(|e| e.to_string())?);
+            }
+        }
+        Ok(patches)
+    })
+}
+
+fn pending_snapshot_patch_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PendingSnapshotPatchRecord> {
+    let seq: i64 = row.get(1)?;
+    let patch_json: String = row.get(2)?;
+    let trigger_index: Option<i64> = row.get(4)?;
+    let created_at: i64 = row.get(5)?;
+    let patch = serde_json::from_str(&patch_json).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            2,
+            rusqlite::types::Type::Text,
+            Box::new(err),
+        )
+    })?;
+    Ok(PendingSnapshotPatchRecord {
+        run_id: row.get(0)?,
+        seq: seq.max(0) as usize,
+        patch,
+        message: row.get(3)?,
+        trigger_user_memory_index: trigger_index.map(|value| value.max(0) as usize),
+        created_at: created_at.max(0) as u64,
+    })
+}
+
+pub fn delete_pending_snapshot_patches(session_id: &str, run_id: Option<&str>) -> Result<(), String> {
+    with_connection(|conn| {
+        if let Some(run_id) = run_id {
+            conn.execute(
+                "DELETE FROM pending_snapshot_patches WHERE session_id = ?1 AND run_id = ?2",
+                params![session_id, run_id],
+            )
+        } else {
+            conn.execute(
+                "DELETE FROM pending_snapshot_patches WHERE session_id = ?1",
+                params![session_id],
+            )
+        }
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
 pub fn upsert_checkpoint_user_message_link(
     session_id: &str,
     user_message_index: usize,

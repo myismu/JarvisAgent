@@ -7,13 +7,13 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 use super::framework::permission::ensure_path_permission;
 use super::framework::registry::ToolDef;
 use crate::core::models::Message;
 use crate::core::rollback::Patch;
-use crate::core::SnapshotRegistry;
+use crate::core::state::{PendingSnapshotPatch, SessionManager};
 
 const IPYNB_INDENT: &[u8] = b" ";
 
@@ -54,29 +54,53 @@ async fn active_user_message_index(app: &tauri::AppHandle, session_id: &str) -> 
         .and_then(|session| latest_user_message_index(&session.messages))
 }
 
+async fn active_run_id(app: &tauri::AppHandle, session_id: &str) -> Option<String> {
+    let manager = app.try_state::<SessionManager>()?;
+    let ctx = manager.get_or_create(session_id).await;
+    let run_id = ctx.active_run_id.lock().await.clone();
+    run_id
+}
+
 async fn record_patch_to_snapshot(
     app: &tauri::AppHandle,
     session_id: &str,
     patch: Patch,
     message: Option<String>,
 ) {
-    if let Some(registry) = app.try_state::<SnapshotRegistry>() {
-        let mgr_result = registry.0.read().await.get_or_create(session_id).await;
-        if let Ok(mgr) = mgr_result {
-            let trigger_user_memory_index = active_user_message_index(app, session_id).await;
-            if let Ok(snapshot) = mgr
-                .create_snapshot(vec![patch], message, None, None, None, trigger_user_memory_index)
-                .await
-            {
-                let _ = app.emit(
-                    "snapshot-created",
-                    json!({
-                        "sessionId": session_id,
-                        "snapshotId": snapshot.id
-                    }),
-                );
-            }
+    if let Some(manager) = app.try_state::<SessionManager>() {
+        let ctx = manager.get_or_create(session_id).await;
+        let trigger_user_memory_index = active_user_message_index(app, session_id).await;
+        let run_id = active_run_id(app, session_id)
+            .await
+            .unwrap_or_else(|| "manual".to_string());
+        let seq = {
+            let guard = ctx.pending_patches.lock().await;
+            guard
+                .iter()
+                .filter(|item| item.run_id == run_id)
+                .map(|item| item.seq)
+                .max()
+                .map_or(0, |seq| seq + 1)
+        };
+
+        if let Err(err) = crate::core::db::insert_pending_snapshot_patch(
+            session_id,
+            &run_id,
+            seq,
+            &patch,
+            message.as_deref(),
+            trigger_user_memory_index,
+        ) {
+            eprintln!("[Snapshot] 持久化 Notebook pending patch 失败: {}", err);
         }
+
+        ctx.pending_patches.lock().await.push(PendingSnapshotPatch {
+            run_id,
+            seq,
+            patch,
+            message,
+            trigger_user_memory_index,
+        });
     }
 }
 

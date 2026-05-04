@@ -211,7 +211,12 @@ pub fn save_session(
                     let filtered_blocks: Vec<ContentBlock> = blocks
                         .iter()
                         .filter(|b| {
-                            matches!(b, ContentBlock::Text { .. } | ContentBlock::Image { .. })
+                            matches!(
+                                b,
+                                ContentBlock::Text { .. }
+                                    | ContentBlock::Image { .. }
+                                    | ContentBlock::ToolResult { .. }
+                            )
                         })
                         .map(|b| {
                             if let ContentBlock::Image { source } = b {
@@ -278,6 +283,7 @@ pub fn save_session(
                             {
                                 Some(b.clone())
                             }
+                            ContentBlock::ToolUse { .. } => Some(b.clone()),
                             _ => None,
                         })
                         .collect();
