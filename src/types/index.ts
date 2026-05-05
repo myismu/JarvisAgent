@@ -202,6 +202,7 @@ export interface AgentCurrentTurn {
   thinkingBlocks: AgentThinkingBlock[];
   toolCalls: AgentToolCallView[];
   logs: AgentExecutionLog[];
+  tokens?: AgentTurnTokens;
   startedAt: number | null;
 }
 

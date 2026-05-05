@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, computed, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { useAgentEvents } from "./composables/useAgentEvents";
 import { usePreferences } from "./composables/usePreferences";
 import { useWindow } from "./composables/useWindow";
@@ -16,6 +17,7 @@ import PlanPreviewPanel from "./components/common/PlanPreviewPanel.vue";
 import SettingsPanel from "./components/settings/SettingsPanel.vue";
 
 const showSettings = ref(false);
+const { t } = useI18n();
 const prefs = usePreferences();
 const sidebarCollapsed = ref(prefs.sidebarCollapsed);
 useTheme(); // 初始化主题
@@ -147,7 +149,7 @@ onBeforeUnmount(() => {
 
         <div class="main-content">
           <div class="tab-bar">
-            <button class="sidebar-toggle" @click="sidebarCollapsed = !sidebarCollapsed" :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'">
+            <button class="sidebar-toggle" @click="sidebarCollapsed = !sidebarCollapsed" :title="sidebarCollapsed ? t('app.expandSidebar') : t('app.collapseSidebar')">
               <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
                 <polyline :points="sidebarCollapsed ? '9 18 15 12 9 6' : '15 18 9 12 15 6'"></polyline>
               </svg>
@@ -164,7 +166,7 @@ onBeforeUnmount(() => {
               class="agent-panel-toggle"
               :class="{ active: agent.showAgentPanel }"
               @click="toggleAgentMonitor"
-              :title="agent.showAgentPanel ? '隐藏执行流程' : '显示执行流程'"
+              :title="agent.showAgentPanel ? t('app.hideAgentPanel') : t('app.showAgentPanel')"
             >
               <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="22 12 18 12"></polyline>
@@ -176,9 +178,11 @@ onBeforeUnmount(() => {
           </div>
           
           <ChatArea />
-          <TerminalInput class="terminal-input-wrapper" :class="{ 'sidebar-expanded': !sidebarCollapsed }" />
+          
+          <div class="floating-terminal-container">
+            <TerminalInput />
+          </div>
         </div>
-
       </div>
     </div>
 
@@ -350,6 +354,23 @@ onBeforeUnmount(() => {
   color: var(--accent-blue);
   background: rgba(59, 130, 246, 0.08);
   border-color: rgba(59, 130, 246, 0.2);
+}
+
+.floating-terminal-container {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  padding: 0 40px 32px;
+  pointer-events: none;
+  display: flex;
+  justify-content: center;
+}
+
+.floating-terminal-container > * {
+  pointer-events: auto;
+  width: 100%;
 }
 
 @keyframes breatheGreen {

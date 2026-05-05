@@ -11,12 +11,14 @@
 -->
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted } from "vue";
+import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentEvents } from "./composables/useAgentEvents";
 import { useWindow } from "./composables/useWindow";
 import { useTheme } from "./composables/useTheme";
 import { useAgentStore } from "./stores/agent";
 import { useSessionStore } from "./stores/session";
+import { normalizeLocale } from "./i18n";
 import type { SessionMeta } from "./types";
 import AgentPanel from "./components/chat/AgentPanel.vue";
 
@@ -24,6 +26,7 @@ useTheme(); // 初始化主题并监听同步
 
 const agent = useAgentStore();
 const session = useSessionStore();
+const { locale } = useI18n();
 const {
   initListeners,
   loadSubAgentRunsFromBackend,
@@ -33,8 +36,9 @@ const {
   loadAgentRunEventsFromBackend,
   loadContextSnapshotFromBackend,
 } = useAgentEvents();
-const { onMonitorSessionChanged, restoreCurrentWindowState, watchCurrentWindowState } = useWindow();
+const { onMonitorSessionChanged, onMonitorLocaleChanged, restoreCurrentWindowState, watchCurrentWindowState } = useWindow();
 let unlistenSessionChanged: (() => void) | null = null;
+let unlistenLocaleChanged: (() => void) | null = null;
 let unwatchWindowState: (() => void) | null = null;
 
 const hydrateMonitorState = async (targetSessionId?: string | null) => {
@@ -72,10 +76,14 @@ onMounted(async () => {
   unlistenSessionChanged = await onMonitorSessionChanged((sessionId) => {
     hydrateMonitorState(sessionId);
   });
+  unlistenLocaleChanged = await onMonitorLocaleChanged((nextLocale) => {
+    locale.value = normalizeLocale(nextLocale);
+  });
 });
 
 onBeforeUnmount(() => {
   unlistenSessionChanged?.();
+  unlistenLocaleChanged?.();
   unwatchWindowState?.();
 });
 </script>

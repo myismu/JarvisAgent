@@ -1,6 +1,9 @@
 import { marked } from "marked";
 import type { AgentToolStatus } from "../types";
+import { i18n } from "../i18n";
 import { toolActionLabel, toolCategoryLabel } from "./toolDisplay";
+
+const t = i18n.global.t;
 
 marked.use({
   renderer: {
@@ -13,7 +16,7 @@ marked.use({
       return `<div class="markdown-code-block">
 <div class="markdown-code-header">
 <span class="markdown-code-language">${escapeHtml(languageLabel)}</span>
-<button type="button" class="markdown-copy-btn code-copy-btn" title="复制代码" aria-label="复制代码">复制</button>
+<button type="button" class="markdown-copy-btn code-copy-btn" title="${escapeHtmlForAttr(t('execution.copyCode'))}" aria-label="${escapeHtmlForAttr(t('execution.copyCode'))}">${escapeHtml(t('common.copy'))}</button>
 </div>
 <pre><code${languageClass}>${code}</code></pre>
 </div>
@@ -39,8 +42,8 @@ ${rows}</tbody>
 
       return `<div class="markdown-table-wrap">
 <div class="markdown-table-header">
-<span>表格</span>
-<button type="button" class="markdown-copy-btn table-copy-btn" title="复制表格" aria-label="复制表格">复制</button>
+<span>${escapeHtml(t('execution.table'))}</span>
+<button type="button" class="markdown-copy-btn table-copy-btn" title="${escapeHtmlForAttr(t('execution.copyTable'))}" aria-label="${escapeHtmlForAttr(t('execution.copyTable'))}">${escapeHtml(t('common.copy'))}</button>
 </div>
 <div class="markdown-table-scroll">
 <table>
@@ -70,8 +73,8 @@ const toolDetailsIcon = `<svg viewBox="0 0 24 24" width="14" height="14" stroke=
 export function renderToolDetails(content: string, mode: "live" | "done", open = false) {
   const summary =
     mode === "live"
-      ? "贾维斯正在思考与执行操作... (点击查看详情)"
-      : "贾维斯已完成思考与操作 (点击查看完整决策链)";
+      ? t('execution.toolDetailsSummary')
+      : t('execution.toolDetailsSummaryDone');
   const body = content.trim() ? renderMarkdown(content) : "";
   return `\n\n<details ${open ? "open" : ""}>\n<summary>${toolDetailsIcon}${summary}</summary>\n\n${body}\n\n</details>\n\n`;
 }
@@ -89,7 +92,7 @@ export function renderToolStatusIcon(status: string) {
 export function renderToolStatusLine(toolCallId: string, tool: string, status: string) {
   const safeId = escapeHtmlForAttr(toolCallId);
   const safeStatus = normalizeToolStatus(status);
-  const title = safeStatus === "completed" ? "已完成" : safeStatus === "error" ? "执行失败" : "正在执行";
+  const title = safeStatus === "completed" ? t('execution.completed') : safeStatus === "error" ? t('execution.error') : t('execution.running');
   const safeCategory = escapeHtml(toolCategoryLabel(tool));
   const safeAction = escapeHtml(toolActionLabel(tool, safeStatus));
   return `<div class="tool-status-line ${escapeHtmlForAttr(safeStatus)}" data-tool-call-id="${safeId}" title="${title}">${renderToolStatusIcon(safeStatus)}<span class="tool-status-title">${safeCategory}</span><span>${safeAction}</span></div>`;
@@ -127,86 +130,7 @@ export function renderTokenUsage(
 ) {
   const sessionPart =
     sessionInputTokens !== undefined && sessionOutputTokens !== undefined
-      ? ` &nbsp;&nbsp;|&nbsp;&nbsp; <b>会话总计</b>: 输入 ${sessionInputTokens || 0} / 输出 ${sessionOutputTokens || 0} Token`
+      ? ` &nbsp;&nbsp;|&nbsp;&nbsp; <b>${escapeHtml(t('execution.sessionUsage'))}</b>: ${escapeHtml(t('execution.input'))} ${sessionInputTokens || 0} / ${escapeHtml(t('execution.outputToken'))} ${sessionOutputTokens || 0} Token`
       : "";
-  return `<div class="token-usage"><b>本次消耗</b>: 输入 ${inputTokens || 0} / 输出 ${outputTokens || 0} Token${sessionPart}</div>`;
-}
-
-export function renderStoredHistory(history: string, READY_TEXT: string) {
-  const trimmed = history.trim();
-  if (!trimmed) return "";
-  if (trimmed === READY_TEXT) return renderMarkdown(history);
-
-  const messageMarker = '<div class="chat-message';
-  if (!history.includes(messageMarker)) {
-    return renderMarkdown(history);
-  }
-
-  let rendered = "";
-  let cursor = 0;
-  while (cursor < history.length) {
-    const start = history.indexOf(messageMarker, cursor);
-    if (start === -1) {
-      rendered += history.slice(cursor);
-      break;
-    }
-
-    rendered += history.slice(cursor, start);
-    const next = history.indexOf(messageMarker, start + messageMarker.length);
-    const end = next === -1 ? history.length : next;
-    rendered += renderHistoryMessageBlock(history.slice(start, end));
-    cursor = end;
-  }
-
-  return rendered;
-}
-
-function findMatchingDivClose(html: string, divStart: number) {
-  const openEnd = html.indexOf(">", divStart);
-  if (openEnd === -1) return -1;
-
-  const lower = html.toLowerCase();
-  let depth = 1;
-  let cursor = openEnd + 1;
-
-  while (cursor < html.length) {
-    const nextOpen = lower.indexOf("<div", cursor);
-    const nextClose = lower.indexOf("</div>", cursor);
-    if (nextClose === -1) return -1;
-
-    if (nextOpen !== -1 && nextOpen < nextClose) {
-      depth += 1;
-      cursor = nextOpen + 4;
-      continue;
-    }
-
-    depth -= 1;
-    if (depth === 0) return nextClose;
-    cursor = nextClose + "</div>".length;
-  }
-
-  return -1;
-}
-
-function findMessageContentDivStart(html: string) {
-  const divPattern = /<div\b[^>]*\bclass=(["'])(?=[^"']*\bmessage-content\b)[^"']*\1[^>]*>/gi;
-  const match = divPattern.exec(html);
-  return match?.index ?? -1;
-}
-
-function renderHistoryMessageBlock(block: string) {
-  const contentStart = findMessageContentDivStart(block);
-  if (contentStart === -1) return block;
-
-  const openEnd = block.indexOf(">", contentStart);
-  const closeStart = findMatchingDivClose(block, contentStart);
-  if (openEnd === -1 || closeStart === -1 || closeStart <= openEnd) {
-    return renderMarkdown(block);
-  }
-
-  const beforeContent = block.slice(0, openEnd + 1);
-  const rawContent = block.slice(openEnd + 1, closeStart);
-  const afterContent = block.slice(closeStart);
-
-  return `${beforeContent}${renderMarkdown(rawContent)}${afterContent}`;
+  return `<div class="token-usage"><b>${escapeHtml(t('execution.tokenUsage'))}</b>: ${escapeHtml(t('execution.input'))} ${inputTokens || 0} / ${escapeHtml(t('execution.outputToken'))} ${outputTokens || 0} Token${sessionPart}</div>`;
 }

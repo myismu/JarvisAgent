@@ -14,7 +14,10 @@
 use crate::core::rollback::Patch;
 use crate::core::tools::framework::permission::ensure_path_permission;
 
-use super::common::{is_locked_file_error, normalize_line_endings, normalize_quotes};
+use super::common::{
+    encode_text_preserve_encoding, is_locked_file_error, normalize_line_endings, normalize_quotes,
+    read_text_preserve_encoding,
+};
 use super::diff::compute_diff;
 use super::notebook_guard::{
     is_notebook_path, looks_like_notebook_json, notebook_text_edit_rejection,
@@ -41,8 +44,10 @@ pub async fn edit_file(
     // 记录读取时的 mtime，用于 TOCTOU 防护
     let read_mtime = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
 
-    match std::fs::read_to_string(path) {
-        Ok(content) => {
+    match read_text_preserve_encoding(path) {
+        Ok(decoded) => {
+            let content = decoded.content;
+            let encoding = decoded.encoding;
             if looks_like_notebook_json(&content) {
                 return notebook_text_edit_rejection(path);
             }
@@ -115,7 +120,12 @@ pub async fn edit_file(
                 }
             }
 
-            match std::fs::write(path, &updated_content) {
+            let bytes = match encode_text_preserve_encoding(&updated_content, encoding) {
+                Ok(bytes) => bytes,
+                Err(e) => return format!("编辑并保存失败: {}", e),
+            };
+
+            match std::fs::write(path, bytes) {
                 Ok(_) => {
                     let patch = Patch::UpdateFile {
                         path: path.to_string(),

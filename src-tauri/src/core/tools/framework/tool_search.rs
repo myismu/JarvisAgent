@@ -180,12 +180,13 @@ pub async fn handle_search_tools(input: &serde_json::Value, intent: &str) -> Str
 
     for name in &matches {
         if let Some(schema) = get_deferred_tool_full_schema(name) {
-            let json_str = serde_json::to_string(&schema).unwrap_or_default();
-            result.push_str(&format!("\n<function>{}</function>", json_str));
+            let json_str = serde_json::to_string_pretty(&schema).unwrap_or_default();
+            result.push_str(&format!("\n工具: {}\n```json\n{}\n```\n", name, json_str));
         }
     }
 
-    result.push_str("\n\n现在可以直接调用以上工具。");
+    result
+        .push_str("\n以上工具已经激活；需要使用时请发起结构化工具调用，不要把工具调用写在正文里。");
 
     result
 }
@@ -301,6 +302,19 @@ mod tests {
         let s = schema.unwrap();
         assert_eq!(s["name"], "ReadFile");
         assert!(s["input_schema"]["properties"]["path"].is_object());
+    }
+
+    #[test]
+    fn test_handle_search_tools_does_not_return_xml_function_wrappers() {
+        let output = tauri::async_runtime::block_on(handle_search_tools(
+            &json!({ "query": "select:ReadFile" }),
+            "PROJECT_ACTION",
+        ));
+
+        assert!(output.contains("工具: ReadFile"));
+        assert!(output.contains("```json"));
+        assert!(!output.contains("<function>"));
+        assert!(!output.contains("</function>"));
     }
 
     #[test]

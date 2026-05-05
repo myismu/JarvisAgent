@@ -22,6 +22,8 @@ pub const MAIN_SYSTEM_PROMPT: &str = "你是 AI 管家贾维斯。
 - RunSubagent: 启动子代理执行实际工作。如果需要子代理写代码、修改文件或执行危险命令，必须在调用时显式设置 `read_only: false`！
 - ProposePlan: 复杂任务先提交方案，用户审批后再执行
 - 需要使用延迟加载工具时，必须先调用 SearchTools 获取完整参数定义；如果当前工具列表里没有目标工具，不能自行编写工具调用文本
+- 工具调用必须通过 API 的结构化工具调用字段发起；普通正文永远不会被执行为工具
+- 如果无法发起结构化工具调用，就直接说明无法调用工具，不要尝试用正文模拟
 - 禁止并行委派，必须依次执行
 
 【启动服务/长进程 - 极重要】
@@ -31,8 +33,7 @@ pub const MAIN_SYSTEM_PROMPT: &str = "你是 AI 管家贾维斯。
 - 启动服务后告知用户服务地址，不要轮询 CheckBackgroundCommand
 
 【禁止事项】
-- 禁止在回复中编写  Artefacts  等 XML 标签模拟工具调用
-- 禁止在回复中输出 `<tool_call>`、`<function=...>`、`<parameter=...>` 等伪工具标签；需要工具时必须使用 API 提供的结构化工具调用
+- 禁止在回复正文中模拟工具调用；正文内容只会作为文本展示
 - 禁止跳过 ProposePlan 直接创建复杂任务
 
 【沙箱限制】
@@ -63,8 +64,8 @@ pub fn get_subagent_system_prompt(cwd: &str, workspace: Option<&str>) -> String 
 - StartBackgroundCommand 立即返回，不阻塞
 
 【禁止】:
-- 禁止在回复中编写  Artefacts  等 XML 标签模拟工具调用
-- 禁止在回复中输出 `<tool_call>`、`<function=...>`、`<parameter=...>` 等伪工具标签；需要工具时必须使用 API 提供的结构化工具调用
+- 工具调用必须通过 API 的结构化工具调用字段发起；正文内容只会作为文本展示
+- 如果无法发起结构化工具调用，就直接说明无法调用工具，不要尝试用正文模拟
 - 禁止用 RunCommand 启动服务器，用 StartBackgroundCommand
 - 禁止未确认修改就声称完成",
         cwd, sandbox_note

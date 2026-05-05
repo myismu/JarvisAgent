@@ -11,11 +11,13 @@
 -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { useSessionStore } from '../../stores/session';
 import { SnapshotTimelineService } from '../../services/snapshotService';
 import type { SnapshotNode, SnapshotSummary, SnapshotTreeView } from '../../types';
 
 const session = useSessionStore();
+const { t } = useI18n();
 
 const loading = ref(false);
 const errorMessage = ref('');
@@ -104,17 +106,17 @@ watch(
   <div class="snapshot-compact">
     <div class="snapshot-head">
       <div>
-        <strong>{{ activeBranch?.name || '无分支' }}</strong>
-        <span v-if="tree?.currentSnapshotId">当前 {{ tree.currentSnapshotId.slice(0, 8) }}</span>
+        <strong>{{ activeBranch?.name || t('monitor.snapshot.noBranch') }}</strong>
+        <span v-if="tree?.currentSnapshotId">{{ t('monitor.snapshot.current', { id: tree.currentSnapshotId.slice(0, 8) }) }}</span>
       </div>
       <button type="button" :disabled="loading" @click="loadSnapshotSection(true)">
-        {{ loading ? '刷新中' : '刷新' }}
+        {{ loading ? t('monitor.snapshot.refreshing') : t('monitor.snapshot.refresh') }}
       </button>
     </div>
 
     <div v-if="errorMessage" class="snapshot-error">{{ errorMessage }}</div>
-    <div v-else-if="!session.activeSessionId" class="snapshot-empty">暂无活跃会话</div>
-    <div v-else-if="recentNodes.length === 0 && !loading" class="snapshot-empty">暂无快照检查点</div>
+    <div v-else-if="!session.activeSessionId" class="snapshot-empty">{{ t('monitor.snapshot.noActiveSession') }}</div>
+    <div v-else-if="recentNodes.length === 0 && !loading" class="snapshot-empty">{{ t('monitor.snapshot.noCheckpoints') }}</div>
 
     <div v-if="recentNodes.length > 0" class="snapshot-node-list">
       <button
@@ -136,8 +138,8 @@ watch(
 
     <div v-if="selectedSummary" class="snapshot-summary">
       <div class="snapshot-summary-head">
-        <span>变更摘要</span>
-        <span>{{ selectedSummary.patchCount }} 项</span>
+        <span>{{ t('monitor.snapshot.changeSummary') }}</span>
+        <span>{{ t('monitor.snapshot.patchCount', { count: selectedSummary.patchCount }) }}</span>
       </div>
       <div v-if="selectedSummary.patchSummary.length > 0" class="snapshot-patches">
         <div v-for="patch in selectedSummary.patchSummary.slice(0, 6)" :key="`${patch.operation}-${patch.path}`" class="snapshot-patch">
@@ -146,7 +148,7 @@ watch(
           <small>+{{ patch.linesAdded }} -{{ patch.linesRemoved }}</small>
         </div>
       </div>
-      <div v-else class="snapshot-empty">该节点没有文件变更摘要</div>
+      <div v-else class="snapshot-empty">{{ t('monitor.snapshot.emptyPatchSummary') }}</div>
     </div>
   </div>
 </template>

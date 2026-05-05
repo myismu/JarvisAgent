@@ -288,8 +288,13 @@ pub async fn handle_tool_call_inner(
         "EditNotebook" => notebook_tools::notebook_edit(app, input, session_id).await,
         "ReadFile" => file_tools::read_file(app, input, session_id).await,
         "ReadFileSkeleton" => file_tools::read_file_skeleton(app, input, session_id).await,
+        "FindSymbol" => file_tools::find_symbol(app, input, session_id).await,
+        "ReadSymbol" => file_tools::read_symbol(app, input, session_id).await,
+        "FindReferences" => file_tools::find_references(app, input, session_id).await,
+        "CodeSearch" => file_tools::code_search(app, input, session_id).await,
         "WriteFile" => file_tools::write_file(app, input, session_id).await,
         "EditFile" => file_tools::edit_file(app, input, session_id).await,
+        "ApplyPatch" => file_tools::apply_patch(app, input, session_id).await,
 
         // Shell 工具
         "RunGitCommand" => shell_tools::git_command(app, input, session_id).await,

@@ -12,6 +12,7 @@
 -->
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { emit } from '@tauri-apps/api/event';
@@ -26,6 +27,7 @@ const session = useSessionStore();
 const agent = useAgentStore();
 const permission = usePermissionStore();
 const { persistCurrentWindowState } = useWindow();
+const { t } = useI18n();
 const props = defineProps<{ standalone?: boolean }>();
 
 const elapsed = ref(0);
@@ -49,7 +51,7 @@ const formatTime = (seconds: number): string => {
 };
 
 const formatDuration = (timestamp?: number | null): string => {
-  if (!timestamp) return '刚刚';
+  if (!timestamp) return t('monitor.justNow');
   const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
@@ -65,25 +67,25 @@ const formatTokens = (tokens: number): string => {
 
 const previewText = (value?: string | null, max = 72): string => {
   const text = (value || '').replace(/\s+/g, ' ').trim();
-  if (!text) return '暂无摘要';
+  if (!text) return t('monitor.emptySummary');
   return text.length > max ? `${text.slice(0, max)}...` : text;
 };
 
 const subAgentStatusLabel = (status: string): string => {
   switch (status) {
-    case 'running': return '运行中';
-    case 'completed': return '完成';
-    case 'failed': return '失败';
-    case 'cancelled': return '取消';
+    case 'running': return t('monitor.subAgentStatus.running');
+    case 'completed': return t('monitor.subAgentStatus.completed');
+    case 'failed': return t('monitor.subAgentStatus.failed');
+    case 'cancelled': return t('monitor.subAgentStatus.cancelled');
     default: return status;
   }
 };
 
 const planStatusLabel = (status: string): string => {
   switch (status) {
-    case 'pending': return '待审批';
-    case 'approved': return '已通过';
-    case 'rejected': return '已拒绝';
+    case 'pending': return t('monitor.planStatus.pending');
+    case 'approved': return t('monitor.planStatus.approved');
+    case 'rejected': return t('monitor.planStatus.rejected');
     default: return status;
   }
 };
@@ -143,11 +145,11 @@ const backgroundTaskTitle = (task: BackgroundTask): string => task.taskType || t
     <aside v-if="panelVisible" class="agent-panel" :class="{ standalone }">
       <div class="panel-header" data-tauri-drag-region>
         <div class="panel-title" data-tauri-drag-region>
-          <span>监控</span>
+          <span>{{ t('monitor.title') }}</span>
           <span v-if="session.isCurrentSessionRunning" class="running-dot"></span>
           <span v-if="session.isCurrentSessionRunning" class="elapsed-time">{{ formatTime(elapsed) }}</span>
         </div>
-        <button class="close-btn" type="button" aria-label="关闭" @click="closePanel">
+        <button class="close-btn" type="button" :aria-label="t('monitor.close')" @click="closePanel">
           <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <line x1="18" y1="6" x2="6" y2="18"></line>
             <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -160,7 +162,7 @@ const backgroundTaskTitle = (task: BackgroundTask): string => task.taskType || t
           <div class="monitor-section-head">
             <div>
               <span class="monitor-kicker">Context</span>
-              <strong>上下文预算</strong>
+              <strong>{{ t('monitor.contextBudget') }}</strong>
             </div>
           </div>
           <ContextInspector :snapshot="currentContextSnapshot" />
@@ -171,7 +173,7 @@ const backgroundTaskTitle = (task: BackgroundTask): string => task.taskType || t
             <div class="monitor-section-head">
               <div>
                 <span class="monitor-kicker">Sub Agents</span>
-                <strong>子 Agent</strong>
+                <strong>{{ t('monitor.subAgents') }}</strong>
               </div>
               <span class="monitor-pill">{{ activeSubAgentCount }}/{{ agent.currentSubAgentRuns.length }}</span>
             </div>
@@ -189,20 +191,20 @@ const backgroundTaskTitle = (task: BackgroundTask): string => task.taskType || t
                 </div>
                 <p>{{ previewText(run.summary || run.error || run.promptPreview || run.prompt) }}</p>
                 <div class="monitor-item-meta">
-                  <span>{{ run.loopCount }}/{{ run.maxLoops }} 轮</span>
+                  <span>{{ t('monitor.loops', { current: run.loopCount, max: run.maxLoops }) }}</span>
                   <span>{{ formatTokens(subAgentTokenTotal(run)) }} tok</span>
-                  <span>{{ formatDuration(run.updatedAt) }} 前</span>
+                  <span>{{ t('monitor.ago', { duration: formatDuration(run.updatedAt) }) }}</span>
                 </div>
               </div>
             </div>
-            <div v-else class="monitor-empty">暂无子 Agent</div>
+            <div v-else class="monitor-empty">{{ t('monitor.noSubAgents') }}</div>
           </section>
 
           <section class="monitor-section">
             <div class="monitor-section-head">
               <div>
                 <span class="monitor-kicker">Background</span>
-                <strong>后台任务</strong>
+                <strong>{{ t('monitor.backgroundTasks') }}</strong>
               </div>
               <span class="monitor-pill">{{ runningBackgroundCount }}/{{ backgroundTasks.length }}</span>
             </div>
@@ -225,14 +227,14 @@ const backgroundTaskTitle = (task: BackgroundTask): string => task.taskType || t
                 </div>
               </div>
             </div>
-            <div v-else class="monitor-empty">暂无后台任务</div>
+            <div v-else class="monitor-empty">{{ t('monitor.noBackgroundTasks') }}</div>
           </section>
 
           <section class="monitor-section plans-section">
             <div class="monitor-section-head">
               <div>
                 <span class="monitor-kicker">Plans</span>
-                <strong>计划记录</strong>
+                <strong>{{ t('monitor.plans') }}</strong>
               </div>
               <span class="monitor-pill">{{ permission.currentPlanDocuments.length }}</span>
             </div>
@@ -250,11 +252,11 @@ const backgroundTaskTitle = (task: BackgroundTask): string => task.taskType || t
                 </div>
                 <p>{{ previewText(plan.content) }}</p>
                 <div class="monitor-item-meta">
-                  <span>{{ formatDuration(plan.updatedAt) }} 前更新</span>
+                  <span>{{ t('monitor.updatedAgo', { duration: formatDuration(plan.updatedAt) }) }}</span>
                 </div>
               </div>
             </div>
-            <div v-else class="monitor-empty">暂无计划记录</div>
+            <div v-else class="monitor-empty">{{ t('monitor.noPlans') }}</div>
           </section>
         </div>
       </div>

@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n';
+
+const { t } = useI18n();
+
 withDefaults(defineProps<{
   open: boolean
   title: string
@@ -10,8 +14,8 @@ withDefaults(defineProps<{
   loading?: boolean
 }>(), {
   warning: '',
-  confirmText: '确认',
-  cancelText: '取消',
+  confirmText: undefined,
+  cancelText: undefined,
   confirmKind: 'primary',
   loading: false,
 })
@@ -32,14 +36,14 @@ const emit = defineEmits<{
         </slot>
         <p v-if="warning" class="confirm-warning" role="alert">{{ warning }}</p>
         <div class="modal-actions">
-          <button class="cancel-btn" :disabled="loading" @click="emit('cancel')">{{ cancelText }}</button>
+          <button class="cancel-btn" :disabled="loading" @click="emit('cancel')">{{ cancelText || t('common.cancel') }}</button>
           <button
             class="confirm-btn"
             :class="confirmKind === 'danger' ? 'danger' : 'primary'"
             :disabled="loading"
             @click="emit('confirm')"
           >
-            {{ loading ? '处理中...' : confirmText }}
+            {{ loading ? t('common.processing') : (confirmText || t('common.confirm')) }}
           </button>
         </div>
       </div>

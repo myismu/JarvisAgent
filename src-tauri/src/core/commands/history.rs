@@ -34,6 +34,13 @@ use serde::Serialize;
 
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
+struct AgentTurnTokens {
+    input: u64,
+    output: u64,
+}
+
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 struct AgentTurnSnapshot {
     version: u32,
     status: String,
@@ -41,6 +48,7 @@ struct AgentTurnSnapshot {
     thinking_blocks: Vec<AgentThinkingBlock>,
     tool_calls: Vec<AgentToolCallView>,
     logs: Vec<AgentExecutionLog>,
+    tokens: Option<AgentTurnTokens>,
     created_at: u64,
 }
 
@@ -411,13 +419,15 @@ fn render_assistant_message(history: &mut String, assistant: &mut AgentTurnSnaps
     if !visible_text.is_empty() {
         history.push_str(visible_text);
     }
-    history.push_str(
-        "
 
-</div></div>
+    if let Some(tokens) = &assistant.tokens {
+        history.push_str(&format!(
+            "\n\n<div class=\"token-usage\"><b>本次消耗</b>: 输入 {} / 输出 {} Token</div>",
+            tokens.input, tokens.output
+        ));
+    }
 
-",
-    );
+    history.push_str("\n\n</div></div>\n\n");
 }
 
 #[tauri::command]
@@ -428,6 +438,7 @@ pub async fn get_session_history(
 ) -> Result<String, String> {
     let ctx = session_manager.get_or_create(&session_id).await;
     let mut memory = session::load_session(&session_id)?;
+    let runs = agent_runs::list_runs(Some(&session_id));
 
     // ── 中断恢复：检测并补回崩溃/中断时丢失的消息 ──
     if let Some((extra_messages, partial_content, partial_thinking)) =
@@ -560,6 +571,12 @@ pub async fn get_session_history(
                     continue;
                 };
 
+                if let Some(run) = visible_user_index.checked_sub(1).and_then(|i| runs.get(i)) {
+                    pending_assistant.tokens = Some(AgentTurnTokens {
+                        input: run.input_tokens,
+                        output: run.output_tokens,
+                    });
+                }
                 render_assistant_message(&mut history, &mut pending_assistant);
                 pending_assistant = AgentTurnSnapshot::default();
                 loop_idx = 1;
@@ -576,6 +593,12 @@ pub async fn get_session_history(
         }
     }
 
+    if let Some(run) = visible_user_index.checked_sub(1).and_then(|i| runs.get(i)) {
+        pending_assistant.tokens = Some(AgentTurnTokens {
+            input: run.input_tokens,
+            output: run.output_tokens,
+        });
+    }
     render_assistant_message(&mut history, &mut pending_assistant);
     Ok(history)
 }

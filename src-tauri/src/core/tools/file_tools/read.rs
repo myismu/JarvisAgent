@@ -11,10 +11,204 @@
 
 use crate::core::tools::framework::permission::ensure_path_permission;
 
-use super::common::{is_locked_file_error, MAX_FILE_SIZE_BYTES, MAX_LINES_DEFAULT};
+use super::common::{
+    is_locked_file_error, read_text_preserve_encoding, MAX_FILE_SIZE_BYTES, MAX_LINES_DEFAULT,
+};
 use super::workspace::get_workspace;
 
-/// 读取文件内容（支持行号范围）
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SkeletonEntry {
+    start_line: usize,
+    end_line: usize,
+    signature: String,
+}
+
+fn line_starts_skeleton_entry(path: &str, line: &str) -> bool {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let trimmed = line.trim();
+    match ext.as_str() {
+        "vue" => trimmed.starts_with("<script")
+            || trimmed.starts_with("defineProps(")
+            || trimmed.starts_with("defineEmits(")
+            || trimmed.starts_with("function ")
+            || trimmed.starts_with("const ")
+            || trimmed.starts_with("let ")
+            || trimmed.starts_with("export default")
+            || trimmed.starts_with("export const ")
+            || trimmed.contains("defineProps<")
+            || trimmed.contains("defineProps(")
+            || trimmed.contains("defineEmits<")
+            || trimmed.contains("defineEmits("),
+        "ts" | "tsx" => trimmed.starts_with("export function ")
+            || trimmed.starts_with("export const ")
+            || trimmed.starts_with("export class ")
+            || trimmed.starts_with("function ")
+            || trimmed.starts_with("const ")
+            || trimmed.starts_with("let ")
+            || trimmed.starts_with("interface ")
+            || trimmed.starts_with("type ")
+            || trimmed.starts_with("class ")
+            || trimmed.starts_with("enum ")
+            || trimmed.starts_with("export type "),
+        "rs" => trimmed.starts_with("pub fn ")
+            || trimmed.starts_with("fn ")
+            || trimmed.starts_with("pub struct ")
+            || trimmed.starts_with("struct ")
+            || trimmed.starts_with("pub enum ")
+            || trimmed.starts_with("enum ")
+            || trimmed.starts_with("pub trait ")
+            || trimmed.starts_with("trait ")
+            || trimmed.starts_with("impl ")
+            || trimmed.starts_with("mod ")
+            || trimmed.starts_with("macro_rules! "),
+        _ => trimmed.starts_with("fn ")
+            || trimmed.starts_with("pub fn ")
+            || trimmed.starts_with("struct ")
+            || trimmed.starts_with("pub struct ")
+            || trimmed.starts_with("class ")
+            || trimmed.starts_with("def ")
+            || trimmed.starts_with("import ")
+            || trimmed.starts_with("use ")
+            || trimmed.starts_with("impl ")
+            || trimmed.starts_with("interface ")
+            || trimmed.starts_with("type ")
+            || trimmed.starts_with("export "),
+    }
+}
+
+fn leading_indent(line: &str) -> usize {
+    line.chars().take_while(|ch| ch.is_whitespace()).count()
+}
+
+fn brace_delta(line: &str) -> isize {
+    line.chars().fold(0, |acc, ch| match ch {
+        '{' => acc + 1,
+        '}' => acc - 1,
+        _ => acc,
+    })
+}
+
+fn skeleton_entry_end(path: &str, lines: &[&str], start_idx: usize) -> usize {
+    let mut balance = 0isize;
+    let mut saw_brace = false;
+    for (idx, line) in lines.iter().enumerate().skip(start_idx) {
+        let delta = brace_delta(line);
+        if delta != 0 {
+            saw_brace = true;
+            balance += delta;
+        }
+        if saw_brace && balance <= 0 && idx > start_idx {
+            return idx;
+        }
+    }
+
+    let start_indent = leading_indent(lines[start_idx]);
+    for (idx, line) in lines.iter().enumerate().skip(start_idx + 1) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if leading_indent(line) <= start_indent && line_starts_skeleton_entry(path, line) {
+            return idx.saturating_sub(1);
+        }
+    }
+    start_idx
+}
+
+fn compact_signature(lines: &[&str], start_idx: usize, end_idx: usize) -> String {
+    let mut parts = Vec::new();
+    for line in lines.iter().take(end_idx + 1).skip(start_idx) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        parts.push(trimmed.to_string());
+        if trimmed.ends_with('{') || trimmed.ends_with(';') || trimmed.ends_with(')') || trimmed.ends_with("=>") {
+            break;
+        }
+    }
+    parts.join(" ")
+}
+
+fn extract_skeleton_entries(path: &str, content: &str) -> Vec<SkeletonEntry> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut entries = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if !line_starts_skeleton_entry(path, line) {
+            continue;
+        }
+        let end_idx = skeleton_entry_end(path, &lines, idx);
+        entries.push(SkeletonEntry {
+            start_line: idx + 1,
+            end_line: end_idx + 1,
+            signature: compact_signature(&lines, idx, end_idx),
+        });
+    }
+    entries
+}
+
+fn format_skeleton_entry(entry: &SkeletonEntry) -> String {
+    format!("[{}-{}] {}", entry.start_line, entry.end_line, entry.signature)
+}
+
+fn extract_skeleton_lines(path: &str, content: &str) -> Vec<String> {
+    extract_skeleton_entries(path, content)
+        .iter()
+        .map(format_skeleton_entry)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_skeleton_entries, extract_skeleton_lines};
+
+    #[test]
+    fn extracts_vue_script_setup_entries() {
+        let lines = extract_skeleton_lines(
+            "Component.vue",
+            "<template></template>\n<script setup lang=\"ts\">\nconst count = ref(0)\ndefineProps<{ title: string }>()\n</script>",
+        );
+        assert!(lines.iter().any(|line| line.contains("<script setup")));
+        assert!(lines.iter().any(|line| line.contains("defineProps")));
+    }
+
+    #[test]
+    fn extracts_typescript_entries() {
+        let lines = extract_skeleton_lines(
+            "store.ts",
+            "import x from 'x'\nexport function load() {}\ninterface State {}\nexport type Mode = 'a'",
+        );
+        assert!(lines.iter().any(|line| line.contains("[2-2] export function load")));
+        assert!(lines.iter().any(|line| line.contains("[3-3] interface State")));
+        assert!(lines.iter().any(|line| line.contains("[4-4] export type Mode")));
+    }
+
+    #[test]
+    fn extracts_multiline_typescript_signature_with_range() {
+        let entries = extract_skeleton_entries(
+            "store.ts",
+            "export function sendMessage(\n  input: string,\n): void {\n  console.log(input)\n}\nconst next = 1",
+        );
+        assert_eq!(entries[0].start_line, 1);
+        assert_eq!(entries[0].end_line, 5);
+        assert!(entries[0].signature.contains("sendMessage"));
+        assert!(entries[0].signature.contains("input: string"));
+    }
+
+    #[test]
+    fn extracts_rust_entries() {
+        let lines = extract_skeleton_lines(
+            "lib.rs",
+            "pub trait Tool {}\nimpl Tool for Read {}\nmacro_rules! demo { () => {} }",
+        );
+        assert!(lines.iter().any(|line| line.contains("pub trait Tool")));
+        assert!(lines.iter().any(|line| line.contains("impl Tool")));
+        assert!(lines.iter().any(|line| line.contains("macro_rules! demo")));
+    }
+}
 pub async fn read_file(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
@@ -39,8 +233,9 @@ pub async fn read_file(
         }
     }
 
-    match std::fs::read_to_string(path) {
-        Ok(content) => {
+    match read_text_preserve_encoding(path) {
+        Ok(decoded) => {
+            let content = decoded.content;
             let lines: Vec<&str> = content.lines().collect();
             let total_lines = lines.len();
             let actual_start = start_line.max(1);
@@ -108,33 +303,17 @@ pub async fn read_file_skeleton(
     if let Err(e) = ensure_path_permission(app, path, "读取", ws.as_deref()).await {
         return e;
     }
-    match std::fs::read_to_string(path) {
-        Ok(content) => {
+    match read_text_preserve_encoding(path) {
+        Ok(decoded) => {
+            let content = decoded.content;
             let total_lines = content.lines().count();
             let mut skeleton = format!("[File: {}] (Total: {} lines)\n", path, total_lines);
-            let mut found = false;
-            for (i, line) in content.lines().enumerate() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("fn ")
-                    || trimmed.starts_with("pub fn ")
-                    || trimmed.starts_with("struct ")
-                    || trimmed.starts_with("pub struct ")
-                    || trimmed.starts_with("class ")
-                    || trimmed.starts_with("def ")
-                    || trimmed.starts_with("import ")
-                    || trimmed.starts_with("use ")
-                    || trimmed.starts_with("impl ")
-                    || trimmed.starts_with("interface ")
-                    || trimmed.starts_with("type ")
-                    || trimmed.starts_with("export ")
-                {
-                    skeleton.push_str(&format!("{:4} | {}\n", i + 1, line));
-                    found = true;
-                }
-            }
-            if !found {
+            let skeleton_lines = extract_skeleton_lines(path, &content);
+            if skeleton_lines.is_empty() {
                 format!("[File: {}] (Total: {} lines)\n未提取到明显的结构骨架（可能是纯文本或不支持的语言格式）", path, total_lines)
             } else {
+                skeleton.push_str(&skeleton_lines.join("\n"));
+                skeleton.push('\n');
                 skeleton
             }
         }

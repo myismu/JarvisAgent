@@ -1,3 +1,9 @@
+<script setup lang="ts">
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
+</script>
+
 <template>
   <div class="welcome-screen">
     <div class="arc-reactor-container">
@@ -109,7 +115,7 @@
         <span class="label-char" style="--i:5">S</span>
       </div>
     </div>
-    <div class="welcome-text">随时准备为您效劳，先生。</div>
+    <div class="welcome-text">{{ t('welcome.ready') }}</div>
   </div>
 </template>
 
@@ -181,8 +187,23 @@
   50% { opacity: 0.9; }
 }
 
-.ring-outer, .ring-segments, .ring-middle, .ring-inner, .ring-core-outer, .core-pulse {
+.ring-outer, 
+.ring-segments, 
+.ring-middle, 
+.ring-inner, 
+.ring-inner-outer,
+.hex-ring,
+.ring-core-outer, 
+.core-pulse,
+.triangles,
+.beam-lines,
+.ring-core-segments,
+.ring-core-inner,
+.scan-line {
   transform-origin: 200px 200px;
+}
+
+.ring-outer, .ring-inner, .ring-core-outer, .core-pulse {
   animation: ringRotateCW 20s linear infinite;
 }
 
@@ -191,22 +212,18 @@
 }
 
 .triangles {
-  transform-origin: 200px 200px;
   animation: ringRotateCW 30s linear infinite;
 }
 
 .beam-lines {
-  transform-origin: 200px 200px;
   animation: ringRotateCCW 15s linear infinite;
 }
 
 .ring-core-segments, .ring-core-inner {
-  transform-origin: 200px 200px;
   animation: ringRotateCW 8s linear infinite;
 }
 
 .scan-line {
-  transform-origin: 200px 200px;
   animation: scanSpin 12s linear infinite;
 }
 

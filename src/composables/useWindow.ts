@@ -25,6 +25,7 @@ const MONITOR_WINDOW_GAP = 12;
 const MONITOR_WINDOW_CLOSED_EVENT = "monitor-window-closed";
 const MONITOR_SESSION_CHANGED_EVENT = "monitor-session-changed";
 const MONITOR_THEME_CHANGED_EVENT = "monitor-theme-changed";
+const MONITOR_LOCALE_CHANGED_EVENT = "monitor-locale-changed";
 const MAIN_WINDOW_WIDTH = 1600;
 const MAIN_WINDOW_HEIGHT = 1000;
 const MAIN_WINDOW_X = 80;
@@ -227,6 +228,16 @@ export function useWindow() {
     });
   };
 
+  const notifyMonitorLocaleChanged = async (locale: string) => {
+    await emit(MONITOR_LOCALE_CHANGED_EVENT, { locale });
+  };
+
+  const onMonitorLocaleChanged = async (handler: (locale: string) => void) => {
+    return listen<{ locale: string }>(MONITOR_LOCALE_CHANGED_EVENT, (event) => {
+      handler(event.payload.locale);
+    });
+  };
+
   const toggleMonitorWindow = async (visible: boolean): Promise<boolean> => {
     if (visible) {
       await closeMonitorWindow();
@@ -321,6 +332,8 @@ export function useWindow() {
     onMonitorSessionChanged,
     notifyMonitorThemeChanged,
     onMonitorThemeChanged,
+    notifyMonitorLocaleChanged,
+    onMonitorLocaleChanged,
     toggleMonitorWindow,
     resetWindowStates,
     restoreCurrentWindowState,

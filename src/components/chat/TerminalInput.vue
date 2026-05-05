@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, nextTick, onUnmounted, onBeforeUnmount, watch } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useSessionStore } from '../../stores/session';
 import { useChatStore } from '../../stores/chat';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { readFile } from '@tauri-apps/plugin-fs';
+
+const { t } = useI18n();
 
 const userInput = ref("");
 const isDragging = ref(false);
@@ -327,8 +330,8 @@ const handleRecallEdit = async () => {
           <polyline points="1 4 1 10 7 10"></polyline>
           <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
         </svg>
-        <span>已取消生成，可撤回上一条消息重新编辑</span>
-        <button class="recall-edit-btn" @click="handleRecallEdit">撤回并编辑</button>
+        <span>{{ t('input.recallHint') }}</span>
+        <button class="recall-edit-btn" @click="handleRecallEdit">{{ t('input.recallEdit') }}</button>
         <button class="recall-dismiss-btn" @click="chat.dismissRecallEdit">✕</button>
       </div>
 
@@ -339,14 +342,14 @@ const handleRecallEdit = async () => {
           <path d="M21 12a9 9 0 0 1-15.5 6.2"></path>
           <polyline points="6 22 6 18 10 18"></polyline>
         </svg>
-        <span>上次执行已中断，已保留当前输出。需要继续时，可在输入框输入“继续”。</span>
+        <span>{{ t('input.resumeHint') }}</span>
       </div>
 
       <div class="input-toolbar">
         <div class="profile-selector">
           <button class="profile-btn" @click="showProfileMenu = !showProfileMenu">
             <span class="profile-icon">✨</span>
-            {{ appConfig?.profiles.find((p: any) => p.id === appConfig?.activeProfileId)?.name || '选择模型' }}
+            {{ appConfig?.profiles.find((p: any) => p.id === appConfig?.activeProfileId)?.name || t('input.selectModel') }}
             <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none"><polyline points="6 9 12 15 18 9"></polyline></svg>
           </button>
           
@@ -372,14 +375,13 @@ const handleRecallEdit = async () => {
               disabled: !canModelThink 
             }" 
             @click="canModelThink && (isThinkingActive = !isThinkingActive)"
-            :title="!canModelThink ? '该模型不支持深度思考模式' : (isThinkingActive ? '深度思考模式: 已开启' : '深度思考模式: 已关闭')"
+            :title="!canModelThink ? t('input.thinkingUnsupportedTitle') : (isThinkingActive ? t('input.thinkingOnTitle') : t('input.thinkingOffTitle'))"
           >
             <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
               <path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27a5 5 0 1 1-7.14 7.14" />
             </svg>
-            <span>{{ !canModelThink ? '不支持思考' : '深度思考' }}</span>
+            <span>{{ !canModelThink ? t('input.thinkingUnsupported') : t('input.thinking') }}</span>
           </button>
-
         </div>
       </div>
 
@@ -402,7 +404,7 @@ const handleRecallEdit = async () => {
             </div>
           </template>
           <span class="media-name">{{ media.path.split(/[/\\]/).pop() }}</span>
-          <button class="remove-media-btn" @click.stop="removeMediaFile(index)" title="移除">✕</button>
+          <button class="remove-media-btn" @click.stop="removeMediaFile(index)" :title="t('input.remove')">✕</button>
         </div>
       </div>
 
@@ -412,7 +414,7 @@ const handleRecallEdit = async () => {
           <line x1="12" y1="9" x2="12" y2="13"></line>
           <line x1="12" y1="17" x2="12.01" y2="17"></line>
         </svg>
-        <span>当前模型不支持多模态，图片/视频将仅作为文件路径传递</span>
+        <span>{{ t('input.visionWarning') }}</span>
         <button class="warning-close-btn" @click="hideVisionWarning">✕</button>
       </div>
 
@@ -420,7 +422,7 @@ const handleRecallEdit = async () => {
         <textarea 
           ref="inputRef"
           v-model="userInput" 
-          placeholder="给贾维斯发送指令... (Shift+Enter 换行)" 
+          :placeholder="t('input.placeholder')"
           class="editor-input"
           autofocus
           rows="1"
@@ -428,13 +430,13 @@ const handleRecallEdit = async () => {
           @keydown="handleKeydown"
         ></textarea>
         
-        <button v-if="!session.isCurrentSessionRunning" class="send-btn" :class="{ active: userInput.trim() || mediaFiles.length > 0 }" @click="handleSubmit" title="发送 (Enter)">
+        <button v-if="!session.isCurrentSessionRunning" class="send-btn" :class="{ active: userInput.trim() || mediaFiles.length > 0 }" @click="handleSubmit" :title="t('input.send')">
           <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <line x1="22" y1="2" x2="11" y2="13"></line>
             <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
           </svg>
         </button>
-        <button v-else class="send-btn active stop-state" @click="handleCancel" title="停止生成" :disabled="isCancelling">
+        <button v-else class="send-btn active stop-state" @click="handleCancel" :title="t('input.stop')" :disabled="isCancelling">
           <svg v-if="!isCancelling" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
           <svg v-else class="spinner-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10"></circle>
@@ -449,29 +451,28 @@ const handleRecallEdit = async () => {
 
 <style scoped>
 .chat-input-container {
-  padding: 12px 24px 24px;
+  padding: 0;
   background-color: transparent;
   display: flex;
   flex-direction: column;
   position: relative;
+  width: 100%;
+  align-items: center; /* 居中核心 */
 }
 
 .chat-input-container::before {
-  content: "";
-  position: absolute;
-  bottom: 0; left: 0; right: 0; top: -30px;
-  background: linear-gradient(to top, var(--glass-bg-heavy) 40%, transparent);
-  pointer-events: none;
-  z-index: 0;
+  display: none;
 }
 
 .chat-input-wrapper {
-  background: var(--glass-bg-heavy);
+  width: 100%;
+  max-width: 1000px;
+  background: var(--surface-strong);
   backdrop-filter: blur(var(--glass-blur-heavy));
   -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   border: 1px solid var(--glass-border);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--glass-shadow);
+  border-radius: 24px; /* 增加圆角度，使其更圆润 */
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.15), var(--glass-shadow);
   display: flex;
   flex-direction: column;
   transition: all var(--transition-normal);
@@ -479,10 +480,14 @@ const handleRecallEdit = async () => {
   z-index: 1;
 }
 
+.chat-input-wrapper:hover {
+  border-color: color-mix(in srgb, var(--accent-blue) 40%, var(--glass-border));
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.2), var(--glass-shadow);
+}
+
 .chat-input-wrapper:focus-within {
   border-color: var(--accent-blue);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15), var(--glass-shadow);
-  transform: translateY(-2px);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2), 0 30px 70px rgba(0, 0, 0, 0.25);
 }
 
 .input-toolbar {
@@ -490,6 +495,8 @@ const handleRecallEdit = async () => {
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px 0;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .profile-selector {
@@ -626,28 +633,6 @@ const handleRecallEdit = async () => {
   filter: grayscale(1);
 }
 
-.stop-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: rgba(239, 68, 68, 0.1);
-  color: var(--accent-red);
-  border: 1px solid rgba(239, 68, 68, 0.2);
-  border-radius: var(--radius-md);
-  padding: 6px 12px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.stop-btn:hover {
-  background: var(--accent-red);
-  color: white;
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.2);
-}
-
 .input-row {
   display: flex;
   align-items: flex-end;
@@ -753,14 +738,6 @@ const handleRecallEdit = async () => {
   flex-shrink: 0;
 }
 
-.media-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-
 .media-name {
   font-size: 0.75rem;
   color: var(--text-main);
@@ -801,28 +778,6 @@ const handleRecallEdit = async () => {
   font-size: 0.8rem;
 }
 
-.vision-warning svg {
-  flex-shrink: 0;
-}
-
-.vision-warning span {
-  flex: 1;
-}
-
-.warning-close-btn {
-  background: transparent;
-  border: none;
-  color: var(--accent-yellow);
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 12px;
-}
-
-.warning-close-btn:hover {
-  background: rgba(245, 158, 11, 0.2);
-}
-
 .recall-edit-bar {
   display: flex;
   align-items: center;
@@ -838,34 +793,6 @@ const handleRecallEdit = async () => {
 @keyframes slideDown {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
-}
-
-.recall-edit-bar svg {
-  flex-shrink: 0;
-}
-
-.recall-edit-bar span {
-  flex: 1;
-}
-
-.resume-run-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  background: rgba(245, 158, 11, 0.1);
-  border-bottom: 1px solid rgba(245, 158, 11, 0.18);
-  color: var(--accent-yellow);
-  font-size: 0.8rem;
-  animation: slideDown 0.2s ease-out;
-}
-
-.resume-run-bar svg {
-  flex-shrink: 0;
-}
-
-.resume-run-bar span {
-  flex: 1;
 }
 
 .recall-edit-btn {
@@ -888,21 +815,18 @@ const handleRecallEdit = async () => {
   transform: translateY(-1px);
 }
 
-.recall-dismiss-btn {
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 12px;
-  transition: all var(--transition-fast);
+.resume-run-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: rgba(245, 158, 11, 0.1);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.18);
+  color: var(--accent-yellow);
+  font-size: 0.8rem;
+  animation: slideDown 0.2s ease-out;
 }
 
-.recall-dismiss-btn:hover {
-  background: rgba(100, 116, 139, 0.15);
-  color: var(--text-main);
-}
 @keyframes spin {
   100% { transform: rotate(360deg); }
 }

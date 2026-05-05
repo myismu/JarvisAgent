@@ -1,5 +1,6 @@
 import { computed, ref, watch } from "vue";
 import type { AgentDisplayMode } from "../types";
+import { DEFAULT_LOCALE, normalizeLocale, type AppLocale } from "../i18n";
 
 const STORAGE_KEY = "jarvis_ui_prefs";
 
@@ -8,6 +9,7 @@ interface UiPreferences {
   agentPanelVisible: boolean;
   fontSize: number;
   agentDisplayMode: AgentDisplayMode;
+  locale: AppLocale;
 }
 
 const defaults: UiPreferences = {
@@ -15,11 +17,12 @@ const defaults: UiPreferences = {
   agentPanelVisible: false,
   fontSize: 15,
   agentDisplayMode: "user",
+  locale: DEFAULT_LOCALE,
 };
 
 function normalizePrefs(value: Partial<UiPreferences>): UiPreferences {
   const mode = value.agentDisplayMode === "developer" ? "developer" : "user";
-  return { ...defaults, ...value, agentDisplayMode: mode };
+  return { ...defaults, ...value, agentDisplayMode: mode, locale: normalizeLocale(value.locale) };
 }
 
 function loadPrefs(): UiPreferences {
@@ -75,6 +78,11 @@ function ensureWatchers() {
     () => prefs.value.agentDisplayMode,
     () => savePrefs(prefs.value),
   );
+
+  watch(
+    () => prefs.value.locale,
+    () => savePrefs(prefs.value),
+  );
 }
 
 export function usePreferences() {
@@ -85,6 +93,13 @@ export function usePreferences() {
     get: () => prefs.value.agentDisplayMode,
     set: (val) => {
       prefs.value.agentDisplayMode = val;
+    },
+  });
+
+  const locale = computed<AppLocale>({
+    get: () => prefs.value.locale,
+    set: (val) => {
+      prefs.value.locale = normalizeLocale(val);
     },
   });
 
@@ -110,6 +125,10 @@ export function usePreferences() {
     agentDisplayMode,
     setAgentDisplayMode: (val: AgentDisplayMode) => {
       prefs.value.agentDisplayMode = val;
+    },
+    locale,
+    setLocale: (val: AppLocale) => {
+      prefs.value.locale = normalizeLocale(val);
     },
   };
 }

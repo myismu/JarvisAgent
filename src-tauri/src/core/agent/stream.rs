@@ -37,6 +37,10 @@ impl Default for StreamConfig {
     }
 }
 
+fn looks_like_textual_tool_call(text: &str) -> bool {
+    text.contains("<tool_call") || text.contains("<function=") || text.contains("<parameter=")
+}
+
 /// 流式处理结果
 pub struct StreamResult {
     pub blocks: Vec<ContentBlock>,
@@ -71,6 +75,7 @@ pub async fn process_stream(
     let mut turn_has_tool = false;
     let mut req_input_tokens: u64 = 0;
     let mut req_output_tokens: u64 = 0;
+    let mut logged_textual_tool_violation = false;
 
     let logger = DebugLogger::new();
     if !config.is_subagent {
@@ -131,6 +136,21 @@ pub async fn process_stream(
                                 {
                                     text.push_str(t);
                                     current_text_this_turn.push_str(t);
+                                    if !logged_textual_tool_violation
+                                        && looks_like_textual_tool_call(&current_text_this_turn)
+                                    {
+                                        logged_textual_tool_violation = true;
+                                        let agent_type = if config.is_subagent {
+                                            "SUBAGENT"
+                                        } else {
+                                            "MAIN"
+                                        };
+                                        logger.log_textual_tool_protocol_violation(
+                                            agent_type,
+                                            loop_count,
+                                            &current_text_this_turn,
+                                        );
+                                    }
                                     if !config.is_subagent {
                                         let _ = app.emit(
                                             "chat-content",
@@ -292,6 +312,21 @@ pub async fn process_stream(
                                 if let Some(t) = delta["text"].as_str() {
                                     text.push_str(t);
                                     current_text_this_turn.push_str(t);
+                                    if !logged_textual_tool_violation
+                                        && looks_like_textual_tool_call(&current_text_this_turn)
+                                    {
+                                        logged_textual_tool_violation = true;
+                                        let agent_type = if config.is_subagent {
+                                            "SUBAGENT"
+                                        } else {
+                                            "MAIN"
+                                        };
+                                        logger.log_textual_tool_protocol_violation(
+                                            agent_type,
+                                            loop_count,
+                                            &current_text_this_turn,
+                                        );
+                                    }
                                     if !config.is_subagent {
                                         let _ = app.emit(
                                             "chat-content",

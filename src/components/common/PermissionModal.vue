@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { usePermissionStore } from '../../stores/permission';
 import { useChatStore } from '../../stores/chat';
+
+const { t } = useI18n();
 
 const perm = usePermissionStore();
 const chat = useChatStore();
@@ -34,7 +37,7 @@ const parsedData = computed(() => {
         command = potentialCommand;
       }
     } else if (msg.length > 150) {
-      reason = "请求执行以下复杂系统指令：";
+      reason = t('permission.complexCommandReason');
       command = msg;
     }
   }
@@ -42,7 +45,7 @@ const parsedData = computed(() => {
   // 精简过长的命令，确保用户能理解且不会破坏界面
   const MAX_CMD_LENGTH = 500;
   if (command.length > MAX_CMD_LENGTH) {
-    command = command.substring(0, 250) + '\n\n... [指令过长已精简，中间内容省略] ...\n\n' + command.substring(command.length - 200);
+    command = command.substring(0, 250) + `\n\n... [${t('permission.longCommandOmitted')}] ...\n\n` + command.substring(command.length - 200);
   }
   
   // 如果 reason 仍然很长，也进行截断，避免撑破界面
@@ -90,8 +93,8 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
             </svg>
           </div>
           <div class="header-text">
-            <h3>{{ isLoopContinuation ? '继续执行确认' : '安全确认 / SECURITY REQUEST' }}</h3>
-            <p>{{ isLoopContinuation ? 'Agent 已达到回合上限，需要你手动确认' : 'Jarvis 正在请求敏感权限' }}</p>
+            <h3>{{ isLoopContinuation ? t('permission.loopTitle') : t('permission.securityTitle') }}</h3>
+            <p>{{ isLoopContinuation ? t('permission.loopSubtitle') : t('permission.securitySubtitle') }}</p>
           </div>
         </div>
 
@@ -99,20 +102,20 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
           <p class="reason-text">{{ parsedData.reason }}</p>
           
           <div v-if="parsedData.command" class="command-container">
-            <div class="container-label">待执行的详细指令:</div>
+            <div class="container-label">{{ t('permission.commandLabel') }}</div>
             <pre class="command-block"><code>{{ parsedData.command }}</code></pre>
           </div>
           
           <div class="modal-actions">
-            <button @click="chat.resolvePermission('reject')" class="cmd-button danger" title="快捷键: R 或 Esc">
-              <span class="key-hint">R</span> 拒绝
+            <button @click="chat.resolvePermission('reject')" class="cmd-button danger" :title="t('permission.rejectShortcut')">
+              <span class="key-hint">R</span> {{ t('permission.reject') }}
             </button>
             <div class="allow-group">
-              <button @click="chat.resolvePermission('allow')" class="cmd-button safe" title="快捷键: A">
-                <span class="key-hint">A</span> 允许一次
+              <button @click="chat.resolvePermission('allow')" class="cmd-button safe" :title="t('permission.allowShortcut')">
+                <span class="key-hint">A</span> {{ t('permission.allowOnce') }}
               </button>
-              <button v-if="canAllowSession" @click="chat.resolvePermission('allow_session')" class="cmd-button warn" title="快捷键: S">
-                <span class="key-hint">S</span> 本次会话始终允许
+              <button v-if="canAllowSession" @click="chat.resolvePermission('allow_session')" class="cmd-button warn" :title="t('permission.allowSessionShortcut')">
+                <span class="key-hint">S</span> {{ t('permission.allowSession') }}
               </button>
             </div>
           </div>

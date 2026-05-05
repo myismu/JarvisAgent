@@ -6,7 +6,7 @@
 
 use serde_json::json;
 use std::path::{Path, PathBuf};
-use std::time::{Instant, UNIX_EPOCH};
+use std::time::Instant;
 use tauri::Manager;
 
 use super::framework::permission::{ensure_path_permission, is_path_safe};
@@ -28,7 +28,6 @@ const SKIP_DIRS: &[&str] = &[
     ".cache",
     "coverage",
 ];
-
 const BINARY_EXTENSIONS: &[&str] = &[
     "png", "ico", "icns", "jpg", "jpeg", "gif", "webp", "mp3", "mp4", "wav", "woff", "woff2",
     "ttf", "eot", "pdf", "zip", "gz", "tar", "rar", "7z", "exe", "dll", "so", "dylib", "class",
@@ -88,10 +87,12 @@ async fn ensure_resolved_path_permission(
     ensure_path_permission(app, &resolved.to_string_lossy(), action, workspace).await
 }
 
-fn should_skip_dir(path: &Path) -> bool {
+fn should_skip_dir_with_overrides(path: &Path, ignore_dirs: &[String]) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .map(|name| SKIP_DIRS.contains(&name))
+        .map(|name| {
+            SKIP_DIRS.contains(&name) || ignore_dirs.iter().any(|ignored| ignored == name)
+        })
         .unwrap_or(false)
 }
 
@@ -102,7 +103,12 @@ fn is_binary_like(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn collect_files(root: &Path, include_binary: bool, files: &mut Vec<PathBuf>) {
+fn collect_files_with_ignore(
+    root: &Path,
+    include_binary: bool,
+    ignore_dirs: &[String],
+    files: &mut Vec<PathBuf>,
+) {
     if root.is_file() {
         if include_binary || !is_binary_like(root) {
             files.push(root.to_path_buf());
@@ -118,34 +124,14 @@ fn collect_files(root: &Path, include_binary: bool, files: &mut Vec<PathBuf>) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            if should_skip_dir(&path) {
+            if should_skip_dir_with_overrides(&path, ignore_dirs) {
                 continue;
             }
-            collect_files(&path, include_binary, files);
+            collect_files_with_ignore(&path, include_binary, ignore_dirs, files);
         } else if path.is_file() && (include_binary || !is_binary_like(&path)) {
             files.push(path);
         }
     }
-}
-
-fn modified_millis(path: &Path) -> u128 {
-    std::fs::metadata(path)
-        .and_then(|meta| meta.modified())
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0)
-}
-
-fn sort_by_modified_desc(paths: &mut [PathBuf]) {
-    paths.sort_by(|a, b| {
-        let mtime_order = modified_millis(b).cmp(&modified_millis(a));
-        if mtime_order == std::cmp::Ordering::Equal {
-            a.to_string_lossy().cmp(&b.to_string_lossy())
-        } else {
-            mtime_order
-        }
-    });
 }
 
 fn display_path(path: &Path, workspace: Option<&Path>) -> String {
@@ -266,6 +252,37 @@ fn split_glob_patterns(glob: &str) -> Vec<String> {
     patterns
 }
 
+fn input_patterns(input: &serde_json::Value, key: &str) -> Vec<String> {
+    input[key]
+        .as_str()
+        .map(split_glob_patterns)
+        .unwrap_or_default()
+}
+
+fn input_string_list(input: &serde_json::Value, key: &str) -> Vec<String> {
+    if let Some(raw) = input[key].as_str() {
+        return raw
+            .split(|ch| ch == ',' || ch == ' ')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+
+    input[key]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn matches_any_glob(path: &Path, base: &Path, patterns: &[String]) -> bool {
     if patterns.is_empty() {
         return true;
@@ -320,6 +337,81 @@ fn matches_type(path: &Path, file_type: Option<&str>) -> bool {
                 .any(|candidate| candidate == &ext.to_lowercase())
         })
         .unwrap_or(false)
+}
+
+fn matches_search_filters(
+    path: &Path,
+    base: &Path,
+    include_patterns: &[String],
+    exclude_patterns: &[String],
+    file_type: Option<&str>,
+) -> bool {
+    matches_type(path, file_type)
+        && matches_any_glob(path, base, include_patterns)
+        && !matches_any_glob(path, base, exclude_patterns)
+}
+
+fn is_code_extension(ext: &str) -> bool {
+    matches!(
+        ext.to_lowercase().as_str(),
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "vue" | "svelte" | "py" | "go" | "java" | "kt"
+            | "kts" | "swift" | "c" | "h" | "cpp" | "cc" | "cxx" | "hpp" | "cs" | "php" | "rb"
+            | "scala" | "sql" | "html" | "css" | "scss" | "less"
+    )
+}
+
+fn is_code_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(is_code_extension)
+        .unwrap_or(false)
+}
+
+fn path_contains_component(path: &Path, component: &str) -> bool {
+    path.components().any(|part| part.as_os_str() == component)
+}
+
+fn path_noise_score(path: &Path) -> usize {
+    let noisy = ["node_modules", "target", "dist", "build", ".next", ".cache", "coverage"];
+    noisy
+        .iter()
+        .filter(|component| path_contains_component(path, component))
+        .count()
+}
+
+fn code_search_rank(path: &Path) -> (usize, usize, usize, String) {
+    (
+        if path_contains_component(path, "src") { 0 } else { 1 },
+        if is_code_file(path) { 0 } else { 1 },
+        path_noise_score(path),
+        normalize_path_for_match(path),
+    )
+}
+
+fn sort_for_code_search(paths: &mut [PathBuf]) {
+    paths.sort_by_key(|path| code_search_rank(path));
+}
+
+pub(crate) fn looks_like_definition_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("fn ")
+        || trimmed.starts_with("pub fn ")
+        || trimmed.starts_with("function ")
+        || trimmed.starts_with("export function ")
+        || trimmed.starts_with("const ")
+        || trimmed.starts_with("export const ")
+        || trimmed.starts_with("class ")
+        || trimmed.starts_with("export class ")
+        || trimmed.starts_with("interface ")
+        || trimmed.starts_with("export interface ")
+        || trimmed.starts_with("type ")
+        || trimmed.starts_with("export type ")
+        || trimmed.starts_with("struct ")
+        || trimmed.starts_with("pub struct ")
+        || trimmed.starts_with("enum ")
+        || trimmed.starts_with("pub enum ")
+        || trimmed.starts_with("trait ")
+        || trimmed.starts_with("pub trait ")
 }
 
 fn truncate_columns(text: &str) -> String {
@@ -489,7 +581,12 @@ pub async fn glob(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
         return "Glob 错误: pattern 不能为空。".to_string();
     }
 
-    let raw_path = input["path"].as_str();
+    let raw_path = input["path"].as_str().or_else(|| input["dir"].as_str());
+    let limit = value_as_usize(input, "limit").unwrap_or(GLOB_DEFAULT_LIMIT);
+    let file_type = input["type"].as_str().or_else(|| input["file_type"].as_str());
+    let include_patterns = input_patterns(input, "include");
+    let exclude_patterns = input_patterns(input, "exclude");
+    let ignore_dirs = input_string_list(input, "ignore_dirs");
     let workspace = get_workspace(app, session_id).await;
     let base = match resolve_path(raw_path, workspace.as_deref()) {
         Ok(path) => path,
@@ -512,19 +609,22 @@ pub async fn glob(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
 
     let start = Instant::now();
     let mut all_files = Vec::new();
-    collect_files(&base, true, &mut all_files);
+    collect_files_with_ignore(&base, true, &ignore_dirs, &mut all_files);
 
     let mut matches: Vec<PathBuf> = all_files
         .into_iter()
         .filter(|path| {
             let relative = path.strip_prefix(&base).unwrap_or(path);
             glob_matches(pattern, relative)
+                && matches_search_filters(path, &base, &include_patterns, &exclude_patterns, file_type)
         })
         .collect();
 
-    sort_by_modified_desc(&mut matches);
-    let truncated = matches.len() > GLOB_DEFAULT_LIMIT;
-    matches.truncate(GLOB_DEFAULT_LIMIT);
+    sort_for_code_search(&mut matches);
+    let truncated = limit > 0 && matches.len() > limit;
+    if limit > 0 {
+        matches.truncate(limit);
+    }
 
     if matches.is_empty() {
         return "No files found".to_string();
@@ -588,11 +688,11 @@ pub async fn grep(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
         Err(e) => return format!("正则表达式无效: {}", e),
     };
 
-    let glob_patterns = input["FindFiles"]
-        .as_str()
-        .map(split_glob_patterns)
-        .unwrap_or_default();
-    let file_type = input["type"].as_str();
+    let include_patterns = input_patterns(input, "glob");
+    let mut extra_include_patterns = input_patterns(input, "include");
+    let exclude_patterns = input_patterns(input, "exclude");
+    let ignore_dirs = input_string_list(input, "ignore_dirs");
+    let file_type = input["type"].as_str().or_else(|| input["file_type"].as_str());
     let head_limit = value_as_usize(input, "head_limit");
     let offset = value_as_usize(input, "offset").unwrap_or(0);
     let show_line_numbers = value_as_bool(input, "-n", true);
@@ -602,22 +702,25 @@ pub async fn grep(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
     let after = context.or_else(|| value_as_usize(input, "-A")).unwrap_or(0);
 
     let mut files = Vec::new();
-    collect_files(&base, false, &mut files);
+    collect_files_with_ignore(&base, false, &ignore_dirs, &mut files);
     let glob_base = if base.is_file() {
         base.parent().unwrap_or(&base)
     } else {
         &base
     };
+    extra_include_patterns.extend(include_patterns);
     files.retain(|path| {
-        matches_type(path, file_type) && matches_any_glob(path, glob_base, &glob_patterns)
+        matches_search_filters(path, glob_base, &extra_include_patterns, &exclude_patterns, file_type)
     });
+    sort_for_code_search(&mut files);
 
     match output_mode {
         GrepOutputMode::Content => {
-            let mut lines = Vec::new();
+            let mut matched_lines = Vec::new();
+            let mut definition_lines = Vec::new();
             for path in &files {
                 if let Ok(content) = std::fs::read_to_string(path) {
-                    lines.extend(collect_content_matches(
+                    let lines = collect_content_matches(
                         path,
                         &content,
                         &re,
@@ -626,9 +729,18 @@ pub async fn grep(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
                         after,
                         show_line_numbers,
                         workspace.as_deref(),
-                    ));
+                    );
+                    for line in lines {
+                        if looks_like_definition_line(line.rsplit_once(':').map(|(_, text)| text).unwrap_or(&line)) {
+                            definition_lines.push(line);
+                        } else {
+                            matched_lines.push(line);
+                        }
+                    }
                 }
             }
+            definition_lines.extend(matched_lines);
+            let lines = definition_lines;
 
             let (limited, applied_limit) =
                 apply_head_limit(&lines, head_limit, offset, GREP_DEFAULT_HEAD_LIMIT);
@@ -700,7 +812,7 @@ pub async fn grep(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
                     }
                 }
             }
-            sort_by_modified_desc(&mut matches);
+            sort_for_code_search(&mut matches);
             let (limited, applied_limit) =
                 apply_head_limit(&matches, head_limit, offset, GREP_DEFAULT_HEAD_LIMIT);
             let limit_info = format_limit_info(applied_limit, offset);
@@ -747,9 +859,33 @@ crate::define_tools! {
                             "type": "string",
                             "description": "The glob pattern to match files against"
                         },
+                        "dir": {
+                            "type": "string",
+                            "description": "The directory to search in. Alias of path. If omitted, the current workspace directory is used."
+                        },
                         "path": {
                             "type": "string",
                             "description": "The directory to search in. If omitted, the current workspace directory is used. Must be a valid directory path if provided."
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of matching files to return. Defaults to 100. Pass 0 for unlimited."
+                        },
+                        "include": {
+                            "type": "string",
+                            "description": "Optional include glob filter applied after pattern matching. Example: src/** or **/*.{ts,tsx}."
+                        },
+                        "exclude": {
+                            "type": "string",
+                            "description": "Optional exclude glob filter. Example: **/*.test.ts or dist/**."
+                        },
+                        "type": {
+                            "type": "string",
+                            "description": "Optional file type filter. Common values: rust, typescript, vue, json, md."
+                        },
+                        "ignore_dirs": {
+                            "type": ["string", "array"],
+                            "description": "Additional directory names to ignore, as comma/space separated string or string array."
                         }
                     },
                     "required": ["pattern"]
@@ -780,7 +916,15 @@ crate::define_tools! {
                         },
                         "glob": {
                             "type": "string",
-                            "description": "Glob pattern to filter files (e.g. \"*.js\", \"*.{ts,tsx}\"). Multiple patterns can be separated by spaces or commas."
+                            "description": "Glob pattern to include files (e.g. \"*.js\", \"*.{ts,tsx}\"). Multiple patterns can be separated by spaces or commas. Alias-like behavior with include."
+                        },
+                        "include": {
+                            "type": "string",
+                            "description": "Additional include glob filter. Example: src/** or **/*.{ts,tsx}."
+                        },
+                        "exclude": {
+                            "type": "string",
+                            "description": "Exclude glob filter. Example: **/*.test.ts or dist/**."
                         },
                         "output_mode": {
                             "type": "string",
@@ -814,6 +958,10 @@ crate::define_tools! {
                         "type": {
                             "type": "string",
                             "description": "File type to search. Common types: js, py, rust, go, java, ts, json, md."
+                        },
+                        "ignore_dirs": {
+                            "type": ["string", "array"],
+                            "description": "Additional directory names to ignore, as comma/space separated string or string array."
                         },
                         "head_limit": {
                             "type": "integer",

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import type { AgentToolCallView, AgentDisplayMode } from "../../types";
 import { renderMarkdown, renderToolStatusIcon } from "../../utils/markdown";
 import {
@@ -16,6 +17,8 @@ defineProps<{
   group: ToolCallGroup;
   mode: AgentDisplayMode;
 }>();
+
+const { t } = useI18n();
 
 const markdown = (content?: string) => renderMarkdown(content || "");
 
@@ -53,7 +56,7 @@ const technicalOpen = (group: ToolCallGroup) => group.status === "error";
     </div>
 
     <details class="agent-tool-technical" :open="technicalOpen(group)">
-      <summary>技术详情 · {{ group.count }} 步</summary>
+      <summary>{{ t('execution.details', { count: group.count }) }}</summary>
       <div class="agent-tool-group-items">
         <div
           v-for="(tool, index) in group.tools"
@@ -67,15 +70,15 @@ const technicalOpen = (group: ToolCallGroup) => group.status === "error";
             <code>{{ tool.name }}</code>
           </div>
           <div v-if="tool.inputSummary" class="agent-tool-field">
-            <span>参数</span>
+            <span>{{ t('execution.parameters') }}</span>
             <div v-html="markdown(tool.inputSummary)"></div>
           </div>
           <div v-if="tool.outputSummary" class="agent-tool-field">
-            <span>输出</span>
+            <span>{{ t('execution.output') }}</span>
             <div v-html="markdown(tool.outputSummary)"></div>
           </div>
           <div v-if="tool.error" class="agent-tool-field error">
-            <span>错误</span>
+            <span>{{ t('execution.error') }}</span>
             <div v-html="markdown(tool.error)"></div>
           </div>
           <div

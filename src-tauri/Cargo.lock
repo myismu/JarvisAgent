@@ -1984,6 +1984,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "encoding_rs",
  "eventsource-stream",
  "futures-util",
  "regex",

@@ -14,7 +14,10 @@
 use crate::core::rollback::Patch;
 use crate::core::tools::framework::permission::ensure_path_permission;
 
-use super::common::{is_locked_file_error, normalize_line_endings};
+use super::common::{
+    encode_text_preserve_encoding, is_locked_file_error, normalize_line_endings,
+    read_text_preserve_encoding, TextEncoding,
+};
 use super::diff::compute_diff;
 use super::notebook_guard::{
     is_notebook_path, looks_like_notebook_json, notebook_text_edit_rejection,
@@ -40,11 +43,28 @@ pub async fn write_file(
     }
 
     let file_exists = std::path::Path::new(path).exists();
-    let old_content = if file_exists {
-        std::fs::read_to_string(path).ok()
+    let old_decoded = if file_exists {
+        match read_text_preserve_encoding(path) {
+            Ok(decoded) => Some(decoded),
+            Err(e) => {
+                let err_msg = e.to_string();
+                if is_locked_file_error(&err_msg) {
+                    return format!(
+                        "写入失败: 文件可能被其他智能体或程序锁定，请稍后重试。详细错误: {}",
+                        e
+                    );
+                }
+                return format!("写入失败，无法读取原文件编码: {}", e);
+            }
+        }
     } else {
         None
     };
+    let old_content = old_decoded.as_ref().map(|decoded| decoded.content.clone());
+    let encoding = old_decoded
+        .as_ref()
+        .map(|decoded| decoded.encoding)
+        .unwrap_or(TextEncoding::Utf8);
 
     // TOCTOU 防护：记录读取时的 mtime
     let read_mtime = if file_exists {
@@ -65,7 +85,12 @@ pub async fn write_file(
         }
     }
 
-    match std::fs::write(path, content.as_str()) {
+    let bytes = match encode_text_preserve_encoding(&content, encoding) {
+        Ok(bytes) => bytes,
+        Err(e) => return format!("写入失败: {}", e),
+    };
+
+    match std::fs::write(path, bytes) {
         Ok(_) => {
             let patch = match &old_content {
                 None => Patch::CreateFile {

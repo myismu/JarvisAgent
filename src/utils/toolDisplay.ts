@@ -1,6 +1,7 @@
-﻿import type { AgentDisplayMode, AgentToolCallView, AgentToolStatus } from "../types";
+import { i18n } from "../i18n";
+import type { AgentDisplayMode, AgentToolCallView, AgentToolStatus } from "../types";
 
-type ToolActionLabels = Record<AgentToolStatus, string>;
+const t = i18n.global.t;
 
 export type ToolDisplayCategory =
   | "task"
@@ -40,318 +41,71 @@ export interface ToolCallGroup {
 
 interface ToolDescriptor {
   category: ToolDisplayCategory;
-  action: string;
-  unit: string;
-  pendingVerb: string;
-  runningVerb: string;
-  completedVerb: string;
-  errorVerb: string;
+  key: string;
 }
-
-const CATEGORY_LABELS: Record<ToolDisplayCategory, string> = {
-  task: "任务管理",
-  file: "文件操作",
-  search: "搜索检索",
-  command: "命令执行",
-  subagent: "子代理",
-  planning: "方案审批",
-  memory: "记忆上下文",
-  system: "系统设置",
-  other: "工具活动",
-};
-
-const DEFAULT_ACTION_LABELS: ToolActionLabels = {
-  pending: "等待执行",
-  running: "正在执行",
-  completed: "已完成",
-  error: "执行失败",
-};
 
 const DEFAULT_DESCRIPTOR: ToolDescriptor = {
   category: "other",
-  action: "执行工具",
-  unit: "次",
-  pendingVerb: "等待执行",
-  runningVerb: "正在执行",
-  completedVerb: "已完成",
-  errorVerb: "执行失败",
+  key: "default",
 };
 
 const TASK_UPDATE_DESCRIPTOR: ToolDescriptor = {
   category: "task",
-  action: "更新任务",
-  unit: "个任务",
-  pendingVerb: "等待更新",
-  runningVerb: "正在更新",
-  completedVerb: "已更新",
-  errorVerb: "更新失败",
+  key: "updateTask",
 };
 
 const TASK_DEPENDENCY_DESCRIPTOR: ToolDescriptor = {
   category: "task",
-  action: "设置依赖",
-  unit: "条依赖",
-  pendingVerb: "等待设置",
-  runningVerb: "正在设置",
-  completedVerb: "已设置",
-  errorVerb: "设置失败",
+  key: "taskDependency",
 };
 
 const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
-  createtask: {
-    category: "task",
-    action: "创建任务",
-    unit: "个任务",
-    pendingVerb: "等待创建",
-    runningVerb: "正在创建",
-    completedVerb: "已创建",
-    errorVerb: "创建失败",
-  },
+  createtask: { category: "task", key: "createTask" },
   updatetask: TASK_UPDATE_DESCRIPTOR,
-  deletetask: {
-    category: "task",
-    action: "删除任务",
-    unit: "个任务",
-    pendingVerb: "等待删除",
-    runningVerb: "正在删除",
-    completedVerb: "已删除",
-    errorVerb: "删除失败",
-  },
-  listtasks: {
-    category: "task",
-    action: "查看任务",
-    unit: "次",
-    pendingVerb: "等待查看",
-    runningVerb: "正在查看",
-    completedVerb: "已查看",
-    errorVerb: "查看失败",
-  },
-  gettask: {
-    category: "task",
-    action: "读取任务",
-    unit: "个任务",
-    pendingVerb: "等待读取",
-    runningVerb: "正在读取",
-    completedVerb: "已读取",
-    errorVerb: "读取失败",
-  },
-  summarizetasks: {
-    category: "task",
-    action: "汇总任务",
-    unit: "次",
-    pendingVerb: "等待汇总",
-    runningVerb: "正在汇总",
-    completedVerb: "已汇总",
-    errorVerb: "汇总失败",
-  },
-  updatetodos: {
-    category: "task",
-    action: "更新待办",
-    unit: "次",
-    pendingVerb: "等待更新",
-    runningVerb: "正在更新",
-    completedVerb: "已更新",
-    errorVerb: "更新失败",
-  },
-  runsubagentssequentially: {
-    category: "task",
-    action: "调度任务",
-    unit: "次",
-    pendingVerb: "等待调度",
-    runningVerb: "正在调度",
-    completedVerb: "已调度",
-    errorVerb: "调度失败",
-  },
-  runsubagent: {
-    category: "subagent",
-    action: "启动子代理",
-    unit: "个任务",
-    pendingVerb: "等待启动",
-    runningVerb: "正在执行",
-    completedVerb: "已完成",
-    errorVerb: "执行失败",
-  },
-  proposeplan: {
-    category: "planning",
-    action: "提交方案",
-    unit: "份方案",
-    pendingVerb: "等待提交",
-    runningVerb: "正在提交",
-    completedVerb: "已提交",
-    errorVerb: "提交失败",
-  },
-  readfile: {
-    category: "file",
-    action: "读取文件",
-    unit: "个文件",
-    pendingVerb: "等待读取",
-    runningVerb: "正在读取",
-    completedVerb: "已读取",
-    errorVerb: "读取失败",
-  },
-  readfileskeleton: {
-    category: "file",
-    action: "读取结构",
-    unit: "个文件",
-    pendingVerb: "等待读取",
-    runningVerb: "正在读取",
-    completedVerb: "已读取",
-    errorVerb: "读取失败",
-  },
-  writefile: {
-    category: "file",
-    action: "写入文件",
-    unit: "个文件",
-    pendingVerb: "等待写入",
-    runningVerb: "正在写入",
-    completedVerb: "已写入",
-    errorVerb: "写入失败",
-  },
-  editfile: {
-    category: "file",
-    action: "修改文件",
-    unit: "个文件",
-    pendingVerb: "等待修改",
-    runningVerb: "正在修改",
-    completedVerb: "已修改",
-    errorVerb: "修改失败",
-  },
-  editnotebook: {
-    category: "file",
-    action: "编辑 Notebook",
-    unit: "个单元",
-    pendingVerb: "等待编辑",
-    runningVerb: "正在编辑",
-    completedVerb: "已编辑",
-    errorVerb: "编辑失败",
-  },
-  listdirectory: {
-    category: "file",
-    action: "查看目录",
-    unit: "个目录",
-    pendingVerb: "等待查看",
-    runningVerb: "正在查看",
-    completedVerb: "已查看",
-    errorVerb: "查看失败",
-  },
-  searchrepo: {
-    category: "search",
-    action: "搜索代码",
-    unit: "次",
-    pendingVerb: "等待搜索",
-    runningVerb: "正在搜索",
-    completedVerb: "已搜索",
-    errorVerb: "搜索失败",
-  },
-  searchtext: {
-    category: "search",
-    action: "搜索文本",
-    unit: "次",
-    pendingVerb: "等待搜索",
-    runningVerb: "正在搜索",
-    completedVerb: "已搜索",
-    errorVerb: "搜索失败",
-  },
-  findfiles: {
-    category: "search",
-    action: "匹配文件",
-    unit: "次",
-    pendingVerb: "等待匹配",
-    runningVerb: "正在匹配",
-    completedVerb: "已匹配",
-    errorVerb: "匹配失败",
-  },
-  searchtools: {
-    category: "search",
-    action: "查找工具",
-    unit: "次",
-    pendingVerb: "等待查找",
-    runningVerb: "正在查找",
-    completedVerb: "已查找",
-    errorVerb: "查找失败",
-  },
-  runcommand: {
-    category: "command",
-    action: "运行命令",
-    unit: "条命令",
-    pendingVerb: "等待运行",
-    runningVerb: "正在运行",
-    completedVerb: "运行成功",
-    errorVerb: "运行失败",
-  },
-  startbackgroundcommand: {
-    category: "command",
-    action: "启动后台命令",
-    unit: "条命令",
-    pendingVerb: "等待启动",
-    runningVerb: "正在启动",
-    completedVerb: "已启动",
-    errorVerb: "启动失败",
-  },
-  checkbackgroundcommand: {
-    category: "command",
-    action: "检查后台任务",
-    unit: "次",
-    pendingVerb: "等待检查",
-    runningVerb: "正在检查",
-    completedVerb: "已检查",
-    errorVerb: "检查失败",
-  },
-  rungitcommand: {
-    category: "command",
-    action: "运行 Git",
-    unit: "条命令",
-    pendingVerb: "等待运行",
-    runningVerb: "正在运行",
-    completedVerb: "运行成功",
-    errorVerb: "运行失败",
-  },
-  loadskill: {
-    category: "memory",
-    action: "加载技能",
-    unit: "个技能",
-    pendingVerb: "等待加载",
-    runningVerb: "正在加载",
-    completedVerb: "已加载",
-    errorVerb: "加载失败",
-  },
-  compactconversation: {
-    category: "memory",
-    action: "压缩上下文",
-    unit: "次",
-    pendingVerb: "等待压缩",
-    runningVerb: "正在压缩",
-    completedVerb: "已压缩",
-    errorVerb: "压缩失败",
-  },
-  consolidatememory: {
-    category: "memory",
-    action: "整理记忆",
-    unit: "次",
-    pendingVerb: "等待整理",
-    runningVerb: "正在整理",
-    completedVerb: "已整理",
-    errorVerb: "整理失败",
-  },
-  setworkspace: {
-    category: "system",
-    action: "设置工作区",
-    unit: "个目录",
-    pendingVerb: "等待设置",
-    runningVerb: "正在设置",
-    completedVerb: "已设置",
-    errorVerb: "设置失败",
-  },
-  getsysteminfo: {
-    category: "system",
-    action: "读取系统信息",
-    unit: "次",
-    pendingVerb: "等待读取",
-    runningVerb: "正在读取",
-    completedVerb: "已读取",
-    errorVerb: "读取失败",
-  },
+  deletetask: { category: "task", key: "deleteTask" },
+  listtasks: { category: "task", key: "listTasks" },
+  gettask: { category: "task", key: "getTask" },
+  summarizetasks: { category: "task", key: "summarizeTasks" },
+  updatetodos: { category: "task", key: "updateTodos" },
+  runsubagentssequentially: { category: "task", key: "runSubagentsSequentially" },
+  runsubagent: { category: "subagent", key: "runSubagent" },
+  proposeplan: { category: "planning", key: "proposePlan" },
+  readfile: { category: "file", key: "readFile" },
+  readfileskeleton: { category: "file", key: "readFileSkeleton" },
+  writefile: { category: "file", key: "writeFile" },
+  editfile: { category: "file", key: "editFile" },
+  editnotebook: { category: "file", key: "editNotebook" },
+  listdirectory: { category: "file", key: "listDirectory" },
+  searchrepo: { category: "search", key: "searchRepo" },
+  searchtext: { category: "search", key: "searchText" },
+  findfiles: { category: "search", key: "findFiles" },
+  searchtools: { category: "search", key: "searchTools" },
+  runcommand: { category: "command", key: "runCommand" },
+  startbackgroundcommand: { category: "command", key: "startBackgroundCommand" },
+  checkbackgroundcommand: { category: "command", key: "checkBackgroundCommand" },
+  rungitcommand: { category: "command", key: "runGitCommand" },
+  loadskill: { category: "memory", key: "loadSkill" },
+  compactconversation: { category: "memory", key: "compactConversation" },
+  consolidatememory: { category: "memory", key: "consolidateMemory" },
+  setworkspace: { category: "system", key: "setWorkspace" },
+  getsysteminfo: { category: "system", key: "getSystemInfo" },
 };
+
+function translate(key: string, params?: Record<string, unknown>) {
+  return t(key, params ?? {}) as string;
+}
+
+function descriptorText(descriptor: ToolDescriptor, field: string, params?: Record<string, unknown>) {
+  return translate(`tools.actions.${descriptor.key}.${field}`, params);
+}
+
+function categoryText(category: ToolDisplayCategory) {
+  return translate(`tools.categories.${category}`);
+}
+
+function defaultActionText(status: AgentToolStatus) {
+  return translate(`tools.status.${status}`);
+}
 
 function normalizeToolName(name: string) {
   const trimmed = (name || "").trim();
@@ -392,36 +146,19 @@ function groupingKeyForTool(tool: AgentToolCallView) {
 
 function actionKeyForTool(tool: AgentToolCallView) {
   const descriptor = descriptorForTools(tool.name, [tool]);
-  return `${descriptor.category}:${descriptor.action}`;
+  return `${descriptor.category}:${descriptor.key}`;
 }
 
 function actionVerb(descriptor: ToolDescriptor, status: AgentToolStatus) {
-  if (status === "pending") return descriptor.pendingVerb;
-  if (status === "running") return descriptor.runningVerb;
-  if (status === "completed") return descriptor.completedVerb;
-  return descriptor.errorVerb;
-}
-
-function actionObject(action: string) {
-  return action
-    .replace(
-      /^(创建|更新|删除|查看|读取|写入|修改|编辑|搜索|匹配|查找|运行|启动|检查|加载|压缩|整理|设置|提交|调度|汇总)/,
-      "",
-    )
-    .trim();
+  return descriptorText(descriptor, `${status}Verb`);
 }
 
 function phraseWithoutCount(descriptor: ToolDescriptor, status: AgentToolStatus) {
-  const object = actionObject(descriptor.action) || descriptor.action;
-  const verb = actionVerb(descriptor, status);
-
-  if (status === "error") return `${object}${verb}`;
-  if (descriptor.category === "command" && status === "completed") return `${object}${verb}`;
-  return `${verb}${object}`;
+  return descriptorText(descriptor, `${status}Phrase`);
 }
 
 function formatCount(count: number, unit: string) {
-  return `${count} ${unit || "次"}`;
+  return translate("tools.summary.count", { count, unit: unit || translate("tools.units.time") });
 }
 
 function commandFromInput(tool: AgentToolCallView) {
@@ -483,24 +220,15 @@ function commandSentence(tool: AgentToolCallView, descriptor: ToolDescriptor, st
   const command = commandFromInput(tool);
   if (!command) return null;
 
-  if (descriptor.action === "启动后台命令") {
-    if (status === "pending") return `等待启动 ${command}`;
-    if (status === "running") return `正在启动 ${command}`;
-    if (status === "completed") return `${command} 已启动`;
-    return `${command} 启动失败`;
+  if (descriptor.key === "startBackgroundCommand") {
+    return descriptorText(descriptor, `${status}Target`, { command });
   }
 
-  if (descriptor.action === "检查后台任务") {
-    if (status === "pending") return "等待检查后台任务";
-    if (status === "running") return "正在检查后台任务";
-    if (status === "completed") return "已检查后台任务";
-    return "后台任务检查失败";
+  if (descriptor.key === "checkBackgroundCommand") {
+    return descriptorText(descriptor, `${status}Phrase`);
   }
 
-  if (status === "pending") return `等待运行 ${command}`;
-  if (status === "running") return `正在运行 ${command}`;
-  if (status === "completed") return `${command} 运行成功`;
-  return `${command} 运行失败`;
+  return descriptorText(descriptor, `${status}Target`, { command });
 }
 
 function targetedSentence(tool: AgentToolCallView, descriptor: ToolDescriptor, status: AgentToolStatus) {
@@ -508,13 +236,10 @@ function targetedSentence(tool: AgentToolCallView, descriptor: ToolDescriptor, s
     return commandSentence(tool, descriptor, status);
   }
 
-  if (descriptor.action === "加载技能") {
+  if (descriptor.key === "loadSkill") {
     const target = labelTargetFromInput(tool);
     if (!target) return null;
-    if (status === "pending") return `等待加载 ${target}`;
-    if (status === "running") return `正在加载 ${target}`;
-    if (status === "completed") return `已加载 ${target}`;
-    return `${target} 加载失败`;
+    return descriptorText(descriptor, `${status}Target`, { target });
   }
 
   return null;
@@ -535,21 +260,22 @@ function buildActionSummary(tools: AgentToolCallView[]): ToolActionSummary {
   const singleTargeted = count === 1 && first ? targetedSentence(first, descriptor, status) : null;
   const completed = tools.filter((tool) => tool.status === "completed").length;
   const verb = actionVerb(descriptor, status);
+  const unit = descriptorText(descriptor, "unit");
   const countLabel =
     status === "running" && completed > 0 && completed < count
-      ? `${completed}/${count} ${descriptor.unit}`
+      ? translate("tools.summary.progress", { completed, count, unit })
       : count > 1
-        ? formatCount(count, descriptor.unit)
+        ? formatCount(count, unit)
         : "";
-  const summary = singleTargeted ?? (countLabel ? `${verb} ${countLabel}` : phraseWithoutCount(descriptor, status));
+  const summary = singleTargeted ?? (countLabel ? translate("tools.summary.verbCount", { verb, count: countLabel }) : phraseWithoutCount(descriptor, status));
   const names = Array.from(new Set(tools.map((tool) => normalizeToolName(tool.name))));
 
   return {
     key: actionKeyForTool(first),
-    label: descriptor.action,
+    label: descriptorText(descriptor, "action"),
     status,
     count,
-    unit: descriptor.unit,
+    unit,
     summary,
     names,
   };
@@ -572,7 +298,7 @@ function buildActionSummaries(tools: AgentToolCallView[]) {
 }
 
 function summarizeGroup(actions: ToolActionSummary[]) {
-  return actions.map((action) => action.summary).join("，");
+  return actions.map((action) => action.summary).join(translate("tools.summary.separator"));
 }
 
 export function createToolCallGroup(tools: AgentToolCallView[]): ToolCallGroup {
@@ -591,7 +317,7 @@ export function createToolCallGroup(tools: AgentToolCallView[]): ToolCallGroup {
     key,
     name: firstTool ? normalizeToolName(firstTool.name) : "unknown_tool",
     category,
-    categoryLabel: CATEGORY_LABELS[category],
+    categoryLabel: categoryText(category),
     tools,
     actions,
     status: aggregateToolStatus(tools),
@@ -637,7 +363,7 @@ export function toolActionLabel(name: string, status: AgentToolStatus, tool?: Ag
   if (targeted) return targeted;
   return TOOL_DESCRIPTORS[toolKey(name)]
     ? phraseWithoutCount(descriptor, status)
-    : DEFAULT_ACTION_LABELS[status];
+    : defaultActionText(status);
 }
 
 export function toolGroupTitle(group: ToolCallGroup) {
@@ -646,23 +372,23 @@ export function toolGroupTitle(group: ToolCallGroup) {
 
 export function toolCategoryLabel(name: string) {
   const descriptor = descriptorForTools(name);
-  return CATEGORY_LABELS[descriptor.category];
+  return categoryText(descriptor.category);
 }
 
 export function toolGroupActionLabel(group: ToolCallGroup) {
-  return group.summary || DEFAULT_ACTION_LABELS[group.status];
+  return group.summary || defaultActionText(group.status);
 }
 
 export function toolActionCountLabel(action: ToolActionSummary) {
-  return action.count > 1 ? `${action.label} × ${action.count}` : action.label;
+  return action.count > 1 ? translate("tools.summary.actionCount", { action: action.label, count: action.count }) : action.label;
 }
 
 export function summarizeToolGroupsForPanel(groups: ToolCallGroup[], totalCount: number) {
-  if (!groups.length) return "无工具活动";
+  if (!groups.length) return translate("execution.noToolActivity");
   const labels = Array.from(new Set(groups.map((group) => group.categoryLabel)));
-  const visible = labels.slice(0, 3).join("、");
-  const suffix = labels.length > 3 ? `等 ${labels.length} 类活动` : visible;
-  return `${suffix} · ${totalCount} 步`;
+  const visible = labels.slice(0, 3).join(translate("tools.summary.labelSeparator"));
+  const suffix = labels.length > 3 ? translate("tools.summary.moreCategories", { count: labels.length }) : visible;
+  return translate("tools.summary.panel", { categories: suffix, count: totalCount });
 }
 
 export function hasToolDetails(tool: AgentToolCallView) {
@@ -687,5 +413,3 @@ export function shouldOpenToolGroup(group: ToolCallGroup, mode: AgentDisplayMode
   if (group.status === "error") return true;
   return mode === "developer" && ["running", "pending"].includes(group.status);
 }
-
-

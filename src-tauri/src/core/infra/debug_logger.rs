@@ -106,6 +106,29 @@ impl DebugLogger {
         }
     }
 
+    /// 记录模型把工具调用写成普通文本的协议违规诊断
+    pub fn log_textual_tool_protocol_violation(
+        &self,
+        agent_type: &str,
+        loop_count: usize,
+        snippet: &str,
+    ) {
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.debug_path)
+        {
+            let truncated: String = snippet.chars().take(500).collect();
+            let _ = writeln!(
+                file,
+                "[{} LOOP {} PROTOCOL VIOLATION] 模型输出疑似工具调用文本，但未返回结构化工具调用。Snippet: {}",
+                agent_type,
+                loop_count,
+                truncated.replace('\n', "\\n")
+            );
+        }
+    }
+
     /// 记录代理思考过程（包括 thinking、工具调用、token 使用）
     pub fn log_thoughts(
         &self,

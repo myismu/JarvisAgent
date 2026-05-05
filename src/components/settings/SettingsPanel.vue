@@ -2,8 +2,13 @@
   <div v-if="modelValue" class="settings-overlay" @click.self="close">
     <div class="settings-modal">
       <div class="settings-header">
-        <h3>系统设置</h3>
-        <button class="icon-btn close-btn" @click="close" title="关闭">
+        <div class="header-title">
+          <svg viewBox="0 0 24 24" width="20" height="20" class="header-icon">
+            <path fill="currentColor" d="M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M19.43,12.97C19.47,12.65 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.43,11.03L21.54,9.37C21.73,9.22 21.78,8.95 21.66,8.73L19.66,5.27C19.54,5.05 19.27,4.96 19.05,5.05L16.56,6.05C16.04,5.66 15.47,5.34 14.86,5.08L14.47,2.44C14.43,2.21 14.23,2 14,2H10C9.77,2 9.57,2.21 9.53,2.44L9.14,5.08C8.53,5.34 7.96,5.66 7.44,6.05L4.95,5.05C4.73,4.96 4.46,5.05 4.34,5.27L2.34,8.73C2.21,8.95 2.27,9.22 2.46,9.37L4.57,11.03C4.53,11.34 4.5,11.67 4.5,12C4.5,12.33 4.53,12.65 4.57,12.97L2.46,14.63C2.27,14.78 2.21,15.05 2.34,15.27L4.34,18.73C4.46,18.95 4.73,19.03 4.95,18.95L7.44,17.94C7.96,18.34 8.53,18.66 9.14,18.92L9.53,21.56C9.57,21.79 9.77,22 10,22H14C14.23,22 14.43,21.79 14.47,21.56L14.86,18.92C15.47,18.66 16.04,18.34 16.56,17.94L19.05,18.95C19.27,19.03 19.54,18.95 19.66,18.73L21.66,15.27C21.78,15.05 21.73,14.78 21.54,14.63L19.43,12.97Z" />
+          </svg>
+          <h3>{{ t('settings.title') }}</h3>
+        </div>
+        <button class="icon-btn close-btn" @click="close" :title="t('settings.close')">
           <svg viewBox="0 0 24 24" width="20" height="20">
             <path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
           </svg>
@@ -11,225 +16,261 @@
       </div>
 
       <div class="settings-container">
-        <!-- 左侧预设列表 -->
+        <!-- 左侧导航 -->
         <div class="settings-sidebar">
-          <div class="sidebar-section-header">
-            <span>配置预设</span>
-            <button class="add-btn" @click="addProfile" title="添加新预设">+</button>
-          </div>
-          <div class="profile-list">
+          <div class="sidebar-nav">
             <div
-              v-for="profile in draftConfig.profiles"
-              :key="profile.id"
-              class="profile-item"
-              :class="{
-                'active': selectedProfileId === profile.id,
-                'is-running': draftConfig.activeProfileId === profile.id
-              }"
-              @click="selectProfile(profile.id)"
+              class="nav-item"
+              :class="{ active: activeTab === 'general' }"
+              @click="activeTab = 'general'"
             >
-              <span class="profile-name">{{ profile.name }}</span>
-              <div class="profile-actions">
-                <label class="sidebar-switch" title="设为全局默认" @click.stop>
-                  <input
-                    type="checkbox"
-                    :checked="savedConfig.globalProfileId === profile.id"
-                    :disabled="actionLoading"
-                    @change="toggleGlobalProfile(profile.id)"
-                  />
-                  <span class="slider"></span>
-                </label>
-                <button
-                  v-if="draftConfig.profiles.length > 1"
-                  class="delete-btn"
-                  :disabled="actionLoading"
-                  @click.stop="requestDeleteProfile(profile.id)"
-                >
-                  <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-                </button>
-              </div>
+              <svg viewBox="0 0 24 24" width="18" height="18">
+                <path fill="currentColor" d="M12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6A6,6 0 0,1 18,12A6,6 0 0,1 12,18M12,8A4,4 0 0,0 8,12A4,4 0 0,0 12,16A4,4 0 0,0 16,12A4,4 0 0,0 12,8M12,2L4.5,20.29L5.21,21L12,18L18.79,21L19.5,20.29L12,2Z" />
+              </svg>
+              <span>{{ t('settings.tabs.general') }}</span>
+            </div>
+            <div
+              class="nav-item"
+              :class="{ active: activeTab === 'presets' }"
+              @click="activeTab = 'presets'"
+            >
+              <svg viewBox="0 0 24 24" width="18" height="18">
+                <path fill="currentColor" d="M13,9.5H11V7.5H13V9.5M13,16.5H11V11.5H13V16.5M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22A10,10 0 0,1 2,12A10,10 0 0,1 12,2M12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20A8,8 0 0,0 20,12A8,8 0 0,0 12,4Z" />
+              </svg>
+              <span>{{ t('settings.tabs.presets') }}</span>
             </div>
           </div>
 
-          <div class="sidebar-section-header" style="margin-top: 16px;">
-            <span>外观</span>
-          </div>
-          <div class="theme-toggle-section">
-            <button class="theme-toggle-btn" @click="toggleTheme">
-              <svg v-if="isDark" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="5"></circle>
-                <line x1="12" y1="1" x2="12" y2="3"></line>
-                <line x1="12" y1="21" x2="12" y2="23"></line>
-                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
-                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
-                <line x1="1" y1="12" x2="3" y2="12"></line>
-                <line x1="21" y1="12" x2="23" y2="12"></line>
-                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
-                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
-              </svg>
-              <svg v-else viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
-              </svg>
-              <span>{{ isDark ? '亮色模式' : '暗色模式' }}</span>
-            </button>
-          </div>
-          <div class="display-mode-section">
-            <div class="display-mode-label">回复视图</div>
-            <div class="display-mode-toggle" role="group" aria-label="Agent display mode">
-              <button
-                type="button"
-                class="display-mode-btn"
-                :class="{ active: agentDisplayMode === 'user' }"
-                @click="setAgentDisplayMode('user')"
-                data-tooltip="普通视图：只显示适合日常使用的回复内容"
-                aria-label="普通视图：只显示适合日常使用的回复内容"
-              >
-                普通
-              </button>
-              <button
-                type="button"
-                class="display-mode-btn"
-                :class="{ active: agentDisplayMode === 'developer' }"
-                @click="setAgentDisplayMode('developer')"
-                data-tooltip="开发者视图：显示更完整的执行过程和调试信息"
-                aria-label="开发者视图：显示更完整的执行过程和调试信息"
-              >
-                开发者
-              </button>
+          <template v-if="activeTab === 'presets'">
+            <div class="sidebar-divider"></div>
+            <div class="sidebar-section-header">
+              <span>{{ t('settings.profiles.section') }}</span>
+              <button class="add-btn" @click="addProfile" :title="t('settings.profiles.add')">+</button>
             </div>
-          </div>
-          <div class="window-state-section">
-            <div class="display-mode-label">窗口状态</div>
-            <button class="window-reset-btn" :disabled="actionLoading" @click="resetDefaultWindows">
-              恢复默认窗口
-            </button>
-            <div class="window-reset-desc">清空 data/window-state.json，并将主窗口与监控窗口恢复到默认大小和位置。</div>
-          </div>
+            <div class="profile-list">
+              <div
+                v-for="profile in draftConfig.profiles"
+                :key="profile.id"
+                class="profile-item"
+                :class="{
+                  'active': selectedProfileId === profile.id,
+                  'is-running': draftConfig.activeProfileId === profile.id
+                }"
+                @click="selectProfile(profile.id)"
+              >
+                <span class="profile-name">{{ profile.name }}</span>
+                <div class="profile-actions">
+                  <label class="sidebar-switch" :title="t('settings.profiles.setGlobal')" @click.stop>
+                    <input
+                      type="checkbox"
+                      :checked="savedConfig.globalProfileId === profile.id"
+                      :disabled="actionLoading"
+                      @change="toggleGlobalProfile(profile.id)"
+                    />
+                    <span class="slider"></span>
+                  </label>
+                  <button
+                    v-if="draftConfig.profiles.length > 1"
+                    class="delete-btn"
+                    :disabled="actionLoading"
+                    @click.stop="requestDeleteProfile(profile.id)"
+                  >
+                    <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </template>
         </div>
 
-        <!-- 右侧编辑区域 -->
-        <div class="settings-content" v-if="editingProfile">
+        <!-- 右侧内容区域 -->
+        <div class="settings-content">
           <div class="settings-body">
-            <div class="setting-group">
-              <h4>预设基本信息</h4>
-              <div class="setting-item">
-                <label>预设名称</label>
-                <input type="text" v-model="editingProfile.name" placeholder="例如：Claude 3.5 Pro" />
-              </div>
-            </div>
-            <div class="setting-group">
-              <h4>API 配置</h4>
-              <div class="setting-item">
-                <label>API 风格 (API Format)</label>
-                <select v-model="editingProfile.config.apiFormat" class="format-select">
-                  <option value="anthropic">Anthropic (Claude) 原生格式</option>
-                  <option value="openai">OpenAI (Chat Completions) 兼容格式</option>
-                </select>
-                <div class="setting-desc">如果使用火山引擎等国产模型直连，请选择 OpenAI 兼容格式。</div>
-              </div>
-              <div class="setting-item">
-                <label>API Key</label>
-                <input type="password" v-model="editingProfile.config.apiKey" placeholder="sk-..." />
-              </div>
-              <div class="setting-item">
-                <label>Base URL</label>
-                <input type="text" v-model="editingProfile.config.baseUrl" placeholder="https://api.anthropic.com/v1/messages" />
-              </div>
-            </div>
-
-            <div class="setting-group">
-              <h4>模型配置</h4>
-              <div class="setting-item">
-                <label>对话模型 (Main + Sub Agent)</label>
-                <input
-                  type="text"
-                  v-model="editingProfile.config.mainModel"
-                  placeholder="deepseek-v4-pro / claude-3-5-sonnet-20241022"
-                  @input="onMainModelInput"
-                />
-                <div class="capability-badges" v-if="mainModelCaps !== null">
-                  <span class="badge" :class="mainModelCaps ? 'badge-ok' : 'badge-none'">
-                    <svg v-if="mainModelCaps" viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                    <svg v-else viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
-                    <span>{{ mainModelCaps ? '已识别' : '未知模型' }}</span>
-                  </span>
-                  <template v-if="mainModelCaps">
-                    <span class="badge" :class="mainModelCaps.streaming ? 'badge-ok' : 'badge-no'">
-                      <svg v-if="mainModelCaps.streaming" viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
-                      <svg v-else viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-                      <span>{{ mainModelCaps.streaming ? '流式' : '无流式' }}</span>
-                    </span>
-                    <span class="badge" :class="mainModelCaps.thinking ? 'badge-think' : 'badge-none'">
-                      <svg v-if="mainModelCaps.thinking" viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"></path><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"></path></svg>
-                      <svg v-else viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                      <span>{{ mainModelCaps.thinking ? '深度思考' : '无思考' }}</span>
-                    </span>
-                    <span class="badge" :class="mainModelCaps.temperature ? 'badge-ok' : 'badge-none'">
-                      <svg v-if="mainModelCaps.temperature" viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line></svg>
-                      <svg v-else viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                      <span>{{ mainModelCaps.temperature ? '温度可调' : '温度固定' }}</span>
-                    </span>
-                    <span class="badge" :class="mainModelCaps.vision ? 'badge-ok' : 'badge-none'">
-                      <svg v-if="mainModelCaps.vision" viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
-                      <svg v-else viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
-                      <span>{{ mainModelCaps.vision ? '多模态' : '纯文本' }}</span>
-                    </span>
-                    <span class="badge badge-info">
-                      <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h14a2 2 0 0 0 2-2V7.5L14.5 2H6a2 2 0 0 0-2 2v4"></path><polyline points="14 2 14 8 20 8"></polyline><path d="M2 15h10"></path><path d="M9 18l3-3-3-3"></path></svg>
-                      <span>输出 {{ mainModelCaps.maxTokens.toLocaleString() }} tokens</span>
-                    </span>
-                    <span class="badge badge-info">
-                      <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M7 8h10"></path><path d="M7 12h6"></path><path d="M7 16h8"></path></svg>
-                      <span>上下文 {{ mainModelCaps.maxContextTokens ? mainModelCaps.maxContextTokens.toLocaleString() : '未知' }} tokens</span>
-                    </span>
-                  </template>
-                  <span class="badge badge-warn" v-else>手动确认是否支持各功能</span>
+            <!-- 常规设置页 -->
+            <div v-if="activeTab === 'general'" class="tab-content">
+              <div class="setting-card">
+                <div class="card-header">
+                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12,18V6L5,12L12,18M11,14.14L11,9.86L8.5,12L11,14.14M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20Z"/></svg>
+                  <h4>{{ t('settings.general.appearance') }}</h4>
                 </div>
-                <div class="capability-note" v-if="mainModelCaps?.notes">{{ mainModelCaps.notes }}</div>
-                <div class="setting-desc">主代理（对话）与子代理（执行任务）共用此模型。建议使用最强的模型。</div>
-              </div>
-              <div class="setting-item">
-                <label>工具代理模型 (Utility Agent)</label>
-                <input type="text" v-model="editingProfile.config.utilityModel" placeholder="claude-3-5-haiku-20241022" />
-                <div class="setting-desc">负责后台记忆整理、摘要压缩等。可使用更便宜、更快的模型。</div>
+                <div class="setting-item">
+                  <label>{{ t('settings.general.colorMode') }}</label>
+                  <button class="theme-toggle-btn" @click="toggleTheme">
+                    <svg v-if="isDark" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="12" cy="12" r="5"></circle>
+                      <line x1="12" y1="1" x2="12" y2="3"></line>
+                      <line x1="12" y1="21" x2="12" y2="23"></line>
+                      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                      <line x1="1" y1="12" x2="3" y2="12"></line>
+                      <line x1="21" y1="12" x2="23" y2="12"></line>
+                      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                    </svg>
+                    <svg v-else viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                    </svg>
+                    <span>{{ isDark ? t('settings.general.darkMode') : t('settings.general.lightMode') }}</span>
+                  </button>
+                </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.general.language') }}</label>
+                  <select :value="appLocale" class="format-select" @change="setAppLocale(($event.target as HTMLSelectElement).value)">
+                    <option value="zh-CN">简体中文</option>
+                    <option value="en-US">English</option>
+                  </select>
+                  <div class="setting-desc">{{ t('settings.general.languageDesc') }}</div>
+                </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.general.displayMode') }}</label>
+                  <div class="display-mode-toggle">
+                    <button
+                      class="display-mode-btn"
+                      :class="{ active: agentDisplayMode === 'user' }"
+                      @click="setAgentDisplayMode('user')"
+                    >{{ t('settings.general.normal') }}</button>
+                    <button
+                      class="display-mode-btn"
+                      :class="{ active: agentDisplayMode === 'developer' }"
+                      @click="setAgentDisplayMode('developer')"
+                    >{{ t('settings.general.developer') }}</button>
+                  </div>
+                  <div class="setting-desc">{{ t('settings.general.developerDesc') }}</div>
+                </div>
               </div>
 
-              <div class="setting-item">
-                <label>温度 (Temperature)</label>
-                <input type="number" v-model.number="editingProfile.config.temperature" placeholder="留空使用模型默认值" step="0.1" min="0" max="2" />
-                <div class="setting-desc">控制输出的随机性，值越大越具创造性，越小越严谨。</div>
-              </div>
-
-              <div class="setting-item">
-                <label>Top-P</label>
-                <input type="number" v-model.number="editingProfile.config.topP" placeholder="留空使用模型默认值" step="0.1" min="0" max="1" />
-                <div class="setting-desc">核采样，控制输出词汇的范围分布，与温度类似。</div>
-              </div>
-
-              <div class="setting-item" v-show="editingProfile.config.apiFormat === 'anthropic'">
-                <label>Top-K</label>
-                <input type="number" v-model.number="editingProfile.config.topK" placeholder="留空使用模型默认值" step="1" min="0" />
-                <div class="setting-desc">控制每次采样只从概率最高的 K 个词中选取。</div>
+              <div class="setting-card">
+                <div class="card-header">
+                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M21,16.5C21,16.88 20.79,17.21 20.47,17.38L12.57,21.82C12.41,21.94 12.21,22 12,22C11.79,22 11.59,21.94 11.43,21.82L3.53,17.38C3.21,17.21 3,16.88 3,16.5V7.5C3,7.12 3.21,6.79 3.53,6.62L11.43,2.18C11.59,2.06 11.79,2 12,2C12.21,2 12.41,2.06 12.57,2.18L20.47,6.62C20.79,6.79 21,7.12 21,7.5V16.5Z"/></svg>
+                  <h4>{{ t('settings.general.windowStatus') }}</h4>
+                </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.general.layoutManagement') }}</label>
+                  <button class="window-reset-btn" :disabled="actionLoading" @click="resetDefaultWindows">
+                    {{ t('settings.general.restoreLayout') }}
+                  </button>
+                </div>
+                <div class="setting-desc">{{ t('settings.general.restoreLayoutDesc') }}</div>
               </div>
             </div>
 
-            <div class="setting-group">
-              <h4>图片压缩</h4>
-              <div class="setting-item">
-                <label>最大宽度 (px)</label>
-                <input type="number" v-model.number="editingProfile.config.imageMaxWidth" placeholder="1920" step="1" min="100" max="8192" />
-                <div class="setting-desc">超过此宽度的图片将等比缩放。留空使用默认值 1920。</div>
+            <!-- 预设编辑页 -->
+            <div v-else-if="activeTab === 'presets' && editingProfile" class="tab-content">
+              <!-- 基本信息卡片 -->
+              <div class="setting-card">
+                <div class="card-header">
+                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,14C16.42,14 20,15.79 20,18V20H4V18C4,15.79 7.58,14 12,14Z"/></svg>
+                  <h4>{{ t('settings.profileEditor.identity') }}</h4>
+                </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.profileEditor.name') }}</label>
+                  <input type="text" v-model="editingProfile.name" :placeholder="t('settings.profileEditor.namePlaceholder')" />
+                </div>
               </div>
-              <div class="setting-item">
-                <label>最大高度 (px)</label>
-                <input type="number" v-model.number="editingProfile.config.imageMaxHeight" placeholder="1080" step="1" min="100" max="8192" />
-                <div class="setting-desc">超过此高度的图片将等比缩放。留空使用默认值 1080。</div>
+
+              <!-- 连接配置卡片 -->
+              <div class="setting-card">
+                <div class="card-header">
+                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12,2L4.5,20.29L5.21,21L12,18L18.79,21L19.5,20.29L12,2Z"/></svg>
+                  <h4>{{ t('settings.profileEditor.apiConnection') }}</h4>
+                </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.profileEditor.apiFormat') }}</label>
+                  <select v-model="editingProfile.config.apiFormat" class="format-select">
+                    <option value="anthropic">{{ t('settings.profileEditor.anthropicNative') }}</option>
+                    <option value="openai">{{ t('settings.profileEditor.openaiCompatible') }}</option>
+                  </select>
+                </div>
+                <div class="setting-item">
+                  <label>Base URL</label>
+                  <input type="text" v-model="editingProfile.config.baseUrl" placeholder="https://..." />
+                </div>
+                <div class="setting-item">
+                  <label>API Key</label>
+                  <input type="password" v-model="editingProfile.config.apiKey" placeholder="sk-..." />
+                </div>
               </div>
-              <div class="setting-item">
-                <label>压缩质量</label>
-                <input type="number" v-model.number="editingProfile.config.imageQuality" placeholder="0.8" step="0.05" min="0.1" max="1.0" />
-                <div class="setting-desc">JPEG/WebP 压缩质量，0.1 最小体积 ~ 1.0 最高画质。留空使用默认值 0.8。</div>
+
+              <!-- 模型配置卡片 -->
+              <div class="setting-card">
+                <div class="card-header">
+                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22A10,10 0 0,1 2,12A10,10 0 0,1 12,2M12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20A8,8 0 0,0 20,12A8,8 0 0,0 12,4M12,6A6,6 0 0,1 18,12A6,6 0 0,1 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6M12,8A4,4 0 0,0 8,12A4,4 0 0,0 12,16A4,4 0 0,0 16,12A4,4 0 0,0 12,8Z"/></svg>
+                  <h4>{{ t('settings.profileEditor.modelSelection') }}</h4>
+                </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.profileEditor.mainModel') }}</label>
+                  <input
+                    type="text"
+                    v-model="editingProfile.config.mainModel"
+                    placeholder="claude-3-5-sonnet-..."
+                    @input="onMainModelInput"
+                  />
+                  <!-- 能力徽章 -->
+                  <div class="capability-badges" v-if="mainModelCaps !== null">
+                    <span class="badge" :class="mainModelCaps ? 'badge-ok' : 'badge-none'">
+                      <span>{{ mainModelCaps ? t('settings.profileEditor.recognized') : t('settings.profileEditor.unknownModel') }}</span>
+                    </span>
+                    <template v-if="mainModelCaps">
+                      <span v-if="mainModelCaps.thinking" class="badge badge-think">{{ t('settings.profileEditor.thinking') }}</span>
+                      <span v-if="mainModelCaps.vision" class="badge badge-ok">{{ t('settings.profileEditor.vision') }}</span>
+                      <span class="badge badge-info">{{ t('settings.profileEditor.outputTokens', { count: mainModelCaps.maxTokens.toLocaleString() }) }}</span>
+                    </template>
+                  </div>
+                </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.profileEditor.utilityModel') }}</label>
+                  <input type="text" v-model="editingProfile.config.utilityModel" placeholder="claude-3-5-haiku-..." />
+                  <div class="setting-desc">{{ t('settings.profileEditor.utilityModelDesc') }}</div>
+                </div>
+
+                <!-- 高级参数折叠 -->
+                <div class="advanced-toggle" @click="showAdvanced = !showAdvanced">
+                  <span>{{ t('settings.profileEditor.advancedParams') }}</span>
+                  <svg :class="{ rotated: showAdvanced }" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,8.58Z"/></svg>
+                </div>
+
+                <div v-show="showAdvanced" class="advanced-content">
+                  <div class="setting-item">
+                    <label>温度 (Temp)</label>
+                    <input type="number" v-model.number="editingProfile.config.temperature" step="0.1" min="0" max="2" />
+                  </div>
+                  <div class="setting-item">
+                    <label>Top-P</label>
+                    <input type="number" v-model.number="editingProfile.config.topP" step="0.1" min="0" max="1" />
+                  </div>
+                  <div class="setting-item" v-if="editingProfile.config.apiFormat === 'anthropic'">
+                    <label>Top-K</label>
+                    <input type="number" v-model.number="editingProfile.config.topK" step="1" min="0" />
+                  </div>
+                </div>
               </div>
+
+              <!-- 扩展配置卡片 -->
+              <div class="setting-card">
+                <div class="card-header">
+                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M8.5,13.5L11,16.5L14.5,12L19,18H5M21,19V5C21,3.89 20.1,3 19,3H5A2,2 0 0,0 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19Z"/></svg>
+                  <h4>{{ t('settings.profileEditor.imageCompression') }}</h4>
+                </div>
+                <div class="setting-item grid-3">
+                  <div class="sub-item">
+                    <label>{{ t('settings.profileEditor.maxWidth') }}</label>
+                    <input type="number" v-model.number="editingProfile.config.imageMaxWidth" />
+                  </div>
+                  <div class="sub-item">
+                    <label>{{ t('settings.profileEditor.maxHeight') }}</label>
+                    <input type="number" v-model.number="editingProfile.config.imageMaxHeight" />
+                  </div>
+                  <div class="sub-item">
+                    <label>{{ t('settings.profileEditor.quality') }}</label>
+                    <input type="number" v-model.number="editingProfile.config.imageQuality" step="0.05" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div v-else class="empty-state">
+              <svg viewBox="0 0 24 24" width="48" height="48"><path fill="currentColor" d="M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22A10,10 0 0,1 2,12A10,10 0 0,1 12,2M12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20A8,8 0 0,0 20,12A8,8 0 0,0 12,4M12,6A6,6 0 0,1 18,12A6,6 0 0,1 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6M12,8A4,4 0 0,0 8,12A4,4 0 0,0 12,16A4,4 0 0,0 16,12A4,4 0 0,0 12,8Z"/></svg>
+              <p>{{ t('settings.profiles.empty') }}</p>
             </div>
           </div>
         </div>
@@ -239,7 +280,7 @@
         <span class="status-msg" :class="{ 'error': isError, 'success': isSuccess }">{{ statusMsg }}</span>
         <div class="footer-actions">
           <button class="save-btn" @click="save" :disabled="isSaving || actionLoading">
-            {{ isSaving ? '保存中...' : '保存所有更改' }}
+            {{ isSaving ? t('settings.actions.saving') : t('settings.actions.save') }}
           </button>
         </div>
       </div>
@@ -250,8 +291,8 @@
       :title="deleteConfirm?.title || ''"
       :message="deleteConfirm?.message || ''"
       :warning="deleteConfirm?.warning || ''"
-      confirm-text="确认删除"
-      cancel-text="取消"
+      :confirm-text="t('settings.profiles.deleteConfirm')"
+      :cancel-text="t('settings.actions.cancel')"
       confirm-kind="danger"
       :loading="actionLoading"
       @cancel="deleteConfirm = null"
@@ -261,7 +302,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, nextTick } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { invoke } from '@tauri-apps/api/core'
 import { useTheme } from '../../composables/useTheme'
 import { usePreferences } from '../../composables/usePreferences'
@@ -269,11 +311,22 @@ import { useWindow } from '../../composables/useWindow'
 import type { AgentDisplayMode } from '../../types'
 import ConfirmModal from '../common/ConfirmModal.vue'
 
+const { t, locale } = useI18n()
+
 const { isDark, toggleTheme } = useTheme()
 const uiPrefs = usePreferences()
-const { resetWindowStates } = useWindow()
+const { resetWindowStates, notifyMonitorLocaleChanged } = useWindow()
 const agentDisplayMode = uiPrefs.agentDisplayMode
 const setAgentDisplayMode = (mode: AgentDisplayMode) => uiPrefs.setAgentDisplayMode(mode)
+const appLocale = uiPrefs.locale
+watch(appLocale, (val) => {
+  locale.value = val
+}, { immediate: true })
+const setAppLocale = async (value: string) => {
+  uiPrefs.setLocale(value as typeof appLocale.value)
+  await notifyMonitorLocaleChanged(appLocale.value)
+  await nextTick()
+}
 
 const props = defineProps<{
   modelValue: boolean
@@ -282,6 +335,10 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'update:modelValue', value: boolean): void
 }>()
+
+// UI 状态
+const activeTab = ref<'general' | 'presets'>('general')
+const showAdvanced = ref(false)
 
 interface AgentConfig {
   apiFormat: string
@@ -329,7 +386,7 @@ const createEmptyConfig = (): AppConfig => ({
 
 const createBlankProfile = (id: string): ModelProfile => ({
   id,
-  name: '新预设',
+  name: t('settings.profiles.newName'),
   config: {
     apiFormat: 'openai',
     apiKey: '',
@@ -432,10 +489,10 @@ const resetDefaultWindows = async () => {
   resetStatus()
   try {
     await resetWindowStates()
-    setSuccessStatus('窗口布局已恢复默认')
+    setSuccessStatus(t('settings.general.restoreLayoutSuccess'))
   } catch (e) {
     console.error('恢复默认窗口失败:', e)
-    setErrorStatus(`恢复默认窗口失败: ${e}`)
+    setErrorStatus(t('settings.general.restoreLayoutError', { error: String(e) }))
   } finally {
     actionLoading.value = false
   }
@@ -484,6 +541,7 @@ watch(() => props.modelValue, (newVal) => {
 
 const selectProfile = (id: string) => {
   selectedProfileId.value = id
+  activeTab.value = 'presets'
 }
 
 const addProfile = () => {
@@ -491,6 +549,7 @@ const addProfile = () => {
   const newId = `profile_${Date.now()}`
   draftConfig.value.profiles.push(createBlankProfile(newId))
   selectedProfileId.value = newId
+  activeTab.value = 'presets'
 }
 
 const toggleGlobalProfile = async (profileId: string) => {
@@ -504,10 +563,10 @@ const toggleGlobalProfile = async (profileId: string) => {
     ensureValidSelection(nextConfig, selectedProfileId.value)
     await invoke('save_config_cmd', { newConfig: nextConfig })
     syncConfigs(nextConfig, selectedProfileId.value)
-    setSuccessStatus('全局默认预设已更新')
+    setSuccessStatus(t('settings.profiles.globalUpdated'))
   } catch (e) {
     console.error('保存全局预设失败:', e)
-    setErrorStatus(`保存全局预设失败: ${e}`)
+    setErrorStatus(t('settings.status.globalSaveError', { error: String(e) }))
   } finally {
     actionLoading.value = false
   }
@@ -521,9 +580,9 @@ const requestDeleteProfile = (id: string) => {
 
   deleteConfirm.value = {
     id,
-    title: '确认删除配置预设',
-    message: `确定要删除配置预设“${profile.name}”吗？`,
-    warning: '此操作会立即保存且不可撤销。'
+    title: t('settings.profiles.deleteTitle'),
+    message: t('settings.profiles.deleteMessage', { name: profile.name }),
+    warning: t('settings.profiles.deleteWarning')
   }
 }
 
@@ -543,7 +602,7 @@ const confirmDeleteProfile = async () => {
 
     nextConfig.profiles.splice(index, 1)
     if (nextConfig.profiles.length === 0) {
-      throw new Error('至少需要保留一个配置预设')
+      throw new Error(t('settings.validation.keepOneProfile'))
     }
 
     const fallbackId = nextConfig.profiles[0].id
@@ -559,10 +618,10 @@ const confirmDeleteProfile = async () => {
     await invoke('save_config_cmd', { newConfig: nextConfig })
     syncConfigs(nextConfig, nextSelectedId)
     deleteConfirm.value = null
-    setSuccessStatus('配置预设已删除并保存')
+    setSuccessStatus(t('settings.profiles.deleteSuccess'))
   } catch (e) {
     console.error('删除配置预设失败:', e)
-    setErrorStatus(`删除配置预设失败: ${e}`)
+    setErrorStatus(t('settings.status.deleteError', { error: String(e) }))
   } finally {
     actionLoading.value = false
   }
@@ -620,7 +679,7 @@ const close = async () => {
     await persistFilledNewProfilesBeforeClose()
   } catch (e) {
     console.error('保存已填写的新预设失败:', e)
-    setErrorStatus(`保存已填写的新预设失败: ${e}`)
+    setErrorStatus(t('settings.status.filledProfileSaveError', { error: String(e) }))
     return
   }
 
@@ -638,19 +697,19 @@ const save = async () => {
 
   for (const p of draftConfig.value.profiles) {
     if (!p.name || !p.name.trim()) {
-      setErrorStatus('预设名称不能为空')
+      setErrorStatus(t('settings.validation.nameRequired'))
       return
     }
     if (!p.config.baseUrl || !p.config.baseUrl.trim()) {
-      setErrorStatus(`预设 [${p.name}] 的 API Base URL 不能为空`)
+      setErrorStatus(t('settings.validation.baseUrlRequired', { name: p.name }))
       return
     }
     if (!p.config.mainModel || !p.config.mainModel.trim()) {
-      setErrorStatus(`预设 [${p.name}] 的主代理模型不能为空`)
+      setErrorStatus(t('settings.validation.mainModelRequired', { name: p.name }))
       return
     }
     if (!p.config.utilityModel || !p.config.utilityModel.trim()) {
-      setErrorStatus(`预设 [${p.name}] 的工具代理模型不能为空`)
+      setErrorStatus(t('settings.validation.utilityModelRequired', { name: p.name }))
       return
     }
   }
@@ -663,12 +722,12 @@ const save = async () => {
     ensureValidSelection(nextConfig, selectedProfileId.value)
     await invoke('save_config_cmd', { newConfig: nextConfig })
     syncConfigs(nextConfig, selectedProfileId.value)
-    setSuccessStatus('配置已保存并同步')
+    setSuccessStatus(t('settings.status.saveSuccess'))
     setTimeout(() => {
       close()
     }, 800)
   } catch (e) {
-    setErrorStatus(`保存失败: ${e}`)
+    setErrorStatus(t('settings.status.saveError', { error: String(e) }))
   } finally {
     isSaving.value = false
   }
@@ -705,8 +764,8 @@ const save = async () => {
   border-radius: var(--radius-xl);
   width: min(1080px, calc(100vw - 48px));
   max-width: 96vw;
-  height: min(760px, calc(100vh - 48px));
-  max-height: 90vh;
+  height: min(800px, calc(100vh - 48px));
+  max-height: 92vh;
   display: flex;
   flex-direction: column;
   box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22), var(--glass-shadow);
@@ -727,15 +786,23 @@ const save = async () => {
   padding: 14px 22px 14px 24px;
   border-bottom: 1px solid var(--glass-border);
   background: var(--surface-strong);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
+}
+
+.header-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-main);
+}
+
+.header-icon {
+  color: var(--accent-blue);
 }
 
 .settings-header h3 {
   margin: 0;
   font-size: 1.1rem;
   font-weight: 600;
-  color: var(--text-main);
   letter-spacing: 0.02em;
 }
 
@@ -747,23 +814,57 @@ const save = async () => {
 
 /* 侧边栏样式 */
 .settings-sidebar {
-  width: 260px;
-  flex: 0 0 260px;
+  width: 240px;
+  flex: 0 0 240px;
   border-right: 1px solid var(--glass-border);
-  background: color-mix(in srgb, var(--surface-strong) 76%, var(--glass-bg-light));
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
+  background: color-mix(in srgb, var(--surface-strong) 92%, var(--glass-bg-light));
   display: flex;
   flex-direction: column;
 }
 
+.sidebar-nav {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.nav-item:hover {
+  background: var(--glass-bg-light);
+  color: var(--text-main);
+}
+
+.nav-item.active {
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--accent-blue);
+}
+
+.sidebar-divider {
+  height: 1px;
+  background: var(--glass-border);
+  margin: 8px 12px;
+}
+
 .sidebar-section-header {
-  padding: 18px 18px 10px;
+  padding: 12px 18px 8px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   color: var(--text-muted);
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -773,227 +874,40 @@ const save = async () => {
   background: var(--glass-bg-light);
   color: var(--accent-blue);
   border: 1px solid rgba(59, 130, 246, 0.3);
-  width: 24px;
-  height: 24px;
-  border-radius: var(--radius-md);
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 14px;
   transition: all var(--transition-fast);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 .add-btn:hover {
   background: rgba(59, 130, 246, 0.1);
   border-color: var(--accent-blue);
-  transform: translateY(-1px);
-}
-
-.theme-toggle-section {
-  padding: 0 12px;
-}
-
-.theme-toggle-btn {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 10px 12px;
-  background: transparent;
-  border: 1px solid var(--glass-border-subtle);
-  border-radius: var(--radius-md);
-  color: var(--text-main);
-  font-size: 0.85rem;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.theme-toggle-btn:hover {
-  background: var(--glass-bg-light);
-  border-color: var(--accent-blue);
-}
-
-.display-mode-section {
-  padding: 14px 12px 12px;
-}
-
-.window-state-section {
-  padding: 0 12px 18px;
-}
-
-.display-mode-label {
-  margin-bottom: 8px;
-  padding: 0 4px;
-  color: var(--text-muted);
-  font-size: 0.75rem;
-  font-weight: 600;
-}
-
-.display-mode-toggle {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-  padding: 3px;
-  border: 1px solid var(--glass-border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--glass-bg-light);
-  overflow: visible;
-}
-
-.display-mode-toggle button {
-  position: relative;
-  min-width: 0;
-  height: 30px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 0.78rem;
-  font-weight: 600;
-  transition: background var(--transition-fast), color var(--transition-fast);
-}
-
-.display-mode-toggle button:hover {
-  color: var(--text-main);
-}
-
-.window-reset-btn {
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--glass-border-subtle);
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--text-main);
-  cursor: pointer;
-  font-size: 0.85rem;
-  font-weight: 600;
-  transition: all var(--transition-fast);
-}
-
-.window-reset-btn:hover:not(:disabled) {
-  background: var(--glass-bg-light);
-  border-color: var(--accent-blue);
-}
-
-.window-reset-btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.window-reset-desc {
-  margin-top: 8px;
-  padding: 0 4px;
-  color: var(--text-muted);
-  font-size: 0.72rem;
-  line-height: 1.45;
-}
-
-.display-mode-btn::before,
-.display-mode-btn::after {
-  position: absolute;
-  left: 50%;
-  pointer-events: none;
-  opacity: 0;
-  visibility: hidden;
-  transform: translate(-50%, -4px);
-  transition: opacity var(--transition-fast), transform var(--transition-fast), visibility var(--transition-fast);
-  z-index: 20;
-}
-
-.display-mode-btn::before {
-  content: attr(data-tooltip);
-  bottom: calc(100% + 10px);
-  width: max-content;
-  max-width: 220px;
-  padding: 8px 10px;
-  border: 1px solid var(--glass-border);
-  border-radius: 8px;
-  background: var(--surface-strong);
-  color: var(--text-main);
-  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.22), var(--shadow-sm);
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.45;
-  text-align: left;
-  white-space: normal;
-}
-
-.display-mode-btn:first-child::before {
-  left: 0;
-  transform: translate(0, -4px);
-}
-
-.display-mode-btn:last-child::before {
-  right: 0;
-  left: auto;
-  transform: translate(0, -4px);
-}
-
-.display-mode-btn::after {
-  content: "";
-  bottom: calc(100% + 5px);
-  width: 9px;
-  height: 9px;
-  border-right: 1px solid var(--glass-border);
-  border-bottom: 1px solid var(--glass-border);
-  background: var(--surface-strong);
-  transform: translate(-50%, -4px) rotate(45deg);
-}
-
-.display-mode-btn:hover::before,
-.display-mode-btn:hover::after,
-.display-mode-btn:focus-visible::before,
-.display-mode-btn:focus-visible::after {
-  opacity: 1;
-  visibility: visible;
-}
-
-.display-mode-btn:hover::before,
-.display-mode-btn:focus-visible::before {
-  transform: translate(-50%, 0);
-}
-
-.display-mode-btn:first-child:hover::before,
-.display-mode-btn:first-child:focus-visible::before,
-.display-mode-btn:last-child:hover::before,
-.display-mode-btn:last-child:focus-visible::before {
-  transform: translate(0, 0);
-}
-
-.display-mode-btn:hover::after,
-.display-mode-btn:focus-visible::after {
-  transform: translate(-50%, 0) rotate(45deg);
-}
-
-.display-mode-toggle button.active {
-  background: var(--glass-bg-heavy);
-  color: var(--accent-blue);
-  box-shadow: var(--shadow-sm);
 }
 
 .profile-list {
   flex: 1;
   overflow-y: auto;
-  padding: 6px 12px 12px;
+  padding: 4px 12px 12px;
 }
 
 .profile-item {
-  min-height: 38px;
   padding: 8px 10px 8px 12px;
   border-radius: var(--radius-md);
   cursor: pointer;
-  margin-bottom: 3px;
+  margin-bottom: 2px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
   transition: all var(--transition-fast);
   color: var(--text-muted);
+  font-size: 13px;
 }
 
 .profile-item:hover {
@@ -1002,10 +916,9 @@ const save = async () => {
 }
 
 .profile-item.active {
-  background: rgba(0, 102, 204, 0.12);
+  background: rgba(59, 130, 246, 0.08);
   color: var(--accent-blue);
   font-weight: 500;
-  box-shadow: inset 3px 0 0 var(--accent-blue);
 }
 
 .profile-name {
@@ -1013,8 +926,6 @@ const save = async () => {
   overflow: hidden;
   text-overflow: ellipsis;
   flex: 1;
-  font-size: 13px;
-  padding-right: 8px;
 }
 
 .profile-actions {
@@ -1026,49 +937,32 @@ const save = async () => {
 .sidebar-switch {
   position: relative;
   display: inline-block;
-  width: 28px;
-  height: 16px;
-  margin: 0;
+  width: 24px;
+  height: 14px;
 }
 
-.sidebar-switch input {
-  opacity: 0;
-  width: 0;
-  height: 0;
-}
-
+.sidebar-switch input { opacity: 0; width: 0; height: 0; }
 .sidebar-switch .slider {
   position: absolute;
   cursor: pointer;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  top: 0; left: 0; right: 0; bottom: 0;
   background-color: var(--border-color);
   transition: .3s;
-  border-radius: 16px;
+  border-radius: 14px;
 }
 
 .sidebar-switch .slider:before {
   position: absolute;
   content: "";
-  height: 12px;
-  width: 12px;
-  left: 2px;
-  bottom: 2px;
+  height: 10px; width: 10px;
+  left: 2px; bottom: 2px;
   background-color: white;
   transition: .3s;
   border-radius: 50%;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
 }
 
-.sidebar-switch input:checked + .slider {
-  background-color: var(--accent-green);
-}
-
-.sidebar-switch input:checked + .slider:before {
-  transform: translateX(12px);
-}
+.sidebar-switch input:checked + .slider { background-color: var(--accent-green); }
+.sidebar-switch input:checked + .slider:before { transform: translateX(10px); }
 
 .delete-btn {
   background: transparent;
@@ -1079,194 +973,221 @@ const save = async () => {
   padding: 2px;
 }
 
-.profile-item:hover .delete-btn {
-  opacity: 1;
-}
-
-.delete-btn:hover {
-  color: var(--accent-red);
-}
+.profile-item:hover .delete-btn { opacity: 1; }
+.delete-btn:hover { color: var(--accent-red); }
 
 /* 内容区域样式 */
 .settings-content {
   flex: 1;
-  display: flex;
-  flex-direction: column;
   min-width: 0;
-  background: color-mix(in srgb, var(--surface-strong) 88%, var(--glass-bg-heavy));
+  background: color-mix(in srgb, var(--surface-strong) 96%, var(--glass-bg-heavy));
 }
 
 .settings-body {
-  padding: 26px 34px 34px;
+  height: 100%;
+  padding: 24px 32px;
   overflow-y: auto;
 }
 
-.setting-group {
-  margin-bottom: 34px;
-  padding-bottom: 28px;
-  border-bottom: 1px solid color-mix(in srgb, var(--text-muted) 13%, transparent);
+.tab-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 800px;
+  margin: 0 auto;
 }
 
-.setting-group:last-child {
-  margin-bottom: 0;
-  padding-bottom: 0;
-  border-bottom: 0;
+.setting-card {
+  background: var(--surface-strong);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
 }
 
-.setting-group h4 {
-  margin: 0 0 18px 0;
-  font-size: 14px;
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
   color: var(--text-main);
+  border-bottom: 1px solid var(--glass-border-subtle);
+  padding-bottom: 12px;
+}
+
+.card-header h4 {
+  margin: 0;
+  font-size: 15px;
   font-weight: 700;
-  border-left: 0;
-  padding-left: 0;
-  letter-spacing: 0;
 }
 
 .setting-item {
-  display: grid;
-  grid-template-columns: 170px minmax(0, 1fr);
-  column-gap: 24px;
-  align-items: start;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   margin-bottom: 18px;
 }
 
-.setting-item:last-child {
-  margin-bottom: 0;
-}
+.setting-item:last-child { margin-bottom: 0; }
 
 .setting-item label {
-  display: flex;
-  align-items: center;
-  min-height: 38px;
-  margin-bottom: 0;
   font-size: 13px;
   font-weight: 600;
   color: var(--text-main);
-  line-height: 1.35;
 }
 
 .setting-item input, .setting-item select {
-  grid-column: 2;
   width: 100%;
-  min-height: 38px;
-  padding: 8px 12px;
-  background: color-mix(in srgb, var(--surface-strong) 70%, var(--glass-bg-light));
-  border: 1px solid color-mix(in srgb, var(--text-muted) 20%, transparent);
+  height: 38px;
+  padding: 0 12px;
+  background: var(--glass-bg-light);
+  border: 1px solid var(--glass-border);
   border-radius: 8px;
   color: var(--text-main);
-  font-family: var(--font-mono);
   font-size: 13px;
   transition: all 0.2s;
-  box-sizing: border-box;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 .setting-item input:focus, .setting-item select:focus {
   outline: none;
   border-color: var(--accent-blue);
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-  background: var(--surface-strong);
-}
-
-.switch-container {
-  grid-column: 2;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  background: var(--glass-bg-light);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--glass-border-subtle);
-  width: fit-content;
-  transition: background var(--transition-fast);
-}
-
-.switch-label {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-main);
-}
-
-.capability-badges {
-  grid-column: 2;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  border-radius: 20px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-  transition: all var(--transition-fast);
-}
-
-.badge-ok {
-  background: rgba(16, 185, 129, 0.1);
-  color: var(--accent-green);
-  border: 1px solid rgba(16, 185, 129, 0.2);
-}
-
-.badge-think {
-  background: rgba(139, 92, 246, 0.1);
-  color: #a080f0;
-  border: 1px solid rgba(139, 92, 246, 0.2);
-}
-
-.badge-none {
-  background: rgba(100, 116, 139, 0.08);
-  color: var(--text-muted);
-  border: 1px solid rgba(100, 116, 139, 0.15);
-}
-
-.badge-no {
-  background: rgba(239, 68, 68, 0.1);
-  color: var(--accent-red);
-  border: 1px solid rgba(239, 68, 68, 0.2);
-}
-
-.badge-info {
-  background: rgba(59, 130, 246, 0.1);
-  color: var(--accent-blue);
-  border: 1px solid rgba(59, 130, 246, 0.2);
-}
-
-.badge-warn {
-  background: rgba(245, 158, 11, 0.1);
-  color: var(--accent-yellow);
-  border: 1px solid rgba(245, 158, 11, 0.2);
-}
-
-.capability-note {
-  grid-column: 2;
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-top: 6px;
-  font-style: italic;
-  line-height: 1.5;
-}
-
-.switch-disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 .setting-desc {
-  grid-column: 2;
   font-size: 12px;
   color: var(--text-muted);
-  margin-top: 8px;
   line-height: 1.5;
-  max-width: 620px;
+}
+
+/* 按钮组样式 */
+.display-mode-toggle {
+  display: flex;
+  background: var(--glass-bg-light);
+  padding: 4px;
+  border-radius: 8px;
+  width: fit-content;
+}
+
+.display-mode-btn {
+  padding: 6px 16px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.display-mode-btn.active {
+  background: var(--surface-strong);
+  color: var(--accent-blue);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.theme-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 8px 16px;
+  background: var(--glass-bg-light);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  color: var(--text-main);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.window-reset-btn {
+  width: fit-content;
+  padding: 8px 16px;
+  background: transparent;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  color: var(--accent-red);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* 高级参数折叠 */
+.advanced-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 0;
+  color: var(--accent-blue);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border-top: 1px dashed var(--glass-border);
+}
+
+.advanced-toggle svg {
+  transition: transform 0.2s;
+}
+
+.advanced-toggle svg.rotated {
+  transform: rotate(180deg);
+}
+
+.advanced-content {
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* 网格布局 */
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.sub-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sub-item label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* 能力徽章 */
+.capability-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.badge-ok { background: rgba(16, 185, 129, 0.1); color: var(--accent-green); }
+.badge-think { background: rgba(139, 92, 246, 0.1); color: #a080f0; }
+.badge-info { background: rgba(59, 130, 246, 0.1); color: var(--accent-blue); }
+.badge-none { background: rgba(100, 116, 139, 0.1); color: var(--text-muted); }
+
+.empty-state {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  gap: 16px;
 }
 
 .settings-footer {
@@ -1276,42 +1197,24 @@ const save = async () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 18px;
   background: var(--surface-strong);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
-}
-
-.footer-actions {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  flex-shrink: 0;
 }
 
 .save-btn {
   background: var(--accent-blue);
-  color: var(--text-inverse);
+  color: white;
   border: none;
-  min-width: 148px;
-  min-height: 38px;
-  padding: 9px 22px;
-  border-radius: var(--radius-md);
-  cursor: pointer;
+  padding: 10px 24px;
+  border-radius: 8px;
   font-size: 14px;
   font-weight: 600;
-  transition: all var(--transition-fast);
-  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.25);
+  cursor: pointer;
+  transition: all 0.2s;
 }
 
 .save-btn:hover:not(:disabled) {
-  background: var(--accent-blue-hover);
+  opacity: 0.9;
   transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(59, 130, 246, 0.35);
-}
-
-.save-btn:active:not(:disabled) {
-  transform: translateY(0);
 }
 
 .save-btn:disabled {
@@ -1320,75 +1223,27 @@ const save = async () => {
 }
 
 .status-msg {
-  min-width: 0;
-  flex: 1;
   font-size: 13px;
-  font-weight: 600;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-weight: 500;
 }
 
-.status-msg.error {
-  color: var(--accent-red);
-}
-
-.status-msg.success {
-  color: var(--accent-green);
-}
+.status-msg.error { color: var(--accent-red); }
+.status-msg.success { color: var(--accent-green); }
 
 .icon-btn {
-  background: var(--glass-bg-light);
-  border: 1px solid var(--glass-border-subtle);
+  background: transparent;
+  border: none;
   color: var(--text-muted);
   cursor: pointer;
-  padding: 8px;
-  border-radius: var(--radius-md);
+  padding: 4px;
+  border-radius: 4px;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all var(--transition-fast);
+  transition: all 0.2s;
 }
 
 .icon-btn:hover {
-  background: var(--glass-bg);
-  border-color: var(--glass-border);
+  background: var(--glass-bg-light);
   color: var(--text-main);
 }
-
-@media (max-width: 860px) {
-  .settings-modal {
-    width: calc(100vw - 24px);
-    height: calc(100vh - 24px);
-  }
-
-  .settings-sidebar {
-    width: 220px;
-    flex-basis: 220px;
-  }
-
-  .settings-body {
-    padding: 22px 24px 30px;
-  }
-
-  .setting-item {
-    grid-template-columns: 1fr;
-    row-gap: 8px;
-  }
-
-  .setting-item label,
-  .setting-item input,
-  .setting-item select,
-  .setting-desc,
-  .capability-badges,
-  .capability-note,
-  .switch-container {
-    grid-column: 1;
-  }
-
-  .setting-item label {
-    min-height: auto;
-  }
-}
 </style>
+

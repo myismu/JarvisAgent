@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, nextTick, computed, watch, onUnmounted } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { useSessionStore } from '../../stores/session';
 import { useChatStore } from '../../stores/chat';
 import { usePermissionStore } from '../../stores/permission';
@@ -35,6 +36,8 @@ interface RollbackPreviewState {
   checkpointLabel: string;
   error: string;
 }
+
+const { t } = useI18n();
 
 const session = useSessionStore();
 const chat = useChatStore();
@@ -164,7 +167,7 @@ function ensureRollbackButtons() {
     button.className = 'rollback-trigger';
     button.setAttribute('data-cp-id', rollbackCheckpointId);
     button.setAttribute('data-latest-snapshot-id', '');
-    button.setAttribute('title', '撤回此消息');
+    button.setAttribute('title', t('rollback.trigger'));
     messageEl.appendChild(button);
   });
 }
@@ -228,7 +231,13 @@ const handleResponseScroll = () => {
 };
 
 const showScrollToBottom = computed(() => {
-  return !isResponseAtBottom() && (chat.parsedHistory || hasCurrentTurnContent.value);
+  return !shouldFollowStream.value && (chat.parsedHistory || hasCurrentTurnContent.value);
+});
+
+watch(() => session.isCurrentSessionRunning, (running) => {
+  if (running) {
+    scrollToBottom(true);
+  }
 });
 
 const pendingInitialScrollSessionKey = ref<string | null>(null);
@@ -340,8 +349,8 @@ const copyText = async (text: string, html?: string) => {
 };
 
 const showCopiedState = (button: HTMLButtonElement) => {
-  const previousText = button.textContent || '复制';
-  button.textContent = '已复制';
+  const previousText = button.textContent || t('common.copy');
+  button.textContent = t('common.copied');
   button.classList.add('copied');
   window.setTimeout(() => {
     button.textContent = previousText;
@@ -455,7 +464,7 @@ const executeRollback = async (mode: 'both' | 'session') => {
     try {
       const sessionId = session.activeSessionId;
       if (!sessionId) {
-        alert('无法获取当前会话');
+        alert(t('rollback.noSession'));
         return;
       }
       const result = await invoke<RollbackPreviewResult>('preview_rollback_to_checkpoint_with_recall', {
@@ -484,30 +493,30 @@ const executeRollback = async (mode: 'both' | 'session') => {
   }
 
   const previewMessage = mode === 'both'
-    ? '确认撤回这条消息以及其后的代码改动吗？'
-    : '确认仅撤回这条消息对应的会话内容吗？';
+    ? t('rollback.confirmBothMessage')
+    : t('rollback.confirmSessionMessage');
 
   rollbackConfirm.value = {
     mode,
     snapshotId: rollbackMenu.value.snapshotId || '',
     fallbackSnapshotId: rollbackMenu.value.fallbackSnapshotId,
     userMessageIndex: rollbackMenu.value.userMessageIndex,
-    title: mode === 'both' ? '确认撤回会话与代码' : '确认撤回会话',
+    title: mode === 'both' ? t('rollback.confirmBothTitle') : t('rollback.confirmSessionTitle'),
     message: previewMessage,
     files: mode === 'both' ? rollbackPreview.value.files : [],
     warning:
       mode === 'both'
-        ? '此操作会恢复文件状态，当前未保存修改可能丢失。'
-        : '此操作会移除该消息及其后的会话记录。',
+        ? t('rollback.warningBoth')
+        : t('rollback.warningSession'),
   };
 };
 
 const normalizeRollbackError = (err: unknown) => {
-  const raw = typeof err === 'string' ? err : err instanceof Error ? err.message : String(err || '未知错误');
-  if (raw.includes('已保留会话历史')) {
+  const raw = typeof err === 'string' ? err : err instanceof Error ? err.message : String(err || t('common.unknownError'));
+  if (raw.includes(t('rollback.historyKept'))) {
     return raw;
   }
-  return `${raw}。为避免会话与文件状态不一致，已保留当前会话历史。`;
+  return t('rollback.historyKeptSuffix', { error: raw });
 };
 
 const confirmRollback = async () => {
@@ -518,7 +527,7 @@ const confirmRollback = async () => {
   try {
     const sessionId = session.activeSessionId;
     if (!sessionId) {
-      alert('无法获取当前会话');
+      alert(t('rollback.noSession'));
       return;
     }
 
@@ -599,7 +608,7 @@ onMounted(() => {
       <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
         <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
       </svg>
-      <span class="working-dir-label">沙盒</span>
+      <span class="working-dir-label">{{ t('rollback.sandbox') }}</span>
       <span class="working-dir-path" :title="session.workingDirectory || undefined">{{ displayWorkingDir }}</span>
     </div>
     <WelcomeScreen v-if="!chat.parsedHistory || chat.parsedHistory === '<p>Ready for input...</p>\n'" />
@@ -626,14 +635,14 @@ onMounted(() => {
         class="rollback-menu"
         :style="{ left: rollbackMenu.x + 'px', top: rollbackMenu.y + 'px' }"
       >
-        <div class="rollback-menu-title">选择撤回方式</div>
+        <div class="rollback-menu-title">{{ t('rollback.selectMode') }}</div>
         <button v-if="rollbackMenu.rollbackMode === 'both'" class="rollback-menu-item" @click="executeRollback('both')" :disabled="rollbackLoading">
           <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
-          会话和代码撤回
+          {{ t('rollback.sessionAndCode') }}
         </button>
         <button class="rollback-menu-item" @click="executeRollback('session')" :disabled="rollbackLoading">
           <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
-          会话撤回
+          {{ t('rollback.sessionOnly') }}
         </button>
       </div>
     </Teleport>
@@ -643,8 +652,8 @@ onMounted(() => {
       :title="rollbackConfirm?.title || ''"
       :message="rollbackConfirm?.message || ''"
       :warning="rollbackError || rollbackConfirm?.warning || ''"
-      confirm-text="确认撤回"
-      cancel-text="取消"
+      :confirm-text="t('rollback.confirm')"
+      :cancel-text="t('common.cancel')"
       confirm-kind="danger"
       :loading="rollbackLoading"
       @cancel="rollbackConfirm = null"
@@ -654,7 +663,7 @@ onMounted(() => {
         <div class="rollback-preview-modal">
           <p class="rollback-preview-message">{{ rollbackConfirm.message }}</p>
           <div v-if="rollbackConfirm.files.length > 0" class="rollback-preview-files">
-            <div class="rollback-preview-summary">将影响 {{ rollbackConfirm.files.length }} 个文件</div>
+            <div class="rollback-preview-summary">{{ t('rollback.previewSummary', { count: rollbackConfirm.files.length }) }}</div>
             <div class="rollback-preview-file-list">
               <div v-for="file in rollbackConfirm.files" :key="file.path" class="rollback-preview-file">
                 <span class="rollback-preview-path" :title="file.path">{{ file.path }}</span>
@@ -665,7 +674,7 @@ onMounted(() => {
               </div>
             </div>
           </div>
-          <p v-else class="rollback-preview-empty">未检测到需要恢复的文件。</p>
+          <p v-else class="rollback-preview-empty">{{ t('rollback.previewEmpty') }}</p>
         </div>
       </template>
     </ConfirmModal>
@@ -675,7 +684,7 @@ onMounted(() => {
         v-if="showScrollToBottom"
         class="scroll-to-bottom-btn"
         @click="scrollToBottom(true)"
-        title="滚动到底部"
+        :title="t('rollback.scrollToBottom')"
       >
         <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="6 9 12 15 18 9"></polyline>
@@ -690,7 +699,7 @@ onMounted(() => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  padding: 16px 0;
+  padding: 16px 0 140px; /* Increased bottom padding for floating input */
   overflow-y: auto;
   overflow-x: hidden;
   font-size: 0.95rem;
@@ -937,16 +946,16 @@ onMounted(() => {
 
 .response-text {
   flex: 1;
-  padding: 0 16px;
+  padding: 0 40px; /* 与输入框左右间距一致 */
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 24px;
 }
 
 :deep(.chat-message) {
   display: flex;
   width: 100%;
-  margin-bottom: 16px;
+  margin-bottom: 20px;
   animation: slideIn var(--transition-normal) forwards;
 }
 
@@ -971,8 +980,8 @@ onMounted(() => {
 }
 
 :deep(.message-content) {
-  max-width: 85%;
-  padding: 12px 18px;
+  max-width: 94%; /* 允许会话内容占据更多宽度，匹配全宽输入框 */
+  padding: 14px 22px;
   border-radius: var(--radius-xl);
   font-size: 0.95rem;
   line-height: 1.6;
@@ -1484,7 +1493,7 @@ onMounted(() => {
 /* 滚动到底部按钮 */
 .scroll-to-bottom-btn {
   position: absolute;
-  bottom: 8px;
+  bottom: 15%; /* Moved up to clear floating input */
   left: 50%;
   transform: translateX(-50%);
   z-index: 10;

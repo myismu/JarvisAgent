@@ -13,11 +13,12 @@ import {
   canMergeToolGroups,
   createToolCallGroup,
   mergeToolGroups,
+  toolGroupTitle,
   type ToolCallGroup,
 } from "../../utils/toolDisplay";
+import { renderTokenUsage, renderToolStatusIcon } from "../../utils/markdown";
 import ExecutionPanel from "./ExecutionPanel.vue";
 import ThinkingStatus from "./ThinkingStatus.vue";
-import ToolCallGroupView from "./ToolCallGroup.vue";
 
 const props = defineProps<{
   turn: AgentCurrentTurn;
@@ -42,6 +43,16 @@ const hasExecution = computed(() => {
     props.turn.thinkingBlocks.some((block) => block.content.trim()) ||
       props.turn.toolCalls.length > 0 ||
       props.turn.logs.some((log) => log.content.trim()),
+  );
+});
+
+const tokenUsageHtml = computed(() => {
+  if (!props.turn.tokens) return "";
+  return renderTokenUsage(
+    props.turn.tokens.input,
+    props.turn.tokens.output,
+    props.turn.tokens.sessionInput,
+    props.turn.tokens.sessionOutput,
   );
 });
 
@@ -158,10 +169,6 @@ const describeThinking = (content: string) => {
   return sentence.length > 28 ? `${sentence.slice(0, 28)}...` : sentence;
 };
 
-const thinkingLabel = (block: AgentThinkingBlock) => {
-  const state = isThinkingOpen(block) ? "思考中" : "思考结果";
-  return `${state} · ${describeThinking(block.content)}`;
-};
 </script>
 
 <template>
@@ -169,42 +176,62 @@ const thinkingLabel = (block: AgentThinkingBlock) => {
     class="agent-turn"
     :class="[displayMode, { 'waiting-only': !hasAssistantText && !hasExecution && showStatus }]"
   >
-    <div v-if="isDeveloperMode && hasDeveloperSegments" class="agent-developer-timeline">
-      <template
-        v-for="segment in developerSegments"
-        :key="`${segment.key}-${segment.thinkingBlock ? isThinkingOpen(segment.thinkingBlock) : segment.toolGroup?.status || 'stable'}`"
-      >
-        <div
-          v-if="segment.type === 'text'"
-          class="agent-turn-answer agent-developer-text"
-          v-html="segment.html"
-        ></div>
-
-        <details
-          v-else-if="segment.type === 'thinking' && segment.thinkingBlock"
-          class="agent-thinking-block"
-          :open="isThinkingOpen(segment.thinkingBlock)"
+    <!-- 开发者模式：Cursor 风格侧边轨迹 -->
+    <div v-if="isDeveloperMode && hasDeveloperSegments" class="agent-developer-layout">
+      <div class="technical-trace">
+        <template
+          v-for="segment in developerSegments"
+          :key="`${segment.key}-${segment.thinkingBlock ? isThinkingOpen(segment.thinkingBlock) : segment.toolGroup?.status || 'stable'}`"
         >
-          <summary>{{ thinkingLabel(segment.thinkingBlock) }} · 第 {{ segment.thinkingBlock.loop || 1 }} 轮</summary>
-          <div v-html="segment.html"></div>
-        </details>
+          <!-- 思考过程：胶囊化 -->
+          <div
+            v-if="segment.type === 'thinking' && segment.thinkingBlock"
+            class="trace-capsule thinking-capsule"
+            :class="{ streaming: isThinkingOpen(segment.thinkingBlock) }"
+            :title="segment.thinkingBlock.content"
+          >
+            <div class="capsule-icon">
+              <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2.5" fill="none"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+            </div>
+            <span class="capsule-label">{{ describeThinking(segment.thinkingBlock.content) }}</span>
+          </div>
 
-        <ToolCallGroupView
-          v-else-if="segment.type === 'tool' && segment.toolGroup"
-          :group="segment.toolGroup"
-          mode="developer"
-        />
+          <!-- 工具调用：胶囊化 -->
+          <div
+            v-else-if="segment.type === 'tool' && segment.toolGroup"
+            class="trace-capsule tool-capsule"
+            :class="segment.toolGroup.status"
+          >
+            <div class="capsule-icon" v-html="renderToolStatusIcon(segment.toolGroup.status)"></div>
+            <span class="capsule-label">{{ toolGroupTitle(segment.toolGroup) }}</span>
+            <span v-if="segment.toolGroup.count > 1" class="capsule-badge">{{ segment.toolGroup.count }}</span>
+          </div>
 
-        <details
-          v-else-if="segment.type === 'log' && segment.log"
-          class="agent-execution-logs"
-        >
-          <summary>执行日志 · 第 {{ segment.log.loop || 1 }} 轮</summary>
-          <div class="agent-execution-log" v-html="segment.html"></div>
-        </details>
-      </template>
+          <!-- 执行日志：微型终端流 -->
+          <div
+            v-else-if="segment.type === 'log' && segment.log"
+            class="mini-terminal-log"
+          >
+            <div class="terminal-header">
+              <span class="terminal-dot red"></span>
+              <span class="terminal-dot yellow"></span>
+              <span class="terminal-dot green"></span>
+              <span class="terminal-title">LOG #{{ segment.log.loop || 1 }}</span>
+            </div>
+            <div class="terminal-content" v-html="segment.html"></div>
+          </div>
+
+          <!-- 文本段落：主干内容 -->
+          <div
+            v-else-if="segment.type === 'text'"
+            class="agent-turn-answer trace-main-text"
+            v-html="segment.html"
+          ></div>
+        </template>
+      </div>
     </div>
 
+    <!-- 普通模式：清爽面板 -->
     <template v-else>
       <ExecutionPanel
         :mode="displayMode"
@@ -215,6 +242,9 @@ const thinkingLabel = (block: AgentThinkingBlock) => {
       />
       <div v-if="hasAssistantText" class="agent-turn-answer" v-html="renderedAssistantText"></div>
     </template>
+
+    <div v-if="tokenUsageHtml" class="agent-turn-tokens" v-html="tokenUsageHtml"></div>
+
     <ThinkingStatus :running="showStatus" :elapsed="elapsed" />
   </div>
 </template>
@@ -222,7 +252,12 @@ const thinkingLabel = (block: AgentThinkingBlock) => {
 <style scoped>
 .agent-turn {
   position: relative;
-  min-width: min(560px, 85vw);
+  width: 100%;
+}
+
+.agent-turn-tokens {
+  margin-top: 12px;
+  width: 100%;
 }
 
 .agent-turn.waiting-only {
@@ -231,6 +266,165 @@ const thinkingLabel = (block: AgentThinkingBlock) => {
   display: inline-flex;
   align-items: center;
   justify-content: flex-start;
+}
+
+/* 开发者模式布局 */
+.agent-developer-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 24px;
+}
+
+.technical-trace {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: relative;
+}
+
+/* 技术胶囊 (Thinking/Tools) */
+.trace-capsule {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  background: var(--glass-bg-light);
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 550;
+  color: var(--text-muted);
+  width: fit-content;
+  max-width: 100%;
+  transition: all var(--transition-fast);
+  cursor: help;
+  user-select: none;
+}
+
+.trace-capsule:hover {
+  background: var(--glass-bg);
+  border-color: var(--accent-blue);
+  color: var(--text-main);
+  transform: translateX(4px);
+}
+
+.capsule-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.capsule-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 思考胶囊特有样式 */
+.thinking-capsule.streaming .capsule-icon svg {
+  animation: spin 2s linear infinite;
+}
+
+.thinking-capsule.streaming {
+  border-color: var(--accent-yellow);
+  color: var(--accent-yellow);
+  background: rgba(245, 158, 11, 0.05);
+}
+
+/* 工具胶囊状态样式 */
+.tool-capsule.completed {
+  border-color: rgba(16, 185, 129, 0.2);
+  color: var(--accent-green);
+}
+
+.tool-capsule.error {
+  border-color: rgba(239, 68, 68, 0.2);
+  color: var(--accent-red);
+}
+
+.tool-capsule.running {
+  border-color: rgba(245, 158, 11, 0.2);
+  color: var(--accent-yellow);
+}
+
+.capsule-badge {
+  background: var(--glass-border);
+  color: var(--text-muted);
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 0.65rem;
+  font-family: var(--font-mono);
+}
+
+/* 微型终端日志 */
+.mini-terminal-log {
+  background: #0f172a; /* 深色终端背景 */
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+  max-width: 600px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  margin: 4px 0;
+}
+
+.terminal-header {
+  background: rgba(255, 255, 255, 0.05);
+  padding: 4px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.terminal-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.terminal-dot.red { background: #ef4444; }
+.terminal-dot.yellow { background: #f59e0b; }
+.terminal-dot.green { background: #10b981; }
+
+.terminal-title {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.4);
+  letter-spacing: 1px;
+}
+
+.terminal-content {
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: #e2e8f0;
+  max-height: 120px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+
+.terminal-content :deep(pre), 
+.terminal-content :deep(code) {
+  background: transparent;
+  padding: 0;
+  border: none;
+  color: inherit;
+  font-size: inherit;
+}
+
+/* 主文本段落 */
+.trace-main-text {
+  padding: 4px 0;
+}
+
+.agent-turn:not(.developer) .agent-turn-answer {
+  padding-bottom: 24px;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .agent-turn > :deep(.thinking-inline-status) {
@@ -242,29 +436,5 @@ const thinkingLabel = (block: AgentThinkingBlock) => {
 
 .agent-turn.waiting-only > :deep(.thinking-inline-status) {
   position: static;
-}
-
-.agent-turn:not(.developer) .agent-turn-answer {
-  padding-bottom: 24px;
-}
-
-.agent-developer-timeline {
-  padding-bottom: 24px;
-}
-
-.agent-developer-text + .agent-thinking-block,
-.agent-developer-text + .agent-tool-call,
-.agent-thinking-block + .agent-tool-call,
-.agent-tool-call + .agent-developer-text,
-.agent-execution-logs + .agent-developer-text {
-  margin-top: 10px;
-}
-
-.agent-turn.waiting-only .agent-turn-answer {
-  padding-right: 0;
-}
-
-.agent-turn :deep(details:first-child) {
-  margin-top: 0;
 }
 </style>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { useI18n } from "vue-i18n";
 import type {
   AgentDisplayMode,
   AgentExecutionLog,
@@ -18,6 +19,8 @@ const props = defineProps<{
   logs: AgentExecutionLog[];
 }>();
 
+const { t } = useI18n();
+
 const thinkingItems = computed(() => props.thinkingBlocks.filter((item) => item.content.trim()));
 const logItems = computed(() => props.logs.filter((item) => item.content.trim()));
 const toolGroups = computed(() => groupAdjacentToolCalls(props.toolCalls));
@@ -27,13 +30,13 @@ const hasExecution = computed(
 const isDeveloperMode = computed(() => props.mode === "developer");
 
 const summaryText = computed(() => {
-  const state = props.running ? "处理中" : "已完成";
+  const state = props.running ? t('execution.running') : t('execution.completed');
   const toolPart =
     props.toolCalls.length > 0
       ? summarizeToolGroupsForPanel(toolGroups.value, props.toolCalls.length)
-      : "无工具活动";
-  const thinkingPart = thinkingItems.value.length > 0 ? ` · ${thinkingItems.value.length} 段思考` : "";
-  const logPart = props.mode === "developer" && logItems.value.length > 0 ? ` · ${logItems.value.length} 条日志` : "";
+      : t('execution.noToolActivity');
+  const thinkingPart = thinkingItems.value.length > 0 ? ` · ${thinkingItems.value.length} ${t('execution.thinkingSegment')}` : "";
+  const logPart = props.mode === "developer" && logItems.value.length > 0 ? ` · ${logItems.value.length} ${t('execution.logCount')}` : "";
   return `${state} · ${toolPart}${thinkingPart}${logPart}`;
 });
 
@@ -77,12 +80,12 @@ const markdown = (content?: string) => renderMarkdown(content || "");
       class="agent-thinking-block"
       :open="isDeveloperMode"
     >
-      <summary>思考过程 · 第 {{ block.loop || 1 }} 轮</summary>
+      <summary>{{ t('execution.thinkingTitle', { loop: block.loop || 1 }) }}</summary>
       <div v-html="markdown(block.content)"></div>
     </details>
 
     <details v-if="logItems.length" class="agent-execution-logs" :open="isDeveloperMode">
-      <summary>执行日志 · {{ logItems.length }} 条</summary>
+      <summary>{{ t('execution.executionLogsTitle', { count: logItems.length }) }}</summary>
       <div
         v-for="log in logItems"
         :key="log.id"

@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n';
+
+const { t } = useI18n();
+
 defineProps<{
   visible: boolean;
   title?: string;
@@ -17,19 +21,19 @@ const emit = defineEmits<{
   <Teleport to="body">
     <div v-if="visible" class="modal-overlay" @click.self="emit('cancel')">
       <div class="modal-content rollback-modal">
-        <h3 class="modal-title">{{ title || '确认回滚' }}</h3>
+        <h3 class="modal-title">{{ title || t('rollback.confirmTitle') }}</h3>
         <p class="rollback-message">{{ message }}</p>
         <div v-if="details && details.length > 0" class="rollback-details">
-          <p class="details-label">操作详情：</p>
+          <p class="details-label">{{ t('rollback.details') }}</p>
           <ul>
             <li v-for="(detail, i) in details" :key="i">{{ detail }}</li>
           </ul>
         </div>
         <div class="modal-actions">
           <button class="cmd-button safe" @click="emit('confirm')" :disabled="loading">
-            {{ loading ? '执行中...' : '确认回滚' }}
+            {{ loading ? t('rollback.running') : t('rollback.confirm') }}
           </button>
-          <button class="cmd-button" @click="emit('cancel')" :disabled="loading">取消</button>
+          <button class="cmd-button" @click="emit('cancel')" :disabled="loading">{{ t('common.cancel') }}</button>
         </div>
       </div>
     </div>

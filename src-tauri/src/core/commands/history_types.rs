@@ -2,6 +2,13 @@
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentTurnTokens {
+    pub input: u64,
+    pub output: u64,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentTurnSnapshot {
     pub version: u32,
     pub status: String,
@@ -9,6 +16,7 @@ pub struct AgentTurnSnapshot {
     pub thinking_blocks: Vec<AgentThinkingBlock>,
     pub tool_calls: Vec<AgentToolCallView>,
     pub logs: Vec<AgentExecutionLog>,
+    pub tokens: Option<AgentTurnTokens>,
     pub created_at: u64,
 }
 

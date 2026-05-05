@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { usePermissionStore } from '../../stores/permission';
 import { useChatStore } from '../../stores/chat';
 import { marked } from 'marked';
+
+const { t } = useI18n();
 
 const perm = usePermissionStore();
 const chat = useChatStore();
@@ -80,12 +83,12 @@ const handleReject = () => {
               </svg>
             </div>
             <div>
-              <span class="plan-kicker">Plan Review</span>
-              <h2 id="plan-review-heading">方案审批</h2>
+              <span class="plan-kicker">{{ t('plan.kicker') }}</span>
+              <h2 id="plan-review-heading">{{ t('plan.title') }}</h2>
             </div>
           </div>
 
-          <button class="plan-icon-btn plan-close-btn" @click="handleReject" title="关闭并拒绝" aria-label="关闭并拒绝">
+          <button class="plan-icon-btn plan-close-btn" @click="handleReject" :title="t('plan.closeReject')" :aria-label="t('plan.closeReject')">
             <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
               <line x1="18" y1="6" x2="6" y2="18"></line>
               <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -95,22 +98,22 @@ const handleReject = () => {
 
         <section class="plan-summary">
           <div class="plan-summary-copy">
-            <span class="plan-label">待批阅方案</span>
+            <span class="plan-label">{{ t('plan.pendingPlan') }}</span>
             <h3 class="plan-title">{{ perm.planProposal.title }}</h3>
           </div>
           <div class="plan-status-stack">
             <span class="plan-status-pill">
               <span class="plan-status-dot"></span>
-              等待确认
+              {{ t('plan.waiting') }}
             </span>
-            <span class="plan-stats">{{ planStats.sections }} 章节 / {{ planStats.lines }} 行</span>
+            <span class="plan-stats">{{ t('plan.stats', { sections: planStats.sections, lines: planStats.lines }) }}</span>
           </div>
         </section>
 
         <div class="plan-toolbar">
           <div class="plan-toolbar-copy">
-            <span class="plan-toolbar-title">{{ isEditing ? 'Markdown 编辑' : 'Markdown 预览' }}</span>
-            <span class="plan-toolbar-subtitle">{{ isEditing ? '修改后保存或直接同意执行' : '请确认计划内容后再执行' }}</span>
+            <span class="plan-toolbar-title">{{ isEditing ? t('plan.editMode') : t('plan.previewMode') }}</span>
+            <span class="plan-toolbar-subtitle">{{ isEditing ? t('plan.editSubtitle') : t('plan.previewSubtitle') }}</span>
           </div>
 
           <div class="plan-edit-actions">
@@ -118,20 +121,20 @@ const handleReject = () => {
               v-if="!isEditing"
               class="plan-mini-btn"
               @click="toggleEdit"
-              title="编辑方案"
+              :title="t('plan.edit')"
             >
               <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M12 20h9"></path>
                 <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z"></path>
               </svg>
-              编辑
+              {{ t('plan.edit') }}
             </button>
             <template v-else>
-              <button class="plan-mini-btn plan-mini-btn-muted" @click="cancelEdit" title="取消编辑">
-                取消
+              <button class="plan-mini-btn plan-mini-btn-muted" @click="cancelEdit" :title="t('plan.cancelEdit')">
+                {{ t('plan.cancel') }}
               </button>
-              <button class="plan-mini-btn plan-mini-btn-primary" @click="toggleEdit" title="保存修改">
-                保存
+              <button class="plan-mini-btn plan-mini-btn-primary" @click="toggleEdit" :title="t('plan.saveEdit')">
+                {{ t('plan.save') }}
               </button>
             </template>
           </div>
@@ -142,7 +145,7 @@ const handleReject = () => {
             v-if="isEditing"
             v-model="editedContent"
             class="plan-editor"
-            placeholder="在此编辑方案内容..."
+            :placeholder="t('plan.placeholder')"
           ></textarea>
           <article v-else class="plan-markdown" v-html="renderedContent"></article>
         </main>
@@ -154,13 +157,13 @@ const handleReject = () => {
               <line x1="15" y1="9" x2="9" y2="15"></line>
               <line x1="9" y1="9" x2="15" y2="15"></line>
             </svg>
-            拒绝
+            {{ t('plan.reject') }}
           </button>
           <button class="plan-btn plan-btn-approve" @click="handleApprove">
             <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
               <path d="M20 6 9 17l-5-5"></path>
             </svg>
-            同意
+            {{ t('plan.approve') }}
           </button>
         </footer>
       </aside>

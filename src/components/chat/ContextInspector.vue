@@ -14,11 +14,14 @@
 -->
 <script setup lang="ts">
 import { computed } from 'vue';
+import { useI18n } from 'vue-i18n';
 import type { ContextSectionSnapshot, SessionContextSnapshot } from '../../types';
 
 const props = defineProps<{
   snapshot: SessionContextSnapshot | null;
 }>();
+
+const { t } = useI18n();
 
 interface SectionView extends ContextSectionSnapshot {
   color: string;
@@ -55,7 +58,7 @@ const formatTime = (timestamp?: number | null): string => {
   });
 };
 
-const sectionContent = (section: ContextSectionSnapshot): string => section.content?.trim() || '（空）';
+const sectionContent = (section: ContextSectionSnapshot): string => section.content?.trim() || t('monitor.context.emptyContent');
 
 const methodLabel = (method?: string | null): string => {
   switch (method) {
@@ -115,15 +118,15 @@ const usageTone = computed(() => {
 
 const usageLabel = computed(() => {
   switch (usageTone.value) {
-    case 'critical': return '需要关注';
-    case 'warning': return '接近阈值';
-    default: return '健康';
+    case 'critical': return t('monitor.context.critical');
+    case 'warning': return t('monitor.context.warning');
+    default: return t('monitor.context.safe');
   }
 });
 
 const driftText = computed(() => {
   const drift = props.snapshot?.driftPercent;
-  if (drift === null || drift === undefined) return '等待 usage';
+  if (drift === null || drift === undefined) return t('monitor.context.waitingUsage');
   const sign = drift > 0 ? '+' : '';
   return `${sign}${drift.toFixed(1)}%`;
 });
@@ -138,14 +141,14 @@ const driftText = computed(() => {
           <div class="context-token-value">≈ {{ formatToken(snapshot.estimatedTokens) }}</div>
           <div class="context-subtitle">
             <template v-if="maxContextTokens">
-              / {{ formatNumber(maxContextTokens) }} 上下文 · {{ contextUsagePercent }}%
+              / {{ formatNumber(maxContextTokens) }} {{ t('monitor.context.contextSuffix') }} · {{ contextUsagePercent }}%
             </template>
             <template v-else>
-              / 未知上下文窗口
+              / {{ t('monitor.context.unknownContextWindow') }}
             </template>
-            · {{ formatNumber(snapshot.totalChars) }} 字符 · {{ formatTime(snapshot.createdAt) }} 更新
+            · {{ t('monitor.context.chars', { count: formatNumber(snapshot.totalChars) }) }} · {{ t('monitor.context.updated', { time: formatTime(snapshot.createdAt) }) }}
             <template v-if="providerInputTokens !== null">
-              · 实际输入 {{ formatToken(providerInputTokens) }}
+              · {{ t('monitor.context.actualInput', { tokens: formatToken(providerInputTokens) }) }}
             </template>
           </div>
         </div>
@@ -154,23 +157,23 @@ const driftText = computed(() => {
 
       <div class="context-overview-grid">
         <div class="context-stat-card">
-          <span>模型</span>
+          <span>{{ t('monitor.context.model') }}</span>
           <strong :title="snapshot.model">{{ snapshot.model }}</strong>
         </div>
         <div class="context-stat-card">
-          <span>上下文窗口</span>
-          <strong>{{ maxContextTokens ? formatNumber(maxContextTokens) : '未知' }}</strong>
+          <span>{{ t('monitor.context.contextWindow') }}</span>
+          <strong>{{ maxContextTokens ? formatNumber(maxContextTokens) : t('monitor.context.unknown') }}</strong>
         </div>
         <div class="context-stat-card">
-          <span>占用</span>
-          <strong>{{ contextUsagePercent !== null ? `${contextUsagePercent}%` : '未知' }}</strong>
+          <span>{{ t('monitor.context.usage') }}</span>
+          <strong>{{ contextUsagePercent !== null ? `${contextUsagePercent}%` : t('monitor.context.unknown') }}</strong>
         </div>
         <div class="context-stat-card">
-          <span>Provider 实际</span>
-          <strong>{{ providerTotalTokens !== null ? formatToken(providerTotalTokens) : '等待 usage' }}</strong>
+          <span>{{ t('monitor.context.providerActual') }}</span>
+          <strong>{{ providerTotalTokens !== null ? formatToken(providerTotalTokens) : t('monitor.context.waitingUsage') }}</strong>
         </div>
         <div class="context-stat-card">
-          <span>估算偏差</span>
+          <span>{{ t('monitor.context.drift') }}</span>
           <strong>{{ driftText }}</strong>
         </div>
       </div>
@@ -195,16 +198,16 @@ const driftText = computed(() => {
           </svg>
           <div class="donut-center">
             <strong>{{ sectionViews.length }}</strong>
-            <span>来源</span>
+            <span>{{ t('monitor.context.sources') }}</span>
           </div>
         </div>
         <div class="context-chart-copy">
-          <span>最大来源</span>
+          <span>{{ t('monitor.context.dominantSource') }}</span>
           <strong v-if="dominantSection">{{ dominantSection.label }}</strong>
           <p v-if="dominantSection">
-            {{ formatToken(dominantSection.estimatedTokens) }}，占 {{ dominantSection.percent }}%
+            {{ t('monitor.context.dominantShare', { tokens: formatToken(dominantSection.estimatedTokens), percent: dominantSection.percent }) }}
           </p>
-          <p v-else>暂无可分析的上下文来源。</p>
+          <p v-else>{{ t('monitor.context.noSources') }}</p>
         </div>
       </div>
 
@@ -220,14 +223,14 @@ const driftText = computed(() => {
           </div>
           <div class="context-bar-meta">
             <span>{{ Math.round(section.percent) }}%</span>
-            <span>{{ formatFullNumber(section.chars) }} 字符 · {{ section.itemCount }} 项 · {{ methodLabel(section.tokenCountMethod) }}</span>
+            <span>{{ t('monitor.context.sectionMeta', { chars: formatFullNumber(section.chars), items: section.itemCount, method: methodLabel(section.tokenCountMethod) }) }}</span>
           </div>
         </div>
       </div>
     </div>
 
     <div class="context-section-list">
-      <div class="context-detail-label">上下文明细</div>
+      <div class="context-detail-label">{{ t('monitor.context.details') }}</div>
       <details
         v-for="section in sectionViews"
         :key="section.key"
@@ -244,15 +247,15 @@ const driftText = computed(() => {
           </span>
         </summary>
         <div class="context-section-extra">
-          <span>{{ formatFullNumber(section.chars) }} 字符 · {{ methodLabel(section.tokenCountMethod) }}</span>
-          <span v-if="section.truncated">已截断显示</span>
+          <span>{{ t('monitor.context.sectionDetailMeta', { chars: formatFullNumber(section.chars), method: methodLabel(section.tokenCountMethod) }) }}</span>
+          <span v-if="section.truncated">{{ t('monitor.context.truncated') }}</span>
         </div>
         <pre>{{ sectionContent(section) }}</pre>
       </details>
     </div>
   </div>
 
-  <div v-else class="section-empty">暂无上下文快照，发送一条消息后会自动生成。</div>
+  <div v-else class="section-empty">{{ t('monitor.context.emptySnapshot') }}</div>
 </template>
 
 <style scoped>

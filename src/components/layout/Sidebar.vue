@@ -10,6 +10,7 @@
 - Internal: `@/stores/session`, `@/stores/chat`, `@/composables/useAgentEvents`
 -->
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n';
 import { ref, onMounted, onUnmounted } from 'vue';
 import type { SessionMeta } from '../../types';
 import { invoke } from '@tauri-apps/api/core';
@@ -28,6 +29,8 @@ defineProps<{
 const emit = defineEmits<{
   (e: 'open-settings'): void;
 }>();
+
+const { t } = useI18n();
 
 const sessionStore = useSessionStore();
 const chat = useChatStore();
@@ -117,7 +120,7 @@ const requestWorkingDirectory = async () => {
     const selected = await open({
       directory: true,
       multiple: false,
-      title: '选择会话工作目录（沙箱）',
+      title: t('sidebar.selectWorkspace'),
     });
 
     if (typeof selected === 'string' && selected.trim()) {
@@ -131,7 +134,7 @@ const requestWorkingDirectory = async () => {
     return null;
   } catch (dialogErr) {
     console.error('打开目录选择器失败:', dialogErr);
-    showSessionActionMessage('目录选择器调用失败。', 'error');
+    showSessionActionMessage(t('sidebar.dialogOpenError'), 'error');
     return null;
   }
 };
@@ -167,17 +170,17 @@ const cancelRenameSession = () => {
 const submitRenameSession = async (sessionId: string) => {
   const title = editingTitle.value.trim();
   if (!title) {
-    showSessionActionMessage('会话名称不能为空。', 'error');
+    showSessionActionMessage(t('sidebar.renameRequired'), 'error');
     return;
   }
   try {
     await invoke('rename_session', { id: sessionId, title });
     cancelRenameSession();
     await loadSessions();
-    showSessionActionMessage('会话已重命名。');
+    showSessionActionMessage(t('sidebar.renamed'));
   } catch (err) {
     console.error('重命名会话失败:', err);
-    showSessionActionMessage(`重命名失败：${formatErrorMessage(err)}`, 'error');
+    showSessionActionMessage(t('sidebar.renameError', { error: formatErrorMessage(err) }), 'error');
   }
 };
 
@@ -205,11 +208,11 @@ const createNewSession = async (withSandbox: boolean = false) => {
     chat.triggerRender();
     await notifyMonitorSessionChanged(null);
 
-    showSessionActionMessage(withSandbox ? '已准备沙盒会话，发送首条消息后保存。' : '已准备新会话，发送首条消息后保存。');
+    showSessionActionMessage(withSandbox ? t('sidebar.sandboxReady') : t('sidebar.newReady'));
     requestAnimationFrame(() => chat.forceScrollToBottom());
   } catch (err) {
     console.error('准备新会话失败:', err);
-    showSessionActionMessage(`准备新会话失败：${formatErrorMessage(err)}`, 'error');
+    showSessionActionMessage(t('sidebar.newError', { error: formatErrorMessage(err) }), 'error');
   }
 };
 
@@ -263,7 +266,7 @@ const deleteSession = async (id: string, event: Event) => {
   event.stopPropagation();
   if (id === sessionStore.activeSessionId) return;
   if (isSessionRunning(id)) {
-    showSessionActionMessage('该会话仍在执行，请停止或等待完成后再删除。', 'error');
+    showSessionActionMessage(t('sidebar.deleteRunning'), 'error');
     return;
   }
   try {
@@ -347,15 +350,15 @@ onUnmounted(() => {
       <div class="sidebar-main">
       <div class="sidebar-section">
         <div class="sidebar-title">
-          <span>会话</span>
+          <span>{{ t('sidebar.sessions') }}</span>
           <div class="session-btn-group">
-            <button type="button" class="new-session-btn" @click.stop="createNewSession(false)" title="新建会话">
+            <button type="button" class="new-session-btn" @click.stop="createNewSession(false)" :title="t('sidebar.newSession')">
               <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none">
                 <line x1="12" y1="5" x2="12" y2="19"></line>
                 <line x1="5" y1="12" x2="19" y2="12"></line>
               </svg>
             </button>
-            <button type="button" class="new-session-btn sandbox-btn" @click.stop="createNewSession(true)" title="新建沙箱会话（指定工作目录）">
+            <button type="button" class="new-session-btn sandbox-btn" @click.stop="createNewSession(true)" :title="t('sidebar.newSandboxSession')">
               <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
               </svg>
@@ -371,38 +374,38 @@ onUnmounted(() => {
         </div>
         <div v-if="showAdvancedSessionFilters" class="session-filter-toggle-row">
           <button type="button" class="session-filter-toggle" :class="{ active: hasActiveSessionFilters() }" @click="showSessionFilters = !showSessionFilters">
-            高级筛选<span v-if="hasActiveSessionFilters()">已启用</span>
+            {{ t('sidebar.advancedFilter') }}<span v-if="hasActiveSessionFilters()">{{ t('sidebar.enabled') }}</span>
           </button>
-          <button v-if="hasActiveSessionFilters()" type="button" class="session-filter-clear" @click="clearSessionFilters">清除</button>
+          <button v-if="hasActiveSessionFilters()" type="button" class="session-filter-clear" @click="clearSessionFilters">{{ t('sidebar.clear') }}</button>
         </div>
         <div v-if="showAdvancedSessionFilters && showSessionFilters" class="session-filters">
           <input
             v-model="sessionSearchKeyword"
             class="session-filter-input"
-            placeholder="搜索会话"
+            :placeholder="t('sidebar.searchSession')"
             @keydown.enter.prevent="loadSessions"
             @blur="loadSessions"
           />
           <input
             v-model="sessionFilterTool"
             class="session-filter-input"
-            placeholder="工具名筛选"
+            :placeholder="t('sidebar.filterByTool')"
             @keydown.enter.prevent="loadSessions"
             @blur="loadSessions"
           />
           <select v-model="sessionFilterRange" class="session-filter-input" @change="loadSessions">
-            <option value="all">全部时间</option>
-            <option value="24h">最近 24 小时</option>
-            <option value="7d">最近 7 天</option>
-            <option value="30d">最近 30 天</option>
+            <option value="all">{{ t('sidebar.allTime') }}</option>
+            <option value="24h">{{ t('sidebar.last24h') }}</option>
+            <option value="7d">{{ t('sidebar.last7d') }}</option>
+            <option value="30d">{{ t('sidebar.last30d') }}</option>
           </select>
           <label class="session-filter-check">
             <input v-model="sessionFilterHasTools" type="checkbox" @change="loadSessions" />
-            <span>有工具调用</span>
+            <span>{{ t('sidebar.hasToolCalls') }}</span>
           </label>
         </div>
         <div v-if="sessions.length === 0" class="session-empty-state">
-          {{ hasActiveSessionFilters() ? '无匹配会话' : '暂无会话' }}
+          {{ hasActiveSessionFilters() ? t('sidebar.noMatchedSessions') : t('sidebar.noSessions') }}
         </div>
         <ul v-else class="session-list">
           <li
@@ -427,7 +430,7 @@ onUnmounted(() => {
                 @blur="submitRenameSession(session.id)"
               />
               <span v-else class="session-title">{{ session.title }}</span>
-              <span v-if="session.workingDirectory" class="sandbox-badge" :title="'沙箱: ' + session.workingDirectory">
+              <span v-if="session.workingDirectory" class="sandbox-badge" :title="t('sidebar.sandboxTitle', { path: session.workingDirectory })">
                 <svg viewBox="0 0 24 24" width="10" height="10" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
                   <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
                   <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
@@ -437,7 +440,7 @@ onUnmounted(() => {
               <button
                 class="rename-btn"
                 @click="startRenameSession(session, $event)"
-                title="重命名会话"
+                :title="t('sidebar.rename')"
               >
                 <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" stroke-width="2" fill="none">
                   <path d="M12 20h9"></path>
@@ -448,7 +451,7 @@ onUnmounted(() => {
                 v-if="session.id !== sessionStore.activeSessionId"
                 class="delete-btn"
                 @click="deleteSession(session.id, $event)"
-                title="删除会话"
+                :title="t('sidebar.delete')"
               >
                 <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" stroke-width="2" fill="none">
                   <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -459,7 +462,7 @@ onUnmounted(() => {
             <div class="session-meta-row">
               <span>{{ formatSessionTime(session.updatedAt) }}</span>
               <span v-if="formatSessionTokens(session)">{{ formatSessionTokens(session) }}</span>
-              <span v-if="session.workingDirectory">沙盒</span>
+              <span v-if="session.workingDirectory">{{ t('sidebar.sandbox') }}</span>
             </div>
           </li>
         </ul>
@@ -492,12 +495,12 @@ onUnmounted(() => {
 
       </div>
       <div class="sidebar-footer">
-        <button type="button" class="footer-action" @click="emit('open-settings')" title="系统设置">
+        <button type="button" class="footer-action" @click="emit('open-settings')" :title="t('sidebar.settingsTitle')">
           <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"></circle>
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
           </svg>
-          <span>设置</span>
+          <span>{{ t('sidebar.settings') }}</span>
         </button>
       </div>
 

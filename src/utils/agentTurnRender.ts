@@ -55,15 +55,16 @@ function describeThinking(content: string) {
   return sentence.length > 28 ? `${sentence.slice(0, 28)}...` : sentence;
 }
 
-function snapshotFromTurn(turn: AgentCurrentTurn): AgentTurnSnapshot {
+export function snapshotFromTurn(turn: AgentCurrentTurn): AgentTurnSnapshot {
   return {
     version: 1,
-    status: turn.isRunning ? "RUNNING" : "FINISH",
+    status: turn.isRunning ? "RUNNING" : "DONE",
     textBlocks: turn.textBlocks,
     thinkingBlocks: turn.thinkingBlocks,
     toolCalls: turn.toolCalls,
     logs: turn.logs,
-    createdAt: turn.startedAt ?? Date.now(),
+    tokens: turn.tokens,
+    createdAt: Date.now(),
   };
 }
 
@@ -304,9 +305,11 @@ export function renderAgentTurnSnapshot(
         snapshot.tokens.sessionOutput,
       )
     : "";
+
   const noticeHtml = snapshot.notice
     ? `<div class="token-usage">${escapeHtml(snapshot.notice)}</div>`
     : "";
+
   return `<div class="agent-turn-render ${displayMode}">
 ${executionHtml}
 ${answerHtml}

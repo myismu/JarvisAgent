@@ -205,8 +205,16 @@ export const useChatStore = defineStore("chat", () => {
     if (notice) {
       snapshot.notice = notice;
     }
+    // 渲染快照 HTML
     const rendered = renderAgentTurnSnapshot(snapshot, prefs.agentDisplayMode.value, false);
-    return `<div class="chat-message agent-message"><div class="${ASSISTANT_MESSAGE_CONTENT_CLASS}">\n\n${serializeAgentTurnSnapshot(snapshot)}\n${rendered}\n\n</div></div>\n\n`;
+    
+    // 如果快照里有 tokens 但渲染结果里没包含 token-usage 类（可能被 renderAgentTurnSnapshot 内部逻辑跳过），我们强制补上
+    let finalHtml = rendered;
+    if (tokens && (tokens.input > 0 || tokens.output > 0) && !rendered.includes('token-usage')) {
+       finalHtml += renderTokenUsage(tokens.input, tokens.output, tokens.sessionInput, tokens.sessionOutput);
+    }
+
+    return `<div class="chat-message agent-message"><div class="${ASSISTANT_MESSAGE_CONTENT_CLASS}">\n\n${serializeAgentTurnSnapshot(snapshot)}\n${finalHtml}\n\n</div></div>\n\n`;
   }
 
   function resetRenderState() {
@@ -588,29 +596,46 @@ export const useChatStore = defineStore("chat", () => {
       }
 
       const { finalContent, finalToolBuffer } = buildFinalResponseParts(requestView, res.content);
+      const inputTokens = res.input_tokens ?? (res as any).inputTokens ?? 0;
+      const outputTokens = res.output_tokens ?? (res as any).outputTokens ?? 0;
+      const sessionInputTokens = res.session_input_tokens ?? (res as any).sessionInputTokens ?? 0;
+      const sessionOutputTokens = res.session_output_tokens ?? (res as any).sessionOutputTokens ?? 0;
+      
+      // 更新当前 turn 的 tokens 状态，供 Live 组件渲染
+      requestView.currentTurn.tokens = {
+        input: inputTokens,
+        output: outputTokens,
+        sessionInput: sessionInputTokens,
+        sessionOutput: sessionOutputTokens,
+      };
+
       const agentResponse = buildStructuredAgentResponseHtml(
         requestView,
         finalContent,
         finalToolBuffer,
         res.status,
         {
-          input: res.input_tokens || 0,
-          output: res.output_tokens || 0,
-          sessionInput: res.session_input_tokens || 0,
-          sessionOutput: res.session_output_tokens || 0,
+          input: inputTokens,
+          output: outputTokens,
+          sessionInput: sessionInputTokens,
+          sessionOutput: sessionOutputTokens,
         },
       );
 
-      requestView.latestCheckpoint = null;
-      session.appendSessionHistory(sessionIdAtStart, agentResponse);
-      session.clearSessionBuffers(sessionIdAtStart);
-      resetRenderState();
-      // 成功时不显示撤回编辑栏——用户可通过右键菜单撤回
+      // 先重置状态和清除缓冲区，确保“实时”渲染区域在历史记录更新前消失
       requestView.status = res.status;
       requestView.activeRunId = null;
       requestView.resumableRunId = null;
       requestView.streamActive = false;
+      requestView.runStartTime = null;
+      
+      session.clearSessionBuffers(sessionIdAtStart);
+      resetRenderState();
 
+      // 然后将最终结果存入历史
+      requestView.latestCheckpoint = null;
+      session.appendSessionHistory(sessionIdAtStart, agentResponse);
+      
       if (!sessionSwitched) {
         triggerRender();
         scrollToBottomCb?.();
@@ -618,7 +643,7 @@ export const useChatStore = defineStore("chat", () => {
       await saveAgentStepsToBackend(sessionIdAtStart);
       const sessionAfterSave = useSessionStore();
       if (sessionIdAtStart === sessionAfterSave.activeSessionId) {
-        sessionAfterSave.setSessionUsageTotals(res.session_input_tokens || 0, res.session_output_tokens || 0);
+        sessionAfterSave.setSessionUsageTotals(sessionInputTokens, sessionOutputTokens);
       }
     } catch (err) {
       session.clearSessionBuffers(sessionIdAtStart);
