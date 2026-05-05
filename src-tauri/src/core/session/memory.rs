@@ -128,13 +128,14 @@ pub fn append_transcript(session_id: &str, text: &str) -> Result<String, MemoryE
 /// 自动压缩：调用 LLM 生成摘要，用摘要替换完整对话历史
 pub async fn auto_compact(
     session_id: &str,
-    messages: &mut Vec<Message>,
+    memory: &mut SessionMemory,
     client: &reqwest::Client,
     api_key: &str,
     base_url: &str,
     model_id: &str,
     api_format: ApiFormat,
 ) -> Result<(), MemoryError> {
+    let messages = &memory.messages;
     let mut json_content = String::new();
     for msg in messages.iter() {
         if let Ok(m) = serde_json::to_string(msg) {
@@ -245,14 +246,15 @@ pub async fn auto_compact(
     };
     let summary = text;
 
-    messages.clear();
-    messages.push(Message::User {
+    memory.messages.clear();
+    memory.message_ids.clear();
+    crate::core::session::append_message(memory, Message::User {
         content: Content::Single(format!(
             "[Conversation compressed. Transcript: {:?}]\n\n{}",
             transcript_path, summary
         )),
     });
-    messages.push(Message::Assistant {
+    crate::core::session::append_message(memory, Message::Assistant {
         content: Content::Single(
             "Understood. I have the context from the summary. Continuing.".to_string(),
         ),

@@ -206,10 +206,77 @@ pub async fn recall_last_message(
                 recalled_text = String::new();
             }
             session.messages.truncate(idx);
+            let message_count = session.messages.len();
+            session.message_ids.truncate(message_count);
         } else {
             return Err("没有可撤回的用户消息".to_string());
         }
         is_empty = session.messages.is_empty();
+    }
+
+    if is_empty {
+        switch_away_and_delete_empty_session(&session_id, &app).await?;
+    } else {
+        let memory = ctx.memory.lock().await.clone();
+        session::save_session(&session_id, &memory, None);
+        let _ = app.emit("session-updated", ());
+    }
+
+    Ok(recalled_text)
+}
+
+#[tauri::command]
+pub async fn recall_message(
+    session_id: String,
+    message_id: Option<String>,
+    user_message_index: Option<usize>,
+    session_manager: tauri::State<'_, SessionManager>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let ctx = session_manager.get_or_create(&session_id).await;
+    let stored_target = if let Some(message_id) = message_id.as_ref().filter(|id| !id.trim().is_empty()) {
+        session::find_session_message_by_id(&session_id, message_id)?
+    } else {
+        None
+    };
+    let recalled_text;
+    let is_empty;
+    {
+        let mut session = ctx.memory.lock().await;
+        let memory_index = stored_target
+            .as_ref()
+            .and_then(|stored| {
+                session
+                    .message_ids
+                    .iter()
+                    .position(|id| id == &stored.message_id)
+            })
+            .or(user_message_index)
+            .ok_or_else(|| "撤回消息不存在".to_string())?;
+        if memory_index >= session.messages.len() {
+            return Err("撤回消息不存在".to_string());
+        }
+        if let Message::User { content } = &session.messages[memory_index] {
+            recalled_text = message_text_content(content);
+        } else if let Some(stored) = stored_target.as_ref() {
+            if let Message::User { content } = &stored.content {
+                recalled_text = message_text_content(content);
+            } else {
+                return Err("撤回目标不是用户消息".to_string());
+            }
+        } else {
+            return Err("撤回目标不是用户消息".to_string());
+        }
+        session.messages.truncate(memory_index);
+        let message_count = session.messages.len();
+        session.message_ids.truncate(message_count);
+        is_empty = session.messages.is_empty();
+    }
+
+    if let Some(stored) = stored_target {
+        session::delete_session_messages_from_seq(&session_id, stored.seq)?;
+    } else if let Some(user_message_index) = user_message_index {
+        session::delete_session_messages_from_seq(&session_id, user_message_index)?;
     }
 
     if is_empty {
@@ -230,45 +297,31 @@ pub async fn recall_message_from_index(
     session_manager: tauri::State<'_, SessionManager>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    let ctx = session_manager.get_or_create(&session_id).await;
-    let recalled_text;
-    let is_empty;
-    {
-        let mut session = ctx.memory.lock().await;
-        if user_message_index >= session.messages.len() {
-            return Err("撤回消息不存在".to_string());
-        }
-        if let Message::User { content } = &session.messages[user_message_index] {
-            recalled_text = match content {
-                Content::Single(s) => s.clone(),
-                Content::Multiple(blocks) => blocks
-                    .iter()
-                    .filter_map(|b| {
-                        if let ContentBlock::Text { text } = b {
-                            Some(text.as_str())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            };
-        } else {
-            return Err("撤回目标不是用户消息".to_string());
-        }
-        session.messages.truncate(user_message_index);
-        is_empty = session.messages.is_empty();
-    }
+    recall_message(
+        session_id,
+        None,
+        Some(user_message_index),
+        session_manager,
+        app,
+    )
+    .await
+}
 
-    if is_empty {
-        switch_away_and_delete_empty_session(&session_id, &app).await?;
-    } else {
-        let memory = ctx.memory.lock().await.clone();
-        session::save_session(&session_id, &memory, None);
-        let _ = app.emit("session-updated", ());
+fn message_text_content(content: &Content) -> String {
+    match content {
+        Content::Single(s) => s.clone(),
+        Content::Multiple(blocks) => blocks
+            .iter()
+            .filter_map(|b| {
+                if let ContentBlock::Text { text } = b {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
     }
-
-    Ok(recalled_text)
 }
 
 #[tauri::command]
@@ -422,7 +475,8 @@ pub async fn prepare_resume_agent_run(
     let should_mark_recovered = {
         let mut memory = ctx.memory.lock().await;
         memory.messages = checkpoint.messages.clone();
-        recover_interrupted_into_memory(&checkpoint.session_id, &mut memory.messages)
+        session::reset_message_ids(&mut memory);
+        recover_interrupted_into_memory(&checkpoint.session_id, &mut memory)
     };
     if should_mark_recovered {
         let memory = ctx.memory.lock().await.clone();
@@ -435,9 +489,10 @@ pub async fn prepare_resume_agent_run(
 
 pub(crate) fn recover_interrupted_into_memory(
     session_id: &str,
-    messages: &mut Vec<Message>,
+    memory: &mut SessionMemory,
 ) -> bool {
-    let current_messages = messages.clone();
+    session::normalize_message_ids(memory);
+    let current_messages = memory.messages.clone();
     let Some((extra_messages, live_content, live_thinking)) =
         crate::core::orchestration::agent_runs::recover_interrupted_messages(
             session_id,
@@ -446,10 +501,12 @@ pub(crate) fn recover_interrupted_into_memory(
     else {
         return false;
     };
-    messages.extend(extra_messages);
+    for message in extra_messages {
+        session::append_message(memory, message);
+    }
     if let Some(message) = recovered_assistant_message(&live_content, &live_thinking) {
-        if !assistant_message_exists_at_tail(messages, &message) {
-            messages.push(message);
+        if !assistant_message_exists_at_tail(&memory.messages, &message) {
+            session::append_message(memory, message);
         }
     }
     true
@@ -518,7 +575,7 @@ pub async fn recover_interrupted_session_messages(
     let ctx = session_manager.get_or_create(&session_id).await;
     let recovered = {
         let mut memory = ctx.memory.lock().await;
-        recover_interrupted_into_memory(&session_id, &mut memory.messages)
+        recover_interrupted_into_memory(&session_id, &mut memory)
     };
     if recovered {
         let memory = ctx.memory.lock().await.clone();

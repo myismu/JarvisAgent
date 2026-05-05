@@ -30,7 +30,7 @@ use crate::core::intent;
 use crate::core::llm::api_client;
 use crate::core::models::*;
 use crate::core::orchestration::agent_runs;
-use crate::core::session::memory::*;
+use crate::core::session::{append_message, memory::*, pop_message, restore_message};
 use crate::core::tools::*;
 
 use super::context::*;
@@ -69,6 +69,16 @@ struct PipelineState {
     final_answer: String,
     /// 渐进式工具披露：已通过 SearchTools 激活的工具名
     activated_tools: Vec<String>,
+}
+
+struct ContextEstimate {
+    total_chars: usize,
+    estimated_tokens: usize,
+    message_count: usize,
+    tool_schema_count: usize,
+    tool_call_count: usize,
+    tool_result_count: usize,
+    sections: Vec<ContextSectionSnapshot>,
 }
 
 const TEXTUAL_PROPOSE_PLAN_MARKER: &str = "<function=ProposePlan>";
@@ -410,7 +420,7 @@ impl PipelineState {
             let mut session = self.ctx.memory.lock().await;
             if crate::core::commands::session::recover_interrupted_into_memory(
                 &self.sid,
-                &mut session.messages,
+                &mut session,
             ) {
                 let recovered_memory = session.clone();
                 crate::core::session::save_session(&self.sid, &recovered_memory, None);
@@ -672,13 +682,13 @@ impl PipelineState {
                 break;
             } else {
                 let mut session = self.ctx.memory.lock().await;
-                session.messages.push(Message::User {
+                append_message(&mut session, Message::User {
                     content: Content::Multiple(tool_results),
                 });
                 if manual_compact {
                     let _ = auto_compact(
                         &self.sid,
-                        &mut session.messages,
+                        &mut session,
                         &self.client,
                         &self.api_key,
                         &self.base_url,
@@ -866,8 +876,9 @@ impl PipelineState {
             let mut session = self.ctx.memory.lock().await;
             let keep_len = (self.initial_msg_index + 1).min(session.messages.len());
             session.messages.truncate(keep_len);
+            session.message_ids.truncate(keep_len);
             self.final_answer = "用户已取消执行。".to_string();
-            session.messages.push(Message::Assistant {
+            append_message(&mut session, Message::Assistant {
                 content: Content::Single(self.final_answer.clone()),
             });
         }
@@ -943,13 +954,13 @@ impl PipelineState {
                 notif_text.push_str(&format!("[bg:{}] {}: {}\n", n.task_id, n.status, n.result));
             }
             let mut session = self.ctx.memory.lock().await;
-            session.messages.push(Message::User {
+            append_message(&mut session, Message::User {
                 content: Content::Single(format!(
                     "<background-results>\n{}\n</background-results>",
                     notif_text
                 )),
             });
-            session.messages.push(Message::Assistant {
+            append_message(&mut session, Message::Assistant {
                 content: Content::Single("Noted background results.".to_string()),
             });
         }
@@ -957,24 +968,32 @@ impl PipelineState {
 
     /// 检查 token 用量并在需要时执行压缩
     async fn compact_if_needed(&mut self) {
-        let mut session = self.ctx.memory.lock().await;
-        micro_compact(&mut session.messages);
-        let tokens = estimate_tokens(&session.messages);
+        let messages_for_estimate = {
+            let mut session = self.ctx.memory.lock().await;
+            micro_compact(&mut session.messages);
+            crate::core::session::normalize_message_ids(&mut session);
+            session.messages.clone()
+        };
+        let history_snapshot = self.prepare_history_snapshot_from_messages(messages_for_estimate);
+        let tools = self.current_tools();
+        let estimate = self.build_context_estimate(&history_snapshot, &tools);
+        let tokens = estimate.estimated_tokens;
         if tokens > crate::core::constants::MAX_TOKENS_COMPACT_TRIGGER {
             println!(
-                "[贾维斯] Token 估算值 > {} ({})，触发自动压缩",
+                "[贾维斯] 上下文估算值 > {} ({})，触发自动压缩",
                 crate::core::constants::MAX_TOKENS_COMPACT_TRIGGER,
                 tokens
             );
 
+            let mut session = self.ctx.memory.lock().await;
             let mut last_user_msg = None;
             if let Some(Message::User { .. }) = session.messages.last() {
-                last_user_msg = session.messages.pop();
+                last_user_msg = pop_message(&mut session);
             }
 
             let compact_result = auto_compact(
                 &self.sid,
-                &mut session.messages,
+                &mut session,
                 &self.client,
                 &self.api_key,
                 &self.base_url,
@@ -989,28 +1008,30 @@ impl PipelineState {
                 self.initial_msg_index = session.messages.len();
             }
 
-            if let Some(msg) = last_user_msg {
+            if let Some((msg, message_id)) = last_user_msg {
                 let needs_assistant_pad = match session.messages.last() {
                     Some(Message::User { .. }) => true,
                     None => true,
                     _ => false,
                 };
                 if needs_assistant_pad {
-                    session.messages.push(Message::Assistant {
+                    append_message(&mut session, Message::Assistant {
                         content: Content::Single("Context compressed.".to_string()),
                     });
                 }
                 self.initial_msg_index = session.messages.len();
-                session.messages.push(msg);
+                restore_message(&mut session, msg, message_id);
             }
         }
     }
 
-    /// 准备历史消息快照（含图片恢复 + 上下文注入）
-    async fn prepare_history_snapshot(&self) -> Vec<Message> {
-        let session = self.ctx.memory.lock().await;
+    fn current_tools(&self) -> Vec<serde_json::Value> {
+        get_tools_definition(&self.detected_intent, &self.activated_tools)
+    }
+
+    fn prepare_history_snapshot_from_messages(&self, messages: Vec<Message>) -> Vec<Message> {
         let mut history_snapshot = if self.detected_intent == "CHAT" {
-            let mut pruned = session.messages.clone();
+            let mut pruned = messages;
             for msg in &mut pruned {
                 if let Message::User { content } = msg {
                     if let Content::Multiple(blocks) = content {
@@ -1029,30 +1050,32 @@ impl PipelineState {
             }
             pruned
         } else {
-            session.messages.clone()
+            messages
         };
-        drop(session); // 释放锁
 
         restore_image_data(&mut history_snapshot);
-        let snapshot_initial_msg_index = self.initial_msg_index;
         inject_context_into_history(
             &mut history_snapshot,
-            snapshot_initial_msg_index,
+            self.initial_msg_index,
             &self.dynamic_context_str,
         );
 
         history_snapshot
     }
 
-    /// 更新本轮请求的上下文 token 快照
-    fn update_context_snapshot(&self, history_snapshot: &[Message], tools: &[serde_json::Value]) {
-        fn now_ms() -> u64 {
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64
-        }
+    /// 准备历史消息快照（含图片恢复 + 上下文注入）
+    async fn prepare_history_snapshot(&self) -> Vec<Message> {
+        let session = self.ctx.memory.lock().await;
+        let messages = session.messages.clone();
+        drop(session); // 释放锁
+        self.prepare_history_snapshot_from_messages(messages)
+    }
 
+    fn build_context_estimate(
+        &self,
+        history_snapshot: &[Message],
+        tools: &[serde_json::Value],
+    ) -> ContextEstimate {
         fn section(
             model_id: &str,
             key: &str,
@@ -1201,6 +1224,27 @@ impl PipelineState {
 
         let total_chars = sections.iter().map(|item| item.chars).sum();
         let estimated_tokens = sections.iter().map(|item| item.estimated_tokens).sum();
+        ContextEstimate {
+            total_chars,
+            estimated_tokens,
+            message_count: cleaned_messages.len(),
+            tool_schema_count: tools.len(),
+            tool_call_count,
+            tool_result_count,
+            sections,
+        }
+    }
+
+    /// 更新本轮请求的上下文 token 快照
+    fn update_context_snapshot(&self, history_snapshot: &[Message], tools: &[serde_json::Value]) {
+        fn now_ms() -> u64 {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64
+        }
+
+        let estimate = self.build_context_estimate(history_snapshot, tools);
         let snapshot = SessionContextSnapshot {
             session_id: self.sid.clone(),
             run_id: Some(self.run_id.clone()),
@@ -1209,8 +1253,8 @@ impl PipelineState {
             intent: self.detected_intent.clone(),
             api_format: self.api_format.as_str().to_string(),
             created_at: now_ms(),
-            total_chars,
-            estimated_tokens,
+            total_chars: estimate.total_chars,
+            estimated_tokens: estimate.estimated_tokens,
             provider_input_tokens: None,
             provider_output_tokens: None,
             provider_total_tokens: None,
@@ -1218,11 +1262,11 @@ impl PipelineState {
             max_context_tokens: crate::core::llm::registry::query_capabilities(&self.model_id)
                 .and_then(|capabilities| capabilities.max_context_tokens),
             max_output_tokens: crate::core::constants::MAX_TOKENS_CONTEXT,
-            message_count: cleaned_messages.len(),
-            tool_schema_count: tools.len(),
-            tool_call_count,
-            tool_result_count,
-            sections,
+            message_count: estimate.message_count,
+            tool_schema_count: estimate.tool_schema_count,
+            tool_call_count: estimate.tool_call_count,
+            tool_result_count: estimate.tool_result_count,
+            sections: estimate.sections,
         };
 
         if let Err(err) = crate::core::session::save_context_snapshot(&snapshot) {
@@ -1260,7 +1304,7 @@ impl PipelineState {
 
     /// 构建 LLM API 请求体
     fn build_llm_request(&self, history_snapshot: Vec<Message>) -> (serde_json::Value, bool) {
-        let tools = get_tools_definition(&self.detected_intent, &self.activated_tools);
+        let tools = self.current_tools();
         self.update_context_snapshot(&history_snapshot, &tools);
 
         let mut request_body = AnthropicRequest {
@@ -1405,7 +1449,7 @@ impl PipelineState {
             })
             .collect();
         if !filtered_blocks.is_empty() {
-            session.messages.push(Message::Assistant {
+            append_message(&mut session, Message::Assistant {
                 content: Content::Multiple(filtered_blocks),
             });
         }

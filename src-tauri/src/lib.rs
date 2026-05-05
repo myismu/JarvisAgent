@@ -147,6 +147,7 @@ pub fn run() {
             core::commands::permission::resolve_permission,
             // 会话管理
             core::commands::session::recall_last_message,
+            core::commands::session::recall_message,
             core::commands::session::recall_message_from_index,
             core::commands::session::get_active_session_id,
             core::commands::session::list_sessions,

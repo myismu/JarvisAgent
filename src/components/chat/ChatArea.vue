@@ -108,6 +108,7 @@ const rollbackMenu = ref<{
   snapshotId: string | null;
   rollbackMode: 'both' | 'session';
   userMessageIndex: number | null;
+  messageId: string | null;
   fallbackSnapshotId: string;
 }>({
   visible: false,
@@ -117,6 +118,7 @@ const rollbackMenu = ref<{
   rollbackMode: 'session',
   userMessageIndex: null,
   fallbackSnapshotId: '',
+  messageId: null,
 });
 
 const rollbackConfirm = ref<{
@@ -124,6 +126,7 @@ const rollbackConfirm = ref<{
   snapshotId: string;
   fallbackSnapshotId: string;
   userMessageIndex: number | null;
+  messageId: string | null;
   title: string;
   message: string;
   files: RollbackPreviewFile[];
@@ -287,6 +290,7 @@ const handleContextMenu = (e: MouseEvent) => {
     snapshotId,
     rollbackMode: 'session',
     userMessageIndex: null,
+    messageId: null,
     fallbackSnapshotId: '',
   };
 };
@@ -299,6 +303,7 @@ const handleRollbackClick = async (e: MouseEvent) => {
   const userMessageEl = btn.closest('.user-message');
   const contentEl = userMessageEl?.querySelector('.message-content');
   const userMessageIndexAttr = contentEl?.getAttribute('data-user-message-index');
+  const messageId = contentEl?.getAttribute('data-message-id') || null;
   const userMessageIndex = userMessageIndexAttr ? Number(userMessageIndexAttr) : null;
   const rollbackTarget = Number.isInteger(userMessageIndex) ? userMessageIndex : null;
   const rollbackMode = contentEl?.getAttribute('data-rollback-mode') === 'both' ? 'both' : 'session';
@@ -312,6 +317,7 @@ const handleRollbackClick = async (e: MouseEvent) => {
     snapshotId: rollbackCheckpointId,
     rollbackMode,
     userMessageIndex: rollbackTarget,
+    messageId,
     fallbackSnapshotId: '',
   };
 };
@@ -470,6 +476,7 @@ const executeRollback = async (mode: 'both' | 'session') => {
       const result = await invoke<RollbackPreviewResult>('preview_rollback_to_checkpoint_with_recall', {
         sessionId,
         checkpointId: rollbackMenu.value.snapshotId || rollbackMenu.value.fallbackSnapshotId || '',
+        messageId: rollbackMenu.value.messageId,
         userMessageIndex: rollbackMenu.value.userMessageIndex,
       });
       rollbackPreview.value = {
@@ -501,6 +508,7 @@ const executeRollback = async (mode: 'both' | 'session') => {
     snapshotId: rollbackMenu.value.snapshotId || '',
     fallbackSnapshotId: rollbackMenu.value.fallbackSnapshotId,
     userMessageIndex: rollbackMenu.value.userMessageIndex,
+    messageId: rollbackMenu.value.messageId,
     title: mode === 'both' ? t('rollback.confirmBothTitle') : t('rollback.confirmSessionTitle'),
     message: previewMessage,
     files: mode === 'both' ? rollbackPreview.value.files : [],
@@ -533,18 +541,21 @@ const confirmRollback = async () => {
 
     let recalledText: string | null = null;
     const rollbackUserMessageIndex = rollbackConfirm.value.userMessageIndex;
+    const rollbackMessageId = rollbackConfirm.value.messageId;
     if (rollbackConfirm.value.snapshotId || rollbackConfirm.value.fallbackSnapshotId || rollbackConfirm.value.mode === 'both') {
       // 有 checkpointId 或需要回滚代码（后端会按传入快照恢复文件）
       const result = await invoke<RollbackRecallResult>('rollback_to_checkpoint_with_recall', {
         sessionId,
         checkpointId: rollbackConfirm.value.snapshotId || rollbackConfirm.value.fallbackSnapshotId || '',
         rollbackFiles: rollbackConfirm.value.mode === 'both',
+        messageId: rollbackMessageId,
         userMessageIndex: rollbackUserMessageIndex,
       });
       recalledText = result.recalledText;
-    } else if (rollbackUserMessageIndex !== null) {
-      recalledText = await invoke<string | null>('recall_message_from_index', {
+    } else if (rollbackMessageId || rollbackUserMessageIndex !== null) {
+      recalledText = await invoke<string | null>('recall_message', {
         sessionId,
+        messageId: rollbackMessageId,
         userMessageIndex: rollbackUserMessageIndex,
       });
     } else {

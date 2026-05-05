@@ -59,6 +59,7 @@ pub struct PendingSnapshotPatch {
     pub patch: crate::core::rollback::Patch,
     pub message: Option<String>,
     pub trigger_user_memory_index: Option<usize>,
+    pub trigger_user_message_id: Option<String>,
 }
 
 pub struct SessionContext {

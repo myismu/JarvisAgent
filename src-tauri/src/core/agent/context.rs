@@ -18,7 +18,7 @@
 //! - 闲聊模式（CHAT）下会截断工具返回内容以节省 Token
 
 use crate::core::models::*;
-use crate::core::session::memory::*;
+use crate::core::session::{append_message, memory::*};
 use crate::core::tools::*;
 
 pub fn build_dynamic_context(
@@ -102,7 +102,7 @@ pub fn inject_user_message(
 ) -> usize {
     let initial_msg_index = session.messages.len();
 
-    if let Some(images) = image_base64_list {
+    let message = if let Some(images) = image_base64_list {
         if !images.is_empty() {
             let mut blocks: Vec<ContentBlock> = Vec::new();
             for img_base64 in images {
@@ -141,19 +141,20 @@ pub fn inject_user_message(
                     },
                 );
             }
-            session.messages.push(Message::User {
+            Message::User {
                 content: Content::Multiple(blocks),
-            });
+            }
         } else {
-            session.messages.push(Message::User {
+            Message::User {
                 content: Content::Single(msg.to_string()),
-            });
+            }
         }
     } else {
-        session.messages.push(Message::User {
+        Message::User {
             content: Content::Single(msg.to_string()),
-        });
-    }
+        }
+    };
+    append_message(session, message);
 
     initial_msg_index
 }

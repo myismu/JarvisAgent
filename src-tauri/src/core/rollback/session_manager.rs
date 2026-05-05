@@ -96,6 +96,16 @@ impl SessionSnapshotManager {
                 .metadata
                 .insert("trigger_user_memory_index".to_string(), index.to_string());
         }
+        let trigger_user_message_id = trigger_user_memory_index.and_then(|index| {
+            crate::core::session::load_session(&self.session_id)
+                .ok()
+                .and_then(|memory| memory.message_ids.get(index).cloned())
+        });
+        if let Some(message_id) = trigger_user_message_id.as_ref() {
+            snapshot
+                .metadata
+                .insert("trigger_user_message_id".to_string(), message_id.clone());
+        }
 
         // 将 metadata 同步回 tree.nodes（create_snapshot 返回的是 clone 前的原始对象，
         // tree.nodes 中存的是 metadata 为空的旧副本，必须手动同步）
@@ -111,8 +121,9 @@ impl SessionSnapshotManager {
             .save_tree(&tree)
             .map_err(|e| format!("保存树失败: {}", e))?;
         if let Some(index) = trigger_user_memory_index {
-            crate::core::db::upsert_checkpoint_user_message_link(
+            crate::core::db::upsert_checkpoint_user_message_link_v2(
                 &self.session_id,
+                trigger_user_message_id.as_deref(),
                 index,
                 &snapshot.id,
                 !patches.is_empty(),
@@ -167,6 +178,15 @@ impl SessionSnapshotManager {
             snapshot
                 .metadata
                 .insert("trigger_user_memory_index".to_string(), index.to_string());
+        }
+        if let Some(message_id) = trigger_user_memory_index.and_then(|index| {
+            crate::core::session::load_session(&self.session_id)
+                .ok()
+                .and_then(|memory| memory.message_ids.get(index).cloned())
+        }) {
+            snapshot
+                .metadata
+                .insert("trigger_user_message_id".to_string(), message_id);
         }
 
         // 将 metadata 同步回 tree.nodes（create_snapshot 返回的是 clone 前的原始对象，

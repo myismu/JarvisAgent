@@ -179,6 +179,47 @@ pub fn create_session(working_directory: Option<String>) -> SessionMeta {
     meta
 }
 
+/// 保证会话消息 ID 与消息数组长度一致。
+pub fn normalize_message_ids(memory: &mut SessionMemory) {
+    if memory.message_ids.len() > memory.messages.len() {
+        memory.message_ids.truncate(memory.messages.len());
+    }
+    for message_id in &mut memory.message_ids {
+        if message_id.trim().is_empty() {
+            *message_id = uuid::Uuid::new_v4().to_string();
+        }
+    }
+    while memory.message_ids.len() < memory.messages.len() {
+        memory.message_ids.push(uuid::Uuid::new_v4().to_string());
+    }
+}
+
+pub fn append_message(memory: &mut SessionMemory, message: Message) -> String {
+    normalize_message_ids(memory);
+    let message_id = uuid::Uuid::new_v4().to_string();
+    memory.messages.push(message);
+    memory.message_ids.push(message_id.clone());
+    message_id
+}
+
+pub fn pop_message(memory: &mut SessionMemory) -> Option<(Message, String)> {
+    normalize_message_ids(memory);
+    let message = memory.messages.pop()?;
+    let message_id = memory.message_ids.pop().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    Some((message, message_id))
+}
+
+pub fn restore_message(memory: &mut SessionMemory, message: Message, message_id: String) {
+    normalize_message_ids(memory);
+    memory.messages.push(message);
+    memory.message_ids.push(message_id);
+}
+
+pub fn reset_message_ids(memory: &mut SessionMemory) {
+    memory.message_ids.clear();
+    normalize_message_ids(memory);
+}
+
 /// 保存会话数据到 SQLite。
 /// 保存时会过滤掉工具调用和工具结果，仅保留用户输入和助手文本回复，
 /// 大幅减少存储体积。
@@ -201,10 +242,16 @@ pub fn save_session(
         working_directory: None,
     });
 
-    let filtered_messages: Vec<Message> = memory
+    let mut normalized_memory = memory.clone();
+    normalize_message_ids(&mut normalized_memory);
+
+    let filtered_pairs: Vec<(String, Message)> = normalized_memory
         .messages
         .iter()
-        .filter_map(|msg| match msg {
+        .enumerate()
+        .filter_map(|(idx, msg)| {
+            let message_id = normalized_memory.message_ids[idx].clone();
+            let filtered_message = match msg {
             Message::User { content } => match content {
                 Content::Single(_) => Some(msg.clone()),
                 Content::Multiple(blocks) => {
@@ -296,8 +343,12 @@ pub fn save_session(
                     }
                 }
             },
+        };
+            filtered_message.map(|message| (message_id, message))
         })
         .collect();
+    let (filtered_message_ids, filtered_messages): (Vec<String>, Vec<Message>) =
+        filtered_pairs.into_iter().unzip();
 
     if let Some((input_delta, output_delta)) = token_usage_delta {
         meta.total_input_tokens = meta.total_input_tokens.saturating_add(input_delta);
@@ -309,22 +360,56 @@ pub fn save_session(
         meta.updated_at = now_ts();
     }
     meta.message_count = new_count;
-    if is_default_title_source(&meta.title_source) && !memory.messages.is_empty() {
-        meta.title = extract_title(&memory.messages);
+    if is_default_title_source(&meta.title_source) && !normalized_memory.messages.is_empty() {
+        meta.title = extract_title(&normalized_memory.messages);
     }
 
     let filtered_memory = SessionMemory {
         messages: filtered_messages,
-        context: memory.context.clone(),
-        activated_tools: memory.activated_tools.clone(),
-        agent_steps: memory.agent_steps.clone(),
-        plan_documents: memory.plan_documents.clone(),
+        message_ids: filtered_message_ids,
+        context: normalized_memory.context.clone(),
+        activated_tools: normalized_memory.activated_tools.clone(),
+        agent_steps: normalized_memory.agent_steps.clone(),
+        plan_documents: normalized_memory.plan_documents.clone(),
     };
 
     repository::upsert_session(&meta, &filtered_memory)
         .unwrap_or_else(|err| panic!("保存 SQLite 会话 {} 失败: {}", id, err));
+    let visible_pairs: Vec<(String, Message)> = filtered_memory
+        .message_ids
+        .iter()
+        .cloned()
+        .zip(filtered_memory.messages.iter().cloned())
+        .filter(|(_, message)| !is_compact_summary_message(message))
+        .collect();
+    let (visible_message_ids, visible_messages): (Vec<String>, Vec<Message>) =
+        visible_pairs.into_iter().unzip();
+    repository::append_or_upsert_session_messages(
+        id,
+        &visible_messages,
+        &visible_message_ids,
+        "chat",
+        meta.updated_at,
+    )
+    .unwrap_or_else(|err| panic!("保存 SQLite 会话历史 {} 失败: {}", id, err));
     let _ = repository::set_last_active_session_id(id);
     meta
+}
+
+fn is_compact_summary_message(message: &Message) -> bool {
+    let Message::User { content } = message else {
+        return false;
+    };
+    match content {
+        Content::Single(text) => text.trim_start().starts_with("[Conversation compressed."),
+        Content::Multiple(blocks) => blocks.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::Text { text }
+                    if text.trim_start().starts_with("[Conversation compressed.")
+            )
+        }),
+    }
 }
 
 /// 加载指定会话的完整数据
@@ -332,6 +417,36 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
     let memory = repository::load_session(id)?;
     repository::set_last_active_session_id(id)?;
     Ok(memory)
+}
+
+pub fn list_visible_session_messages(id: &str) -> Result<Vec<repository::StoredSessionMessage>, String> {
+    repository::list_visible_session_messages(id)
+}
+
+pub fn find_session_message_by_id(
+    session_id: &str,
+    message_id: &str,
+) -> Result<Option<repository::StoredSessionMessage>, String> {
+    repository::find_session_message_by_id(session_id, message_id)
+}
+
+pub fn hide_session_messages_from_seq(
+    session_id: &str,
+    seq: usize,
+    recalled: bool,
+) -> Result<(), String> {
+    repository::hide_session_messages_from_seq(session_id, seq, recalled)
+}
+
+pub fn delete_session_messages_from_seq(
+    session_id: &str,
+    seq: usize,
+) -> Result<(), String> {
+    repository::delete_session_messages_from_seq(session_id, seq)
+}
+
+pub fn session_messages_count(session_id: &str) -> Result<usize, String> {
+    repository::session_messages_count(session_id)
 }
 
 pub fn save_context_snapshot(

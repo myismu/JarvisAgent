@@ -20,6 +20,20 @@ use serde::{Deserialize, Serialize};
 use crate::core::models::{Message, SessionContextSnapshot, SessionMemory};
 use crate::core::session::SessionMeta;
 
+#[derive(Debug, Clone)]
+pub struct StoredSessionMessage {
+    pub message_id: String,
+    pub seq: usize,
+    pub role: String,
+    pub content: Message,
+    pub created_at: u64,
+    pub updated_at: Option<u64>,
+    pub recalled_at: Option<u64>,
+    pub hidden_at: Option<u64>,
+    pub source: String,
+    pub turn_id: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionListFilter {
@@ -86,32 +100,230 @@ pub fn upsert_session(meta: &SessionMeta, memory: &SessionMemory) -> Result<(), 
         )
         .map_err(|e| e.to_string())?;
 
-        tx.execute(
-            "DELETE FROM session_messages WHERE session_id = ?1",
-            [meta.id.as_str()],
-        )
-        .map_err(|e| e.to_string())?;
-        for (seq, message) in memory.messages.iter().enumerate() {
+        Ok(())
+    })
+}
+
+pub fn append_or_upsert_session_messages(
+    session_id: &str,
+    messages: &[Message],
+    message_ids: &[String],
+    source: &str,
+    now: u64,
+) -> Result<(), String> {
+    crate::core::db::with_transaction(|tx| {
+        let mut next_seq: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(seq), -1) + 1 FROM session_messages WHERE session_id = ?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+
+        let mut existing_by_content = tx
+            .prepare(
+                "SELECT message_id, seq, role, content_json
+                 FROM session_messages
+                 WHERE session_id = ?1 AND hidden_at IS NULL AND recalled_at IS NULL",
+            )
+            .map_err(|e| e.to_string())?
+            .query_map([session_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        for (idx, message) in messages.iter().enumerate() {
+            let Some(message_id) = message_ids.get(idx).filter(|id| !id.trim().is_empty()) else {
+                continue;
+            };
             let role = match message {
                 Message::User { .. } => "user",
                 Message::Assistant { .. } => "assistant",
             };
             let content_json = serde_json::to_string(message).map_err(|e| e.to_string())?;
+            let existing_seq: Option<i64> = tx
+                .query_row(
+                    "SELECT seq FROM session_messages WHERE session_id = ?1 AND message_id = ?2",
+                    params![session_id, message_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            let seq = if let Some(seq) = existing_seq {
+                seq
+            } else if let Some(position) = existing_by_content.iter().position(
+                |(existing_message_id, _, existing_role, existing_content_json)| {
+                    existing_message_id != message_id
+                        && existing_role == role
+                        && existing_content_json == &content_json
+                },
+            ) {
+                let (_, seq, _, _) = existing_by_content.remove(position);
+                tx.execute(
+                    "UPDATE session_messages
+                     SET message_id = ?3, updated_at = ?4, source = ?5
+                     WHERE session_id = ?1 AND seq = ?2",
+                    params![session_id, seq, message_id, now as i64, source],
+                )
+                .map_err(|e| e.to_string())?;
+                seq
+            } else {
+                let seq = next_seq;
+                next_seq += 1;
+                seq
+            };
+
             tx.execute(
-                "INSERT INTO session_messages(session_id, seq, role, content_json, created_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO session_messages(
+                    session_id, message_id, seq, role, content_json, created_at, updated_at, source
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)
+                 ON CONFLICT(session_id, message_id) DO UPDATE SET
+                    role = excluded.role,
+                    content_json = excluded.content_json,
+                    updated_at = excluded.updated_at,
+                    source = excluded.source",
                 params![
-                    meta.id,
-                    seq as i64,
+                    session_id,
+                    message_id,
+                    seq,
                     role,
                     content_json,
-                    meta.updated_at as i64
+                    now as i64,
+                    source,
                 ],
             )
             .map_err(|e| e.to_string())?;
         }
 
         Ok(())
+    })
+}
+
+pub fn list_visible_session_messages(session_id: &str) -> Result<Vec<StoredSessionMessage>, String> {
+    crate::core::db::with_connection(|conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT message_id, seq, role, content_json, created_at, updated_at, recalled_at,
+                        hidden_at, source, turn_id
+                 FROM session_messages
+                 WHERE session_id = ?1
+                   AND hidden_at IS NULL
+                   AND recalled_at IS NULL
+                   AND source != 'compact'
+                 ORDER BY seq ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([session_id], stored_session_message_from_row)
+            .map_err(|e| e.to_string())?;
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(messages)
+    })
+}
+
+pub fn find_session_message_by_id(
+    session_id: &str,
+    message_id: &str,
+) -> Result<Option<StoredSessionMessage>, String> {
+    crate::core::db::with_connection(|conn| {
+        conn.query_row(
+            "SELECT message_id, seq, role, content_json, created_at, updated_at, recalled_at,
+                    hidden_at, source, turn_id
+             FROM session_messages
+             WHERE session_id = ?1 AND message_id = ?2",
+            params![session_id, message_id],
+            stored_session_message_from_row,
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    })
+}
+
+pub fn hide_session_messages_from_seq(
+    session_id: &str,
+    seq: usize,
+    recalled: bool,
+) -> Result<(), String> {
+    crate::core::db::with_connection(|conn| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if recalled {
+            conn.execute(
+                "UPDATE session_messages
+                 SET hidden_at = COALESCE(hidden_at, ?3), recalled_at = COALESCE(recalled_at, ?3)
+                 WHERE session_id = ?1 AND seq >= ?2",
+                params![session_id, seq as i64, now as i64],
+            )
+        } else {
+            conn.execute(
+                "UPDATE session_messages
+                 SET hidden_at = COALESCE(hidden_at, ?3)
+                 WHERE session_id = ?1 AND seq >= ?2",
+                params![session_id, seq as i64, now as i64],
+            )
+        }
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+pub fn delete_session_messages_from_seq(session_id: &str, seq: usize) -> Result<(), String> {
+    crate::core::db::with_connection(|conn| {
+        conn.execute(
+            "DELETE FROM session_messages WHERE session_id = ?1 AND seq >= ?2",
+            params![session_id, seq as i64],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+pub fn session_messages_count(session_id: &str) -> Result<usize, String> {
+    crate::core::db::with_connection(|conn| {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_messages WHERE session_id = ?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(count.max(0) as usize)
+    })
+}
+
+fn stored_session_message_from_row(row: &Row<'_>) -> rusqlite::Result<StoredSessionMessage> {
+    let seq: i64 = row.get(1)?;
+    let content_json: String = row.get(3)?;
+    let created_at: i64 = row.get(4)?;
+    let updated_at: Option<i64> = row.get(5)?;
+    let recalled_at: Option<i64> = row.get(6)?;
+    let hidden_at: Option<i64> = row.get(7)?;
+    let content = serde_json::from_str(&content_json).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(err))
+    })?;
+    Ok(StoredSessionMessage {
+        message_id: row.get(0)?,
+        seq: seq.max(0) as usize,
+        role: row.get(2)?,
+        content,
+        created_at: created_at.max(0) as u64,
+        updated_at: updated_at.map(|value| value.max(0) as u64),
+        recalled_at: recalled_at.map(|value| value.max(0) as u64),
+        hidden_at: hidden_at.map(|value| value.max(0) as u64),
+        source: row.get(8)?,
+        turn_id: row.get(9)?,
     })
 }
 

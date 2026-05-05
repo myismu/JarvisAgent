@@ -74,6 +74,12 @@ async fn record_patch_to_snapshot(
     if let Some(manager) = app.try_state::<SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         let trigger_user_memory_index = active_user_message_index(app, session_id).await;
+        let trigger_user_message_id = trigger_user_memory_index.and_then(|index| {
+            ctx.memory
+                .try_lock()
+                .ok()
+                .and_then(|memory| memory.message_ids.get(index).cloned())
+        });
         let run_id = active_run_id(app, session_id)
             .await
             .unwrap_or_else(|| "manual".to_string());
@@ -94,6 +100,7 @@ async fn record_patch_to_snapshot(
             &patch,
             message.as_deref(),
             trigger_user_memory_index,
+            trigger_user_message_id.as_deref(),
         ) {
             eprintln!("[Snapshot] 持久化 Notebook pending patch 失败: {}", err);
         }
@@ -104,6 +111,7 @@ async fn record_patch_to_snapshot(
             patch,
             message,
             trigger_user_memory_index,
+            trigger_user_message_id,
         });
     }
 }

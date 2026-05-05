@@ -91,6 +91,12 @@ async fn persist_pending_patch(
     if let Some(manager) = app.try_state::<SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         let trigger_user_memory_index = active_user_message_index(app, session_id).await;
+        let trigger_user_message_id = trigger_user_memory_index.and_then(|index| {
+            ctx.memory
+                .try_lock()
+                .ok()
+                .and_then(|memory| memory.message_ids.get(index).cloned())
+        });
         let run_id = ctx
             .active_run_id
             .lock()
@@ -114,6 +120,7 @@ async fn persist_pending_patch(
             &patch,
             message.as_deref(),
             trigger_user_memory_index,
+            trigger_user_message_id.as_deref(),
         ) {
             eprintln!("[Snapshot] 持久化 pending patch 失败: {}", err);
         }
@@ -124,6 +131,7 @@ async fn persist_pending_patch(
             patch,
             message,
             trigger_user_memory_index,
+            trigger_user_message_id,
         });
     }
 }
@@ -139,6 +147,7 @@ fn records_to_pending(
             patch: record.patch,
             message: record.message,
             trigger_user_memory_index: record.trigger_user_memory_index,
+            trigger_user_message_id: record.trigger_user_message_id,
         })
         .collect()
 }
@@ -250,7 +259,7 @@ pub async fn commit_pending_snapshot(
                     );
                     if mgr.should_create_checkpoint().await {
                         let _ = mgr
-                            .create_checkpoint_snapshot(snapshot_message, None, None, None)
+                            .create_checkpoint_snapshot(snapshot_message, None, None, user_index)
                             .await;
                     }
                     return Some(snapshot_id);

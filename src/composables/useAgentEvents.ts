@@ -592,7 +592,6 @@ export function useAgentEvents() {
       if (!sessionId) return;
       const view = session.getSessionView(sessionId);
       if (event.payload?.checkpointId) {
-        // 有实快照的轮次
         view.latestCheckpoint = {
           id: event.payload.checkpointId,
           hasOperations: event.payload.hasOperations === true,
@@ -600,7 +599,6 @@ export function useAgentEvents() {
           canRollback: true,
         };
       } else if (event.payload?.canRollback) {
-        // 纯聊天轮次：没有 checkpointId，但可以回滚消息
         view.latestCheckpoint = {
           id: "",
           hasOperations: false,
@@ -609,7 +607,9 @@ export function useAgentEvents() {
         };
       }
       view.hydrated = true;
-      await refreshSessionHistory(sessionId);
+      if (view.status !== "RUNNING") {
+        await refreshSessionHistory(sessionId);
+      }
       syncActiveSessionView(sessionId, false);
     });
 

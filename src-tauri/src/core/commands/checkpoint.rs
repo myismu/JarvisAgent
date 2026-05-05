@@ -101,6 +101,7 @@ struct RollbackTarget {
     truncate_index: usize,
     recalled_text: String,
     effective_checkpoint_id: String,
+    message_seq: Option<usize>,
 }
 
 fn message_text(content: &crate::core::models::Content) -> String {
@@ -158,10 +159,23 @@ fn log_rollback_abort(session_id: &str, reason: &str) -> String {
 fn checkpoint_id_before_user_message(
     session_id: &str,
     user_message_index: Option<usize>,
+    message_seq: Option<usize>,
 ) -> Option<String> {
+    let links = crate::core::db::list_checkpoint_user_message_links(session_id).ok()?;
+    if let Some(message_seq) = message_seq {
+        let by_seq = links
+            .iter()
+            .filter(|link| {
+                link.has_file_edits && !link.checkpoint_id.is_empty() && link.user_message_index < message_seq
+            })
+            .max_by_key(|link| (link.user_message_index, link.created_at))
+            .map(|link| link.checkpoint_id.clone());
+        if by_seq.is_some() {
+            return by_seq;
+        }
+    }
     let target_index = user_message_index?;
-    crate::core::db::list_checkpoint_user_message_links(session_id)
-        .ok()?
+    links
         .into_iter()
         .filter(|link| {
             link.has_file_edits
@@ -190,11 +204,30 @@ async fn checkpoint_parent_id(
 async fn resolve_rollback_target(
     session_id: &str,
     checkpoint_id: &str,
+    message_id: Option<&str>,
     user_message_index: Option<usize>,
+    message_ids: &[String],
     messages: &[crate::core::models::Message],
     registry: &tauri::State<'_, SnapshotRegistry>,
 ) -> Result<RollbackTarget, String> {
-    let (truncate_index, recalled_text) = if let Some(index) = user_message_index {
+    let stored_target = if let Some(message_id) = message_id.filter(|id| !id.trim().is_empty()) {
+        crate::core::session::find_session_message_by_id(session_id, message_id)?
+    } else {
+        None
+    };
+    let message_seq = stored_target.as_ref().map(|stored| stored.seq);
+    let (truncate_index, recalled_text) = if let Some(stored) = stored_target.as_ref() {
+        let index = message_ids
+            .iter()
+            .position(|id| id == &stored.message_id)
+            .or(user_message_index)
+            .unwrap_or(stored.seq);
+        if let crate::core::models::Message::User { content } = &stored.content {
+            (index, message_text(content))
+        } else {
+            return Err(log_rollback_abort(session_id, "撤回目标不是用户消息"));
+        }
+    } else if let Some(index) = user_message_index {
         if index >= messages.len() {
             return Err(log_rollback_abort(session_id, "撤回消息不存在"));
         }
@@ -228,7 +261,7 @@ async fn resolve_rollback_target(
     };
 
     let effective_checkpoint_id =
-        if let Some(id) = checkpoint_id_before_user_message(session_id, Some(truncate_index)) {
+        if let Some(id) = checkpoint_id_before_user_message(session_id, Some(truncate_index), message_seq) {
             id
         } else if let Some(id) = checkpoint_parent_id(session_id, checkpoint_id, registry).await? {
             id
@@ -240,6 +273,7 @@ async fn resolve_rollback_target(
         truncate_index,
         recalled_text,
         effective_checkpoint_id,
+        message_seq,
     })
 }
 
@@ -444,6 +478,7 @@ pub async fn rollback_to_checkpoint(
                 find_checkpoint_user_message(&session.messages, &snapshot_message)
             {
                 session.messages.truncate(idx);
+                session.message_ids.truncate(idx);
             }
         }
         // 清理该检查点之后的元数据（基于时间戳）
@@ -480,6 +515,7 @@ pub async fn rollback_to_checkpoint(
 pub async fn preview_rollback_to_checkpoint_with_recall(
     session_id: String,
     checkpoint_id: String,
+    message_id: Option<String>,
     user_message_index: Option<usize>,
     session_manager: tauri::State<'_, SessionManager>,
     registry: tauri::State<'_, SnapshotRegistry>,
@@ -501,7 +537,9 @@ pub async fn preview_rollback_to_checkpoint_with_recall(
         resolve_rollback_target(
             &session_id,
             &checkpoint_id,
+            message_id.as_deref(),
             user_message_index,
+            &session.message_ids,
             &session.messages,
             &registry,
         )
@@ -549,6 +587,7 @@ pub async fn rollback_to_checkpoint_with_recall(
     session_id: String,
     checkpoint_id: String,
     rollback_files: Option<bool>,
+    message_id: Option<String>,
     user_message_index: Option<usize>,
     session_manager: tauri::State<'_, SessionManager>,
     registry: tauri::State<'_, SnapshotRegistry>,
@@ -565,7 +604,9 @@ pub async fn rollback_to_checkpoint_with_recall(
         resolve_rollback_target(
             &session_id,
             &checkpoint_id,
+            message_id.as_deref(),
             user_message_index,
+            &session.message_ids,
             &session.messages,
             &registry,
         )
@@ -574,6 +615,7 @@ pub async fn rollback_to_checkpoint_with_recall(
     let truncate_index = target.truncate_index;
     let recalled_text = target.recalled_text.clone();
     let effective_checkpoint_id = target.effective_checkpoint_id.clone();
+    let message_seq = target.message_seq;
 
     let cutoff = if !checkpoint_id.is_empty() {
         match registry.0.read().await.get_or_create(&session_id).await {
@@ -604,10 +646,17 @@ pub async fn rollback_to_checkpoint_with_recall(
     {
         let mut session = ctx.memory.lock().await;
         session.messages.truncate(truncate_index);
+        session.message_ids.truncate(truncate_index);
         if cutoff > 0 {
             prune_metadata_after_checkpoint(&mut session, cutoff);
         }
         is_empty = session.messages.is_empty();
+    }
+
+    if let Some(seq) = message_seq {
+        crate::core::session::delete_session_messages_from_seq(&session_id, seq)?;
+    } else {
+        crate::core::session::delete_session_messages_from_seq(&session_id, truncate_index)?;
     }
 
     if is_empty {

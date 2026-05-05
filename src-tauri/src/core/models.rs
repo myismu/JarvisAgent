@@ -254,6 +254,8 @@ pub struct SessionContextSnapshot {
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct SessionMemory {
     pub messages: Vec<Message>,
+    #[serde(default)]
+    pub message_ids: Vec<String>,
     pub context: Vec<String>,
     #[serde(default)]
     pub activated_tools: Vec<String>,

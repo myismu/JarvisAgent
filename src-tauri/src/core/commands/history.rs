@@ -16,6 +16,7 @@ use crate::core::models::*;
 use crate::core::orchestration::agent_runs;
 use crate::core::session;
 use crate::core::state::*;
+use std::collections::HashMap;
 
 #[derive(Clone)]
 struct RollbackInfo {
@@ -26,8 +27,15 @@ struct RollbackInfo {
 
 struct UserDisplayMessage {
     memory_index: usize,
+    message_id: Option<String>,
+    seq: Option<usize>,
     display: String,
     rollback_info: Option<RollbackInfo>,
+}
+
+struct RollbackLookups {
+    by_index: Vec<(usize, RollbackInfo)>,
+    by_message_id: HashMap<String, RollbackInfo>,
 }
 
 use serde::Serialize;
@@ -259,24 +267,29 @@ fn append_tool_result(
     }
 }
 
-fn build_linked_rollbacks(session_id: &str) -> Vec<(usize, RollbackInfo)> {
-    let mut links = crate::core::db::list_checkpoint_user_message_links(session_id)
+fn build_linked_rollbacks(session_id: &str) -> RollbackLookups {
+    let mut by_index = Vec::new();
+    let mut by_message_id = HashMap::new();
+    for link in crate::core::db::list_checkpoint_user_message_links(session_id)
         .unwrap_or_default()
         .into_iter()
         .filter(|link| link.has_file_edits && !link.checkpoint_id.is_empty())
-        .map(|link| {
-            (
-                link.user_message_index,
-                RollbackInfo {
-                    checkpoint_id: link.checkpoint_id,
-                    has_file_edits: true,
-                    created_at: link.created_at,
-                },
-            )
-        })
-        .collect::<Vec<_>>();
-    links.sort_by_key(|(trigger_index, info)| (*trigger_index, info.created_at));
-    links
+    {
+        let info = RollbackInfo {
+            checkpoint_id: link.checkpoint_id,
+            has_file_edits: true,
+            created_at: link.created_at,
+        };
+        if let Some(message_id) = link.message_id.filter(|value| !value.trim().is_empty()) {
+            by_message_id.insert(message_id, info.clone());
+        }
+        by_index.push((link.user_message_index, info));
+    }
+    by_index.sort_by_key(|(trigger_index, info)| (*trigger_index, info.created_at));
+    RollbackLookups {
+        by_index,
+        by_message_id,
+    }
 }
 
 fn parse_snapshot_usize(snapshot: &crate::core::rollback::Snapshot, key: &str) -> Option<usize> {
@@ -286,17 +299,38 @@ fn parse_snapshot_usize(snapshot: &crate::core::rollback::Snapshot, key: &str) -
         .and_then(|value| value.parse::<usize>().ok())
 }
 
+fn parse_snapshot_string(snapshot: &crate::core::rollback::Snapshot, key: &str) -> Option<String> {
+    snapshot
+        .metadata
+        .get(key)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn find_rollback_info(
-    linked_rollbacks: &[(usize, RollbackInfo)],
-    metadata_rollbacks: &[(usize, u64, String)],
+    linked_rollbacks: &RollbackLookups,
+    metadata_rollbacks_by_index: &[(usize, u64, String)],
+    metadata_rollbacks_by_message_id: &HashMap<String, RollbackInfo>,
     memory_index: usize,
+    message_id: Option<&str>,
 ) -> Option<RollbackInfo> {
+    if let Some(message_id) = message_id {
+        if let Some(info) = linked_rollbacks
+            .by_message_id
+            .get(message_id)
+            .or_else(|| metadata_rollbacks_by_message_id.get(message_id))
+        {
+            return Some(info.clone());
+        }
+    }
+
     let linked = linked_rollbacks
+        .by_index
         .iter()
         .filter(|(trigger_index, _)| *trigger_index >= memory_index)
         .min_by_key(|(trigger_index, info)| (*trigger_index, info.created_at))
         .map(|(_, info)| info.clone());
-    let metadata = metadata_rollbacks
+    let metadata = metadata_rollbacks_by_index
         .iter()
         .filter(|(trigger_index, _, _)| *trigger_index >= memory_index)
         .min_by_key(|(trigger_index, created_at, _)| (*trigger_index, *created_at))
@@ -338,8 +372,20 @@ fn render_user_message(history: &mut String, message: &UserDisplayMessage) {
         .unwrap_or("");
 
     history.push_str(&format!(
-        "<div class=\"chat-message user-message\" style=\"position: relative;\"><div class=\"message-content\" data-user-message-index=\"{}\" data-rollback-mode=\"{}\" data-rollback-checkpoint-id=\"{}\">\n\n{}\n\n</div></div>\n\n",
-        message.memory_index, rollback_mode, rollback_checkpoint_id, display
+        "<div class=\"chat-message user-message\" style=\"position: relative;\"><div class=\"message-content\" data-user-message-index=\"{}\"{}{} data-rollback-mode=\"{}\" data-rollback-checkpoint-id=\"{}\">\n\n{}\n\n</div></div>\n\n",
+        message.memory_index,
+        message
+            .message_id
+            .as_ref()
+            .map(|id| format!(" data-message-id=\"{}\"", id))
+            .unwrap_or_default(),
+        message
+            .seq
+            .map(|seq| format!(" data-message-seq=\"{}\"", seq))
+            .unwrap_or_default(),
+        rollback_mode,
+        rollback_checkpoint_id,
+        display
     ));
 }
 
@@ -469,7 +515,7 @@ pub async fn get_session_history(
                     text: marked_content,
                 });
             }
-            memory.messages.push(Message::Assistant {
+            session::append_message(&mut memory, Message::Assistant {
                 content: Content::Multiple(blocks),
             });
         }
@@ -486,46 +532,98 @@ pub async fn get_session_history(
         *ctx.memory.lock().await = memory.clone();
     }
 
-    if memory.messages.is_empty() {
+    if memory.messages.is_empty() && session::session_messages_count(&session_id).unwrap_or(0) == 0 {
         return Ok(String::new());
     }
 
     let linked_rollbacks = build_linked_rollbacks(&session_id);
-    let metadata_rollbacks = {
+    let metadata_rollbacks_by_index;
+    let metadata_rollbacks_by_message_id;
+    {
         let manager = registry.0.read().await.get_or_create(&session_id).await?;
-        let mut items = manager
+        let mut by_index = Vec::new();
+        let mut by_message_id = HashMap::new();
+        for snapshot in manager
             .list_snapshots(None)
             .await
             .into_iter()
             .filter(|snapshot| snapshot.is_checkpoint)
-            .filter_map(|snapshot| {
-                let trigger_index = parse_snapshot_usize(&snapshot, "trigger_user_memory_index")?;
-                let patch_count = parse_snapshot_usize(&snapshot, "patch_count").unwrap_or(0);
-                if patch_count == 0 {
-                    return None;
-                }
-                Some((trigger_index, snapshot.created_at, snapshot.id))
-            })
-            .collect::<Vec<_>>();
-        items.sort_by_key(|(trigger_index, created_at, _)| (*trigger_index, *created_at));
-        items
+        {
+            let patch_count = parse_snapshot_usize(&snapshot, "patch_count").unwrap_or(0);
+            if patch_count == 0 {
+                continue;
+            }
+            let info = RollbackInfo {
+                checkpoint_id: snapshot.id.clone(),
+                has_file_edits: true,
+                created_at: snapshot.created_at,
+            };
+            if let Some(message_id) = parse_snapshot_string(&snapshot, "trigger_user_message_id") {
+                by_message_id.insert(message_id, info);
+            }
+            if let Some(trigger_index) = parse_snapshot_usize(&snapshot, "trigger_user_memory_index") {
+                by_index.push((trigger_index, snapshot.created_at, snapshot.id));
+            }
+        }
+        by_index.sort_by_key(|(trigger_index, created_at, _)| (*trigger_index, *created_at));
+        metadata_rollbacks_by_index = by_index;
+        metadata_rollbacks_by_message_id = by_message_id;
     };
 
-    let display_messages = memory
-        .messages
+    let stored_messages = session::list_visible_session_messages(&session_id)?;
+    let mut message_id_to_memory_index = HashMap::new();
+    for (idx, message_id) in memory.message_ids.iter().enumerate() {
+        message_id_to_memory_index.insert(message_id.clone(), idx);
+    }
+    let render_messages = if stored_messages.is_empty() {
+        memory
+            .messages
+            .iter()
+            .enumerate()
+            .map(|(idx, message)| {
+                (
+                    idx,
+                    memory.message_ids.get(idx).cloned(),
+                    None,
+                    message.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    } else {
+        stored_messages
+            .into_iter()
+            .map(|stored| {
+                let memory_index = message_id_to_memory_index
+                    .get(&stored.message_id)
+                    .cloned()
+                    .unwrap_or(stored.seq);
+                (
+                    memory_index,
+                    Some(stored.message_id),
+                    Some(stored.seq),
+                    stored.content,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let display_messages = render_messages
         .iter()
-        .enumerate()
-        .filter_map(|(memory_index, msg)| {
+        .filter_map(|(memory_index, message_id, seq, msg)| {
             if let Message::User { content } = msg {
                 let display = user_display_content(content);
                 if !is_internal_user_text(&display) && !display.trim().is_empty() {
                     return Some(UserDisplayMessage {
-                        memory_index,
+                        memory_index: *memory_index,
+                        message_id: message_id.clone(),
+                        seq: *seq,
                         display,
                         rollback_info: find_rollback_info(
                             &linked_rollbacks,
-                            &metadata_rollbacks,
-                            memory_index,
+                            &metadata_rollbacks_by_index,
+                            &metadata_rollbacks_by_message_id,
+                            *memory_index,
+                            message_id.as_deref(),
                         ),
                     });
                 }
@@ -540,7 +638,7 @@ pub async fn get_session_history(
     let mut loop_idx = 1;
     let mut current_ts = 1000u64;
 
-    for msg in &memory.messages {
+    for (_, _, _, msg) in &render_messages {
         current_ts += 1;
         match msg {
             Message::User { content } => {
