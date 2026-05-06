@@ -120,10 +120,111 @@ pub fn format_shell_output(
     result
 }
 
+/// 将命令字符串按空格分割为 token，保留引号包裹的完整路径
+fn split_command_tokens(cmd: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_quote = false;
+    let mut quote_char = '"';
+
+    for ch in cmd.chars() {
+        match ch {
+            '"' | '\'' => {
+                if in_quote && ch == quote_char {
+                    // 结束引号：闭合当前 token
+                    current.push(ch);
+                    tokens.push(current.clone());
+                    current.clear();
+                    in_quote = false;
+                } else if !in_quote {
+                    // 开始引号
+                    if !current.trim().is_empty() {
+                        tokens.push(current.clone());
+                    }
+                    current.clear();
+                    current.push(ch);
+                    in_quote = true;
+                    quote_char = ch;
+                } else {
+                    // 引号内遇到另一种引号，当作普通字符
+                    current.push(ch);
+                }
+            }
+            ' ' | '\t' => {
+                if in_quote {
+                    current.push(ch);
+                } else if !current.trim().is_empty() {
+                    tokens.push(current.clone());
+                    current.clear();
+                } else {
+                    current.clear();
+                }
+            }
+            _ => {
+                current.push(ch);
+            }
+        }
+    }
+    if !current.trim().is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
 /// 检查命令中的路径引用是否在沙箱内（检查绝对路径和 `..` 相对路径）
 pub fn check_command_paths(cmd: &str, workspace: &std::path::Path) -> Result<(), String> {
-    for part in cmd.split_whitespace() {
+    for (i, part) in split_command_tokens(cmd).into_iter().enumerate() {
         let trimmed = part.trim_matches('"').trim_matches('\'');
+
+        // 跳过第一个 token（命令可执行文件本身，如 "C:\Program Files\nodejs\npm.cmd"）
+        if i == 0 {
+            continue;
+        }
+
+        // 跳过命令行开关和选项
+        if trimmed.starts_with('-') || trimmed.starts_with('/') {
+            continue;
+        }
+
+        // 跳过子命令关键字 (npm install 中的 install, git clone 中的 clone 等)
+        if i == 1 {
+            if matches!(
+                trimmed.to_lowercase().as_str(),
+                "install" | "uninstall" | "run" | "start" | "test" | "build"
+                    | "dev" | "serve" | "lint" | "format" | "clean" | "init"
+                    | "add" | "remove" | "update" | "upgrade" | "publish"
+                    | "login" | "logout" | "whoami" | "config" | "link" | "unlink"
+                    | "audit" | "outdated" | "dedupe" | "prune" | "shrinkwrap"
+                    | "bundle" | "help" | "version" | "search" | "docs"
+                    | "clone" | "fetch" | "pull" | "push" | "merge" | "rebase"
+                    | "branch" | "checkout" | "commit" | "diff" | "log" | "status"
+                    | "stash" | "tag" | "remote" | "reset" | "restore" | "revert"
+                    | "switch" | "cherry-pick" | "bisect" | "blame" | "grep"
+            ) {
+                continue;
+            }
+        }
+
+        // 跳过常见的命令关键字和 shell 内建命令
+        if matches!(
+            trimmed.to_lowercase().as_str(),
+            "npm" | "npx" | "node" | "git" | "cargo" | "python" | "python3"
+                | "mkdir" | "dir" | "ls" | "echo" | "type" | "copy" | "move"
+                | "del" | "ren" | "set" | "cd" | "pwd" | "cat" | "rm"
+                | "cp" | "mv" | "find" | "grep" | "sed" | "awk" | "chmod"
+                | "chown" | "netstat" | "tasklist" | "Get-Process" | "Get-Service"
+                | "Get-ChildItem" | "Set-Location" | "Select-Object" | "Select-String"
+                | "Where-Object" | "Start-Sleep" | "Stop-Process" | "Start-Service"
+                | "Write-Output" | "Write-Host" | "New-Item" | "Remove-Item"
+                | "Copy-Item" | "Move-Item" | "Rename-Item" | "Test-Path"
+                | "Invoke-WebRequest" | "Invoke-RestMethod" | "ConvertFrom-Json"
+                | "ConvertTo-Json" | "ForEach-Object" | "Sort-Object" | "Group-Object"
+                | "Format-Table" | "Format-List" | "Out-File" | "Out-String"
+                | "Set-Content" | "Get-Content" | "Add-Content" | "Clear-Content"
+                | "Measure-Object" | "Export-Csv" | "Import-Csv"
+        ) {
+            continue;
+        }
 
         // 检查 Windows 绝对路径：X:\ 或 X:/
         if trimmed.len() >= 3

@@ -12,7 +12,6 @@ import TitleBar from "./components/layout/TitleBar.vue";
 import Sidebar from "./components/layout/Sidebar.vue";
 import ChatArea from "./components/chat/ChatArea.vue";
 import TerminalInput from "./components/chat/TerminalInput.vue";
-import PermissionModal from "./components/common/PermissionModal.vue";
 import PlanPreviewPanel from "./components/common/PlanPreviewPanel.vue";
 import SettingsPanel from "./components/settings/SettingsPanel.vue";
 
@@ -186,7 +185,6 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <PermissionModal />
     <PlanPreviewPanel />
     <SettingsPanel v-model="showSettings" />
   </main>

@@ -16,6 +16,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { TauriEvent } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { emit, listen } from "@tauri-apps/api/event";
+import { usePreferences, type AgentPanelPosition } from "./usePreferences";
 
 const MAIN_WINDOW_LABEL = "main";
 const MONITOR_WINDOW_LABEL = "monitor";
@@ -61,11 +62,13 @@ const readValidCustomWindowState = async (label: string): Promise<CustomWindowSt
   return isValidWindowState(state) ? state : null;
 };
 
-const applyCustomWindowState = async (window: Window | WebviewWindow, state: CustomWindowState | null) => {
+const applyCustomWindowState = async (window: Window | WebviewWindow, state: CustomWindowState | null, skipPosition = false) => {
   if (!isValidWindowState(state)) return false;
 
   await window.setSize(new PhysicalSize(state.width, state.height));
-  await window.setPosition(new PhysicalPosition(state.x, state.y));
+  if (!skipPosition) {
+    await window.setPosition(new PhysicalPosition(state.x, state.y));
+  }
   return true;
 };
 
@@ -99,11 +102,17 @@ const saveCustomWindowState = async (label: string, window: Window | WebviewWind
   await invoke("save_custom_window_state", { label, state });
 };
 
-const defaultMonitorPosition = async () => {
+const calcMonitorPosition = async (side: AgentPanelPosition) => {
   const mainWindow = await getMainWindow();
   const mainPosition = await mainWindow.outerPosition();
   const mainSize = await mainWindow.outerSize();
 
+  if (side === "left") {
+    return new PhysicalPosition(
+      mainPosition.x - MONITOR_WINDOW_WIDTH - MONITOR_WINDOW_GAP,
+      mainPosition.y,
+    );
+  }
   return new PhysicalPosition(
     mainPosition.x + mainSize.width + MONITOR_WINDOW_GAP,
     mainPosition.y,
@@ -143,11 +152,16 @@ export function useWindow() {
   };
 
   const positionMonitorNextToMain = async (monitorWindow: WebviewWindow) => {
-    const savedState = await readValidCustomWindowState(MONITOR_WINDOW_LABEL);
-    if (await applyCustomWindowState(monitorWindow, savedState)) return;
-
-    await monitorWindow.setSize(new PhysicalSize(MONITOR_WINDOW_WIDTH, MONITOR_WINDOW_HEIGHT));
-    await monitorWindow.setPosition(await defaultMonitorPosition());
+    const prefs = usePreferences();
+    const side = prefs.agentPanelPosition;
+    // 只恢复窗口大小，位置由面板侧偏好推算
+    const savedState = await readCustomWindowState(MONITOR_WINDOW_LABEL);
+    if (savedState && isValidWindowState({ ...savedState, x: 0, y: 0 })) {
+      await monitorWindow.setSize(new PhysicalSize(savedState.width, savedState.height));
+    } else {
+      await monitorWindow.setSize(new PhysicalSize(MONITOR_WINDOW_WIDTH, MONITOR_WINDOW_HEIGHT));
+    }
+    await monitorWindow.setPosition(await calcMonitorPosition(side));
   };
 
   const focusMonitorWindow = async (): Promise<WebviewWindow | null> => {
@@ -166,14 +180,16 @@ export function useWindow() {
     const existingWindow = await focusMonitorWindow();
     if (existingWindow) return existingWindow;
 
-    const savedState = await readValidCustomWindowState(MONITOR_WINDOW_LABEL);
+    const prefs = usePreferences();
+    const savedState = await readCustomWindowState(MONITOR_WINDOW_LABEL);
+    const monitorPos = await calcMonitorPosition(prefs.agentPanelPosition);
     const monitorWindow = new WebviewWindow(MONITOR_WINDOW_LABEL, {
       url: monitorUrl(),
       title: "执行监控",
       width: savedState?.width ?? MONITOR_WINDOW_WIDTH,
       height: savedState?.height ?? MONITOR_WINDOW_HEIGHT,
-      x: savedState?.x,
-      y: savedState?.y,
+      x: monitorPos.x,
+      y: monitorPos.y,
       minWidth: 520,
       minHeight: 520,
       maximized: savedState?.maximized,
@@ -258,14 +274,17 @@ export function useWindow() {
     const monitorWindow = await getMonitorWindow();
     if (monitorWindow) {
       await monitorWindow.setSize(new PhysicalSize(MONITOR_WINDOW_WIDTH, MONITOR_WINDOW_HEIGHT));
-      await monitorWindow.setPosition(await defaultMonitorPosition());
+      const prefs = usePreferences();
+      await monitorWindow.setPosition(await calcMonitorPosition(prefs.agentPanelPosition));
     }
   };
 
   const restoreCurrentWindowState = async () => {
     const currentWindow = getCurrentWindow();
     const savedState = await readValidCustomWindowState(currentWindow.label);
-    if (await applyCustomWindowState(currentWindow, savedState)) return;
+    // 监控窗口只恢复大小，位置由主窗口根据面板侧偏好推算
+    const skipPos = currentWindow.label === MONITOR_WINDOW_LABEL;
+    if (await applyCustomWindowState(currentWindow, savedState, skipPos)) return;
 
     if (currentWindow.label === MAIN_WINDOW_LABEL) {
       await currentWindow.setSize(new PhysicalSize(MAIN_WINDOW_WIDTH, MAIN_WINDOW_HEIGHT));

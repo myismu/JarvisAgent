@@ -27,7 +27,322 @@ use crate::core::infra::prompts::get_subagent_system_prompt;
 use crate::core::llm::adapters::parse_streamed_tool_input;
 use crate::core::models::{AnthropicRequest, Content, ContentBlock, Message};
 use crate::core::orchestration::subagents::{SubAgentMonitor, SubAgentPhase};
-use crate::core::session::memory::micro_compact;
+use crate::core::session::memory::{compact_messages, estimate_tokens, micro_compact};
+use crate::core::state::{SessionManager, ToolDedupeCacheEntry};
+use crate::core::tools::file_tools::generate_repo_map;
+use std::collections::HashMap;
+
+/// 提取工具调用的关键输入摘要（规则提取，不调用 LLM）
+fn summarize_tool_input(name: &str, input: &serde_json::Value) -> String {
+    match name {
+        "ReadFile" | "ReadFileSkeleton" | "WriteFile" | "EditFile" | "ApplyPatch" => {
+            let path = input["path"].as_str().unwrap_or("?");
+            if let Some(start) = input["start_line"].as_u64() {
+                if let Some(end) = input["end_line"].as_u64() {
+                    format!("{} (L{}-{})", path, start, end)
+                } else {
+                    format!("{} (从 L{} 起)", path, start)
+                }
+            } else {
+                format!("{}", path)
+            }
+        }
+        "SearchText" => {
+            let pattern = input["pattern"].as_str().unwrap_or("?");
+            if let Some(dir) = input["path"].as_str() {
+                if !dir.is_empty() {
+                    format!("\"{}\" 在 {}", pattern, dir)
+                } else {
+                    format!("\"{}\"", pattern)
+                }
+            } else {
+                format!("\"{}\"", pattern)
+            }
+        }
+        "FindFiles" => {
+            let pattern = input["pattern"].as_str().unwrap_or("?");
+            format!("{}", pattern)
+        }
+        "SearchRepo" | "CodeSearch" => {
+            let query = input["query"].as_str().unwrap_or("?");
+            format!("\"{}\"", query)
+        }
+        "FindSymbol" | "FindReferences" => {
+            let sym = input["name"].as_str().unwrap_or("?");
+            format!("{}", sym)
+        }
+        "RunCommand" | "RunGitCommand" | "StartBackgroundCommand" => {
+            let cmd = input["command"].as_str().unwrap_or("?");
+            let truncated: String = cmd.chars().take(80).collect();
+            if cmd.len() > 80 {
+                format!("{}...", truncated)
+            } else {
+                truncated
+            }
+        }
+        "ListDirectory" => {
+            let path = input["path"].as_str().unwrap_or(".");
+            format!("{}", path)
+        }
+        "LoadSkill" => {
+            let skill_name = input["name"].as_str().unwrap_or("?");
+            format!("{}", skill_name)
+        }
+        _ => {
+            let raw = input.to_string();
+            let truncated: String = raw.chars().take(60).collect();
+            if raw.len() > 60 {
+                format!("{}...", truncated)
+            } else {
+                truncated
+            }
+        }
+    }
+}
+
+/// 提取工具调用结果的摘要（规则提取，不调用 LLM）
+fn summarize_tool_result(name: &str, content: &str) -> String {
+    match name {
+        "ReadFile" | "ReadFileSkeleton" => {
+            // 提取行数 + 首行预览
+            if let Some(line) = content.lines().find(|l| l.contains("Total:")) {
+                line.to_string()
+            } else {
+                let line_count = content.lines().count();
+                if line_count > 5 {
+                    format!("{} 行内容", line_count)
+                } else {
+                    String::new()
+                }
+            }
+        }
+        "SearchText" => {
+            if content.contains("No files found") || content.contains("No matches") {
+                "无匹配".to_string()
+            } else {
+                let file_count = content.lines().filter(|l| l.contains(':')).count();
+                if file_count > 0 {
+                    format!("{} 个文件匹配", file_count)
+                } else {
+                    String::new()
+                }
+            }
+        }
+        "FindFiles" => {
+            if content.contains("No files found") {
+                "无匹配".to_string()
+            } else {
+                let count = content.lines().count();
+                if count > 0 {
+                    format!("{} 个文件", count)
+                } else {
+                    String::new()
+                }
+            }
+        }
+        "RunCommand" | "RunGitCommand" => {
+            if content.contains("[exit code: 0") {
+                let preview: String = content
+                    .lines()
+                    .filter(|l| !l.starts_with("[exit code"))
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let truncated: String = preview.chars().take(80).collect();
+                if truncated.is_empty() {
+                    "成功".to_string()
+                } else {
+                    truncated
+                }
+            } else if content.contains("[exit code:") {
+                let err_preview: String = content
+                    .lines()
+                    .filter(|l| !l.starts_with("[exit code"))
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let truncated: String = err_preview.chars().take(80).collect();
+                format!("失败: {}", truncated)
+            } else {
+                String::new()
+            }
+        }
+        "WriteFile" | "EditFile" => {
+            if content.contains("成功创建") || content.contains("成功编辑") || content.contains("成功写入")
+            {
+                "成功".to_string()
+            } else if content.contains("失败") || content.contains("编辑失败") {
+                let line = content.lines().next().unwrap_or("失败");
+                line.chars().take(80).collect()
+            } else {
+                String::new()
+            }
+        }
+        "ListDirectory" => {
+            let items: Vec<&str> = content
+                .lines()
+                .filter(|l| l.starts_with("[FILE]") || l.starts_with("[DIR]"))
+                .take(5)
+                .collect();
+            if items.is_empty() {
+                "空目录".to_string()
+            } else {
+                let names: Vec<&str> = items
+                    .iter()
+                    .map(|l| l.trim_start_matches("[FILE] ").trim_start_matches("[DIR] "))
+                    .collect();
+                format!("{}", names.join(", "))
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+/// 判断工具是否需要去重（与主 Agent 去重目标一致）
+fn is_dedup_target(name: &str) -> bool {
+    matches!(
+        name,
+        "LoadSkill"
+            | "CompactConversation"
+            | "ConsolidateMemory"
+            | "ProposePlan"
+            | "RunSubagent"
+    )
+}
+
+/// 提取主 Agent 上下文供子 Agent 继承（规则提取，不调用 LLM）
+async fn extract_subagent_context(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    ws: &Option<std::path::PathBuf>,
+) -> String {
+    let mut ctx = String::new();
+
+    // 1. Repo Map（项目文件树，深度 3）
+    let repo_dir = ws
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let repo_map = generate_repo_map(&repo_dir, "", 0, 3);
+    if !repo_map.trim().is_empty() {
+        ctx.push_str("【项目结构（主Agent已探索）】\n```\n");
+        ctx.push_str(&repo_map);
+        ctx.push_str("```\n\n");
+    }
+
+    // 2. 主 Agent 工具调用 + 结果摘要（配对展示，含结果信息）
+    if let Some(manager) = app.try_state::<SessionManager>() {
+        let session_ctx = manager.get_or_create(session_id).await;
+        let memory = session_ctx.memory.lock().await;
+
+        let msgs = &memory.messages;
+        let mut tool_entries: Vec<String> = Vec::new();
+
+        // 遍历消息，将 ToolUse 与紧随的 ToolResult 配对
+        for window in msgs.windows(2) {
+            if let (Message::Assistant {
+                content: Content::Multiple(assistant_blocks),
+            }, Message::User {
+                content: Content::Multiple(user_blocks),
+            }) = (&window[0], &window[1])
+            {
+                for block in assistant_blocks {
+                    if let ContentBlock::ToolUse {
+                        name, input, id, ..
+                    } = block
+                    {
+                        if matches!(
+                            name.as_str(),
+                            "SearchTools"
+                                | "RunSubagent"
+                                | "RunSubagentsSequentially"
+                                | "CompactConversation"
+                                | "ConsolidateMemory"
+                                | "UpdateTodos"
+                        ) {
+                            continue;
+                        }
+                        let call_info = summarize_tool_input(name, input);
+                        // 查找对应的 ToolResult
+                        let result_info = user_blocks
+                            .iter()
+                            .find_map(|b| {
+                                if let ContentBlock::ToolResult {
+                                    tool_use_id, content, ..
+                                } = b
+                                {
+                                    if tool_use_id == id {
+                                        Some(summarize_tool_result(name, content))
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_default();
+
+                        let entry = if result_info.is_empty() {
+                            format!("- {}: {}", name, call_info)
+                        } else {
+                            format!("- {}: {} → {}", name, call_info, result_info)
+                        };
+                        tool_entries.push(entry);
+                        if tool_entries.len() >= 10 {
+                            break;
+                        }
+                    }
+                }
+            }
+            if tool_entries.len() >= 10 {
+                break;
+            }
+        }
+
+        if !tool_entries.is_empty() {
+            ctx.push_str("【主Agent已执行的关键操作（无需重复）】\n");
+            for entry in &tool_entries {
+                ctx.push_str(entry);
+                ctx.push('\n');
+            }
+            ctx.push('\n');
+        }
+
+        // 3. 主 Agent 最近的结论（最后一条非工具 Assistant 消息的 text 部分）
+        for msg in memory.messages.iter().rev() {
+            if let Message::Assistant {
+                content: Content::Multiple(blocks),
+            } = msg
+            {
+                let has_tool = blocks
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+                if !has_tool {
+                    let text: String = blocks
+                        .iter()
+                        .filter_map(|b| {
+                            if let ContentBlock::Text { text } = b {
+                                Some(text.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if !text.trim().is_empty() {
+                        let truncated: String = text.chars().take(300).collect();
+                        ctx.push_str(&format!(
+                            "【主Agent的分析结论】\n{}\n\n",
+                            truncated
+                        ));
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    ctx
+}
 
 /// 子代理执行引擎：独立 Agent Loop，支持只读/读写模式，返回 (结果, 输入token, 输出token)
 pub async fn run_subagent(
@@ -102,14 +417,24 @@ pub async fn run_subagent(
         }
     }
 
+    // 提取主 Agent 上下文注入到子 Agent 初始消息中
+    let subagent_context = extract_subagent_context(&app, &session_id, &ws).await;
+    let augmented_prompt = if subagent_context.is_empty() {
+        prompt.clone()
+    } else {
+        format!("{}\n【委派任务】\n{}", subagent_context, prompt)
+    };
+
     let mut messages = vec![Message::User {
-        content: Content::Single(prompt.clone()),
+        content: Content::Single(augmented_prompt),
     }];
 
     let mut loop_count = 0;
     let mut final_answer = String::new();
     let mut sub_input_tokens: u64 = 0;
     let mut sub_output_tokens: u64 = 0;
+    // 子 Agent 工具去重（与主 Agent 机制一致，scope 为子 Agent run_id）
+    let mut agent_dedup_state: HashMap<String, ToolDedupeCacheEntry> = HashMap::new();
 
     let tools = agent_registry.resolve_tools(agent, read_only);
     if tools.is_empty() {
@@ -177,14 +502,14 @@ pub async fn run_subagent(
             top_k: cfg.top_k,
         };
 
-        if cfg.enable_thinking.unwrap_or(false) {
-            request_body.thinking = Some(crate::core::models::ThinkingConfig {
-                r#type: "enabled".to_string(),
-                budget_tokens: Some(1024),
-            });
-            if request_body.max_tokens <= 1024 {
-                request_body.max_tokens = 4096;
-            }
+        let should_think = cfg.enable_thinking.unwrap_or(false);
+        request_body.thinking = Some(crate::core::models::ThinkingConfig {
+            r#type: Some(if should_think { "enabled" } else { "disabled" }.to_string()),
+            budget_tokens: if should_think { Some(1024) } else { None },
+            enable: None,
+        });
+        if should_think && request_body.max_tokens <= 1024 {
+            request_body.max_tokens = 4096;
         }
 
         let (req_json, is_openai) = if api_format_enum.is_openai() {
@@ -221,42 +546,16 @@ pub async fn run_subagent(
                 thinking: None,
                 thinking_budget: None,
                 enable_thinking: None,
+                extra_body: None,
+                parameters: None,
                 temperature: request_body.temperature,
                 top_p: request_body.top_p,
             };
 
             let should_think = cfg.enable_thinking.unwrap_or(false);
-            let thinking_param = crate::core::llm::registry::query_capabilities(&model_id)
-                .and_then(|c| c.thinking_param);
-
-            match thinking_param.as_deref() {
-                Some("reasoning_effort") => {
-                    if should_think {
-                        openai_req.reasoning_effort = Some("high".to_string());
-                    }
-                }
-                Some("thinking") => {
-                    openai_req.thinking = Some(crate::core::models::ThinkingConfig {
-                        r#type: if should_think {
-                            "enabled".to_string()
-                        } else {
-                            "disabled".to_string()
-                        },
-                        budget_tokens: None,
-                    });
-                }
-                Some("thinkingBudget") => {
-                    openai_req.thinking_budget = Some(if should_think { 8192 } else { 0 });
-                }
-                Some("enable_thinking") => {
-                    openai_req.enable_thinking = Some(should_think);
-                }
-                _ => {
-                    if should_think {
-                        openai_req.reasoning_effort = Some("high".to_string());
-                    }
-                }
-            }
+            crate::core::llm::registry::apply_thinking_for_model(
+                &mut openai_req, &model_id, should_think,
+            );
             (serde_json::to_value(openai_req).unwrap(), true)
         } else {
             (serde_json::to_value(request_body).unwrap(), false)
@@ -462,6 +761,37 @@ pub async fn run_subagent(
                             }),
                         );
 
+                        // 去重检查：与主 Agent 机制一致，阻止重复调用 Agent 控制工具
+                        if is_dedup_target(name) {
+                            let dedup_key = name.to_lowercase();
+                            if let Some(entry) = agent_dedup_state.get_mut(&dedup_key) {
+                                entry.suppressed_count += 1;
+                                let blocked = format!(
+                                    "重复调用被阻止: 工具 {} 已在本子Agent运行中被调用。请使用已有的结果继续，不要重复调用。 (第{}次抑制)",
+                                    name, entry.suppressed_count
+                                );
+                                SubAgentMonitor::record_tool_result(
+                                    &app, &run_id, name,
+                                    Some(blocked.chars().take(180).collect::<String>()),
+                                    loop_count + 1, sub_input_tokens, sub_output_tokens,
+                                ).await;
+                                immediate_results.push(SubToolTaskResult {
+                                    index,
+                                    tool_use_id: id.clone(),
+                                    name: name.clone(),
+                                    output: blocked,
+                                });
+                                continue;
+                            }
+                            agent_dedup_state.insert(
+                                dedup_key,
+                                ToolDedupeCacheEntry {
+                                    display: name.to_string(),
+                                    suppressed_count: 0,
+                                    running: false,
+                                },
+                            );
+                        }
                         spawn_tasks.push(SubToolTaskData {
                             index,
                             tool_use_id: id.clone(),
@@ -605,8 +935,26 @@ pub async fn run_subagent(
             messages.push(Message::User {
                 content: Content::Multiple(tool_results),
             });
-            // 轻量压缩：清理空内容块，避免上下文无限增长
+            // 轻量压缩：清理旧工具结果，避免上下文无限增长
             micro_compact(&mut messages);
+            // Token 阈值触发 LLM 摘要压缩（使用工具模型）
+            let estimated = estimate_tokens(&messages);
+            if estimated > crate::core::constants::MAX_TOKENS_COMPACT_TRIGGER {
+                println!(
+                    "[SUBAGENT] 上下文估算值 > {} ({})，触发自动压缩",
+                    crate::core::constants::MAX_TOKENS_COMPACT_TRIGGER,
+                    estimated
+                );
+                let _ = compact_messages(
+                    &mut messages,
+                    &client,
+                    &api_key,
+                    &base_url,
+                    &cfg.utility_model,
+                    api_format_enum,
+                )
+                .await;
+            }
         }
         loop_count += 1;
     }
@@ -628,19 +976,84 @@ pub async fn run_subagent(
         }),
     );
 
-    if loop_count >= max_loops && final_answer.is_empty() {
+    if loop_count >= max_loops {
+        // 收集最后的工具输出作为部分成果，而非直接标记失败
+        let mut partial_results: Vec<String> = messages
+            .iter()
+            .rev()
+            .filter_map(|msg| {
+                if let Message::User {
+                    content: Content::Multiple(blocks),
+                } = msg
+                {
+                    let summaries: Vec<&str> = blocks
+                        .iter()
+                        .filter_map(|block| {
+                            if let ContentBlock::ToolResult { content, .. } = block {
+                                Some(content.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if summaries.is_empty() {
+                        None
+                    } else {
+                        Some(summaries.join("\n"))
+                    }
+                } else {
+                    None
+                }
+            })
+            .take(5)
+            .collect();
+        partial_results.reverse();
+
+        let partial_summary = if !partial_results.is_empty() {
+            let joined: String = partial_results
+                .iter()
+                .map(|r| {
+                    let truncated: String = r.chars().take(200).collect();
+                    if r.len() > 200 {
+                        format!("{}...", truncated)
+                    } else {
+                        truncated
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n---\n");
+            format!(
+                "\n\n【部分成果（{}轮已达上限）】\n{}",
+                max_loops, joined
+            )
+        } else {
+            String::new()
+        };
+
         let stop_message = format!(
-            "子代理执行达到 {} 轮上限，已停止。\n\nSubagent stopped because it reached the loop limit. Treat this as a failed delegated attempt. Do not rerun the same dependency install/startup loop, do not launch another identical subagent, and do not continue trying the same commands. Summarize the failure, include the last useful command output already in context, and ask the user how to proceed.",
-            max_loops
+            "子代理执行达到 {} 轮上限，已停止。{}",
+            max_loops, partial_summary
         );
-        SubAgentMonitor::fail_run(
-            &app,
-            &run_id,
-            "Subagent reached loop limit".to_string(),
-            sub_input_tokens,
-            sub_output_tokens,
-        )
-        .await;
+
+        if final_answer.is_empty() && partial_results.is_empty() {
+            SubAgentMonitor::fail_run(
+                &app,
+                &run_id,
+                "Subagent reached loop limit with no results".to_string(),
+                sub_input_tokens,
+                sub_output_tokens,
+            )
+            .await;
+        } else {
+            SubAgentMonitor::complete_run(
+                &app,
+                &run_id,
+                sub_input_tokens,
+                sub_output_tokens,
+                Some(stop_message.clone()),
+            )
+            .await;
+        }
         return (stop_message, sub_input_tokens, sub_output_tokens);
     } else {
         SubAgentMonitor::complete_run(

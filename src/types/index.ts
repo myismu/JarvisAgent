@@ -286,6 +286,7 @@ export interface SubAgentRun {
   sessionId: string;
   taskId?: number | null;
   label: string;
+  agentType: string;
   prompt?: string | null;
   promptPreview: string;
   readOnly: boolean;

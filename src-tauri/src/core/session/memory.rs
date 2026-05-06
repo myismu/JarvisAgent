@@ -54,9 +54,12 @@ pub fn estimate_tokens(messages: &[Message]) -> usize {
     total_chars / 4
 }
 
-/// 轻量压缩：清理旧的工具结果，仅保留最近 keep_recent 条
+/// 轻量压缩：清理旧的工具结果，最近 keep_recent 条保留原文，其余截断为首部摘要
 pub fn micro_compact(messages: &mut Vec<Message>) {
-    let keep_recent = 3;
+    let keep_recent = 20;
+    const TRUNCATE_AT: usize = 300;
+    const MIN_FOLD_LEN: usize = 400;
+
     let mut tool_results_pos = Vec::new();
     for (i, msg) in messages.iter().enumerate() {
         if let Message::User {
@@ -100,12 +103,18 @@ pub fn micro_compact(messages: &mut Vec<Message>) {
                 content,
             } = &mut blocks[j]
             {
-                if content.len() > 100 {
+                if content.len() > MIN_FOLD_LEN {
                     let tool_name = tool_name_map
                         .get(tool_use_id)
                         .cloned()
-                        .unwrap_or_else(|| "unknown".to_string());
-                    *content = format!("[Previous: used {}]", tool_name);
+                        .unwrap_or_else(|| "?".to_string());
+                    let preview: String = content.chars().take(TRUNCATE_AT).collect();
+                    *content = format!(
+                        "[早期结果-已截断] {} → {}\n... [共{}字符，后段已省略]",
+                        tool_name,
+                        preview,
+                        content.len()
+                    );
                 }
             }
         }
@@ -125,17 +134,37 @@ pub fn append_transcript(session_id: &str, text: &str) -> Result<String, MemoryE
     .map_err(MemoryError::FileRead)
 }
 
-/// 自动压缩：调用 LLM 生成摘要，用摘要替换完整对话历史
-pub async fn auto_compact(
-    session_id: &str,
-    memory: &mut SessionMemory,
+/// 对消息列表执行 LLM 摘要压缩（会话无关，不保存转录，供子 Agent 等场景使用）
+pub async fn compact_messages(
+    messages: &mut Vec<Message>,
     client: &reqwest::Client,
     api_key: &str,
     base_url: &str,
     model_id: &str,
     api_format: ApiFormat,
 ) -> Result<(), MemoryError> {
-    let messages = &memory.messages;
+    let summary = call_summarize_llm(messages, client, api_key, base_url, model_id, api_format).await?;
+
+    messages.clear();
+    messages.push(Message::User {
+        content: Content::Single(format!("[Conversation compressed.]\n\n{}", summary)),
+    });
+    messages.push(Message::Assistant {
+        content: Content::Single("Understood. Continuing.".to_string()),
+    });
+
+    Ok(())
+}
+
+/// LLM 摘要核心逻辑：序列化消息 → 构建请求 → 调用 LLM → 返回摘要文本
+async fn call_summarize_llm(
+    messages: &[Message],
+    client: &reqwest::Client,
+    api_key: &str,
+    base_url: &str,
+    model_id: &str,
+    api_format: ApiFormat,
+) -> Result<String, MemoryError> {
     let mut json_content = String::new();
     for msg in messages.iter() {
         if let Ok(m) = serde_json::to_string(msg) {
@@ -152,9 +181,6 @@ pub async fn auto_compact(
     } else {
         json_content.clone()
     };
-
-    let transcript_path = append_transcript(session_id, &json_content)?;
-    println!("[auto_compact] Transcript saved to {}", transcript_path);
 
     let summary_prompt = format!("Summarize this conversation for continuity. Include: \n1) What was accomplished, 2) Current state, 3) Key decisions made. \nBe concise but preserve critical details.\n\n{}", summarized_text);
 
@@ -190,6 +216,8 @@ pub async fn auto_compact(
                 thinking: None,
                 thinking_budget: None,
                 enable_thinking: None,
+                extra_body: None,
+                parameters: None,
                 temperature: request_body.temperature,
                 top_p: request_body.top_p,
             };
@@ -208,14 +236,14 @@ pub async fn auto_compact(
         req = req.header("anthropic-version", "2023-06-01");
     }
 
-    crate::core::llm::api_client::log_model_request(model_id, base_url, "记忆agent");
+    crate::core::llm::api_client::log_model_request(model_id, base_url, "摘要压缩");
 
     let response = req.json(&req_json).send().await.map_err(|e| {
-        MemoryError::CompactionFailed(format!("auto_compact request failed: {}", e))
+        MemoryError::CompactionFailed(format!("compact request failed: {}", e))
     })?;
 
     let body: serde_json::Value = response.json().await.map_err(|e| {
-        MemoryError::CompactionFailed(format!("auto_compact response parse failed: {}", e))
+        MemoryError::CompactionFailed(format!("compact response parse failed: {}", e))
     })?;
 
     let mut text = String::new();
@@ -244,21 +272,54 @@ pub async fn auto_compact(
             "Failed to get summary text".to_string(),
         ));
     };
-    let summary = text;
 
-    memory.messages.clear();
-    memory.message_ids.clear();
-    crate::core::session::append_message(memory, Message::User {
-        content: Content::Single(format!(
-            "[Conversation compressed. Transcript: {:?}]\n\n{}",
-            transcript_path, summary
-        )),
-    });
-    crate::core::session::append_message(memory, Message::Assistant {
-        content: Content::Single(
-            "Understood. I have the context from the summary. Continuing.".to_string(),
-        ),
-    });
+    Ok(text)
+}
+
+/// 自动压缩：保存转录 → 调用 LLM 生成摘要 → 替换会话历史
+pub async fn auto_compact(
+    session_id: &str,
+    memory: &mut SessionMemory,
+    client: &reqwest::Client,
+    api_key: &str,
+    base_url: &str,
+    model_id: &str,
+    api_format: ApiFormat,
+) -> Result<(), MemoryError> {
+    // 保存转录
+    let mut json_content = String::new();
+    for msg in memory.messages.iter() {
+        if let Ok(m) = serde_json::to_string(msg) {
+            json_content.push_str(&m);
+            json_content.push('\n');
+        }
+    }
+    let transcript_path = append_transcript(session_id, &json_content)?;
+    println!("[auto_compact] Transcript saved to {}", transcript_path);
+
+    // 委托核心压缩逻辑
+    compact_messages(&mut memory.messages, client, api_key, base_url, model_id, api_format).await?;
+
+    // 压缩消息需要稳定的 message_id，不能裸清空
+    // session_messages 表通过 message_id 与 memory_json 关联，不稳定ID会导致索引错位
+    memory.message_ids = vec![
+        format!("compact:{}:user", uuid::Uuid::new_v4().simple()),
+        format!("compact:{}:asst", uuid::Uuid::new_v4().simple()),
+    ];
+
+    // 将转录路径补充到摘要消息中
+    if let Some(msg) = memory.messages.first_mut() {
+        if let Message::User {
+            content: Content::Single(ref mut text),
+        } = msg
+        {
+            *text = format!(
+                "[Conversation compressed. Transcript: {:?}]\n\n{}",
+                transcript_path,
+                text.trim_start_matches("[Conversation compressed.]\n\n")
+            );
+        }
+    }
 
     Ok(())
 }
@@ -303,6 +364,8 @@ pub async fn auto_compact_summary(
                 thinking: None,
                 thinking_budget: None,
                 enable_thinking: None,
+                extra_body: None,
+                parameters: None,
                 temperature: request_body.temperature,
                 top_p: request_body.top_p,
             };
@@ -472,6 +535,8 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
                 thinking: None,
                 thinking_budget: None,
                 enable_thinking: None,
+                extra_body: None,
+                parameters: None,
                 temperature: request_body.temperature,
                 top_p: request_body.top_p,
             };

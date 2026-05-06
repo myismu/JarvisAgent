@@ -76,42 +76,15 @@ impl LlmProvider for OpenAIProvider {
             thinking: None,
             thinking_budget: None,
             enable_thinking: None,
+            extra_body: None,
+            parameters: None,
             temperature,
             top_p,
         };
 
-        // 根据模型注册表的 thinking_param 字段，选择对应的思考模式参数
-        let thinking_param =
-            crate::core::llm::registry::query_capabilities(model_id).and_then(|c| c.thinking_param);
-
-        match thinking_param.as_deref() {
-            Some("reasoning_effort") => {
-                if should_think {
-                    openai_req.reasoning_effort = Some("high".to_string());
-                }
-            }
-            Some("thinking") => {
-                openai_req.thinking = Some(ThinkingConfig {
-                    r#type: if should_think {
-                        "enabled".to_string()
-                    } else {
-                        "disabled".to_string()
-                    },
-                    budget_tokens: None,
-                });
-            }
-            Some("thinkingBudget") => {
-                openai_req.thinking_budget = Some(if should_think { 8192 } else { 0 });
-            }
-            Some("enable_thinking") => {
-                openai_req.enable_thinking = Some(should_think);
-            }
-            _ => {
-                if should_think {
-                    openai_req.reasoning_effort = Some("high".to_string());
-                }
-            }
-        }
+        crate::core::llm::registry::apply_thinking_for_model(
+            &mut openai_req, model_id, should_think,
+        );
 
         serde_json::to_value(openai_req).unwrap()
     }

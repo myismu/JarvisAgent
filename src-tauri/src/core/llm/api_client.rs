@@ -135,7 +135,7 @@ pub async fn call_llm_simple(
         ApiFormat::OpenAI => {
             use crate::core::llm::adapters::translate_messages_to_openai;
             let openai_msgs = translate_messages_to_openai(system_prompt, &request_body.messages);
-            let openai_req = OpenAIRequest {
+            let mut openai_req = OpenAIRequest {
                 model: model_id.to_string(),
                 max_tokens: Some(max_tokens),
                 messages: openai_msgs,
@@ -146,9 +146,15 @@ pub async fn call_llm_simple(
                 thinking: None,
                 thinking_budget: None,
                 enable_thinking: None,
+                extra_body: None,
+                parameters: None,
                 temperature: None,
                 top_p: None,
             };
+            // 工具调用不需要深度思考，显式关闭（避免 DeepSeek 等默认开启的模型浪费 token）
+            crate::core::llm::registry::apply_thinking_for_model(
+                &mut openai_req, model_id, false,
+            );
             (serde_json::to_value(openai_req).unwrap(), true)
         }
         ApiFormat::Anthropic => (serde_json::to_value(request_body).unwrap(), false),

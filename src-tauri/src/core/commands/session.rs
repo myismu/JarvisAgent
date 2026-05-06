@@ -243,20 +243,17 @@ pub async fn recall_message(
     let is_empty;
     {
         let mut session = ctx.memory.lock().await;
-        let memory_index = stored_target
+        // message_id 为主查找 memory.message_ids 中的精确位置（不受压缩偏移影响）
+        // user_message_index 降级：无 message_id 的旧数据兼容
+        let truncate_at = stored_target
             .as_ref()
-            .and_then(|stored| {
-                session
-                    .message_ids
-                    .iter()
-                    .position(|id| id == &stored.message_id)
-            })
+            .and_then(|stored| session.message_ids.iter().position(|id| id == &stored.message_id))
             .or(user_message_index)
             .ok_or_else(|| "撤回消息不存在".to_string())?;
-        if memory_index >= session.messages.len() {
+        if truncate_at >= session.messages.len() {
             return Err("撤回消息不存在".to_string());
         }
-        if let Message::User { content } = &session.messages[memory_index] {
+        if let Message::User { content } = &session.messages[truncate_at] {
             recalled_text = message_text_content(content);
         } else if let Some(stored) = stored_target.as_ref() {
             if let Message::User { content } = &stored.content {
@@ -267,13 +264,14 @@ pub async fn recall_message(
         } else {
             return Err("撤回目标不是用户消息".to_string());
         }
-        session.messages.truncate(memory_index);
+        session.messages.truncate(truncate_at);
         let message_count = session.messages.len();
         session.message_ids.truncate(message_count);
         is_empty = session.messages.is_empty();
     }
 
     if let Some(stored) = stored_target {
+        // 使用 stored.seq 而非 user_message_index，因为 seq 是 DB 中精确的行号
         session::delete_session_messages_from_seq(&session_id, stored.seq)?;
     } else if let Some(user_message_index) = user_message_index {
         session::delete_session_messages_from_seq(&session_id, user_message_index)?;
@@ -282,8 +280,20 @@ pub async fn recall_message(
     if is_empty {
         switch_away_and_delete_empty_session(&session_id, &app).await?;
     } else {
-        let memory = ctx.memory.lock().await.clone();
-        session::save_session(&session_id, &memory, None);
+        {
+            let memory = ctx.memory.lock().await.clone();
+            session::save_session(&session_id, &memory, None);
+        }
+        // 保存后从 DB 重新加载，确保内存与持久化数据完全一致
+        match session::load_session(&session_id) {
+            Ok(reloaded) => {
+                let mut session = ctx.memory.lock().await;
+                *session = reloaded;
+            }
+            Err(e) => {
+                eprintln!("[Recall] 撤回后重新加载会话内存失败: {}", e);
+            }
+        }
         let _ = app.emit("session-updated", ());
     }
 

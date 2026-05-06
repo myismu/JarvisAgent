@@ -49,14 +49,19 @@
             </div>
             <div class="profile-list">
               <div
-                v-for="profile in draftConfig.profiles"
+                v-for="(profile, index) in draftConfig.profiles"
                 :key="profile.id"
                 class="profile-item"
                 :class="{
                   'active': selectedProfileId === profile.id,
-                  'is-running': draftConfig.activeProfileId === profile.id
+                  'is-running': draftConfig.activeProfileId === profile.id,
+                  'drag-over': dragIndex !== null && dragOverIndex === index && dragIndex !== index,
+                  'dragging': dragIndex === index && dragMoved
                 }"
-                @click="selectProfile(profile.id)"
+                :style="dragIndex === index && dragMoved ? { transform: `translateY(${dragOffsetY}px)`, zIndex: 10 } : {}"
+                @mousedown="onMouseDown($event, index)"
+                @mousemove="onMouseMove($event)"
+                @mouseup="onMouseUp($event, index)"
               >
                 <span class="profile-name">{{ profile.name }}</span>
                 <div class="profile-actions">
@@ -69,6 +74,14 @@
                     />
                     <span class="slider"></span>
                   </label>
+                  <button
+                    class="copy-btn"
+                    :disabled="actionLoading"
+                    @click.stop="copyProfile(profile.id)"
+                    :title="t('settings.profiles.copy')"
+                  >
+                    <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  </button>
                   <button
                     v-if="draftConfig.profiles.length > 1"
                     class="delete-btn"
@@ -114,6 +127,54 @@
                   </button>
                 </div>
                 <div class="setting-item">
+                  <label>{{ t('settings.general.fontSize') }}</label>
+                  <div class="font-size-control">
+                    <button class="font-size-step" @click="setFontSize(Math.max(11, fontSize - 1))" :disabled="fontSize <= 11" :title="t('settings.general.zoomOut')">
+                      <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+                    </button>
+                    <div class="slider-track-wrap">
+                      <input
+                        type="range"
+                        min="11"
+                        max="22"
+                        :value="fontSize"
+                        class="font-size-slider"
+                        :style="{ '--fill-pct': ((fontSize - 11) / (22 - 11) * 100).toFixed(0) + '%' }"
+                        @input="setFontSize(Number(($event.target as HTMLInputElement).value))"
+                      />
+                    </div>
+                    <button class="font-size-step" @click="setFontSize(Math.min(22, fontSize + 1))" :disabled="fontSize >= 22" :title="t('settings.general.zoomIn')">
+                      <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/><line x1="11" y1="8" x2="11" y2="14"/></svg>
+                    </button>
+                    <span class="font-size-value">{{ fontSize }}px</span>
+                  </div>
+                  <div class="setting-desc">{{ t('settings.general.fontSizeDesc') }}</div>
+                </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.general.codeFontSize') }}</label>
+                  <div class="font-size-control">
+                    <button class="font-size-step" @click="setCodeFontSize(Math.max(10, codeFontSize - 1))" :disabled="codeFontSize <= 10" :title="t('settings.general.zoomOut')">
+                      <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+                    </button>
+                    <div class="slider-track-wrap">
+                      <input
+                        type="range"
+                        min="10"
+                        max="20"
+                        :value="codeFontSize"
+                        class="font-size-slider"
+                        :style="{ '--fill-pct': ((codeFontSize - 10) / (20 - 10) * 100).toFixed(0) + '%' }"
+                        @input="setCodeFontSize(Number(($event.target as HTMLInputElement).value))"
+                      />
+                    </div>
+                    <button class="font-size-step" @click="setCodeFontSize(Math.min(20, codeFontSize + 1))" :disabled="codeFontSize >= 20" :title="t('settings.general.zoomIn')">
+                      <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/><line x1="11" y1="8" x2="11" y2="14"/></svg>
+                    </button>
+                    <span class="font-size-value">{{ codeFontSize }}px</span>
+                  </div>
+                  <div class="setting-desc">{{ t('settings.general.codeFontSizeDesc') }}</div>
+                </div>
+                <div class="setting-item">
                   <label>{{ t('settings.general.language') }}</label>
                   <select :value="appLocale" class="format-select" @change="setAppLocale(($event.target as HTMLSelectElement).value)">
                     <option value="zh-CN">简体中文</option>
@@ -136,6 +197,53 @@
                     >{{ t('settings.general.developer') }}</button>
                   </div>
                   <div class="setting-desc">{{ t('settings.general.developerDesc') }}</div>
+                </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.general.compactMode') }}</label>
+                  <label class="toggle-switch">
+                    <input type="checkbox" :checked="compactMode" @change="setCompactMode(($event.target as HTMLInputElement).checked)" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                  <div class="setting-desc">{{ t('settings.general.compactModeDesc') }}</div>
+                </div>
+              </div>
+
+              <div class="setting-card">
+                <div class="card-header">
+                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4M12,17A5,5 0 0,1 7,12A5,5 0 0,1 12,7A5,5 0 0,1 17,12A5,5 0 0,1 12,17Z"/></svg>
+                  <h4>{{ t('settings.general.behavior') }}</h4>
+                </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.general.autoScroll') }}</label>
+                  <label class="toggle-switch">
+                    <input type="checkbox" :checked="autoScroll" @change="setAutoScroll(($event.target as HTMLInputElement).checked)" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                  <div class="setting-desc">{{ t('settings.general.autoScrollDesc') }}</div>
+                </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.general.defaultExpandThinking') }}</label>
+                  <label class="toggle-switch">
+                    <input type="checkbox" :checked="defaultExpandThinking" @change="setDefaultExpandThinking(($event.target as HTMLInputElement).checked)" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                  <div class="setting-desc">{{ t('settings.general.defaultExpandThinkingDesc') }}</div>
+                </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.general.agentPanelPosition') }}</label>
+                  <div class="display-mode-toggle">
+                    <button
+                      class="display-mode-btn"
+                      :class="{ active: agentPanelPosition === 'right' }"
+                      @click="setAgentPanelPosition('right')"
+                    >{{ t('settings.general.positionRight') }}</button>
+                    <button
+                      class="display-mode-btn"
+                      :class="{ active: agentPanelPosition === 'left' }"
+                      @click="setAgentPanelPosition('left')"
+                    >{{ t('settings.general.positionLeft') }}</button>
+                  </div>
+                  <div class="setting-desc">{{ t('settings.general.agentPanelPositionDesc') }}</div>
                 </div>
               </div>
 
@@ -224,6 +332,15 @@
                 </div>
 
                 <!-- 高级参数折叠 -->
+                <div class="setting-item" v-if="mainModelCaps?.thinking">
+                  <label>{{ t('settings.profileEditor.thinking') }}</label>
+                  <label class="toggle-switch">
+                    <input type="checkbox" :checked="editingProfile!.config.enableThinking ?? false" @change="editingProfile!.config.enableThinking = ($event.target as HTMLInputElement).checked" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                  <div class="setting-desc">{{ t('settings.profileEditor.thinkingDesc') }}</div>
+                </div>
+
                 <div class="advanced-toggle" @click="showAdvanced = !showAdvanced">
                   <span>{{ t('settings.profileEditor.advancedParams') }}</span>
                   <svg :class="{ rotated: showAdvanced }" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,8.58Z"/></svg>
@@ -302,11 +419,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, computed, nextTick } from 'vue'
+import { ref, watch, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { invoke } from '@tauri-apps/api/core'
 import { useTheme } from '../../composables/useTheme'
-import { usePreferences } from '../../composables/usePreferences'
+import { usePreferences, type AgentPanelPosition } from '../../composables/usePreferences'
 import { useWindow } from '../../composables/useWindow'
 import type { AgentDisplayMode } from '../../types'
 import ConfirmModal from '../common/ConfirmModal.vue'
@@ -318,6 +435,18 @@ const uiPrefs = usePreferences()
 const { resetWindowStates, notifyMonitorLocaleChanged } = useWindow()
 const agentDisplayMode = uiPrefs.agentDisplayMode
 const setAgentDisplayMode = (mode: AgentDisplayMode) => uiPrefs.setAgentDisplayMode(mode)
+const fontSize = computed(() => uiPrefs.fontSize)
+const setFontSize = (val: number) => uiPrefs.setFontSize(val)
+const codeFontSize = computed(() => uiPrefs.codeFontSize)
+const setCodeFontSize = (val: number) => uiPrefs.setCodeFontSize(val)
+const defaultExpandThinking = computed(() => uiPrefs.defaultExpandThinking)
+const setDefaultExpandThinking = (val: boolean) => uiPrefs.setDefaultExpandThinking(val)
+const autoScroll = computed(() => uiPrefs.autoScroll)
+const setAutoScroll = (val: boolean) => uiPrefs.setAutoScroll(val)
+const agentPanelPosition = computed(() => uiPrefs.agentPanelPosition)
+const setAgentPanelPosition = (val: AgentPanelPosition) => uiPrefs.setAgentPanelPosition(val)
+const compactMode = computed(() => uiPrefs.compactMode)
+const setCompactMode = (val: boolean) => uiPrefs.setCompactMode(val)
 const appLocale = uiPrefs.locale
 watch(appLocale, (val) => {
   locale.value = val
@@ -551,6 +680,86 @@ const addProfile = () => {
   selectedProfileId.value = newId
   activeTab.value = 'presets'
 }
+
+const copyProfile = (id: string) => {
+  resetStatus()
+  const source = draftConfig.value.profiles.find(p => p.id === id)
+  if (!source) return
+  const newId = `profile_${Date.now()}`
+  const copy = JSON.parse(JSON.stringify(source)) as typeof source
+  copy.id = newId
+  copy.name = `${copy.name} - ${t('settings.profiles.copySuffix')}`
+  draftConfig.value.profiles.push(copy)
+  selectedProfileId.value = newId
+  activeTab.value = 'presets'
+}
+
+// ── 拖拽排序 ──
+const dragIndex = ref<number | null>(null)
+const dragOverIndex = ref<number | null>(null)
+const dragOffsetY = ref(0)
+let dragStartY = 0
+let dragStartIndex = 0
+let dragItemHeight = 0
+let dragMoved = false
+
+const DRAG_THRESHOLD = 5
+
+const onMouseDown = (e: MouseEvent, index: number) => {
+  if (actionLoading.value) return
+  dragStartY = e.clientY
+  dragStartIndex = index
+  dragItemHeight = (e.currentTarget as HTMLElement).offsetHeight
+  dragMoved = false
+  dragIndex.value = index
+}
+
+const onMouseMove = (e: MouseEvent) => {
+  if (dragIndex.value === null) return
+  const deltaY = e.clientY - dragStartY
+  if (!dragMoved && Math.abs(deltaY) > DRAG_THRESHOLD) {
+    dragMoved = true
+    document.body.style.userSelect = 'none'
+  }
+  if (!dragMoved) return
+  dragOffsetY.value = deltaY
+  // 计算当前悬停位置（鼠标所在处对应哪个预设）
+  const profiles = draftConfig.value.profiles
+  const relativeIdx = Math.round(deltaY / dragItemHeight)
+  const targetIdx = Math.max(0, Math.min(profiles.length - 1, dragStartIndex + relativeIdx))
+  if (targetIdx !== dragStartIndex || dragOverIndex.value === null) {
+    dragOverIndex.value = targetIdx
+  }
+}
+
+const onMouseUp = (_e: MouseEvent, _index: number) => {
+  if (dragIndex.value === null) return
+  document.body.style.userSelect = ''
+  if (!dragMoved) {
+    selectProfile(draftConfig.value.profiles[dragStartIndex].id)
+  } else if (dragOverIndex.value !== null && dragOverIndex.value !== dragStartIndex) {
+    const profiles = draftConfig.value.profiles
+    const [moved] = profiles.splice(dragStartIndex, 1)
+    profiles.splice(dragOverIndex.value, 0, moved)
+  }
+  dragIndex.value = null
+  dragOverIndex.value = null
+  dragOffsetY.value = 0
+  dragMoved = false
+}
+
+const onWindowMouseUp = () => {
+  if (dragIndex.value !== null) {
+    document.body.style.userSelect = ''
+    dragIndex.value = null
+    dragOverIndex.value = null
+    dragOffsetY.value = 0
+    dragMoved = false
+  }
+}
+
+onMounted(() => window.addEventListener('mouseup', onWindowMouseUp))
+onUnmounted(() => window.removeEventListener('mouseup', onWindowMouseUp))
 
 const toggleGlobalProfile = async (profileId: string) => {
   if (actionLoading.value || savedConfig.value.globalProfileId === profileId) return
@@ -964,7 +1173,7 @@ const save = async () => {
 .sidebar-switch input:checked + .slider { background-color: var(--accent-green); }
 .sidebar-switch input:checked + .slider:before { transform: translateX(10px); }
 
-.delete-btn {
+.copy-btn, .delete-btn {
   background: transparent;
   border: none;
   color: var(--text-muted);
@@ -973,8 +1182,15 @@ const save = async () => {
   padding: 2px;
 }
 
-.profile-item:hover .delete-btn { opacity: 1; }
+.profile-item:hover .copy-btn, .profile-item:hover .delete-btn { opacity: 1; }
+.copy-btn:hover { color: var(--accent-blue); }
 .delete-btn:hover { color: var(--accent-red); }
+
+.profile-item { cursor: grab; }
+.profile-item.dragging { opacity: 0.5; cursor: grabbing; }
+.profile-item.drag-over {
+  border-top: 2px solid var(--accent-blue);
+}
 
 /* 内容区域样式 */
 .settings-content {
@@ -1058,6 +1274,190 @@ const save = async () => {
   font-size: 12px;
   color: var(--text-muted);
   line-height: 1.5;
+}
+
+/* 字体大小控件 */
+.font-size-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.font-size-step {
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.font-size-step:hover:not(:disabled) {
+  background: var(--glass-bg-heavy);
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+  transform: scale(1.04);
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.15);
+}
+
+.font-size-step:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.font-size-step:disabled {
+  opacity: 0.28;
+  cursor: not-allowed;
+}
+
+.slider-track-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.font-size-slider {
+  width: 100%;
+  height: 22px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  outline: none;
+  cursor: pointer;
+  margin: 0;
+}
+
+/* 轨道 */
+.font-size-slider::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 3px;
+  background: linear-gradient(
+    to right,
+    var(--accent-blue) 0%,
+    var(--accent-blue) var(--fill-pct, 50%),
+    var(--glass-bg-light) var(--fill-pct, 50%),
+    var(--glass-bg-light) 100%
+  );
+  border: 0.5px solid var(--glass-border-subtle);
+}
+
+/* 滑块钮 */
+.font-size-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--surface-strong);
+  border: 2px solid var(--accent-blue);
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.25), 0 0 0 4px rgba(59, 130, 246, 0.08);
+  margin-top: -7px;
+  cursor: pointer;
+  transition: box-shadow 0.2s ease, transform 0.15s ease;
+}
+
+.font-size-slider::-webkit-slider-thumb:hover {
+  box-shadow: 0 2px 12px rgba(59, 130, 246, 0.4), 0 0 0 6px rgba(59, 130, 246, 0.12);
+}
+
+.font-size-slider::-webkit-slider-thumb:active {
+  transform: scale(0.92);
+}
+
+/* Firefox */
+.font-size-slider::-moz-range-track {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--glass-bg-light);
+  border: 0.5px solid var(--glass-border-subtle);
+}
+
+.font-size-slider::-moz-range-progress {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--accent-blue);
+}
+
+.font-size-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--surface-strong);
+  border: 2px solid var(--accent-blue);
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.25);
+  cursor: pointer;
+}
+
+.font-size-value {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-main);
+  background: var(--glass-bg);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: 6px;
+  padding: 4px 10px;
+  min-width: 44px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+/* 开关切换 */
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  cursor: pointer;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--glass-bg-light);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  transition: all 0.2s;
+}
+
+.toggle-slider::before {
+  content: "";
+  position: absolute;
+  height: 18px;
+  width: 18px;
+  left: 2px;
+  bottom: 2px;
+  background: var(--text-muted);
+  border-radius: 50%;
+  transition: all 0.2s;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(20px);
+  background: white;
 }
 
 /* 按钮组样式 */

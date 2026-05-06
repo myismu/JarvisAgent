@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
+import { usePreferences } from "../../composables/usePreferences";
 import type {
   AgentDisplayMode,
   AgentExecutionLog,
@@ -28,6 +29,8 @@ const hasExecution = computed(
   () => thinkingItems.value.length > 0 || props.toolCalls.length > 0 || logItems.value.length > 0,
 );
 const isDeveloperMode = computed(() => props.mode === "developer");
+const { defaultExpandThinking } = usePreferences();
+const shouldExpand = computed(() => isDeveloperMode.value || defaultExpandThinking);
 
 const summaryText = computed(() => {
   const state = props.running ? t('execution.running') : t('execution.completed');
@@ -48,7 +51,7 @@ const markdown = (content?: string) => renderMarkdown(content || "");
     v-if="hasExecution"
     class="agent-execution-panel"
     :class="[mode, { running }]"
-    :open="isDeveloperMode"
+    :open="shouldExpand"
   >
     <summary>
       <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
@@ -78,13 +81,13 @@ const markdown = (content?: string) => renderMarkdown(content || "");
       v-for="block in thinkingItems"
       :key="block.id"
       class="agent-thinking-block"
-      :open="isDeveloperMode"
+      :open="shouldExpand"
     >
       <summary>{{ t('execution.thinkingTitle', { loop: block.loop || 1 }) }}</summary>
       <div v-html="markdown(block.content)"></div>
     </details>
 
-    <details v-if="logItems.length" class="agent-execution-logs" :open="isDeveloperMode">
+    <details v-if="logItems.length" class="agent-execution-logs" :open="shouldExpand">
       <summary>{{ t('execution.executionLogsTitle', { count: logItems.length }) }}</summary>
       <div
         v-for="log in logItems"

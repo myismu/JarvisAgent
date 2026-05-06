@@ -171,6 +171,8 @@ async fn classify_intent_by_llm(
                 thinking: None,
                 thinking_budget: None,
                 enable_thinking: None,
+                extra_body: None,
+                parameters: None,
                 temperature: request_body.temperature,
                 top_p: request_body.top_p,
             };

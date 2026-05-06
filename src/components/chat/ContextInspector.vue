@@ -13,7 +13,7 @@
 - 只展示后端提供的估算值，不改变 Agent 请求或压缩策略
 -->
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ContextSectionSnapshot, SessionContextSnapshot } from '../../types';
 
@@ -130,6 +130,19 @@ const driftText = computed(() => {
   const sign = drift > 0 ? '+' : '';
   return `${sign}${drift.toFixed(1)}%`;
 });
+
+const copiedSection = ref<string | null>(null);
+
+const copySectionContent = async (section: ContextSectionSnapshot) => {
+  const text = sectionContent(section);
+  try {
+    await navigator.clipboard.writeText(text);
+    copiedSection.value = section.key;
+    setTimeout(() => { copiedSection.value = null; }, 1500);
+  } catch {
+    // fallback silently
+  }
+};
 </script>
 
 <template>
@@ -250,7 +263,16 @@ const driftText = computed(() => {
           <span>{{ t('monitor.context.sectionDetailMeta', { chars: formatFullNumber(section.chars), method: methodLabel(section.tokenCountMethod) }) }}</span>
           <span v-if="section.truncated">{{ t('monitor.context.truncated') }}</span>
         </div>
-        <pre>{{ sectionContent(section) }}</pre>
+        <div class="context-section-body">
+          <pre>{{ sectionContent(section) }}</pre>
+          <button
+            class="copy-btn"
+            :class="{ copied: copiedSection === section.key }"
+            @click.stop="copySectionContent(section)"
+          >
+            {{ copiedSection === section.key ? '已复制' : '复制' }}
+          </button>
+        </div>
       </details>
     </div>
   </div>
@@ -605,10 +627,13 @@ const driftText = computed(() => {
   font-variant-numeric: tabular-nums;
 }
 
+.context-section-body {
+  position: relative;
+}
+
 .context-section-item pre {
-  max-height: 220px;
   margin: 6px 8px 8px;
-  padding: 8px;
+  padding: 8px 60px 8px 8px;
   overflow: auto;
   color: var(--text-main);
   border: 1px solid var(--border-color);
@@ -619,6 +644,31 @@ const driftText = computed(() => {
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.copy-btn {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  padding: 2px 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--glass-bg);
+  color: var(--text-muted);
+  font-size: 0.55rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.copy-btn:hover {
+  color: var(--text-main);
+  border-color: var(--text-muted);
+}
+
+.copy-btn.copied {
+  color: var(--accent-green);
+  border-color: var(--accent-green);
 }
 
 @media (max-width: 560px) {

@@ -78,6 +78,37 @@ struct AbsoluteUndoEntry {
     original_content: Option<String>,
 }
 
+/// 带重试的文件操作（处理 Windows 文件锁，供回滚时使用）
+async fn retry_fs_op<F, T>(op: F, max_retries: u32) -> Result<T, ReplayError>
+where
+    F: Fn() -> Result<T, std::io::Error>,
+{
+    let mut last_err = None;
+    for attempt in 0..=max_retries {
+        match op() {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                let is_locked = e.kind() == std::io::ErrorKind::PermissionDenied
+                    || e.raw_os_error() == Some(32)
+                    || e.raw_os_error() == Some(5);
+                if is_locked && attempt < max_retries {
+                    println!(
+                        "[ROLLBACK] File locked (attempt {}/{}), retrying in {}ms...",
+                        attempt + 1, max_retries, 300 * (attempt + 1)
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        300 * (attempt as u64 + 1),
+                    )).await;
+                    last_err = Some(e);
+                    continue;
+                }
+                return Err(ReplayError::IoError(e));
+            }
+        }
+    }
+    Err(ReplayError::IoError(last_err.unwrap()))
+}
+
 /// 默认会话文件回滚器，只处理 patch 记录过的绝对路径
 struct AbsoluteFileRollback {
     entries: Vec<AbsoluteRestoreEntry>,
@@ -469,7 +500,7 @@ impl AbsoluteFileRollback {
         let mut undo_log = Vec::new();
 
         for entry in &self.entries {
-            match apply_absolute_restore_entry(entry) {
+            match apply_absolute_restore_entry(entry).await {
                 Ok(undo) => undo_log.push(undo),
                 Err(err) => {
                     let rollback_err = restore_absolute_undo_log(&undo_log).err();
@@ -488,7 +519,7 @@ impl AbsoluteFileRollback {
     }
 }
 
-fn apply_absolute_restore_entry(
+async fn apply_absolute_restore_entry(
     entry: &AbsoluteRestoreEntry,
 ) -> Result<AbsoluteUndoEntry, ReplayError> {
     let original_content = if entry.path.exists() {
@@ -502,11 +533,14 @@ fn apply_absolute_restore_entry(
             if let Some(parent) = entry.path.parent() {
                 fs::create_dir_all(parent)?;
             }
-            fs::write(&entry.path, content)?;
+            let content_clone = content.clone();
+            let p = entry.path.clone();
+            retry_fs_op(|| std::fs::write(&p, &content_clone), 5).await?;
         }
         None => {
             if entry.path.exists() {
-                fs::remove_file(&entry.path)?;
+                let p = entry.path.clone();
+                retry_fs_op(|| std::fs::remove_file(&p), 5).await?;
             }
         }
     }
@@ -593,7 +627,7 @@ impl AtomicFileRollback {
         })
     }
 
-    /// 执行原子回滚（先写入临时目录，再批量重命名）
+    /// 执行原子回滚（先写入临时目录，再批量重命名，遇文件锁自动重试）
     pub async fn execute(&self) -> Result<(), ReplayError> {
         let staging_dir = self.temp_dir.join(format!("staging-{}", Uuid::new_v4()));
         fs::create_dir_all(&staging_dir)?;
@@ -606,10 +640,22 @@ impl AtomicFileRollback {
 
             match &entry.action {
                 UndoAction::Create { content } => {
-                    fs::write(&staging_path, content)?;
+                    let content_clone = content.clone();
+                    let p = staging_path.clone();
+                    retry_fs_op(
+                        || std::fs::write(&p, &content_clone),
+                        3,
+                    )
+                    .await?;
                 }
                 UndoAction::Update { new_content, .. } => {
-                    fs::write(&staging_path, new_content)?;
+                    let content_clone = new_content.clone();
+                    let p = staging_path.clone();
+                    retry_fs_op(
+                        || std::fs::write(&p, &content_clone),
+                        3,
+                    )
+                    .await?;
                 }
                 UndoAction::Delete { .. } => {}
             }
@@ -625,17 +671,34 @@ impl AtomicFileRollback {
                         fs::create_dir_all(parent)?;
                     }
                     if staging_path.exists() {
-                        fs::rename(&staging_path, &target_path)?;
+                        let sp = staging_path.clone();
+                        let tp = target_path.clone();
+                        retry_fs_op(
+                            || std::fs::rename(&sp, &tp),
+                            5,
+                        )
+                        .await?;
                     }
                 }
                 UndoAction::Update { .. } => {
                     if staging_path.exists() {
-                        fs::rename(&staging_path, &target_path)?;
+                        let sp = staging_path.clone();
+                        let tp = target_path.clone();
+                        retry_fs_op(
+                            || std::fs::rename(&sp, &tp),
+                            5,
+                        )
+                        .await?;
                     }
                 }
                 UndoAction::Delete { .. } => {
                     if target_path.exists() {
-                        fs::remove_file(&target_path)?;
+                        let tp = target_path.clone();
+                        retry_fs_op(
+                            || std::fs::remove_file(&tp),
+                            5,
+                        )
+                        .await?;
                     }
                 }
             }

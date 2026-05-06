@@ -78,6 +78,6 @@ pub use commands::snapshot::{
     snapshot_rollback, snapshot_switch_branch,
 };
 pub use commands::window_state::{
-    clear_custom_window_states, get_custom_window_state, list_custom_window_states,
-    save_custom_window_state,
+    clear_custom_window_states, get_custom_window_state, get_ui_preferences,
+    list_custom_window_states, save_custom_window_state, save_ui_preferences,
 };

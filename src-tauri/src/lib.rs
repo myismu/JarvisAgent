@@ -145,6 +145,8 @@ pub fn run() {
             // 权限控制
             core::commands::permission::cancel_jarvis,
             core::commands::permission::resolve_permission,
+            core::commands::permission::get_permission_state,
+            core::commands::permission::revoke_session_permission,
             // 会话管理
             core::commands::session::recall_last_message,
             core::commands::session::recall_message,
@@ -206,6 +208,8 @@ pub fn run() {
             core::commands::window_state::get_custom_window_state,
             core::commands::window_state::list_custom_window_states,
             core::commands::window_state::save_custom_window_state,
+            core::commands::window_state::get_ui_preferences,
+            core::commands::window_state::save_ui_preferences,
             // 沙盒会话
             core::commands::sandbox::sandbox_create,
             core::commands::sandbox::sandbox_get,

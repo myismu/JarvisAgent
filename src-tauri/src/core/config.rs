@@ -68,9 +68,9 @@ impl AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            api_format: "anthropic".to_string(),
+            api_format: "openai".to_string(),
             api_key: String::new(),
-            base_url: "https://api.xiaomimimo.com/anthropic/v1/messages".to_string(),
+            base_url: "https://api.xiaomimimo.com/v1/chat/completions".to_string(),
             main_model: "mimo-v2-flash".to_string(),
             utility_model: "mimo-v2-flash".to_string(),
             enable_thinking: Some(false),

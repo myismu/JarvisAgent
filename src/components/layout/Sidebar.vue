@@ -200,6 +200,14 @@ const createNewSession = async (withSandbox: boolean = false) => {
     }
 
     sessionStore.activeSessionId = null;
+    // 新建会话时切到全局默认模型
+    try {
+      const config = await invoke<any>('get_config');
+      if (config.globalProfileId) {
+        config.activeProfileId = config.globalProfileId;
+        await invoke('save_config_cmd', { newConfig: config });
+      }
+    } catch { /* ignore */ }
     sessionStore.pendingWorkingDirectory = sandboxDir;
     sessionStore.workingDirectory = sandboxDir;
     sessionStore.resetSessionView(null);

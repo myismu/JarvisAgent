@@ -35,6 +35,7 @@
   /* 字体系统 */
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  --code-font-size: 13px;
 
   /* 毛玻璃核心变量 */
   --glass-bg: rgba(255, 255, 255, 0.45);
@@ -529,3 +530,28 @@ body.dragging-active .editor-container {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* --- 代码块字体 --- */
+.response-text pre code,
+.markdown-code-block pre code {
+  font-size: var(--code-font-size);
+}
+
+/* --- 紧凑模式 --- */
+.compact-mode .response-text :deep(.chat-message) {
+  margin-bottom: 8px;
+}
+.compact-mode .response-text :deep(.message-content) {
+  padding: 8px 14px;
+}
+.compact-mode .response-area {
+  padding-top: 8px;
+}
+.compact-mode .response-text :deep(p) {
+  margin-bottom: 0.35em;
+}
+.compact-mode .response-text :deep(pre) {
+  padding: 8px;
+  margin-bottom: 0.35em;
+}
+

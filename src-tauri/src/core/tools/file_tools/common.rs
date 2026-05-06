@@ -158,11 +158,133 @@ fn looks_like_binary(bytes: &[u8]) -> bool {
     let sample = &bytes[..sample_len];
     let nul_count = sample.iter().filter(|&&b| b == 0).count();
 
+    // UTF-16 BOM 不是二进制
     if sample.starts_with(&[0xFF, 0xFE]) || sample.starts_with(&[0xFE, 0xFF]) {
         return false;
     }
 
-    nul_count > 0
+    // 任何 null 字节 = 二进制
+    if nul_count > 0 {
+        return true;
+    }
+
+    // 检测已知二进制/压缩文件魔数
+    if has_binary_magic_bytes(sample) {
+        return true;
+    }
+
+    // 非可打印字符比例超过 10% 视为二进制（排除常见的空白字符）
+    let non_printable_ratio = non_printable_ratio(sample);
+    non_printable_ratio > 0.10
+}
+
+/// 已知二进制/压缩文件格式的魔数
+fn has_binary_magic_bytes(sample: &[u8]) -> bool {
+    if sample.len() < 4 {
+        return false;
+    }
+    // gzip (.gz)
+    if sample.starts_with(&[0x1F, 0x8B]) {
+        return true;
+    }
+    // zip / jar / docx / xlsx / pptx / apk
+    if sample.starts_with(&[0x50, 0x4B, 0x03, 0x04])
+        || sample.starts_with(&[0x50, 0x4B, 0x05, 0x06])
+        || sample.starts_with(&[0x50, 0x4B, 0x07, 0x08])
+    {
+        return true;
+    }
+    // 7-zip (.7z)
+    if sample.starts_with(b"7z\xBC\xAF\x27\x1C") {
+        return true;
+    }
+    // xz (.xz / .tar.xz)
+    if sample.starts_with(&[0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]) {
+        return true;
+    }
+    // bzip2 (.bz2)
+    if sample.starts_with(b"BZh") {
+        return true;
+    }
+    // zstd (.zst)
+    if sample.starts_with(&[0x28, 0xB5, 0x2F, 0xFD]) {
+        return true;
+    }
+    // lz4
+    if sample.starts_with(&[0x04, 0x22, 0x4D, 0x18]) {
+        return true;
+    }
+    // Windows PE (.exe, .dll, .sys, .pdb)
+    if sample.starts_with(b"MZ") {
+        return true;
+    }
+    // ELF (Linux binary)
+    if sample.starts_with(&[0x7F, b'E', b'L', b'F']) {
+        return true;
+    }
+    // Mach-O (macOS binary)
+    if sample.starts_with(&[0xCF, 0xFA, 0xED, 0xFE])
+        || sample.starts_with(&[0xCE, 0xFA, 0xED, 0xFE])
+        || sample.starts_with(&[0xFE, 0xED, 0xFA, 0xCF])
+        || sample.starts_with(&[0xFE, 0xED, 0xFA, 0xCE])
+    {
+        return true;
+    }
+    // RAR
+    if sample.starts_with(b"Rar!\x1A\x07")
+        || sample.starts_with(b"Rar!\x1A\x07\x01\x00")
+    {
+        return true;
+    }
+    // tar (ustar)
+    if sample.len() >= 262 && &sample[257..262] == b"ustar" {
+        return true;
+    }
+    // MSI / OLE2 (Office 旧格式)
+    if sample.starts_with(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]) {
+        return true;
+    }
+    // PNG
+    if sample.starts_with(&[0x89, b'P', b'N', b'G']) {
+        return true;
+    }
+    // JPEG
+    if sample.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return true;
+    }
+    // WebP
+    if sample.len() >= 12 && &sample[..4] == b"RIFF" && &sample[8..12] == b"WEBP" {
+        return true;
+    }
+    // GIF
+    if sample.starts_with(b"GIF8") {
+        return true;
+    }
+    // PDF
+    if sample.starts_with(b"%PDF") {
+        return true;
+    }
+    // ISO / DMG / raw disk images
+    if sample.starts_with(&[0x43, 0x44, 0x30, 0x30, 0x31]) {
+        return true; // CD001
+    }
+    // WebAssembly (.wasm)
+    if sample.starts_with(&[0x00, 0x61, 0x73, 0x6D]) {
+        return true;
+    }
+    false
+}
+
+/// 计算非可打印字符比例（排除 \t \n \r）
+fn non_printable_ratio(sample: &[u8]) -> f64 {
+    if sample.is_empty() {
+        return 0.0;
+    }
+    let non_printable = sample
+        .iter()
+        .filter(|&&b| b != b'\t' && b != b'\n' && b != b'\r' && (b < 0x20 || b == 0x7F))
+        .count();
+    non_printable as f64 / sample.len() as f64
 }
 
 fn invalid_data_error(message: &str) -> io::Error {
@@ -214,6 +336,78 @@ pub(super) fn is_static_asset_extension(ext: &str) -> bool {
 
 pub(super) fn is_search_skipped_extension(ext: &str) -> bool {
     is_static_asset_extension(ext) || matches!(ext.to_lowercase().as_str(), "pdf" | "zip")
+}
+
+/// 检查扩展名是否属于二进制/压缩文件（不应作文本读取）
+pub fn is_binary_extension(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| is_binary_ext_str(ext))
+        .unwrap_or(false)
+}
+
+fn is_binary_ext_str(ext: &str) -> bool {
+    matches!(
+        ext.to_lowercase().as_str(),
+        // 压缩/归档
+        "zip" | "gz" | "tar" | "bz2" | "xz" | "7z" | "zst" | "lz4" | "rar" | "tgz" | "tbz2" | "txz"
+        // 可执行/库
+        | "exe" | "dll" | "so" | "dylib" | "pdb" | "sys" | "msi" | "app" | "bin"
+        // 图片（直接读取无意义）
+        | "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "icns" | "tiff" | "tif"
+        // 音视频
+        | "mp3" | "mp4" | "wav" | "ogg" | "flac" | "avi" | "mov" | "mkv" | "webm" | "m4a" | "aac"
+        // 字体
+        | "ttf" | "otf" | "woff" | "woff2" | "eot"
+        // 文档（按文本读取无意义）
+        | "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "odt" | "ods" | "odp"
+        // 其他二进制
+        | "wasm" | "class" | "pyc" | "pyo" | "o" | "obj" | "lib" | "a" | "dex" | "apk"
+        | "whl" | "egg" | "rlib" | "rmeta" | "ilk" | "exp" | "res" | "manifest"
+        | "pak" | "dat" | "db" | "sqlite" | "sqlite3" | "mdb" | "accdb"
+    )
+}
+
+/// 检查文件扩展名并给出替代工具建议
+pub fn binary_file_read_error(path: &std::path::Path) -> Option<String> {
+    if !is_binary_extension(path) {
+        return None;
+    }
+    let ext = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let suggestion = match ext.as_str() {
+        "zip" | "gz" | "tar" | "bz2" | "xz" | "7z" | "zst" | "lz4" | "rar" | "tgz" | "tbz2" | "txz" => {
+            "这是压缩文件，请使用 RunCommand 执行解压命令（如 Expand-Archive / tar -xzf）查看内容，不要用 ReadFile 直接读取。"
+        }
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "icns" | "tiff" | "tif" => {
+            "这是图片文件，ReadFile 会读取无意义的二进制数据。请直接使用 ReadFile 查看图片（系统支持图片渲染）。"
+        }
+        "pdf" => {
+            "这是 PDF 文件，请使用 ReadFile 并指定 pages 参数读取（如 pages: \"1-5\"），不要全文读取。"
+        }
+        "docx" | "xlsx" | "pptx" | "doc" | "xls" | "ppt" | "odt" | "ods" | "odp" => {
+            "这是 Office 文档格式，无法直接按文本读取。如需查看内容，请使用对应的办公软件打开。"
+        }
+        "exe" | "dll" | "so" | "dylib" | "pdb" | "sys" | "bin" | "wasm" | "class" | "pyc" | "pyo" | "o" | "obj" | "lib" | "a" | "rlib" | "rmeta" | "ilk" => {
+            "这是编译产物/二进制文件，无法按文本读取。请读取对应的源代码文件。"
+        }
+        "mp3" | "mp4" | "wav" | "ogg" | "flac" | "avi" | "mov" | "mkv" | "webm" | "m4a" | "aac" => {
+            "这是音视频文件，无法按文本读取。"
+        }
+        "db" | "sqlite" | "sqlite3" | "mdb" | "accdb" => {
+            "这是数据库文件，请使用对应的数据库工具查看，不要用 ReadFile 直接读取。"
+        }
+        _ => "这是二进制文件格式，无法按文本读取。",
+    };
+    Some(format!(
+        "读取错误: 文件 '{}' 的扩展名 .{} 表明这是二进制格式。\n{}",
+        path.display(),
+        ext,
+        suggestion
+    ))
 }
 
 pub(super) fn is_locked_file_error(err_msg: &str) -> bool {
@@ -303,5 +497,71 @@ mod tests {
         let result = decode_text_preserve_encoding(&[0x00, 0x01, 0x02, 0x03]);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn detects_gzip_magic_bytes() {
+        // gzip magic: 1F 8B
+        let bytes = vec![0x1F, 0x8B, 0x08, 0x00];
+        assert!(looks_like_binary(&bytes));
+    }
+
+    #[test]
+    fn detects_zip_magic_bytes() {
+        // zip magic: 50 4B 03 04
+        let bytes = vec![0x50, 0x4B, 0x03, 0x04, 0x00, 0x00];
+        assert!(looks_like_binary(&bytes));
+    }
+
+    #[test]
+    fn detects_pe_magic_bytes() {
+        // Windows PE magic: MZ
+        let bytes = b"MZ\x00\x00PE\x00\x00".to_vec();
+        assert!(looks_like_binary(&bytes));
+    }
+
+    #[test]
+    fn detects_binary_by_non_printable_ratio() {
+        // 50% non-printable bytes
+        let mut bytes = vec![b'a'; 500];
+        bytes.extend(vec![0x01; 500]); // 500 non-printable + 500 printable = 50%
+        assert!(looks_like_binary(&bytes));
+    }
+
+    #[test]
+    fn text_file_passes_all_checks() {
+        // Normal text should NOT be detected as binary
+        let bytes = b"fn main() {\n    println!(\"Hello\");\n}\n".to_vec();
+        assert!(!looks_like_binary(&bytes));
+    }
+
+    #[test]
+    fn utf8_with_unicode_passes() {
+        let bytes = "中文 hello мир".as_bytes().to_vec();
+        assert!(!looks_like_binary(&bytes));
+    }
+
+    #[test]
+    fn binary_extensions_are_detected_for_tar_gz() {
+        assert!(is_binary_extension(std::path::Path::new("archive.tar.gz")));
+        assert!(is_binary_extension(std::path::Path::new("app.exe")));
+        assert!(is_binary_extension(std::path::Path::new("lib.dll")));
+        assert!(is_binary_extension(std::path::Path::new("debug.pdb")));
+        assert!(is_binary_extension(std::path::Path::new("data.zip")));
+        assert!(is_binary_extension(std::path::Path::new("image.png")));
+    }
+
+    #[test]
+    fn text_extensions_are_not_binary() {
+        assert!(!is_binary_extension(std::path::Path::new("main.rs")));
+        assert!(!is_binary_extension(std::path::Path::new("app.tsx")));
+        assert!(!is_binary_extension(std::path::Path::new("README.md")));
+        assert!(!is_binary_extension(std::path::Path::new(".gitignore")));
+        assert!(!is_binary_extension(std::path::Path::new("Makefile.toml")));
+    }
+
+    #[test]
+    fn svg_is_not_binary() {
+        assert!(!is_binary_extension(std::path::Path::new("icon.svg")));
     }
 }

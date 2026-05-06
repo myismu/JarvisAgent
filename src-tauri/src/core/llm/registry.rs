@@ -98,6 +98,63 @@ pub fn get_model_capabilities(model_id: String) -> Option<ModelCapabilities> {
     query_capabilities(&model_id)
 }
 
+/// 统一入口：根据模型注册表的 thinkingParam，向 OpenAIRequest 写入思考参数
+/// should_think=true 开启，false 显式关闭。不匹配或无能力时不做任何操作。
+pub fn apply_thinking_for_model(
+    req: &mut crate::core::models::OpenAIRequest,
+    model_id: &str,
+    should_think: bool,
+) {
+    let Some(caps) = query_capabilities(model_id) else { return };
+    if !caps.thinking { return; }
+    match caps.thinking_param.as_deref() {
+        Some("reasoning_effort") => {
+            if should_think {
+                req.reasoning_effort = Some("high".to_string());
+            }
+        }
+        Some("thinking") => {
+            req.thinking = Some(crate::core::models::ThinkingConfig {
+                r#type: Some(if should_think { "enabled" } else { "disabled" }.to_string()),
+                budget_tokens: None,
+                enable: None,
+            });
+        }
+        Some("thinkingBudget") => {
+            req.thinking_budget = Some(if should_think { 8192 } else { 0 });
+        }
+        Some("enable_thinking") => {
+            req.enable_thinking = Some(should_think);
+        }
+        Some("extra_thinking") | Some("extra_enable_thinking") => {
+            let key = if caps.thinking_param.as_deref() == Some("extra_enable_thinking") {
+                "enable_thinking"
+            } else {
+                "thinking"
+            };
+            req.extra_body = Some(serde_json::json!({ key: should_think }));
+        }
+        Some("extra_chain_of_thought") => {
+            req.extra_body = Some(serde_json::json!({ "chain_of_thought": should_think }));
+        }
+        Some("thinking_enable") => {
+            req.thinking = Some(crate::core::models::ThinkingConfig {
+                r#type: None,
+                budget_tokens: None,
+                enable: Some(should_think),
+            });
+        }
+        Some("enable_thought") => {
+            req.parameters = Some(serde_json::json!({ "enable_thought": should_think }));
+        }
+        _ => {
+            if should_think {
+                req.reasoning_effort = Some("high".to_string());
+            }
+        }
+    }
+}
+
 /// Tauri 命令：返回完整的注册表列表（用于前端下拉选择）
 #[tauri::command]
 pub fn list_model_registry() -> Vec<ModelRegistryEntry> {

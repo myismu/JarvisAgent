@@ -12,7 +12,8 @@
 use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{
-    is_locked_file_error, read_text_preserve_encoding, MAX_FILE_SIZE_BYTES, MAX_LINES_DEFAULT,
+    binary_file_read_error, is_locked_file_error, read_text_preserve_encoding, MAX_FILE_SIZE_BYTES,
+    MAX_LINES_DEFAULT,
 };
 use super::workspace::get_workspace;
 
@@ -223,6 +224,12 @@ pub async fn read_file(
         return e;
     }
 
+    // 二进制扩展名检查（在读取前拒绝）
+    let file_path = std::path::Path::new(path);
+    if let Some(err_msg) = binary_file_read_error(file_path) {
+        return err_msg;
+    }
+
     // 文件大小限制检查
     if let Ok(meta) = std::fs::metadata(path) {
         if meta.len() > MAX_FILE_SIZE_BYTES {
@@ -302,6 +309,10 @@ pub async fn read_file_skeleton(
     let ws = get_workspace(app, session_id).await;
     if let Err(e) = ensure_path_permission(app, path, "读取", ws.as_deref()).await {
         return e;
+    }
+    let file_path = std::path::Path::new(path);
+    if let Some(err_msg) = binary_file_read_error(file_path) {
+        return err_msg;
     }
     match read_text_preserve_encoding(path) {
         Ok(decoded) => {

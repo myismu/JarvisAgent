@@ -571,40 +571,25 @@ pub async fn get_session_history(
     };
 
     let stored_messages = session::list_visible_session_messages(&session_id)?;
-    let mut message_id_to_memory_index = HashMap::new();
-    for (idx, message_id) in memory.message_ids.iter().enumerate() {
-        message_id_to_memory_index.insert(message_id.clone(), idx);
-    }
-    let render_messages = if stored_messages.is_empty() {
+    // stored_messages 和 session_memory 表是同一次 save_session 写入的，
+    // 顺序完全一致，直接用 enumerate() 的 idx 作为 memory_index，无需 HashMap 查找
+    let render_messages: Vec<_> = if stored_messages.is_empty() {
         memory
             .messages
             .iter()
             .enumerate()
             .map(|(idx, message)| {
-                (
-                    idx,
-                    memory.message_ids.get(idx).cloned(),
-                    None,
-                    message.clone(),
-                )
+                (idx, memory.message_ids.get(idx).cloned(), None, message.clone())
             })
-            .collect::<Vec<_>>()
+            .collect()
     } else {
         stored_messages
             .into_iter()
-            .map(|stored| {
-                let memory_index = message_id_to_memory_index
-                    .get(&stored.message_id)
-                    .cloned()
-                    .unwrap_or(stored.seq);
-                (
-                    memory_index,
-                    Some(stored.message_id),
-                    Some(stored.seq),
-                    stored.content,
-                )
+            .enumerate()
+            .map(|(idx, stored)| {
+                (idx, Some(stored.message_id), Some(stored.seq), stored.content)
             })
-            .collect::<Vec<_>>()
+            .collect()
     };
 
     let display_messages = render_messages

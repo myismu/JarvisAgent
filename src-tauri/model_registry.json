@@ -1,6 +1,6 @@
 {
   "_comment": "模型能力注册表 - 使用 include_str!() 编译时内嵌，无需运行时文件。参数依据 doc/ai-models-guide.md 同步；maxTokens 表示最大输出，maxContextTokens 表示最大上下文窗口。",
-  "_lastUpdated": "2026-04-29",
+  "_lastUpdated": "2026-05-06",
   "models": [
     {
       "id": "deepseek-v4-pro",
@@ -10,10 +10,10 @@
       "capabilities": {
         "streaming": true,
         "thinking": true,
-        "thinkingParam": "reasoning_effort",
+        "thinkingParam": "thinking",
         "temperature": false,
         "maxTokens": 384000,
-        "notes": "最新旗舰，支持 thinking/non-thinking 切换，1M 上下文，384K 输出；输入 $1.74/1M tokens（缓存 $0.0145），输出 $3.48/1M tokens；当前 75% 折扣至 2026-05-31；暂不支持视觉",
+        "notes": "最新旗舰，使用 thinking:{type:enabled/disabled} 控制深度思考，1M 上下文，384K 输出；输入 $1.74/1M tokens（缓存 $0.0145），输出 $3.48/1M tokens；当前 75% 折扣至 2026-05-31；暂不支持视觉",
         "vision": false,
         "maxContextTokens": 1000000
       }
@@ -26,10 +26,10 @@
       "capabilities": {
         "streaming": true,
         "thinking": true,
-        "thinkingParam": "reasoning_effort",
+        "thinkingParam": "thinking",
         "temperature": false,
         "maxTokens": 384000,
-        "notes": "轻量快速版，支持 thinking/non-thinking 切换，1M 上下文，384K 输出；输入 $0.14/1M tokens（缓存 $0.0028），输出 $0.28/1M tokens；暂不支持视觉",
+        "notes": "轻量快速版，使用 thinking:{type:enabled/disabled} 控制深度思考，1M 上下文，384K 输出；输入 $0.14/1M tokens（缓存 $0.0028），输出 $0.28/1M tokens；暂不支持视觉",
         "vision": false,
         "maxContextTokens": 1000000
       }
@@ -57,6 +57,7 @@
       "capabilities": {
         "streaming": true,
         "thinking": true,
+        "thinkingParam": "thinking",
         "temperature": false,
         "maxTokens": 8192,
         "notes": "旧版专用推理模型，始终处于推理模式，128K 上下文，8K 输出；输入 $0.55/1M tokens（缓存 $0.14），输出 $2.19/1M tokens；deepseek-reasoner 即将弃用，对应 DeepSeek-V4-Flash thinking 模式",
@@ -419,6 +420,7 @@
       "capabilities": {
         "streaming": true,
         "thinking": true,
+        "thinkingParam": "reasoning_effort",
         "temperature": false,
         "maxTokens": 100000,
         "notes": "旧有高风险长文本分析推理模型；200K 上下文，100K 输出；参数表未给出价格；温度不可调",
@@ -631,6 +633,7 @@
       "capabilities": {
         "streaming": true,
         "thinking": true,
+        "thinkingParam": "extra_enable_thinking",
         "temperature": true,
         "maxTokens": 32768,
         "notes": "MoE 大模型，参数表标注支持深度思考和视觉；参数表未给出上下文和最大输出，沿用 32K 注册上限",
@@ -645,10 +648,10 @@
       "capabilities": {
         "streaming": true,
         "thinking": true,
-        "thinkingParam": "enable_thinking",
+        "thinkingParam": "extra_enable_thinking",
         "temperature": true,
         "maxTokens": 32768,
-        "notes": "阿里旗舰 MoE 推理模型，enable_thinking 参数控制；参数表未单列 Qwen3，保留现有 32K 输出注册上限",
+        "notes": "阿里旗舰 MoE 推理模型，使用 extra_body:{enable_thinking:bool} 控制深度思考；参数表未单列 Qwen3，保留现有 32K 输出注册上限",
         "vision": false
       }
     },
@@ -660,7 +663,7 @@
       "capabilities": {
         "streaming": true,
         "thinking": true,
-        "thinkingParam": "enable_thinking",
+        "thinkingParam": "extra_enable_thinking",
         "temperature": true,
         "maxTokens": 32768,
         "notes": "通义千问 3 稠密旗舰，支持思考模式；参数表未单列 Qwen3，保留现有 32K 输出注册上限",
@@ -675,7 +678,7 @@
       "capabilities": {
         "streaming": true,
         "thinking": true,
-        "thinkingParam": "enable_thinking",
+        "thinkingParam": "extra_enable_thinking",
         "temperature": true,
         "maxTokens": 32768,
         "notes": "中量级推理模型；参数表未单列 Qwen3，保留现有 32K 输出注册上限",
@@ -748,13 +751,134 @@
       "id": "mimo-v2-flash",
       "provider": "XiaoMi",
       "displayName": "MIMO V2 Flash",
-      "apiFormat": "anthropic",
+      "apiFormat": "openai",
       "capabilities": {
         "streaming": true,
-        "thinking": false,
+        "thinking": true,
+        "thinkingParam": "reasoning_effort",
         "temperature": true,
         "maxTokens": 16384,
-        "notes": "小米 MIMO 模型，暂无官方思考参数支持",
+        "notes": "小米 MiMo 快速模型，兼容 OpenAI 格式 reasoning_effort 控制深度思考；默认关闭，需手动开启",
+        "vision": false
+      }
+    },
+    {
+      "id": "mimo-v2-pro",
+      "provider": "XiaoMi",
+      "displayName": "MIMO V2 Pro",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "reasoning_effort",
+        "temperature": true,
+        "maxTokens": 32768,
+        "notes": "小米 MiMo 旗舰模型，兼容 OpenAI 格式 reasoning_effort 控制深度思考；默认关闭，需手动开启",
+        "vision": true
+      }
+    },
+    {
+      "id": "mimo-v2.5-pro",
+      "provider": "XiaoMi",
+      "displayName": "MIMO V2.5 Pro",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "reasoning_effort",
+        "temperature": true,
+        "maxTokens": 65536,
+        "notes": "小米 MiMo 最新旗舰，兼容 OpenAI 格式 reasoning_effort 控制深度思考；默认关闭，需手动开启",
+        "vision": true
+      }
+    },
+    {
+      "id": "mimo-v2-omni",
+      "provider": "XiaoMi",
+      "displayName": "MIMO V2 Omni（全模态）",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "reasoning_effort",
+        "temperature": true,
+        "maxTokens": 65536,
+        "notes": "小米 MiMo 全模态模型，支持文本/图像/音频/视频输入；兼容 OpenAI 格式 reasoning_effort；默认关闭，需手动开启",
+        "vision": true
+      }
+    },
+    {
+      "id": "ernie-5.0-thinking-preview",
+      "provider": "Baidu",
+      "displayName": "文心一言 Ernie 5.0 Thinking",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "extra_enable_thinking",
+        "temperature": true,
+        "maxTokens": 16384,
+        "notes": "百度文心旗舰推理模型，使用 extra_body:{enable_thinking:bool} 控制深度思考；默认关闭",
+        "vision": false
+      }
+    },
+    {
+      "id": "glm-5.1",
+      "provider": "ZhipuAI",
+      "displayName": "智谱 GLM-5.1",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "extra_thinking",
+        "temperature": true,
+        "maxTokens": 32768,
+        "notes": "智谱AI最新旗舰，使用 extra_body:{thinking:bool} 控制深度思考；默认关闭",
+        "vision": true
+      }
+    },
+    {
+      "id": "hunyuan-pro-think",
+      "provider": "Tencent",
+      "displayName": "混元 Pro Think",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "thinking_enable",
+        "temperature": true,
+        "maxTokens": 32768,
+        "notes": "腾讯混元推理模型，使用 thinking:{enable:bool} 控制深度思考；默认关闭",
+        "vision": false
+      }
+    },
+    {
+      "id": "abab6.5s-think",
+      "provider": "MiniMax",
+      "displayName": "MiniMax abab6.5s Think",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "enable_thought",
+        "temperature": true,
+        "maxTokens": 16384,
+        "notes": "MiniMax 推理模型，使用 parameters:{enable_thought:bool} 控制深度思考；默认关闭",
+        "vision": false
+      }
+    },
+    {
+      "id": "kimi-k2.5-pro",
+      "provider": "Moonshot",
+      "displayName": "Kimi K2.5 Pro",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "extra_chain_of_thought",
+        "temperature": true,
+        "maxTokens": 32768,
+        "notes": "月之暗面旗舰推理模型，使用 extra_body:{chain_of_thought:bool} 控制深度思考；默认关闭",
         "vision": false
       }
     }

@@ -39,10 +39,11 @@ pub struct Notification {
 
 /// 后台任务管理器
 ///
-/// 维护所有运行中任务的状态和通知队列
+/// 维护所有运行中任务的状态和通知队列，以及子进程句柄用于安全终止
 pub struct BackgroundManager {
     pub tasks: HashMap<String, BackgroundTask>,
     pub notification_queue: Vec<Notification>,
+    pub child_processes: HashMap<String, Arc<tokio::sync::Mutex<Option<tokio::process::Child>>>>,
 }
 
 impl BackgroundManager {
@@ -50,7 +51,39 @@ impl BackgroundManager {
         Self {
             tasks: HashMap::new(),
             notification_queue: Vec::new(),
+            child_processes: HashMap::new(),
         }
+    }
+
+    /// 终止单个后台任务进程
+    pub async fn kill_task(&mut self, task_id: &str) {
+        if let Some(child_arc) = self.child_processes.remove(task_id) {
+            let mut child_guard = child_arc.lock().await;
+            if let Some(ref mut child) = *child_guard {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                println!("[BACKGROUND] Killed task {}", task_id);
+            }
+        }
+        if let Some(task) = self.tasks.get_mut(task_id) {
+            if task.status == "running" {
+                task.status = "killed".to_string();
+            }
+        }
+    }
+
+    /// 终止所有运行中的后台任务进程（撤回前调用，释放文件锁）
+    pub async fn kill_all(&mut self) {
+        let ids: Vec<String> = self
+            .tasks
+            .iter()
+            .filter(|(_, t)| t.status == "running")
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &ids {
+            self.kill_task(id).await;
+        }
+        println!("[BACKGROUND] Killed {} running tasks", ids.len());
     }
 
     /// 从命令字符串中检测服务端口和任务类型
@@ -171,7 +204,7 @@ impl BackgroundManager {
                     cmd_async
                 );
 
-                let mut child = match tokio::process::Command::new("powershell")
+                let child = match tokio::process::Command::new("powershell")
                     .current_dir(&target_dir)
                     .args(&["-NoProfile", "-Command", &ps_cmd])
                     .stdout(Stdio::piped())
@@ -199,11 +232,24 @@ impl BackgroundManager {
                     }
                 };
 
+                // 保存子进程句柄，用于撤回前安全终止
+                let child_arc = Arc::new(tokio::sync::Mutex::new(Some(child)));
+                {
+                    let mut bg = state_clone.lock().await;
+                    bg.child_processes.insert(task_id_async.clone(), child_arc.clone());
+                }
+
+                // 取出 child 用于后续流式读取
+                let mut child_owned = {
+                    let mut guard = child_arc.lock().await;
+                    guard.take().expect("child just inserted")
+                };
+
                 let output_buffer = Arc::new(tokio::sync::Mutex::new(String::new()));
                 let max_output = crate::core::constants::MAX_BACKGROUND_OUTPUT_LEN;
 
-                let stdout = child.stdout.take();
-                let stderr = child.stderr.take();
+                let stdout = child_owned.stdout.take();
+                let stderr = child_owned.stderr.take();
 
                 if let Some(stdout) = stdout {
                     let reader = BufReader::new(stdout);
@@ -241,7 +287,7 @@ impl BackgroundManager {
                     });
                 }
 
-                let status = match child.wait().await {
+                let status = match child_owned.wait().await {
                     Ok(s) => {
                         if s.success() {
                             "completed"
@@ -270,6 +316,8 @@ impl BackgroundManager {
                         task.status = status.to_string();
                         task.result = Some(final_output.clone());
                     }
+                    // 清理子进程句柄
+                    bg.child_processes.remove(&task_id_async);
 
                     bg.notification_queue.push(Notification {
                         task_id: task_id_async,
@@ -348,6 +396,14 @@ impl BackgroundManager {
             notifs
         } else {
             Vec::new()
+        }
+    }
+
+    /// 终止所有运行中的后台任务（撤回文件前调用，释放文件锁）
+    pub async fn kill_all_background(app: &tauri::AppHandle) {
+        if let Some(state) = app.try_state::<BackgroundState>() {
+            let mut bg = state.0.lock().await;
+            bg.kill_all().await;
         }
     }
 }

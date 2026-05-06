@@ -188,7 +188,9 @@ pub fn append_or_upsert_session_messages(
                     role = excluded.role,
                     content_json = excluded.content_json,
                     updated_at = excluded.updated_at,
-                    source = excluded.source",
+                    source = excluded.source,
+                    hidden_at = NULL,
+                    recalled_at = NULL",
                 params![
                     session_id,
                     message_id,
@@ -240,7 +242,9 @@ pub fn find_session_message_by_id(
             "SELECT message_id, seq, role, content_json, created_at, updated_at, recalled_at,
                     hidden_at, source, turn_id
              FROM session_messages
-             WHERE session_id = ?1 AND message_id = ?2",
+             WHERE session_id = ?1 AND message_id = ?2
+               AND hidden_at IS NULL
+               AND recalled_at IS NULL",
             params![session_id, message_id],
             stored_session_message_from_row,
         )
@@ -287,6 +291,47 @@ pub fn delete_session_messages_from_seq(session_id: &str, seq: usize) -> Result<
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    })
+}
+
+/// 隐藏 session_messages 中已不在 memory.message_ids 里的孤儿行
+/// 压缩后 message_ids 被替换为新ID，旧行需要标记 hidden 以保持两表一致
+pub fn hide_orphan_session_messages(session_id: &str, alive_message_ids: &[String]) -> Result<usize, String> {
+    crate::core::db::with_connection(|conn| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        // 将不在 alive_message_ids 中且未被隐藏的行标记 hidden_at
+        let placeholders: Vec<String> = alive_message_ids.iter().enumerate()
+            .map(|(i, _)| format!("?{}", i + 3))
+            .collect();
+        let sql = if alive_message_ids.is_empty() {
+            "UPDATE session_messages
+             SET hidden_at = COALESCE(hidden_at, ?1), updated_at = ?2
+             WHERE session_id = ?3 AND hidden_at IS NULL".to_string()
+        } else {
+            format!(
+                "UPDATE session_messages
+                 SET hidden_at = COALESCE(hidden_at, ?1), updated_at = ?2
+                 WHERE session_id = ?3 AND hidden_at IS NULL AND message_id NOT IN ({})",
+                placeholders.join(",")
+            )
+        };
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+            Box::new(now),
+            Box::new(now),
+            Box::new(session_id.to_string()),
+        ];
+        for id in alive_message_ids {
+            params.push(Box::new(id.clone()));
+        }
+        let affected = conn.execute(
+            &sql,
+            rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(affected)
     })
 }
 

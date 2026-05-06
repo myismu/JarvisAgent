@@ -34,9 +34,12 @@ pub struct JarvisResult {
 
 #[derive(Serialize, Clone, Debug)]
 pub struct ThinkingConfig {
-    pub r#type: String, // "enabled" or "disabled"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<String>, // "enabled" / "disabled" (Doubao/DeepSeek)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_tokens: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable: Option<bool>, // Hunyuan 格式
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -83,6 +86,10 @@ pub struct OpenAIRequest {
     pub thinking_budget: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_thinking: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_body: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]

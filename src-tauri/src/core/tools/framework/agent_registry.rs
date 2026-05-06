@@ -21,6 +21,10 @@ const GENERAL_TOOLS: &[&str] = &[
     "SearchRepo",
     "ReadFile",
     "ReadFileSkeleton",
+    "FindSymbol",
+    "ReadSymbol",
+    "FindReferences",
+    "CodeSearch",
     "WriteFile",
     "EditFile",
     "EditNotebook",
@@ -39,6 +43,10 @@ const READ_ONLY_RESEARCH_TOOLS: &[&str] = &[
     "SearchRepo",
     "ReadFile",
     "ReadFileSkeleton",
+    "FindSymbol",
+    "ReadSymbol",
+    "FindReferences",
+    "CodeSearch",
     "RunGitCommand",
     "CheckBackgroundCommand",
 ];
@@ -52,6 +60,10 @@ const VERIFICATION_TOOLS: &[&str] = &[
     "SearchRepo",
     "ReadFile",
     "ReadFileSkeleton",
+    "FindSymbol",
+    "ReadSymbol",
+    "FindReferences",
+    "CodeSearch",
     "RunCommand",
     "RunGitCommand",
     "CheckBackgroundCommand",
@@ -92,7 +104,7 @@ impl AgentRegistry {
                 disallowed_tools: &[],
                 model: None,
                 read_only_default: true,
-                max_turns: None,
+                max_turns: Some(30),
             });
 
             registry.register(AgentDefinition {
@@ -103,7 +115,7 @@ impl AgentRegistry {
                 disallowed_tools: &[],
                 model: None,
                 read_only_default: true,
-                max_turns: Some(8),
+                max_turns: Some(20),
             });
 
             registry.register(AgentDefinition {
@@ -114,7 +126,7 @@ impl AgentRegistry {
                 disallowed_tools: &[],
                 model: None,
                 read_only_default: true,
-                max_turns: Some(8),
+                max_turns: Some(15),
             });
 
             registry.register(AgentDefinition {
@@ -125,7 +137,7 @@ impl AgentRegistry {
                 disallowed_tools: &[],
                 model: None,
                 read_only_default: true,
-                max_turns: Some(8),
+                max_turns: Some(15),
             });
 
             registry.register(AgentDefinition {
@@ -136,7 +148,7 @@ impl AgentRegistry {
                 disallowed_tools: &["WriteFile", "EditFile", "EditNotebook", "StartBackgroundCommand"],
                 model: None,
                 read_only_default: false,
-                max_turns: Some(10),
+                max_turns: Some(20),
             });
 
             registry.register(AgentDefinition {
@@ -147,7 +159,7 @@ impl AgentRegistry {
                 disallowed_tools: &[],
                 model: None,
                 read_only_default: false,
-                max_turns: None,
+                max_turns: Some(50),
             });
 
             registry

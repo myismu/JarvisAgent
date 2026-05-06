@@ -125,6 +125,13 @@ const switchProfile = async (id: string) => {
       if (activeProfile) {
         await checkModelCapabilities(activeProfile.config.mainModel);
       }
+      // 切模型后刷新历史，确保 data-user-message-index 同步
+      try {
+        if (session.activeSessionId) {
+          const history = await invoke<string>('get_session_history', { sessionId: session.activeSessionId });
+          session.replaceSessionHistory(session.activeSessionId, history);
+        }
+      } catch { /* ignore */ }
     } catch (e) {
       console.error('Failed to switch profile:', e);
     }
@@ -199,11 +206,23 @@ const processDroppedFiles = async (paths: string[]) => {
 
 onMounted(async () => {
   await loadConfig();
+  // 如果没有活跃会话，将模型初始化为全局默认
+  if (!session.activeSessionId && appConfig.value?.globalProfileId) {
+    appConfig.value.activeProfileId = appConfig.value.globalProfileId;
+    await invoke('save_config_cmd', { newConfig: appConfig.value });
+  }
   await loadImageCompressConfig();
-  
-  unlistenConfig = await listen('config-updated', () => {
+
+  unlistenConfig = await listen('config-updated', async () => {
     loadConfig();
     loadImageCompressConfig();
+    // 配置变更后刷新历史，确保 data-user-message-index 同步
+    try {
+      if (session.activeSessionId) {
+        const history = await invoke<string>('get_session_history', { sessionId: session.activeSessionId });
+        session.replaceSessionHistory(session.activeSessionId, history);
+      }
+    } catch { /* ignore */ }
   });
 
   document.addEventListener('click', closeMenuOnOutsideClick);
@@ -813,6 +832,27 @@ const handleRecallEdit = async () => {
   color: white;
   border-color: transparent;
   transform: translateY(-1px);
+}
+
+.recall-dismiss-btn {
+  background: none;
+  border: none;
+  color: var(--accent-blue);
+  opacity: 0.6;
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  transition: all var(--transition-fast);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.recall-dismiss-btn:hover {
+  opacity: 1;
+  background: rgba(59, 130, 246, 0.15);
 }
 
 .resume-run-bar {

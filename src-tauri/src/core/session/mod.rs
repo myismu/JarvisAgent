@@ -181,16 +181,48 @@ pub fn create_session(working_directory: Option<String>) -> SessionMeta {
 
 /// 保证会话消息 ID 与消息数组长度一致。
 pub fn normalize_message_ids(memory: &mut SessionMemory) {
-    if memory.message_ids.len() > memory.messages.len() {
-        memory.message_ids.truncate(memory.messages.len());
+    let msg_count = memory.messages.len();
+    let id_count = memory.message_ids.len();
+
+    // 多余的 message_ids（通常不会发生）直接截断
+    if id_count > msg_count {
+        memory.message_ids.truncate(msg_count);
     }
+
+    // 填充空的 message_id
     for message_id in &mut memory.message_ids {
         if message_id.trim().is_empty() {
             *message_id = uuid::Uuid::new_v4().to_string();
         }
     }
-    while memory.message_ids.len() < memory.messages.len() {
-        memory.message_ids.push(uuid::Uuid::new_v4().to_string());
+
+    // 补齐缺失的 message_id（数组长度不一致时）
+    // 使用索引生成固定前缀 id，避免随机 UUID 覆盖已有 id 导致消息对应关系错乱
+    let prefix = uuid::Uuid::new_v4().simple().to_string()[..6].to_string();
+    let missing = msg_count.saturating_sub(memory.message_ids.len());
+    for _ in 0..missing {
+        let index = memory.message_ids.len();
+        memory.message_ids.push(format!(
+            "auto:{}{}:{}",
+            prefix,
+            index,
+            uuid::Uuid::new_v4().simple().to_string()[..4].to_string()
+        ));
+    }
+
+    // 最终对齐：如果仍有差异（不应发生），告警并强制对齐
+    if memory.message_ids.len() != msg_count {
+        eprintln!(
+            "[MEMORY] message_ids 与 messages 长度不一致 ({} vs {})，强制对齐",
+            memory.message_ids.len(),
+            msg_count
+        );
+        memory.message_ids.truncate(msg_count);
+        while memory.message_ids.len() < msg_count {
+            memory
+                .message_ids
+                .push(uuid::Uuid::new_v4().to_string());
+        }
     }
 }
 
@@ -216,7 +248,8 @@ pub fn restore_message(memory: &mut SessionMemory, message: Message, message_id:
 }
 
 pub fn reset_message_ids(memory: &mut SessionMemory) {
-    memory.message_ids.clear();
+    // 只清理超出 messages 范围的多余 id，保留已有配对
+    memory.message_ids.truncate(memory.messages.len());
     normalize_message_ids(memory);
 }
 
@@ -384,6 +417,9 @@ pub fn save_session(
         .collect();
     let (visible_message_ids, visible_messages): (Vec<String>, Vec<Message>) =
         visible_pairs.into_iter().unzip();
+    // 同步前清理 session_messages 中已被压缩覆盖的孤儿行
+    // compressed User 消息不写入 session_messages，但需保留在 alive 集合中避免被误清
+    let _ = repository::hide_orphan_session_messages(id, &filtered_memory.message_ids);
     repository::append_or_upsert_session_messages(
         id,
         &visible_messages,
@@ -443,6 +479,13 @@ pub fn delete_session_messages_from_seq(
     seq: usize,
 ) -> Result<(), String> {
     repository::delete_session_messages_from_seq(session_id, seq)
+}
+
+pub fn hide_orphan_session_messages(
+    session_id: &str,
+    alive_message_ids: &[String],
+) -> Result<usize, String> {
+    repository::hide_orphan_session_messages(session_id, alive_message_ids)
 }
 
 pub fn session_messages_count(session_id: &str) -> Result<usize, String> {

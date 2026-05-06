@@ -96,3 +96,29 @@ pub async fn cancel_jarvis(
     }
     Ok(())
 }
+
+/// 查询当前会话的权限状态
+#[tauri::command]
+pub async fn get_permission_state(
+    session_id: String,
+    session_manager: tauri::State<'_, SessionManager>,
+) -> Result<serde_json::Value, String> {
+    let ctx = session_manager.get_or_create(&session_id).await;
+    let session_allowed = *ctx.session_allowed.lock().await;
+    let pending_count = ctx.pending_permissions.lock().await.len();
+    Ok(serde_json::json!({
+        "sessionAllowed": session_allowed,
+        "pendingCount": pending_count,
+    }))
+}
+
+/// 撤销"允许本次会话"授权
+#[tauri::command]
+pub async fn revoke_session_permission(
+    session_id: String,
+    session_manager: tauri::State<'_, SessionManager>,
+) -> Result<(), String> {
+    let ctx = session_manager.get_or_create(&session_id).await;
+    *ctx.session_allowed.lock().await = false;
+    Ok(())
+}

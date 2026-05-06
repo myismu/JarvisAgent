@@ -45,16 +45,13 @@ impl LlmProvider for AnthropicProvider {
             top_k,
         };
 
-        // 启用扩展思考模式，预算 1024 tokens
-        if should_think {
-            body.thinking = Some(ThinkingConfig {
-                r#type: "enabled".to_string(),
-                budget_tokens: Some(1024),
-            });
-            // thinking 模式需要更大的 max_tokens 空间
-            if body.max_tokens <= 1024 {
-                body.max_tokens = 4096;
-            }
+        body.thinking = Some(ThinkingConfig {
+            r#type: Some(if should_think { "enabled" } else { "disabled" }.to_string()),
+            budget_tokens: if should_think { Some(1024) } else { None },
+            enable: None,
+        });
+        if should_think && body.max_tokens <= 1024 {
+            body.max_tokens = 4096;
         }
 
         serde_json::to_value(body).unwrap()

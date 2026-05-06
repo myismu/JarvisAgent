@@ -14,7 +14,6 @@
 //! - 循环次数受 `MAX_AGENT_LOOP_BEFORE_CONFIRM` 和 `MAX_AGENT_LOOP_ABSOLUTE` 常量限制
 //! - 取消令牌（`CancellationToken`）贯穿全流程，支持用户随时中断
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -81,7 +80,6 @@ struct ContextEstimate {
     sections: Vec<ContextSectionSnapshot>,
 }
 
-const TEXTUAL_PROPOSE_PLAN_MARKER: &str = "<function=ProposePlan>";
 const DIRECT_DEVELOPER_INTENT: &str = "PROJECT_ACTION";
 
 fn normalize_agent_display_mode(mode: Option<&str>) -> &'static str {
@@ -89,137 +87,6 @@ fn normalize_agent_display_mode(mode: Option<&str>) -> &'static str {
         Some("developer") => "developer",
         _ => "user",
     }
-}
-
-fn parse_textual_tool_parameters(raw: &str) -> HashMap<String, String> {
-    let mut params = HashMap::new();
-    let mut current_key: Option<String> = None;
-    let mut current_value = String::new();
-
-    for line in raw.lines() {
-        let trimmed = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("<parameter=") {
-            if let Some(key) = current_key.take() {
-                params.insert(key, current_value.trim().to_string());
-                current_value.clear();
-            }
-
-            if let Some(end) = rest.find('>') {
-                current_key = Some(rest[..end].trim().to_string());
-                current_value.push_str(rest[end + 1..].trim_start());
-            }
-        } else if trimmed.starts_with("<function=") {
-            break;
-        } else if current_key.is_some() {
-            if !current_value.is_empty() {
-                current_value.push('\n');
-            }
-            current_value.push_str(line);
-        }
-    }
-
-    if let Some(key) = current_key.take() {
-        params.insert(key, current_value.trim().to_string());
-    }
-
-    params
-}
-
-fn build_plan_content_from_textual_call(
-    clean_text: &str,
-    params: &HashMap<String, String>,
-) -> String {
-    if !clean_text.trim().is_empty() {
-        return clean_text.trim().to_string();
-    }
-
-    let mut content = String::new();
-    if let Some(description) = params
-        .get("content")
-        .or_else(|| params.get("plan_content"))
-        .or_else(|| params.get("plan_description"))
-    {
-        content.push_str(description);
-        content.push_str("\n\n");
-    }
-    if let Some(tasks) = params.get("task_breakdown") {
-        content.push_str("## 任务分解\n\n```json\n");
-        content.push_str(tasks);
-        content.push_str("\n```\n\n");
-    }
-    if let Some(estimated_time) = params.get("estimated_time") {
-        content.push_str("## 预估时间\n\n");
-        content.push_str(estimated_time);
-        content.push('\n');
-    }
-
-    if content.trim().is_empty() {
-        "模型以文本形式输出了方案工具调用，但未提供方案正文。".to_string()
-    } else {
-        content.trim().to_string()
-    }
-}
-
-fn recover_textual_propose_plan_call(
-    current_blocks: &mut Vec<ContentBlock>,
-    tool_input_buffers: &mut HashMap<usize, String>,
-    current_text_this_turn: &mut String,
-    loop_count: usize,
-) -> bool {
-    let Some(start) = current_text_this_turn.find(TEXTUAL_PROPOSE_PLAN_MARKER) else {
-        return false;
-    };
-
-    let clean_text = current_text_this_turn[..start].trim_end().to_string();
-    let raw_call = &current_text_this_turn[start + TEXTUAL_PROPOSE_PLAN_MARKER.len()..];
-    let params = parse_textual_tool_parameters(raw_call);
-    let title = params
-        .get("title")
-        .or_else(|| params.get("plan_title"))
-        .cloned()
-        .unwrap_or_else(|| "实施方案".to_string());
-    let content = build_plan_content_from_textual_call(&clean_text, &params);
-    let input = json!({
-        "title": title,
-        "content": content,
-    });
-
-    let visible_notice = format!(
-        "我已整理实施方案「{}」，请在右侧方案审批面板中审阅。",
-        title
-    );
-    *current_text_this_turn = visible_notice.clone();
-    let mut wrote_text = false;
-    current_blocks.retain_mut(|block| match block {
-        ContentBlock::Text { text } => {
-            if wrote_text {
-                return false;
-            }
-            *text = visible_notice.clone();
-            wrote_text = true;
-            !text.trim().is_empty()
-        }
-        _ => true,
-    });
-    if !wrote_text {
-        current_blocks.insert(
-            0,
-            ContentBlock::Text {
-                text: visible_notice,
-            },
-        );
-    }
-
-    let tool_index = current_blocks.len();
-    current_blocks.push(ContentBlock::ToolUse {
-        id: format!("textual_propose_plan_{}", loop_count),
-        name: "ProposePlan".to_string(),
-        input: json!({}),
-    });
-    let input_text = serde_json::to_string(&input).unwrap_or_else(|_| "{}".to_string());
-    tool_input_buffers.insert(tool_index, input_text);
-    println!("[JARVIS] Recovered textual ProposePlan call as a real tool call");
-    true
 }
 
 impl PipelineState {
@@ -523,10 +390,10 @@ impl PipelineState {
 
             let (
                 mut current_blocks,
-                mut tool_input_buffers,
-                mut current_text_this_turn,
+                tool_input_buffers,
+                current_text_this_turn,
                 mut current_thinking_this_turn,
-                mut turn_has_tool,
+                turn_has_tool,
                 turn_in_tokens,
                 turn_out_tokens,
             ) = (
@@ -543,15 +410,6 @@ impl PipelineState {
             self.req_output_tokens += turn_out_tokens;
             if turn_in_tokens > 0 || turn_out_tokens > 0 {
                 self.update_provider_usage_snapshot(turn_in_tokens, turn_out_tokens);
-            }
-
-            if recover_textual_propose_plan_call(
-                &mut current_blocks,
-                &mut tool_input_buffers,
-                &mut current_text_this_turn,
-                self.total_loop_count + 1,
-            ) {
-                turn_has_tool = true;
             }
 
             // 提取工具调用信息
@@ -868,16 +726,44 @@ impl PipelineState {
 
     async fn handle_cancellation(&mut self) {
         println!(
-            "[JARVIS] 用户已取消执行，保留用户消息并清理 agent 输出，user index {}",
+            "[JARVIS] 用户已取消执行，保留用户消息并恢复部分输出，user index {}",
             self.initial_msg_index
         );
+
+        // 直接查 agent_runs 表的 live_content（不受 running 状态保护逻辑影响）
+        let run = crate::core::orchestration::agent_run_repository::list_runs(Some(&self.sid))
+            .ok()
+            .and_then(|runs| runs.into_iter().find(|r| r.run_id == self.run_id));
+        let live_content = run.as_ref().map(|r| r.live_content.clone()).unwrap_or_default();
+        let live_thinking = run.as_ref().map(|r| r.live_thinking.clone()).unwrap_or_default();
+
+        let mut answer = if !live_content.trim().is_empty() {
+            live_content
+        } else if !live_thinking.trim().is_empty() {
+            live_thinking
+        } else if !self.final_answer.is_empty()
+            && self.final_answer != "用户已取消执行。"
+        {
+            std::mem::take(&mut self.final_answer)
+        } else {
+            String::new()
+        };
+
+        if answer.trim().is_empty() {
+            answer = "用户已取消执行，无部分结果。".to_string();
+        } else {
+            answer = format!(
+                "{}\n\n> ✕ **用户已取消执行（以上为部分结果）**",
+                answer
+            );
+        }
 
         {
             let mut session = self.ctx.memory.lock().await;
             let keep_len = (self.initial_msg_index + 1).min(session.messages.len());
             session.messages.truncate(keep_len);
             session.message_ids.truncate(keep_len);
-            self.final_answer = "用户已取消执行。".to_string();
+            self.final_answer = answer.clone();
             append_message(&mut session, Message::Assistant {
                 content: Content::Single(self.final_answer.clone()),
             });
@@ -997,7 +883,7 @@ impl PipelineState {
                 &self.client,
                 &self.api_key,
                 &self.base_url,
-                &self.model_id,
+                &self.cfg.utility_model,
                 self.api_format,
             )
             .await;
@@ -1083,19 +969,8 @@ impl PipelineState {
             content: String,
             item_count: usize,
         ) -> ContextSectionSnapshot {
-            const MAX_PREVIEW_CHARS: usize = 6000;
             let chars = content.chars().count();
             let token_count = crate::core::llm::token_count::count_text(model_id, &content);
-            let truncated = chars > MAX_PREVIEW_CHARS;
-            let content = if truncated {
-                let preview: String = content.chars().take(MAX_PREVIEW_CHARS).collect();
-                format!(
-                    "{}\n\n…已截断，仅展示前 {} 字符",
-                    preview, MAX_PREVIEW_CHARS
-                )
-            } else {
-                content
-            };
             ContextSectionSnapshot {
                 key: key.to_string(),
                 label: label.to_string(),
@@ -1104,7 +979,7 @@ impl PipelineState {
                 token_count_method: token_count.method.as_str().to_string(),
                 item_count,
                 content,
-                truncated,
+                truncated: false,
             }
         }
 
@@ -1320,14 +1195,13 @@ impl PipelineState {
             top_k: self.cfg.top_k,
         };
 
-        if self.should_think {
-            request_body.thinking = Some(ThinkingConfig {
-                r#type: "enabled".to_string(),
-                budget_tokens: Some(1024),
-            });
-            if request_body.max_tokens <= 1024 {
-                request_body.max_tokens = 4096;
-            }
+        request_body.thinking = Some(ThinkingConfig {
+            r#type: Some(if self.should_think { "enabled" } else { "disabled" }.to_string()),
+            budget_tokens: if self.should_think { Some(1024) } else { None },
+            enable: None,
+        });
+        if self.should_think && request_body.max_tokens <= 1024 {
+            request_body.max_tokens = 4096;
         }
 
         if self.api_format.is_openai() {
@@ -1363,40 +1237,15 @@ impl PipelineState {
                 thinking: None,
                 thinking_budget: None,
                 enable_thinking: None,
+                extra_body: None,
+                parameters: None,
                 temperature: request_body.temperature,
                 top_p: request_body.top_p,
             };
 
-            let thinking_param = crate::core::llm::registry::query_capabilities(&self.model_id)
-                .and_then(|c| c.thinking_param);
-            match thinking_param.as_deref() {
-                Some("reasoning_effort") => {
-                    if self.should_think {
-                        openai_req.reasoning_effort = Some("high".to_string());
-                    }
-                }
-                Some("thinking") => {
-                    openai_req.thinking = Some(ThinkingConfig {
-                        r#type: if self.should_think {
-                            "enabled".to_string()
-                        } else {
-                            "disabled".to_string()
-                        },
-                        budget_tokens: None,
-                    });
-                }
-                Some("thinkingBudget") => {
-                    openai_req.thinking_budget = Some(if self.should_think { 8192 } else { 0 });
-                }
-                Some("enable_thinking") => {
-                    openai_req.enable_thinking = Some(self.should_think);
-                }
-                _ => {
-                    if self.should_think {
-                        openai_req.reasoning_effort = Some("high".to_string());
-                    }
-                }
-            }
+            crate::core::llm::registry::apply_thinking_for_model(
+                &mut openai_req, &self.model_id, self.should_think,
+            );
             (serde_json::to_value(openai_req).unwrap(), true)
         } else {
             (serde_json::to_value(request_body).unwrap(), false)

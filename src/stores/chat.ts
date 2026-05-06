@@ -16,6 +16,32 @@ import {
   stripPseudoToolCalls,
 } from "../utils/agentTurnRender";
 
+/** 从 Tauri 序列化的 Rust 枚举错误中提取人类可读消息 */
+function extractErrorMessage(err: unknown): string {
+  if (typeof err === "string") return err;
+  if (err instanceof Error) return err.message;
+  if (typeof err !== "object" || err === null) return String(err);
+  const obj = err as Record<string, unknown>;
+  // Rust enum 外部标签: {"VariantName": inner_value}
+  const keys = Object.keys(obj);
+  for (const key of keys) {
+    const val = obj[key];
+    if (typeof val === "string") return `${key}: ${val}`;
+    if (typeof val === "object" && val !== null) {
+      const inner = val as Record<string, unknown>;
+      // ApiError HttpError: {"status": 400, "body": "..."}
+      if (typeof inner.body === "string" && inner.body.length > 0) return inner.body as string;
+      // RetriesExhausted: {"max_retries": 3, "last_error": "..."}
+      if (typeof inner.last_error === "string") return inner.last_error as string;
+      // 递归嵌套变体: {"Api": {"HttpError": {...}}}
+      const nested = extractErrorMessage(val);
+      if (nested && nested !== "[object Object]") return nested;
+    }
+    return `${key}: ${JSON.stringify(val)}`;
+  }
+  return JSON.stringify(err);
+}
+
 interface BackendAgentStep {
   type: string;
   tool?: string;
@@ -430,11 +456,10 @@ export const useChatStore = defineStore("chat", () => {
     session.resetSessionView(meta.id);
     session.setSessionUsageTotals(meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
 
+    // 记录新建会话使用的模型，后续切回来时自动恢复
     const config = await invoke<any>("get_config");
-    if (config.globalProfileId) {
-      config.activeProfileId = config.globalProfileId;
-      await invoke("save_config_cmd", { newConfig: config });
-      await invoke("update_session_profile", { id: meta.id, profileId: config.globalProfileId });
+    if (config.activeProfileId) {
+      await invoke("update_session_profile", { id: meta.id, profileId: config.activeProfileId });
     }
     return meta.id as string;
   }
@@ -632,10 +657,18 @@ export const useChatStore = defineStore("chat", () => {
       session.clearSessionBuffers(sessionIdAtStart);
       resetRenderState();
 
-      // 然后将最终结果存入历史
+      // 将最终结果存入历史
       requestView.latestCheckpoint = null;
-      session.appendSessionHistory(sessionIdAtStart, agentResponse);
-      
+
+      // 从后端拉取完整历史替换，确保 data-user-message-index 始终正确
+      try {
+        const history = await invoke<string>('get_session_history', { sessionId: sessionIdAtStart });
+        session.replaceSessionHistory(sessionIdAtStart, history || 'Ready for input...');
+      } catch {
+        // 拉取失败则追加兜底
+        session.appendSessionHistory(sessionIdAtStart, agentResponse);
+      }
+
       if (!sessionSwitched) {
         triggerRender();
         scrollToBottomCb?.();
@@ -649,7 +682,10 @@ export const useChatStore = defineStore("chat", () => {
       session.clearSessionBuffers(sessionIdAtStart);
       resetRenderState();
 
-      session.appendSessionHistory(sessionIdAtStart, `\n\n**Error:** ${err}`);
+      console.error("[chat] ask_jarvis 失败，原始错误:", err);
+      const errMsg = extractErrorMessage(err);
+      console.error("[chat] 格式化后:", errMsg);
+      session.appendSessionHistory(sessionIdAtStart, `\n\n**Error:** ${errMsg}`);
       requestView.showRecallEdit = true;
       requestView.status = "ERROR";
       requestView.activeRunId = null;

@@ -13,7 +13,6 @@ use crate::core::models::{
     OpenAIUserContent,
 };
 use crate::core::session;
-use serde_json::json;
 
 /// 规范化 JSON 字符串中的控制字符（换行、制表符等）
 fn normalize_json_string_control_chars(raw: &str) -> String {
@@ -73,24 +72,14 @@ pub fn parse_streamed_tool_input(raw: &str) -> Result<(serde_json::Value, bool),
     }
 }
 
-/// 将 Anthropic 内部格式的 Message 翻译为 OpenAI 格式
+/// 为没有思考块的消息生成一个最小 reasoning_content，保持 OpenAI 对话格式一致
 fn non_deepseek_reasoning_placeholder() -> serde_json::Value {
-    json!({
-        "type": "non_deepseek_message",
-        "note": "\u{975e}\u{601d}\u{8003}\u{6a21}\u{578b}\u{751f}\u{6210}"
-    })
+    serde_json::Value::String(String::new())
 }
 
+/// 将思考块内容转为 reasoning_content 字符串（OpenAI 格式要求纯文本，不能是对象）
 fn reasoning_content_from_thinking(thinking: &str) -> serde_json::Value {
-    let trimmed = thinking.trim();
-    if trimmed.is_empty() {
-        non_deepseek_reasoning_placeholder()
-    } else {
-        json!({
-            "type": "deepseek_reasoning",
-            "content": trimmed
-        })
-    }
+    serde_json::Value::String(thinking.to_string())
 }
 
 /// 将 Anthropic 消息格式转换为 OpenAI 格式

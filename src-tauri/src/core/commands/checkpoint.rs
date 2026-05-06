@@ -152,7 +152,7 @@ fn find_checkpoint_user_message(
 
 fn log_rollback_abort(session_id: &str, reason: &str) -> String {
     let message = format!("{}，已保留会话历史", reason);
-    eprintln!("[Rollback] 会话 {} 撤回中止: {}", session_id, message);
+    println!("[Rollback] 会话 {} 撤回中止: {}", session_id, message);
     message
 }
 
@@ -215,7 +215,7 @@ async fn resolve_rollback_target(
     } else {
         None
     };
-    let message_seq = stored_target.as_ref().map(|stored| stored.seq);
+    let mut message_seq = stored_target.as_ref().map(|stored| stored.seq);
     let (truncate_index, recalled_text) = if let Some(stored) = stored_target.as_ref() {
         let index = message_ids
             .iter()
@@ -224,6 +224,16 @@ async fn resolve_rollback_target(
             .unwrap_or(stored.seq);
         if let crate::core::models::Message::User { content } = &stored.content {
             (index, message_text(content))
+        } else if let Some(user_idx) = user_message_index {
+            if user_idx >= messages.len() {
+                return Err(log_rollback_abort(session_id, "撤回消息不存在"));
+            }
+            if let crate::core::models::Message::User { content } = &messages[user_idx] {
+                message_seq = None;
+                (user_idx, message_text(content))
+            } else {
+                return Err(log_rollback_abort(session_id, "撤回目标不是用户消息"));
+            }
         } else {
             return Err(log_rollback_abort(session_id, "撤回目标不是用户消息"));
         }
@@ -448,6 +458,8 @@ pub async fn rollback_to_checkpoint(
 
     if rollback_files.unwrap_or(false) {
         if let Some(effective_id) = &effective_checkpoint_id {
+            // 先终止所有后台任务，释放文件锁
+            crate::core::infra::background::BackgroundManager::kill_all_background(&app).await;
             restored_files =
                 rollback_files_to_snapshot(&app, &registry, &session_id, effective_id).await?;
         }
@@ -527,10 +539,7 @@ pub async fn preview_rollback_to_checkpoint_with_recall(
             if index >= session.messages.len() {
                 return Err(log_rollback_abort(&session_id, "撤回消息不存在"));
             }
-            if !matches!(
-                session.messages[index],
-                crate::core::models::Message::User { .. }
-            ) {
+            if !matches!(session.messages[index], crate::core::models::Message::User { .. }) {
                 return Err(log_rollback_abort(&session_id, "撤回目标不是用户消息"));
             }
         }
@@ -637,6 +646,8 @@ pub async fn rollback_to_checkpoint_with_recall(
             checkpoint_id,
             if effective_checkpoint_id.is_empty() { "初始状态" } else { &effective_checkpoint_id }
         );
+        // 先终止所有后台任务，释放文件锁
+        crate::core::infra::background::BackgroundManager::kill_all_background(&app).await;
         restored_files =
             rollback_files_to_snapshot(&app, &registry, &session_id, &effective_checkpoint_id)
                 .await?;
@@ -673,6 +684,17 @@ pub async fn rollback_to_checkpoint_with_recall(
                 "[Rollback] 会话 {} 已撤回到初始状态并清理快照记录",
                 session_id
             );
+        }
+
+        // 保存后从 DB 重新加载到内存，确保 ctx.memory 与 session_memory 表完全一致
+        match crate::core::session::load_session(&session_id) {
+            Ok(reloaded) => {
+                let mut session = ctx.memory.lock().await;
+                *session = reloaded;
+            }
+            Err(e) => {
+                println!("[Rollback] 撤回后重新加载会话内存失败: {}", e);
+            }
         }
     }
 

@@ -8,6 +8,8 @@ import { usePreferences } from '../../composables/usePreferences';
 import { invoke } from '@tauri-apps/api/core';
 import ConfirmModal from '../common/ConfirmModal.vue';
 import AgentTurn from './AgentTurn.vue';
+import TodoPanel from './TodoPanel.vue';
+import PermissionCard from './PermissionCard.vue';
 import WelcomeScreen from './WelcomeScreen.vue';
 import type { PlanDocument } from '../../types';
 
@@ -44,7 +46,7 @@ const chat = useChatStore();
 const perm = usePermissionStore();
 const prefs = usePreferences();
 const responseAreaRef = ref<HTMLElement | null>(null);
-const shouldFollowStream = ref(true);
+const shouldFollowStream = ref(prefs.autoScroll);
 const currentTurn = computed(() => session.currentSessionView.currentTurn);
 const hasCurrentTurnContent = computed(() => {
   const turn = currentTurn.value;
@@ -195,7 +197,7 @@ const displayWorkingDir = computed(() => {
 const isResponseAtBottom = () => {
   if (!responseAreaRef.value) return false;
   const { scrollTop, scrollHeight, clientHeight } = responseAreaRef.value;
-  return scrollHeight - scrollTop - clientHeight <= 100;
+  return scrollHeight - scrollTop - clientHeight <= 35;
 };
 
 const setResponseScrollToBottom = () => {
@@ -622,6 +624,7 @@ onMounted(() => {
       <span class="working-dir-label">{{ t('rollback.sandbox') }}</span>
       <span class="working-dir-path" :title="session.workingDirectory || undefined">{{ displayWorkingDir }}</span>
     </div>
+    <TodoPanel />
     <WelcomeScreen v-if="!chat.parsedHistory || chat.parsedHistory === '<p>Ready for input...</p>\n'" />
     <div class="response-text markdown-body" v-else>
       <div class="history-html" v-html="chat.parsedHistory"></div>
@@ -638,6 +641,7 @@ onMounted(() => {
           />
         </div>
       </div>
+      <PermissionCard />
     </div>
 
     <Teleport to="body">
@@ -710,7 +714,7 @@ onMounted(() => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  padding: 16px 0 140px; /* Increased bottom padding for floating input */
+  padding: 16px 0 200px; /* Increased bottom padding for floating input */
   overflow-y: auto;
   overflow-x: hidden;
   font-size: 0.95rem;
@@ -1249,7 +1253,7 @@ onMounted(() => {
   background-color: transparent;
   padding: 0;
   color: inherit;
-  font-size: 0.85rem;
+  font-size: var(--code-font-size);
   border: none;
 }
 
@@ -1504,7 +1508,7 @@ onMounted(() => {
 /* 滚动到底部按钮 */
 .scroll-to-bottom-btn {
   position: absolute;
-  bottom: 15%; /* Moved up to clear floating input */
+  bottom: calc(160px); /* 响应式定位：140px 是 response-area 的底部 padding，20px 是额外间距 */
   left: 50%;
   transform: translateX(-50%);
   z-index: 10;
