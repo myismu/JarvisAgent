@@ -390,7 +390,7 @@
       <div class="settings-footer">
         <span class="status-msg" :class="{ 'error': isError, 'success': isSuccess }">{{ statusMsg }}</span>
         <div class="footer-actions">
-          <button class="save-btn" @click="save" :disabled="isSaving || actionLoading">
+          <button v-if="activeTab === 'presets'" class="save-btn" @click="save" :disabled="isSaving || actionLoading">
             {{ isSaving ? t('settings.actions.saving') : t('settings.actions.save') }}
           </button>
         </div>

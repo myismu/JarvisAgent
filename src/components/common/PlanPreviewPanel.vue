@@ -178,13 +178,12 @@ const handleReject = () => {
   display: flex;
   justify-content: flex-end;
   padding: 10px;
-  background: color-mix(in srgb, var(--bg-dark) 60%, transparent);
-  backdrop-filter: blur(10px) saturate(1.08);
-  -webkit-backdrop-filter: blur(10px) saturate(1.08);
+  pointer-events: none;
   z-index: 200;
 }
 
 .plan-panel {
+  pointer-events: auto;
   position: relative;
   isolation: isolate;
   width: min(640px, 92vw);

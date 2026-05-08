@@ -112,6 +112,7 @@ impl TaskScheduler {
                         "[SCHEDULER] 启动子Agent: Task #{} - {}",
                         task_id, task_subject
                     );
+                    let label = format!("Task #{}: {}", task_id, task_subject);
                     let result = tokio::time::timeout(
                         std::time::Duration::from_secs(300), // 5 分钟超时
                         run_subagent(
@@ -120,7 +121,7 @@ impl TaskScheduler {
                             false,
                             sid,
                             Some(task_id),
-                            Some(format!("Task #{}", task_id)),
+                            Some(label),
                             Some(IMPLEMENTATION_AGENT_TYPE.to_string()),
                             None,
                         ),
@@ -134,7 +135,7 @@ impl TaskScheduler {
                 });
             }
 
-            // 4. 逐个处理完成的任务，完成一个立即解锁下游
+            // 4. 流式调度：完成一个立即解锁下游并检查新就绪任务
             while let Some(result) = set.join_next().await {
                 if let Ok((task_id, answer, si, so)) = result {
                     total_in += si;
@@ -167,7 +168,6 @@ impl TaskScheduler {
                             metadata: None,
                         },
                     );
-                    // _clear_dependency 在 update(Completed) 中自动调用，级联解锁下游任务
 
                     println!(
                         "[SCHEDULER] Task #{} {} (input: {}, output: {} tokens)",
@@ -183,9 +183,48 @@ impl TaskScheduler {
                             "sessionId": session_id,
                         }),
                     );
+
+                    // 立即检查是否有新解锁的任务，加入同一 JoinSet
+                    let new_ready = tm.get_ready_tasks();
+                    for task in new_ready {
+                        if cancel_token.is_cancelled() { break; }
+                        let app_clone = app.clone();
+                        let sid = session_id.to_string();
+                        let prompt = if task.description.is_empty() {
+                            task.subject.clone()
+                        } else {
+                            format!("{}\n\n{}", task.subject, task.description)
+                        };
+                        let tid = task.id;
+                        let tsubject = task.subject.clone();
+                        let _ = tm.update(tid, TaskUpdateParams {
+                            status: Some(TaskStatus::InProgress),
+                            subject: None, description: None, active_form: None,
+                            owner: None, add_blocked_by: None, add_blocks: None, metadata: None,
+                        });
+                        let _ = app.emit("agent-step", serde_json::json!({
+                            "type": "task_scheduled", "taskId": tid,
+                            "subject": tsubject, "sessionId": session_id,
+                        }));
+                        set.spawn(async move {
+                            let label = format!("Task #{}: {}", tid, tsubject);
+                            println!("[SCHEDULER] 流式解锁: {}", label);
+                            let result = tokio::time::timeout(
+                                std::time::Duration::from_secs(300),
+                                run_subagent(app_clone, prompt, false, sid,
+                                    Some(tid), Some(label),
+                                    Some(IMPLEMENTATION_AGENT_TYPE.to_string()), None),
+                            ).await;
+                            let (a, si, so) = match result {
+                                Ok(r) => r,
+                                Err(_) => (format!("任务超时（超过 5 分钟）"), 0, 0),
+                            };
+                            (tid, a, si, so)
+                        });
+                    }
                 }
             }
-            // 回到循环顶部，自动发现新解锁的任务（包括流式解锁的）
+            // 回到循环顶部检查是否还有残留未完成任务
         }
 
         // 生成汇总报告
