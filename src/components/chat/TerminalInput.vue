@@ -23,7 +23,7 @@ const chat = useChatStore();
 const uiPrefs = usePreferences();
 
 const isRunning = computed(() =>
-  session.runningSessionId === session.activeSessionId || isRunning
+  session.runningSessionId != null && session.runningSessionId === session.activeSessionId
 );
 
 // WorkMode 状态，与 usePreferences 双向同步 + 监听后端切换
