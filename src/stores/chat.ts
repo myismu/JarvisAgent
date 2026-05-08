@@ -544,6 +544,7 @@ export const useChatStore = defineStore("chat", () => {
         resetRenderState();
         requestView.streamActive = false;
         requestView.status = "IDLE";
+        session.runningSessionId = null;
         requestView.activeRunId = null;
         if (!sessionSwitched) {
           triggerRender();
@@ -649,6 +650,7 @@ export const useChatStore = defineStore("chat", () => {
     } catch (err) {
       console.error("取消执行失败:", err);
     }
+    session.runningSessionId = null;
   }
 
   async function recallAndEdit(): Promise<string> {
