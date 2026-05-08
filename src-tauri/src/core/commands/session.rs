@@ -254,9 +254,9 @@ pub async fn recall_message(
             let visible = session::list_visible_session_messages(&session_id)?;
             let pos = visible.iter().position(|m| m.seq == stored.seq)
                 .ok_or_else(|| "撤回消息不存在".to_string())?;
-            // 保留目标消息及之前的所有可见消息，丢弃之后的
-            let keep: Vec<_> = visible.into_iter().take(pos + 1).collect();
-            let target_content = keep.last().map(|m| m.content.clone());
+            // 撤回目标消息及之后的所有消息，只保留之前的
+            let target_content = visible.get(pos).map(|m| m.content.clone());
+            let keep: Vec<_> = visible.into_iter().take(pos).collect();
             session.messages = keep.iter().map(|m| m.content.clone()).collect();
             session.message_ids = keep.iter().map(|m| m.message_id.clone()).collect();
             target_content

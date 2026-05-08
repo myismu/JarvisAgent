@@ -178,9 +178,7 @@ const handleReject = () => {
   display: flex;
   justify-content: flex-end;
   padding: 10px;
-  background:
-    linear-gradient(90deg, rgba(15, 23, 42, 0.04), rgba(15, 23, 42, 0.34)),
-    rgba(2, 6, 23, 0.18);
+  background: color-mix(in srgb, var(--bg-dark) 60%, transparent);
   backdrop-filter: blur(10px) saturate(1.08);
   -webkit-backdrop-filter: blur(10px) saturate(1.08);
   z-index: 200;
@@ -195,29 +193,12 @@ const handleReject = () => {
   flex-direction: column;
   overflow: hidden;
   color: var(--text-main);
-  background:
-    linear-gradient(150deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.48) 48%, rgba(255, 255, 255, 0.62)),
-    var(--glass-bg-heavy);
+  background: var(--glass-bg-heavy);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-xl);
-  box-shadow:
-    -18px 0 56px rgba(15, 23, 42, 0.18),
-    inset 1px 1px 0 rgba(255, 255, 255, 0.78),
-    inset -1px -1px 0 rgba(255, 255, 255, 0.18);
-  backdrop-filter: blur(28px) saturate(1.28);
-  -webkit-backdrop-filter: blur(28px) saturate(1.28);
-}
-
-.plan-panel::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background:
-    linear-gradient(115deg, rgba(255, 255, 255, 0.62), transparent 34%),
-    linear-gradient(180deg, rgba(59, 130, 246, 0.08), transparent 30%);
-  opacity: 0.9;
+  box-shadow: var(--glass-shadow), -18px 0 56px rgba(0, 0, 0, 0.15);
+  backdrop-filter: blur(var(--glass-blur-heavy)) saturate(1.28);
+  -webkit-backdrop-filter: blur(var(--glass-blur-heavy)) saturate(1.28);
 }
 
 .plan-panel::after {
@@ -228,7 +209,8 @@ const handleReject = () => {
   left: 0;
   width: 1px;
   pointer-events: none;
-  background: linear-gradient(180deg, transparent, rgba(96, 165, 250, 0.7), transparent);
+  background: linear-gradient(180deg, transparent, var(--accent-blue), transparent);
+  opacity: 0.5;
 }
 
 .plan-header {
@@ -256,14 +238,10 @@ const handleReject = () => {
   justify-content: center;
   flex-shrink: 0;
   color: var(--accent-blue);
-  border: 1px solid rgba(59, 130, 246, 0.24);
+  border: 1px solid var(--glass-border);
   border-radius: 12px;
-  background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.55), rgba(59, 130, 246, 0.08)),
-    var(--glass-bg-light);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 10px 24px rgba(59, 130, 246, 0.12);
+  background: var(--glass-bg-light);
+  box-shadow: var(--shadow-sm);
 }
 
 .plan-kicker {
@@ -307,8 +285,8 @@ const handleReject = () => {
 
 .plan-icon-btn:hover {
   color: var(--accent-red);
-  border-color: rgba(239, 68, 68, 0.28);
-  background: rgba(239, 68, 68, 0.08);
+  border-color: var(--border-danger);
+  background: color-mix(in srgb, var(--accent-red) 10%, transparent);
   transform: translateY(-1px);
 }
 
@@ -319,7 +297,7 @@ const handleReject = () => {
   gap: 16px;
   padding: 18px 20px 16px;
   border-bottom: 1px solid var(--glass-border-subtle);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.08));
+  background: var(--glass-bg-light);
   flex-shrink: 0;
 }
 
@@ -366,7 +344,6 @@ const handleReject = () => {
   border: 1px solid var(--border-warning);
   border-radius: 999px;
   background: color-mix(in srgb, var(--surface-warning) 74%, transparent);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42);
 }
 
 .plan-status-dot {
@@ -374,7 +351,7 @@ const handleReject = () => {
   height: 7px;
   border-radius: 50%;
   background: var(--accent-yellow);
-  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.13), 0 0 12px rgba(245, 158, 11, 0.34);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-yellow) 20%, transparent);
 }
 
 .plan-stats {
@@ -391,7 +368,7 @@ const handleReject = () => {
   gap: 12px;
   padding: 12px 20px;
   border-bottom: 1px solid var(--glass-border-subtle);
-  background: rgba(255, 255, 255, 0.12);
+  background: color-mix(in srgb, var(--bg-panel) 40%, transparent);
   flex-shrink: 0;
 }
 
@@ -448,27 +425,27 @@ const handleReject = () => {
 
 .plan-mini-btn:hover {
   color: var(--accent-blue);
-  border-color: rgba(59, 130, 246, 0.32);
-  background: rgba(59, 130, 246, 0.08);
+  border-color: var(--accent-blue);
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
   transform: translateY(-1px);
 }
 
 .plan-mini-btn-muted:hover {
   color: var(--accent-red);
-  border-color: rgba(239, 68, 68, 0.28);
-  background: rgba(239, 68, 68, 0.08);
+  border-color: var(--border-danger);
+  background: color-mix(in srgb, var(--accent-red) 10%, transparent);
 }
 
 .plan-mini-btn-primary {
-  color: #ffffff;
-  border-color: rgba(59, 130, 246, 0.56);
-  background: linear-gradient(180deg, var(--accent-blue), var(--accent-blue-hover));
-  box-shadow: 0 8px 18px rgba(59, 130, 246, 0.22);
+  color: var(--text-inverse);
+  border-color: var(--accent-blue);
+  background: var(--accent-blue);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent-blue) 30%, transparent);
 }
 
 .plan-mini-btn-primary:hover {
-  color: #ffffff;
-  background: linear-gradient(180deg, var(--accent-blue-hover), #1d4ed8);
+  color: var(--text-inverse);
+  background: var(--accent-blue-hover);
 }
 
 .plan-body {
@@ -488,12 +465,8 @@ const handleReject = () => {
   padding: 18px 18px 26px;
   border: 1px solid var(--glass-border-subtle);
   border-radius: var(--radius-lg);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.2)),
-    rgba(255, 255, 255, 0.18);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.55),
-    0 12px 32px rgba(15, 23, 42, 0.06);
+  background: var(--glass-bg-light);
+  box-shadow: var(--shadow-sm);
 }
 
 .plan-editor {
@@ -509,12 +482,8 @@ const handleReject = () => {
   padding: 16px;
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-lg);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.18)),
-    var(--glass-bg-light);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.48),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  background: var(--glass-bg-light);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.05);
   backdrop-filter: blur(14px) saturate(1.12);
   -webkit-backdrop-filter: blur(14px) saturate(1.12);
 }
@@ -524,10 +493,8 @@ const handleReject = () => {
 }
 
 .plan-editor:focus {
-  border-color: rgba(59, 130, 246, 0.56);
-  box-shadow:
-    0 0 0 3px rgba(59, 130, 246, 0.11),
-    inset 0 1px 0 rgba(255, 255, 255, 0.48);
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 20%, transparent);
 }
 
 .plan-markdown :deep(h1) {
@@ -537,7 +504,7 @@ const handleReject = () => {
   font-size: 1.32rem;
   font-weight: 760;
   line-height: 1.32;
-  border-bottom: 1px solid rgba(59, 130, 246, 0.24);
+  border-bottom: 1px solid var(--glass-border-subtle);
 }
 
 .plan-markdown :deep(h2) {
@@ -571,6 +538,7 @@ const handleReject = () => {
 
 .plan-markdown :deep(li) {
   margin: 5px 0;
+  color: var(--text-main);
   line-height: 1.68;
 }
 
@@ -594,23 +562,22 @@ const handleReject = () => {
   font-size: 0.85em;
   border: 1px solid var(--glass-border-subtle);
   border-radius: 5px;
-  background: rgba(59, 130, 246, 0.08);
+  background: color-mix(in srgb, var(--text-muted) 15%, transparent);
 }
 
 .plan-markdown :deep(pre) {
   margin: 12px 0;
   padding: 14px 16px;
   overflow-x: auto;
-  border: 1px solid var(--glass-border);
+  border: 1px solid var(--glass-border-subtle);
   border-radius: var(--radius-md);
-  background:
-    linear-gradient(180deg, rgba(15, 23, 42, 0.88), rgba(15, 23, 42, 0.78));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  background: color-mix(in srgb, var(--bg-dark) 80%, var(--bg-sidebar));
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .plan-markdown :deep(pre code) {
   padding: 0;
-  color: #dbeafe;
+  color: var(--text-main);
   border: 0;
   background: transparent;
 }
@@ -618,10 +585,10 @@ const handleReject = () => {
 .plan-markdown :deep(blockquote) {
   margin: 12px 0;
   padding: 10px 14px;
-  color: var(--text-main);
+  color: var(--text-muted);
   border-left: 3px solid var(--accent-blue);
   border-radius: 0 var(--radius-md) var(--radius-md) 0;
-  background: rgba(59, 130, 246, 0.08);
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
 }
 
 .plan-markdown :deep(strong) {
@@ -644,12 +611,12 @@ const handleReject = () => {
   padding: 9px 12px;
   text-align: left;
   border-bottom: 1px solid var(--glass-border-subtle);
+  color: var(--text-main);
 }
 
 .plan-markdown :deep(th) {
-  color: var(--text-main);
   font-weight: 730;
-  background: rgba(59, 130, 246, 0.08);
+  background: color-mix(in srgb, var(--bg-panel) 50%, transparent);
 }
 
 .plan-markdown :deep(tr:last-child td) {
@@ -664,9 +631,7 @@ const handleReject = () => {
   padding: 12px 18px;
   flex-shrink: 0;
   border-top: 1px solid var(--glass-border-subtle);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.18)),
-    var(--glass-bg-light);
+  background: var(--glass-bg-light);
   backdrop-filter: blur(18px) saturate(1.15);
   -webkit-backdrop-filter: blur(18px) saturate(1.15);
 }
@@ -702,29 +667,28 @@ const handleReject = () => {
 }
 
 .plan-btn-reject {
-  color: var(--text-muted);
+  color: var(--text-main);
   border-color: var(--glass-border-subtle);
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--glass-bg-light);
 }
 
 .plan-btn-reject:hover {
   color: var(--accent-red);
-  border-color: rgba(239, 68, 68, 0.28);
-  background: rgba(239, 68, 68, 0.08);
+  border-color: var(--border-danger);
+  background: color-mix(in srgb, var(--accent-red) 10%, transparent);
   box-shadow: none;
 }
 
 .plan-btn-approve {
-  color: #ffffff;
-  border-color: rgba(16, 185, 129, 0.42);
-  background: rgba(16, 185, 129, 0.92);
-  box-shadow: 0 8px 18px rgba(16, 185, 129, 0.18);
+  color: var(--text-inverse);
+  border-color: var(--accent-green);
+  background: var(--accent-green);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent-green) 30%, transparent);
 }
 
 .plan-btn-approve:hover {
-  border-color: rgba(16, 185, 129, 0.58);
-  background: rgba(5, 150, 105, 0.96);
-  box-shadow: 0 10px 20px rgba(16, 185, 129, 0.2);
+  background: color-mix(in srgb, var(--accent-green) 85%, #000);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent-green) 40%, transparent);
 }
 
 .plan-slide-enter-active {
@@ -752,44 +716,6 @@ const handleReject = () => {
 .plan-slide-leave-to .plan-panel {
   transform: translateX(28px) scale(0.985);
   opacity: 0;
-}
-
-:global(body.dark-mode) .plan-overlay {
-  background:
-    linear-gradient(90deg, rgba(2, 6, 23, 0.12), rgba(2, 6, 23, 0.52)),
-    rgba(2, 6, 23, 0.38);
-}
-
-:global(body.dark-mode) .plan-panel {
-  background:
-    linear-gradient(150deg, rgba(22, 27, 41, 0.82), rgba(9, 12, 22, 0.62) 52%, rgba(18, 24, 38, 0.72)),
-    var(--glass-bg-heavy);
-  box-shadow:
-    -22px 0 64px rgba(0, 0, 0, 0.36),
-    inset 1px 1px 0 rgba(255, 255, 255, 0.08),
-    inset -1px -1px 0 rgba(255, 255, 255, 0.04);
-}
-
-:global(body.dark-mode) .plan-panel::before {
-  background:
-    linear-gradient(115deg, rgba(255, 255, 255, 0.1), transparent 34%),
-    linear-gradient(180deg, rgba(96, 165, 250, 0.1), transparent 32%);
-}
-
-:global(body.dark-mode) .plan-summary,
-:global(body.dark-mode) .plan-toolbar,
-:global(body.dark-mode) .plan-actions {
-  background: rgba(15, 23, 42, 0.18);
-}
-
-:global(body.dark-mode) .plan-markdown,
-:global(body.dark-mode) .plan-editor {
-  background:
-    linear-gradient(180deg, rgba(15, 23, 42, 0.5), rgba(15, 23, 42, 0.24)),
-    rgba(15, 23, 42, 0.2);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 14px 36px rgba(0, 0, 0, 0.2);
 }
 
 @media (max-width: 720px) {
