@@ -105,6 +105,41 @@ pub enum MemoryError {
     MemoryAgent(String),
 }
 
+/// 数据库/持久化层错误 — 供数据访问层使用，通过 From trait 与其他错误类型互转
+#[derive(Debug, Error, Serialize)]
+pub enum DbError {
+    #[error("数据库错误: {0}")]
+    Sqlite(String),
+    #[error("序列化错误: {0}")]
+    Serialize(String),
+    #[error("未找到: {0}")]
+    NotFound(String),
+}
+
+impl From<rusqlite::Error> for DbError {
+    fn from(e: rusqlite::Error) -> Self {
+        DbError::Sqlite(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for DbError {
+    fn from(e: serde_json::Error) -> Self {
+        DbError::Serialize(e.to_string())
+    }
+}
+
+impl From<String> for DbError {
+    fn from(s: String) -> Self {
+        DbError::Sqlite(s)
+    }
+}
+
+impl From<DbError> for AgentError {
+    fn from(e: DbError) -> Self {
+        AgentError::Session(e.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

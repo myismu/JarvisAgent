@@ -262,6 +262,23 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS subagent_events (
+            event_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            message TEXT NOT NULL,
+            tool TEXT,
+            input_summary TEXT,
+            output_summary TEXT,
+            error TEXT,
+            loop_count INTEGER NOT NULL,
+            input_tokens INTEGER NOT NULL,
+            output_tokens INTEGER NOT NULL,
+            timestamp INTEGER NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS agent_run_checkpoints (
             run_id TEXT PRIMARY KEY,
             session_id TEXT NOT NULL,

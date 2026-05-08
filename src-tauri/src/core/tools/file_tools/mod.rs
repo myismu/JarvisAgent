@@ -17,7 +17,6 @@ mod common;
 mod diff;
 mod directory;
 mod edit;
-mod notebook_guard;
 mod patch;
 mod read;
 mod registry;

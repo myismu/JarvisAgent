@@ -1,0 +1,114 @@
+{
+  "priority_order": [
+    "DANGEROUS", "TASK_PLAN", "MEMORY_QUERY", "CODE_REVIEW",
+    "CODE_READ", "CODE_WRITE", "QUESTION", "TASK_EXECUTE",
+    "SETTINGS", "GENERAL_CHAT"
+  ],
+  "intents": {
+    "DANGEROUS": [
+      "(?i)(删除|删掉|删除掉|删去|清空|清除|移除|卸载)\\s*(所有|全部|整个|一切)",
+      "(?i)(delete|remove|clear|drop|truncate)\\s*(all|everything|entire|whole)",
+      "(?i)格式化\\s*(磁盘|硬盘|驱动器)",
+      "(?i)format\\s*(disk|drive)",
+      "(?i)(清空|删除|删掉)\\s*(数据库|项目|文件|目录|文件夹)",
+      "(?i)(drop|delete)\\s*(database|table|schema)",
+      "(?i)rm\\s+-rf",
+      "(?i)del\\s+/\\s*s",
+      "(?i)把.*删(了|掉|除)",
+      "(?i)删(了|掉)\\s*它"
+    ],
+    "TASK_PLAN": [
+      "(?i)(先|先不要|不要直接).*(方案|计划|审批|审阅)",
+      "(?i)(提交|生成|制定|提出).*(方案|计划).*(审批|审阅|确认)",
+      "(?i)(完整|最小可用|MVP).*(项目|系统|应用|app|project|system)",
+      "(?i)(创建|新建|开发|实现|搭建).*(项目|系统|应用|前端|后端|API)",
+      "(?i)(前端|后端).*(接口|API|REST|数据库|数据存储)",
+      "(?i)(plan|proposal|approve|review).*(before|first|then)",
+      "(?i)(create|build|implement|develop).*(project|system|app|frontend|backend|api)"
+    ],
+    "MEMORY_QUERY": [
+      "(?i)(之前|以前|上次|上次我们|刚才|早些时候)",
+      "(?i)(previous|last time|earlier|before)",
+      "(?i)(记得|记住|回忆|想起来)",
+      "(?i)(remember|recall|remind)",
+      "(?i)(我们(之前|以前)讨论|我们(之前|以前)说)",
+      "(?i)(we discussed|we talked about|we said)",
+      "(?i)(历史记录|聊天记录|对话记录)",
+      "(?i)(conversation history|chat history|conversation record|chat log)"
+    ],
+    "CODE_REVIEW": [
+      "(?i)(检查|审查|review|check|看看.*(有问题|对不对|好不好|行不行|合理|规范))",
+      "(?i)(bug|问题|错误|毛病|不对|不正常|有问题|隐患|风险)",
+      "(?i)(优化|改进|提升|改善|提高)\\s*(性能|速度|效率|质量|代码)",
+      "(?i)(optimize|improve|enhance|refactor|review|check|inspect|audit)",
+      "(?i)(好像|似乎|感觉|觉得)\\s*(不对|有问题|不合理|怪怪的)",
+      "(?i)(有没有|是否|是不是)\\s*(问题|bug|隐患|风险|错误)"
+    ],
+    "CODE_READ": [
+      "(?i)(读|读取|查看|打开|显示|展示|浏览)\\s+[\\w\\.\\-]+\\.[a-z0-9]{1,8}",
+      "(?i)(读|查看|看|打开|显示|展示|浏览|搜|找)\\s*(文件|代码|目录|文件夹|日志|配置)",
+      "(?i)(read|view|show|display|open|browse|catalog)\\s*(file|code|dir|folder|log|config)",
+      "(?i)(cat|less|head|tail|ls|dir|type)",
+      "(?i)让我看看|给我看看|看看.*代码|看看.*文件",
+      "(?i)怎么写的|怎么实现的|什么内容",
+      "(?i)(内容|结构|骨架|摘要|大纲)\\s*(是|是什么|长什么样)",
+      "(?i)(有哪些|哪些|什么|哪个)\\s*(文件|目录|代码|模块)"
+    ],
+    "CODE_WRITE": [
+      "(?i)(创建|新建|生成|写|编写|修改|编辑|重构|重写|替换|加上|去掉|改成|改为|添加|增加|删除|移除)",
+      "(?i)(create|write|modify|edit|refactor|rewrite|replace|add|remove|delete|update)",
+      "(?i)(改一下|换成|改成|改为|加上|去掉|添上|删掉|写入)",
+      "(?i)把.*(改|换|改|加|删|写)",
+      "(?i)帮我.*(写|改|建|创|修)"
+    ],
+    "QUESTION": [
+      "(?i)(什么是|什么叫|怎么用|怎么理解|为什么|如何|怎样|有没有|能不能)",
+      "(?i)(是什么|啥是|啥叫)",
+      "(?i)(what is|how (to|do|does)|why does|can you explain|difference between)",
+      "(?i)(是什么意思|怎么工作|原理是什么|什么原理|怎么实现)",
+      "(?i)(区别|差异|对比|compare|difference|vs|versus)",
+      "(?i)(想问一下|请教|请问|问个问题)",
+      "(?i)(如果|假如|假设|要是|万一).*(会怎么|怎么做|怎么办|如何)",
+      "(?i)(if|suppose|assuming).*(what would|how would|what should)",
+      "(?i)(你会|你应该|建议|推荐).*(怎么|如何|做)",
+      "(?i)(would you|should I|recommend|suggest).*(how|what)"
+    ],
+    "TASK_EXECUTE": [
+      "(?i)(运行|执行|启动|编译|构建|部署|打包|发布|安装|卸载|更新|升级|下载|上传)",
+      "(?i)(run|execute|start|launch|build|compile|deploy|install|uninstall|update|upgrade)",
+      "(?i)(测试|test|benchmark|profiling)",
+      "(?i)(git|npm|pip|cargo|yarn|pnpm|bun|mvn|gradle|docker|kubectl|helm)",
+      "(?i)(终端|命令行|shell|bash|cmd|powershell|terminal|console)",
+      "(?i)(npm\\s+(run|install|build|test|start))",
+      "(?i)(cargo\\s+(build|run|test|check|clippy))",
+      "(?i)(git\\s+(push|pull|commit|checkout|merge|rebase|status|log))",
+      "(?i)(重启|restart|stop|停止|kill)"
+    ],
+    "SETTINGS": [
+      "(?i)(设置|配置|偏好|选项|settings|config|preferences)",
+      "(?i)(想换|切换|换成|改为)\\s*(模型|主题|语言|字体|皮肤)",
+      "(?i)(打开|显示|展示)\\s*(设置|配置|面板|控制台)",
+      "(?i)(change|switch|set)\\s*(model|theme|language|setting|config)"
+    ],
+    "GENERAL_CHAT": [
+      "(?i)^(你好|哈喽|嗨|hi|hello|hey|早上好|晚上好|下午好)",
+      "(?i)^(谢谢|感谢|thanks|thank you)",
+      "(?i)^(再见|拜拜|bye|goodbye)",
+      "(?i)(讲个|说个|来个)\\s*(笑话|故事|段子)",
+      "(?i)(tell|give)\\s*(me\\s*)?(a\\s*)?(joke|story)",
+      "(?i)(天气|weather)",
+      "(?i)(怎么样|如何|what do you think)",
+      "(?i)(哈哈|呵呵|嘿嘿|嘻嘻|lol|haha)",
+      "(?i)(你是谁|你叫什么|what is your name|who are you)",
+      "(?i)(今天|明天|昨天|this|next|yesterday|tomorrow)\\s*(星期|周|几)"
+    ]
+  },
+  "affirmative_continuation": [
+    "(?i)^(继续|可以|需要|好|好的|行|没问题|是的|对|确认|确定|同意|ok|sure|yes|go ahead|continue|proceed)$",
+    "(?i)^(改一下|换成|加上|去掉|修改|调整)",
+    "(?i)^(然后呢|接下来|下一步|还需要|也要)",
+    "(?i)^(好的?[，,]?\\s*(继续|改|换|加|删|做))"
+  ],
+  "short_unclear": "^[\\d\\s\\.\\,\\-\\+\\*]+$|^[a-zA-Z]$|^[^\\w\\s\\u4e00-\\u9fff]+$",
+  "development_context": "(?i)(代码|源码|文件|文件夹|目录|日志|函数|类|组件|项目|仓库|脚本|程序|应用|网站|网页|前端|后端|接口|数据库|依赖|测试|构建|编译|页面|界面|样式|逻辑|模块|终端|命令|工具|插件|软件|功能|code|source|file|folder|directory|log|function|class|component|project|repo|repository|script|program|app|application|website|webpage|frontend|backend|api|database|dependency|test|build|compile|page|ui|style|logic|module|terminal|command|tool|plugin|software|feature|\\.[a-z0-9]{1,8}\\b|[a-z]:\\\\|/[\\w\\.\\-]+)"
+}

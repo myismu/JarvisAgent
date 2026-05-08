@@ -108,7 +108,12 @@ pub async fn propose_plan(
 
     // 创建 oneshot channel 等待用户决策
     let (tx, rx) = tokio::sync::oneshot::channel();
-    ctx.pending_permissions.lock().await.insert(id.clone(), tx);
+    {
+        let mut perms = ctx.pending_permissions.lock().await;
+        let now = std::time::Instant::now();
+        perms.retain(|_, (ts, _)| now.duration_since(*ts).as_secs() < 300);
+        perms.insert(id.clone(), (std::time::Instant::now(), tx));
+    }
 
     // Plan documents are persisted through session memory in SQLite.
     let now = std::time::SystemTime::now()
@@ -216,9 +221,25 @@ pub async fn propose_plan(
     } else {
         crate::jarvis_info!("JARVIS", "[JARVIS] 用户同意了方案: {}", title);
         if let Some(content) = modified_content {
-            format!("用户已同意方案「{}」并做了修改！修改后的方案内容：\n\n{}\n\n现在请使用 CreateTask 创建完整持久化任务图，使用 UpdateTask 设置真实依赖关系，最后调用 RunSubagentsSequentially 一次性启动调度器。只有单个临时委派才直接使用 RunSubagent。", title, content)
+            format!(
+                "用户已同意方案「{}」并做了修改！修改后的方案内容：\n\n{}\n\n现在请按以下步骤执行：\n\
+                 1. 使用 SwitchWorkMode 切换到编辑模式（mode=\"edit\", reason=\"方案已审批，开始执行\"）\n\
+                 2. 使用 CreateTask 逐个创建任务，每个任务必须是单一变更单元\n\
+                 3. 使用 UpdateTask 的 add_blocked_by 建立依赖关系\n\
+                 4. 确认所有任务和依赖后，调用 RunSubagentsSequentially 启动调度器\n\
+                 5. 无依赖的任务会被自动并行执行，有依赖的任务按序执行",
+                title, content
+            )
         } else {
-            format!("用户已同意方案「{}」！现在请使用 CreateTask 创建完整持久化任务图，使用 UpdateTask 设置真实依赖关系，最后调用 RunSubagentsSequentially 一次性启动调度器。只有单个临时委派才直接使用 RunSubagent。", title)
+            format!(
+                "用户已同意方案「{}」！现在请按以下步骤执行：\n\
+                 1. 使用 SwitchWorkMode 切换到编辑模式（mode=\"edit\", reason=\"方案已审批，开始执行\"）\n\
+                 2. 使用 CreateTask 逐个创建任务，每个任务必须是单一变更单元\n\
+                 3. 使用 UpdateTask 的 add_blocked_by 建立依赖关系\n\
+                 4. 确认所有任务和依赖后，调用 RunSubagentsSequentially 启动调度器\n\
+                 5. 无依赖的任务会被自动并行执行，有依赖的任务按序执行",
+                title
+            )
         }
     }
 }

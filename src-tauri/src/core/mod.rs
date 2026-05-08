@@ -23,6 +23,7 @@ pub mod constants;
 pub mod data_paths;
 pub mod db;
 pub mod error;
+pub mod events;
 pub mod models;
 pub mod state;
 pub mod traits;

@@ -254,3 +254,87 @@ fn current_timestamp() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::snapshot::{Branch, Snapshot, SnapshotTree};
+    use std::collections::HashMap;
+
+    fn make_snapshot(id: &str, branch: &str, created_at: u64) -> Snapshot {
+        Snapshot {
+            id: id.to_string(),
+            parent_id: None,
+            branch_name: branch.to_string(),
+            patches: vec![],
+            message: None,
+            is_checkpoint: false,
+            workspace_state: None,
+            agent_id: None,
+            workspace_id: None,
+            created_at,
+            metadata: HashMap::new(),
+        }
+    }
+
+    fn make_branch(name: &str, head_id: &str) -> Branch {
+        Branch {
+            name: name.to_string(),
+            session_id: "test".to_string(),
+            head_snapshot_id: head_id.to_string(),
+            created_at: current_timestamp(),
+            agent_id: None,
+            description: String::new(),
+            is_active: true,
+        }
+    }
+
+    fn make_tree() -> SnapshotTree {
+        SnapshotTree {
+            nodes: HashMap::new(),
+            branches: HashMap::new(),
+            current_branch: "main".to_string(),
+            current_snapshot_id: String::new(),
+            session_id: "test".to_string(),
+            max_loaded_nodes: 200,
+        }
+    }
+
+    #[test]
+    fn test_gc_should_remove_old_snapshots() {
+        let config = GcConfig {
+            max_age_days: 30,
+            immediate_detach: false,
+            ..Default::default()
+        };
+        let gc = GarbageCollector::new(config);
+        let old = make_snapshot("old", "main", current_timestamp() - 40 * 24 * 60 * 60);
+        let recent = make_snapshot("recent", "main", current_timestamp() - 5 * 24 * 60 * 60);
+        assert!(gc.should_remove(&old));
+        assert!(!gc.should_remove(&recent));
+    }
+
+    #[test]
+    fn test_gc_immediate_detach_removes_all() {
+        let config = GcConfig {
+            immediate_detach: true,
+            ..Default::default()
+        };
+        let gc = GarbageCollector::new(config);
+        let snapshot = make_snapshot("s1", "main", current_timestamp());
+        assert!(gc.should_remove(&snapshot));
+    }
+
+    #[test]
+    fn test_find_orphan_branches() {
+        let config = GcConfig::default();
+        let gc = GarbageCollector::new(config);
+        let mut tree = make_tree();
+        let s1 = make_snapshot("s1", "main", current_timestamp());
+        tree.nodes.insert("s1".into(), s1);
+        tree.branches.insert("main".into(), make_branch("main", "s1"));
+        tree.branches.insert("orphan".into(), make_branch("orphan", "missing"));
+        let orphans = gc.find_orphan_branches(&tree);
+        assert_eq!(orphans, vec!["orphan"]);
+    }
+}

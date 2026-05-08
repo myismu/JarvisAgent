@@ -29,7 +29,7 @@ use crate::core::state::{
 };
 
 // 后台任务、配置、子代理
-use crate::core::config::{load_config, ConfigState}; // 配置状态与加载函数
+use crate::core::config::{load_config, ConfigState, RuntimeConfigState, RuntimeSettings}; // 配置状态与加载函数
 use crate::core::infra::background::BackgroundState; // 后台任务状态
 use crate::core::orchestration::subagents::SubAgentMonitorState;
 use crate::core::rollback::session_manager::SnapshotManagerRegistry;
@@ -129,6 +129,7 @@ pub fn run() {
         .manage(BackgroundState::default())
         .manage(SubAgentMonitorState::default())
         .manage(ConfigState(std::sync::Arc::new(Mutex::new(load_config()))))
+        .manage(RuntimeConfigState(RuntimeSettings::default()))
         .manage(WorkspaceState(Mutex::new(None)))
         .manage(SnapshotRegistry(tokio::sync::RwLock::new(
             SnapshotManagerRegistry::new(),

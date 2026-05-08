@@ -232,7 +232,7 @@ export const useChatStore = defineStore("chat", () => {
       snapshot.notice = notice;
     }
     // 渲染快照 HTML
-    const rendered = renderAgentTurnSnapshot(snapshot, prefs.agentDisplayMode.value, false);
+    const rendered = renderAgentTurnSnapshot(snapshot, prefs.agentAudience.value, false);
     
     // 如果快照里有 tokens 但渲染结果里没包含 token-usage 类（可能被 renderAgentTurnSnapshot 内部逻辑跳过），我们强制补上
     let finalHtml = rendered;
@@ -349,7 +349,7 @@ export const useChatStore = defineStore("chat", () => {
     const prefs = usePreferences();
     const view = session.currentSessionView;
     if (view.messages.length === 0) {
-      return renderStoredHistory(view.jarvisResponse, session.READY_TEXT, prefs.agentDisplayMode.value);
+      return renderStoredHistory(view.jarvisResponse, session.READY_TEXT, prefs.agentAudience.value);
     }
     return view.messages
       .map((msg) => {
@@ -535,7 +535,7 @@ export const useChatStore = defineStore("chat", () => {
         msg,
         thinkingOverride: thinkingOverride ?? null,
         imageBase64List: imageBase64List ?? null,
-        agentDisplayMode: usePreferences().agentDisplayMode.value,
+        agentDisplayMode: usePreferences().agentAudience.value,
       });
 
       const sessionSwitched = sessionIdAtStart !== session.activeSessionId;

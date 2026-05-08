@@ -58,9 +58,11 @@ pub async fn classify_intent(
         return result;
     }
 
-    // 第二层：从历史消息中提取上一轮助手行为特征
-    let last_assistant_action: Option<LastAssistantAction> =
-        history.iter().rev().find_map(|m| match m {
+    // 第二层：从历史消息中提取最近 4 条助手行为特征（与 LLM 层对齐）
+    let recent_assistant_actions: Vec<LastAssistantAction> = history
+        .iter()
+        .rev()
+        .filter_map(|m| match m {
             Message::Assistant { content } => {
                 let text = match content {
                     Content::Single(s) => s.clone(),
@@ -73,9 +75,11 @@ pub async fn classify_intent(
                 }
             }
             _ => None,
-        });
+        })
+        .take(4)
+        .collect();
 
-    let context_intent = classify_with_context(msg, last_assistant_action.as_ref());
+    let context_intent = classify_with_context(msg, &recent_assistant_actions);
     println!(
         "[INTENT] Context-aware classification: {:?}",
         context_intent
@@ -218,11 +222,21 @@ async fn classify_intent_by_llm(
                 }
             }
 
-            // 从 LLM 响应中提取意图标签，非法值回退到规则分类
-            let detected_intent = match serde_json::from_str::<serde_json::Value>(text_resp.trim())
-            {
+            // 从 LLM 响应中提取意图标签
+            // 先剥离 markdown 围栏（```json ... ```），再尝试 JSON 解析
+            let cleaned = text_resp.trim();
+            let cleaned = cleaned
+                .strip_prefix("```json")
+                .or_else(|| cleaned.strip_prefix("```"))
+                .unwrap_or(cleaned);
+            let cleaned = cleaned
+                .strip_suffix("```")
+                .unwrap_or(cleaned)
+                .trim();
+
+            let detected_intent = match serde_json::from_str::<serde_json::Value>(cleaned) {
                 Ok(val) => {
-                    let category = val["category"].as_str().unwrap_or("UNCLEAR").to_uppercase();
+                    let category = val["category"].as_str().unwrap_or("").to_uppercase();
                     match category.as_str() {
                         "CODE_READ" | "CODE_WRITE" | "CODE_REVIEW" | "TASK_EXECUTE"
                         | "TASK_PLAN" | "TASK_CONTINUE" | "QUESTION" | "MEMORY_QUERY"
@@ -231,32 +245,23 @@ async fn classify_intent_by_llm(
                     }
                 }
                 Err(_) => {
-                    let t = text_resp.trim().to_uppercase();
-                    if t.contains("DANGEROUS") {
-                        "DANGEROUS".to_string()
-                    } else if t.contains("MEMORY_QUERY") {
-                        "MEMORY_QUERY".to_string()
-                    } else if t.contains("CODE_REVIEW") {
-                        "CODE_REVIEW".to_string()
-                    } else if t.contains("CODE_READ") {
-                        "CODE_READ".to_string()
-                    } else if t.contains("CODE_WRITE") {
-                        "CODE_WRITE".to_string()
-                    } else if t.contains("TASK_EXECUTE") {
-                        "TASK_EXECUTE".to_string()
-                    } else if t.contains("TASK_PLAN") {
-                        "TASK_PLAN".to_string()
-                    } else if t.contains("TASK_CONTINUE") {
-                        "TASK_CONTINUE".to_string()
-                    } else if t.contains("QUESTION") {
-                        "QUESTION".to_string()
-                    } else if t.contains("SETTINGS") {
-                        "SETTINGS".to_string()
-                    } else if t.contains("CHAT") {
-                        "CHAT".to_string()
-                    } else {
-                        fallback_intent_for_unresolved(msg)
-                    }
+                    // JSON 解析失败，按优先级做边界匹配（用 split_whitespace 防子串误匹配）
+                    let t = cleaned.to_uppercase();
+                    let words: Vec<&str> = t.split(|c: char| !c.is_alphanumeric()).collect();
+                    let has = |w: &str| words.contains(&w);
+                    // 优先级：DANGEROUS > CODE_REVIEW > CODE_READ > CODE_WRITE > TASK_PLAN > TASK_EXECUTE > TASK_CONTINUE > MEMORY_QUERY > QUESTION > SETTINGS > CHAT
+                    if has("DANGEROUS") { "DANGEROUS".to_string() }
+                    else if has("CODE_REVIEW") { "CODE_REVIEW".to_string() }
+                    else if has("CODE_READ") { "CODE_READ".to_string() }
+                    else if has("CODE_WRITE") { "CODE_WRITE".to_string() }
+                    else if has("TASK_PLAN") { "TASK_PLAN".to_string() }
+                    else if has("TASK_EXECUTE") { "TASK_EXECUTE".to_string() }
+                    else if has("TASK_CONTINUE") { "TASK_CONTINUE".to_string() }
+                    else if has("MEMORY_QUERY") { "MEMORY_QUERY".to_string() }
+                    else if has("QUESTION") { "QUESTION".to_string() }
+                    else if has("SETTINGS") { "SETTINGS".to_string() }
+                    else if has("CHAT") { "CHAT".to_string() }
+                    else { fallback_intent_for_unresolved(msg) }
                 }
             };
 

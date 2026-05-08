@@ -19,11 +19,13 @@ mod compact;
 mod plan;
 mod skill;
 mod subagent;
+mod switch_mode;
 
 pub use compact::{compact, dream};
 pub use plan::propose_plan;
 pub use skill::load_skill;
 pub use subagent::run_subagent;
+pub use switch_mode::switch_work_mode;
 
 use super::framework::agent_registry::AgentRegistry;
 
@@ -63,13 +65,28 @@ crate::define_tools! {
             "ProposePlan",
             desc: "提交复杂任务实施方案给用户审阅",
             hint: "propose plan review approval",
-            schema_desc: "【方案审批工具】将实施方案提交给用户审阅。当面对复杂任务（涉及多步骤修改、架构变更等），必须使用此工具提交方案文档，等待用户确认后才能继续执行。方案内容使用 Markdown 格式。前端会以专门的预览面板展示方案，用户可以选择同意或拒绝。",
+            schema_desc: "【方案审批工具】将实施方案提交给用户审阅。当面对复杂任务（涉及多步骤修改、架构变更等），必须使用此工具提交方案文档，等待用户确认后才能继续执行。方案内容使用 Markdown 格式。前端会以专门的预览面板展示方案，用户可以选择同意或拒绝。task_breakdown 字段用于结构化任务分解，每项包含 subject（任务名）、description（详情）、depends_on（前置任务序号数组，从1开始）、can_parallel_with（可并行任务序号数组）。",
             props: {
                 title: string => "方案标题",
                 content: string => "方案正文（Markdown 格式），包含需求理解、变更范围、具体步骤、风险评估等",
+                task_breakdown: array => "结构化任务分解列表，每项包含 subject、description、depends_on（前置任务序号数组）、can_parallel_with（可并行序号数组）",
             },
             required: ["title", "content"],
             defer: true,
+        ),
+        crate::tool_def!(
+            "SwitchWorkMode",
+            desc: "切换 Agent 工作模式",
+            hint: "switch work mode chat edit plan",
+            schema_desc: "切换 Agent 的工作模式（chat/edit/plan）。编辑模式下遇到复杂任务时，可切换到计划模式进行深度规划；规划完成后切回编辑模式执行。聊天模式下禁止切换到计划模式。此工具只切换工作模式，不影响用户类型（user/developer）。",
+            props: {
+                mode: string => "目标工作模式：chat（聊天）、edit（编辑）、plan（规划）",
+                reason: string => "切换原因，会展示给用户",
+            },
+            required: ["mode", "reason"],
+            defer: true,
+            read_only: true,
+            concurrency_safe: true,
         ),
         crate::tool_def!(
             "RunSubagent",

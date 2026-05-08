@@ -195,17 +195,41 @@ impl SessionSnapshotManager {
             node.metadata = snapshot.metadata.clone();
         }
 
+        // 增量检查点：从前一个检查点的 workspace_state 出发，只应用增量补丁
         let workspace = self
             .replay_engine
-            .rebuild_workspace(&tree, &snapshot.id)
+            .rebuild_workspace_incremental(&tree, &snapshot.id)
             .map_err(|e| format!("为 checkpoint 重建工作区失败: {}", e))?;
 
         if !workspace.files.is_empty() {
+            // 找到前一个检查点的 workspace_state 用于 diff
+            let prev_state = Self::find_prev_checkpoint_state(&tree, &snapshot.id);
             let mut files: HashMap<String, FileInfo> = HashMap::new();
             for (path, content) in &workspace.files {
-                let hash = Patch::content_hash(content);
-                super::store::save_content(&self.session_id, &hash, content)
-                    .map_err(|e| format!("保存快照内容失败: {}", e))?;
+                // 只对新增或变更的文件重新计算 hash 并写入 snapshot_content
+                let hash = if let Some(prev_files) = &prev_state {
+                    if let Some(prev_info) = prev_files.get(path) {
+                        let new_hash = Patch::content_hash(content);
+                        if prev_info.hash == new_hash {
+                            // 未变更，复用旧 hash 和内容
+                            new_hash
+                        } else {
+                            super::store::save_content(&self.session_id, &new_hash, content)
+                                .map_err(|e| format!("保存快照内容失败: {}", e))?;
+                            new_hash
+                        }
+                    } else {
+                        let new_hash = Patch::content_hash(content);
+                        super::store::save_content(&self.session_id, &new_hash, content)
+                            .map_err(|e| format!("保存快照内容失败: {}", e))?;
+                        new_hash
+                    }
+                } else {
+                    let new_hash = Patch::content_hash(content);
+                    super::store::save_content(&self.session_id, &new_hash, content)
+                        .map_err(|e| format!("保存快照内容失败: {}", e))?;
+                    new_hash
+                };
                 files.insert(
                     path.clone(),
                     FileInfo {
@@ -346,23 +370,6 @@ impl SessionSnapshotManager {
             .map_err(|e| format!("预览回滚文件失败: {}", e))
     }
 
-    pub async fn rollback_touched_files_to(&self, snapshot_id: &str) -> Result<Workspace, String> {
-        let mut tree = self.tree.write().await;
-
-        let workspace = self
-            .replay_engine
-            .rollback_touched_files_to(&mut tree, snapshot_id)
-            .await
-            .map_err(|e| format!("回滚失败: {}", e))?;
-
-        self.store
-            .save_tree(&tree)
-            .map_err(|e| format!("保存树失败: {}", e))?;
-        crate::core::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
-
-        Ok(workspace)
-    }
-
     pub async fn clear_snapshots_for_initial_state(&self) -> Result<(), String> {
         let mut tree = self.tree.write().await;
         *tree = SnapshotTree::new(&self.session_id);
@@ -397,6 +404,31 @@ impl SessionSnapshotManager {
     pub async fn get_current_snapshot_id(&self) -> String {
         let tree = self.tree.read().await;
         tree.current_snapshot_id.clone()
+    }
+
+    /// 查找目标快照之前最近一个检查点的 workspace_state
+    fn find_prev_checkpoint_state(
+        tree: &SnapshotTree,
+        target_id: &str,
+    ) -> Option<HashMap<String, crate::core::rollback::snapshot::FileInfo>> {
+        let mut current_id = tree
+            .nodes
+            .get(target_id)
+            .and_then(|s| s.parent_id.clone());
+        while let Some(id) = current_id {
+            if let Some(snapshot) = tree.nodes.get(&id) {
+                if snapshot.is_checkpoint {
+                    return snapshot
+                        .workspace_state
+                        .as_ref()
+                        .map(|ws| ws.files.clone());
+                }
+                current_id = snapshot.parent_id.clone();
+            } else {
+                break;
+            }
+        }
+        None
     }
 
     /// 获取自上次 checkpoint 以来累积的补丁数量
@@ -599,7 +631,7 @@ impl SessionSnapshotManager {
     ) -> Result<Snapshot, String> {
         let mut tree = self.tree.write().await;
 
-        let result = self
+        let (mut result, merged_patches) = self
             .merge_engine
             .merge_branches(&tree, source_branch, target_branch, resolutions)
             .map_err(|e| format!("合并失败: {}", e))?;
@@ -608,6 +640,21 @@ impl SessionSnapshotManager {
             return Err(format!("存在 {} 个未解决的冲突", result.manual_required));
         }
 
+        if merged_patches.is_empty() {
+            return Err("合并后没有需要应用的补丁".to_string());
+        }
+
+        let snapshot = tree.create_snapshot(
+            merged_patches,
+            message.or_else(|| Some(format!("Merge {} into {}", source_branch, target_branch))),
+            None,
+            None,
+            false,
+            None,
+        );
+
+        result.merged_snapshot_id = Some(snapshot.id.clone());
+
         let mut journal = self.journal.write().await;
         let entry = super::journal::JournalEntry::CreateBranch {
             name: format!("merged-{}", source_branch),
@@ -615,15 +662,6 @@ impl SessionSnapshotManager {
             agent_id: None,
         };
         let _ = journal.append(&entry);
-
-        let snapshot = tree.create_snapshot(
-            vec![],
-            message.or_else(|| Some(format!("Merge {} into {}", source_branch, target_branch))),
-            None,
-            None,
-            false,
-            None,
-        );
 
         self.store
             .save_tree(&tree)

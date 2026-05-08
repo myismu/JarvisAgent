@@ -17,7 +17,7 @@ use crate::core::llm::api_client;
 use crate::core::models::*;
 use crate::core::session;
 use crate::core::state::*;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 #[tauri::command]
 pub async fn get_active_session_id() -> Result<Option<String>, String> {
@@ -100,6 +100,11 @@ pub async fn switch_away_and_delete_empty_session(
     };
 
     session::delete_session(deleted_session_id)?;
+
+    // 清理 SessionManager 内存中的 SessionContext
+    if let Some(manager) = app.try_state::<SessionManager>() {
+        manager.remove(deleted_session_id).await;
+    }
 
     let _ = app.emit(
         "active-session-changed",
@@ -335,10 +340,13 @@ fn message_text_content(content: &Content) -> String {
 }
 
 #[tauri::command]
-pub async fn delete_session(id: String) -> Result<(), String> {
-    // Frontend is responsible for checking if it's the active one, or it just deletes it.
-    // If it deletes the active one, it should call switch_away_and_delete_empty_session or similar.
-    session::delete_session(&id)
+pub async fn delete_session(
+    id: String,
+    session_manager: tauri::State<'_, SessionManager>,
+) -> Result<(), String> {
+    session::delete_session(&id)?;
+    session_manager.remove(&id).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -614,7 +622,7 @@ pub async fn get_subagent_runs(
     session_id: Option<String>,
     monitor_state: tauri::State<'_, crate::core::orchestration::subagents::SubAgentMonitorState>,
 ) -> Result<Vec<crate::core::orchestration::subagents::SubAgentRun>, String> {
-    let monitor = monitor_state.0.lock().await;
+    let mut monitor = monitor_state.0.lock().await;
     Ok(monitor.list(session_id.as_deref()))
 }
 
@@ -623,7 +631,7 @@ pub async fn list_subagents(
     session_id: Option<String>,
     monitor_state: tauri::State<'_, crate::core::orchestration::subagents::SubAgentMonitorState>,
 ) -> Result<Vec<crate::core::orchestration::subagents::SubAgentRun>, String> {
-    let monitor = monitor_state.0.lock().await;
+    let mut monitor = monitor_state.0.lock().await;
     Ok(monitor.list(session_id.as_deref()))
 }
 

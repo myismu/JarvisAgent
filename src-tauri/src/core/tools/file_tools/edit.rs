@@ -19,7 +19,7 @@ use super::common::{
     read_text_preserve_encoding,
 };
 use super::diff::compute_diff;
-use super::notebook_guard::{
+use crate::core::tools::notebook_tools::notebook_guard::{
     is_notebook_path, looks_like_notebook_json, notebook_text_edit_rejection,
 };
 use super::workspace::{get_workspace, record_patch_to_snapshot};
@@ -132,6 +132,7 @@ pub async fn edit_file(
                         old_content: content.clone(),
                         new_content: updated_content.clone(),
                         diff: Some(compute_diff(&content, &updated_content)),
+                        content_hash: None,
                     };
                     let msg = Some(format!("编辑 {}", path));
                     record_patch_to_snapshot(app, session_id, patch, msg).await;

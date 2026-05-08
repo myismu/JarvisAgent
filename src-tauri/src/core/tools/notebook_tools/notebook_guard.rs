@@ -6,13 +6,10 @@
 //! - `is_notebook_path()`: 判断路径是否指向 Jupyter Notebook 文件
 //! - `looks_like_notebook_json()`: 判断文本内容是否符合 Notebook JSON 结构
 //! - `notebook_text_edit_rejection()`: 生成拒绝直接文本编辑 Notebook 的提示
-//!
-//! ## Dependencies
-//! - External: `serde_json`
 
 use std::path::Path;
 
-pub(super) fn is_notebook_path(path: &str) -> bool {
+pub(crate) fn is_notebook_path(path: &str) -> bool {
     Path::new(path)
         .extension()
         .and_then(|ext| ext.to_str())
@@ -20,7 +17,7 @@ pub(super) fn is_notebook_path(path: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub(super) fn looks_like_notebook_json(content: &str) -> bool {
+pub(crate) fn looks_like_notebook_json(content: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(content)
         .ok()
         .map(|value| {
@@ -33,7 +30,7 @@ pub(super) fn looks_like_notebook_json(content: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub(super) fn notebook_text_edit_rejection(path: &str) -> String {
+pub(crate) fn notebook_text_edit_rejection(path: &str) -> String {
     format!(
         "拒绝文本编辑 Notebook: '{}' 是 .ipynb/Jupyter Notebook 或 notebook-shaped JSON。\
         Notebook 是结构化 JSON，直接使用 edit_file/write_file 可能破坏 cells、metadata、outputs。\

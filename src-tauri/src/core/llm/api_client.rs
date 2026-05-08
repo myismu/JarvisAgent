@@ -81,6 +81,22 @@ pub async fn api_call_with_retry(
                 if status.is_success() || status.as_u16() == 200 {
                     return Ok(response);
                 }
+                // 429 Rate Limit：按服务器建议的等待时间重试
+                if status.as_u16() == 429 {
+                    let retry_after = response
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .unwrap_or(5);
+                    println!(
+                        "[JARVIS] 触发频率限制 (429)，按服务器建议等待 {}s...",
+                        retry_after
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(retry_after)).await;
+                    last_error = format!("频率限制 (429)，等待 {}s 后重试", retry_after);
+                    continue;
+                }
                 if status.is_client_error() {
                     let err_body = response.text().await.unwrap_or_default();
                     return Err(ApiError::HttpError {

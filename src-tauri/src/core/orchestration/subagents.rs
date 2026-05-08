@@ -94,7 +94,8 @@ impl SubAgentMonitor {
         }
     }
 
-    pub fn list(&self, session_id: Option<&str>) -> Vec<SubAgentRun> {
+    pub fn list(&mut self, session_id: Option<&str>) -> Vec<SubAgentRun> {
+        self.cleanup_expired();
         let mut runs: Vec<SubAgentRun> = self
             .runs
             .values()
@@ -103,6 +104,26 @@ impl SubAgentMonitor {
             .collect();
         runs.sort_by_key(|run| run.started_at);
         runs
+    }
+
+    /// 清理已完成超过 1 小时的运行记录，防止内存无限增长
+    fn cleanup_expired(&mut self) {
+        let now = now_millis();
+        let ttl_ms: u64 = 3600 * 1000; // 1 小时
+        let expired: Vec<String> = self
+            .runs
+            .iter()
+            .filter(|(_, run)| {
+                run.status != SubAgentStatus::Running
+                    && run.finished_at.map_or(false, |finished| now.saturating_sub(finished) > ttl_ms)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &expired {
+            self.runs.remove(id);
+            self.events.remove(id);
+            self.cancel_tokens.remove(id);
+        }
     }
 
     pub fn list_events(
@@ -576,6 +597,73 @@ impl SubAgentMonitor {
         )
     }
 
+    /// 子 Agent 事件持久化到 SQLite，进程退出后可恢复
+    fn persist_subagent_events(events: &[SubAgentEvent]) {
+        for event in events {
+            let _ = crate::core::db::with_connection(|conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO subagent_events(
+                        event_id, run_id, session_id, event_type, message, tool,
+                        input_summary, output_summary, error, loop_count,
+                        input_tokens, output_tokens, timestamp
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    rusqlite::params![
+                        event.event_id,
+                        event.run_id,
+                        event.session_id,
+                        event.event_type,
+                        event.message,
+                        event.tool,
+                        event.input_summary,
+                        event.output_summary,
+                        event.error,
+                        event.loop_count as i64,
+                        event.input_tokens as i64,
+                        event.output_tokens as i64,
+                        event.timestamp as i64,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(())
+            });
+        }
+    }
+
+    /// 从 SQLite 加载指定 run_id 的历史事件
+    pub fn load_persisted_events(run_id: &str) -> Vec<SubAgentEvent> {
+        crate::core::db::with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT event_id, run_id, session_id, event_type, message, tool,
+                            input_summary, output_summary, error, loop_count,
+                            input_tokens, output_tokens, timestamp
+                     FROM subagent_events WHERE run_id = ?1 ORDER BY timestamp",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([run_id], |row| {
+                    Ok(SubAgentEvent {
+                        event_id: row.get(0)?,
+                        run_id: row.get(1)?,
+                        session_id: row.get(2)?,
+                        event_type: row.get(3)?,
+                        message: row.get(4)?,
+                        tool: row.get(5)?,
+                        input_summary: row.get(6)?,
+                        output_summary: row.get(7)?,
+                        error: row.get(8)?,
+                        loop_count: row.get::<_, i64>(9)? as usize,
+                        input_tokens: row.get::<_, i64>(10)? as u64,
+                        output_tokens: row.get::<_, i64>(11)? as u64,
+                        timestamp: row.get::<_, i64>(12)? as u64,
+                    })
+                })
+                .map_err(|e| e.to_string())?;
+            Ok(rows.filter_map(|r| r.ok()).collect())
+        })
+        .unwrap_or_default()
+    }
+
     async fn push_event(
         app: &tauri::AppHandle,
         run_id: &str,
@@ -616,7 +704,9 @@ impl SubAgentMonitor {
             events.push(event.clone());
             if events.len() > 300 {
                 let overflow = events.len() - 300;
-                events.drain(0..overflow);
+                // 丢弃的事件持久化到 SQLite，防止彻底丢失
+                let drained: Vec<_> = events.drain(0..overflow).collect();
+                Self::persist_subagent_events(&drained);
             }
             event
         };

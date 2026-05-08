@@ -569,11 +569,21 @@ export function useAgentEvents() {
       view.hydrated = true;
     });
 
-    // subagent updated
+    // subagent updated（节流批量更新，减轻 5s 心跳 × N 子 Agent 的渲染压力）
+    let pendingSubAgentRuns: Record<string, SubAgentRun> = {};
+    let subAgentFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
     await on<SubAgentRun>("subagent-updated", (event) => {
       const run = event.payload;
       if (!run?.runId) return;
-      agent.subAgentRuns = { ...agent.subAgentRuns, [run.runId]: run };
+      pendingSubAgentRuns[run.runId] = run;
+      if (!subAgentFlushTimer) {
+        subAgentFlushTimer = setTimeout(() => {
+          agent.subAgentRuns = { ...agent.subAgentRuns, ...pendingSubAgentRuns };
+          pendingSubAgentRuns = {};
+          subAgentFlushTimer = null;
+        }, 2000);
+      }
     });
 
     // subagent event

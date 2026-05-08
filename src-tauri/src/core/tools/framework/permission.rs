@@ -102,13 +102,22 @@ pub async fn request_permission(app: &tauri::AppHandle, session_id: &str, messag
     let id = REQ_ID.fetch_add(1, Ordering::SeqCst).to_string();
 
     let (tx, rx) = oneshot::channel();
-    ctx.pending_permissions.lock().await.insert(id.clone(), tx);
+    // 插入前清理超时条目（5 分钟未响应）
+    {
+        let mut perms = ctx.pending_permissions.lock().await;
+        let now = std::time::Instant::now();
+        perms.retain(|_, (ts, _)| now.duration_since(*ts).as_secs() < 300);
+        perms.insert(id.clone(), (std::time::Instant::now(), tx));
+    }
 
     let _ = app.emit(
         "permission-request",
         json!({ "id": id, "message": message, "sessionId": session_id }),
     );
-    let decision = rx.await.unwrap_or_else(|_| "reject".to_string());
+    let decision = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
+        .await
+        .map(|r| r.unwrap_or_else(|_| "reject".to_string()))
+        .unwrap_or_else(|_| "reject".to_string());
 
     if decision == "allow_session" {
         *ctx.session_allowed.lock().await = true;

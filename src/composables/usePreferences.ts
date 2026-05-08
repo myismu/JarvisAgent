@@ -1,7 +1,7 @@
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { AgentDisplayMode } from "../types";
+import type { AgentAudience, AgentWorkMode } from "../types";
 import { DEFAULT_LOCALE, normalizeLocale, type AppLocale } from "../i18n";
 
 export type AgentPanelPosition = "left" | "right";
@@ -15,7 +15,8 @@ interface UiPreferences {
   compactMode: boolean;
   sidebarCollapsed: boolean;
   agentPanelVisible: boolean;
-  agentDisplayMode: AgentDisplayMode;
+  agentAudience: AgentAudience;
+  agentWorkMode: AgentWorkMode;
   locale: AppLocale;
 }
 
@@ -28,14 +29,23 @@ const defaults: UiPreferences = {
   compactMode: false,
   sidebarCollapsed: false,
   agentPanelVisible: false,
-  agentDisplayMode: "user",
+  agentAudience: "developer",
+  agentWorkMode: "edit",
   locale: DEFAULT_LOCALE,
 };
 
-function normalizePrefs(value: Partial<UiPreferences>): UiPreferences {
-  const mode = value.agentDisplayMode === "developer" ? "developer" : "user";
-  const pos = value.agentPanelPosition === "left" ? "left" : "right";
-  return { ...defaults, ...value, agentDisplayMode: mode, locale: normalizeLocale(value.locale), agentPanelPosition: pos };
+function normalizePrefs(value: Partial<UiPreferences> & { agentDisplayMode?: string }): UiPreferences {
+  const result = { ...defaults, ...value };
+  // 向后兼容：旧 agentDisplayMode 值自动迁移
+  if (value.agentDisplayMode !== undefined && !value.agentAudience) {
+    result.agentAudience = value.agentDisplayMode === "developer" ? "developer" : "user";
+    result.agentWorkMode = value.agentDisplayMode === "developer" ? "edit" : "chat";
+  }
+  result.agentAudience = result.agentAudience === "user" ? "user" : "developer";
+  result.agentWorkMode = ["chat", "plan"].includes(result.agentWorkMode) ? result.agentWorkMode : "edit";
+  result.agentPanelPosition = result.agentPanelPosition === "left" ? "left" : "right";
+  result.locale = normalizeLocale(result.locale);
+  return result;
 }
 
 const prefs = ref<UiPreferences>({ ...defaults });
@@ -98,7 +108,8 @@ function startWatchers() {
   watch(() => prefs.value.agentPanelPosition, () => scheduleSave());
   watch(() => prefs.value.sidebarCollapsed, () => scheduleSave());
   watch(() => prefs.value.agentPanelVisible, () => scheduleSave());
-  watch(() => prefs.value.agentDisplayMode, () => scheduleSave());
+  watch(() => prefs.value.agentAudience, () => scheduleSave());
+  watch(() => prefs.value.agentWorkMode, () => scheduleSave());
   watch(() => prefs.value.locale, () => scheduleSave());
   watch(() => prefs.value.defaultExpandThinking, () => scheduleSave());
   watch(() => prefs.value.autoScroll, () => scheduleSave());
@@ -141,9 +152,13 @@ function ensureInit() {
 
 export function usePreferences() {
   ensureInit();
-  const agentDisplayMode = computed<AgentDisplayMode>({
-    get: () => prefs.value.agentDisplayMode,
-    set: (val) => { prefs.value.agentDisplayMode = val; },
+  const agentAudience = computed<AgentAudience>({
+    get: () => prefs.value.agentAudience,
+    set: (val) => { prefs.value.agentAudience = val; },
+  });
+  const agentWorkMode = computed<AgentWorkMode>({
+    get: () => prefs.value.agentWorkMode,
+    set: (val) => { prefs.value.agentWorkMode = val; },
   });
 
   const locale = computed<AppLocale>({
@@ -160,8 +175,10 @@ export function usePreferences() {
     setFontSize: (val: number) => { prefs.value.fontSize = val; },
     get codeFontSize() { return prefs.value.codeFontSize; },
     setCodeFontSize: (val: number) => { prefs.value.codeFontSize = val; },
-    agentDisplayMode,
-    setAgentDisplayMode: (val: AgentDisplayMode) => { prefs.value.agentDisplayMode = val; },
+    agentAudience,
+    setAgentAudience: (val: AgentAudience) => { prefs.value.agentAudience = val; },
+    agentWorkMode,
+    setAgentWorkMode: (val: AgentWorkMode) => { prefs.value.agentWorkMode = val; },
     locale,
     setLocale: (val: AppLocale) => { prefs.value.locale = normalizeLocale(val); },
     get defaultExpandThinking() { return prefs.value.defaultExpandThinking; },

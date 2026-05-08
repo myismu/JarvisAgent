@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::Mutex;
 
@@ -26,8 +26,8 @@ pub struct BackgroundTask {
     pub task_type: Option<String>,
 }
 
-/// 任务完成通知（用于向前端推送状态变更）
-#[derive(Clone, Debug)]
+/// 任务完成通知（Tauri 事件推送 + 轮询兼容）
+#[derive(Clone, Debug, Serialize)]
 pub struct Notification {
     pub task_id: String,
     pub status: String,
@@ -199,17 +199,20 @@ impl BackgroundManager {
                         .to_string()
                 });
 
-                let ps_cmd = format!(
-                    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; {}",
-                    cmd_async
-                );
+                let (shell, shell_args): (String, Vec<String>) = if cfg!(target_os = "windows") {
+                    let ps_cmd = format!(
+                        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; {}",
+                        cmd_async
+                    );
+                    ("powershell".to_string(), vec!["-NoProfile".to_string(), "-Command".to_string(), ps_cmd])
+                } else {
+                    ("bash".to_string(), vec!["-c".to_string(), cmd_async.clone()])
+                };
 
-                let child = match tokio::process::Command::new("powershell")
-                    .current_dir(&target_dir)
-                    .args(&["-NoProfile", "-Command", &ps_cmd])
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
+                let mut cmd = tokio::process::Command::new(&shell);
+                cmd.current_dir(&target_dir).args(&shell_args);
+
+                let child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
                 {
                     Ok(c) => c,
                     Err(e) => {
@@ -310,23 +313,26 @@ impl BackgroundManager {
                     }
                 };
 
+                let notif = Notification {
+                    task_id: task_id_async.clone(),
+                    status: status.to_string(),
+                    command: cmd_async.clone(),
+                    result: final_output,
+                    port: port_async,
+                    task_type: type_async,
+                };
+
+                // Tauri 事件推送（实时通知前端，替代轮询）
+                let _ = app_handle.emit("bg-task-done", &notif);
+
                 if let Some(st) = app_handle.try_state::<BackgroundState>() {
                     let mut bg = st.0.lock().await;
                     if let Some(task) = bg.tasks.get_mut(&task_id_async) {
                         task.status = status.to_string();
-                        task.result = Some(final_output.clone());
+                        task.result = Some(notif.result.clone());
                     }
-                    // 清理子进程句柄
                     bg.child_processes.remove(&task_id_async);
-
-                    bg.notification_queue.push(Notification {
-                        task_id: task_id_async,
-                        status: status.to_string(),
-                        command: cmd_async,
-                        result: final_output,
-                        port: port_async,
-                        task_type: type_async,
-                    });
+                    bg.notification_queue.push(notif);
                 }
             });
         }
@@ -344,12 +350,22 @@ impl BackgroundManager {
         )
     }
 
+    /// 清理已完成且子进程句柄已释放的后台任务，防止内存无限增长
+    fn cleanup_expired(&mut self) {
+        // 清理那些已经不在 child_processes 中的非 running 任务
+        // child_processes 在任务完成时会被移除 (task 完成逻辑中 child_processes.remove)
+        self.tasks.retain(|id, task| {
+            task.status == "running" || self.child_processes.contains_key(id)
+        });
+    }
+
     /// 查询任务状态
     ///
     /// 提供 task_id 时返回单个任务详情，否则返回所有任务摘要
     pub async fn check(app: &tauri::AppHandle, task_id: Option<String>) -> String {
         if let Some(state) = app.try_state::<BackgroundState>() {
-            let bg = state.0.lock().await;
+            let mut bg = state.0.lock().await;
+            bg.cleanup_expired();
             if let Some(tid) = task_id {
                 if let Some(t) = bg.tasks.get(&tid) {
                     let mut short_cmd = t.command.clone();

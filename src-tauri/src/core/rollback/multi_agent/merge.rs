@@ -78,14 +78,14 @@ impl MergeEngine {
         }
     }
 
-    /// 执行分支合并（带冲突解决）
+    /// 执行分支合并（带冲突解决），返回合并结果和合并后的补丁列表
     pub fn merge_branches(
         &self,
         tree: &SnapshotTree,
         source_branch: &str,
         target_branch: &str,
         resolutions: HashMap<String, ConflictResolution>,
-    ) -> Result<MergeResult, MergeError> {
+    ) -> Result<(MergeResult, Vec<Patch>), MergeError> {
         if source_branch == target_branch {
             return Err(MergeError::SameBranch);
         }
@@ -113,10 +113,10 @@ impl MergeEngine {
             return Err(MergeError::UnresolvedConflicts(unresolved));
         }
 
-        let _merged_patches =
+        let merged_patches =
             self.merge_patches(&source_patches, &target_patches, &resolved_conflicts);
 
-        Ok(MergeResult {
+        Ok((MergeResult {
             success: unresolved == 0,
             target_branch: target_branch.to_string(),
             source_branch: source_branch.to_string(),
@@ -127,7 +127,7 @@ impl MergeEngine {
                 .filter(|c| c.resolution.is_some())
                 .count(),
             manual_required: unresolved,
-        })
+        }, merged_patches))
     }
 
     /// 预览合并结果（不实际执行）
@@ -335,6 +335,16 @@ impl MergeEngine {
         (resolved, unresolved)
     }
 
+    /// 根据冲突解决结果构建合并后的补丁列表（公开方法）
+    pub fn build_merged_patches(
+        &self,
+        source_patches: &[Patch],
+        target_patches: &[Patch],
+        conflicts: &[Conflict],
+    ) -> Vec<Patch> {
+        self.merge_patches(source_patches, target_patches, conflicts)
+    }
+
     fn merge_patches(
         &self,
         source_patches: &[Patch],
@@ -369,6 +379,7 @@ impl MergeEngine {
                                 old_content: conflict.target_content.clone().unwrap_or_default(),
                                 new_content: content.clone(),
                                 diff: None,
+                                content_hash: None,
                             });
                         }
                     }
@@ -390,6 +401,7 @@ impl MergeEngine {
                             old_content: conflict.target_content.clone().unwrap_or_default(),
                             new_content: resolved_content.clone(),
                             diff: None,
+                            content_hash: None,
                         });
                     }
                 }

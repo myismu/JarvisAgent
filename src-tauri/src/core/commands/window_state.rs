@@ -50,18 +50,36 @@ pub struct UiPreferences {
     pub sidebar_collapsed: bool,
     #[serde(default)]
     pub agent_panel_visible: bool,
-    #[serde(default = "default_agent_display_mode")]
-    pub agent_display_mode: String,
+    #[serde(default = "default_agent_audience")]
+    pub agent_audience: String,
+    #[serde(default = "default_agent_work_mode")]
+    pub agent_work_mode: String,
     #[serde(default = "default_locale")]
     pub locale: String,
+    /// 图片压缩最大宽度（像素）
+    #[serde(default = "default_image_max_width")]
+    pub image_max_width: u32,
+    /// 图片压缩最大高度（像素）
+    #[serde(default = "default_image_max_height")]
+    pub image_max_height: u32,
+    /// 图片压缩质量 (0.0 ~ 1.0)
+    #[serde(default = "default_image_quality")]
+    pub image_quality: f32,
+    /// 向后兼容：读取旧 agent_display_mode 字段
+    #[serde(default)]
+    agent_display_mode: Option<String>,
 }
 
 fn default_font_size() -> i32 { 15 }
 fn default_code_font_size() -> i32 { 13 }
 fn default_true() -> bool { true }
 fn default_agent_panel_position() -> String { "right".to_string() }
-fn default_agent_display_mode() -> String { "user".to_string() }
+fn default_agent_audience() -> String { "developer".to_string() }
+fn default_agent_work_mode() -> String { "edit".to_string() }
 fn default_locale() -> String { "zh-CN".to_string() }
+fn default_image_max_width() -> u32 { 1920 }
+fn default_image_max_height() -> u32 { 1080 }
+fn default_image_quality() -> f32 { 0.8 }
 
 impl Default for UiPreferences {
     fn default() -> Self {
@@ -74,8 +92,36 @@ impl Default for UiPreferences {
             compact_mode: false,
             sidebar_collapsed: false,
             agent_panel_visible: false,
-            agent_display_mode: "user".to_string(),
+            agent_audience: "developer".to_string(),
+            agent_work_mode: "edit".to_string(),
             locale: "zh-CN".to_string(),
+            image_max_width: 1920,
+            image_max_height: 1080,
+            image_quality: 0.8,
+            agent_display_mode: None,
+        }
+    }
+}
+
+impl UiPreferences {
+    /// 兼容旧版本 agent_display_mode，迁移到双轴
+    pub fn migrate_legacy_display_mode(&mut self) {
+        if let Some(legacy) = self.agent_display_mode.take() {
+            if self.agent_audience == default_agent_audience()
+                && self.agent_work_mode == default_agent_work_mode()
+            {
+                match legacy.as_str() {
+                    "user" => {
+                        self.agent_audience = "user".to_string();
+                        self.agent_work_mode = "chat".to_string();
+                    }
+                    "developer" => {
+                        self.agent_audience = "developer".to_string();
+                        self.agent_work_mode = "edit".to_string();
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 }
@@ -150,7 +196,9 @@ pub async fn save_custom_window_state(
 
 #[tauri::command]
 pub async fn get_ui_preferences() -> Result<UiPreferences, String> {
-    Ok(read_file().ui_preferences)
+    let mut prefs = read_file().ui_preferences;
+    prefs.migrate_legacy_display_mode();
+    Ok(prefs)
 }
 
 #[tauri::command]

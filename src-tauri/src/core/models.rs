@@ -260,7 +260,10 @@ pub struct SessionContextSnapshot {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct SessionMemory {
+    /// 运行时消息（从 session_messages 表按 active_message_ids 重建，不序列化存储）
+    #[serde(default, skip_serializing)]
     pub messages: Vec<Message>,
+    /// LLM 活动视图索引 —— 指向 session_messages 表中 LLM 当前应看到的消息 ID
     #[serde(default)]
     pub message_ids: Vec<String>,
     pub context: Vec<String>,

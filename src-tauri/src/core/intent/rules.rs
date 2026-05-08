@@ -259,6 +259,25 @@ pub enum Intent {
 }
 
 impl Intent {
+    /// 从字符串标签恢复意图枚举（用于外部规则加载）
+    pub fn from_str(s: &str) -> Option<Intent> {
+        match s {
+            "CODE_READ" => Some(Intent::CodeRead),
+            "CODE_WRITE" => Some(Intent::CodeWrite),
+            "CODE_REVIEW" => Some(Intent::CodeReview),
+            "TASK_EXECUTE" => Some(Intent::TaskExecute),
+            "TASK_PLAN" => Some(Intent::TaskPlan),
+            "TASK_CONTINUE" => Some(Intent::TaskContinue),
+            "QUESTION" => Some(Intent::Question),
+            "MEMORY_QUERY" => Some(Intent::MemoryQuery),
+            "SETTINGS" => Some(Intent::Settings),
+            "CHAT" | "GENERAL_CHAT" => Some(Intent::GeneralChat),
+            "DANGEROUS" | "DANGEROUS_ACTION" => Some(Intent::DangerousAction),
+            "UNCLEAR" => Some(Intent::Unclear),
+            _ => None,
+        }
+    }
+
     /// 转为字符串标签，用于日志和下游路由
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -326,6 +345,13 @@ pub fn classify_by_rules(input: &str) -> Intent {
     // 返回 NeedsContext 让上下文层或 LLM 层判断
     if SHORT_UNCLEAR.is_match(trimmed) {
         return Intent::NeedsContext;
+    }
+
+    // 外部规则检查（JSON 配置的规则，覆盖/补充编译规则）
+    if let Some(external) = check_external_rules(trimmed) {
+        if let Some(intent) = Intent::from_str(&external) {
+            return intent;
+        }
     }
 
     // 优先级1：危险操作（最高优先级）
@@ -439,15 +465,15 @@ pub fn classify_by_rules(input: &str) -> Intent {
 /// - 意图分类结果
 pub fn classify_with_context(
     input: &str,
-    last_assistant_action: Option<&LastAssistantAction>,
+    recent_assistant_actions: &[LastAssistantAction],
 ) -> Intent {
-    if let Some(action) = last_assistant_action {
-        // 上一轮是提问且用户有回复 → 视为任务延续
+    for action in recent_assistant_actions {
+        // 最近 N 轮中有提问且用户有回复 → 视为任务延续
         if action.was_asking_question && !input.trim().is_empty() {
             return Intent::TaskContinue;
         }
 
-        // 上一轮是项目操作或计划提议，且用户回复确认词 → 任务延续
+        // 最近 N 轮中有项目操作或计划提议，且用户回复确认词 → 任务延续
         if action.was_project_action || action.was_proposing_plan {
             for pattern in AFFIRMATIVE_CONTINUATION.iter() {
                 if pattern.is_match(input.trim()) {
@@ -530,6 +556,78 @@ pub fn analyze_last_assistant_message(message: &str) -> LastAssistantAction {
         was_proposing_plan,
         action_summary,
     }
+}
+
+// ============================================================================
+// 外部意图规则加载（JSON 配置文件扩展编译规则，无需重编译即可新增/调整意图）
+// ============================================================================
+
+use std::sync::RwLock;
+
+/// 存储从 JSON 文件加载的外部规则：意图名 → 正则模式列表
+static EXTERNAL_INTENT_RULES: RwLock<Vec<(String, Vec<Regex>)>> = RwLock::new(Vec::new());
+
+/// 从 JSON 文件加载额外意图规则，与编译期规则同时生效
+pub fn load_external_rules(path: &std::path::Path) -> std::io::Result<usize> {
+    let content = std::fs::read_to_string(path)?;
+    let rules: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    let mut loaded = 0;
+    let mut external = Vec::new();
+
+    if let Some(intents) = rules["intents"].as_object() {
+        // 按 priority_order 加载，保持优先级语义
+        let order: Vec<&str> = rules["priority_order"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+
+        let mut keys: Vec<&str> = intents.keys().map(|k| k.as_str()).collect();
+        // 排序：先按 priority_order，其余追加到末尾
+        keys.sort_by_key(|k| {
+            order
+                .iter()
+                .position(|o| o.eq_ignore_ascii_case(k))
+                .unwrap_or(usize::MAX)
+        });
+
+        for key in &keys {
+            if let Some(list) = intents[*key].as_array() {
+                let mut patterns = Vec::new();
+                for p in list {
+                    if let Some(s) = p.as_str() {
+                        if let Ok(re) = Regex::new(s) {
+                            patterns.push(re);
+                            loaded += 1;
+                        }
+                    }
+                }
+                if !patterns.is_empty() {
+                    external.push((key.to_uppercase(), patterns));
+                }
+            }
+        }
+    }
+
+    if let Ok(mut guard) = EXTERNAL_INTENT_RULES.write() {
+        *guard = external;
+    }
+    Ok(loaded)
+}
+
+/// 检查外部规则，命中时返回意图标签字符串
+fn check_external_rules(input: &str) -> Option<String> {
+    if let Ok(guard) = EXTERNAL_INTENT_RULES.read() {
+        for (name, patterns) in guard.iter() {
+            for p in patterns {
+                if p.is_match(input) {
+                    return Some(name.clone());
+                }
+            }
+        }
+    }
+    None
 }
 
 // ============================================================================
@@ -645,12 +743,13 @@ mod tests {
             was_proposing_plan: false,
             action_summary: "创建文件".to_string(),
         };
+        let actions = vec![action];
         assert_eq!(
-            classify_with_context("继续", Some(&action)),
+            classify_with_context("继续", &actions),
             Intent::TaskContinue
         );
         assert_eq!(
-            classify_with_context("好的", Some(&action)),
+            classify_with_context("好的", &actions),
             Intent::TaskContinue
         );
     }
@@ -663,8 +762,9 @@ mod tests {
             was_proposing_plan: false,
             action_summary: String::new(),
         };
+        let actions = vec![action];
         assert_eq!(
-            classify_with_context("好的", Some(&action)),
+            classify_with_context("好的", &actions),
             Intent::NeedsContext
         );
     }
@@ -677,12 +777,13 @@ mod tests {
             was_proposing_plan: false,
             action_summary: "询问文件内容".to_string(),
         };
+        let actions = vec![action];
         assert_eq!(
-            classify_with_context("备忘txt", Some(&action)),
+            classify_with_context("备忘txt", &actions),
             Intent::TaskContinue
         );
         assert_eq!(
-            classify_with_context("test.md", Some(&action)),
+            classify_with_context("test.md", &actions),
             Intent::TaskContinue
         );
     }

@@ -47,13 +47,13 @@ pub struct AgentConfig {
     pub top_p: Option<f32>,
     /// 模型生成的 Top K 参数
     pub top_k: Option<u32>,
-    /// 图片压缩最大宽度（像素），超过此宽度将等比缩放
+    /// [兼容旧配置] 旧版图片/子模型字段，读取后忽略
+    #[serde(default, skip_serializing)]
     pub image_max_width: Option<u32>,
-    /// 图片压缩最大高度（像素），超过此高度将等比缩放
+    #[serde(default, skip_serializing)]
     pub image_max_height: Option<u32>,
-    /// 图片压缩质量 (0.0 ~ 1.0)，仅对 JPEG/WebP 有效
+    #[serde(default, skip_serializing)]
     pub image_quality: Option<f32>,
-    /// [兼容旧配置] 旧版 sub_model 字段，读取后忽略（合并进 main_model）
     #[serde(default, skip_serializing)]
     pub sub_model: Option<String>,
 }
@@ -138,20 +138,21 @@ impl AppConfig {
                     .unwrap_or_default()
             });
 
-        // 规范化 base_url
+        // 规范化 base_url：剥离 query string 后再检查后缀，防误判
         let mut url = config.base_url.trim_end_matches('/').to_string();
+        let url_for_check = url.split('?').next().unwrap_or(&url);
         match config.api_format_enum() {
             ApiFormat::OpenAI => {
-                if !url.ends_with("/chat/completions") {
-                    if !url.ends_with("/v1") {
+                if !url_for_check.ends_with("/chat/completions") {
+                    if !url_for_check.ends_with("/v1") {
                         url.push_str("/v1");
                     }
                     url.push_str("/chat/completions");
                 }
             }
             ApiFormat::Anthropic => {
-                if !url.ends_with("/messages") {
-                    if !url.ends_with("/v1") {
+                if !url_for_check.ends_with("/messages") {
+                    if !url_for_check.ends_with("/v1") {
                         url.push_str("/v1");
                     }
                     url.push_str("/messages");
@@ -164,8 +165,66 @@ impl AppConfig {
     }
 }
 
+/// 运行时可调参数 — 集中管理所有内部阈值、间隔和限制
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RuntimeSettings {
+    /// 最大上下文 token 数
+    pub max_tokens_context: i32,
+    /// 触发自动压缩的 token 阈值
+    pub max_tokens_compact_trigger: usize,
+    /// 强制用户确认前的最大循环次数
+    pub max_agent_loop_before_confirm: usize,
+    /// 绝对循环上限
+    pub max_agent_loop_absolute: usize,
+    /// 后台任务输出最大长度
+    pub max_background_output_len: usize,
+    /// 后台通知消息最大长度
+    pub max_background_notify_len: usize,
+    /// 快照最大保留天数
+    pub gc_max_age_days: u64,
+    /// 是否保护分支头节点
+    pub gc_keep_branch_heads: bool,
+    /// 合并冲突阈值
+    pub merge_conflict_threshold: usize,
+    /// Thinking 预算 token 数
+    pub thinking_budget_tokens: u32,
+    /// API 重试次数
+    pub api_retry_count: u32,
+    /// 子 Agent 心跳间隔（秒）
+    pub heartbeat_interval_secs: u64,
+    /// 子 Agent 事件历史保留上限
+    pub subagent_event_history_limit: usize,
+    /// 后台任务 TTL（秒）
+    pub background_task_ttl_secs: u64,
+}
+
+impl Default for RuntimeSettings {
+    fn default() -> Self {
+        Self {
+            max_tokens_context: 8192,
+            max_tokens_compact_trigger: 50000,
+            max_agent_loop_before_confirm: 30,
+            max_agent_loop_absolute: 500,
+            max_background_output_len: 50000,
+            max_background_notify_len: 500,
+            gc_max_age_days: 30,
+            gc_keep_branch_heads: true,
+            merge_conflict_threshold: 10,
+            thinking_budget_tokens: 1024,
+            api_retry_count: 3,
+            heartbeat_interval_secs: 5,
+            subagent_event_history_limit: 200,
+            background_task_ttl_secs: 3600,
+        }
+    }
+}
+
 /// 全局配置状态（Tauri State）
 pub struct ConfigState(pub Arc<Mutex<AppConfig>>);
+
+/// 运行时配置状态（Tauri State）
+pub struct RuntimeConfigState(pub RuntimeSettings);
 
 /// 获取配置文件路径
 fn config_path() -> std::path::PathBuf {
@@ -207,14 +266,34 @@ pub fn load_config() -> AppConfig {
     AppConfig::default()
 }
 
-/// 保存配置到磁盘
-pub fn save_config(config: &AppConfig) {
+/// 保存配置到磁盘（原子写入：先写临时文件，再 rename）
+pub fn save_config(config: &AppConfig) -> Result<(), String> {
     let path = config_path();
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {}", e))?;
     }
-    let _ = std::fs::write(
-        &path,
-        serde_json::to_string_pretty(config).unwrap_or_default(),
-    );
+    let json = serde_json::to_string_pretty(config).map_err(|e| format!("序列化配置失败: {}", e))?;
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, &json).map_err(|e| format!("写入配置失败: {}", e))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("保存配置失败: {}", e))?;
+    Ok(())
+}
+
+/// 校验配置必填字段
+pub fn validate_config(config: &AppConfig) -> Result<(), String> {
+    for profile in &config.profiles {
+        if profile.name.trim().is_empty() {
+            return Err("预设名称不能为空".to_string());
+        }
+        if profile.config.api_key.trim().is_empty() {
+            return Err(format!("预设「{}」的 API Key 不能为空", profile.name));
+        }
+        if profile.config.base_url.trim().is_empty() {
+            return Err(format!("预设「{}」的 Base URL 不能为空", profile.name));
+        }
+        if profile.config.main_model.trim().is_empty() {
+            return Err(format!("预设「{}」的主模型不能为空", profile.name));
+        }
+    }
+    Ok(())
 }

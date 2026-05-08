@@ -19,7 +19,8 @@ pub async fn load_skill(
         let ctx = manager.get_or_create(session_id).await;
         let scope = crate::core::state::active_run_scope_key(app, session_id).await;
         let key = format!("{}:{}", scope, skill_name.to_ascii_lowercase());
-        let mut state = ctx.loaded_skill_state.lock().await;
+        let mut cache = ctx.dedupe_cache.lock().await;
+        let state = cache.entry("skill".to_string()).or_default();
         if let Some(entry) = state.get_mut(&key) {
             entry.suppressed_count += 1;
             return format!(

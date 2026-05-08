@@ -17,33 +17,35 @@ use reqwest::header::CONTENT_TYPE;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
-/// 粗略估算消息列表的 token 数（字符数 / 4）
+/// 使用 tiktoken 精确计算 token 数，tokenizer 不可用时退化为 chars/4 估算
 pub fn estimate_tokens(messages: &[Message]) -> usize {
-    let mut total_chars = 0;
+    let mut text_buf = String::new();
+    let mut total_image_estimate = 0;
+
     for msg in messages {
         match msg {
             Message::User { content } | Message::Assistant { content } => match content {
                 Content::Single(text) => {
-                    total_chars += text.len();
+                    text_buf.push_str(text);
                 }
                 Content::Multiple(blocks) => {
                     for block in blocks {
                         match block {
                             ContentBlock::Text { text } => {
-                                total_chars += text.len();
+                                text_buf.push_str(text);
                             }
                             ContentBlock::Thinking { thinking, .. } => {
-                                total_chars += thinking.len();
+                                text_buf.push_str(thinking);
                             }
                             ContentBlock::ToolUse { name, input, .. } => {
-                                total_chars += name.len();
-                                total_chars += input.to_string().len();
+                                text_buf.push_str(name);
+                                text_buf.push_str(&input.to_string());
                             }
                             ContentBlock::ToolResult { content, .. } => {
-                                total_chars += content.len();
+                                text_buf.push_str(content);
                             }
                             ContentBlock::Image { .. } => {
-                                total_chars += 1000;
+                                total_image_estimate += 1000;
                             }
                         }
                     }
@@ -51,7 +53,9 @@ pub fn estimate_tokens(messages: &[Message]) -> usize {
             },
         }
     }
-    total_chars / 4
+
+    // cl100k_base 是所有主流模型共用分词器（GPT-4/3.5/Claude），模型名仅用于查表
+    crate::core::llm::token_count::count_text("gpt-4", &text_buf).tokens + total_image_estimate
 }
 
 /// 轻量压缩：清理旧的工具结果，最近 keep_recent 条保留原文，其余截断为首部摘要
@@ -121,6 +125,52 @@ pub fn micro_compact(messages: &mut Vec<Message>) {
     }
 }
 
+/// 中压缩：移除早期 thinking 块（保留最近 5 个），其余替换为摘要
+pub fn mid_compact(messages: &mut Vec<Message>) {
+    const KEEP_RECENT: usize = 5;
+    const TRUNCATE_AT: usize = 200;
+
+    let mut thinking_positions = Vec::new();
+    for (i, msg) in messages.iter().enumerate() {
+        if let Message::Assistant {
+            content: Content::Multiple(blocks),
+        } = msg
+        {
+            for (j, block) in blocks.iter().enumerate() {
+                if let ContentBlock::Thinking { .. } = block {
+                    thinking_positions.push((i, j));
+                }
+            }
+        }
+    }
+
+    if thinking_positions.len() <= KEEP_RECENT {
+        return;
+    }
+
+    let to_clear = thinking_positions.len() - KEEP_RECENT;
+    for &(i, j) in thinking_positions.iter().take(to_clear) {
+        if let Message::Assistant {
+            content: Content::Multiple(ref mut blocks),
+        } = messages[i]
+        {
+            if let ContentBlock::Thinking {
+                thinking,
+                signature,
+            } = &mut blocks[j]
+            {
+                let preview: String = thinking.chars().take(TRUNCATE_AT).collect();
+                *thinking = format!(
+                    "[早期思考-已截断] {}\n... [共{}字符，后段已省略]",
+                    preview,
+                    thinking.len()
+                );
+                *signature = String::new();
+            }
+        }
+    }
+}
+
 /// 将对话记录保存为 JSONL 转录文件（用于压缩前的备份）
 pub fn append_transcript(session_id: &str, text: &str) -> Result<String, MemoryError> {
     let timestamp = std::time::SystemTime::now()
@@ -182,12 +232,21 @@ async fn call_summarize_llm(
         json_content.clone()
     };
 
-    let summary_prompt = format!("Summarize this conversation for continuity. Include: \n1) What was accomplished, 2) Current state, 3) Key decisions made. \nBe concise but preserve critical details.\n\n{}", summarized_text);
+    let summary_prompt = format!(
+        "Summarize this conversation for continuity. Include:\n\
+         1) What was accomplished (specific files modified, commands run)\n\
+         2) Current state (what's working, what's broken, what's in progress)\n\
+         3) Key technical decisions made and WHY\n\
+         4) Any error messages encountered and how they were resolved\n\
+         5) Preserve exact code snippets, file paths, and API signatures where present\n\
+         Be concise but prioritize technical precision over brevity.\n\n{}",
+        summarized_text
+    );
 
     let request_body = AnthropicRequest {
         model: model_id.to_string(),
         max_tokens: 2000,
-        system: "You are a summarizing agent.".to_string(),
+        system: "You are a technical conversation summarizer. Your job is to compress chat history while preserving all information needed for an AI coding agent to continue work without losing context. Prioritize: file paths, code snippets, error messages, technical decisions, and current task state. If in doubt, include it.".to_string(),
         messages: vec![Message::User {
             content: Content::Single(summary_prompt),
         }],
@@ -300,9 +359,9 @@ pub async fn auto_compact(
     // 委托核心压缩逻辑
     compact_messages(&mut memory.messages, client, api_key, base_url, model_id, api_format).await?;
 
-    // 压缩消息需要稳定的 message_id，不能裸清空
-    // session_messages 表通过 message_id 与 memory_json 关联，不稳定ID会导致索引错位
-    memory.message_ids = vec![
+    // 视图引用方案：压缩消息写入 session_messages 表（source='compact'），
+    // message_ids 指向它们，LLM 读这些消息，UI 自动跳过（filter source != 'compact'）
+    let compact_ids = vec![
         format!("compact:{}:user", uuid::Uuid::new_v4().simple()),
         format!("compact:{}:asst", uuid::Uuid::new_v4().simple()),
     ];
@@ -320,6 +379,23 @@ pub async fn auto_compact(
             );
         }
     }
+
+    // 持久化压缩消息到 session_messages 表
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if let Err(e) = crate::core::session::repository::append_or_upsert_session_messages(
+        session_id,
+        &memory.messages,
+        &compact_ids,
+        "compact",
+        now,
+    ) {
+        println!("[auto_compact] 保存压缩消息到 session_messages 失败: {}", e);
+    }
+
+    memory.message_ids = compact_ids;
 
     Ok(())
 }

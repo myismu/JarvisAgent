@@ -13,7 +13,7 @@ use super::common::{
     read_text_preserve_encoding, TextEncoding,
 };
 use super::diff::compute_diff;
-use super::notebook_guard::{
+use crate::core::tools::notebook_tools::notebook_guard::{
     is_notebook_path, looks_like_notebook_json, notebook_text_edit_rejection,
 };
 use super::workspace::{get_workspace, record_patch_to_snapshot};
@@ -628,6 +628,7 @@ pub async fn apply_patch(
                 old_content: plan.loaded.old_content.clone(),
                 new_content: plan.new_content.clone(),
                 diff: Some(compute_diff(&plan.loaded.old_content, &plan.new_content)),
+                content_hash: None,
             }
         } else {
             Patch::CreateFile {

@@ -374,17 +374,59 @@ fn stored_session_message_from_row(row: &Row<'_>) -> rusqlite::Result<StoredSess
 
 pub fn load_session(id: &str) -> Result<SessionMemory, String> {
     crate::core::db::with_connection(|conn| {
-        conn.query_row(
-            "SELECT memory_json FROM session_memory
-             JOIN sessions ON sessions.id = session_memory.session_id
-             WHERE session_id = ?1 AND sessions.deleted_at IS NULL",
-            [id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("会话 {} 不存在", id))
-        .and_then(|json| serde_json::from_str(&json).map_err(|e| e.to_string()))
+        let json = conn
+            .query_row(
+                "SELECT memory_json FROM session_memory
+                 JOIN sessions ON sessions.id = session_memory.session_id
+                 WHERE session_id = ?1 AND sessions.deleted_at IS NULL",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("会话 {} 不存在", id))?;
+
+        let mut memory: SessionMemory =
+            serde_json::from_str(&json).map_err(|e| e.to_string())?;
+
+        // 从 session_messages 表重建 messages
+        // 新方案：按 active_message_ids 读取
+        // 向后兼容：如果 message_ids 为空（旧会话），加载所有可见消息
+        if !memory.message_ids.is_empty() {
+            let placeholders: Vec<String> = memory
+                .message_ids
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect();
+            let sql = format!(
+                "SELECT content_json FROM session_messages
+                 WHERE session_id = ?{} AND message_id IN ({})
+                 ORDER BY seq ASC",
+                placeholders.len() + 1,
+                placeholders.join(",")
+            );
+            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+                vec![Box::new(id.to_string())];
+            for mid in &memory.message_ids {
+                params.push(Box::new(mid.clone()));
+            }
+            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(
+                    rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let content_json = row.map_err(|e| e.to_string())?;
+                if let Ok(msg) = serde_json::from_str::<Message>(&content_json) {
+                    memory.messages.push(msg);
+                }
+            }
+        }
+
+        Ok(memory)
     })
 }
 

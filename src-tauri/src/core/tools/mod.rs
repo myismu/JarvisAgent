@@ -319,9 +319,53 @@ pub async fn handle_tool_call_inner(
         // 方案审批工具
         "ProposePlan" => agent_tools::propose_plan(app, input, session_id).await,
 
+        // 工作模式切换
+        "SwitchWorkMode" => agent_tools::switch_work_mode(app, input, session_id).await,
+
         // 工具搜索
         "SearchTools" => framework::tool_search::handle_search_tools(input, intent).await,
 
         _ => format!("未知工具: {}", name),
     }
+}
+
+/// 按 WorkMode 过滤工具名称列表
+pub fn allowed_tools_for_work_mode(mode: &str) -> Vec<&'static str> {
+    match mode {
+        "chat" => vec![
+            "ReadFile", "ReadFileSkeleton", "SearchText", "FindFiles", "ListDirectory",
+            "FindSymbol", "ReadSymbol", "FindReferences", "SearchRepo", "CodeSearch",
+            "GetSystemInfo", "LoadSkill", "SearchTools", "CompactConversation",
+        ],
+        "plan" => vec![
+            "ReadFile", "ReadFileSkeleton", "SearchText", "FindFiles", "ListDirectory",
+            "FindSymbol", "ReadSymbol", "FindReferences", "SearchRepo", "CodeSearch",
+            "GetSystemInfo", "LoadSkill",
+            "ProposePlan", "CreateTask", "UpdateTask", "ListTasks", "GetTask", "DeleteTask",
+            "SummarizeTasks",
+            "SearchTools", "CompactConversation",
+            "SwitchWorkMode",
+        ],
+        _ => vec![],  // edit = all tools (no filter)
+    }
+}
+
+/// 根据 WorkMode 过滤工具定义
+pub fn filter_tools_by_work_mode(
+    tools: Vec<serde_json::Value>,
+    work_mode: &str,
+) -> Vec<serde_json::Value> {
+    let allowed = allowed_tools_for_work_mode(work_mode);
+    if allowed.is_empty() {
+        return tools;  // edit mode = all tools
+    }
+    tools
+        .into_iter()
+        .filter(|t| {
+            t.get("name")
+                .and_then(|n| n.as_str())
+                .map(|name| allowed.contains(&name))
+                .unwrap_or(true)
+        })
+        .collect()
 }

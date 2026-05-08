@@ -95,51 +95,55 @@ impl TaskScheduler {
                 );
             }
 
-            // 3. 并行 spawn 所有就绪任务的子Agent
-            let handles: Vec<_> = ready_tasks
-                .into_iter()
-                .map(|task| {
-                    let app_clone = app.clone();
-                    let sid = session_id.to_string();
-                    let prompt = if task.description.is_empty() {
-                        task.subject.clone()
-                    } else {
-                        format!("{}\n\n{}", task.subject, task.description)
-                    };
-                    let task_id = task.id;
-                    let task_subject = task.subject.clone();
-                    tokio::spawn(async move {
-                        println!(
-                            "[SCHEDULER] 启动子Agent: Task #{} - {}",
-                            task_id, task_subject
-                        );
-                        let (answer, si, so) = run_subagent(
+            // 3. 流式调度：JoinSet 替代 join_all，谁先完成就立刻解锁下游
+            let mut set = tokio::task::JoinSet::new();
+            for task in ready_tasks {
+                let app_clone = app.clone();
+                let sid = session_id.to_string();
+                let prompt = if task.description.is_empty() {
+                    task.subject.clone()
+                } else {
+                    format!("{}\n\n{}", task.subject, task.description)
+                };
+                let task_id = task.id;
+                let task_subject = task.subject.clone();
+                set.spawn(async move {
+                    println!(
+                        "[SCHEDULER] 启动子Agent: Task #{} - {}",
+                        task_id, task_subject
+                    );
+                    let result = tokio::time::timeout(
+                        std::time::Duration::from_secs(300), // 5 分钟超时
+                        run_subagent(
                             app_clone,
                             prompt,
-                            false, // 非只读，允许写操作
+                            false,
                             sid,
                             Some(task_id),
                             Some(format!("Task #{}", task_id)),
                             Some(IMPLEMENTATION_AGENT_TYPE.to_string()),
                             None,
-                        )
-                        .await;
-                        (task_id, answer, si, so)
-                    })
-                })
-                .collect();
+                        ),
+                    )
+                    .await;
+                    let (answer, si, so) = match result {
+                        Ok(r) => r,
+                        Err(_) => (format!("任务超时（超过 5 分钟）"), 0, 0),
+                    };
+                    (task_id, answer, si, so)
+                });
+            }
 
-            // 4. join_all 等待本批次全部完成
-            let results = futures_util::future::join_all(handles).await;
-
-            // 5. 处理结果，更新任务状态
-            for result in results {
+            // 4. 逐个处理完成的任务，完成一个立即解锁下游
+            while let Some(result) = set.join_next().await {
                 if let Ok((task_id, answer, si, so)) = result {
                     total_in += si;
                     total_out += so;
 
-                    // 无论成功失败都标记为 Completed（避免阻塞后续任务）
-                    let status_msg = if answer.contains("子代理已取消") {
+                    let status_msg = if answer.contains("任务超时") {
+                        failed_count += 1;
+                        "超时"
+                    } else if answer.contains("子代理已取消") {
                         failed_count += 1;
                         "取消"
                     } else if answer.contains("子代理执行达到") {
@@ -181,7 +185,7 @@ impl TaskScheduler {
                     );
                 }
             }
-            // 回到循环顶部，自动发现新解锁的任务
+            // 回到循环顶部，自动发现新解锁的任务（包括流式解锁的）
         }
 
         // 生成汇总报告

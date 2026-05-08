@@ -17,7 +17,8 @@ pub async fn compact(
     if let Some(manager) = app.try_state::<crate::core::state::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         let scope = crate::core::state::active_run_scope_key(app, session_id).await;
-        let mut state = ctx.compact_state.lock().await;
+        let mut cache = ctx.dedupe_cache.lock().await;
+        let state = cache.entry("compact".to_string()).or_default();
         if let Some(entry) = state.get_mut(&scope) {
             entry.suppressed_count += 1;
             return format!(
@@ -42,7 +43,8 @@ pub async fn dream(app: &tauri::AppHandle, _input: &serde_json::Value, session_i
     if let Some(manager) = app.try_state::<crate::core::state::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         let scope = crate::core::state::active_run_scope_key(app, session_id).await;
-        let mut state = ctx.dream_state.lock().await;
+        let mut cache = ctx.dedupe_cache.lock().await;
+        let state = cache.entry("dream".to_string()).or_default();
         if let Some(entry) = state.get_mut(&scope) {
             entry.suppressed_count += 1;
             return format!(

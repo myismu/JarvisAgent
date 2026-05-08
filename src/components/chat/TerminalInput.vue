@@ -4,9 +4,11 @@ import { useI18n } from 'vue-i18n';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useSessionStore } from '../../stores/session';
 import { useChatStore } from '../../stores/chat';
+import { usePreferences } from '../../composables/usePreferences';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { readFile } from '@tauri-apps/plugin-fs';
+import type { AgentWorkMode } from '../../types';
 
 const { t } = useI18n();
 
@@ -18,9 +20,19 @@ const showVisionWarning = ref(false);
 
 const session = useSessionStore();
 const chat = useChatStore();
+const uiPrefs = usePreferences();
+
+// WorkMode 状态，与 usePreferences 双向同步 + 监听后端切换
+const showWorkModeMenu = ref(false);
+const currentWorkMode = ref<AgentWorkMode>(uiPrefs.agentWorkMode.value);
+
+watch(() => uiPrefs.agentWorkMode.value, (val) => {
+  currentWorkMode.value = val;
+});
 
 let unlistenDragDrop: (() => void) | null = null;
 let unlistenConfig: UnlistenFn | null = null;
+let unlistenWorkMode: UnlistenFn | null = null;
 
 const appConfig = ref<any>(null);
 const showProfileMenu = ref(false);
@@ -138,10 +150,19 @@ const switchProfile = async (id: string) => {
   }
 };
 
+const switchWorkMode = (mode: AgentWorkMode) => {
+  uiPrefs.setAgentWorkMode(mode);
+  currentWorkMode.value = mode;
+  showWorkModeMenu.value = false;
+};
+
 const closeMenuOnOutsideClick = (e: MouseEvent) => {
   const target = e.target as HTMLElement;
   if (!target.closest('.profile-selector')) {
     showProfileMenu.value = false;
+  }
+  if (!target.closest('.work-mode-selector')) {
+    showWorkModeMenu.value = false;
   }
 };
 
@@ -216,13 +237,17 @@ onMounted(async () => {
   unlistenConfig = await listen('config-updated', async () => {
     loadConfig();
     loadImageCompressConfig();
-    // 配置变更后刷新历史，确保 data-user-message-index 同步
     try {
       if (session.activeSessionId) {
         const history = await invoke<string>('get_session_history', { sessionId: session.activeSessionId });
         session.replaceSessionHistory(session.activeSessionId, history);
       }
     } catch { /* ignore */ }
+  });
+
+  // 监听 Agent 自动切换 WorkMode 的事件
+  unlistenWorkMode = await listen<{ from: string; to: string; reason: string }>('agent-work-mode-changed', (event) => {
+    currentWorkMode.value = event.payload.to as AgentWorkMode;
   });
 
   document.addEventListener('click', closeMenuOnOutsideClick);
@@ -249,6 +274,7 @@ onMounted(async () => {
 onUnmounted(() => {
   if (unlistenDragDrop) unlistenDragDrop();
   if (unlistenConfig) unlistenConfig();
+  if (unlistenWorkMode) unlistenWorkMode();
 });
 
 onBeforeUnmount(() => {
@@ -386,13 +412,39 @@ const handleRecallEdit = async () => {
           </div>
         </div>
         
+        <div class="toolbar-spacer"></div>
+
+        <div class="work-mode-selector">
+          <button class="work-mode-btn" @click="showWorkModeMenu = !showWorkModeMenu">
+            <span class="work-mode-dot" :class="currentWorkMode"></span>
+            <span class="work-mode-label">{{ t('settings.general.' + currentWorkMode) }}</span>
+            <svg viewBox="0 0 24 24" width="10" height="10" stroke="currentColor" stroke-width="2" fill="none"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+
+          <div v-if="showWorkModeMenu" class="work-mode-menu">
+            <div
+              v-for="mode in (['chat', 'edit', 'plan'] as AgentWorkMode[])"
+              :key="mode"
+              class="work-mode-menu-item"
+              :class="{ active: currentWorkMode === mode }"
+              @click="switchWorkMode(mode)"
+            >
+              <span class="work-mode-dot" :class="mode"></span>
+              <div class="work-mode-menu-text">
+                <div class="work-mode-menu-name">{{ t('settings.general.' + mode) }}</div>
+                <div class="work-mode-menu-desc">{{ t('settings.general.' + mode + 'DescShort') }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div class="toolbar-right">
-          <button 
-            class="action-toggle-btn" 
-            :class="{ 
-              active: isThinkingActive, 
-              disabled: !canModelThink 
-            }" 
+          <button
+            class="action-toggle-btn"
+            :class="{
+              active: isThinkingActive,
+              disabled: !canModelThink
+            }"
             @click="canModelThink && (isThinkingActive = !isThinkingActive)"
             :title="!canModelThink ? t('input.thinkingUnsupportedTitle') : (isThinkingActive ? t('input.thinkingOnTitle') : t('input.thinkingOffTitle'))"
           >
@@ -650,6 +702,110 @@ const handleRecallEdit = async () => {
   opacity: 0.5;
   cursor: not-allowed;
   filter: grayscale(1);
+}
+
+.toolbar-spacer {
+  flex: 1;
+}
+
+.work-mode-selector {
+  position: relative;
+}
+
+.work-mode-btn {
+  background: var(--glass-bg-light);
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-main);
+  padding: 6px 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.work-mode-btn:hover {
+  background: var(--glass-bg);
+  border-color: var(--glass-border);
+  transform: translateY(-1px);
+}
+
+.work-mode-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.work-mode-dot.chat { background: var(--accent-green, #22c55e); }
+.work-mode-dot.edit { background: var(--accent-blue, #3b82f6); }
+.work-mode-dot.plan { background: var(--accent-yellow, #f59e0b); }
+
+.work-mode-label {
+  white-space: nowrap;
+}
+
+.work-mode-menu {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface-strong);
+  backdrop-filter: blur(var(--glass-blur-heavy));
+  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
+  border: 1px solid color-mix(in srgb, var(--text-muted) 22%, transparent);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.18), var(--glass-shadow);
+  min-width: 200px;
+  z-index: 100;
+  overflow: hidden;
+  animation: popIn var(--transition-fast);
+  padding: 8px;
+}
+
+.work-mode-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  border-radius: var(--radius-md);
+  margin-bottom: 2px;
+}
+
+.work-mode-menu-item:last-child {
+  margin-bottom: 0;
+}
+
+.work-mode-menu-item:hover {
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+}
+
+.work-mode-menu-item.active {
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.work-mode-menu-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.work-mode-menu-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.work-mode-menu-desc {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  margin-top: 2px;
 }
 
 .input-row {

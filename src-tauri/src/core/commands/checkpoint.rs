@@ -307,25 +307,17 @@ async fn rollback_files_to_snapshot(
         snapshot_id
     };
 
-    if let Some(workspace) = crate::core::state::effective_workspace(app, session_id).await {
-        manager
-            .rollback_to(snapshot_id, &workspace)
-            .await
-            .map_err(|e| log_rollback_abort(session_id, &format!("文件回滚失败: {}", e)))?;
-        println!(
-            "[Rollback] 会话 {} 已按 workspace 恢复到 {}",
-            session_id, target_label
-        );
-    } else {
-        manager
-            .rollback_touched_files_to(snapshot_id)
-            .await
-            .map_err(|e| log_rollback_abort(session_id, &format!("文件回滚失败: {}", e)))?;
-        println!(
-            "[Rollback] 会话 {} 已按 patch 记录路径恢复到 {}",
-            session_id, target_label
-        );
-    }
+    let workspace = crate::core::state::effective_workspace(app, session_id)
+        .await
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    manager
+        .rollback_to(snapshot_id, &workspace)
+        .await
+        .map_err(|e| log_rollback_abort(session_id, &format!("文件回滚失败: {}", e)))?;
+    println!(
+        "[Rollback] 会话 {} 已恢复到 {}",
+        session_id, target_label
+    );
 
     Ok(vec!["文件已恢复到检查点状态".to_string()])
 }

@@ -24,7 +24,6 @@ use tauri::Emitter;
 use crate::core::config::AgentConfig;
 use crate::core::error::AgentError;
 use crate::core::infra::debug_logger;
-use crate::core::infra::prompts::*;
 use crate::core::intent;
 use crate::core::llm::api_client;
 use crate::core::models::*;
@@ -82,10 +81,18 @@ struct ContextEstimate {
 
 const DIRECT_DEVELOPER_INTENT: &str = "PROJECT_ACTION";
 
-fn normalize_agent_display_mode(mode: Option<&str>) -> &'static str {
+fn normalize_agent_audience(audience: &str) -> &'static str {
+    match audience {
+        "user" => "user",
+        _ => "developer",
+    }
+}
+
+fn normalize_agent_work_mode(mode: &str) -> &'static str {
     match mode {
-        Some("developer") => "developer",
-        _ => "user",
+        "chat" => "chat",
+        "plan" => "plan",
+        _ => "edit",
     }
 }
 
@@ -96,7 +103,7 @@ impl PipelineState {
         msg: String,
         thinking_override: Option<bool>,
         image_base64_list: Option<Vec<String>>,
-        agent_display_mode: Option<String>,
+        _agent_display_mode: Option<String>,
         app: tauri::AppHandle,
         session_manager: tauri::State<'_, crate::core::state::SessionManager>,
         config_state: tauri::State<'_, crate::core::config::ConfigState>,
@@ -154,13 +161,24 @@ impl PipelineState {
         );
 
         let client = reqwest::Client::new();
-        let system_prompt = MAIN_SYSTEM_PROMPT.to_string();
+
+        // 读取双轴偏好
+        let (audience, work_mode) = {
+            let prefs = crate::core::commands::window_state::get_ui_preferences()
+                .await
+                .unwrap_or_default();
+            let audience = normalize_agent_audience(&prefs.agent_audience).to_string();
+            let work_mode = normalize_agent_work_mode(&prefs.agent_work_mode).to_string();
+            (audience, work_mode)
+        };
+        *ctx.agent_audience.lock().await = audience.clone();
+        *ctx.agent_work_mode.lock().await = work_mode.clone();
+        let system_prompt = crate::core::infra::prompts::get_system_prompt(&audience, &work_mode);
 
         let has_images = image_base64_list
             .as_ref()
             .map(|l| !l.is_empty())
             .unwrap_or(false);
-        let agent_display_mode = normalize_agent_display_mode(agent_display_mode.as_deref());
         let msg_for_intent = if has_images {
             format!(
                 "{}\n\n[用户同时附带了图片/截图；截图可能是报错、UI 异常、终端输出、运行结果或代码问题反馈，请结合文本判断是否属于项目操作，不要仅因有图判为 CHAT。]",
@@ -169,8 +187,8 @@ impl PipelineState {
         } else {
             msg.clone()
         };
-        let detected_intent = if agent_display_mode == "developer" {
-            println!("[JARVIS] 开发者模式：跳过意图分类，直接进入软件开发/项目操作流程");
+        let detected_intent = if work_mode != "chat" {
+            println!("[JARVIS] {} 模式：跳过意图分类，直接进入项目操作流程", work_mode);
             DIRECT_DEVELOPER_INTENT.to_string()
         } else {
             let history_for_classification = ctx.memory.lock().await.messages.clone();
@@ -308,9 +326,14 @@ impl PipelineState {
         crate::core::session::save_session(&self.sid, &memory_after_user_message, None);
         let _ = self.app.emit("session-updated", ());
 
-        self.should_think = self
-            .thinking_override
-            .unwrap_or_else(|| self.cfg.enable_thinking.unwrap_or(false));
+        self.should_think = self.thinking_override.unwrap_or_else(|| {
+            // 用户未手动切换时，根据意图自动决定
+            match self.detected_intent.as_str() {
+                "CODE_WRITE" | "TASK_PLAN" | "PROJECT_ACTION" | "TASK_EXECUTE" => true,
+                "CODE_READ" | "CODE_REVIEW" | "QUESTION" | "CHAT" | "MEMORY_QUERY" | "SETTINGS" => false,
+                _ => self.cfg.enable_thinking.unwrap_or(false),
+            }
+        });
 
         self.run_id = agent_runs::start_run(&self.app, &self.sid, &self.msg, None);
         *self.ctx.active_run_id.lock().await = Some(self.run_id.clone());
@@ -356,7 +379,9 @@ impl PipelineState {
             let history_snapshot = self.prepare_history_snapshot().await;
 
             // 构建请求并更新上下文快照
-            let (req_json, is_openai) = self.build_llm_request(history_snapshot);
+            let audience = self.ctx.agent_audience.lock().await.clone();
+            let work_mode = self.ctx.agent_work_mode.lock().await.clone();
+            let (req_json, is_openai) = self.build_llm_request(history_snapshot, &audience, &work_mode);
 
             // 调试日志
             let request_json = serde_json::to_string_pretty(&req_json).unwrap_or_default();
@@ -374,19 +399,45 @@ impl PipelineState {
                 None => continue,
             };
 
-            // 流式处理
-            let mut stream = response.bytes_stream().eventsource();
-            let stream_result = process_stream(
-                &mut stream,
-                is_openai,
-                &self.app,
-                &self.sid,
-                &self.run_id,
-                self.total_loop_count + 1,
-                &self.cancel_token,
-                StreamConfig::default(),
-            )
-            .await;
+            // 流式处理（含一次断流重试）
+            let stream_result = {
+                let mut stream = response.bytes_stream().eventsource();
+                let result = process_stream(
+                    &mut stream,
+                    is_openai,
+                    &self.app,
+                    &self.sid,
+                    &self.run_id,
+                    self.total_loop_count + 1,
+                    &self.cancel_token,
+                    StreamConfig::default(),
+                )
+                .await;
+
+                // 如果流提前结束且未收到工具调用也未收到正文，重试一次
+                if result.text.is_empty() && !result.has_tool && !self.cancel_token.is_cancelled()
+                {
+                    println!("[JARVIS] 流式响应提前终止，尝试重试一次...");
+                    if let Some(resp) = self.call_api_with_retry(&req_json).await? {
+                        let mut stream2 = resp.bytes_stream().eventsource();
+                        process_stream(
+                            &mut stream2,
+                            is_openai,
+                            &self.app,
+                            &self.sid,
+                            &self.run_id,
+                            self.total_loop_count + 1,
+                            &self.cancel_token,
+                            StreamConfig::default(),
+                        )
+                        .await
+                    } else {
+                        result
+                    }
+                } else {
+                    result
+                }
+            };
 
             let (
                 mut current_blocks,
@@ -854,21 +905,40 @@ impl PipelineState {
 
     /// 检查 token 用量并在需要时执行压缩
     async fn compact_if_needed(&mut self) {
-        let messages_for_estimate = {
+        // L1: micro_compact 每轮执行（截断旧工具结果，零成本）
+        {
             let mut session = self.ctx.memory.lock().await;
             micro_compact(&mut session.messages);
             crate::core::session::normalize_message_ids(&mut session);
+        }
+
+        let messages_for_estimate = {
+            let session = self.ctx.memory.lock().await;
             session.messages.clone()
         };
         let history_snapshot = self.prepare_history_snapshot_from_messages(messages_for_estimate);
+        let work_mode_check = self.ctx.agent_work_mode.lock().await.clone();
         let tools = self.current_tools();
+        let tools = filter_tools_by_work_mode(tools, &work_mode_check);
         let estimate = self.build_context_estimate(&history_snapshot, &tools);
         let tokens = estimate.estimated_tokens;
-        if tokens > crate::core::constants::MAX_TOKENS_COMPACT_TRIGGER {
+        let trigger = crate::core::constants::MAX_TOKENS_COMPACT_TRIGGER;
+
+        // L2（80%~95%）：中压缩（移除早期 thinking 块）
+        if tokens > trigger * 80 / 100 {
             println!(
-                "[贾维斯] 上下文估算值 > {} ({})，触发自动压缩",
-                crate::core::constants::MAX_TOKENS_COMPACT_TRIGGER,
-                tokens
+                "[贾维斯] 上下文 > {}% 上限 ({}/{}), 触发中压缩",
+                80, tokens, trigger
+            );
+            let mut session = self.ctx.memory.lock().await;
+            mid_compact(&mut session.messages);
+        }
+
+        // L3（>95% 上限）：LLM 摘要压缩（保存 transcript，替换历史）
+        if tokens > trigger * 95 / 100 {
+            println!(
+                "[贾维斯] 上下文 > {}% 上限 ({}/{}), 触发全压缩",
+                95, tokens, trigger
             );
 
             let mut session = self.ctx.memory.lock().await;
@@ -1178,14 +1248,21 @@ impl PipelineState {
     }
 
     /// 构建 LLM API 请求体
-    fn build_llm_request(&self, history_snapshot: Vec<Message>) -> (serde_json::Value, bool) {
+    fn build_llm_request(
+        &self,
+        history_snapshot: Vec<Message>,
+        audience: &str,
+        work_mode: &str,
+    ) -> (serde_json::Value, bool) {
+        let system_prompt = crate::core::infra::prompts::get_system_prompt(audience, work_mode);
         let tools = self.current_tools();
+        let tools = filter_tools_by_work_mode(tools, work_mode);
         self.update_context_snapshot(&history_snapshot, &tools);
 
         let mut request_body = AnthropicRequest {
             model: self.model_id.clone(),
             max_tokens: crate::core::constants::MAX_TOKENS_CONTEXT,
-            system: self.system_prompt.clone(),
+            system: system_prompt.clone(),
             messages: history_snapshot,
             tools,
             stream: true,

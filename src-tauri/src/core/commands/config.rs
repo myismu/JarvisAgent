@@ -25,29 +25,30 @@ pub async fn save_config_cmd(
     config_state: tauri::State<'_, config::ConfigState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    // 校验必填字段
+    config::validate_config(&new_config)?;
+    // 原子写入磁盘
+    config::save_config(&new_config)?;
     let mut current = config_state.0.lock().await;
     *current = new_config.clone();
-    config::save_config(&new_config);
     let active = new_config.active_config();
     println!(
         "[配置] 已保存应用配置，当前激活: {} (main_model={})",
         new_config.active_profile_id, active.main_model
     );
-    // 通知前端刷新配置状态
     let _ = app.emit("config-updated", ());
     Ok(())
 }
 
-/// 获取图片压缩配置（最大宽高、质量）
+/// 获取图片压缩配置（最大宽高、质量），从 UiPreferences 读取
 #[tauri::command]
-pub async fn get_image_compress_config(
-    config_state: tauri::State<'_, config::ConfigState>,
-) -> Result<serde_json::Value, String> {
-    let app_config = config_state.0.lock().await;
-    let active = app_config.active_config();
+pub async fn get_image_compress_config() -> Result<serde_json::Value, String> {
+    let prefs = crate::core::commands::window_state::get_ui_preferences()
+        .await
+        .unwrap_or_default();
     Ok(serde_json::json!({
-        "maxWidth": active.image_max_width.unwrap_or(1920),
-        "maxHeight": active.image_max_height.unwrap_or(1080),
-        "quality": active.image_quality.unwrap_or(0.8),
+        "maxWidth": prefs.image_max_width,
+        "maxHeight": prefs.image_max_height,
+        "quality": prefs.image_quality,
     }))
 }

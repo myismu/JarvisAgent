@@ -15,7 +15,7 @@ import { computed, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { emit } from '@tauri-apps/api/event';
+import { emit, listen } from '@tauri-apps/api/event';
 import { useWindow } from '../../composables/useWindow';
 import { useSessionStore } from '../../stores/session';
 import { useAgentStore } from '../../stores/agent';
@@ -182,9 +182,15 @@ watch(() => session.isCurrentSessionRunning, (running) => {
   }
 }, { immediate: true });
 
+// 监听后台任务完成事件（Tauri 推送，0 延迟，替代轮询的即时通路）
+listen("bg-task-done", () => {
+  refreshBackgroundTasks();
+});
+
 watch(panelVisible, (visible) => {
   if (visible) {
     refreshBackgroundTasks();
+    // 保留 3s 轮询作为兜底（首次加载 + 异常恢复）
     if (!backgroundTimer) {
       backgroundTimer = setInterval(refreshBackgroundTasks, 3000);
     }

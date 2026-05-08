@@ -635,7 +635,7 @@ onMounted(() => {
         >
           <AgentTurn
             :turn="currentTurn"
-            :display-mode="prefs.agentDisplayMode.value"
+            :display-mode="prefs.agentAudience.value"
             :show-status="showInlineStatus"
             :elapsed="thinkingElapsed"
           />

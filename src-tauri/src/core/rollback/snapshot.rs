@@ -56,6 +56,13 @@ pub struct SnapshotTree {
     pub current_branch: String,
     pub current_snapshot_id: String,
     pub session_id: String,
+    /// 内存中最多保留的节点数（超出时驱逐最旧的非分支头节点）
+    #[serde(default = "default_max_loaded_nodes")]
+    pub max_loaded_nodes: usize,
+}
+
+fn default_max_loaded_nodes() -> usize {
+    200
 }
 
 /// 分支信息
@@ -242,6 +249,31 @@ impl SnapshotTree {
             current_branch: "main".to_string(),
             current_snapshot_id: String::new(),
             session_id: session_id.to_string(),
+            max_loaded_nodes: default_max_loaded_nodes(),
+        }
+    }
+
+    /// 驱逐旧节点以控制在内存中的节点数
+    pub fn trim_old_nodes(&mut self) {
+        if self.nodes.len() <= self.max_loaded_nodes {
+            return;
+        }
+        let branch_head_ids: HashSet<String> = self
+            .branches
+            .values()
+            .map(|b| b.head_snapshot_id.clone())
+            .collect();
+        // 收集可驱逐的节点（非分支头，且不是当前快照的祖先链上的节点）
+        let mut evictable: Vec<(String, u64)> = self
+            .nodes
+            .iter()
+            .filter(|(id, _)| !branch_head_ids.contains(*id) && **id != self.current_snapshot_id)
+            .map(|(id, s)| (id.clone(), s.created_at))
+            .collect();
+        evictable.sort_by_key(|(_, ts)| *ts);
+        let remove_count = self.nodes.len().saturating_sub(self.max_loaded_nodes);
+        for (id, _) in evictable.iter().take(remove_count) {
+            self.nodes.remove(id);
         }
     }
 
@@ -277,6 +309,7 @@ impl SnapshotTree {
         };
 
         self.nodes.insert(id.clone(), snapshot.clone());
+        self.trim_old_nodes();
         self.current_snapshot_id = id.clone();
 
         if let Some(branch) = self.branches.get_mut(&self.current_branch) {

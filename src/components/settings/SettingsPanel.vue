@@ -183,20 +183,41 @@
                   <div class="setting-desc">{{ t('settings.general.languageDesc') }}</div>
                 </div>
                 <div class="setting-item">
-                  <label>{{ t('settings.general.displayMode') }}</label>
+                  <label>{{ t('settings.general.audience') }}</label>
                   <div class="display-mode-toggle">
                     <button
                       class="display-mode-btn"
-                      :class="{ active: agentDisplayMode === 'user' }"
-                      @click="setAgentDisplayMode('user')"
+                      :class="{ active: agentAudience === 'user' }"
+                      @click="setAgentAudience('user')"
                     >{{ t('settings.general.normal') }}</button>
                     <button
                       class="display-mode-btn"
-                      :class="{ active: agentDisplayMode === 'developer' }"
-                      @click="setAgentDisplayMode('developer')"
+                      :class="{ active: agentAudience === 'developer' }"
+                      @click="setAgentAudience('developer')"
                     >{{ t('settings.general.developer') }}</button>
                   </div>
-                  <div class="setting-desc">{{ t('settings.general.developerDesc') }}</div>
+                  <div class="setting-desc">{{ t('settings.general.audienceDesc') }}</div>
+                </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.general.workMode') }}</label>
+                  <div class="display-mode-toggle">
+                    <button
+                      class="display-mode-btn"
+                      :class="{ active: agentWorkMode === 'chat' }"
+                      @click="setAgentWorkMode('chat')"
+                    >{{ t('settings.general.chat') }}</button>
+                    <button
+                      class="display-mode-btn"
+                      :class="{ active: agentWorkMode === 'edit' }"
+                      @click="setAgentWorkMode('edit')"
+                    >{{ t('settings.general.edit') }}</button>
+                    <button
+                      class="display-mode-btn"
+                      :class="{ active: agentWorkMode === 'plan' }"
+                      @click="setAgentWorkMode('plan')"
+                    >{{ t('settings.general.plan') }}</button>
+                  </div>
+                  <div class="setting-desc">{{ t('settings.general.workModeDesc') }}</div>
                 </div>
                 <div class="setting-item">
                   <label>{{ t('settings.general.compactMode') }}</label>
@@ -331,14 +352,8 @@
                   <div class="setting-desc">{{ t('settings.profileEditor.utilityModelDesc') }}</div>
                 </div>
 
-                <!-- 高级参数折叠 -->
-                <div class="setting-item" v-if="mainModelCaps?.thinking">
-                  <label>{{ t('settings.profileEditor.thinking') }}</label>
-                  <label class="toggle-switch">
-                    <input type="checkbox" :checked="editingProfile!.config.enableThinking ?? false" @change="editingProfile!.config.enableThinking = ($event.target as HTMLInputElement).checked" />
-                    <span class="toggle-slider"></span>
-                  </label>
-                  <div class="setting-desc">{{ t('settings.profileEditor.thinkingDesc') }}</div>
+                <div class="setting-item">
+                  <div class="setting-desc image-info">{{ t('settings.profileEditor.imageCompressInfo') }}</div>
                 </div>
 
                 <div class="advanced-toggle" @click="showAdvanced = !showAdvanced">
@@ -362,27 +377,6 @@
                 </div>
               </div>
 
-              <!-- 扩展配置卡片 -->
-              <div class="setting-card">
-                <div class="card-header">
-                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M8.5,13.5L11,16.5L14.5,12L19,18H5M21,19V5C21,3.89 20.1,3 19,3H5A2,2 0 0,0 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19Z"/></svg>
-                  <h4>{{ t('settings.profileEditor.imageCompression') }}</h4>
-                </div>
-                <div class="setting-item grid-3">
-                  <div class="sub-item">
-                    <label>{{ t('settings.profileEditor.maxWidth') }}</label>
-                    <input type="number" v-model.number="editingProfile.config.imageMaxWidth" />
-                  </div>
-                  <div class="sub-item">
-                    <label>{{ t('settings.profileEditor.maxHeight') }}</label>
-                    <input type="number" v-model.number="editingProfile.config.imageMaxHeight" />
-                  </div>
-                  <div class="sub-item">
-                    <label>{{ t('settings.profileEditor.quality') }}</label>
-                    <input type="number" v-model.number="editingProfile.config.imageQuality" step="0.05" />
-                  </div>
-                </div>
-              </div>
             </div>
 
             <div v-else class="empty-state">
@@ -433,8 +427,10 @@ const { t, locale } = useI18n()
 const { isDark, toggleTheme } = useTheme()
 const uiPrefs = usePreferences()
 const { resetWindowStates, notifyMonitorLocaleChanged } = useWindow()
-const agentDisplayMode = uiPrefs.agentDisplayMode
-const setAgentDisplayMode = (mode: AgentDisplayMode) => uiPrefs.setAgentDisplayMode(mode)
+const agentAudience = uiPrefs.agentAudience
+const setAgentAudience = (val: "user" | "developer") => uiPrefs.setAgentAudience(val)
+const agentWorkMode = uiPrefs.agentWorkMode
+const setAgentWorkMode = (val: "chat" | "edit" | "plan") => uiPrefs.setAgentWorkMode(val)
 const fontSize = computed(() => uiPrefs.fontSize)
 const setFontSize = (val: number) => uiPrefs.setFontSize(val)
 const codeFontSize = computed(() => uiPrefs.codeFontSize)
@@ -479,9 +475,6 @@ interface AgentConfig {
   temperature?: number | null
   topP?: number | null
   topK?: number | null
-  imageMaxWidth?: number | null
-  imageMaxHeight?: number | null
-  imageQuality?: number | null
 }
 
 interface ModelCapabilities {
@@ -526,9 +519,6 @@ const createBlankProfile = (id: string): ModelProfile => ({
     temperature: null,
     topP: null,
     topK: null,
-    imageMaxWidth: null,
-    imageMaxHeight: null,
-    imageQuality: null
   }
 })
 
@@ -539,9 +529,6 @@ const normalizeProfileConfig = (config: AppConfig) => {
     p.config.temperature = p.config.temperature == null ? null : Number(p.config.temperature)
     p.config.topP = p.config.topP == null ? null : Number(p.config.topP)
     p.config.topK = p.config.topK == null ? null : Number(p.config.topK)
-    p.config.imageMaxWidth = p.config.imageMaxWidth == null ? null : Number(p.config.imageMaxWidth)
-    p.config.imageMaxHeight = p.config.imageMaxHeight == null ? null : Number(p.config.imageMaxHeight)
-    p.config.imageQuality = p.config.imageQuality == null ? null : Number(p.config.imageQuality)
   })
   return config
 }
@@ -856,9 +843,6 @@ const hasNewProfileContent = (profile: ModelProfile): boolean => {
     'temperature',
     'topP',
     'topK',
-    'imageMaxWidth',
-    'imageMaxHeight',
-    'imageQuality'
   ]
 
   return contentKeys.some((key) => hasMeaningfulDraftValue(profile.config[key]))

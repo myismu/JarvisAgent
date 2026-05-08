@@ -3,6 +3,8 @@
 //! `.ipynb` 文件本质是 JSON，直接用文本替换容易破坏结构或误改 outputs。
 //! 本模块提供 cell 级别的 replace / insert / delete 操作。
 
+pub(crate) mod notebook_guard;
+
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -429,6 +431,7 @@ pub async fn notebook_edit(
                 old_content: original_content.clone(),
                 new_content: updated_content.clone(),
                 diff: Some(compute_diff(&original_content, &updated_content)),
+                content_hash: None,
             };
             let msg = Some(format!("NotebookEdit {}", path.display()));
             record_patch_to_snapshot(app, session_id, patch, msg).await;

@@ -22,6 +22,9 @@ pub enum Patch {
         old_content: String,
         new_content: String,
         diff: Option<TextDiff>,
+        /// 大文件内容去重引用：(old_hash, new_hash)
+        /// 内容超过阈值时写入 snapshot_content 表，此处仅保留 hash
+        content_hash: Option<(String, String)>,
     },
     RenameFile {
         old_path: String,
@@ -136,7 +139,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_patch_summary() {
+    fn test_patch_summary_create() {
         let patch = Patch::CreateFile {
             path: "test.rs".to_string(),
             content: "line1\nline2\nline3".to_string(),
@@ -146,5 +149,58 @@ mod tests {
         assert_eq!(summary.operation, "create");
         assert_eq!(summary.lines_added, 3);
         assert_eq!(summary.lines_removed, 0);
+    }
+
+    #[test]
+    fn test_patch_summary_delete() {
+        let patch = Patch::DeleteFile {
+            path: "old.rs".to_string(),
+        };
+        let summary = patch.to_summary();
+        assert_eq!(summary.operation, "delete");
+        assert_eq!(summary.lines_added, 0);
+    }
+
+    #[test]
+    fn test_patch_summary_rename() {
+        let patch = Patch::RenameFile {
+            old_path: "a.rs".to_string(),
+            new_path: "b.rs".to_string(),
+        };
+        let summary = patch.to_summary();
+        assert_eq!(summary.path, "a.rs");
+        assert_eq!(summary.operation, "rename");
+    }
+
+    #[test]
+    fn test_content_hash_stable() {
+        let h1 = Patch::content_hash("hello world");
+        let h2 = Patch::content_hash("hello world");
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_content_hash_differs() {
+        let h1 = Patch::content_hash("hello");
+        let h2 = Patch::content_hash("world");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_touched_paths_create() {
+        let patch = Patch::CreateFile {
+            path: "new.txt".to_string(),
+            content: "data".to_string(),
+        };
+        assert_eq!(patch.touched_paths(), vec!["new.txt"]);
+    }
+
+    #[test]
+    fn test_touched_paths_rename() {
+        let patch = Patch::RenameFile {
+            old_path: "old.txt".to_string(),
+            new_path: "new.txt".to_string(),
+        };
+        assert_eq!(patch.touched_paths(), vec!["old.txt", "new.txt"]);
     }
 }

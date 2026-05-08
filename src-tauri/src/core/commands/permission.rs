@@ -49,7 +49,7 @@ pub async fn resolve_permission(
         }
     }
 
-    if let Some(tx) = ctx.pending_permissions.lock().await.remove(&id) {
+    if let Some((_, tx)) = ctx.pending_permissions.lock().await.remove(&id) {
         let response = if let Some(modified_content) = content {
             format!("{}|||{}", decision, modified_content)
         } else {
@@ -80,7 +80,7 @@ pub async fn cancel_jarvis(
         .await
         .drain()
         .collect::<Vec<_>>();
-    for (_, tx) in pending {
+    for (_, (_, tx)) in pending {
         let _ = tx.send("reject".to_string());
     }
     // 级联取消该会话下所有运行中的子 Agent

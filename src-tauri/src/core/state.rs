@@ -70,13 +70,15 @@ pub struct SessionContext {
     pub todos: Mutex<Vec<crate::core::models::TodoItem>>,
     pub workspace: Mutex<Option<std::path::PathBuf>>,
     pub session_allowed: Mutex<bool>,
-    pub pending_permissions: Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>,
+    pub pending_permissions: Mutex<HashMap<String, (std::time::Instant, tokio::sync::oneshot::Sender<String>)>>,
     pub pending_patches: Mutex<Vec<PendingSnapshotPatch>>,
-    pub compact_state: Mutex<HashMap<String, ToolDedupeCacheEntry>>,
-    pub dream_state: Mutex<HashMap<String, ToolDedupeCacheEntry>>,
     pub pending_plan_state: Mutex<HashMap<String, PendingPlanCacheEntry>>,
-    pub loaded_skill_state: Mutex<HashMap<String, ToolDedupeCacheEntry>>,
-    pub subagent_invocation_state: Mutex<HashMap<String, ToolDedupeCacheEntry>>,
+    /// 统一去重缓存：category → (key → entry)，替代分散的 compact/dream/skill/subagent 缓存
+    pub dedupe_cache: Mutex<HashMap<String, HashMap<String, ToolDedupeCacheEntry>>>,
+    /// 用户类型（"user" / "developer"），只有用户手动切换
+    pub agent_audience: Mutex<String>,
+    /// 工作模式（"chat" / "edit" / "plan"），用户可手动切换，Edit 下 Agent 可自动切 Plan
+    pub agent_work_mode: Mutex<String>,
 }
 
 impl SessionContext {
@@ -91,11 +93,10 @@ impl SessionContext {
             session_allowed: Mutex::new(false),
             pending_permissions: Mutex::new(HashMap::new()),
             pending_patches: Mutex::new(Vec::new()),
-            compact_state: Mutex::new(HashMap::new()),
-            dream_state: Mutex::new(HashMap::new()),
             pending_plan_state: Mutex::new(HashMap::new()),
-            loaded_skill_state: Mutex::new(HashMap::new()),
-            subagent_invocation_state: Mutex::new(HashMap::new()),
+            dedupe_cache: Mutex::new(HashMap::new()),
+            agent_audience: Mutex::new("developer".to_string()),
+            agent_work_mode: Mutex::new("edit".to_string()),
         }
     }
 }
@@ -106,6 +107,10 @@ pub struct SessionManager(pub RwLock<HashMap<String, Arc<SessionContext>>>);
 impl SessionManager {
     pub fn new() -> Self {
         Self(RwLock::new(HashMap::new()))
+    }
+
+    pub async fn remove(&self, session_id: &str) -> Option<Arc<SessionContext>> {
+        self.0.write().await.remove(session_id)
     }
 
     pub async fn get_or_create(&self, session_id: &str) -> Arc<SessionContext> {

@@ -149,6 +149,12 @@ export interface AgentStep {
 
 export type AgentDisplayMode = "user" | "developer";
 
+/** 用户类型（谁在用）→ 影响 UI 渲染细节和交流风格 */
+export type AgentAudience = "user" | "developer";
+
+/** 工作模式（在干什么）→ 影响工具集和系统提示词 */
+export type AgentWorkMode = "chat" | "edit" | "plan";
+
 export type AgentTextBlockKind = "assistant" | "tool_stream" | "system";
 export type AgentBlockStatus = "streaming" | "done";
 export type AgentToolStatus = "pending" | "running" | "completed" | "error";
