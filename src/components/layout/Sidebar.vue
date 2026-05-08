@@ -240,21 +240,26 @@ const switchToSession = async (id: string) => {
 
     sessionStore.setSessionUsageTotals(meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
 
-    if (!sessionStore.hasHydratedSessionView(id)) {
+    // 已渲染过的会话保留原有 UI，不覆盖（特别是正在运行的会话）
+    const wasHydrated = sessionStore.hasHydratedSessionView(id);
+    if (!wasHydrated) {
       const history = await invoke<string>('get_session_history', { sessionId: id });
       sessionStore.replaceSessionHistory(id, history || 'Ready for input...');
     }
 
     await Promise.all([
       events.loadPlanDocumentsFromBackend(id),
-      events.loadAgentRunsFromBackend(id, { refreshHistory: false }),
+      events.loadAgentRunsFromBackend(id, { refreshHistory: !wasHydrated }),
       events.loadAgentRunEventsFromBackend(id),
       events.loadSubAgentRunsFromBackend(id),
       events.loadSubAgentEventsFromBackend(id),
       events.loadContextSnapshotFromBackend(id),
     ]);
 
-    chat.resetRenderState();
+    // 已渲染过的会话不清 buffer（保留正在运行的 stream 状态）
+    if (!wasHydrated) {
+      chat.resetRenderState();
+    }
     chat.triggerRender();
     await notifyMonitorSessionChanged(id);
     await loadSessions();
