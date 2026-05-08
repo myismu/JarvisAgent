@@ -162,8 +162,6 @@ pub fn run() {
             core::commands::session::get_session_meta,
             core::commands::session::get_session_context_snapshot,
             core::commands::session::get_workspace_dir,
-            core::commands::session::save_agent_steps,
-            core::commands::session::get_agent_steps,
             core::commands::session::list_plan_documents,
             core::commands::session::list_agent_runs,
             core::commands::session::list_agent_run_events,

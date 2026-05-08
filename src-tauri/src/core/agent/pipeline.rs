@@ -638,8 +638,6 @@ impl PipelineState {
 
         // 创建检查点快照（仅在有文件编辑时创建实快照，纯聊天轮次不创建）
         {
-            let has_operations = self.ctx.memory.lock().await.agent_steps.len() > 0;
-            // 检查自上次 checkpoint 以来是否有新的文件补丁
             let has_patches =
                 crate::core::tools::file_tools::has_pending_patches(&self.app, &self.sid).await;
 
@@ -665,7 +663,6 @@ impl PipelineState {
                 serde_json::json!({
                     "sessionId": self.sid,
                     "checkpointId": checkpoint_id,
-                    "hasOperations": has_operations,
                     "hasPatches": has_patches,
                     "canRollback": true,
                     "message": self.user_msg_preview

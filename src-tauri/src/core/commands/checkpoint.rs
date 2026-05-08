@@ -342,13 +342,12 @@ fn snapshot_to_checkpoint(
     }
 }
 
-/// 清理检查点之后的 agent_steps 和 plan_documents（基于时间戳）
+/// 清理检查点之后的 plan_documents（基于时间戳）
 fn prune_metadata_after_checkpoint(
     session: &mut crate::core::models::SessionMemory,
     cutoff_secs: u64,
 ) {
     if cutoff_secs == 0 {
-        session.agent_steps.clear();
         session.plan_documents.clear();
         return;
     }
@@ -356,14 +355,6 @@ fn prune_metadata_after_checkpoint(
     session
         .plan_documents
         .retain(|plan| plan.created_at <= cutoff_secs);
-    session.agent_steps.retain(|step| {
-        let timestamp_secs = if step.timestamp > 10_000_000_000 {
-            step.timestamp / 1000
-        } else {
-            step.timestamp
-        };
-        timestamp_secs <= cutoff_secs
-    });
 }
 
 #[tauri::command]

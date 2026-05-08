@@ -67,11 +67,11 @@ pub use commands::sandbox::{
     sandbox_publish,
 };
 pub use commands::session::{
-    cancel_subagent_run, create_session, delete_session, get_active_session_id, get_agent_steps,
+    cancel_subagent_run, create_session, delete_session, get_active_session_id,
     get_background_tasks, get_session_context_snapshot, get_session_meta, get_subagent_runs,
     get_workspace_dir, list_agent_run_events, list_agent_runs, list_plan_documents, list_sessions,
     list_subagent_events, list_subagents, prepare_resume_agent_run, recall_last_message,
-    rename_session, save_agent_steps, switch_session, update_session_profile,
+    rename_session, switch_session, update_session_profile,
 };
 pub use commands::snapshot::{
     snapshot_create, snapshot_create_branch, snapshot_get_current, snapshot_get_detail,

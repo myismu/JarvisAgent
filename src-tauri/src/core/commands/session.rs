@@ -387,41 +387,6 @@ pub async fn get_workspace_dir(
 }
 
 #[tauri::command]
-pub async fn save_agent_steps(
-    steps: Vec<crate::core::models::AgentStep>,
-    session_id: String,
-    session_manager: tauri::State<'_, SessionManager>,
-) -> Result<(), String> {
-    let ctx = session_manager.get_or_create(&session_id).await;
-    {
-        let mut session = ctx.memory.lock().await;
-        session.agent_steps = steps;
-        // 截断到最近 50 条，防止 memory_json 膨胀
-        if session.agent_steps.len() > 50 {
-            let trim = session.agent_steps.len() - 50;
-            session.agent_steps.drain(0..trim);
-        }
-        if session.plan_documents.len() > 20 {
-            let trim = session.plan_documents.len() - 20;
-            session.plan_documents.drain(0..trim);
-        }
-        let memory = session.clone();
-        session::save_session(&session_id, &memory, None);
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn get_agent_steps(
-    session_id: String,
-    session_manager: tauri::State<'_, SessionManager>,
-) -> Result<Vec<crate::core::models::AgentStep>, String> {
-    let ctx = session_manager.get_or_create(&session_id).await;
-    let steps = ctx.memory.lock().await.agent_steps.clone();
-    Ok(steps)
-}
-
-#[tauri::command]
 pub async fn list_plan_documents(
     session_id: String,
 ) -> Result<Vec<crate::core::models::PlanDocument>, String> {

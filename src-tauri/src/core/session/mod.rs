@@ -402,7 +402,6 @@ pub fn save_session(
         message_ids: filtered_message_ids,
         context: normalized_memory.context.clone(),
         activated_tools: normalized_memory.activated_tools.clone(),
-        agent_steps: normalized_memory.agent_steps.clone(),
         plan_documents: normalized_memory.plan_documents.clone(),
     };
 

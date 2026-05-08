@@ -42,19 +42,6 @@ function extractErrorMessage(err: unknown): string {
   return JSON.stringify(err);
 }
 
-interface BackendAgentStep {
-  type: string;
-  tool?: string;
-  input_summary?: string;
-  output_summary?: string;
-  error?: string;
-  task?: string;
-  attempt?: number;
-  max?: number;
-  content?: string;
-  timestamp: number;
-}
-
 function buildFinalResponseParts(
   view: { contentBuffer: string; tempBuffer: string; toolBuffer: string; thinkingBuffer: string },
   fallbackContent?: string,
@@ -73,21 +60,6 @@ function buildFinalResponseParts(
 }
 
 const ASSISTANT_MESSAGE_CONTENT_CLASS = "message-content current-turn-content";
-
-function convertFrontendStep(step: AgentStep): BackendAgentStep {
-  return {
-    type: step.type,
-    tool: step.tool,
-    input_summary: step.input_summary,
-    output_summary: step.output_summary,
-    error: step.error,
-    task: step.task,
-    attempt: step.attempt,
-    max: step.max,
-    content: step.content,
-    timestamp: step.timestamp,
-  };
-}
 
 export const useChatStore = defineStore("chat", () => {
   const parsedCurrentTurnHtml = ref("");
@@ -400,47 +372,6 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  async function saveAgentStepsToBackend(sessionId?: string | null) {
-    const session = useSessionStore();
-    const sid = sessionId ?? session.activeSessionId;
-    if (!sid) return;
-    try {
-      const view = session.getSessionView(sid);
-      const steps = view.agentSteps.map(convertFrontendStep);
-      await invoke("save_agent_steps", { steps, sessionId: sid });
-    } catch (err) {
-      console.error("保存执行流程失败:", err);
-    }
-  }
-
-  async function loadAgentStepsFromBackend(sessionId?: string | null) {
-    const session = useSessionStore();
-    const sid = sessionId ?? session.activeSessionId;
-    if (!sid) return;
-    try {
-      const steps = await invoke<BackendAgentStep[]>("get_agent_steps", { sessionId: sid });
-      const view = session.getSessionView(sid);
-      view.agentSteps = steps.map((s) => ({
-        type: s.type as AgentStep["type"],
-        tool: s.tool,
-        input_summary: s.input_summary,
-        output_summary: s.output_summary,
-        error: s.error,
-        task: s.task,
-        attempt: s.attempt,
-        max: s.max,
-        content: s.content,
-        timestamp: s.timestamp,
-      }));
-      view.currentTurnStepsStart = view.agentSteps.length;
-      view.hydrated = true;
-    } catch (err) {
-      console.error("加载执行流程失败:", err);
-      const view = session.getSessionView(sid);
-      view.agentSteps = [];
-    }
-  }
-
   async function ensureActiveSessionForSend() {
     const session = useSessionStore();
     if (session.activeSessionId) {
@@ -588,7 +519,7 @@ export const useChatStore = defineStore("chat", () => {
           triggerRender();
           scrollToBottomCb?.();
         }
-        await saveAgentStepsToBackend(sessionIdAtStart);
+        // steps persist removed — session_messages is the source of truth
         return;
       }
 
@@ -616,7 +547,7 @@ export const useChatStore = defineStore("chat", () => {
           triggerRender();
           scrollToBottomCb?.();
         }
-        await saveAgentStepsToBackend(sessionIdAtStart);
+        // steps persist removed — session_messages is the source of truth
         return;
       }
 
@@ -737,7 +668,7 @@ export const useChatStore = defineStore("chat", () => {
       }
       view.showRecallEdit = false;
       view.lastUserMessage = "";
-      await saveAgentStepsToBackend(session.activeSessionId);
+      // steps persist removed — session_messages is the source of truth
       triggerRender();
 
       return recalledText || "";
@@ -813,7 +744,5 @@ export const useChatStore = defineStore("chat", () => {
     dismissRecallEdit,
     cancelSubAgentRun,
     resumeAgentRun,
-    saveAgentStepsToBackend,
-    loadAgentStepsFromBackend,
   };
 });
