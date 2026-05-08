@@ -385,10 +385,25 @@ export function toolActionCountLabel(action: ToolActionSummary) {
 
 export function summarizeToolGroupsForPanel(groups: ToolCallGroup[], totalCount: number) {
   if (!groups.length) return translate("execution.noToolActivity");
+  // 优先展示具体工具操作摘要（如"读取 main.rs"），而非笼统分类标签（如"文件操作"）
+  const summaries: string[] = [];
+  for (const group of groups) {
+    for (const action of group.actions) {
+      if (action.summary) summaries.push(action.summary);
+    }
+  }
+  if (summaries.length > 0) {
+    const sep = translate("tools.summary.labelSeparator");
+    const visible = summaries.slice(0, 4).join(sep);
+    const text = summaries.length > 4
+      ? translate("tools.summary.moreCategories", { count: summaries.length })
+      : visible;
+    return translate("tools.summary.panel", { categories: text, count: totalCount });
+  }
+  // 回退：无具体摘要时用分类标签
   const labels = Array.from(new Set(groups.map((group) => group.categoryLabel)));
   const visible = labels.slice(0, 3).join(translate("tools.summary.labelSeparator"));
-  const suffix = labels.length > 3 ? translate("tools.summary.moreCategories", { count: labels.length }) : visible;
-  return translate("tools.summary.panel", { categories: suffix, count: totalCount });
+  return translate("tools.summary.panel", { categories: visible, count: totalCount });
 }
 
 export function hasToolDetails(tool: AgentToolCallView) {
