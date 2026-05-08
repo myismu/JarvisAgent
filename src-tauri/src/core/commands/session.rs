@@ -248,30 +248,40 @@ pub async fn recall_message(
     let is_empty;
     {
         let mut session = ctx.memory.lock().await;
-        // message_id 为主查找 memory.message_ids 中的精确位置（不受压缩偏移影响）
-        // user_message_index 降级：无 message_id 的旧数据兼容
-        let truncate_at = stored_target
-            .as_ref()
-            .and_then(|stored| session.message_ids.iter().position(|id| id == &stored.message_id))
-            .or(user_message_index)
-            .ok_or_else(|| "撤回消息不存在".to_string())?;
-        if truncate_at >= session.messages.len() {
-            return Err("撤回消息不存在".to_string());
-        }
-        if let Message::User { content } = &session.messages[truncate_at] {
-            recalled_text = message_text_content(content);
-        } else if let Some(stored) = stored_target.as_ref() {
-            if let Message::User { content } = &stored.content {
-                recalled_text = message_text_content(content);
-            } else {
-                return Err("撤回目标不是用户消息".to_string());
+        // 优先通过 stored.seq（session_messages 表行号）定位截断点。
+        // 压缩后 message_ids 只含摘要 ID，position() 查不到原始消息，必须从 DB 重建。
+        let target_msg: Option<Message> = if let Some(stored) = stored_target.as_ref() {
+            let visible = session::list_visible_session_messages(&session_id)?;
+            let pos = visible.iter().position(|m| m.seq == stored.seq)
+                .ok_or_else(|| "撤回消息不存在".to_string())?;
+            // 保留目标消息及之前的所有可见消息，丢弃之后的
+            let keep: Vec<_> = visible.into_iter().take(pos + 1).collect();
+            let target_content = keep.last().map(|m| m.content.clone());
+            session.messages = keep.iter().map(|m| m.content.clone()).collect();
+            session.message_ids = keep.iter().map(|m| m.message_id.clone()).collect();
+            target_content
+        } else if let Some(idx) = user_message_index {
+            if idx >= session.messages.len() {
+                return Err("撤回消息不存在".to_string());
             }
+            let target = session.messages[idx].clone();
+            // 保留 idx 及之前（即丢弃 idx 之后的），因为要撤回的是 idx 这条消息，
+            // 所以保留到 idx-1
+            session.messages.truncate(idx);
+            session.message_ids.truncate(idx);
+            Some(target)
+        } else {
+            return Err("撤回消息不存在".to_string());
+        };
+
+        let Some(target_msg) = target_msg else {
+            return Err("撤回消息不存在".to_string());
+        };
+        if let Message::User { content } = &target_msg {
+            recalled_text = message_text_content(content);
         } else {
             return Err("撤回目标不是用户消息".to_string());
         }
-        session.messages.truncate(truncate_at);
-        let message_count = session.messages.len();
-        session.message_ids.truncate(message_count);
         is_empty = session.messages.is_empty();
     }
 

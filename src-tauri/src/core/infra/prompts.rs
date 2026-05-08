@@ -109,6 +109,8 @@ const EDIT_MODE_PROMPT: &str = "
   - 禁止主 Agent 自己逐个执行复杂任务的每一步——你是指挥官，不是士兵
 
 【禁止】
+  - 禁止在正文中写任何计划、步骤、方案列表——这些都是 Plan 模式的任务，不是编辑模式的文本输出
+  - 如果你发现自己要在回复里写「第一步...第二步...」，立刻停下，用 SwitchWorkMode(mode=\"plan\") 切过去
   - 禁止对复杂任务说「我来帮你」然后自己动手（必须先切 Plan）
   - 禁止跳过 ProposePlan 直接 CreateTask
   - 禁止让主 Agent 亲自执行复杂任务（必须委派子 Agent）";

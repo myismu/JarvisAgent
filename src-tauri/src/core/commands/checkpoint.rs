@@ -206,7 +206,6 @@ async fn resolve_rollback_target(
     checkpoint_id: &str,
     message_id: Option<&str>,
     user_message_index: Option<usize>,
-    message_ids: &[String],
     messages: &[crate::core::models::Message],
     registry: &tauri::State<'_, SnapshotRegistry>,
 ) -> Result<RollbackTarget, String> {
@@ -217,10 +216,12 @@ async fn resolve_rollback_target(
     };
     let mut message_seq = stored_target.as_ref().map(|stored| stored.seq);
     let (truncate_index, recalled_text) = if let Some(stored) = stored_target.as_ref() {
-        let index = message_ids
-            .iter()
-            .position(|id| id == &stored.message_id)
-            .or(user_message_index)
+        // 压缩后 message_ids 只含摘要 ID，position() 查不到原始消息。
+        // 改用 stored.seq 从 session_messages 表定位。
+        let visible = crate::core::session::list_visible_session_messages(session_id)
+            .unwrap_or_default();
+        let pos = visible.iter().position(|m| m.seq == stored.seq);
+        let index = pos.or(user_message_index)
             .unwrap_or(stored.seq);
         if let crate::core::models::Message::User { content } = &stored.content {
             (index, message_text(content))
@@ -531,7 +532,6 @@ pub async fn preview_rollback_to_checkpoint_with_recall(
             &checkpoint_id,
             message_id.as_deref(),
             user_message_index,
-            &session.message_ids,
             &session.messages,
             &registry,
         )
@@ -598,7 +598,6 @@ pub async fn rollback_to_checkpoint_with_recall(
             &checkpoint_id,
             message_id.as_deref(),
             user_message_index,
-            &session.message_ids,
             &session.messages,
             &registry,
         )
