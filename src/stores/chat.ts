@@ -421,6 +421,7 @@ export const useChatStore = defineStore("chat", () => {
     requestView.currentTurnStepsStart = requestView.agentSteps.length;
     requestView.hydrated = true;
     requestView.status = "RUNNING";
+    session.runningSessionId = sessionIdAtStart;
     requestView.activeRunId = null;
     requestView.resumableRunId = null;
     requestView.runStartTime = Date.now();
@@ -513,6 +514,7 @@ export const useChatStore = defineStore("chat", () => {
         requestView.runStartTime = null;
         requestView.streamActive = false;
         requestView.status = "IDLE";
+        session.runningSessionId = null;
         requestView.activeRunId = null;
         requestView.cancelHandled = false;
         if (!sessionSwitched) {

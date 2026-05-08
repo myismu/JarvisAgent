@@ -176,9 +176,12 @@ export const useSessionStore = defineStore("session", () => {
     Object.values(sessionViews.value).some((v) => v.status === "RUNNING")
   );
 
+  const runningSessionId = ref<string | null>(null);
+
   return {
     sessionViews,
     activeSessionId,
+    runningSessionId,
     pendingWorkingDirectory,
     workingDirectory,
     totalInputTokens,

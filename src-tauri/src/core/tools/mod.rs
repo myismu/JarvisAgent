@@ -234,6 +234,13 @@ pub async fn handle_tool_call(
             model_override,
         );
         Box::pin(fut).await
+    } else if name == "RunSubagentsSequentially" {
+        use crate::core::orchestration::scheduler::TaskScheduler;
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let (summary, si, so) = TaskScheduler::run_schedule(
+            app, session_id, "", &cancel_token,
+        ).await;
+        (summary, si, so)
     } else {
         (
             handle_tool_call_inner(app, name, input, session_id, intent).await,

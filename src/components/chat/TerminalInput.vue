@@ -22,6 +22,10 @@ const session = useSessionStore();
 const chat = useChatStore();
 const uiPrefs = usePreferences();
 
+const isRunning = computed(() =>
+  session.runningSessionId === session.activeSessionId || isRunning
+);
+
 // WorkMode 状态，与 usePreferences 双向同步 + 监听后端切换
 const showWorkModeMenu = ref(false);
 const currentWorkMode = ref<AgentWorkMode>(uiPrefs.agentWorkMode.value);
@@ -43,7 +47,7 @@ const canModelVision = ref(true);
 const imageCompressConfig = ref({ maxWidth: 1920, maxHeight: 1080, quality: 0.8 });
 const showInterruptedResumeHint = computed(() => {
   const view = session.currentSessionView;
-  return !session.isCurrentSessionRunning && (view.status === "INTERRUPTED" || Boolean(view.resumableRunId));
+  return !isRunning && (view.status === "INTERRUPTED" || Boolean(view.resumableRunId));
 });
 
 const loadImageCompressConfig = async () => {
@@ -296,7 +300,7 @@ const handleInput = () => {
 const handleKeydown = (e: KeyboardEvent) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
-    if (!session.isCurrentSessionRunning) {
+    if (!isRunning) {
       handleSubmit();
     }
   }
@@ -501,7 +505,7 @@ const handleRecallEdit = async () => {
           @keydown="handleKeydown"
         ></textarea>
         
-        <button v-if="!session.isCurrentSessionRunning" class="send-btn" :class="{ active: userInput.trim() || mediaFiles.length > 0 }" @click="handleSubmit" :title="t('input.send')">
+        <button v-if="!isRunning" class="send-btn" :class="{ active: userInput.trim() || mediaFiles.length > 0 }" @click="handleSubmit" :title="t('input.send')">
           <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <line x1="22" y1="2" x2="11" y2="13"></line>
             <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
