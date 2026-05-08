@@ -216,7 +216,11 @@ const closePanel = async () => {
 
 const itemStatusClass = (status: string): string => `status-${status}`;
 const planStatusClass = (plan: PlanDocument): string => `status-${plan.status}`;
-const backgroundTaskTitle = (task: BackgroundTask): string => task.task_type || task.taskType || task.id;
+const backgroundTaskTitle = (task: BackgroundTask): string => {
+  const cmd = task.command || "";
+  if (cmd.length <= 50) return cmd;
+  return cmd.substring(0, 50) + "...";
+};
 const backgroundStatusLabel = (status: string): string => {
   switch (status) {
     case 'running': return t('monitor.subAgentStatus.running');
@@ -384,9 +388,9 @@ const backgroundStatusLabel = (status: string): string => {
                   <strong>{{ backgroundTaskTitle(task) }}</strong>
                   <span>{{ backgroundStatusLabel(task.status) }}</span>
                 </div>
-                <p>{{ task.command }}</p>
                 <div class="monitor-item-meta">
-                  <span v-if="task.port">端口 {{ task.port }}</span>
+                  <span v-if="task.task_type || task.taskType">{{ task.task_type || task.taskType }}</span>
+                  <span v-if="task.port">:{{ task.port }}</span>
                   <span v-if="task.result">{{ task.result }}</span>
                 </div>
               </div>
