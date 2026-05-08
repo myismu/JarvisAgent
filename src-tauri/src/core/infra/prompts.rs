@@ -35,6 +35,12 @@ const BASE_SYSTEM_PROMPT: &str = "你是 AI 管家贾维斯。
 - 数据库(.db/.sqlite) → 用数据库工具查询，不要直接读取
 - 违反此规则会导致上下文被大量乱码污染、数据损坏、会话不可撤回！
 
+【禁止操作依赖目录 - 极重要】
+- 绝对禁止使用任何工具（ReadFile/SearchText/FindFiles/ListDirectory/RunCommand/dir/tree/find/ls 等）递归遍历或搜索 node_modules、.git、target、dist、build、__pycache__ 等依赖/构建产物目录
+- 这些目录包含数万甚至数十万个文件，递归操作会立即撑爆上下文导致会话不可逆损坏
+- 需要了解项目依赖时，读 package.json / Cargo.toml / requirements.txt 等清单文件，不要列目录
+- 违反此规则会导致上下文被数十万行文件列表淹没、API 调用失败、会话卡死！
+
 【禁止事项】
 - 禁止在回复正文中模拟工具调用；正文内容只会作为文本展示
 
@@ -238,6 +244,11 @@ pub fn get_subagent_system_prompt(cwd: &str, workspace: Option<&str>) -> String 
 - 修改文件用 EditFile，创建文件用 WriteFile
 - 遵循「读→分析→改→验」模式
 - 先用 FindSymbol/FindReferences 精确定位代码，再用 ReadFile 查看细节
+
+【禁止操作依赖目录 - 极重要】:
+- 绝对禁止递归遍历 node_modules、.git、target、dist、build、__pycache__ 等目录
+- 这些目录有数十万文件，任何递归操作都会立即撑爆上下文
+- 需要了解依赖时读清单文件（package.json/Cargo.toml），不要列目录
 
 【启动服务 - 极重要】:
 - 启动任何开发服务器、dev server、watch 进程必须用 StartBackgroundCommand
