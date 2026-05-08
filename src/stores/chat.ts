@@ -581,8 +581,9 @@ export const useChatStore = defineStore("chat", () => {
         },
       );
 
-      // 先重置状态和清除缓冲区，确保“实时”渲染区域在历史记录更新前消失
+      // 先重置状态和清除缓冲区，确保”实时”渲染区域在历史记录更新前消失
       requestView.status = res.status;
+      session.runningSessionId = null;
       requestView.activeRunId = null;
       requestView.resumableRunId = null;
       requestView.streamActive = false;
@@ -622,6 +623,7 @@ export const useChatStore = defineStore("chat", () => {
       session.appendSessionHistory(sessionIdAtStart, `\n\n**Error:** ${errMsg}`);
       requestView.showRecallEdit = true;
       requestView.status = "ERROR";
+      session.runningSessionId = null;
       requestView.activeRunId = null;
       requestView.streamActive = false;
       if (sessionIdAtStart === session.activeSessionId) {
