@@ -117,6 +117,31 @@ pub fn save_task(session_id: &str, task: &Task) -> Result<(), String> {
     })
 }
 
+/// 原子分配 ID 并保存任务：在同一 DB 连接内完成 max_id 查询 + insert
+pub fn save_task_with_auto_id(session_id: &str, task: &Task) -> Result<Task, String> {
+    ensure_session_record(session_id)?;
+    let mut task = task.clone();
+    crate::core::db::with_connection(|conn| {
+        let next_id: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(task_id), 0) + 1 FROM session_tasks WHERE session_id = ?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        task.id = next_id as i32;
+        let task_json = serde_json::to_string(&task).map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO session_tasks(session_id, task_id, task_json, updated_at)
+             VALUES(?1, ?2, ?3, ?4)",
+            rusqlite::params![session_id, next_id, task_json, now_ts() as i64],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })?;
+    Ok(task)
+}
+
 pub fn load_task(session_id: &str, task_id: i32) -> Result<Option<Task>, String> {
     crate::core::db::with_connection(|conn| {
         conn.query_row(

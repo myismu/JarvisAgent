@@ -7,9 +7,8 @@
 use crate::core::models::{Task, TaskStatus};
 use crate::core::session::resource_repository;
 
-/// 任务管理器 - 基于文件系统的任务持久化
+/// 任务管理器 - 基于 SQLite 的任务持久化
 pub struct TaskManager {
-    /// 任务文件存储目录
     session_id: String,
 }
 
@@ -36,10 +35,6 @@ impl TaskManager {
         }
     }
 
-    fn _max_id(&self) -> i32 {
-        resource_repository::max_task_id(&self.session_id).unwrap_or_default()
-    }
-
     fn _load(&self, id: i32) -> Result<Task, String> {
         resource_repository::load_task(&self.session_id, id)?
             .ok_or_else(|| format!("Task {} not found", id))
@@ -62,9 +57,9 @@ impl TaskManager {
         metadata: Option<serde_json::Value>,
         owner: Option<String>,
     ) -> Result<Task, String> {
-        let next_id = self._max_id() + 1;
+        // 原子分配 ID + 保存：利用全局 DB Mutex 保证 max_id 查询和 insert 之间无竞态
         let task = Task {
-            id: next_id,
+            id: 0, // 占位，由 save_task_with_auto_id 分配真实 ID
             subject,
             description,
             status: TaskStatus::Pending,
@@ -74,8 +69,12 @@ impl TaskManager {
             active_form,
             metadata,
         };
-        self._save(&task)?;
-        Ok(task)
+        self._save_atomic(&task)
+    }
+
+    /// 原子保存：在一个 with_connection 内完成 max_id + 1 + insert
+    fn _save_atomic(&self, task: &Task) -> Result<Task, String> {
+        resource_repository::save_task_with_auto_id(&self.session_id, task)
     }
 
     /// 获取单个任务详情
