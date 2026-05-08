@@ -483,6 +483,11 @@ pub async fn get_session_history(
     registry: tauri::State<'_, SnapshotRegistry>,
 ) -> Result<String, String> {
     let ctx = session_manager.get_or_create(&session_id).await;
+    // 先将内存中的 message_ids flush 到 DB，确保读到最新状态
+    {
+        let mem = ctx.memory.lock().await;
+        let _ = crate::core::session::save_session(&session_id, &mem, None);
+    }
     let mut memory = session::load_session(&session_id)?;
     let runs = agent_runs::list_runs(Some(&session_id));
 
