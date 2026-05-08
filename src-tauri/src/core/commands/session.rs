@@ -222,8 +222,15 @@ pub async fn recall_last_message(
     if is_empty {
         switch_away_and_delete_empty_session(&session_id, &app).await?;
     } else {
-        let memory = ctx.memory.lock().await.clone();
-        session::save_session(&session_id, &memory, None);
+        {
+            let memory = ctx.memory.lock().await.clone();
+            session::save_session(&session_id, &memory, None);
+        }
+        // 保存后从 DB 重新加载，确保内存与持久化数据完全一致
+        if let Ok(reloaded) = session::load_session(&session_id) {
+            let mut session = ctx.memory.lock().await;
+            *session = reloaded;
+        }
         let _ = app.emit("session-updated", ());
     }
 
