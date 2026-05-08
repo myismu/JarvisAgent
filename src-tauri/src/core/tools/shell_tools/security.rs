@@ -42,9 +42,16 @@ pub fn get_destructive_warning(cmd: &str) -> Option<String> {
     }
 }
 
-// --- Unix/bash 特定安全检查（参考 bashSecurity.ts） ---
+// --- Unix/bash 特定安全检查 ---
 /// 返回第一个匹配的 Block 或所有 Warn 的合并。
 pub fn check_command_safety(cmd: &str) -> SafetyResult {
+    // 通用阻断：递归列目录未排除 node_modules 等依赖目录
+    if recursive_listing_re().is_match(cmd) && !has_dependency_exclusion(cmd) {
+        return SafetyResult::Block(
+            "递归列目录命令未排除依赖目录（node_modules/.git/target/dist 等）。请改用读清单文件（如 package.json/Cargo.toml）了解项目结构，或添加排除参数后重试。".to_string(),
+        );
+    }
+
     if cfg!(target_os = "windows") {
         check_command_safety_windows(cmd)
     } else {

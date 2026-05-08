@@ -71,6 +71,27 @@ pub fn node_modules_re() -> &'static Regex {
     })
 }
 
+/// 递归列目录命令（容易无差别扫入 node_modules/.git 等数万文件）
+pub fn recursive_listing_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)(dir\s+/s\b|Get-ChildItem\s+.*-Recurse|tree\b|ls\s+.*-R\b|find\s+\.\s+-type|dir\s+/b\s+/s)",
+        )
+        .unwrap()
+    })
+}
+
+/// 检查递归列目录命令是否排除了依赖目录
+pub fn has_dependency_exclusion(cmd: &str) -> bool {
+    let exclusions = [
+        "node_modules", ".git", "target", "dist", "build",
+        "__pycache__", ".next", ".nuxt", "vendor", "bower_components",
+    ];
+    let lower = cmd.to_lowercase();
+    exclusions.iter().any(|d| lower.contains(d))
+}
+
 pub fn obfuscated_flag_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
