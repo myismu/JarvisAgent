@@ -300,7 +300,7 @@ const handleInput = () => {
 const handleKeydown = (e: KeyboardEvent) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
-    if (!isRunning) {
+    if (!isRunning.value) {
       handleSubmit();
     }
   }
