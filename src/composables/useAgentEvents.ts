@@ -667,7 +667,6 @@ export function useAgentEvents() {
             session.replaceSessionHistory(nextActiveSessionId, history);
           }
           await Promise.all([
-            chat.loadAgentStepsFromBackend(nextActiveSessionId),
             loadSubAgentRunsFromBackend(nextActiveSessionId),
             loadSubAgentEventsFromBackend(nextActiveSessionId),
             loadPlanDocumentsFromBackend(nextActiveSessionId),

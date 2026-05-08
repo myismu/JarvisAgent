@@ -582,7 +582,6 @@ const confirmRollback = async () => {
     try {
       const history = await invoke<string>('get_session_history', { sessionId });
       session.replaceSessionHistory(sessionId, history || 'Ready for input...');
-      await chat.loadAgentStepsFromBackend(sessionId);
       const planDocuments = await invoke<PlanDocument[]>('list_plan_documents', { sessionId });
       perm.planDocumentsBySession = {
         ...perm.planDocumentsBySession,

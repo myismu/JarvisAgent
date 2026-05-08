@@ -187,8 +187,6 @@ const submitRenameSession = async (sessionId: string) => {
 // 创建新会话
 const createNewSession = async (withSandbox: boolean = false) => {
   try {
-    await chat.saveAgentStepsToBackend();
-
     let sandboxDir: string | null = null;
 
     if (withSandbox) {
@@ -228,8 +226,6 @@ const createNewSession = async (withSandbox: boolean = false) => {
 const switchToSession = async (id: string) => {
   if (id === sessionStore.activeSessionId) return;
   try {
-    await chat.saveAgentStepsToBackend();
-
     const meta = await invoke<any>('switch_session', { id });
     sessionStore.activeSessionId = id;
     sessionStore.workingDirectory = meta.workingDirectory || null;
@@ -250,7 +246,6 @@ const switchToSession = async (id: string) => {
     }
 
     await Promise.all([
-      chat.loadAgentStepsFromBackend(id),
       events.loadPlanDocumentsFromBackend(id),
       events.loadAgentRunsFromBackend(id, { refreshHistory: false }),
       events.loadAgentRunEventsFromBackend(id),
@@ -327,7 +322,6 @@ onMounted(async () => {
   }
 
   await Promise.all([
-    chat.loadAgentStepsFromBackend(),
     events.loadPlanDocumentsFromBackend(),
     events.loadAgentRunsFromBackend(undefined, { refreshHistory: false }),
     events.loadAgentRunEventsFromBackend(),

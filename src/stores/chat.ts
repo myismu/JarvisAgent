@@ -604,7 +604,7 @@ export const useChatStore = defineStore("chat", () => {
         triggerRender();
         scrollToBottomCb?.();
       }
-      await saveAgentStepsToBackend(sessionIdAtStart);
+      // agent_steps persist removed
       const sessionAfterSave = useSessionStore();
       if (sessionIdAtStart === sessionAfterSave.activeSessionId) {
         sessionAfterSave.setSessionUsageTotals(sessionInputTokens, sessionOutputTokens);
@@ -624,7 +624,7 @@ export const useChatStore = defineStore("chat", () => {
       if (sessionIdAtStart === session.activeSessionId) {
         triggerRender();
       }
-      await saveAgentStepsToBackend(sessionIdAtStart);
+      // agent_steps persist removed
     }
   }
 
