@@ -342,9 +342,22 @@ pub async fn execute_tool_calls(
             loop_count,
         );
 
+        // 截断超大工具结果，防止极长输出（如 node_modules 全量列目录）撑爆上下文
+        const MAX_TOOL_RESULT_LEN: usize = 50000;
+        let output = if result.output.len() > MAX_TOOL_RESULT_LEN {
+            let mut truncated = result.output[..MAX_TOOL_RESULT_LEN].to_string();
+            truncated.push_str(&format!(
+                "\n\n[输出已截断，省略 {} 字符]",
+                result.output.len() - MAX_TOOL_RESULT_LEN
+            ));
+            truncated
+        } else {
+            result.output
+        };
+
         tool_results.push(ContentBlock::ToolResult {
             tool_use_id: result.tool_use_id,
-            content: result.output,
+            content: output,
         });
     }
 
