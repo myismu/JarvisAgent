@@ -266,7 +266,6 @@ pub struct SessionMemory {
     /// LLM 活动视图索引 —— 指向 session_messages 表中 LLM 当前应看到的消息 ID
     #[serde(default)]
     pub message_ids: Vec<String>,
-    pub context: Vec<String>,
     #[serde(default)]
     pub activated_tools: Vec<String>,
     #[serde(default)]

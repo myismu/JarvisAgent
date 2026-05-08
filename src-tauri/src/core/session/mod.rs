@@ -400,7 +400,6 @@ pub fn save_session(
     let filtered_memory = SessionMemory {
         messages: filtered_messages,
         message_ids: filtered_message_ids,
-        context: normalized_memory.context.clone(),
         activated_tools: normalized_memory.activated_tools.clone(),
         plan_documents: normalized_memory.plan_documents.clone(),
     };

@@ -24,7 +24,6 @@ use crate::core::tools::*;
 pub fn build_dynamic_context(
     intent: &str,
     workspace: &Option<std::path::PathBuf>,
-    session_context: &[String],
 ) -> String {
     match intent {
         "CHAT" => "<intent>\nCHAT\n</intent>\n".to_string(),
@@ -54,13 +53,6 @@ pub fn build_dynamic_context(
                 "<intent>\nPROJECT_ACTION\n</intent>\n\n<global_context>\n{}\n</global_context>\n\n<project_context>\n# Dynamic Repo Map\n{}\n</project_context>\n",
                 global_content, repo_map
             );
-
-            if !session_context.is_empty() {
-                ctx.push_str(&format!(
-                    "\n【当前任务状态】\n- {}\n",
-                    session_context.join("\n- ")
-                ));
-            }
 
             // 注入延迟加载工具名称列表（渐进式披露）
             ctx.push_str(&get_deferred_tools_context(intent));

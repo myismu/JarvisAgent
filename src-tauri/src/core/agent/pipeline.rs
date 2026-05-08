@@ -291,7 +291,6 @@ impl PipelineState {
         self.dynamic_context_str = build_dynamic_context(
             &self.detected_intent,
             &self.request_workspace,
-            &self.ctx.memory.lock().await.context,
         );
 
         self.user_msg_for_memory = self.msg.clone();
