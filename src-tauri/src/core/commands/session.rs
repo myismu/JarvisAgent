@@ -396,6 +396,15 @@ pub async fn save_agent_steps(
     {
         let mut session = ctx.memory.lock().await;
         session.agent_steps = steps;
+        // 截断到最近 50 条，防止 memory_json 膨胀
+        if session.agent_steps.len() > 50 {
+            let trim = session.agent_steps.len() - 50;
+            session.agent_steps.drain(0..trim);
+        }
+        if session.plan_documents.len() > 20 {
+            let trim = session.plan_documents.len() - 20;
+            session.plan_documents.drain(0..trim);
+        }
         let memory = session.clone();
         session::save_session(&session_id, &memory, None);
     }
