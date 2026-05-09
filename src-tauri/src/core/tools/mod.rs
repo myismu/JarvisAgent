@@ -285,7 +285,6 @@ pub async fn handle_tool_call_inner(
     match name {
         // 系统工具
         "SetWorkspace" => system_tools::set_workspace(app, input, session_id).await,
-        "GetSystemInfo" => system_tools::get_system_info(app, input, session_id).await,
 
         // 文件工具
         "ListDirectory" => file_tools::list_directory(app, input, session_id).await,
@@ -342,12 +341,12 @@ pub fn allowed_tools_for_work_mode(mode: &str) -> Vec<&'static str> {
         "chat" => vec![
             "ReadFile", "ReadFileSkeleton", "SearchText", "FindFiles", "ListDirectory",
             "FindSymbol", "ReadSymbol", "FindReferences", "SearchRepo", "CodeSearch",
-            "GetSystemInfo", "LoadSkill", "SearchTools", "CompactConversation",
+            "LoadSkill", "SearchTools", "CompactConversation",
         ],
         "plan" => vec![
             "ReadFile", "ReadFileSkeleton", "SearchText", "FindFiles", "ListDirectory",
             "FindSymbol", "ReadSymbol", "FindReferences", "SearchRepo", "CodeSearch",
-            "GetSystemInfo", "LoadSkill",
+            "LoadSkill",
             "ProposePlan", "CreateTask", "UpdateTask", "ListTasks", "GetTask", "DeleteTask",
             "SummarizeTasks",
             "SearchTools", "CompactConversation",

@@ -62,6 +62,7 @@ const props = defineProps<{ standalone?: boolean }>();
 
 const elapsed = ref(0);
 const backgroundTasks = ref<BackgroundTask[]>([]);
+const dismissingTasks = ref<Set<string>>(new Set());
 let timer: ReturnType<typeof setInterval> | null = null;
 let backgroundTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -166,9 +167,33 @@ const planStatusLabel = (status: string): string => {
 
 const refreshBackgroundTasks = async () => {
   try {
-    backgroundTasks.value = await invoke<BackgroundTask[]>('get_background_tasks');
+    const sid = session.activeSessionId;
+    backgroundTasks.value = await invoke<BackgroundTask[]>('get_background_tasks', { sessionId: sid });
   } catch (err) {
     console.error('加载后台任务失败:', err);
+  }
+};
+
+const dismissTask = async (taskId: string) => {
+  dismissingTasks.value.add(taskId);
+  try {
+    await invoke('dismiss_background_task', { taskId });
+    backgroundTasks.value = backgroundTasks.value.filter((t) => t.id !== taskId);
+  } catch (err) {
+    console.error('清理后台任务失败:', err);
+  } finally {
+    dismissingTasks.value.delete(taskId);
+  }
+};
+
+const clearAllDoneTasks = async () => {
+  const sid = session.activeSessionId;
+  if (!sid) return;
+  try {
+    await invoke('clear_session_background_tasks', { sessionId: sid });
+    await refreshBackgroundTasks();
+  } catch (err) {
+    console.error('清理后台任务失败:', err);
   }
 };
 
@@ -387,6 +412,12 @@ const backgroundStatusLabel = (status: string): string => {
                   <span class="status-dot"></span>
                   <strong>{{ backgroundTaskTitle(task) }}</strong>
                   <span>{{ backgroundStatusLabel(task.status) }}</span>
+                  <button
+                    class="dismiss-task-btn"
+                    :disabled="dismissingTasks.has(task.id)"
+                    @click="dismissTask(task.id)"
+                    :title="t('monitor.dismissTask')"
+                  >&times;</button>
                 </div>
                 <div class="monitor-item-meta">
                   <span v-if="task.task_type || task.taskType">{{ task.task_type || task.taskType }}</span>
@@ -394,6 +425,10 @@ const backgroundStatusLabel = (status: string): string => {
                   <span v-if="task.result">{{ task.result }}</span>
                 </div>
               </div>
+              <button
+                class="clear-all-tasks-btn"
+                @click="clearAllDoneTasks"
+              >{{ t('monitor.clearDoneTasks') }}</button>
             </div>
             <div v-else class="monitor-empty">{{ t('monitor.noBackgroundTasks') }}</div>
           </section>
@@ -651,6 +686,53 @@ const backgroundStatusLabel = (status: string): string => {
   color: var(--text-muted);
   font-size: 0.6rem;
   font-weight: 750;
+}
+
+.dismiss-task-btn {
+  flex-shrink: 0;
+  margin-left: auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+
+.monitor-item:hover .dismiss-task-btn {
+  opacity: 1;
+}
+
+.dismiss-task-btn:hover {
+  background: color-mix(in srgb, var(--text-muted) 16%, transparent);
+  color: var(--text-main);
+}
+
+.dismiss-task-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.clear-all-tasks-btn {
+  margin-top: 6px;
+  padding: 4px 0;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.6rem;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.clear-all-tasks-btn:hover {
+  color: var(--accent-red);
 }
 
 .monitor-item p {

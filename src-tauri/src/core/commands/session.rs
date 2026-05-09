@@ -602,10 +602,36 @@ pub async fn recover_interrupted_session_messages(
 
 #[tauri::command]
 pub async fn get_background_tasks(
+    session_id: Option<String>,
     bg_state: tauri::State<'_, crate::core::infra::background::BackgroundState>,
 ) -> Result<Vec<crate::core::infra::background::BackgroundTask>, String> {
     let bg = bg_state.0.lock().await;
-    Ok(bg.tasks.values().cloned().collect())
+    let tasks: Vec<_> = if let Some(sid) = session_id {
+        bg.tasks
+            .values()
+            .filter(|t| t.session_id.as_deref() == Some(&sid))
+            .cloned()
+            .collect()
+    } else {
+        bg.tasks.values().cloned().collect()
+    };
+    Ok(tasks)
+}
+
+#[tauri::command]
+pub async fn dismiss_background_task(
+    task_id: String,
+    app: tauri::AppHandle,
+) -> Result<bool, String> {
+    Ok(crate::core::infra::background::BackgroundManager::dismiss_task(&app, &task_id).await)
+}
+
+#[tauri::command]
+pub async fn clear_session_background_tasks(
+    session_id: String,
+    app: tauri::AppHandle,
+) -> Result<usize, String> {
+    Ok(crate::core::infra::background::BackgroundManager::clear_session_tasks(&app, &session_id).await)
 }
 
 #[tauri::command]
@@ -642,4 +668,14 @@ pub async fn cancel_subagent_run(
     app: tauri::AppHandle,
 ) -> Result<crate::core::orchestration::subagents::SubAgentRun, String> {
     crate::core::orchestration::subagents::SubAgentMonitor::cancel_run(&app, &run_id).await
+}
+
+#[tauri::command]
+pub async fn get_session_todos(
+    session_id: String,
+    session_manager: tauri::State<'_, SessionManager>,
+) -> Result<Vec<crate::core::models::TodoItem>, String> {
+    let ctx = session_manager.get_or_create(&session_id).await;
+    let todos = ctx.todos.lock().await;
+    Ok(todos.clone())
 }

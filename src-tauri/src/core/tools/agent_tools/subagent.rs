@@ -27,7 +27,7 @@ use crate::core::infra::prompts::get_subagent_system_prompt;
 use crate::core::llm::adapters::parse_streamed_tool_input;
 use crate::core::models::{AnthropicRequest, Content, ContentBlock, Message};
 use crate::core::orchestration::subagents::{SubAgentMonitor, SubAgentPhase};
-use crate::core::session::memory::{compact_messages, estimate_tokens, micro_compact};
+use crate::core::session::memory::{compact_messages, estimate_tokens};
 use crate::core::state::{SessionManager, ToolDedupeCacheEntry};
 use crate::core::tools::file_tools::generate_repo_map;
 use std::collections::HashMap;
@@ -338,6 +338,30 @@ async fn extract_subagent_context(
                     break;
                 }
             }
+        }
+    }
+
+    // 4. 当前会话的后台任务状态（避免子Agent重复启动已运行的服务）
+    if let Some(bg_state) = app.try_state::<crate::core::infra::background::BackgroundState>() {
+        let bg = bg_state.0.lock().await;
+        let session_tasks: Vec<_> = bg
+            .tasks
+            .iter()
+            .filter(|(_, t)| t.session_id.as_deref() == Some(session_id))
+            .collect();
+        if !session_tasks.is_empty() {
+            ctx.push_str("【会话中已在运行的后台任务（绝对不要重复启动！）】\n");
+            for (_, task) in &session_tasks {
+                let port_info = task.port.map(|p| format!(" :{}", p)).unwrap_or_default();
+                ctx.push_str(&format!(
+                    "- [{}] {} {}{}\n",
+                    task.status,
+                    task.command,
+                    task.task_type.as_deref().unwrap_or("unknown"),
+                    port_info
+                ));
+            }
+            ctx.push_str("如果上述任务已覆盖你要执行的命令，跳过它，不要重复启动。\n\n");
         }
     }
 
@@ -935,11 +959,9 @@ pub async fn run_subagent(
             messages.push(Message::User {
                 content: Content::Multiple(tool_results),
             });
-            // 轻量压缩：清理旧工具结果，避免上下文无限增长
-            micro_compact(&mut messages);
-            // Token 阈值触发 LLM 摘要压缩（使用工具模型）
+            // Token > 70% 上限时触发 LLM 摘要压缩
             let estimated = estimate_tokens(&messages);
-            if estimated > crate::core::constants::MAX_TOKENS_COMPACT_TRIGGER {
+            if estimated > crate::core::constants::MAX_TOKENS_COMPACT_TRIGGER * 70 / 100 {
                 println!(
                     "[SUBAGENT] 上下文估算值 > {} ({})，触发自动压缩",
                     crate::core::constants::MAX_TOKENS_COMPACT_TRIGGER,

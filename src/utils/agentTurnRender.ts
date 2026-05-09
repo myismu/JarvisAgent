@@ -9,12 +9,9 @@ import type {
 } from "../types";
 import { renderMarkdown, renderTokenUsage, renderToolStatusIcon } from "./markdown";
 import {
-  canMergeToolGroups,
-  createToolCallGroup,
   groupAdjacentToolCalls,
   hasToolDetails,
   isSubAgentToolGroup,
-  mergeToolGroups,
   shouldOpenToolGroup,
   summarizeToolGroupsForPanel,
   toolActionCountLabel,
@@ -76,13 +73,6 @@ function renderTextBlocks(blocks: AgentTextBlock[]) {
       .join(""),
   );
   return text.trim() ? `<div class="agent-turn-answer">${renderMarkdown(text)}</div>` : "";
-}
-
-function renderTextBlock(block: AgentTextBlock) {
-  const content = stripPseudoToolCalls(block.content);
-  return content.trim()
-    ? `<div class="agent-turn-answer agent-developer-text">${renderMarkdown(content)}</div>`
-    : "";
 }
 
 function renderThinkingBlock(block: AgentThinkingBlock, open: boolean) {
@@ -170,14 +160,6 @@ ${children}
 </details>`;
 }
 
-function renderExecutionLog(log: AgentExecutionLog) {
-  if (!log.content.trim()) return "";
-  return `<details class="agent-execution-logs">
-<summary>执行日志 · 第 ${log.loop || 1} 轮</summary>
-<div class="agent-execution-log">${renderMarkdown(log.content)}</div>
-</details>`;
-}
-
 function renderExecutionLogs(logs: AgentExecutionLog[], open: boolean) {
   if (!logs.some((log) => log.content.trim())) return "";
   return `<details class="agent-execution-logs" ${open ? "open" : ""}>
@@ -219,7 +201,7 @@ function renderExecutionPanel(snapshot: AgentTurnSnapshot, mode: AgentDisplayMod
       : `${state} · ${toolCount > 0 ? summarizeToolGroupsForPanel(toolGroups, toolCount) : "无工具活动"}${thinkingCount > 0 ? ` · ${thinkingCount} 段思考` : ""}`;
 
   const body = renderExecutionBody(snapshot, mode);
-  return `<details class="agent-execution-panel ${mode}" ${mode === "developer" || live ? "open" : ""}>
+  return `<details class="agent-execution-panel ${mode}" ${live ? "open" : ""}>
 <summary>
   <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3"></path><path d="M12 19v3"></path><path d="M4.93 4.93l2.12 2.12"></path><path d="M16.95 16.95l2.12 2.12"></path><path d="M2 12h3"></path><path d="M19 12h3"></path><path d="M4.93 19.07l2.12-2.12"></path><path d="M16.95 7.05l2.12-2.12"></path></svg>
   ${escapeHtml(summary)}
@@ -228,63 +210,45 @@ ${body}
 </details>`;
 }
 
-function renderDeveloperTimeline(snapshot: AgentTurnSnapshot) {
-  const segments: Array<{
-    timestamp: number;
-    order: number;
-    html?: string;
-    group?: ToolCallGroup;
-    type: "html" | "tool";
-  }> = [];
+function renderDeveloperView(snapshot: AgentTurnSnapshot) {
+  // 开发者视图：每个工具独立展示（不按分类合并），全部展开，正文在上面已渲染
+  const parts: string[] = [];
 
-  snapshot.textBlocks.forEach((block, index) => {
-    if (block.kind !== "assistant") return;
-    const html = renderTextBlock(block);
-    if (!html) return;
-    segments.push({ timestamp: block.timestamp, order: index * 4, html, type: "html" });
+  // 思考过程
+  snapshot.thinkingBlocks.forEach((block) => {
+    const html = renderThinkingBlock(block, true);
+    if (html) parts.push(html);
   });
 
-  snapshot.thinkingBlocks.forEach((block, index) => {
-    const html = renderThinkingBlock(block, block.status === "streaming");
-    if (!html) return;
-    segments.push({ timestamp: block.timestamp, order: index * 4 + 1, html, type: "html" });
+  // 工具调用 —— 每条独立，展开显示详情
+  snapshot.toolCalls.forEach((tool) => {
+    parts.push(renderDeveloperToolCall(tool));
   });
 
-  snapshot.toolCalls.forEach((tool, index) => {
-    const group = createToolCallGroup([tool]);
-    segments.push({ timestamp: group.timestamp, order: index * 4 + 2, group, type: "tool" });
-  });
+  // 执行日志
+  const logsHtml = renderExecutionLogs(snapshot.logs, true);
+  if (logsHtml) parts.push(logsHtml);
 
-  snapshot.logs.forEach((log, index) => {
-    const html = renderExecutionLog(log);
-    if (!html) return;
-    segments.push({ timestamp: log.timestamp, order: index * 4 + 3, html, type: "html" });
-  });
+  return parts.length ? `<div class="agent-developer-view">${parts.join("")}</div>` : "";
+}
 
-  const merged: typeof segments = [];
-  segments
-    .sort((a, b) => a.timestamp - b.timestamp || a.order - b.order)
-    .forEach((segment) => {
-      const previous = merged[merged.length - 1];
-      if (
-        segment.type === "tool" &&
-        segment.group &&
-        previous?.type === "tool" &&
-        previous.group &&
-        canMergeToolGroups(previous.group, segment.group)
-      ) {
-        previous.group = mergeToolGroups(previous.group, segment.group);
-        previous.timestamp = previous.group.timestamp;
-        return;
-      }
-      merged.push(segment);
-    });
+function renderDeveloperToolCall(tool: AgentToolCallView) {
+  const icon = renderToolStatusIcon(tool.status);
+  const label = toolActionLabel(tool.name, tool.status, tool);
+  const detailHtml = renderToolDetailHtml(tool);
 
-  const body = merged
-    .map((segment) => (segment.type === "tool" && segment.group ? renderToolGroup(segment.group, "developer") : segment.html || ""))
-    .join("");
+  const logHtml = tool.logs.length
+    ? tool.logs.map((log) => `<div class="agent-tool-log">${renderMarkdown(log)}</div>`).join("")
+    : "";
 
-  return body ? `<div class="agent-developer-timeline">${body}</div>` : "";
+  return `<div class="dev-tool-call ${escapeHtml(tool.status)}">
+<div class="dev-tool-row">
+  ${icon}
+  <code>${escapeHtml(tool.name)}</code>
+  <span class="dev-tool-label">${escapeHtml(label)}</span>
+</div>
+${detailHtml || logHtml ? `<div class="dev-tool-body">${detailHtml}${logHtml}</div>` : ""}
+</div>`;
 }
 
 export function renderAgentTurnSnapshot(
@@ -292,10 +256,10 @@ export function renderAgentTurnSnapshot(
   displayMode: AgentDisplayMode,
   live = false,
 ) {
-  const answerHtml = displayMode === "developer" ? "" : renderTextBlocks(snapshot.textBlocks);
+  const answerHtml = renderTextBlocks(snapshot.textBlocks);
   const executionHtml =
     displayMode === "developer"
-      ? renderDeveloperTimeline(snapshot)
+      ? renderDeveloperView(snapshot)
       : renderExecutionPanel(snapshot, displayMode, live);
   const tokenHtml = snapshot.tokens
     ? renderTokenUsage(

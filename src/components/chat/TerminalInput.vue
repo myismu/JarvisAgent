@@ -426,6 +426,7 @@ const handleRecallEdit = async () => {
           </button>
 
           <div v-if="showWorkModeMenu" class="work-mode-menu">
+            <div class="work-mode-menu-inner">
             <div
               v-for="mode in (['chat', 'edit', 'plan'] as AgentWorkMode[])"
               :key="mode"
@@ -438,6 +439,7 @@ const handleRecallEdit = async () => {
                 <div class="work-mode-menu-name">{{ t('settings.general.' + mode) }}</div>
                 <div class="work-mode-menu-desc">{{ t('settings.general.' + mode + 'DescShort') }}</div>
               </div>
+            </div>
             </div>
           </div>
         </div>
@@ -728,7 +730,7 @@ const handleRecallEdit = async () => {
   align-items: center;
   gap: 6px;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
 }
@@ -759,14 +761,17 @@ const handleRecallEdit = async () => {
   bottom: calc(100% + 12px);
   left: 50%;
   transform: translateX(-50%);
+  z-index: 100;
+  min-width: 200px;
+}
+
+.work-mode-menu-inner {
   background: var(--surface-strong);
   backdrop-filter: blur(var(--glass-blur-heavy));
   -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   border: 1px solid color-mix(in srgb, var(--text-muted) 22%, transparent);
   border-radius: var(--radius-lg);
   box-shadow: 0 18px 45px rgba(15, 23, 42, 0.18), var(--glass-shadow);
-  min-width: 200px;
-  z-index: 100;
   overflow: hidden;
   animation: popIn var(--transition-fast);
   padding: 8px;

@@ -16,9 +16,16 @@ export const useAgentStore = defineStore("agent", () => {
   const subAgentRuns = ref<Record<string, SubAgentRun>>({});
   const subAgentEventsByRun = ref<Record<string, SubAgentEvent[]>>({});
   const contextSnapshots = ref<Record<string, SessionContextSnapshot>>({});
-  const todos = ref<TodoItem[]>([]);
+  const todosBySession = ref<Record<string, TodoItem[]>>({});
   const focusedTaskId = ref<number | null>(null);
   const showAgentPanel = ref(false);
+
+  const currentTodos = computed(() => {
+    const session = useSessionStore();
+    const sessionId = session.activeSessionId;
+    if (!sessionId) return [];
+    return todosBySession.value[sessionId] ?? [];
+  });
 
   const agentSteps = computed(() => {
     const session = useSessionStore();
@@ -103,7 +110,8 @@ export const useAgentStore = defineStore("agent", () => {
   }
 
   return {
-    todos,
+    todosBySession,
+    currentTodos,
     agentSteps,
     agentRuns,
     agentRunEventsByRun,

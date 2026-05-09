@@ -168,10 +168,13 @@ pub fn run() {
             core::commands::session::prepare_resume_agent_run,
             core::commands::session::recover_interrupted_session_messages,
             core::commands::session::get_background_tasks,
+            core::commands::session::dismiss_background_task,
+            core::commands::session::clear_session_background_tasks,
             core::commands::session::get_subagent_runs,
             core::commands::session::list_subagents,
             core::commands::session::list_subagent_events,
             core::commands::session::cancel_subagent_run,
+            core::commands::session::get_session_todos,
             // 配置管理
             core::commands::config::get_config,
             core::commands::config::save_config_cmd,

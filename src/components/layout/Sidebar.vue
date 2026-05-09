@@ -249,6 +249,7 @@ const switchToSession = async (id: string) => {
 
     await Promise.all([
       events.loadPlanDocumentsFromBackend(id),
+      events.loadTodosFromBackend(id),
       events.loadAgentRunsFromBackend(id, { refreshHistory: !wasHydrated }),
       events.loadAgentRunEventsFromBackend(id),
       events.loadSubAgentRunsFromBackend(id),
@@ -328,6 +329,7 @@ onMounted(async () => {
 
   await Promise.all([
     events.loadPlanDocumentsFromBackend(),
+    events.loadTodosFromBackend(),
     events.loadAgentRunsFromBackend(undefined, { refreshHistory: false }),
     events.loadAgentRunEventsFromBackend(),
     events.loadSubAgentRunsFromBackend(),
@@ -475,10 +477,10 @@ onUnmounted(() => {
         </ul>
       </div>
 
-      <div class="sidebar-section" v-if="agent.todos.length > 0">
+      <div class="sidebar-section" v-if="agent.currentTodos.length > 0">
         <div class="sidebar-title"><span>TASKS</span></div>
         <ul class="todo-list">
-          <li v-for="todo in agent.todos" :key="todo.id" :class="['todo-item', todo.status]">
+          <li v-for="todo in agent.currentTodos" :key="todo.id" :class="['todo-item', todo.status]">
             <span class="todo-icon">
               <svg v-if="todo.status === 'completed'" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="20 6 9 17 4 12"></polyline>

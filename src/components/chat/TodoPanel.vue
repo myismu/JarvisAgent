@@ -11,7 +11,7 @@ import type { TodoItem } from '../../types';
 
 const agent = useAgentStore();
 
-const todos = computed(() => agent.todos);
+const todos = computed(() => agent.currentTodos);
 const visible = computed(() => todos.value.length > 0);
 
 const pendingCount = computed(() => todos.value.filter((t) => t.status === 'pending').length);

@@ -393,17 +393,17 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
         // 新方案：按 active_message_ids 读取
         // 向后兼容：如果 message_ids 为空（旧会话），加载所有可见消息
         if !memory.message_ids.is_empty() {
+            // ?1 = session_id, ?2.. = message_ids
             let placeholders: Vec<String> = memory
                 .message_ids
                 .iter()
                 .enumerate()
-                .map(|(i, _)| format!("?{}", i + 1))
+                .map(|(i, _)| format!("?{}", i + 2))
                 .collect();
             let sql = format!(
                 "SELECT content_json FROM session_messages
-                 WHERE session_id = ?{} AND message_id IN ({})
+                 WHERE session_id = ?1 AND message_id IN ({})
                  ORDER BY seq ASC",
-                placeholders.len() + 1,
                 placeholders.join(",")
             );
             let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =

@@ -147,14 +147,29 @@ impl ToolRegistry {
         match intent {
             "CHAT" | "MEMORY_QUERY" | "QUESTION" => false,
             "SUBAGENT" => {
-                // 子代理不能调用主控/调度/主会话进度工具
+                // 子代理只能执行具体操作，不能调用主控/调度/会话管理工具
                 !matches!(
                     tool.name,
+                    // 子代理控制
                     "RunSubagent"
-                        | "ConsolidateMemory"
-                        | "CompactConversation"
                         | "RunSubagentsSequentially"
+                        // 任务编排（主Agent 管理）
+                        | "CreateTask"
+                        | "UpdateTask"
+                        | "DeleteTask"
+                        | "ListTasks"
+                        | "GetTask"
+                        | "SummarizeTasks"
+                        // 会话管理
+                        | "SwitchWorkMode"
                         | "UpdateTodos"
+                        | "CompactConversation"
+                        | "ConsolidateMemory"
+                        // 后台服务（主Agent 统一管理）
+                        | "StartBackgroundCommand"
+                        | "CheckBackgroundCommand"
+                        // 工作区设置
+                        | "SetWorkspace"
                 )
             }
             _ => true, // PROJECT_ACTION

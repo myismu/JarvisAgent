@@ -88,7 +88,6 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
   compactconversation: { category: "memory", key: "compactConversation" },
   consolidatememory: { category: "memory", key: "consolidateMemory" },
   setworkspace: { category: "system", key: "setWorkspace" },
-  getsysteminfo: { category: "system", key: "getSystemInfo" },
 };
 
 function translate(key: string, params?: Record<string, unknown>) {
@@ -236,10 +235,13 @@ function targetedSentence(tool: AgentToolCallView, descriptor: ToolDescriptor, s
     return commandSentence(tool, descriptor, status);
   }
 
-  if (descriptor.key === "loadSkill") {
-    const target = labelTargetFromInput(tool);
-    if (!target) return null;
-    return descriptorText(descriptor, `${status}Target`, { target });
+  // 文件/搜索/系统类工具：提取目标路径/名称
+  const target = labelTargetFromInput(tool);
+  if (target) {
+    const targeted = descriptorText(descriptor, `${status}Target`, { target });
+    // i18n fallback: 如果没有定义 xxxTarget，返回 null 回退通用文本
+    if (targeted && !targeted.startsWith("tools.actions.")) return targeted;
+    return null;
   }
 
   return null;
@@ -426,5 +428,8 @@ export function isSubAgentToolGroup(group: ToolCallGroup) {
 export function shouldOpenToolGroup(group: ToolCallGroup, mode: AgentDisplayMode) {
   if (!hasToolGroupDetails(group)) return false;
   if (group.status === "error") return true;
-  return mode === "developer" && ["running", "pending"].includes(group.status);
+  // 开发者模式：始终展开，看到全部细节
+  if (mode === "developer") return true;
+  // 用户模式：仅运行中展开
+  return ["running", "pending"].includes(group.status);
 }

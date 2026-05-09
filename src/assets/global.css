@@ -299,33 +299,65 @@ body.dragging-active .editor-container {
   min-width: 0;
 }
 
-.agent-developer-timeline {
+/* ── 开发者视图：工具调用列表 ── */
+.agent-developer-view {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  position: relative;
-  padding-left: 12px;
-  padding-bottom: 16px;
+  gap: 6px;
+  margin: 8px 0;
 }
 
-.agent-developer-timeline::before {
-  content: "";
-  position: absolute;
-  left: 5px;
-  top: 6px;
-  bottom: 16px;
-  width: 1px;
-  background-color: var(--glass-border-subtle);
-  z-index: 0;
+.dev-tool-call {
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  font-size: 0.78rem;
 }
 
-.agent-developer-timeline > * {
-  position: relative;
-  z-index: 1;
+.dev-tool-call.completed { border-color: color-mix(in srgb, var(--accent-green) 20%, transparent); }
+.dev-tool-call.error { border-color: color-mix(in srgb, var(--accent-red) 20%, transparent); }
+.dev-tool-call.running { border-color: color-mix(in srgb, var(--accent-yellow) 30%, transparent); }
+
+.dev-tool-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  min-height: 28px;
 }
 
-.agent-developer-timeline::after {
-  /* No more specific margin clearing needed because gap handles it */
+.dev-tool-row code {
+  font-weight: 650;
+  color: var(--text-main);
+  background: transparent;
+  padding: 0;
+  border: 0;
+  font-size: 0.78rem;
+}
+
+.dev-tool-label {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.dev-tool-body {
+  border-top: 1px solid var(--glass-border-subtle);
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--surface-strong) 40%, transparent);
+}
+
+.dev-tool-body .agent-tool-field,
+.dev-tool-body .agent-tool-log {
+  margin: 4px 0;
+}
+
+.dev-tool-body .agent-tool-field:first-child {
+  margin-top: 0;
+}
+
+.dev-tool-body .agent-tool-field:last-child,
+.dev-tool-body .agent-tool-log:last-child {
+  margin-bottom: 0;
 }
 
 .agent-thinking-block,

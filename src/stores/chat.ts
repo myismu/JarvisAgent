@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import type { JarvisResult, AgentStep } from "../types";
+import type { JarvisResult } from "../types";
 import { useSessionStore } from "./session";
 import type { SessionViewState } from "./session";
 import { useAgentStore } from "./agent";

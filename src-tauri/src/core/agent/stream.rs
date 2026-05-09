@@ -369,6 +369,25 @@ pub async fn process_stream(
         }
     }
 
+    // 兼容不支持原生 tool_calls 的模型：从文本中提取 <tool_call> XML 块
+    if !turn_has_tool && current_text_this_turn.contains("<tool_call") {
+        let parsed = parse_textual_tool_calls(&current_text_this_turn);
+        if !parsed.is_empty() {
+            // 移除原有的纯文本块，替换为解析出的工具调用块
+            current_blocks.retain(|b| !matches!(b, ContentBlock::Text { .. }));
+            for (i, (name, input_json)) in parsed.iter().enumerate() {
+                let id = format!("call_{}", uuid::Uuid::new_v4().simple().to_string()[..8].to_string());
+                current_blocks.push(ContentBlock::ToolUse {
+                    name: name.clone(),
+                    input: input_json.clone(),
+                    id: id.clone(),
+                });
+                tool_input_buffers.insert(i, input_json.to_string());
+            }
+            turn_has_tool = true;
+        }
+    }
+
     StreamResult {
         blocks: current_blocks,
         tool_input_buffers,
@@ -378,4 +397,77 @@ pub async fn process_stream(
         input_tokens: req_input_tokens,
         output_tokens: req_output_tokens,
     }
+}
+
+/// 从模型输出的文本中解析 <tool_call> XML 块，转为 (name, input_json) 列表
+fn parse_textual_tool_calls(text: &str) -> Vec<(String, serde_json::Value)> {
+    let mut results = Vec::new();
+    let mut rest = text;
+
+    while let Some(tc_start) = rest.find("<tool_call>") {
+        let after_start = &rest[tc_start + "<tool_call>".len()..];
+        let tc_end = match after_start.find("</tool_call>") {
+            Some(pos) => pos,
+            None => break,
+        };
+        let tc_body = &after_start[..tc_end].trim();
+        rest = &after_start[tc_end + "</tool_call>".len()..];
+
+        // 解析 <function=NAME>
+        let fn_start = match tc_body.find("<function=") {
+            Some(pos) => pos + "<function=".len(),
+            None => continue,
+        };
+        let fn_body = &tc_body[fn_start..];
+        let fn_end = match fn_body.find('>') {
+            Some(pos) => pos,
+            None => continue,
+        };
+        let fn_name = fn_body[..fn_end].trim().to_string();
+        let after_fn = &fn_body[fn_end + 1..];
+
+        // 找到 </function> 来界定参数范围
+        let fn_close = match after_fn.find("</function>") {
+            Some(pos) => pos,
+            None => continue,
+        };
+        let params_text = &after_fn[..fn_close];
+
+        // 解析 <parameter=KEY>VALUE</parameter>
+        let mut input_map = serde_json::Map::new();
+        let mut param_rest = params_text;
+        while let Some(p_start) = param_rest.find("<parameter=") {
+            let after_p_start = &param_rest[p_start + "<parameter=".len()..];
+            let p_name_end = match after_p_start.find('>') {
+                Some(pos) => pos,
+                None => break,
+            };
+            let p_name = after_p_start[..p_name_end].trim().to_string();
+            let after_p_name = &after_p_start[p_name_end + 1..];
+            let p_value_end = match after_p_name.find("</parameter>") {
+                Some(pos) => pos,
+                None => break,
+            };
+            let p_value = after_p_name[..p_value_end].trim().to_string();
+            param_rest = &after_p_name[p_value_end + "</parameter>".len()..];
+
+            // 尝试将值解析为 JSON（数字/布尔/字符串），失败则保持字符串
+            let value = if let Ok(n) = p_value.parse::<i64>() {
+                serde_json::Value::Number(n.into())
+            } else if let Ok(b) = p_value.parse::<bool>() {
+                serde_json::Value::Bool(b)
+            } else if (p_value.starts_with('{') && p_value.ends_with('}'))
+                || (p_value.starts_with('[') && p_value.ends_with(']'))
+            {
+                serde_json::from_str(&p_value).unwrap_or(serde_json::Value::String(p_value))
+            } else {
+                serde_json::Value::String(p_value)
+            };
+            input_map.insert(p_name, value);
+        }
+
+        results.push((fn_name, serde_json::Value::Object(input_map)));
+    }
+
+    results
 }

@@ -31,6 +31,7 @@ import {
 } from "../utils/agentTurnState";
 import type {
   TodoItem,
+  TodoUpdatePayload,
   PermissionRequest,
   PlanProposal,
   PlanDocument,
@@ -265,6 +266,20 @@ export function useAgentEvents() {
     }
   }
 
+  async function loadTodosFromBackend(sid?: string | null) {
+    try {
+      const effectiveSid = sid ?? session.activeSessionId;
+      if (!effectiveSid) return;
+      const todos = await invoke<TodoItem[]>("get_session_todos", { sessionId: effectiveSid });
+      agent.todosBySession = {
+        ...agent.todosBySession,
+        [effectiveSid]: todos,
+      };
+    } catch (err) {
+      console.error("加载 todos 失败:", err);
+    }
+  }
+
   async function loadAgentRunsFromBackend(sid?: string | null, options: { refreshHistory?: boolean } = {}) {
     try {
       const effectiveSid = sid ?? session.activeSessionId;
@@ -366,9 +381,12 @@ export function useAgentEvents() {
       unlisteners.push(unlisten);
     }
 
-    // todos
-    await on<TodoItem[]>("todo-update", (event) => {
-      agent.todos = event.payload;
+    // todos（按会话隔离）
+    await on<TodoUpdatePayload>("todo-update", (event) => {
+      const { todos, sessionId } = event.payload;
+      if (sessionId) {
+        agent.todosBySession = { ...agent.todosBySession, [sessionId]: todos };
+      }
       chat.triggerRender();
     });
 
@@ -720,6 +738,7 @@ export function useAgentEvents() {
     loadSubAgentRunsFromBackend,
     loadSubAgentEventsFromBackend,
     loadPlanDocumentsFromBackend,
+    loadTodosFromBackend,
     loadAgentRunsFromBackend,
     loadAgentRunEventsFromBackend,
     loadContextSnapshotFromBackend,

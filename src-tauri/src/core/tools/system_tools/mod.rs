@@ -27,32 +27,6 @@ async fn get_workspace(app: &tauri::AppHandle, session_id: &str) -> Option<std::
 }
 
 /// 获取系统基本信息
-pub async fn get_system_info(
-    app: &tauri::AppHandle,
-    _input: &serde_json::Value,
-    session_id: &str,
-) -> String {
-    let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "Unknown".to_string());
-    let cwd = std::env::current_dir()
-        .unwrap()
-        .to_string_lossy()
-        .to_string();
-
-    // 如果有沙箱，显示沙箱目录
-    let ws = get_workspace(app, session_id).await;
-    let workspace_info = match ws {
-        Some(ref ws_path) => format!("{} (沙箱限制)", ws_path.display()),
-        None => cwd,
-    };
-
-    format!(
-        "OS: {}\nCWD: {}\nHome: {}",
-        std::env::consts::OS,
-        workspace_info,
-        home
-    )
-}
-
 /// 设置工作区目录
 pub async fn set_workspace(
     app: &tauri::AppHandle,
@@ -121,19 +95,6 @@ crate::define_tools! {
             is_concurrency_safe: false,
             is_enabled: true,
         },
-        ToolDef {
-            name: "GetSystemInfo",
-            description: "获取系统关键信息",
-            search_hint: "system info environment config",
-            schema: json!({
-                "name": "GetSystemInfo",
-                "description": "获取系统关键信息。",
-                "input_schema": { "type": "object", "properties": {} }
-            }),
-            should_defer: false,
-            is_read_only: true,
-            is_concurrency_safe: true,
-            is_enabled: true,
-        }
+        // GetSystemInfo 已移除——OS/CWD/Home 已在提示词中自动注入，无需 Agent 手动调用
     }
 }

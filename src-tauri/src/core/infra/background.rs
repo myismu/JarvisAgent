@@ -19,6 +19,7 @@ use tokio::sync::Mutex;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BackgroundTask {
     pub id: String,
+    pub session_id: Option<String>,
     pub command: String,
     pub status: String,
     pub result: Option<String>,
@@ -30,6 +31,7 @@ pub struct BackgroundTask {
 #[derive(Clone, Debug, Serialize)]
 pub struct Notification {
     pub task_id: String,
+    pub session_id: Option<String>,
     pub status: String,
     pub command: String,
     pub result: String,
@@ -89,26 +91,40 @@ impl BackgroundManager {
     /// 从命令字符串中检测服务端口和任务类型
     ///
     /// 支持显式端口参数（`--port`/`-p`）和框架默认端口推断
-    fn detect_port_and_type(command: &str) -> (Option<u16>, Option<String>) {
+    fn detect_port_and_type(command: &str, dir: Option<&str>) -> (Option<u16>, Option<String>) {
         let lower = command.to_lowercase();
+        let dir_lower = dir.map(|d| d.to_lowercase()).unwrap_or_default();
 
-        let task_type = if lower.contains("npm run dev")
-            || lower.contains("npm start")
-            || lower.contains("vite")
-            || lower.contains("vue-cli-service serve")
-            || lower.contains("next dev")
-            || lower.contains("nuxt dev")
-        {
-            Some("frontend".to_string())
-        } else if lower.contains("python")
-            || lower.contains("flask")
-            || lower.contains("uvicorn")
-            || lower.contains("node ")
-            || lower.contains("cargo run")
-        {
-            Some("backend".to_string())
-        } else {
-            None
+        let task_type: Option<String> = {
+            // 优先根据目录名判断
+            if dir_lower.contains("frontend")
+                || dir_lower.contains("client")
+                || dir_lower.contains("web")
+                || dir_lower.ends_with("/fe")
+            {
+                Some("frontend".to_string())
+            } else if dir_lower.contains("backend")
+                || dir_lower.contains("server")
+                || dir_lower.contains("api")
+                || dir_lower.ends_with("/be")
+            {
+                Some("backend".to_string())
+            } else if lower.contains("vite")
+                || lower.contains("vue-cli-service serve")
+                || lower.contains("next dev")
+                || lower.contains("nuxt dev")
+            {
+                Some("frontend".to_string())
+            } else if lower.contains("python")
+                || lower.contains("flask")
+                || lower.contains("uvicorn")
+                || lower.contains("cargo run")
+            {
+                Some("backend".to_string())
+            } else {
+                // npm run dev/node 命令无法仅从命令字符串判断类型，留空
+                None
+            }
         };
 
         let port = if lower.contains("--port") || lower.contains("-p ") {
@@ -131,12 +147,17 @@ impl BackgroundManager {
                 }
             }
             None
-        } else if lower.contains("vite") || lower.contains("npm run dev") {
+        } else if lower.contains("vite") {
             Some(5173)
-        } else if lower.contains("next dev") {
+        } else if lower.contains("next dev") || lower.contains("nuxt dev") {
             Some(3000)
-        } else if lower.contains("nuxt dev") {
-            Some(3000)
+        } else if lower.contains("npm run dev") || lower.contains("npm start") {
+            // 根据目录推断端口：backend 通常是 3000/8000，frontend 通常是 5173
+            if dir_lower.contains("backend") || dir_lower.contains("server") || dir_lower.contains("api") {
+                Some(3000)
+            } else {
+                Some(5173)
+            }
         } else if lower.contains("flask run") {
             Some(5000)
         } else if lower.contains("uvicorn") {
@@ -153,7 +174,7 @@ impl BackgroundManager {
     /// 启动后台任务
     ///
     /// 通过 PowerShell 执行命令，异步捕获输出，任务完成后推送通知
-    pub async fn run(app: tauri::AppHandle, command: String, dir: Option<String>) -> String {
+    pub async fn run(app: tauri::AppHandle, command: String, dir: Option<String>, session_id: Option<String>) -> String {
         let task_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
 
         let mut short_cmd = command.clone();
@@ -162,19 +183,21 @@ impl BackgroundManager {
             short_cmd.push_str("...");
         }
 
-        let (detected_port, task_type) = Self::detect_port_and_type(&command);
+        let (detected_port, task_type) = Self::detect_port_and_type(&command, dir.as_deref());
 
         if let Some(state) = app.try_state::<BackgroundState>() {
             let state_clone = state.0.clone();
             let task_id_clone = task_id.clone();
             let cmd_clone = command.clone();
 
+            let session_id_clone = session_id.clone();
             {
                 let mut bg = state_clone.lock().await;
                 bg.tasks.insert(
                     task_id_clone.clone(),
                     BackgroundTask {
                         id: task_id_clone.clone(),
+                        session_id: session_id.clone(),
                         command: cmd_clone.clone(),
                         status: "running".to_string(),
                         result: None,
@@ -224,6 +247,7 @@ impl BackgroundManager {
                             }
                             bg.notification_queue.push(Notification {
                                 task_id: task_id_async,
+                                session_id: session_id_clone.clone(),
                                 status: "error".to_string(),
                                 command: cmd_async,
                                 result: format!("Failed to spawn: {}", e),
@@ -315,6 +339,7 @@ impl BackgroundManager {
 
                 let notif = Notification {
                     task_id: task_id_async.clone(),
+                    session_id: session_id_clone.clone(),
                     status: status.to_string(),
                     command: cmd_async.clone(),
                     result: final_output,
@@ -348,6 +373,34 @@ impl BackgroundManager {
             "Background task {} started{}{}: {}",
             task_id, type_info, port_info, short_cmd
         )
+    }
+
+    /// 移除单个后台任务（无论状态）
+    fn remove_task(&mut self, task_id: &str) {
+        self.tasks.remove(task_id);
+        self.child_processes.remove(task_id);
+        println!("[BACKGROUND] Dismissed task {}", task_id);
+    }
+
+    /// 清理指定会话的所有非 running 任务
+    fn remove_session_tasks(&mut self, session_id: &str) {
+        let ids: Vec<String> = self
+            .tasks
+            .iter()
+            .filter(|(_, t)| {
+                t.session_id.as_deref() == Some(session_id) && t.status != "running"
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &ids {
+            self.tasks.remove(id);
+            self.child_processes.remove(id);
+        }
+        println!(
+            "[BACKGROUND] Cleared {} tasks for session {}",
+            ids.len(),
+            session_id
+        );
     }
 
     /// 清理已完成且子进程句柄已释放的后台任务，防止内存无限增长
@@ -420,6 +473,29 @@ impl BackgroundManager {
         if let Some(state) = app.try_state::<BackgroundState>() {
             let mut bg = state.0.lock().await;
             bg.kill_all().await;
+        }
+    }
+
+    /// 移除单个后台任务
+    pub async fn dismiss_task(app: &tauri::AppHandle, task_id: &str) -> bool {
+        if let Some(state) = app.try_state::<BackgroundState>() {
+            let mut bg = state.0.lock().await;
+            bg.remove_task(task_id);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 清理指定会话的非运行中任务
+    pub async fn clear_session_tasks(app: &tauri::AppHandle, session_id: &str) -> usize {
+        if let Some(state) = app.try_state::<BackgroundState>() {
+            let mut bg = state.0.lock().await;
+            let before = bg.tasks.len();
+            bg.remove_session_tasks(session_id);
+            before - bg.tasks.len()
+        } else {
+            0
         }
     }
 }

@@ -82,6 +82,11 @@ export interface TodoItem {
   status: "pending" | "in_progress" | "completed";
 }
 
+export interface TodoUpdatePayload {
+  todos: TodoItem[];
+  sessionId: string;
+}
+
 export interface PermissionRequest {
   id: string;
   message: string;
@@ -113,6 +118,7 @@ export interface PlanDocument {
 
 export interface BackgroundTask {
   id: string;
+  sessionId?: string | null;
   command: string;
   status: string;
   result?: string | null;
@@ -131,6 +137,8 @@ export type AgentStepType =
   | "tool_error"
   | "subagent_start"
   | "subagent_end"
+  | "task_scheduled"
+  | "task_completed"
   | "retry"
   | "cancelled";
 
@@ -141,6 +149,9 @@ export interface AgentStep {
   output_summary?: string;
   error?: string;
   task?: string;
+  taskId?: number;
+  subject?: string;
+  status?: string;
   attempt?: number;
   max?: number;
   content?: string;

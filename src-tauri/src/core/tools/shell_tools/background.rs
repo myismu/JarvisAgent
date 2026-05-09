@@ -21,7 +21,7 @@ pub async fn background_run_internal(
     workspace: &Option<std::path::PathBuf>,
 ) -> String {
     let exec_dir = workspace.as_ref().map(|p| p.to_string_lossy().into_owned());
-    crate::core::infra::background::BackgroundManager::run(app.clone(), cmd.to_string(), exec_dir)
+    crate::core::infra::background::BackgroundManager::run(app.clone(), cmd.to_string(), exec_dir, None)
         .await
 }
 
@@ -52,7 +52,7 @@ pub async fn background_run(
         ws.map(|p| p.to_string_lossy().into_owned())
     };
 
-    crate::core::infra::background::BackgroundManager::run(app.clone(), cmd.to_string(), exec_dir)
+    crate::core::infra::background::BackgroundManager::run(app.clone(), cmd.to_string(), exec_dir, Some(session_id.to_string()))
         .await
 }
 

@@ -227,7 +227,11 @@ pub async fn propose_plan(
                  2. 使用 CreateTask 逐个创建任务，每个任务必须是单一变更单元\n\
                  3. 使用 UpdateTask 的 add_blocked_by 建立依赖关系\n\
                  4. 确认所有任务和依赖后，调用 RunSubagentsSequentially 启动调度器\n\
-                 5. 无依赖的任务会被自动并行执行，有依赖的任务按序执行",
+                 5. 无依赖的任务会被自动并行执行，有依赖的任务按序执行\n\
+                 6. ⚠️ 调度完成后，你必须根据返回的调度报告，用中文向用户简洁总结：\n\
+                    - 哪些任务成功\n\
+                    - 哪些失败（如有）\n\
+                    - 最终产出了什么（文件/功能）",
                 title, content
             )
         } else {
@@ -237,7 +241,10 @@ pub async fn propose_plan(
                  2. 使用 CreateTask 逐个创建任务，每个任务必须是单一变更单元\n\
                  3. 使用 UpdateTask 的 add_blocked_by 建立依赖关系\n\
                  4. 确认所有任务和依赖后，调用 RunSubagentsSequentially 启动调度器\n\
-                 5. 无依赖的任务会被自动并行执行，有依赖的任务按序执行",
+                 5. ⚠️ 调度完成后，你必须根据返回的调度报告，用中文向用户简洁总结：\n\
+                    - 哪些任务成功\n\
+                    - 哪些失败（如有）\n\
+                    - 最终产出了什么（文件/功能）",
                 title
             )
         }

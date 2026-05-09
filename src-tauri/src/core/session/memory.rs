@@ -1,13 +1,10 @@
 //! # 记忆压缩与上下文管理 (Memory & Context Compaction)
 //!
-//! 管理对话上下文长度和持久化记忆，包含三个核心能力：
+//! 管理对话上下文长度和持久化记忆：
 //!
-//! 1. **Token 估算** — 按字符数 / 4 近似计算 token 用量
-//! 2. **上下文压缩** — 三级压缩策略：
-//!    - `micro_compact`：清理旧的工具调用结果，保留最近 3 条
-//!    - `auto_compact`：调用 LLM 生成对话摘要，替换完整历史
-//!    - `auto_compact_summary`：独立摘要接口（用于外部调用）
-//! 3. **记忆系统** — 全局记忆 + 项目记忆的读写，由记忆 Agent 自动维护
+//! 1. **Token 估算** — tiktoken 精确计算，不可用时退化为 chars/4 估算
+//! 2. **上下文压缩** — 单级 LLM 摘要：接近 token 上限时调模型压缩历史为一段摘要
+//! 3. **记忆系统** — 全局记忆的读写，由记忆 Agent 自动维护
 
 use crate::core::error::MemoryError;
 use crate::core::infra::prompts::*;
@@ -56,119 +53,6 @@ pub fn estimate_tokens(messages: &[Message]) -> usize {
 
     // cl100k_base 是所有主流模型共用分词器（GPT-4/3.5/Claude），模型名仅用于查表
     crate::core::llm::token_count::count_text("gpt-4", &text_buf).tokens + total_image_estimate
-}
-
-/// 轻量压缩：清理旧的工具结果，最近 keep_recent 条保留原文，其余截断为首部摘要
-pub fn micro_compact(messages: &mut Vec<Message>) {
-    let keep_recent = 20;
-    const TRUNCATE_AT: usize = 300;
-    const MIN_FOLD_LEN: usize = 400;
-
-    let mut tool_results_pos = Vec::new();
-    for (i, msg) in messages.iter().enumerate() {
-        if let Message::User {
-            content: Content::Multiple(blocks),
-        } = msg
-        {
-            for (j, block) in blocks.iter().enumerate() {
-                if let ContentBlock::ToolResult { .. } = block {
-                    tool_results_pos.push((i, j));
-                }
-            }
-        }
-    }
-
-    if tool_results_pos.len() <= keep_recent {
-        return;
-    }
-
-    let mut tool_name_map = std::collections::HashMap::new();
-    for msg in messages.iter() {
-        if let Message::Assistant {
-            content: Content::Multiple(blocks),
-        } = msg
-        {
-            for block in blocks {
-                if let ContentBlock::ToolUse { id, name, .. } = block {
-                    tool_name_map.insert(id.clone(), name.clone());
-                }
-            }
-        }
-    }
-
-    let to_clear_count = tool_results_pos.len() - keep_recent;
-    for &(i, j) in tool_results_pos.iter().take(to_clear_count) {
-        if let Message::User {
-            content: Content::Multiple(ref mut blocks),
-        } = messages[i]
-        {
-            if let ContentBlock::ToolResult {
-                tool_use_id,
-                content,
-            } = &mut blocks[j]
-            {
-                if content.len() > MIN_FOLD_LEN {
-                    let tool_name = tool_name_map
-                        .get(tool_use_id)
-                        .cloned()
-                        .unwrap_or_else(|| "?".to_string());
-                    let preview: String = content.chars().take(TRUNCATE_AT).collect();
-                    *content = format!(
-                        "[早期结果-已截断] {} → {}\n... [共{}字符，后段已省略]",
-                        tool_name,
-                        preview,
-                        content.len()
-                    );
-                }
-            }
-        }
-    }
-}
-
-/// 中压缩：移除早期 thinking 块（保留最近 5 个），其余替换为摘要
-pub fn mid_compact(messages: &mut Vec<Message>) {
-    const KEEP_RECENT: usize = 5;
-    const TRUNCATE_AT: usize = 200;
-
-    let mut thinking_positions = Vec::new();
-    for (i, msg) in messages.iter().enumerate() {
-        if let Message::Assistant {
-            content: Content::Multiple(blocks),
-        } = msg
-        {
-            for (j, block) in blocks.iter().enumerate() {
-                if let ContentBlock::Thinking { .. } = block {
-                    thinking_positions.push((i, j));
-                }
-            }
-        }
-    }
-
-    if thinking_positions.len() <= KEEP_RECENT {
-        return;
-    }
-
-    let to_clear = thinking_positions.len() - KEEP_RECENT;
-    for &(i, j) in thinking_positions.iter().take(to_clear) {
-        if let Message::Assistant {
-            content: Content::Multiple(ref mut blocks),
-        } = messages[i]
-        {
-            if let ContentBlock::Thinking {
-                thinking,
-                signature,
-            } = &mut blocks[j]
-            {
-                let preview: String = thinking.chars().take(TRUNCATE_AT).collect();
-                *thinking = format!(
-                    "[早期思考-已截断] {}\n... [共{}字符，后段已省略]",
-                    preview,
-                    thinking.len()
-                );
-                *signature = String::new();
-            }
-        }
-    }
 }
 
 /// 将对话记录保存为 JSONL 转录文件（用于压缩前的备份）
@@ -509,11 +393,6 @@ pub fn get_global_memory_path() -> PathBuf {
     crate::core::data_paths::global_memory_path()
 }
 
-/// 项目记忆文件路径（agent_home/global/memory/GEMINI.md）
-pub fn get_project_memory_path() -> PathBuf {
-    crate::core::data_paths::project_memory_path()
-}
-
 /// 读取记忆文件，不存在则创建带默认头部的空文件
 pub fn read_memory_file(path: &Path, header: &str) -> String {
     if let Ok(content) = std::fs::read_to_string(path) {
@@ -544,28 +423,22 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
     let model_id = config.utility_model; // 记忆 Agent 使用工具模型（更便宜）
 
     let global_path = get_global_memory_path();
-    let project_path = get_project_memory_path();
-
     let global_content = read_memory_file(&global_path, "Global Memory");
-    let project_content = read_memory_file(&project_path, "Project Memory");
-
-    // let system = MEMORY_AGENT_SYSTEM;
 
     let user_content = format!(
-        "【当前全局记忆】\n{}\n\n【当前项目记忆】\n{}\n\n【最新对话】\nUser: {}\nAssistant: {}",
-        global_content, project_content, user_msg, assistant_reply
+        "【当前全局记忆】\n{}\n\n【最新对话】\nUser: {}\nAssistant: {}",
+        global_content, user_msg, assistant_reply
     );
 
     let tools = vec![json!({
         "name": "update_memory",
-        "description": "更新记忆文件。",
+        "description": "更新全局记忆文件。",
         "input_schema": {
             "type": "object",
             "properties": {
-                "scope": { "type": "string", "enum": ["global", "project"], "description": "更新范围" },
                 "content": { "type": "string", "description": "更新后的完整 Markdown 内容" }
             },
-            "required": ["scope", "content"]
+            "required": ["content"]
         }
     })];
 
@@ -651,24 +524,14 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
                                         if let Ok(args_json) =
                                             serde_json::from_str::<serde_json::Value>(args_str)
                                         {
-                                            let scope = args_json["scope"].as_str().unwrap_or("");
                                             let content =
                                                 args_json["content"].as_str().unwrap_or("");
-                                            let target_path = if scope == "global" {
-                                                &global_path
-                                            } else {
-                                                &project_path
-                                            };
-
                                             if !content.is_empty() {
-                                                println!(
-                                                    "[MEMORY] Updating {} memory (OpenAI)...",
-                                                    scope
-                                                );
-                                                let _ = std::fs::write(target_path, content);
+                                                println!("[MEMORY] Updating global memory (OpenAI)...");
+                                                let _ = std::fs::write(&global_path, content);
                                                 logger.log_memory_agent(
                                                     &request_json_str,
-                                                    &format!("Updated {} memory", scope),
+                                                    "Updated global memory",
                                                 );
                                             }
                                         }
@@ -682,20 +545,13 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
                 if let Some(content_array) = body["content"].as_array() {
                     for block in content_array {
                         if block["type"] == "tool_use" && block["name"] == "update_memory" {
-                            let scope = block["input"]["scope"].as_str().unwrap_or("");
                             let content = block["input"]["content"].as_str().unwrap_or("");
-                            let target_path = if scope == "global" {
-                                &global_path
-                            } else {
-                                &project_path
-                            };
-
                             if !content.is_empty() {
-                                println!("[MEMORY] Updating {} memory (Anthropic)...", scope);
-                                let _ = std::fs::write(target_path, content);
+                                println!("[MEMORY] Updating global memory (Anthropic)...");
+                                let _ = std::fs::write(&global_path, content);
                                 logger.log_memory_agent(
                                     &request_json_str,
-                                    &format!("Updated {} memory", scope),
+                                    "Updated global memory",
                                 );
                             }
                         }

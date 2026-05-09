@@ -176,10 +176,21 @@
                 </div>
                 <div class="setting-item">
                   <label>{{ t('settings.general.language') }}</label>
-                  <select :value="appLocale" class="format-select" @change="setAppLocale(($event.target as HTMLSelectElement).value)">
-                    <option value="zh-CN">简体中文</option>
-                    <option value="en-US">English</option>
-                  </select>
+                  <div class="custom-select" :class="{ open: langMenuOpen }">
+                    <button class="custom-select-trigger" @click="langMenuOpen = !langMenuOpen">
+                      <span>{{ localeOptions[appLocale] }}</span>
+                      <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                    </button>
+                    <div v-if="langMenuOpen" class="custom-select-menu">
+                      <div
+                        v-for="(label, value) in localeOptions"
+                        :key="value"
+                        class="custom-select-option"
+                        :class="{ active: appLocale === value }"
+                        @click="setAppLocale(value); langMenuOpen = false"
+                      >{{ label }}</div>
+                    </div>
+                  </div>
                   <div class="setting-desc">{{ t('settings.general.languageDesc') }}</div>
                 </div>
                 <div class="setting-item">
@@ -419,7 +430,6 @@ import { invoke } from '@tauri-apps/api/core'
 import { useTheme } from '../../composables/useTheme'
 import { usePreferences, type AgentPanelPosition } from '../../composables/usePreferences'
 import { useWindow } from '../../composables/useWindow'
-import type { AgentDisplayMode } from '../../types'
 import ConfirmModal from '../common/ConfirmModal.vue'
 
 const { t, locale } = useI18n()
@@ -443,6 +453,8 @@ const agentPanelPosition = computed(() => uiPrefs.agentPanelPosition)
 const setAgentPanelPosition = (val: AgentPanelPosition) => uiPrefs.setAgentPanelPosition(val)
 const compactMode = computed(() => uiPrefs.compactMode)
 const setCompactMode = (val: boolean) => uiPrefs.setCompactMode(val)
+const langMenuOpen = ref(false)
+const localeOptions: Record<string, string> = { 'zh-CN': '简体中文', 'en-US': 'English' }
 const appLocale = uiPrefs.locale
 watch(appLocale, (val) => {
   locale.value = val
@@ -735,13 +747,16 @@ const onMouseUp = (_e: MouseEvent, _index: number) => {
   dragMoved = false
 }
 
-const onWindowMouseUp = () => {
+const onWindowMouseUp = (e: MouseEvent) => {
   if (dragIndex.value !== null) {
     document.body.style.userSelect = ''
     dragIndex.value = null
     dragOverIndex.value = null
     dragOffsetY.value = 0
     dragMoved = false
+  }
+  if (langMenuOpen.value && e.target instanceof HTMLElement && !e.target.closest('.custom-select')) {
+    langMenuOpen.value = false
   }
 }
 
@@ -1240,12 +1255,123 @@ const save = async () => {
   width: 100%;
   height: 38px;
   padding: 0 12px;
-  background: var(--glass-bg-light);
+  background-color: var(--glass-bg-light);
   border: 1px solid var(--glass-border);
   border-radius: 8px;
   color: var(--text-main);
   font-size: 13px;
-  transition: all 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s;
+}
+
+.setting-item select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2214%22%20height%3D%2214%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%2364748b%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpolyline%20points%3D%226%209%2012%2015%2018%209%22%3E%3C%2Fpolyline%3E%3C%2Fsvg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 14px;
+  padding-right: 32px;
+  cursor: pointer;
+}
+
+.setting-item select:hover {
+  border-color: var(--accent-blue);
+  background-color: var(--glass-bg);
+}
+
+.format-select {
+  width: auto !important;
+  min-width: 160px;
+}
+
+/* ── 自定义下拉（替代原生 select）── */
+.custom-select {
+  position: relative;
+  width: auto;
+  min-width: 160px;
+}
+
+.custom-select-trigger {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  padding-right: 32px;
+  background-color: var(--glass-bg-light);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  color: var(--text-main);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s;
+}
+
+.custom-select-trigger:hover {
+  border-color: var(--accent-blue);
+  background-color: var(--glass-bg);
+}
+
+.custom-select.open .custom-select-trigger {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.custom-select-trigger svg {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: transform 0.2s;
+}
+
+.custom-select.open .custom-select-trigger svg {
+  transform: rotate(180deg);
+}
+
+.custom-select-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 110;
+  background: var(--surface-strong);
+  backdrop-filter: blur(var(--glass-blur-heavy));
+  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
+  border: 1px solid color-mix(in srgb, var(--text-muted) 20%, transparent);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  overflow: hidden;
+  padding: 4px;
+  animation: popIn var(--transition-fast);
+}
+
+.custom-select-option {
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-main);
+  transition: background-color 0.15s;
+}
+
+.custom-select-option:hover {
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+}
+
+.custom-select-option.active {
+  background: color-mix(in srgb, var(--accent-blue) 16%, transparent);
+  color: var(--accent-blue);
+  font-weight: 600;
+}
+
+:global(body.dark-mode) .setting-item select {
+  background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2214%22%20height%3D%2214%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23a1a1aa%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpolyline%20points%3D%226%209%2012%2015%2018%209%22%3E%3C%2Fpolyline%3E%3C%2Fsvg%3E");
+}
+
+.setting-item select option {
+  background: var(--surface-strong);
+  color: var(--text-main);
 }
 
 .setting-item input:focus, .setting-item select:focus {

@@ -161,7 +161,13 @@ pub async fn todo_write(
         Vec::new()
     };
 
-    let _ = app.emit("todo-update", &visible_todos);
+    let _ = app.emit(
+        "todo-update",
+        serde_json::json!({
+            "todos": visible_todos,
+            "sessionId": session_id,
+        }),
+    );
 
     serde_json::json!({
         "success": true,

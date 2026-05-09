@@ -901,13 +901,6 @@ impl PipelineState {
 
     /// 检查 token 用量并在需要时执行压缩
     async fn compact_if_needed(&mut self) {
-        // L1: micro_compact 每轮执行（截断旧工具结果，零成本）
-        {
-            let mut session = self.ctx.memory.lock().await;
-            micro_compact(&mut session.messages);
-            crate::core::session::normalize_message_ids(&mut session);
-        }
-
         let messages_for_estimate = {
             let session = self.ctx.memory.lock().await;
             session.messages.clone()
@@ -920,21 +913,11 @@ impl PipelineState {
         let tokens = estimate.estimated_tokens;
         let trigger = crate::core::constants::MAX_TOKENS_COMPACT_TRIGGER;
 
-        // L2（80%~95%）：中压缩（移除早期 thinking 块）
-        if tokens > trigger * 80 / 100 {
+        // >70% 上限：LLM 摘要压缩
+        if tokens > trigger * 70 / 100 {
             println!(
-                "[贾维斯] 上下文 > {}% 上限 ({}/{}), 触发中压缩",
-                80, tokens, trigger
-            );
-            let mut session = self.ctx.memory.lock().await;
-            mid_compact(&mut session.messages);
-        }
-
-        // L3（>95% 上限）：LLM 摘要压缩（保存 transcript，替换历史）
-        if tokens > trigger * 95 / 100 {
-            println!(
-                "[贾维斯] 上下文 > {}% 上限 ({}/{}), 触发全压缩",
-                95, tokens, trigger
+                "[贾维斯] 上下文 > {}% 上限 ({}/{}), 触发 LLM 摘要压缩",
+                70, tokens, trigger
             );
 
             let mut session = self.ctx.memory.lock().await;

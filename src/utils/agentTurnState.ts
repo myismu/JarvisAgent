@@ -273,6 +273,19 @@ export function applyAgentStepToCurrentTurn(
       error: step.error,
       status: "error",
     });
+  } else if (step.type === "task_scheduled" && step.taskId != null) {
+    const taskName = `Task #${step.taskId}: ${step.subject || ""}`;
+    upsertAgentToolCall(view, `task_${step.taskId}`, taskName, "running", turn.loop);
+  } else if (step.type === "task_completed" && step.taskId != null) {
+    const taskPrefix = `Task #${step.taskId}:`;
+    const item = [...turn.toolCalls].reverse().find((tool) =>
+      tool.name.startsWith(taskPrefix),
+    );
+    if (item) {
+      item.status = step.status === "完成" ? "completed" : "error";
+      item.outputSummary = step.status;
+      item.updatedAt = now();
+    }
   }
   bump(turn);
 }

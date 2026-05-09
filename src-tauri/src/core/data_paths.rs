@@ -52,10 +52,6 @@ pub fn global_memory_path() -> PathBuf {
     global_dir().join(constants::FILE_GLOBAL_MEMORY)
 }
 
-pub fn project_memory_path() -> PathBuf {
-    ensure_dir(global_dir().join("memory")).join("GEMINI.md")
-}
-
 pub fn ensure_base_layout() {
     ensure_dir(data_root());
     ensure_dir(global_dir());
