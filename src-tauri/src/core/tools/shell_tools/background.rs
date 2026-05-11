@@ -1,4 +1,4 @@
-//! # background.rs — 后台执行与状态查询
+﻿//! # background.rs — 后台执行与状态查询
 //!
 //! 提供长周期 Shell 任务的后台执行和状态检查功能。
 //!
@@ -8,7 +8,7 @@
 //! - check_background(): 工具入口：检查后台任务状态
 //!
 //! ## Dependencies
-//! - Internal: crate::core::infra::background::BackgroundManager, crate::core::tools::framework::permission
+//! - Internal: crate::infra::background::BackgroundManager, crate::core::tools::framework::permission
 //! - External: serde_json, 	auri
 
 use super::super::framework::permission::is_within_workspace;
@@ -21,7 +21,7 @@ pub async fn background_run_internal(
     workspace: &Option<std::path::PathBuf>,
 ) -> String {
     let exec_dir = workspace.as_ref().map(|p| p.to_string_lossy().into_owned());
-    crate::core::infra::background::BackgroundManager::run(app.clone(), cmd.to_string(), exec_dir, None)
+    crate::infra::background::BackgroundManager::run(app.clone(), cmd.to_string(), exec_dir, None)
         .await
 }
 
@@ -52,7 +52,7 @@ pub async fn background_run(
         ws.map(|p| p.to_string_lossy().into_owned())
     };
 
-    crate::core::infra::background::BackgroundManager::run(app.clone(), cmd.to_string(), exec_dir, Some(session_id.to_string()))
+    crate::infra::background::BackgroundManager::run(app.clone(), cmd.to_string(), exec_dir, Some(session_id.to_string()))
         .await
 }
 
@@ -63,5 +63,5 @@ pub async fn check_background(
     _session_id: &str,
 ) -> String {
     let task_id = input["task_id"].as_str().map(|s| s.to_string());
-    crate::core::infra::background::BackgroundManager::check(app, task_id).await
+    crate::infra::background::BackgroundManager::check(app, task_id).await
 }

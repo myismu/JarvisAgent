@@ -1,4 +1,4 @@
-//! 子Agent监控模块 - 子Agent生命周期与状态追踪
+﻿//! 子Agent监控模块 - 子Agent生命周期与状态追踪
 //!
 //! 管理子Agent的运行状态、事件记录、取消控制。
 //! 通过 Tauri 事件系统向前端推送实时状态更新。
@@ -600,7 +600,7 @@ impl SubAgentMonitor {
     /// 子 Agent 事件持久化到 SQLite，进程退出后可恢复
     fn persist_subagent_events(events: &[SubAgentEvent]) {
         for event in events {
-            let _ = crate::core::db::with_connection(|conn| {
+            let _ = crate::infra::db::with_connection(|conn| {
                 conn.execute(
                     "INSERT OR IGNORE INTO subagent_events(
                         event_id, run_id, session_id, event_type, message, tool,
@@ -631,7 +631,7 @@ impl SubAgentMonitor {
 
     /// 从 SQLite 加载指定 run_id 的历史事件
     pub fn load_persisted_events(run_id: &str) -> Vec<SubAgentEvent> {
-        crate::core::db::with_connection(|conn| {
+        crate::infra::db::with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT event_id, run_id, session_id, event_type, message, tool,

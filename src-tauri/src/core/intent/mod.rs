@@ -1,4 +1,4 @@
-//! # 意图分类模块 (Intent Classification)
+﻿//! # 意图分类模块 (Intent Classification)
 //!
 //! 采用三层分级策略将用户输入归类为预定义意图：
 //! 1. 规则层 — 关键词正则匹配（覆盖 ~90% 明确请求，零延迟）
@@ -10,9 +10,9 @@
 
 pub mod rules;
 
-use crate::core::infra::debug_logger;
-use crate::core::llm::api_format::ApiFormat;
-use crate::core::models::*;
+use crate::infra::debug_logger;
+use crate::infra::llm::api_format::ApiFormat;
+use crate::infra::types::models::*;
 
 fn fallback_intent_for_unresolved(msg: &str) -> String {
     use crate::core::intent::rules::{classify_by_rules, Intent};
@@ -110,7 +110,7 @@ async fn classify_intent_by_llm(
     msg: &str,
     history: &[Message],
 ) -> String {
-    let system_prompt = crate::core::infra::prompts::INTENT_CLASSIFIER_PROMPT_LIGHT;
+    let system_prompt = crate::core::agent::prompts::INTENT_CLASSIFIER_PROMPT_LIGHT;
 
     // 拼接最近 4 条对话作为上下文（每条截断至 100 字符以节省 token）
     let mut context_str = String::new();
@@ -161,8 +161,8 @@ async fn classify_intent_by_llm(
     let is_openai = api_format.is_openai();
     let (req_json, _) = match api_format {
         ApiFormat::OpenAI => {
-            use crate::core::llm::adapters::translate_messages_to_openai;
-            use crate::core::models::OpenAIRequest;
+            use crate::infra::llm::adapters::translate_messages_to_openai;
+            use crate::infra::types::models::OpenAIRequest;
             let openai_msgs = translate_messages_to_openai(&system_prompt, &request_body.messages);
             let openai_req = OpenAIRequest {
                 model: model_id.to_string(),
@@ -197,7 +197,7 @@ async fn classify_intent_by_llm(
         req = req.header("anthropic-version", "2023-06-01");
     }
 
-    crate::core::llm::api_client::log_model_request(model_id, base_url, "意图分类器agent");
+    crate::infra::llm::api_client::log_model_request(model_id, base_url, "意图分类器agent");
 
     // 发送请求并解析响应
     if let Ok(response) = req.json(&req_json).send().await {

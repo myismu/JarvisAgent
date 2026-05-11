@@ -45,6 +45,7 @@
   --glass-border-subtle: rgba(255, 255, 255, 0.15);
   --glass-blur: 16px;
   --glass-blur-heavy: 24px;
+  --msg-bg-rgb: 255, 255, 255;
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.06);
 
   /* 渐变光晕 */
@@ -103,6 +104,7 @@ body.dark-mode {
   --glass-border-subtle: rgba(255, 255, 255, 0.05);
   --glass-blur: 20px;
   --glass-blur-heavy: 28px;
+  --msg-bg-rgb: 39, 39, 42;
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
 
   --glow-blue: rgba(59, 130, 246, 0.08);
@@ -120,6 +122,7 @@ body.dark-mode {
   padding: 0;
   box-sizing: border-box;
 }
+
 
 html, body {
   width: 100%;
@@ -299,65 +302,267 @@ body.dragging-active .editor-container {
   min-width: 0;
 }
 
-/* ── 开发者视图：工具调用列表 ── */
+/* Agent 错误横幅 */
+.agent-error-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 16px;
+  background: color-mix(in srgb, var(--accent-red) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-red) 25%, transparent);
+  border-radius: var(--radius-md);
+  color: var(--accent-red);
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+.agent-error-banner::before {
+  content: "";
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  background: var(--accent-red);
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2'%3E%3Ccircle cx='12' cy='12' r='10'%3E%3C/circle%3E%3Cline x1='12' y1='8' x2='12' y2='12'%3E%3C/line%3E%3Cline x1='12' y1='16' x2='12.01' y2='16'%3E%3C/line%3E%3C/svg%3E");
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  -webkit-mask-image: inherit;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  background-color: var(--accent-red);
+}
+
+/* ── 开发者模式：Cursor/Codex 风格轨迹 ── */
+
+/* 消息背景透明度 */
+:root {
+  --agent-message-opacity: 0;
+  --user-message-opacity: 100;
+}
+.chat-message.agent-message .message-content {
+  background: rgba(var(--msg-bg-rgb), calc(0.85 * var(--agent-message-opacity) / 100));
+}
+.chat-message.user-message .message-content {
+  background: rgba(var(--msg-bg-rgb), calc(0.80 * var(--user-message-opacity) / 100));
+  border: none;
+}
+
+/* 执行过程大折叠 */
+.dev-execution-fold {
+  margin-bottom: 16px;
+}
+.dev-execution-summary {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.dev-execution-fold[open] > .dev-execution-summary {
+  margin-bottom: 8px;
+}
+
+.dev-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 4px 0;
+}
+.dev-execution-fold .dev-layout {
+  margin: 0;
+}
+
+/* 状态圆点 */
+.dev-status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--accent-green);
+}
+.dev-status-dot.running {
+  background: var(--accent-yellow);
+}
+.dev-status-dot.error {
+  background: var(--accent-red);
+}
+.dev-status-dot.completed {
+  background: var(--accent-green);
+}
+
+/* 思考块 */
+.dev-thinking {
+  padding: 6px 0;
+}
+.dev-thinking-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  padding: 2px 0;
+}
+.dev-thinking-summary::-webkit-details-marker { display: none; }
+.dev-thinking-label {
+  color: var(--text-muted);
+}
+.dev-thinking.streaming .dev-thinking-label {
+  color: var(--accent-yellow);
+}
+.dev-thinking-body {
+  margin-top: 8px;
+  padding: 10px 14px;
+  border-left: 2px solid var(--glass-border-subtle);
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+.dev-thinking.streaming .dev-thinking-body {
+  border-left-color: var(--accent-yellow);
+}
+
+/* 工具调用 */
+.dev-tool {
+  border-radius: 6px;
+}
+.dev-tool[open] {
+  background: color-mix(in srgb, var(--surface-strong) calc(30 * var(--agent-message-opacity) / 100), transparent);
+}
+.dev-tool-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  border-radius: 6px;
+  font-size: 0.8rem;
+}
+.dev-tool-summary::-webkit-details-marker { display: none; }
+.dev-tool-summary:hover {
+  background: color-mix(in srgb, var(--surface-strong) calc(20 * var(--agent-message-opacity) / 100), transparent);
+}
+.dev-tool-name {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-main);
+  background: transparent !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+.dev-tool-action {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dev-tool-status {
+  margin-left: auto;
+  font-size: 0.7rem;
+  flex-shrink: 0;
+}
+.dev-tool.completed .dev-tool-status { color: var(--accent-green); }
+.dev-tool.running .dev-tool-status { color: var(--accent-yellow); }
+.dev-tool.error .dev-tool-status { color: var(--accent-red); }
+.dev-tool.error .dev-tool-name { color: var(--accent-red); }
+
+.dev-tool-body {
+  padding: 0 8px 8px 24px;
+}
+.dev-tool-section {
+  margin-top: 8px;
+}
+.dev-tool-section-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.dev-tool-section.error .dev-tool-section-label {
+  color: var(--accent-red);
+}
+.dev-tool-pre {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+  color: var(--text-main);
+  margin: 0;
+}
+.dev-tool-section.error .dev-tool-pre {
+  border-color: color-mix(in srgb, var(--accent-red) 30%, transparent);
+  background: color-mix(in srgb, var(--accent-red) calc(5 * var(--agent-message-opacity) / 100), transparent);
+}
+
+/* 执行日志终端 */
+.dev-log {
+  background: rgba(15, 23, 42, calc(var(--agent-message-opacity) / 100));
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  margin: 8px 0;
+}
+.dev-log-header {
+  background: rgba(255, 255, 255, calc(0.04 * var(--agent-message-opacity) / 100));
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.dev-log-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.dev-log-dot.red   { background: #ef4444; }
+.dev-log-dot.yellow { background: #f59e0b; }
+.dev-log-dot.green  { background: #10b981; }
+.dev-log-title {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.35);
+  letter-spacing: 1px;
+}
+.dev-log-body {
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: #e2e8f0;
+  max-height: 160px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+.dev-log-body pre,
+.dev-log-body code {
+  background: transparent;
+  padding: 0;
+  border: none;
+  color: inherit;
+  font-size: inherit;
+}
+
+/* ── 旧版开发者视图（保留向后兼容，已废弃） ── */
 .agent-developer-view {
   display: flex;
   flex-direction: column;
   gap: 6px;
   margin: 8px 0;
-}
-
-.dev-tool-call {
-  border: 1px solid var(--glass-border-subtle);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-  font-size: 0.78rem;
-}
-
-.dev-tool-call.completed { border-color: color-mix(in srgb, var(--accent-green) 20%, transparent); }
-.dev-tool-call.error { border-color: color-mix(in srgb, var(--accent-red) 20%, transparent); }
-.dev-tool-call.running { border-color: color-mix(in srgb, var(--accent-yellow) 30%, transparent); }
-
-.dev-tool-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  min-height: 28px;
-}
-
-.dev-tool-row code {
-  font-weight: 650;
-  color: var(--text-main);
-  background: transparent;
-  padding: 0;
-  border: 0;
-  font-size: 0.78rem;
-}
-
-.dev-tool-label {
-  color: var(--text-muted);
-  font-size: 0.72rem;
-}
-
-.dev-tool-body {
-  border-top: 1px solid var(--glass-border-subtle);
-  padding: 8px 10px;
-  background: color-mix(in srgb, var(--surface-strong) 40%, transparent);
-}
-
-.dev-tool-body .agent-tool-field,
-.dev-tool-body .agent-tool-log {
-  margin: 4px 0;
-}
-
-.dev-tool-body .agent-tool-field:first-child {
-  margin-top: 0;
-}
-
-.dev-tool-body .agent-tool-field:last-child,
-.dev-tool-body .agent-tool-log:last-child {
-  margin-bottom: 0;
 }
 
 .agent-thinking-block,

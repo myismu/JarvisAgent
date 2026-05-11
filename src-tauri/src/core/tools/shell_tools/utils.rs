@@ -1,4 +1,4 @@
-//! # utils.rs — Shell 辅助工具
+﻿//! # utils.rs — Shell 辅助工具
 //!
 //! 处理工作区目录解析、命令出口代码语义化及终端输出格式化。
 //!
@@ -15,7 +15,7 @@ use super::super::framework::permission::is_within_workspace;
 use tauri::Manager;
 
 pub async fn get_workspace(app: &tauri::AppHandle, session_id: &str) -> Option<std::path::PathBuf> {
-    if let Some(manager) = app.try_state::<crate::core::state::SessionManager>() {
+    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         let ws = ctx.workspace.lock().await.clone();
         return ws;

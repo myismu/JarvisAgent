@@ -1,4 +1,4 @@
-//! # plan.rs — 方案审批工具
+﻿//! # plan.rs — 方案审批工具
 //!
 //! 推送实施方案到前端预览面板，通过 oneshot channel 阻塞等待用户决策。
 //!
@@ -8,7 +8,7 @@
 use serde_json::json;
 use tauri::{Emitter, Manager};
 
-use crate::core::models::PlanDocument;
+use crate::infra::types::models::PlanDocument;
 
 /// 方案审批工具：推送方案到前端预览面板，通过 oneshot channel 阻塞等待用户决策
 pub async fn propose_plan(
@@ -54,12 +54,12 @@ pub async fn propose_plan(
     }
 
     // 生成唯一 ID
-    let session_manager = app.state::<crate::core::state::SessionManager>();
+    let session_manager = app.state::<crate::infra::state::state::SessionManager>();
     let ctx = session_manager.get_or_create(session_id).await;
     let plan_fingerprint = format!(
         "{}:{}",
         title.trim().to_ascii_lowercase(),
-        crate::core::state::stable_hash(&content)
+        crate::infra::state::state::stable_hash(&content)
     );
     {
         let memory = ctx.memory.lock().await;
@@ -85,7 +85,7 @@ pub async fn propose_plan(
         }
         pending.insert(
             plan_fingerprint.clone(),
-            crate::core::state::PendingPlanCacheEntry {
+            crate::infra::state::state::PendingPlanCacheEntry {
                 display: title.to_string(),
                 title: title.to_string(),
                 id: "pending".to_string(),

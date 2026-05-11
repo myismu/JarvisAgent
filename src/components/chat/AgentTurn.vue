@@ -1,22 +1,11 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import type {
-  AgentCurrentTurn,
-  AgentDisplayMode,
-  AgentExecutionLog,
-  AgentTextBlock,
-  AgentThinkingBlock,
-} from "../../types";
-import { renderMarkdown } from "../../utils/markdown";
-import { stripPseudoToolCalls } from "../../utils/agentTurnRender";
+import type { AgentCurrentTurn, AgentDisplayMode } from "../../types";
+import { renderMarkdown, renderTokenUsage } from "../../utils/markdown";
 import {
-  canMergeToolGroups,
-  createToolCallGroup,
-  mergeToolGroups,
-  toolGroupTitle,
-  type ToolCallGroup,
-} from "../../utils/toolDisplay";
-import { renderTokenUsage, renderToolStatusIcon } from "../../utils/markdown";
+  stripPseudoToolCalls,
+  buildDeveloperTimeline,
+} from "../../utils/agentTurnRender";
 import ExecutionPanel from "./ExecutionPanel.vue";
 import ThinkingStatus from "./ThinkingStatus.vue";
 
@@ -56,119 +45,38 @@ const tokenUsageHtml = computed(() => {
   );
 });
 
-interface DeveloperSegment {
-  key: string;
-  type: "text" | "thinking" | "tool" | "log";
-  timestamp: number;
-  order: number;
-  textBlock?: AgentTextBlock;
-  thinkingBlock?: AgentThinkingBlock;
-  toolGroup?: ToolCallGroup;
-  log?: AgentExecutionLog;
-  html?: string;
-}
-
 const isDeveloperMode = computed(() => props.displayMode === "developer");
 
-const developerSegments = computed<DeveloperSegment[]>(() => {
-  const segments: DeveloperSegment[] = [];
+// 统一时间线：直播和历史共用 buildDeveloperTimeline
+const developerTimeline = computed(() =>
+  buildDeveloperTimeline(
+    {
+      textBlocks: props.turn.textBlocks.filter((b) => b.kind === "assistant").map((b) => ({
+        content: stripPseudoToolCalls(b.content),
+        timestamp: b.timestamp,
+      })),
+      thinkingBlocks: props.turn.thinkingBlocks,
+      toolCalls: props.turn.toolCalls,
+      logs: props.turn.logs,
+    },
+    props.turn.isRunning,
+  ),
+);
 
-  props.turn.textBlocks.forEach((block, index) => {
-    if (block.kind !== "assistant") return;
-    const content = stripPseudoToolCalls(block.content);
-    if (!content.trim()) return;
-    segments.push({
-      key: `text-${block.id}`,
-      type: "text",
-      timestamp: block.timestamp,
-      order: index * 4,
-      textBlock: block,
-      html: renderMarkdown(content),
-    });
-  });
-
-  props.turn.thinkingBlocks.forEach((block, index) => {
-    if (!block.content.trim()) return;
-    segments.push({
-      key: `thinking-${block.id}`,
-    type: "thinking",
-    timestamp: block.timestamp,
-      order: index * 4 + 1,
-      thinkingBlock: block,
-      html: renderMarkdown(block.content),
-    });
-  });
-
-  props.turn.toolCalls.forEach((tool, index) => {
-    const group = createToolCallGroup([tool]);
-    segments.push({
-      key: `tool-${group.id}`,
-      type: "tool",
-      timestamp: group.timestamp,
-      order: index * 4 + 2,
-      toolGroup: group,
-    });
-  });
-
-  props.turn.logs.forEach((log, index) => {
-    if (!log.content.trim()) return;
-    segments.push({
-      key: `log-${log.id}`,
-      type: "log",
-      timestamp: log.timestamp,
-      order: index * 4 + 3,
-      log,
-      html: renderMarkdown(log.content),
-    });
-  });
-
-  const merged: DeveloperSegment[] = [];
-  segments
-    .sort((a, b) => a.timestamp - b.timestamp || a.order - b.order)
-    .forEach((segment) => {
-      const previous = merged[merged.length - 1];
-      if (
-        segment.type === "tool" &&
-        segment.toolGroup &&
-        previous?.type === "tool" &&
-        previous.toolGroup &&
-        canMergeToolGroups(previous.toolGroup, segment.toolGroup)
-      ) {
-        const group = mergeToolGroups(previous.toolGroup, segment.toolGroup);
-        previous.key = `tool-${group.id}`;
-        previous.timestamp = group.timestamp;
-        previous.toolGroup = group;
-        return;
-      }
-
-      merged.push(segment);
-    });
-
-  return merged;
+// 最后一个 text 块始终在折叠外，其余全进折叠
+const timelineSplit = computed(() => {
+  const items = developerTimeline.value;
+  let lastTextIdx = -1;
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i].type === "text") { lastTextIdx = i; break; }
+  }
+  if (lastTextIdx < 0) return { execItems: items, finalItems: [] as typeof items };
+  return {
+    execItems: items.filter((_, i) => i !== lastTextIdx),
+    finalItems: [items[lastTextIdx]],
+  };
 });
-
-const hasDeveloperSegments = computed(() => developerSegments.value.length > 0);
-
-const isThinkingOpen = (block: AgentThinkingBlock) => {
-  return block.status === "streaming" && props.turn.activeThinkingBlockId === block.id;
-};
-
-const describeThinking = (content: string) => {
-  const text = content.replace(/\s+/g, " ").trim();
-  const lower = text.toLowerCase();
-
-  if (!text) return "分析当前步骤";
-  if (/(方案|计划|审批|plan|proposal)/i.test(text)) return "制定方案与审批策略";
-  if (/(工具|调用|tool|function|参数)/i.test(text)) return "选择工具并整理调用参数";
-  if (/(文件|目录|代码|实现|修改|file|code|implement)/i.test(text)) return "分析代码与实现路径";
-  if (/(错误|失败|修复|bug|error|fix)/i.test(text)) return "定位问题与修复思路";
-  if (/(测试|验证|build|check|test)/i.test(text)) return "规划验证与测试方式";
-  if (lower.includes("user") || text.includes("用户")) return "理解用户需求与约束";
-
-  const sentence = text.split(/[。.!?？；;]/)[0]?.trim() || text;
-  return sentence.length > 28 ? `${sentence.slice(0, 28)}...` : sentence;
-};
-
+const hasDeveloperSegments = computed(() => developerTimeline.value.length > 0);
 </script>
 
 <template>
@@ -176,62 +84,32 @@ const describeThinking = (content: string) => {
     class="agent-turn"
     :class="[displayMode, { 'waiting-only': !hasAssistantText && !hasExecution && showStatus }]"
   >
-    <!-- 开发者模式：Cursor 风格侧边轨迹 -->
-    <div v-if="isDeveloperMode && hasDeveloperSegments" class="agent-developer-layout">
-      <div class="technical-trace">
-        <template
-          v-for="segment in developerSegments"
-          :key="`${segment.key}-${segment.thinkingBlock ? isThinkingOpen(segment.thinkingBlock) : segment.toolGroup?.status || 'stable'}`"
-        >
-          <!-- 思考过程：胶囊化 -->
+    <!-- 开发者模式 -->
+    <div v-if="isDeveloperMode && hasDeveloperSegments">
+      <!-- 执行过程大折叠：直播时展开，完成后折叠 -->
+      <details
+        v-if="timelineSplit.execItems.length > 0"
+        class="dev-execution-fold"
+        :open="props.turn.isRunning"
+      >
+        <summary class="dev-execution-summary">执行过程（{{ timelineSplit.execItems.length }} 步）</summary>
+        <div class="dev-layout">
           <div
-            v-if="segment.type === 'thinking' && segment.thinkingBlock"
-            class="trace-capsule thinking-capsule"
-            :class="{ streaming: isThinkingOpen(segment.thinkingBlock) }"
-            :title="segment.thinkingBlock.content"
-          >
-            <div class="capsule-icon">
-              <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2.5" fill="none"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
-            </div>
-            <span class="capsule-label">{{ describeThinking(segment.thinkingBlock.content) }}</span>
-          </div>
-
-          <!-- 工具调用：胶囊化 -->
-          <div
-            v-else-if="segment.type === 'tool' && segment.toolGroup"
-            class="trace-capsule tool-capsule"
-            :class="segment.toolGroup.status"
-          >
-            <div class="capsule-icon" v-html="renderToolStatusIcon(segment.toolGroup.status)"></div>
-            <span class="capsule-label">{{ toolGroupTitle(segment.toolGroup) }}</span>
-            <span v-if="segment.toolGroup.count > 1" class="capsule-badge">{{ segment.toolGroup.count }}</span>
-          </div>
-
-          <!-- 执行日志：微型终端流 -->
-          <div
-            v-else-if="segment.type === 'log' && segment.log"
-            class="mini-terminal-log"
-          >
-            <div class="terminal-header">
-              <span class="terminal-dot red"></span>
-              <span class="terminal-dot yellow"></span>
-              <span class="terminal-dot green"></span>
-              <span class="terminal-title">LOG #{{ segment.log.loop || 1 }}</span>
-            </div>
-            <div class="terminal-content" v-html="segment.html"></div>
-          </div>
-
-          <!-- 文本段落：主干内容 -->
-          <div
-            v-else-if="segment.type === 'text'"
-            class="agent-turn-answer trace-main-text"
-            v-html="segment.html"
+            v-for="(item, i) in timelineSplit.execItems"
+            :key="`exec-${item.type}-${item.timestamp}-${i}`"
+            v-html="item.html"
           ></div>
-        </template>
-      </div>
+        </div>
+      </details>
+      <!-- 最终总结 -->
+      <div
+        v-for="(item, i) in timelineSplit.finalItems"
+        :key="`final-${item.timestamp}-${i}`"
+        v-html="item.html"
+      ></div>
     </div>
 
-    <!-- 普通模式：清爽面板 -->
+    <!-- 普通模式 -->
     <template v-else>
       <ExecutionPanel
         :mode="displayMode"
@@ -256,7 +134,7 @@ const describeThinking = (content: string) => {
 }
 
 .agent-turn-tokens {
-  margin-top: 12px;
+  margin-top: 16px;
   width: 100%;
 }
 
@@ -268,163 +146,8 @@ const describeThinking = (content: string) => {
   justify-content: flex-start;
 }
 
-/* 开发者模式布局 */
-.agent-developer-layout {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding-bottom: 24px;
-}
-
-.technical-trace {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  position: relative;
-}
-
-/* 技术胶囊 (Thinking/Tools) */
-.trace-capsule {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 12px;
-  background: var(--glass-bg-light);
-  border: 1px solid var(--glass-border-subtle);
-  border-radius: 20px;
-  font-size: 0.75rem;
-  font-weight: 550;
-  color: var(--text-muted);
-  width: fit-content;
-  max-width: 100%;
-  transition: all var(--transition-fast);
-  cursor: help;
-  user-select: none;
-}
-
-.trace-capsule:hover {
-  background: var(--glass-bg);
-  border-color: var(--accent-blue);
-  color: var(--text-main);
-  transform: translateX(4px);
-}
-
-.capsule-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.capsule-label {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* 思考胶囊特有样式 */
-.thinking-capsule.streaming .capsule-icon svg {
-  animation: spin 2s linear infinite;
-}
-
-.thinking-capsule.streaming {
-  border-color: var(--accent-yellow);
-  color: var(--accent-yellow);
-  background: rgba(245, 158, 11, 0.05);
-}
-
-/* 工具胶囊状态样式 */
-.tool-capsule.completed {
-  border-color: rgba(16, 185, 129, 0.2);
-  color: var(--accent-green);
-}
-
-.tool-capsule.error {
-  border-color: rgba(239, 68, 68, 0.2);
-  color: var(--accent-red);
-}
-
-.tool-capsule.running {
-  border-color: rgba(245, 158, 11, 0.2);
-  color: var(--accent-yellow);
-}
-
-.capsule-badge {
-  background: var(--glass-border);
-  color: var(--text-muted);
-  padding: 0 5px;
-  border-radius: 4px;
-  font-size: 0.65rem;
-  font-family: var(--font-mono);
-}
-
-/* 微型终端日志 */
-.mini-terminal-log {
-  background: #0f172a; /* 深色终端背景 */
-  border-radius: var(--radius-md);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  overflow: hidden;
-  max-width: 600px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-  margin: 4px 0;
-}
-
-.terminal-header {
-  background: rgba(255, 255, 255, 0.05);
-  padding: 4px 10px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.terminal-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-}
-.terminal-dot.red { background: #ef4444; }
-.terminal-dot.yellow { background: #f59e0b; }
-.terminal-dot.green { background: #10b981; }
-
-.terminal-title {
-  font-family: var(--font-mono);
-  font-size: 0.65rem;
-  color: rgba(255, 255, 255, 0.4);
-  letter-spacing: 1px;
-}
-
-.terminal-content {
-  padding: 8px 12px;
-  font-family: var(--font-mono);
-  font-size: 0.8rem;
-  color: #e2e8f0;
-  max-height: 120px;
-  overflow-y: auto;
-  line-height: 1.5;
-}
-
-.terminal-content :deep(pre), 
-.terminal-content :deep(code) {
-  background: transparent;
-  padding: 0;
-  border: none;
-  color: inherit;
-  font-size: inherit;
-}
-
-/* 主文本段落 */
-.trace-main-text {
-  padding: 4px 0;
-}
-
 .agent-turn:not(.developer) .agent-turn-answer {
   padding-bottom: 24px;
-}
-
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
 }
 
 .agent-turn > :deep(.thinking-inline-status) {
@@ -436,5 +159,242 @@ const describeThinking = (content: string) => {
 
 .agent-turn.waiting-only > :deep(.thinking-inline-status) {
   position: static;
+}
+
+/* ══════════════════════════════════════════════
+   开发者模式 — Cursor/Codex 风格
+   ══════════════════════════════════════════════ */
+
+/* 执行过程大折叠 */
+.dev-execution-fold {
+  margin-bottom: 16px;
+}
+.dev-execution-summary {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.dev-execution-fold[open] > .dev-execution-summary {
+  margin-bottom: 8px;
+}
+
+.dev-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 24px;
+}
+.dev-execution-fold .dev-layout {
+  padding-bottom: 0;
+}
+
+/* 状态圆点 */
+.dev-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--accent-green);
+  transition: background 0.2s;
+}
+.dev-status-dot.running {
+  background: var(--accent-yellow);
+  animation: dev-pulse 1.5s ease-in-out infinite;
+}
+
+/* 思考块 */
+.dev-thinking {
+  padding: 6px 0;
+}
+.dev-thinking-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  padding: 2px 0;
+}
+.dev-thinking-summary::-webkit-details-marker {
+  display: none;
+}
+.dev-thinking-label {
+  color: var(--text-muted);
+}
+.dev-thinking.streaming .dev-thinking-label {
+  color: var(--accent-yellow);
+}
+.dev-thinking-body {
+  margin-top: 8px;
+  padding: 10px 14px;
+  border-left: 2px solid var(--glass-border-subtle);
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+.dev-thinking.streaming .dev-thinking-body {
+  border-left-color: var(--accent-yellow);
+}
+
+/* 工具调用 */
+.dev-tool {
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+.dev-tool[open] {
+  background: color-mix(in srgb, var(--surface-strong) calc(30 * var(--agent-message-opacity) / 100), transparent);
+}
+.dev-tool-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  transition: background 0.15s;
+}
+.dev-tool-summary::-webkit-details-marker {
+  display: none;
+}
+.dev-tool-summary:hover {
+  background: color-mix(in srgb, var(--surface-strong) calc(20 * var(--agent-message-opacity) / 100), transparent);
+}
+.dev-tool-name {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-main);
+  background: transparent;
+  padding: 0;
+  border: 0;
+}
+.dev-tool-action {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dev-tool-status {
+  margin-left: auto;
+  font-size: 0.7rem;
+  flex-shrink: 0;
+}
+.dev-tool.completed .dev-tool-status {
+  color: var(--accent-green);
+}
+.dev-tool.running .dev-tool-status {
+  color: var(--accent-yellow);
+}
+.dev-tool.error .dev-tool-status {
+  color: var(--accent-red);
+}
+.dev-tool.error .dev-tool-name {
+  color: var(--accent-red);
+}
+
+/* 工具详情 */
+.dev-tool-body {
+  padding: 0 8px 8px 24px;
+}
+.dev-tool-section {
+  margin-top: 8px;
+}
+.dev-tool-section-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.dev-tool-section.error .dev-tool-section-label {
+  color: var(--accent-red);
+}
+.dev-tool-pre {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  background: color-mix(in srgb, var(--surface-strong) calc(50 * var(--agent-message-opacity) / 100), transparent);
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: 4px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+  color: var(--text-main);
+  margin: 0;
+}
+.dev-tool-section.error .dev-tool-pre {
+  border-color: color-mix(in srgb, var(--accent-red) 30%, transparent);
+  background: color-mix(in srgb, var(--accent-red) calc(5 * var(--agent-message-opacity) / 100), transparent);
+}
+
+/* 执行日志终端 */
+.dev-log {
+  background: rgba(15, 23, 42, calc(var(--agent-message-opacity) / 100));
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  margin: 8px 0;
+}
+.dev-log-header {
+  background: rgba(255, 255, 255, calc(0.04 * var(--agent-message-opacity) / 100));
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.dev-log-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.dev-log-dot.red   { background: #ef4444; }
+.dev-log-dot.yellow { background: #f59e0b; }
+.dev-log-dot.green  { background: #10b981; }
+.dev-log-title {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.35);
+  letter-spacing: 1px;
+}
+.dev-log-body {
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: #e2e8f0;
+  max-height: 160px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+.dev-log-body :deep(pre),
+.dev-log-body :deep(code) {
+  background: transparent;
+  padding: 0;
+  border: none;
+  color: inherit;
+  font-size: inherit;
+}
+
+/* 文本回答 */
+.dev-text {
+  padding: 8px 0;
+  line-height: 1.75;
+}
+
+@keyframes dev-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 </style>

@@ -1,4 +1,4 @@
-//! 会话快照管理器
+﻿//! 会话快照管理器
 //!
 //! 管理单个会话的完整快照生命周期：
 //! - 快照树维护（创建、查询、回滚）
@@ -9,9 +9,12 @@
 use super::snapshot::Branch;
 use super::store::SnapshotStore;
 use super::{
-    AgentSandbox, Conflict, ConflictResolution, FileInfo, Journal, JournalEntry, MergeEngine,
-    MergeResult, Patch, ReplayEngine, SandboxComparison, SandboxManager, Snapshot, SnapshotSummary,
-    SnapshotTree, SnapshotTreeView, Workspace, WorkspaceState,
+    FileInfo, Journal, JournalEntry, Patch, PatchSummary, ReplayEngine, Snapshot,
+    SnapshotSummary, SnapshotTree, SnapshotTreeView, Workspace, WorkspaceState,
+};
+use crate::core::orchestration::multi_agent::{
+    AgentSandbox, Conflict, ConflictResolution, MergeEngine, MergeResult,
+    SandboxComparison, SandboxManager,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -38,7 +41,7 @@ impl SessionSnapshotManager {
     ///
     /// 初始化快照树、日志、沙箱管理器等组件
     pub async fn new(session_id: &str) -> Result<Self, String> {
-        let sandbox_base_dir = crate::core::data_paths::tmp_dir()
+        let sandbox_base_dir = crate::infra::config::data_paths::tmp_dir()
             .join("sandboxes")
             .join(session_id);
         std::fs::create_dir_all(&sandbox_base_dir)
@@ -121,7 +124,7 @@ impl SessionSnapshotManager {
             .save_tree(&tree)
             .map_err(|e| format!("保存树失败: {}", e))?;
         if let Some(index) = trigger_user_memory_index {
-            crate::core::db::upsert_checkpoint_user_message_link_v2(
+            crate::infra::db::upsert_checkpoint_user_message_link_v2(
                 &self.session_id,
                 trigger_user_message_id.as_deref(),
                 index,
@@ -131,7 +134,7 @@ impl SessionSnapshotManager {
             )
             .map_err(|e| format!("写入消息快照关联失败: {}", e))?;
         }
-        crate::core::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
+        crate::infra::config::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
 
         let mut journal = self.journal.write().await;
         let entry = JournalEntry::CreateSnapshot {
@@ -254,7 +257,7 @@ impl SessionSnapshotManager {
         self.store
             .save_tree(&tree)
             .map_err(|e| format!("保存树失败: {}", e))?;
-        crate::core::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
+        crate::infra::config::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
 
         let mut journal = self.journal.write().await;
         let entry = JournalEntry::CreateSnapshot {
@@ -358,16 +361,59 @@ impl SessionSnapshotManager {
         self.store
             .save_tree(&tree)
             .map_err(|e| format!("保存树失败: {}", e))?;
-        crate::core::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
+        crate::infra::config::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
 
         Ok(workspace)
     }
 
-    pub async fn preview_touched_files_to(&self, snapshot_id: &str) -> Result<Vec<String>, String> {
+    pub async fn preview_touched_files_to(&self, snapshot_id: &str) -> Result<Vec<PatchSummary>, String> {
         let tree = self.tree.read().await;
         self.replay_engine
             .preview_touched_files(&tree, snapshot_id)
             .map_err(|e| format!("预览回滚文件失败: {}", e))
+    }
+
+    pub async fn rollback_to_initial_state(&self, target_dir: &PathBuf) -> Result<Workspace, String> {
+        let tree = self.tree.read().await;
+        // 收集每个文件的最早 old_content 作为初始状态
+        let mut initial_files: HashMap<String, String> = HashMap::new();
+        for snapshot in tree.nodes.values() {
+            for patch in &snapshot.patches {
+                let (path, old_content) = match patch {
+                    Patch::UpdateFile { path, old_content, .. } => (path, old_content),
+                    Patch::DeleteFile { .. } => {
+                        continue;
+                    }
+                    Patch::CreateFile { .. } => {
+                        continue;
+                    }
+                    Patch::RenameFile { .. } => {
+                        continue;
+                    }
+                };
+                initial_files.entry(path.clone()).or_insert_with(|| old_content.clone());
+            }
+        }
+        drop(tree);
+
+        // 用每个文件的最早状态构建初始工作区
+        let mut workspace = Workspace::new();
+        workspace.files = initial_files;
+
+        self.replay_engine
+            .rollback_to_initial_state(&workspace, target_dir)
+            .await
+            .map_err(|e| format!("回滚到初始状态失败: {}", e))?;
+
+        // 重置树
+        let mut tree = self.tree.write().await;
+        *tree = SnapshotTree::new(&self.session_id);
+        self.store
+            .delete_all_for_session()
+            .map_err(|e| format!("清理快照记录失败: {}", e))?;
+        crate::infra::config::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
+
+        Ok(workspace)
     }
 
     pub async fn clear_snapshots_for_initial_state(&self) -> Result<(), String> {
@@ -376,7 +422,7 @@ impl SessionSnapshotManager {
         self.store
             .delete_all_for_session()
             .map_err(|e| format!("清理快照记录失败: {}", e))?;
-        crate::core::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
+        crate::infra::config::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
         Ok(())
     }
 
@@ -580,7 +626,7 @@ impl SessionSnapshotManager {
         self.store
             .save_tree(&tree)
             .map_err(|e| format!("保存树失败: {}", e))?;
-        crate::core::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
+        crate::infra::config::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
 
         sandbox_mgr
             .save()
@@ -666,7 +712,7 @@ impl SessionSnapshotManager {
         self.store
             .save_tree(&tree)
             .map_err(|e| format!("保存树失败: {}", e))?;
-        crate::core::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
+        crate::infra::config::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
 
         Ok(snapshot)
     }

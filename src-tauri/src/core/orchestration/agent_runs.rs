@@ -1,4 +1,4 @@
-//! 主Agent执行记录模块 - 运行历史与检查点管理
+﻿//! 主Agent执行记录模块 - 运行历史与检查点管理
 //!
 //! 记录主Agent每次执行的完整生命周期：启动、思考、工具调用、完成/失败。
 //! 支持检查点保存与恢复，用于断点续传和崩溃恢复。
@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 
-use crate::core::models::Message;
+use crate::infra::types::models::Message;
 use crate::core::orchestration::agent_run_repository;
 
 /// 运行记录过期阈值（毫秒），超过此时间未更新视为中断

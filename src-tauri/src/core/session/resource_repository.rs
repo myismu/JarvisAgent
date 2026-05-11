@@ -1,9 +1,9 @@
-//! SQLite-backed storage for session-scoped binary/text resources.
+﻿//! SQLite-backed storage for session-scoped binary/text resources.
 
 use rusqlite::{params, OptionalExtension};
 use std::path::Path;
 
-use crate::core::models::Task;
+use crate::infra::types::models::Task;
 
 fn now_ts() -> u64 {
     std::time::SystemTime::now()
@@ -35,7 +35,7 @@ pub fn save_attachment(
     data: &[u8],
 ) -> Result<(), String> {
     ensure_session_record(session_id)?;
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         conn.execute(
             "INSERT INTO session_attachments(filename, session_id, media_type, data, created_at)
              VALUES(?1, ?2, ?3, ?4, ?5)
@@ -52,7 +52,7 @@ pub fn save_attachment(
 
 pub fn load_attachment(filename: &str) -> Result<Option<(String, Vec<u8>)>, String> {
     let filename = basename(filename);
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         conn.query_row(
             "SELECT media_type, data FROM session_attachments WHERE filename = ?1",
             [filename],
@@ -65,7 +65,7 @@ pub fn load_attachment(filename: &str) -> Result<Option<(String, Vec<u8>)>, Stri
 
 pub fn delete_attachment(filename: &str) -> Result<(), String> {
     let filename = basename(filename);
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         conn.execute(
             "DELETE FROM session_attachments WHERE filename = ?1",
             [filename],
@@ -83,7 +83,7 @@ pub fn save_transcript(
 ) -> Result<String, String> {
     ensure_session_record(session_id)?;
     let id = format!("transcript_{}_{}", session_id, created_at);
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         conn.execute(
             "INSERT INTO session_transcripts(id, session_id, filename, content, created_at)
              VALUES(?1, ?2, ?3, ?4, ?5)
@@ -103,7 +103,7 @@ pub fn save_transcript(
 pub fn save_task(session_id: &str, task: &Task) -> Result<(), String> {
     ensure_session_record(session_id)?;
     let task_json = serde_json::to_string(task).map_err(|e| e.to_string())?;
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         conn.execute(
             "INSERT INTO session_tasks(session_id, task_id, task_json, updated_at)
              VALUES(?1, ?2, ?3, ?4)
@@ -121,7 +121,7 @@ pub fn save_task(session_id: &str, task: &Task) -> Result<(), String> {
 pub fn save_task_with_auto_id(session_id: &str, task: &Task) -> Result<Task, String> {
     ensure_session_record(session_id)?;
     let mut task = task.clone();
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         let next_id: i64 = conn
             .query_row(
                 "SELECT COALESCE(MAX(task_id), 0) + 1 FROM session_tasks WHERE session_id = ?1",
@@ -143,7 +143,7 @@ pub fn save_task_with_auto_id(session_id: &str, task: &Task) -> Result<Task, Str
 }
 
 pub fn load_task(session_id: &str, task_id: i32) -> Result<Option<Task>, String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         conn.query_row(
             "SELECT task_json FROM session_tasks WHERE session_id = ?1 AND task_id = ?2",
             params![session_id, task_id as i64],
@@ -157,7 +157,7 @@ pub fn load_task(session_id: &str, task_id: i32) -> Result<Option<Task>, String>
 }
 
 pub fn list_tasks(session_id: &str) -> Result<Vec<Task>, String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         let mut stmt = conn
             .prepare("SELECT task_json FROM session_tasks WHERE session_id = ?1 ORDER BY task_id")
             .map_err(|e| e.to_string())?;
@@ -175,7 +175,7 @@ pub fn list_tasks(session_id: &str) -> Result<Vec<Task>, String> {
 }
 
 pub fn delete_task(session_id: &str, task_id: i32) -> Result<(), String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         conn.execute(
             "DELETE FROM session_tasks WHERE session_id = ?1 AND task_id = ?2",
             params![session_id, task_id as i64],
@@ -186,7 +186,7 @@ pub fn delete_task(session_id: &str, task_id: i32) -> Result<(), String> {
 }
 
 pub fn max_task_id(session_id: &str) -> Result<i32, String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         conn.query_row(
             "SELECT COALESCE(MAX(task_id), 0) FROM session_tasks WHERE session_id = ?1",
             [session_id],

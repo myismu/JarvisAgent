@@ -153,15 +153,19 @@ impl Workspace {
                 new_content,
                 ..
             } => {
-                let current = self
-                    .files
-                    .get(path)
-                    .ok_or_else(|| PatchError::FileNotFound(path.clone()))?;
-                if current != old_content {
-                    return Err(PatchError::HashMismatch {
-                        expected: Patch::content_hash(old_content),
-                        actual: Patch::content_hash(current),
-                    });
+                match self.files.get(path) {
+                    Some(current) => {
+                        if current != old_content {
+                            return Err(PatchError::HashMismatch {
+                                expected: Patch::content_hash(old_content),
+                                actual: Patch::content_hash(current),
+                            });
+                        }
+                    }
+                    None => {
+                        // 链中第一个补丁，old_content 就是文件初始状态，直接写入
+                        self.files.insert(path.clone(), old_content.clone());
+                    }
                 }
                 self.files.insert(path.clone(), new_content.clone());
                 Ok(())

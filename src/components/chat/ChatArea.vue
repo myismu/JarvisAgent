@@ -9,6 +9,7 @@ import { invoke } from '@tauri-apps/api/core';
 import ConfirmModal from '../common/ConfirmModal.vue';
 import AgentTurn from './AgentTurn.vue';
 import TodoPanel from './TodoPanel.vue';
+import SessionTaskBoard from './SessionTaskBoard.vue';
 import PermissionCard from './PermissionCard.vue';
 import WelcomeScreen from './WelcomeScreen.vue';
 import type { PlanDocument } from '../../types';
@@ -624,6 +625,7 @@ onMounted(() => {
       <span class="working-dir-path" :title="session.workingDirectory || undefined">{{ displayWorkingDir }}</span>
     </div>
     <TodoPanel />
+    <SessionTaskBoard />
     <WelcomeScreen v-if="!chat.parsedHistory || chat.parsedHistory === '<p>Ready for input...</p>\n'" />
     <div class="response-text markdown-body" v-else>
       <div class="history-html" v-html="chat.parsedHistory"></div>
@@ -1009,32 +1011,20 @@ onMounted(() => {
 }
 
 :deep(.user-message .message-content) {
-  background: var(--glass-bg-heavy);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
-  border: 1px solid var(--glass-border);
   color: var(--text-main);
   border-bottom-right-radius: 4px;
-  box-shadow: var(--shadow-sm);
 }
 
 :deep(.user-message .message-content:hover) {
   box-shadow: var(--shadow-md);
-  border-color: var(--accent-blue);
 }
 
 :deep(.agent-message .message-content) {
-  background: var(--glass-bg);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
-  border: 1px solid var(--glass-border);
   border-bottom-left-radius: 4px;
-  box-shadow: var(--shadow-sm);
 }
 
 :deep(.agent-message .message-content:hover) {
-  box-shadow: var(--shadow-md);
-  border-color: var(--glass-border);
+  /* transparent, no hover effect needed */
 }
 
 :deep(.user-message .message-content p) {
@@ -1507,7 +1497,7 @@ onMounted(() => {
 /* 滚动到底部按钮 */
 .scroll-to-bottom-btn {
   position: absolute;
-  bottom: calc(160px); /* 响应式定位：140px 是 response-area 的底部 padding，20px 是额外间距 */
+  bottom: calc(180px); /* 响应式定位：140px 是 response-area 的底部 padding，20px 是额外间距 */
   left: 50%;
   transform: translateX(-50%);
   z-index: 10;

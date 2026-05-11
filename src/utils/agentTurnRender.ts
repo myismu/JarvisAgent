@@ -210,45 +210,43 @@ ${body}
 </details>`;
 }
 
-function renderDeveloperView(snapshot: AgentTurnSnapshot) {
-  // 开发者视图：每个工具独立展示（不按分类合并），全部展开，正文在上面已渲染
-  const parts: string[] = [];
-
-  // 思考过程
-  snapshot.thinkingBlocks.forEach((block) => {
-    const html = renderThinkingBlock(block, true);
-    if (html) parts.push(html);
-  });
-
-  // 工具调用 —— 每条独立，展开显示详情
-  snapshot.toolCalls.forEach((tool) => {
-    parts.push(renderDeveloperToolCall(tool));
-  });
-
-  // 执行日志
-  const logsHtml = renderExecutionLogs(snapshot.logs, true);
-  if (logsHtml) parts.push(logsHtml);
-
-  return parts.length ? `<div class="agent-developer-view">${parts.join("")}</div>` : "";
+function describeThinkingStatic(content: string) {
+  const text = content.replace(/\s+/g, " ").trim();
+  if (!text) return "分析中...";
+  if (/(方案|计划|审批|plan|proposal)/i.test(text)) return "制定方案";
+  if (/(工具|调用|tool|function|参数)/i.test(text)) return "选择工具";
+  if (/(文件|目录|代码|实现|修改|file|code|implement)/i.test(text)) return "分析代码";
+  if (/(错误|失败|修复|bug|error|fix)/i.test(text)) return "定位问题";
+  if (/(测试|验证|build|check|test)/i.test(text)) return "规划验证";
+  const sentence = text.split(/[。.!?？；;]/)[0]?.trim() || text;
+  return sentence.length > 20 ? `${sentence.slice(0, 20)}...` : sentence;
 }
 
-function renderDeveloperToolCall(tool: AgentToolCallView) {
-  const icon = renderToolStatusIcon(tool.status);
+function renderDeveloperToolCall(tool: AgentToolCallView, live: boolean) {
+  const statusLabel = tool.status === "completed" ? "完成" : tool.status === "running" ? "执行中" : tool.status === "error" ? "失败" : "";
   const label = toolActionLabel(tool.name, tool.status, tool);
-  const detailHtml = renderToolDetailHtml(tool);
+  const open = live && (tool.status === "running" || tool.status === "error");
 
-  const logHtml = tool.logs.length
-    ? tool.logs.map((log) => `<div class="agent-tool-log">${renderMarkdown(log)}</div>`).join("")
+  const paramsHtml = tool.inputSummary
+    ? `<div class="dev-tool-section"><div class="dev-tool-section-label">参数</div><pre class="dev-tool-pre">${escapeHtml(tool.inputSummary)}</pre></div>`
     : "";
+  const outputHtml = tool.outputSummary
+    ? `<div class="dev-tool-section"><div class="dev-tool-section-label">输出</div><pre class="dev-tool-pre">${escapeHtml(tool.outputSummary)}</pre></div>`
+    : "";
+  const errorHtml = tool.error
+    ? `<div class="dev-tool-section error"><div class="dev-tool-section-label">错误</div><pre class="dev-tool-pre">${escapeHtml(tool.error)}</pre></div>`
+    : "";
+  const bodyHtml = paramsHtml + outputHtml + errorHtml;
 
-  return `<div class="dev-tool-call ${escapeHtml(tool.status)}">
-<div class="dev-tool-row">
-  ${icon}
-  <code>${escapeHtml(tool.name)}</code>
-  <span class="dev-tool-label">${escapeHtml(label)}</span>
-</div>
-${detailHtml || logHtml ? `<div class="dev-tool-body">${detailHtml}${logHtml}</div>` : ""}
-</div>`;
+  return `<details class="dev-tool ${escapeHtml(tool.status)}" ${open ? "open" : ""}>
+<summary class="dev-tool-summary">
+  <span class="dev-status-dot ${escapeHtml(tool.status)}"></span>
+  <code class="dev-tool-name">${escapeHtml(tool.name)}</code>
+  <span class="dev-tool-action">${escapeHtml(label)}</span>
+  <span class="dev-tool-status">${escapeHtml(statusLabel)}</span>
+</summary>
+${bodyHtml ? `<div class="dev-tool-body">${bodyHtml}</div>` : ""}
+</details>`;
 }
 
 export function renderAgentTurnSnapshot(
@@ -256,11 +254,6 @@ export function renderAgentTurnSnapshot(
   displayMode: AgentDisplayMode,
   live = false,
 ) {
-  const answerHtml = renderTextBlocks(snapshot.textBlocks);
-  const executionHtml =
-    displayMode === "developer"
-      ? renderDeveloperView(snapshot)
-      : renderExecutionPanel(snapshot, displayMode, live);
   const tokenHtml = snapshot.tokens
     ? renderTokenUsage(
         snapshot.tokens.input,
@@ -274,9 +267,133 @@ export function renderAgentTurnSnapshot(
     ? `<div class="token-usage">${escapeHtml(snapshot.notice)}</div>`
     : "";
 
+  // 开发者模式：所有块按时间戳交错渲染
+  if (displayMode === "developer") {
+    return renderDeveloperTimeline(snapshot, tokenHtml, noticeHtml);
+  }
+
+  // 用户模式：execution 面板 + 回答文本
+  const answerHtml = renderTextBlocks(snapshot.textBlocks);
+  const executionHtml = renderExecutionPanel(snapshot, displayMode, live);
+
   return `<div class="agent-turn-render ${displayMode}">
 ${executionHtml}
 ${answerHtml}
+${tokenHtml}
+${noticeHtml}
+</div>`;
+}
+
+const renderer = {
+  text(block: { content: string }) {
+    return renderMarkdown(block.content.trim());
+  },
+  thinking(block: { content: string; status: string }, live: boolean) {
+    const open = live && block.status === "streaming";
+    return `<details class="dev-thinking${open ? " streaming" : ""}" ${open ? "open" : ""}>
+<summary class="dev-thinking-summary">
+  <span class="dev-status-dot${open ? " running" : ""}"></span>
+  <span class="dev-thinking-label">${escapeHtml(describeThinkingStatic(block.content))}</span>
+</summary>
+<div class="dev-thinking-body">${renderMarkdown(block.content)}</div>
+</details>`;
+  },
+  tool(tool: AgentToolCallView, live: boolean) {
+    return renderDeveloperToolCall(tool, live);
+  },
+  log(log: { content: string; loop?: number }) {
+    return `<div class="dev-log">
+<div class="dev-log-header">
+  <span class="dev-log-dot red"></span>
+  <span class="dev-log-dot yellow"></span>
+  <span class="dev-log-dot green"></span>
+  <span class="dev-log-title">输出 #${log.loop || 1}</span>
+</div>
+<div class="dev-log-body">${renderMarkdown(log.content)}</div>
+</div>`;
+  },
+};
+
+/** 统一的开发者时间线条目，直播和历史共用 */
+export interface DevTimelineItem {
+  type: "text" | "thinking" | "tool" | "log";
+  timestamp: number;
+  html: string;
+}
+
+/** 从快照数据构建开发者时间线（按时间戳交错排序），直播和历史共用 */
+export function buildDeveloperTimeline(
+  snapshot: {
+    textBlocks: { content: string; timestamp: number }[];
+    thinkingBlocks: { content: string; status: string; timestamp: number }[];
+    toolCalls: AgentToolCallView[];
+    logs: AgentExecutionLog[];
+  },
+  live: boolean,
+): DevTimelineItem[] {
+  const timeline: DevTimelineItem[] = [];
+
+  snapshot.textBlocks.forEach((block) => {
+    if (!block.content.trim()) return;
+    timeline.push({ type: "text", timestamp: block.timestamp, html: renderer.text(block) });
+  });
+
+  snapshot.thinkingBlocks.forEach((block) => {
+    if (!block.content.trim()) return;
+    timeline.push({ type: "thinking", timestamp: block.timestamp, html: renderer.thinking(block, live) });
+  });
+
+  snapshot.toolCalls.forEach((tool) => {
+    timeline.push({ type: "tool", timestamp: tool.timestamp, html: renderer.tool(tool, live) });
+  });
+
+  snapshot.logs.forEach((log) => {
+    if (!log.content.trim()) return;
+    timeline.push({ type: "log", timestamp: log.timestamp, html: renderer.log(log) });
+  });
+
+  timeline.sort((a, b) => a.timestamp - b.timestamp);
+  return timeline;
+}
+
+function splitTimeline(timeline: DevTimelineItem[]) {
+  // 最后一个 text 块始终在折叠外（最终总结），其余全进折叠
+  let lastTextIdx = -1;
+  for (let i = timeline.length - 1; i >= 0; i--) {
+    if (timeline[i].type === "text") { lastTextIdx = i; break; }
+  }
+  if (lastTextIdx < 0) return { execItems: timeline, finalItems: [] };
+
+  const execItems: DevTimelineItem[] = [];
+  const finalItems: DevTimelineItem[] = [];
+  for (let i = 0; i < timeline.length; i++) {
+    if (i === lastTextIdx) finalItems.push(timeline[i]);
+    else execItems.push(timeline[i]);
+  }
+  return { execItems, finalItems };
+}
+
+function renderDeveloperTimeline(
+  snapshot: AgentTurnSnapshot,
+  tokenHtml: string,
+  noticeHtml: string,
+) {
+  const timeline = buildDeveloperTimeline(snapshot, false);
+  const { execItems, finalItems } = splitTimeline(timeline);
+
+  const execHtml =
+    execItems.length > 0
+      ? `<details class="dev-execution-fold">
+<summary class="dev-execution-summary">执行过程（${execItems.length} 步）</summary>
+<div class="dev-layout">${execItems.map((e) => e.html).join("")}</div>
+</details>`
+      : "";
+
+  const finalHtml = finalItems.map((e) => e.html).join("");
+
+  return `<div class="agent-turn-render ${"developer"}">
+${execHtml}
+${finalHtml}
 ${tokenHtml}
 ${noticeHtml}
 </div>`;

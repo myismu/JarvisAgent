@@ -238,6 +238,28 @@
                   </label>
                   <div class="setting-desc">{{ t('settings.general.compactModeDesc') }}</div>
                 </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.general.agentMessageOpacity') }}</label>
+                  <div class="font-size-control">
+                    <div class="slider-track-wrap">
+                      <input type="range" min="0" max="100" :value="agentMessageOpacity" class="font-size-slider"
+                        :style="{ '--fill-pct': agentMessageOpacity + '%' }"
+                        @input="setAgentMessageOpacity(Number(($event.target as HTMLInputElement).value))" />
+                    </div>
+                    <span class="font-size-value">{{ agentMessageOpacity }}%</span>
+                  </div>
+                </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.general.userMessageOpacity') }}</label>
+                  <div class="font-size-control">
+                    <div class="slider-track-wrap">
+                      <input type="range" min="0" max="100" :value="userMessageOpacity" class="font-size-slider"
+                        :style="{ '--fill-pct': userMessageOpacity + '%' }"
+                        @input="setUserMessageOpacity(Number(($event.target as HTMLInputElement).value))" />
+                    </div>
+                    <span class="font-size-value">{{ userMessageOpacity }}%</span>
+                  </div>
+                </div>
               </div>
 
               <div class="setting-card">
@@ -453,6 +475,10 @@ const agentPanelPosition = computed(() => uiPrefs.agentPanelPosition)
 const setAgentPanelPosition = (val: AgentPanelPosition) => uiPrefs.setAgentPanelPosition(val)
 const compactMode = computed(() => uiPrefs.compactMode)
 const setCompactMode = (val: boolean) => uiPrefs.setCompactMode(val)
+const agentMessageOpacity = computed(() => uiPrefs.agentMessageOpacity)
+const setAgentMessageOpacity = (val: number) => uiPrefs.setAgentMessageOpacity(val)
+const userMessageOpacity = computed(() => uiPrefs.userMessageOpacity)
+const setUserMessageOpacity = (val: number) => uiPrefs.setUserMessageOpacity(val)
 const langMenuOpen = ref(false)
 const localeOptions: Record<string, string> = { 'zh-CN': '简体中文', 'en-US': 'English' }
 const appLocale = uiPrefs.locale

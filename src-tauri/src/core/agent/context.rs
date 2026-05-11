@@ -1,4 +1,4 @@
-//! # context.rs — 上下文构建与消息注入
+﻿//! # context.rs — 上下文构建与消息注入
 //!
 //! 负责构建动态上下文（意图标签、全局记忆、项目结构、技能列表等），
 //! 并将用户消息、图片数据、上下文信息注入到会话历史中。
@@ -10,14 +10,14 @@
 //! - `restore_image_data()`: 恢复历史消息中的图片数据（近期保留，远期折叠）
 //!
 //! ## 依赖
-//! - Internal: `crate::core::session::memory`, `crate::core::models`, `crate::core::tools`
+//! - Internal: `crate::core::session::memory`, `crate::infra::types::models`, `crate::core::tools`
 //! - External: 无
 //!
 //! ## 约束
 //! - 图片数据仅保留最近 2 条消息中的，远期图片会被折叠为文本摘要
 //! - 闲聊模式（CHAT）下会截断工具返回内容以节省 Token
 
-use crate::core::models::*;
+use crate::infra::types::models::*;
 use crate::core::session::{append_message, memory::*};
 use crate::core::tools::*;
 

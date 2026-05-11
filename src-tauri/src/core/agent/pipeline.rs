@@ -1,4 +1,4 @@
-//! # pipeline.rs — Agent 主循环流水线
+﻿//! # pipeline.rs — Agent 主循环流水线
 //!
 //! 实现 Agent 的 5 阶段执行流水线：初始化 → 意图验证 → 上下文构建 → 主循环 → 收尾。
 //! 主循环阶段包含压缩检查、API 调用、流式处理、工具执行等完整 Agent Loop 逻辑。
@@ -7,7 +7,7 @@
 //! - `run_pipeline()`: 主流程入口，依次执行 5 个阶段并返回 `JarvisResult`
 //!
 //! ## 依赖
-//! - Internal: `crate::core::orchestration::agent_runs`, `crate::core::llm::api_client`, `crate::core::config::AgentConfig`, `crate::core::intent`, `crate::core::session::memory`, `crate::core::tools`
+//! - Internal: `crate::core::orchestration::agent_runs`, `crate::infra::llm::api_client`, `crate::infra::config::config::AgentConfig`, `crate::core::intent`, `crate::core::session::memory`, `crate::core::tools`
 //! - External: `eventsource_stream`, `serde_json`, `tauri`, `tokio_util`, `reqwest`
 //!
 //! ## 约束
@@ -21,12 +21,12 @@ use eventsource_stream::Eventsource;
 use serde_json::json;
 use tauri::Emitter;
 
-use crate::core::config::AgentConfig;
-use crate::core::error::AgentError;
-use crate::core::infra::debug_logger;
+use crate::infra::config::config::AgentConfig;
+use crate::infra::types::error::AgentError;
+use crate::infra::debug_logger;
 use crate::core::intent;
-use crate::core::llm::api_client;
-use crate::core::models::*;
+use crate::infra::llm::api_client;
+use crate::infra::types::models::*;
 use crate::core::orchestration::agent_runs;
 use crate::core::session::{append_message, memory::*, pop_message, restore_message};
 use crate::core::tools::*;
@@ -39,14 +39,14 @@ use super::tools_runner::execute_tool_calls;
 struct PipelineState {
     app: tauri::AppHandle,
     sid: String,
-    ctx: Arc<crate::core::state::SessionContext>,
+    ctx: Arc<crate::infra::state::state::SessionContext>,
     cancel_token: tokio_util::sync::CancellationToken,
     request_workspace: Option<std::path::PathBuf>,
     cfg: AgentConfig,
     api_key: String,
     base_url: String,
     model_id: String,
-    api_format: crate::core::llm::api_format::ApiFormat,
+    api_format: crate::infra::llm::api_format::ApiFormat,
     client: reqwest::Client,
     system_prompt: String,
     msg: String,
@@ -105,8 +105,8 @@ impl PipelineState {
         image_base64_list: Option<Vec<String>>,
         _agent_display_mode: Option<String>,
         app: tauri::AppHandle,
-        session_manager: tauri::State<'_, crate::core::state::SessionManager>,
-        config_state: tauri::State<'_, crate::core::config::ConfigState>,
+        session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
+        config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
     ) -> Result<Self, AgentError> {
         println!("\n{}", "=".repeat(60));
         println!(
@@ -164,7 +164,7 @@ impl PipelineState {
 
         // 读取双轴偏好
         let (audience, work_mode) = {
-            let prefs = crate::core::commands::window_state::get_ui_preferences()
+            let prefs = crate::command::window_state::get_ui_preferences()
                 .await
                 .unwrap_or_default();
             let audience = normalize_agent_audience(&prefs.agent_audience).to_string();
@@ -173,7 +173,7 @@ impl PipelineState {
         };
         *ctx.agent_audience.lock().await = audience.clone();
         *ctx.agent_work_mode.lock().await = work_mode.clone();
-        let system_prompt = crate::core::infra::prompts::get_system_prompt(&audience, &work_mode);
+        let system_prompt = crate::core::agent::prompts::get_system_prompt(&audience, &work_mode);
 
         let has_images = image_base64_list
             .as_ref()
@@ -302,7 +302,7 @@ impl PipelineState {
 
         let memory_after_user_message = {
             let mut session = self.ctx.memory.lock().await;
-            if crate::core::commands::session::recover_interrupted_into_memory(
+            if crate::command::session::recover_interrupted_into_memory(
                 &self.sid,
                 &mut session,
             ) {
@@ -361,7 +361,7 @@ impl PipelineState {
             }
 
             // 循环次数确认
-            if self.loop_count >= crate::core::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM {
+            if self.loop_count >= crate::infra::types::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM {
                 let decision = self.request_loop_continuation().await;
                 if !decision {
                     break;
@@ -619,10 +619,10 @@ impl PipelineState {
             self.loop_count += 1;
             self.total_loop_count += 1;
 
-            if self.total_loop_count >= crate::core::constants::MAX_AGENT_LOOP_ABSOLUTE {
+            if self.total_loop_count >= crate::infra::types::constants::MAX_AGENT_LOOP_ABSOLUTE {
                 self.final_answer = format!(
                     "代理执行超过绝对上限 {} 轮，为防止死循环已强制停止。",
-                    crate::core::constants::MAX_AGENT_LOOP_ABSOLUTE
+                    crate::infra::types::constants::MAX_AGENT_LOOP_ABSOLUTE
                 );
                 break;
             }
@@ -689,7 +689,7 @@ impl PipelineState {
                 let sid_clone = self.sid.clone();
                 let memory_clone = memory.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = crate::core::commands::session::auto_name_session(
+                    if let Err(e) = crate::command::session::auto_name_session(
                         app_clone,
                         sid_clone,
                         memory_clone,
@@ -846,7 +846,7 @@ impl PipelineState {
         let _ = self.app.emit(
             "chat-stream",
             json!({
-                "content": format!("\n> **代理执行已达到 {} 回合，正在等待用户确认是否继续...**\n", crate::core::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM),
+                "content": format!("\n> **代理执行已达到 {} 回合，正在等待用户确认是否继续...**\n", crate::infra::types::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM),
                 "sessionId": self.sid,
                 "loopCount": self.total_loop_count + 1
             }),
@@ -856,7 +856,7 @@ impl PipelineState {
             &self.sid,
             &format!(
                 "代理执行已达到 {} 回合，可能任务较为复杂或陷入循环。是否继续执行？",
-                crate::core::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM
+                crate::infra::types::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM
             ),
         )
         .await;
@@ -880,7 +880,7 @@ impl PipelineState {
     /// 注入后台任务完成通知到会话中
     async fn drain_background_notifications(&self) {
         let notifs =
-            crate::core::infra::background::BackgroundManager::drain_notifications(&self.app).await;
+            crate::infra::background::BackgroundManager::drain_notifications(&self.app).await;
         if !notifs.is_empty() {
             let mut notif_text = String::new();
             for n in notifs {
@@ -911,7 +911,7 @@ impl PipelineState {
         let tools = filter_tools_by_work_mode(tools, &work_mode_check);
         let estimate = self.build_context_estimate(&history_snapshot, &tools);
         let tokens = estimate.estimated_tokens;
-        let trigger = crate::core::constants::MAX_TOKENS_COMPACT_TRIGGER;
+        let trigger = crate::infra::types::constants::MAX_TOKENS_COMPACT_TRIGGER;
 
         // >70% 上限：LLM 摘要压缩
         if tokens > trigger * 70 / 100 {
@@ -1019,7 +1019,7 @@ impl PipelineState {
             item_count: usize,
         ) -> ContextSectionSnapshot {
             let chars = content.chars().count();
-            let token_count = crate::core::llm::token_count::count_text(model_id, &content);
+            let token_count = crate::infra::llm::token_count::count_text(model_id, &content);
             ContextSectionSnapshot {
                 key: key.to_string(),
                 label: label.to_string(),
@@ -1183,9 +1183,9 @@ impl PipelineState {
             provider_output_tokens: None,
             provider_total_tokens: None,
             drift_percent: None,
-            max_context_tokens: crate::core::llm::registry::query_capabilities(&self.model_id)
+            max_context_tokens: crate::infra::llm::registry::query_capabilities(&self.model_id)
                 .and_then(|capabilities| capabilities.max_context_tokens),
-            max_output_tokens: crate::core::constants::MAX_TOKENS_CONTEXT,
+            max_output_tokens: crate::infra::types::constants::MAX_TOKENS_CONTEXT,
             message_count: estimate.message_count,
             tool_schema_count: estimate.tool_schema_count,
             tool_call_count: estimate.tool_call_count,
@@ -1205,7 +1205,7 @@ impl PipelineState {
             .ok()
             .flatten()
             .and_then(|snapshot| {
-                crate::core::llm::token_count::drift_percent(
+                crate::infra::llm::token_count::drift_percent(
                     snapshot.estimated_tokens,
                     input_tokens,
                 )
@@ -1233,14 +1233,14 @@ impl PipelineState {
         audience: &str,
         work_mode: &str,
     ) -> (serde_json::Value, bool) {
-        let system_prompt = crate::core::infra::prompts::get_system_prompt(audience, work_mode);
+        let system_prompt = crate::core::agent::prompts::get_system_prompt(audience, work_mode);
         let tools = self.current_tools();
         let tools = filter_tools_by_work_mode(tools, work_mode);
         self.update_context_snapshot(&history_snapshot, &tools);
 
         let mut request_body = AnthropicRequest {
             model: self.model_id.clone(),
-            max_tokens: crate::core::constants::MAX_TOKENS_CONTEXT,
+            max_tokens: crate::infra::types::constants::MAX_TOKENS_CONTEXT,
             system: system_prompt.clone(),
             messages: history_snapshot,
             tools,
@@ -1261,7 +1261,7 @@ impl PipelineState {
         }
 
         if self.api_format.is_openai() {
-            use crate::core::llm::adapters::{
+            use crate::infra::llm::adapters::{
                 should_backfill_deepseek_reasoning_content,
                 translate_messages_to_openai_with_reasoning_backfill, translate_tools_to_openai,
             };
@@ -1278,7 +1278,7 @@ impl PipelineState {
             let openai_tools = translate_tools_to_openai(&request_body.tools);
             let mut openai_req = OpenAIRequest {
                 model: self.model_id.clone(),
-                max_tokens: Some(crate::core::constants::MAX_TOKENS_CONTEXT),
+                max_tokens: Some(crate::infra::types::constants::MAX_TOKENS_CONTEXT),
                 messages: openai_msgs,
                 tools: if openai_tools.is_empty() {
                     None
@@ -1299,7 +1299,7 @@ impl PipelineState {
                 top_p: request_body.top_p,
             };
 
-            crate::core::llm::registry::apply_thinking_for_model(
+            crate::infra::llm::registry::apply_thinking_for_model(
                 &mut openai_req, &self.model_id, self.should_think,
             );
             (serde_json::to_value(openai_req).unwrap(), true)
@@ -1369,8 +1369,8 @@ pub async fn run_pipeline(
     image_base64_list: Option<Vec<String>>,
     agent_display_mode: Option<String>,
     app: tauri::AppHandle,
-    session_manager: tauri::State<'_, crate::core::state::SessionManager>,
-    config_state: tauri::State<'_, crate::core::config::ConfigState>,
+    session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
+    config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
 ) -> Result<JarvisResult, AgentError> {
     // 阶段 1: 初始化
     let mut state = PipelineState::setup(

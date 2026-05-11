@@ -24,6 +24,29 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 const MAX_SHELL_OUTPUT_LEN: usize = 50000;
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
+/// 检测命令是否为文件修改操作，拦截并引导 Agent 使用专用文件工具
+fn is_file_mutation_command(cmd: &str) -> Option<&'static str> {
+    let lower = cmd.to_lowercase().trim().to_string();
+    if lower.contains("set-content") || lower.contains("out-file") || lower.contains("add-content") {
+        return Some("请使用 WriteFile 或 EditFile 工具，不要用 PowerShell cmdlet 写文件");
+    }
+    if lower.contains("remove-item") || lower.contains("del ") || lower.contains("rm ") || lower.contains("rmdir ") {
+        return Some("请使用 DeleteFile 工具，不要用 shell 命令删除文件");
+    }
+    if (lower.contains(">") || lower.contains(">>"))
+        && !lower.contains("git ") && !lower.contains("npm ") && !lower.contains("cargo ") && !lower.contains("pnpm ")
+    {
+        return Some("请使用 WriteFile/EditFile 工具，不要用 shell 重定向写文件");
+    }
+    if lower.contains("move-item") || lower.contains("rename-item") || lower.contains("ren ") || lower.contains("mv ") {
+        return Some("请使用 RenameFile 工具，不要用 shell 命令重命名文件");
+    }
+    if lower.contains("copy-item") || lower.contains("cp ") {
+        return Some("请使用 WriteFile 工具创建文件，不要用 shell 命令复制文件");
+    }
+    None
+}
+
 /// 异步执行 shell 命令（按平台选择 PowerShell 或 bash），返回 (stdout, stderr, exit_code)
 async fn run_shell_async(cmd: &str, exec_dir: &std::path::Path) -> (String, String, i32) {
     let (shell, args) = if cfg!(target_os = "windows") {
@@ -188,6 +211,11 @@ pub async fn run_shell(
     }
 
     // --- 5. 同步模式 → tokio::process::Command + timeout ---
+    // 拦截文件修改类命令，引导 Agent 使用专用文件工具
+    if let Some(hint) = is_file_mutation_command(cmd) {
+        return format!("被拦截：{}\n\nRunCommand 不支持文件写入/删除/重命名操作。请使用以下专用工具：\n- 创建/覆盖文件 → WriteFile\n- 修改文件内容 → EditFile\n- 删除文件 → DeleteFile\n- 重命名/移动文件 → RenameFile", hint);
+    }
+
     let exec_dir = ws.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
     let result = tokio::time::timeout(

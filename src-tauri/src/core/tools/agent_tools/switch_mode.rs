@@ -1,4 +1,4 @@
-//! # switch_mode.rs — 工作模式切换工具
+﻿//! # switch_mode.rs — 工作模式切换工具
 //!
 //! Agent 可在运行中通过此工具切换 WorkMode（chat/edit/plan），
 //! Audience（user/developer）不变。
@@ -12,7 +12,7 @@ pub async fn switch_work_mode(
     input: &serde_json::Value,
     session_id: &str,
 ) -> String {
-    let session_manager = app.state::<crate::core::state::SessionManager>();
+    let session_manager = app.state::<crate::infra::state::state::SessionManager>();
     let ctx = session_manager.get_or_create(session_id).await;
     let current_mode = ctx.agent_work_mode.lock().await.clone();
     let target_mode = input["mode"].as_str().unwrap_or("edit").to_string();

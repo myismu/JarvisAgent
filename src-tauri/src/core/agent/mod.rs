@@ -1,4 +1,4 @@
-//! # mod.rs — Agent 子系统入口模块
+﻿//! # mod.rs — Agent 子系统入口模块
 //!
 //! 组织并暴露 Agent 核心子模块（pipeline、stream、context、tools_runner），
 //! 并定义前端可调用的 `ask_jarvis` Tauri 命令。
@@ -7,17 +7,18 @@
 //! - `ask_jarvis()`: Tauri 命令入口，接收用户消息并触发完整 Agent 流程
 //!
 //! ## 依赖
-//! - Internal: `pipeline::run_pipeline`, `crate::core::error::AgentError`, `crate::core::models::JarvisResult`
+//! - Internal: `pipeline::run_pipeline`, `crate::infra::types::error::AgentError`, `crate::infra::types::models::JarvisResult`
 //! - External: `tauri`
 //!
 //! ## 约束
 //! - `ask_jarvis` 必须在 Tauri 运行时中调用，依赖 `SessionManager` 和 `ConfigState` 状态
 
-use crate::core::error::AgentError;
-use crate::core::models::JarvisResult;
+use crate::infra::types::error::AgentError;
+use crate::infra::types::models::JarvisResult;
 
 mod context;
 mod pipeline;
+pub mod prompts;
 pub mod stream;
 mod tools_runner;
 
@@ -34,8 +35,8 @@ pub async fn ask_jarvis(
     image_base64_list: Option<Vec<String>>,
     agent_display_mode: Option<String>,
     app: tauri::AppHandle,
-    session_manager: tauri::State<'_, crate::core::state::SessionManager>,
-    config_state: tauri::State<'_, crate::core::config::ConfigState>,
+    session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
+    config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
 ) -> Result<JarvisResult, AgentError> {
     run_pipeline(
         session_id,

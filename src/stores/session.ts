@@ -135,6 +135,13 @@ export const useSessionStore = defineStore("session", () => {
     view.jarvisResponse = history && history.trim() ? history : READY_TEXT;
     view.messages = [];
     view.hydrated = true;
+    // 清除 live turn 缓冲区，避免与历史 HTML 重复渲染最后一条 agent 回复
+    view.contentBuffer = "";
+    view.tempBuffer = "";
+    view.toolBuffer = "";
+    view.thinkingBuffer = "";
+    view.streamActive = false;
+    resetAgentCurrentTurn(view);
   }
 
   function appendSessionHistory(sessionId: string | null | undefined, html: string) {

@@ -1,4 +1,4 @@
-//! # stream.rs — SSE 流式响应处理
+﻿//! # stream.rs — SSE 流式响应处理
 //!
 //! 解析 LLM 返回的 SSE 流式响应，支持 Anthropic 和 OpenAI 两种格式。
 //! 实时提取文本、思考过程、工具调用等 ContentBlock，并通过 Tauri 事件推送到前端。
@@ -7,7 +7,7 @@
 //! - `process_stream()`: 解析 SSE 流，返回内容块、工具输入缓冲、token 统计等
 //!
 //! ## 依赖
-//! - Internal: `crate::core::orchestration::agent_runs`, `crate::core::infra::debug_logger::DebugLogger`, `crate::core::models`
+//! - Internal: `crate::core::orchestration::agent_runs`, `crate::infra::debug_logger::DebugLogger`, `crate::infra::types::models`
 //! - External: `futures_util`, `serde_json`, `eventsource_stream`, `tauri`
 //!
 //! ## 约束
@@ -19,8 +19,8 @@ use serde_json::json;
 use std::collections::HashMap;
 use tauri::Emitter;
 
-use crate::core::infra::debug_logger::DebugLogger;
-use crate::core::models::*;
+use crate::infra::debug_logger::DebugLogger;
+use crate::infra::types::models::*;
 use crate::core::orchestration::agent_runs;
 
 /// 流式处理配置：控制事件发送行为

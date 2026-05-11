@@ -1,4 +1,4 @@
-//! # 会话持久化模块 (Session Persistence)
+﻿//! # 会话持久化模块 (Session Persistence)
 //!
 //! 将对话历史持久化到 SQLite，支持多会话管理。
 //! 会话元数据、消息、步骤和计划文档由 `crate::core::session::repository` 统一读写。
@@ -16,7 +16,7 @@ pub mod memory;
 pub mod repository;
 pub mod resource_repository;
 
-use crate::core::models::{
+use crate::infra::types::models::{
     Content, ContentBlock, ImageSource, Message, PlanDocument, SessionMemory,
 };
 use base64::Engine;
@@ -120,7 +120,7 @@ fn extract_title(messages: &[Message]) -> String {
                     blocks
                         .iter()
                         .find_map(|b| {
-                            if let crate::core::models::ContentBlock::Text { text } = b {
+                            if let crate::infra::types::models::ContentBlock::Text { text } = b {
                                 Some(text.clone())
                             } else {
                                 None
@@ -138,9 +138,9 @@ fn extract_title(messages: &[Message]) -> String {
             if !user_input.is_empty() {
                 let title: String = user_input
                     .chars()
-                    .take(crate::core::constants::MAX_SESSION_TITLE_LEN)
+                    .take(crate::infra::types::constants::MAX_SESSION_TITLE_LEN)
                     .collect();
-                return if user_input.chars().count() > crate::core::constants::MAX_SESSION_TITLE_LEN
+                return if user_input.chars().count() > crate::infra::types::constants::MAX_SESSION_TITLE_LEN
                 {
                     format!("{}...", title)
                 } else {
@@ -491,7 +491,7 @@ pub fn session_messages_count(session_id: &str) -> Result<usize, String> {
 }
 
 pub fn save_context_snapshot(
-    snapshot: &crate::core::models::SessionContextSnapshot,
+    snapshot: &crate::infra::types::models::SessionContextSnapshot,
 ) -> Result<(), String> {
     repository::upsert_context_snapshot(snapshot)
 }
@@ -502,7 +502,7 @@ pub fn update_context_snapshot_usage(
     provider_output_tokens: u64,
     provider_total_tokens: u64,
     drift_percent: Option<f32>,
-) -> Result<Option<crate::core::models::SessionContextSnapshot>, String> {
+) -> Result<Option<crate::infra::types::models::SessionContextSnapshot>, String> {
     repository::update_context_snapshot_usage(
         session_id,
         provider_input_tokens,
@@ -514,7 +514,7 @@ pub fn update_context_snapshot_usage(
 
 pub fn get_context_snapshot(
     session_id: &str,
-) -> Result<Option<crate::core::models::SessionContextSnapshot>, String> {
+) -> Result<Option<crate::infra::types::models::SessionContextSnapshot>, String> {
     repository::get_context_snapshot(session_id)
 }
 

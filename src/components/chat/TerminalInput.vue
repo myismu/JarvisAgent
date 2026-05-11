@@ -26,6 +26,14 @@ const isRunning = computed(() =>
   session.runningSessionId != null && session.runningSessionId === session.activeSessionId
 );
 
+const sessionTokenTotal = computed(() => (session.totalInputTokens || 0) + (session.totalOutputTokens || 0));
+
+const formatToken = (n: number): string => {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${n}`;
+};
+
 // WorkMode 状态，与 usePreferences 双向同步 + 监听后端切换
 const showWorkModeMenu = ref(false);
 const currentWorkMode = ref<AgentWorkMode>(uiPrefs.agentWorkMode.value);
@@ -39,6 +47,7 @@ let unlistenConfig: UnlistenFn | null = null;
 let unlistenWorkMode: UnlistenFn | null = null;
 
 const appConfig = ref<any>(null);
+const agentModel = computed(() => appConfig.value?.mainModel || '—');
 const showProfileMenu = ref(false);
 const isThinkingActive = ref(false);
 const canModelThink = ref(true);
@@ -145,6 +154,7 @@ const switchProfile = async (id: string) => {
       try {
         if (session.activeSessionId) {
           const history = await invoke<string>('get_session_history', { sessionId: session.activeSessionId });
+          session.clearSessionBuffers(session.activeSessionId);
           session.replaceSessionHistory(session.activeSessionId, history);
         }
       } catch { /* ignore */ }
@@ -244,6 +254,7 @@ onMounted(async () => {
     try {
       if (session.activeSessionId) {
         const history = await invoke<string>('get_session_history', { sessionId: session.activeSessionId });
+        session.clearSessionBuffers(session.activeSessionId);
         session.replaceSessionHistory(session.activeSessionId, history);
       }
     } catch { /* ignore */ }
@@ -521,7 +532,26 @@ const handleRecallEdit = async () => {
           </svg>
         </button>
       </div>
-      
+
+      <!-- Token 使用统计 -->
+      <div class="token-bar" v-if="sessionTokenTotal > 0">
+        <span class="token-bar-item" title="累计输入 Token">
+          <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none"><polyline points="15 14 20 9 15 4"></polyline><path d="M4 20v-7a4 4 0 0 1 4-4h12"></path></svg>
+          {{ formatToken(session.totalInputTokens) }}
+        </span>
+        <span class="token-bar-sep">·</span>
+        <span class="token-bar-item" title="累计输出 Token">
+          <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none"><polyline points="4 17 9 12 4 7"></polyline><path d="M12 20v-7a4 4 0 0 1 4-4h4"></path></svg>
+          {{ formatToken(session.totalOutputTokens) }}
+        </span>
+        <span class="token-bar-sep">·</span>
+        <span class="token-bar-item token-bar-total" title="累计总消耗">
+          {{ formatToken(sessionTokenTotal) }}
+        </span>
+        <span class="token-bar-spacer"></span>
+        <span class="token-bar-item token-bar-model">{{ agentModel }}</span>
+      </div>
+
     </div>
   </div>
 </template>
@@ -1039,5 +1069,47 @@ const handleRecallEdit = async () => {
 .spinner-icon {
   animation: spin 1s linear infinite;
   opacity: 0.7;
+}
+
+/* ── Token 统计栏 ── */
+.token-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  max-width: 1000px;
+  padding: 4px 16px 0;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.token-bar-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.token-bar-item svg {
+  opacity: 0.5;
+}
+
+.token-bar-sep {
+  opacity: 0.35;
+}
+
+.token-bar-total {
+  font-weight: 650;
+}
+
+.token-bar-spacer {
+  flex: 1;
+}
+
+.token-bar-model {
+  font-style: italic;
+  font-size: 0.6rem;
+  opacity: 0.6;
 }
 </style>

@@ -9,6 +9,7 @@
 
 pub mod agent_run_repository;
 pub mod agent_runs;
+pub mod multi_agent;
 pub mod scheduler;
 pub mod subagents;
 pub mod tasks;

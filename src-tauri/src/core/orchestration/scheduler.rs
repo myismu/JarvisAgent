@@ -1,4 +1,4 @@
-//! 任务调度器模块 - 基于依赖图的流式任务调度
+﻿//! 任务调度器模块 - 基于依赖图的流式任务调度
 //!
 //! 调度算法：
 //! 1. 查找所有就绪任务（无依赖或依赖已满足）
@@ -8,7 +8,7 @@
 
 use tauri::Emitter;
 
-use crate::core::models::TaskStatus;
+use crate::infra::types::models::TaskStatus;
 use crate::core::orchestration::tasks::{TaskManager, TaskUpdateParams};
 use crate::core::tools::{run_subagent, IMPLEMENTATION_AGENT_TYPE};
 
@@ -205,7 +205,7 @@ fn spawn_into_set(
     set: &mut tokio::task::JoinSet<(i32, String, u64, u64)>,
     app: &tauri::AppHandle,
     session_id: &str,
-    task: &crate::core::models::Task,
+    task: &crate::infra::types::models::Task,
     _task_subjects: &std::collections::HashMap<i32, String>,
     completed_results: &std::collections::HashMap<i32, (String, String)>,
 ) {

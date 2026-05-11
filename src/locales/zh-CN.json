@@ -234,6 +234,7 @@
     "noSubAgents": "暂无子 Agent",
     "noBackgroundTasks": "暂无后台任务",
     "dismissTask": "清除此任务",
+    "killTask": "终止进程",
     "clearDoneTasks": "清除已结束任务",
     "noPlans": "暂无计划记录",
     "subAgentStatus": {
@@ -349,6 +350,8 @@
       "codeFontSizeDesc": "代码块中代码的字体大小（10px–20px）。",
       "compactMode": "紧凑模式",
       "compactModeDesc": "减少消息间距和内边距，在屏幕上显示更多内容。",
+      "agentMessageOpacity": "Agent 回复透明度",
+      "userMessageOpacity": "用户消息透明度",
       "behavior": "交互行为",
       "autoScroll": "自动跟随滚动",
       "autoScrollDesc": "Agent 输出新内容时自动滚动到底部。",

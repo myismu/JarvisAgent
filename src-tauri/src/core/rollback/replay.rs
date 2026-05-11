@@ -5,7 +5,7 @@
 //! - 增量重放（基于当前状态的 LCA 差异计算）
 //! - 原子回滚（带 undo 日志的文件级回滚）
 
-use super::patch::Patch;
+use super::patch::{Patch, PatchSummary};
 use super::snapshot::{Snapshot, SnapshotTree, Workspace, WorkspaceState};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -328,18 +328,29 @@ impl ReplayEngine {
         &self,
         tree: &SnapshotTree,
         target_id: &str,
-    ) -> Result<Vec<String>, ReplayError> {
+    ) -> Result<Vec<PatchSummary>, ReplayError> {
         let current_id = tree.current_snapshot_id.clone();
         let (undo_patches, redo_patches) =
             self.collect_transition_patches(tree, &current_id, target_id)?;
-        let mut paths: Vec<String> = undo_patches
+        let mut summaries: Vec<PatchSummary> = undo_patches
             .iter()
             .chain(redo_patches.iter())
-            .flat_map(|patch| patch.touched_paths().into_iter().map(str::to_string))
+            .map(|patch| patch.to_summary())
             .collect();
-        paths.sort();
-        paths.dedup();
-        Ok(paths)
+        summaries.sort_by(|a, b| a.path.cmp(&b.path));
+        summaries.dedup_by(|a, b| a.path == b.path);
+        Ok(summaries)
+    }
+
+    /// 回滚到初始状态（用每个文件的最早内容重建）
+    pub async fn rollback_to_initial_state(
+        &self,
+        workspace: &Workspace,
+        target_dir: &PathBuf,
+    ) -> Result<(), ReplayError> {
+        let atomic_rollback = AtomicFileRollback::prepare(workspace, target_dir)?;
+        atomic_rollback.execute().await?;
+        Ok(())
     }
 
     /// 回滚到指定快照（原子操作）

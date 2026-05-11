@@ -1,4 +1,4 @@
-//! # workspace.rs — 会话工作区与快照记录桥接
+﻿//! # workspace.rs — 会话工作区与快照记录桥接
 //!
 //! 为文件工具提供当前会话工作目录查询，以及写入 rollback 后通知前端的统一入口。
 //!
@@ -9,22 +9,22 @@
 //! - `commit_checkpoint_snapshot()`: 创建加速回放用检查点快照
 //!
 //! ## Dependencies
-//! - Internal: `crate::core::state::SessionManager`, `crate::core::SnapshotRegistry`, `crate::core::rollback`
+//! - Internal: `crate::infra::state::state::SessionManager`, `crate::core::SnapshotRegistry`, `crate::core::rollback`
 //! - External: `tauri`
 
 use tauri::{Emitter, Manager};
 
-use crate::core::models::Message;
+use crate::infra::types::models::Message;
 use crate::core::rollback::Patch;
-use crate::core::state::{PendingSnapshotPatch, SessionManager};
-use crate::core::SnapshotRegistry;
+use crate::infra::state::state::{PendingSnapshotPatch, SessionManager};
+use crate::infra::state::state::SnapshotRegistry;
 
 /// 获取当前会话的工作目录沙箱
 pub(super) async fn get_workspace(
     app: &tauri::AppHandle,
     session_id: &str,
 ) -> Option<std::path::PathBuf> {
-    if let Some(manager) = app.try_state::<crate::core::state::SessionManager>() {
+    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         let ws = ctx.workspace.lock().await.clone();
         return ws;
@@ -34,7 +34,7 @@ pub(super) async fn get_workspace(
 
 /// 查找最后一条"真正的用户输入"消息（跳过工具结果等内部消息）
 fn latest_user_message_index(messages: &[Message]) -> Option<usize> {
-    use crate::core::models::{Content, ContentBlock};
+    use crate::infra::types::models::{Content, ContentBlock};
 
     messages
         .iter()
@@ -65,7 +65,7 @@ fn latest_user_message_index(messages: &[Message]) -> Option<usize> {
 }
 
 async fn active_user_message_index(app: &tauri::AppHandle, session_id: &str) -> Option<usize> {
-    if let Some(manager) = app.try_state::<crate::core::state::SessionManager>() {
+    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         let session = ctx.memory.lock().await;
         return latest_user_message_index(&session.messages);
@@ -113,7 +113,7 @@ async fn persist_pending_patch(
                 .map_or(0, |seq| seq + 1)
         };
 
-        if let Err(err) = crate::core::db::insert_pending_snapshot_patch(
+        if let Err(err) = crate::infra::db::insert_pending_snapshot_patch(
             session_id,
             &run_id,
             seq,
@@ -137,7 +137,7 @@ async fn persist_pending_patch(
 }
 
 fn records_to_pending(
-    records: Vec<crate::core::db::PendingSnapshotPatchRecord>,
+    records: Vec<crate::infra::db::PendingSnapshotPatchRecord>,
 ) -> Vec<PendingSnapshotPatch> {
     records
         .into_iter()
@@ -169,7 +169,7 @@ pub async fn has_pending_patches(app: &tauri::AppHandle, session_id: &str) -> bo
             return true;
         }
     }
-    crate::core::db::list_pending_snapshot_patches(session_id, None)
+    crate::infra::db::list_pending_snapshot_patches(session_id, None)
         .map(|records| !records.is_empty())
         .unwrap_or(false)
 }
@@ -187,7 +187,7 @@ pub async fn commit_pending_snapshot(
         let mut guard = ctx.pending_patches.lock().await;
         if guard.is_empty() {
             let records =
-                crate::core::db::list_pending_snapshot_patches(session_id, run_id.as_deref())
+                crate::infra::db::list_pending_snapshot_patches(session_id, run_id.as_deref())
                     .unwrap_or_else(|err| {
                         eprintln!("[Snapshot] 读取 pending patch 失败: {}", err);
                         Vec::new()
@@ -244,7 +244,7 @@ pub async fn commit_pending_snapshot(
             {
                 Ok(snapshot) => {
                     let snapshot_id = snapshot.id.clone();
-                    if let Err(err) = crate::core::db::delete_pending_snapshot_patches(
+                    if let Err(err) = crate::infra::db::delete_pending_snapshot_patches(
                         session_id,
                         Some(&commit_run_id),
                     ) {

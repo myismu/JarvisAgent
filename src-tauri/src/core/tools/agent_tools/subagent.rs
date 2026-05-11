@@ -1,4 +1,4 @@
-//! # subagent.rs — 子代理执行引擎
+﻿//! # subagent.rs — 子代理执行引擎
 //!
 //! 包含完整的 SSE 流式处理和并行工具执行循环。
 //! 这是工具系统中最复杂的模块，实现了独立 Agent Loop。
@@ -7,7 +7,7 @@
 //! - `run_subagent()`: 子代理执行引擎（独立 Agent Loop，支持只读/读写模式）
 //!
 //! ## 依赖
-//! - Internal: `crate::core::orchestration::subagents`, `crate::core::llm::adapters`
+//! - Internal: `crate::core::orchestration::subagents`, `crate::infra::llm::adapters`
 //! - External: `eventsource_stream`, `futures_util`, `serde_json`, `tauri`
 //!
 //! ## 约束
@@ -22,13 +22,13 @@ use tauri::{Emitter, Manager};
 use super::super::framework::agent_registry::{normalize_agent_type, AgentRegistry};
 use super::super::{handle_tool_call_inner_owned, load_all_skills};
 use crate::core::agent::{process_stream, StreamConfig};
-use crate::core::config::ConfigState;
-use crate::core::infra::prompts::get_subagent_system_prompt;
-use crate::core::llm::adapters::parse_streamed_tool_input;
-use crate::core::models::{AnthropicRequest, Content, ContentBlock, Message};
+use crate::infra::config::config::ConfigState;
+use crate::core::agent::prompts::get_subagent_system_prompt;
+use crate::infra::llm::adapters::parse_streamed_tool_input;
+use crate::infra::types::models::{AnthropicRequest, Content, ContentBlock, Message};
 use crate::core::orchestration::subagents::{SubAgentMonitor, SubAgentPhase};
 use crate::core::session::memory::{compact_messages, estimate_tokens};
-use crate::core::state::{SessionManager, ToolDedupeCacheEntry};
+use crate::infra::state::state::{SessionManager, ToolDedupeCacheEntry};
 use crate::core::tools::file_tools::generate_repo_map;
 use std::collections::HashMap;
 
@@ -342,7 +342,7 @@ async fn extract_subagent_context(
     }
 
     // 4. 当前会话的后台任务状态（避免子Agent重复启动已运行的服务）
-    if let Some(bg_state) = app.try_state::<crate::core::infra::background::BackgroundState>() {
+    if let Some(bg_state) = app.try_state::<crate::infra::background::BackgroundState>() {
         let bg = bg_state.0.lock().await;
         let session_tasks: Vec<_> = bg
             .tasks
@@ -387,7 +387,7 @@ pub async fn run_subagent(
     let agent_type = agent.agent_type.to_string();
     let max_loops = agent
         .max_turns
-        .unwrap_or(crate::core::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM);
+        .unwrap_or(crate::infra::types::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM);
 
     // 注册子代理运行记录
     let run_id = SubAgentMonitor::start_run(
@@ -421,7 +421,7 @@ pub async fn run_subagent(
     // Only a session workspace is treated as a project/work directory.
     // The app process CWD is JarvisAgent's own runtime location and must not
     // leak into non-sandbox subagent context as the user's project.
-    let ws = crate::core::state::effective_workspace(&app, &session_id).await;
+    let ws = crate::infra::state::state::effective_workspace(&app, &session_id).await;
     let cwd = ws
         .as_ref()
         .map(|p| p.to_string_lossy().to_string())
@@ -515,7 +515,7 @@ pub async fn run_subagent(
 
         let mut request_body = AnthropicRequest {
             model: model_id.clone(),
-            max_tokens: crate::core::constants::MAX_TOKENS_CONTEXT,
+            max_tokens: crate::infra::types::constants::MAX_TOKENS_CONTEXT,
             system: system_prompt.clone(),
             messages: messages.clone(),
             tools: tools.clone(),
@@ -527,7 +527,7 @@ pub async fn run_subagent(
         };
 
         let should_think = cfg.enable_thinking.unwrap_or(false);
-        request_body.thinking = Some(crate::core::models::ThinkingConfig {
+        request_body.thinking = Some(crate::infra::types::models::ThinkingConfig {
             r#type: Some(if should_think { "enabled" } else { "disabled" }.to_string()),
             budget_tokens: if should_think { Some(1024) } else { None },
             enable: None,
@@ -537,11 +537,11 @@ pub async fn run_subagent(
         }
 
         let (req_json, is_openai) = if api_format_enum.is_openai() {
-            use crate::core::llm::adapters::{
+            use crate::infra::llm::adapters::{
                 should_backfill_deepseek_reasoning_content,
                 translate_messages_to_openai_with_reasoning_backfill, translate_tools_to_openai,
             };
-            use crate::core::models::OpenAIRequest;
+            use crate::infra::types::models::OpenAIRequest;
             let backfill_reasoning_content = should_backfill_deepseek_reasoning_content(
                 &model_id,
                 &base_url,
@@ -555,7 +555,7 @@ pub async fn run_subagent(
             let openai_tools = translate_tools_to_openai(&request_body.tools);
             let mut openai_req = OpenAIRequest {
                 model: model_id.clone(),
-                max_tokens: Some(crate::core::constants::MAX_TOKENS_CONTEXT),
+                max_tokens: Some(crate::infra::types::constants::MAX_TOKENS_CONTEXT),
                 messages: openai_msgs,
                 tools: if openai_tools.is_empty() {
                     None
@@ -563,7 +563,7 @@ pub async fn run_subagent(
                     Some(openai_tools)
                 },
                 stream: true,
-                stream_options: Some(crate::core::models::StreamOptions {
+                stream_options: Some(crate::infra::types::models::StreamOptions {
                     include_usage: true,
                 }),
                 reasoning_effort: None,
@@ -577,7 +577,7 @@ pub async fn run_subagent(
             };
 
             let should_think = cfg.enable_thinking.unwrap_or(false);
-            crate::core::llm::registry::apply_thinking_for_model(
+            crate::infra::llm::registry::apply_thinking_for_model(
                 &mut openai_req, &model_id, should_think,
             );
             (serde_json::to_value(openai_req).unwrap(), true)
@@ -586,7 +586,7 @@ pub async fn run_subagent(
         };
 
         let request_json_str = serde_json::to_string_pretty(&req_json).unwrap_or_default();
-        let logger = crate::core::infra::debug_logger::DebugLogger::new();
+        let logger = crate::infra::debug_logger::DebugLogger::new();
         logger.log_request_to_terminal("SUB AGENT", loop_count + 1, &request_json_str);
         logger.log_request_to_file("SUB AGENT", loop_count + 1, &request_json_str);
 
@@ -600,7 +600,7 @@ pub async fn run_subagent(
             req = req.header("anthropic-version", "2023-06-01");
         }
 
-        crate::core::llm::api_client::log_model_request(&model_id, &base_url, "子agent");
+        crate::infra::llm::api_client::log_model_request(&model_id, &base_url, "子agent");
 
         let response_res = req.json(&req_json).send().await;
 
@@ -961,10 +961,10 @@ pub async fn run_subagent(
             });
             // Token > 70% 上限时触发 LLM 摘要压缩
             let estimated = estimate_tokens(&messages);
-            if estimated > crate::core::constants::MAX_TOKENS_COMPACT_TRIGGER * 70 / 100 {
+            if estimated > crate::infra::types::constants::MAX_TOKENS_COMPACT_TRIGGER * 70 / 100 {
                 println!(
                     "[SUBAGENT] 上下文估算值 > {} ({})，触发自动压缩",
-                    crate::core::constants::MAX_TOKENS_COMPACT_TRIGGER,
+                    crate::infra::types::constants::MAX_TOKENS_COMPACT_TRIGGER,
                     estimated
                 );
                 let _ = compact_messages(

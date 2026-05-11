@@ -1,4 +1,4 @@
-//! # repository.rs — 会话 SQLite 仓储
+﻿//! # repository.rs — 会话 SQLite 仓储
 //!
 //! 封装会话元数据、完整记忆、消息展开索引和列表筛选的 SQLite 读写。
 //!
@@ -11,13 +11,13 @@
 //! - `set_last_active_session_id()`: 持久化最后活跃会话
 //!
 //! ## Dependencies
-//! - Internal: `crate::core::db`, `crate::core::models`
+//! - Internal: `crate::infra::db`, `crate::infra::types::models`
 //! - External: `rusqlite`, `serde`
 
 use rusqlite::{params, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 
-use crate::core::models::{Message, SessionContextSnapshot, SessionMemory};
+use crate::infra::types::models::{Message, SessionContextSnapshot, SessionMemory};
 use crate::core::session::SessionMeta;
 
 #[derive(Debug, Clone)]
@@ -58,7 +58,7 @@ pub struct SessionListFilter {
 }
 
 pub fn upsert_session(meta: &SessionMeta, memory: &SessionMemory) -> Result<(), String> {
-    crate::core::db::with_transaction(|tx| {
+    crate::infra::db::with_transaction(|tx| {
         tx.execute(
             "INSERT INTO sessions(
                 id, title, created_at, updated_at, message_count, is_smart_named,
@@ -111,7 +111,7 @@ pub fn append_or_upsert_session_messages(
     source: &str,
     now: u64,
 ) -> Result<(), String> {
-    crate::core::db::with_transaction(|tx| {
+    crate::infra::db::with_transaction(|tx| {
         let mut next_seq: i64 = tx
             .query_row(
                 "SELECT COALESCE(MAX(seq), -1) + 1 FROM session_messages WHERE session_id = ?1",
@@ -209,7 +209,7 @@ pub fn append_or_upsert_session_messages(
 }
 
 pub fn list_visible_session_messages(session_id: &str) -> Result<Vec<StoredSessionMessage>, String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT message_id, seq, role, content_json, created_at, updated_at, recalled_at,
@@ -237,7 +237,7 @@ pub fn find_session_message_by_id(
     session_id: &str,
     message_id: &str,
 ) -> Result<Option<StoredSessionMessage>, String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         conn.query_row(
             "SELECT message_id, seq, role, content_json, created_at, updated_at, recalled_at,
                     hidden_at, source, turn_id
@@ -258,7 +258,7 @@ pub fn hide_session_messages_from_seq(
     seq: usize,
     recalled: bool,
 ) -> Result<(), String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -284,7 +284,7 @@ pub fn hide_session_messages_from_seq(
 }
 
 pub fn delete_session_messages_from_seq(session_id: &str, seq: usize) -> Result<(), String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         conn.execute(
             "DELETE FROM session_messages WHERE session_id = ?1 AND seq >= ?2",
             params![session_id, seq as i64],
@@ -297,7 +297,7 @@ pub fn delete_session_messages_from_seq(session_id: &str, seq: usize) -> Result<
 /// 隐藏 session_messages 中已不在 memory.message_ids 里的孤儿行
 /// 压缩后 message_ids 被替换为新ID，旧行需要标记 hidden 以保持两表一致
 pub fn hide_orphan_session_messages(session_id: &str, alive_message_ids: &[String]) -> Result<usize, String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -336,7 +336,7 @@ pub fn hide_orphan_session_messages(session_id: &str, alive_message_ids: &[Strin
 }
 
 pub fn session_messages_count(session_id: &str) -> Result<usize, String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM session_messages WHERE session_id = ?1",
@@ -373,7 +373,7 @@ fn stored_session_message_from_row(row: &Row<'_>) -> rusqlite::Result<StoredSess
 }
 
 pub fn load_session(id: &str) -> Result<SessionMemory, String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         let json = conn
             .query_row(
                 "SELECT memory_json FROM session_memory
@@ -431,7 +431,7 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
 }
 
 pub fn upsert_context_snapshot(snapshot: &SessionContextSnapshot) -> Result<(), String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         let snapshot_json = serde_json::to_string(snapshot).map_err(|e| e.to_string())?;
         conn.execute(
             "INSERT INTO session_context_snapshots(session_id, snapshot_json, updated_at)
@@ -457,7 +457,7 @@ pub fn update_context_snapshot_usage(
     provider_total_tokens: u64,
     drift_percent: Option<f32>,
 ) -> Result<Option<SessionContextSnapshot>, String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         let snapshot_json = conn
             .query_row(
                 "SELECT snapshot_json FROM session_context_snapshots
@@ -494,7 +494,7 @@ pub fn update_context_snapshot_usage(
 }
 
 pub fn get_context_snapshot(session_id: &str) -> Result<Option<SessionContextSnapshot>, String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         conn.query_row(
             "SELECT snapshot_json FROM session_context_snapshots
              JOIN sessions ON sessions.id = session_context_snapshots.session_id
@@ -510,7 +510,7 @@ pub fn get_context_snapshot(session_id: &str) -> Result<Option<SessionContextSna
 }
 
 pub fn get_session_meta(id: &str) -> Result<SessionMeta, String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         conn.query_row(
             "SELECT id, title, created_at, updated_at, message_count, is_smart_named,
                     profile_id, total_input_tokens, total_output_tokens, title_source, working_directory
@@ -525,7 +525,7 @@ pub fn get_session_meta(id: &str) -> Result<SessionMeta, String> {
 }
 
 pub fn list_sessions(filter: Option<&SessionListFilter>) -> Result<Vec<SessionMeta>, String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         let mut sessions = Vec::new();
         let mut stmt = conn
             .prepare(
@@ -556,7 +556,7 @@ pub fn list_sessions(filter: Option<&SessionListFilter>) -> Result<Vec<SessionMe
 }
 
 pub fn ensure_session_exists(id: &str, title: Option<&str>, created_at: u64) -> Result<(), String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         let existing: Option<String> = conn
             .query_row(
                 "SELECT id FROM sessions WHERE id = ?1 AND deleted_at IS NULL",
@@ -593,7 +593,7 @@ pub fn ensure_session_exists(id: &str, title: Option<&str>, created_at: u64) -> 
 }
 
 pub fn delete_session(id: &str) -> Result<(), String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         let changed = conn
             .execute("DELETE FROM sessions WHERE id = ?1", [id])
             .map_err(|e| e.to_string())?;
@@ -610,7 +610,7 @@ pub fn rename_session(
     is_smart_named: bool,
     title_source: &str,
 ) -> Result<SessionMeta, String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         let changed = conn
             .execute(
                 "UPDATE sessions SET title = ?2, is_smart_named = ?3, title_source = ?4 WHERE id = ?1 AND deleted_at IS NULL",
@@ -632,7 +632,7 @@ pub fn rename_session(
 }
 
 pub fn update_session_profile(id: &str, profile_id: &str) -> Result<(), String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         let changed = conn
             .execute(
                 "UPDATE sessions SET profile_id = ?2 WHERE id = ?1 AND deleted_at IS NULL",
@@ -647,7 +647,7 @@ pub fn update_session_profile(id: &str, profile_id: &str) -> Result<(), String> 
 }
 
 pub fn get_last_active_session_id() -> Option<String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         conn.query_row(
             "SELECT value FROM app_state WHERE key = 'last_active_session_id'",
             [],
@@ -661,7 +661,7 @@ pub fn get_last_active_session_id() -> Option<String> {
 }
 
 pub fn set_last_active_session_id(id: &str) -> Result<(), String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         conn.execute(
             "INSERT INTO app_state(key, value) VALUES('last_active_session_id', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",

@@ -1,4 +1,4 @@
-use crate::core::models::{TodoItem, TodoStatus};
+﻿use crate::infra::types::models::{TodoItem, TodoStatus};
 use crate::core::tools::framework::registry::ToolDef;
 use serde_json::json;
 use tauri::{Emitter, Manager};
@@ -151,7 +151,7 @@ pub async fn todo_write(
             .all(|todo| todo.status == TodoStatus::Completed);
     let visible_todos = if all_done { Vec::new() } else { todos.clone() };
 
-    let old_todos = if let Some(manager) = app.try_state::<crate::core::state::SessionManager>() {
+    let old_todos = if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         let mut state = ctx.todos.lock().await;
         let old = state.clone();

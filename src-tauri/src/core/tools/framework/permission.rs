@@ -1,4 +1,4 @@
-//! # permission.rs — 权限管理模块
+﻿//! # permission.rs — 权限管理模块
 //!
 //! 路径安全检查、沙箱边界校验、用户权限确认（通过 oneshot channel 阻塞等待前端决策）。
 //!
@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tauri::{Emitter, Manager};
 use tokio::sync::oneshot;
 
-use crate::core::state::SessionManager;
+use crate::infra::state::state::SessionManager;
 
 pub fn is_path_safe(path_str: &str) -> bool {
     !path_str.contains("..")

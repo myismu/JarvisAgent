@@ -1,10 +1,10 @@
-//! 任务管理器 - 任务生命周期与依赖关系管理
+﻿//! 任务管理器 - 任务生命周期与依赖关系管理
 //!
 //! 提供任务的创建、查询、更新、删除等 CRUD 操作。
 //! 支持任务间依赖关系（blocked_by/blocks）和级联解锁机制。
 //! 任务以 JSON 文件形式持久化存储。
 
-use crate::core::models::{Task, TaskStatus};
+use crate::infra::types::models::{Task, TaskStatus};
 use crate::core::session::resource_repository;
 
 /// 任务管理器 - 基于 SQLite 的任务持久化

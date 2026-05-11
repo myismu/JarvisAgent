@@ -635,9 +635,7 @@ export function useAgentEvents() {
         };
       }
       view.hydrated = true;
-      if (view.status !== "RUNNING") {
-        await refreshSessionHistory(sessionId);
-      }
+      await refreshSessionHistory(sessionId);
       syncActiveSessionView(sessionId, false);
     });
 

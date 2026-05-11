@@ -1,4 +1,4 @@
-//! SQLite-backed operation journal for snapshot lifecycle events.
+﻿//! SQLite-backed operation journal for snapshot lifecycle events.
 
 use super::snapshot::SnapshotTree;
 use rusqlite::{params, OptionalExtension};
@@ -64,7 +64,7 @@ fn ensure_session_record(session_id: &str) -> Result<(), String> {
 
 impl Journal {
     pub fn open(session_id: &str) -> Result<Self, JournalError> {
-        let sequence = crate::core::db::with_connection(|conn| {
+        let sequence = crate::infra::db::with_connection(|conn| {
             conn.query_row(
                 "SELECT COUNT(*) FROM snapshot_journal WHERE session_id = ?1",
                 [session_id],
@@ -85,7 +85,7 @@ impl Journal {
     pub fn append(&mut self, entry: &JournalEntry) -> Result<(), JournalError> {
         ensure_session_record(&self.session_id).map_err(JournalError::DbError)?;
         let json = serde_json::to_string(entry)?;
-        crate::core::db::with_connection(|conn| {
+        crate::infra::db::with_connection(|conn| {
             conn.execute(
                 "INSERT INTO snapshot_journal(session_id, event_json, created_at)
                  VALUES(?1, ?2, ?3)",
@@ -100,7 +100,7 @@ impl Journal {
     }
 
     pub fn replay(&self) -> Result<Vec<JournalEntry>, JournalError> {
-        crate::core::db::with_connection(|conn| {
+        crate::infra::db::with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT event_json FROM snapshot_journal WHERE session_id = ?1 ORDER BY id",
@@ -126,7 +126,7 @@ impl Journal {
 
     pub fn compact(&mut self, tree: &SnapshotTree) -> Result<(), JournalError> {
         ensure_session_record(&self.session_id).map_err(JournalError::DbError)?;
-        crate::core::db::with_transaction(|tx| {
+        crate::infra::db::with_transaction(|tx| {
             tx.execute(
                 "DELETE FROM snapshot_journal WHERE session_id = ?1",
                 [self.session_id.as_str()],

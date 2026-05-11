@@ -1,4 +1,4 @@
-//! # skill.rs — 技能加载工具
+﻿//! # skill.rs — 技能加载工具
 //!
 //! 按名称从 skills 目录加载技能知识文件。
 //!
@@ -15,9 +15,9 @@ pub async fn load_skill(
     session_id: &str,
 ) -> String {
     let skill_name = input["name"].as_str().unwrap_or("");
-    if let Some(manager) = app.try_state::<crate::core::state::SessionManager>() {
+    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
-        let scope = crate::core::state::active_run_scope_key(app, session_id).await;
+        let scope = crate::infra::state::state::active_run_scope_key(app, session_id).await;
         let key = format!("{}:{}", scope, skill_name.to_ascii_lowercase());
         let mut cache = ctx.dedupe_cache.lock().await;
         let state = cache.entry("skill".to_string()).or_default();
@@ -30,7 +30,7 @@ pub async fn load_skill(
         }
         state.insert(
             key,
-            crate::core::state::ToolDedupeCacheEntry {
+            crate::infra::state::state::ToolDedupeCacheEntry {
                 display: skill_name.to_string(),
                 suppressed_count: 0,
                 running: false,

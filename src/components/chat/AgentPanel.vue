@@ -94,6 +94,15 @@ const formatDuration = (timestamp?: number | null): string => {
   return `${Math.floor(minutes / 60)}h`;
 };
 
+const formatCountdown = (run: { status: string; startedAt: number; timeoutSecs: number }): string => {
+  if (run.status !== 'running') return '';
+  void elapsed.value; // 每 1s 刷新，利用现有 timer
+  const deadline = run.startedAt + run.timeoutSecs * 1000;
+  const remaining = Math.max(0, Math.floor((deadline - Date.now()) / 1000));
+  if (remaining > 3600) return `${Math.floor(remaining / 3600)}h`;
+  return `${Math.floor(remaining / 60)}:${(remaining % 60).toString().padStart(2, '0')}`;
+};
+
 const formatTokens = (tokens: number): string => {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}m`;
   if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`;
@@ -181,6 +190,18 @@ const dismissTask = async (taskId: string) => {
     backgroundTasks.value = backgroundTasks.value.filter((t) => t.id !== taskId);
   } catch (err) {
     console.error('清理后台任务失败:', err);
+  } finally {
+    dismissingTasks.value.delete(taskId);
+  }
+};
+
+const killTask = async (taskId: string) => {
+  dismissingTasks.value.add(taskId);
+  try {
+    await invoke('kill_background_task', { taskId });
+    await refreshBackgroundTasks();
+  } catch (err) {
+    console.error('终止后台任务失败:', err);
   } finally {
     dismissingTasks.value.delete(taskId);
   }
@@ -315,9 +336,10 @@ const backgroundStatusLabel = (status: string): string => {
                   <strong>{{ run.label || run.runId }}</strong>
                   <span class="agent-type-badge" :title="`Agent: ${run.agentType}`">{{ run.agentType }}</span>
                   <span v-if="run.readOnly" class="readonly-badge" :title="t('monitor.readOnly')">R</span>
-                  <span class="phase-badge" :class="phaseClass(run.phase)">{{ phaseLabel(run.phase) }}</span>
+                  <span v-if="run.status === 'running'" class="phase-badge" :class="phaseClass(run.phase)">{{ phaseLabel(run.phase) }}</span>
                   <span class="status-label">{{ subAgentStatusLabel(run.status) }}</span>
                   <span class="loop-badge">{{ run.loopCount }}/{{ run.maxLoops }}</span>
+                  <span v-if="run.status === 'running'" class="countdown-badge">&#9201; {{ formatCountdown(run) }}</span>
                   <span class="expand-arrow">{{ expandedSubAgents.has(run.runId) ? '▾' : '▸' }}</span>
                 </div>
 
@@ -412,6 +434,13 @@ const backgroundStatusLabel = (status: string): string => {
                   <span class="status-dot"></span>
                   <strong>{{ backgroundTaskTitle(task) }}</strong>
                   <span>{{ backgroundStatusLabel(task.status) }}</span>
+                  <button
+                    v-if="task.status === 'running'"
+                    class="kill-task-btn"
+                    :disabled="dismissingTasks.has(task.id)"
+                    @click="killTask(task.id)"
+                    :title="t('monitor.killTask')"
+                  >&#9209;</button>
                   <button
                     class="dismiss-task-btn"
                     :disabled="dismissingTasks.has(task.id)"
@@ -714,9 +743,35 @@ const backgroundStatusLabel = (status: string): string => {
   color: var(--text-main);
 }
 
-.dismiss-task-btn:disabled {
+.dismiss-task-btn:disabled,
+.kill-task-btn:disabled {
   opacity: 0.3;
   cursor: not-allowed;
+}
+
+.kill-task-btn {
+  flex-shrink: 0;
+  margin-left: 2px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--accent-red);
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.monitor-item:hover .kill-task-btn {
+  opacity: 1;
+}
+
+.kill-task-btn:hover {
+  background: color-mix(in srgb, var(--accent-red) 16%, transparent);
 }
 
 .clear-all-tasks-btn {
@@ -863,6 +918,14 @@ const backgroundStatusLabel = (status: string): string => {
 .loop-badge {
   flex-shrink: 0;
   color: var(--text-muted);
+  font-size: 0.6rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.countdown-badge {
+  flex-shrink: 0;
+  color: var(--accent-blue);
   font-size: 0.6rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;

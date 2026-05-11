@@ -1,4 +1,4 @@
-//! # 记忆压缩与上下文管理 (Memory & Context Compaction)
+﻿//! # 记忆压缩与上下文管理 (Memory & Context Compaction)
 //!
 //! 管理对话上下文长度和持久化记忆：
 //!
@@ -6,10 +6,10 @@
 //! 2. **上下文压缩** — 单级 LLM 摘要：接近 token 上限时调模型压缩历史为一段摘要
 //! 3. **记忆系统** — 全局记忆的读写，由记忆 Agent 自动维护
 
-use crate::core::error::MemoryError;
-use crate::core::infra::prompts::*;
-use crate::core::llm::api_format::ApiFormat;
-use crate::core::models::*;
+use crate::infra::types::error::MemoryError;
+use crate::core::agent::prompts::*;
+use crate::infra::llm::api_format::ApiFormat;
+use crate::infra::types::models::*;
 use reqwest::header::CONTENT_TYPE;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -52,7 +52,7 @@ pub fn estimate_tokens(messages: &[Message]) -> usize {
     }
 
     // cl100k_base 是所有主流模型共用分词器（GPT-4/3.5/Claude），模型名仅用于查表
-    crate::core::llm::token_count::count_text("gpt-4", &text_buf).tokens + total_image_estimate
+    crate::infra::llm::token_count::count_text("gpt-4", &text_buf).tokens + total_image_estimate
 }
 
 /// 将对话记录保存为 JSONL 转录文件（用于压缩前的备份）
@@ -144,8 +144,8 @@ async fn call_summarize_llm(
 
     let (req_json, is_openai) = match api_format {
         ApiFormat::OpenAI => {
-            use crate::core::llm::adapters::translate_messages_to_openai;
-            use crate::core::models::OpenAIRequest;
+            use crate::infra::llm::adapters::translate_messages_to_openai;
+            use crate::infra::types::models::OpenAIRequest;
             let openai_msgs =
                 translate_messages_to_openai(&request_body.system, &request_body.messages);
             let openai_req = OpenAIRequest {
@@ -179,7 +179,7 @@ async fn call_summarize_llm(
         req = req.header("anthropic-version", "2023-06-01");
     }
 
-    crate::core::llm::api_client::log_model_request(model_id, base_url, "摘要压缩");
+    crate::infra::llm::api_client::log_model_request(model_id, base_url, "摘要压缩");
 
     let response = req.json(&req_json).send().await.map_err(|e| {
         MemoryError::CompactionFailed(format!("compact request failed: {}", e))
@@ -309,8 +309,8 @@ pub async fn auto_compact_summary(
     let is_openai = api_format.is_openai();
     let (req_json, _) = match api_format {
         ApiFormat::OpenAI => {
-            use crate::core::llm::adapters::translate_messages_to_openai;
-            use crate::core::models::OpenAIRequest;
+            use crate::infra::llm::adapters::translate_messages_to_openai;
+            use crate::infra::types::models::OpenAIRequest;
             let openai_msgs =
                 translate_messages_to_openai(&request_body.system, &request_body.messages);
             let openai_req = OpenAIRequest {
@@ -344,7 +344,7 @@ pub async fn auto_compact_summary(
         req = req.header("anthropic-version", "2023-06-01");
     }
 
-    crate::core::llm::api_client::log_model_request(model_id, base_url, "记忆agent");
+    crate::infra::llm::api_client::log_model_request(model_id, base_url, "记忆agent");
 
     let response = req
         .json(&req_json)
@@ -390,7 +390,7 @@ pub async fn auto_compact_summary(
 
 /// 全局记忆文件路径（agent_home/global/global_memory.md）
 pub fn get_global_memory_path() -> PathBuf {
-    crate::core::data_paths::global_memory_path()
+    crate::infra::config::data_paths::global_memory_path()
 }
 
 /// 读取记忆文件，不存在则创建带默认头部的空文件
@@ -409,7 +409,7 @@ fn create_memory_file(path: &Path, header: &str) -> String {
     initial
 }
 
-use crate::core::config::AgentConfig;
+use crate::infra::config::config::AgentConfig;
 
 /// 记忆 Agent：根据最新对话自动更新全局/项目记忆文件
 pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config: AgentConfig) {
@@ -445,7 +445,7 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
     let client = reqwest::Client::new();
     let request_body = AnthropicRequest {
         model: model_id.clone(),
-        max_tokens: crate::core::constants::MAX_TOKENS_CONTEXT,
+        max_tokens: crate::infra::types::constants::MAX_TOKENS_CONTEXT,
         system: MEMORY_AGENT_SYSTEM.to_string(),
         messages: vec![Message::User {
             content: Content::Single(user_content),
@@ -462,16 +462,16 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
     let is_openai = api_format.is_openai();
     let (req_json, _) = match api_format {
         ApiFormat::OpenAI => {
-            use crate::core::llm::adapters::{
+            use crate::infra::llm::adapters::{
                 translate_messages_to_openai, translate_tools_to_openai,
             };
-            use crate::core::models::OpenAIRequest;
+            use crate::infra::types::models::OpenAIRequest;
             let openai_msgs =
                 translate_messages_to_openai(&request_body.system, &request_body.messages);
             let openai_tools = translate_tools_to_openai(&request_body.tools);
             let openai_req = OpenAIRequest {
                 model: model_id.clone(),
-                max_tokens: Some(crate::core::constants::MAX_TOKENS_CONTEXT),
+                max_tokens: Some(crate::infra::types::constants::MAX_TOKENS_CONTEXT),
                 messages: openai_msgs,
                 tools: if openai_tools.is_empty() {
                     None
@@ -495,7 +495,7 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
     };
 
     let request_json_str = serde_json::to_string_pretty(&req_json).unwrap_or_default();
-    let logger = crate::core::infra::debug_logger::DebugLogger::new();
+    let logger = crate::infra::debug_logger::DebugLogger::new();
     logger.log_request_to_terminal("MEMORY AGENT", 1, &request_json_str);
 
     let (auth_header, auth_value) = api_format.auth_header(&api_key);
@@ -508,7 +508,7 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
         req = req.header("anthropic-version", "2023-06-01");
     }
 
-    crate::core::llm::api_client::log_model_request(&model_id, &base_url, "记忆agent");
+    crate::infra::llm::api_client::log_model_request(&model_id, &base_url, "记忆agent");
 
     if let Ok(response) = req.json(&req_json).send().await {
         if let Ok(body) = response.json::<serde_json::Value>().await {

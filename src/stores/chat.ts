@@ -18,28 +18,60 @@ import {
 
 /** 从 Tauri 序列化的 Rust 枚举错误中提取人类可读消息 */
 function extractErrorMessage(err: unknown): string {
-  if (typeof err === "string") return err;
+  if (typeof err === "string") {
+    const parsed = tryParseApiErrorBody(err);
+    if (parsed) return parsed;
+    return err;
+  }
   if (err instanceof Error) return err.message;
   if (typeof err !== "object" || err === null) return String(err);
   const obj = err as Record<string, unknown>;
-  // Rust enum 外部标签: {"VariantName": inner_value}
   const keys = Object.keys(obj);
   for (const key of keys) {
     const val = obj[key];
-    if (typeof val === "string") return `${key}: ${val}`;
+    if (typeof val === "string") {
+      const parsed = tryParseApiErrorBody(val);
+      return parsed || `${key}: ${val}`;
+    }
     if (typeof val === "object" && val !== null) {
       const inner = val as Record<string, unknown>;
-      // ApiError HttpError: {"status": 400, "body": "..."}
-      if (typeof inner.body === "string" && inner.body.length > 0) return inner.body as string;
-      // RetriesExhausted: {"max_retries": 3, "last_error": "..."}
+      if (typeof inner.body === "string" && inner.body.length > 0) {
+        const parsed = tryParseApiErrorBody(inner.body);
+        return parsed || (inner.body as string);
+      }
       if (typeof inner.last_error === "string") return inner.last_error as string;
-      // 递归嵌套变体: {"Api": {"HttpError": {...}}}
       const nested = extractErrorMessage(val);
       if (nested && nested !== "[object Object]") return nested;
     }
     return `${key}: ${JSON.stringify(val)}`;
   }
   return JSON.stringify(err);
+}
+
+function tryParseApiErrorBody(body: string): string | null {
+  try {
+    const json = JSON.parse(body);
+    if (!json || typeof json !== "object") return null;
+    const error = json.error || json;
+    if (typeof error !== "object" || error === null) return null;
+    const message = (error as any).message || "";
+    const type = (error as any).type || "";
+    const code = (error as any).code || "";
+
+    if (type === "insufficient_balance" || /balance|quota|计费|余额|欠费/i.test(message)) {
+      return `账户余额不足，请前往 API 平台充值后重试。${code ? ` (HTTP ${code})` : ""}`;
+    }
+    if (/rate.?limit|频率|限流|too many requests/i.test(message)) {
+      return `API 请求频率过高，请稍后重试。${code ? ` (HTTP ${code})` : ""}`;
+    }
+    if (/auth|unauthorized|key|token|权限|鉴权/i.test(message)) {
+      return `API Key 无效或已过期，请在设置中检查密钥配置。${code ? ` (HTTP ${code})` : ""}`;
+    }
+    if (message) return message;
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function buildFinalResponseParts(
@@ -581,28 +613,23 @@ export const useChatStore = defineStore("chat", () => {
         },
       );
 
-      // 先重置状态和清除缓冲区，确保”实时”渲染区域在历史记录更新前消失
+      // 标记流结束，但暂不清空缓冲区——让 live AgentTurn 保持可见，
+      // 等后端历史加载完成再替换，避免 DOM 空窗期导致的闪烁
       requestView.status = res.status;
       session.runningSessionId = null;
       requestView.activeRunId = null;
       requestView.resumableRunId = null;
       requestView.streamActive = false;
       requestView.runStartTime = null;
-      
-      session.clearSessionBuffers(sessionIdAtStart);
-      resetRenderState();
-
-      // 将最终结果存入历史
       requestView.latestCheckpoint = null;
 
-      // 从后端拉取完整历史替换，确保 data-user-message-index 始终正确
-      try {
-        const history = await invoke<string>('get_session_history', { sessionId: sessionIdAtStart });
-        session.replaceSessionHistory(sessionIdAtStart, history || 'Ready for input...');
-      } catch {
-        // 拉取失败则追加兜底
-        session.appendSessionHistory(sessionIdAtStart, agentResponse);
-      }
+      // 用前端构建的完整 HTML 追加到历史（保持和前端的 AgentTurn.vue 渲染一致）
+      // 不再从后端拉取历史替换，避免后端重建快照和前端实时状态产生差异
+      session.appendSessionHistory(sessionIdAtStart, agentResponse);
+
+      // 历史已就位，现在安全清空 live 缓冲区
+      session.clearSessionBuffers(sessionIdAtStart);
+      resetRenderState();
 
       if (!sessionSwitched) {
         triggerRender();
@@ -620,7 +647,9 @@ export const useChatStore = defineStore("chat", () => {
       console.error("[chat] ask_jarvis 失败，原始错误:", err);
       const errMsg = extractErrorMessage(err);
       console.error("[chat] 格式化后:", errMsg);
-      session.appendSessionHistory(sessionIdAtStart, `\n\n**Error:** ${errMsg}`);
+      const escapedErr = errMsg.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      const errorHtml = `<div class="chat-message agent-message"><div class="message-content"><div class="agent-error-banner">${escapedErr}</div></div></div>\n\n`;
+      session.appendSessionHistory(sessionIdAtStart, errorHtml);
       requestView.showRecallEdit = true;
       requestView.status = "ERROR";
       session.runningSessionId = null;

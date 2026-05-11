@@ -1,4 +1,4 @@
-//! # tools_runner.rs — 工具调用并行执行引擎
+﻿//! # tools_runner.rs — 工具调用并行执行引擎
 //!
 //! 实现工具调用的三阶段流水线：预处理（串行解析参数）→ 并行执行（tokio::spawn）→ 排序汇总。
 //! 支持参数自动修复、取消检查、`RunSubagentsSequentially` 调度器特殊处理等。
@@ -7,7 +7,7 @@
 //! - `execute_tool_calls()`: 执行所有工具调用，返回结果块、手动压缩标记和子 agent token 统计
 //!
 //! ## 依赖
-//! - Internal: `crate::core::llm::adapters::parse_streamed_tool_input`, `crate::core::orchestration::agent_runs`, `crate::core::orchestration::scheduler::TaskScheduler`, `crate::core::tools`
+//! - Internal: `crate::infra::llm::adapters::parse_streamed_tool_input`, `crate::core::orchestration::agent_runs`, `crate::core::orchestration::scheduler::TaskScheduler`, `crate::core::tools`
 //! - External: `serde_json`, `tauri`, `tokio`, `futures_util`
 //!
 //! ## 约束
@@ -17,8 +17,8 @@
 use serde_json::json;
 use tauri::Emitter;
 
-use crate::core::llm::adapters::parse_streamed_tool_input;
-use crate::core::models::*;
+use crate::infra::llm::adapters::parse_streamed_tool_input;
+use crate::infra::types::models::*;
 use crate::core::orchestration::agent_runs;
 use crate::core::orchestration::scheduler::TaskScheduler;
 use crate::core::tools::*;

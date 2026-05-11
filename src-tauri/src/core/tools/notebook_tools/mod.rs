@@ -1,4 +1,4 @@
-//! # notebook_tools.rs — Jupyter Notebook cell 级编辑工具
+﻿//! # notebook_tools.rs — Jupyter Notebook cell 级编辑工具
 //!
 //! `.ipynb` 文件本质是 JSON，直接用文本替换容易破坏结构或误改 outputs。
 //! 本模块提供 cell 级别的 replace / insert / delete 操作。
@@ -13,9 +13,9 @@ use tauri::Manager;
 
 use super::framework::permission::ensure_path_permission;
 use super::framework::registry::ToolDef;
-use crate::core::models::Message;
+use crate::infra::types::models::Message;
 use crate::core::rollback::Patch;
-use crate::core::state::{PendingSnapshotPatch, SessionManager};
+use crate::infra::state::state::{PendingSnapshotPatch, SessionManager};
 
 const IPYNB_INDENT: &[u8] = b" ";
 
@@ -28,7 +28,7 @@ struct NotebookEditOutcome {
 }
 
 async fn get_workspace(app: &tauri::AppHandle, session_id: &str) -> Option<PathBuf> {
-    if let Some(manager) = app.try_state::<crate::core::state::SessionManager>() {
+    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         return ctx.workspace.lock().await.clone();
     }
@@ -50,7 +50,7 @@ fn latest_user_message_index(messages: &[Message]) -> Option<usize> {
 }
 
 async fn active_user_message_index(app: &tauri::AppHandle, session_id: &str) -> Option<usize> {
-    if let Some(manager) = app.try_state::<crate::core::state::SessionManager>() {
+    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         let session = ctx.memory.lock().await;
         return latest_user_message_index(&session.messages);
@@ -95,7 +95,7 @@ async fn record_patch_to_snapshot(
                 .map_or(0, |seq| seq + 1)
         };
 
-        if let Err(err) = crate::core::db::insert_pending_snapshot_patch(
+        if let Err(err) = crate::infra::db::insert_pending_snapshot_patch(
             session_id,
             &run_id,
             seq,

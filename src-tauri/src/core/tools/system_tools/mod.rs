@@ -1,4 +1,4 @@
-//! # system_tools.rs — 系统信息工具模块
+﻿//! # system_tools.rs — 系统信息工具模块
 //!
 //! 提供系统信息查询和全局工作区设置工具。
 //!
@@ -18,7 +18,7 @@ use tauri::Manager;
 
 /// 获取当前会话的工作目录沙箱
 async fn get_workspace(app: &tauri::AppHandle, session_id: &str) -> Option<std::path::PathBuf> {
-    if let Some(manager) = app.try_state::<crate::core::state::SessionManager>() {
+    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         let ws = ctx.workspace.lock().await.clone();
         return ws;
@@ -64,7 +64,7 @@ pub async fn set_workspace(
 
     match std::env::set_current_dir(path) {
         Ok(_) => {
-            let workspace_file = crate::core::data_paths::workspace_file_path();
+            let workspace_file = crate::infra::config::data_paths::workspace_file_path();
             let _ = std::fs::write(&workspace_file, path_str);
             format!("全局工作区成功切换到: {}", path_str)
         }

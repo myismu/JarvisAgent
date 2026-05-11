@@ -1,4 +1,4 @@
-//! 垃圾回收模块
+﻿//! 垃圾回收模块
 //!
 //! 清理过期快照、孤立分支和孤儿内容，释放存储空间。
 //!
@@ -153,7 +153,7 @@ impl GarbageCollector {
     fn cleanup_orphan_snapshots(&self, session_id: &str, tree: &SnapshotTree) -> usize {
         let tree_node_ids: HashSet<String> = tree.nodes.keys().cloned().collect();
 
-        crate::core::db::with_connection(|conn| {
+        crate::infra::db::with_connection(|conn| {
             // 查询该会话的所有 snapshot_id
             let mut stmt = conn
                 .prepare("SELECT snapshot_id, branch_name FROM snapshots WHERE session_id = ?1")
@@ -200,7 +200,7 @@ impl GarbageCollector {
             }
         }
 
-        crate::core::db::with_connection(|conn| {
+        crate::infra::db::with_connection(|conn| {
             // 查询该会话的所有 content_hash
             let mut stmt = conn
                 .prepare("SELECT content_hash FROM snapshot_content WHERE session_id = ?1")
@@ -237,7 +237,7 @@ fn delete_snapshot_from_db(
     branch_name: &str,
     snapshot_id: &str,
 ) -> Result<(), String> {
-    crate::core::db::with_connection(|conn| {
+    crate::infra::db::with_connection(|conn| {
         conn.execute(
             "DELETE FROM snapshots WHERE session_id = ?1 AND branch_name = ?2 AND snapshot_id = ?3",
             rusqlite::params![session_id, branch_name, snapshot_id],

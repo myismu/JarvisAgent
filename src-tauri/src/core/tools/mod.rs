@@ -1,4 +1,4 @@
-//! # mod.rs — 工具系统入口模块
+﻿//! # mod.rs — 工具系统入口模块
 //!
 //! 工具系统的中央枢纽：模块注册、技能加载、工具定义组装、路由分发。
 //! 根据意图（intent）筛选工具集，支持渐进式披露（核心工具始终携带，延迟工具按需激活）。
@@ -29,7 +29,7 @@ pub mod task_tools;
 use serde_json::json;
 use std::path::Path;
 
-use crate::core::models::Skill;
+use crate::infra::types::models::Skill;
 use crate::get_agent_home;
 
 // Re-export 供外部使用的公开接口
@@ -47,7 +47,7 @@ pub use framework::tool_search::{
 pub fn load_all_skills() -> Vec<Skill> {
     let mut skills = Vec::new();
     let home = get_agent_home();
-    let mut skills_dir = home.join(crate::core::constants::DIR_SKILLS);
+    let mut skills_dir = home.join(crate::infra::types::constants::DIR_SKILLS);
     if !skills_dir.exists() {
         skills_dir = home.join("..").join("skills");
     }

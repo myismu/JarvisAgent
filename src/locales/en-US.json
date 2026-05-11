@@ -234,6 +234,7 @@
     "noSubAgents": "No sub-agents",
     "noBackgroundTasks": "No background tasks",
     "dismissTask": "Dismiss this task",
+    "killTask": "Kill process",
     "clearDoneTasks": "Clear finished tasks",
     "noPlans": "No plans",
     "subAgentStatus": {
@@ -349,6 +350,8 @@
       "codeFontSizeDesc": "Font size for code in code blocks (10px–20px).",
       "compactMode": "Compact mode",
       "compactModeDesc": "Reduce message spacing and padding to fit more content on screen.",
+      "agentMessageOpacity": "Agent message opacity",
+      "userMessageOpacity": "User message opacity",
       "behavior": "Behavior",
       "autoScroll": "Auto-scroll",
       "autoScrollDesc": "Automatically scroll to bottom when the agent outputs new content.",

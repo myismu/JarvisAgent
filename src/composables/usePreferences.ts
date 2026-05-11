@@ -18,6 +18,8 @@ interface UiPreferences {
   agentAudience: AgentAudience;
   agentWorkMode: AgentWorkMode;
   locale: AppLocale;
+  agentMessageOpacity: number;
+  userMessageOpacity: number;
 }
 
 const defaults: UiPreferences = {
@@ -32,6 +34,8 @@ const defaults: UiPreferences = {
   agentAudience: "developer",
   agentWorkMode: "edit",
   locale: DEFAULT_LOCALE,
+  agentMessageOpacity: 0,
+  userMessageOpacity: 100,
 };
 
 function normalizePrefs(value: Partial<UiPreferences> & { agentDisplayMode?: string }): UiPreferences {
@@ -66,10 +70,16 @@ function applyCompactMode(compact: boolean) {
   document.documentElement.classList.toggle("compact-mode", compact);
 }
 
+function applyMessageOpacity() {
+  document.documentElement.style.setProperty("--agent-message-opacity", String(prefs.value.agentMessageOpacity ?? 0));
+  document.documentElement.style.setProperty("--user-message-opacity", String(prefs.value.userMessageOpacity ?? 100));
+}
+
 function applyAll(p: UiPreferences) {
   applyFontSize(p.fontSize);
   applyCodeFontSize(p.codeFontSize);
   applyCompactMode(p.compactMode);
+  applyMessageOpacity();
 }
 
 // ── 持久化（Rust 后端 → data/window-state.json） ──
@@ -113,9 +123,9 @@ function startWatchers() {
   watch(() => prefs.value.locale, () => scheduleSave());
   watch(() => prefs.value.defaultExpandThinking, () => scheduleSave());
   watch(() => prefs.value.autoScroll, () => scheduleSave());
+  watch(() => prefs.value.agentMessageOpacity, () => { applyMessageOpacity(); scheduleSave(); });
+  watch(() => prefs.value.userMessageOpacity, () => { applyMessageOpacity(); scheduleSave(); });
 }
-
-// ── 自动初始化（usePreferences 首次调用时触发，无需顶层 await） ──
 
 let initStarted = false;
 
@@ -189,5 +199,9 @@ export function usePreferences() {
     setAgentPanelPosition: (val: AgentPanelPosition) => { prefs.value.agentPanelPosition = val; },
     get compactMode() { return prefs.value.compactMode; },
     setCompactMode: (val: boolean) => { prefs.value.compactMode = val; },
+    get agentMessageOpacity() { return prefs.value.agentMessageOpacity; },
+    setAgentMessageOpacity: (val: number) => { prefs.value.agentMessageOpacity = Math.round(val); },
+    get userMessageOpacity() { return prefs.value.userMessageOpacity; },
+    setUserMessageOpacity: (val: number) => { prefs.value.userMessageOpacity = Math.round(val); },
   };
 }

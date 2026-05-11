@@ -311,6 +311,7 @@ export interface SubAgentRun {
   phase: SubAgentPhase;
   loopCount: number;
   maxLoops: number;
+  timeoutSecs: number;
   currentTool?: string | null;
   currentToolInput?: string | null;
   inputTokens: number;

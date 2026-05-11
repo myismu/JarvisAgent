@@ -1,4 +1,4 @@
-//! # claude_code_tools.rs — Claude Code 风格搜索工具
+﻿//! # claude_code_tools.rs — Claude Code 风格搜索工具
 //!
 //! 提供两个只读、并发安全的搜索工具：
 //! - `glob`: 按 glob 模式查找文件路径，结果按修改时间倒序排列
@@ -42,7 +42,7 @@ enum GrepOutputMode {
 }
 
 async fn get_workspace(app: &tauri::AppHandle, session_id: &str) -> Option<PathBuf> {
-    if let Some(manager) = app.try_state::<crate::core::state::SessionManager>() {
+    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         return ctx.workspace.lock().await.clone();
     }
