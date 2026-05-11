@@ -184,9 +184,10 @@ pub fn normalize_message_ids(memory: &mut SessionMemory) {
     let msg_count = memory.messages.len();
     let id_count = memory.message_ids.len();
 
-    // 多余的 message_ids（通常不会发生）直接截断
+    // 多余的 ID 从头部删除（压缩摘要插入在数组开头，尾部截断会删错）
     if id_count > msg_count {
-        memory.message_ids.truncate(msg_count);
+        let excess = id_count - msg_count;
+        memory.message_ids.drain(0..excess);
     }
 
     // 填充空的 message_id
@@ -406,17 +407,11 @@ pub fn save_session(
 
     repository::upsert_session(&meta, &filtered_memory)
         .unwrap_or_else(|err| panic!("保存 SQLite 会话 {} 失败: {}", id, err));
-    let visible_pairs: Vec<(String, Message)> = filtered_memory
-        .message_ids
-        .iter()
-        .cloned()
-        .zip(filtered_memory.messages.iter().cloned())
-        .filter(|(_, message)| !is_compact_summary_message(message))
-        .collect();
     let (visible_message_ids, visible_messages): (Vec<String>, Vec<Message>) =
-        visible_pairs.into_iter().unzip();
+        filtered_memory.message_ids.iter().cloned()
+        .zip(filtered_memory.messages.iter().cloned())
+        .unzip();
     // 同步前清理 session_messages 中已被压缩覆盖的孤儿行
-    // compressed User 消息不写入 session_messages，但需保留在 alive 集合中避免被误清
     let _ = repository::hide_orphan_session_messages(id, &filtered_memory.message_ids);
     repository::append_or_upsert_session_messages(
         id,
@@ -428,22 +423,6 @@ pub fn save_session(
     .unwrap_or_else(|err| panic!("保存 SQLite 会话历史 {} 失败: {}", id, err));
     let _ = repository::set_last_active_session_id(id);
     meta
-}
-
-fn is_compact_summary_message(message: &Message) -> bool {
-    let Message::User { content } = message else {
-        return false;
-    };
-    match content {
-        Content::Single(text) => text.trim_start().starts_with("[Conversation compressed."),
-        Content::Multiple(blocks) => blocks.iter().any(|block| {
-            matches!(
-                block,
-                ContentBlock::Text { text }
-                    if text.trim_start().starts_with("[Conversation compressed.")
-            )
-        }),
-    }
 }
 
 /// 加载指定会话的完整数据

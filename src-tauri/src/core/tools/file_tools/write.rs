@@ -16,7 +16,7 @@ use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{
     encode_text_preserve_encoding, is_locked_file_error, normalize_line_endings,
-    read_text_preserve_encoding, TextEncoding,
+    read_text_preserve_encoding, resolve_path, TextEncoding,
 };
 use super::diff::compute_diff;
 use crate::core::tools::notebook_tools::notebook_guard::{
@@ -30,7 +30,7 @@ pub async fn write_file(
     input: &serde_json::Value,
     session_id: &str,
 ) -> String {
-    let path = input["path"].as_str().unwrap_or("");
+    let path = resolve_path(input);
     let content = input["content"].as_str().unwrap_or("");
     // 统一行尾为 LF，避免 CRLF/LF 混乱
     let content = normalize_line_endings(content);

@@ -174,6 +174,12 @@ pub async fn propose_plan(
         }),
     );
 
+    // 方案审批可能持续较长时间，立即 flush 会话消息到 DB，防止切换会话时丢失
+    {
+        let memory = ctx.memory.lock().await;
+        let _ = crate::core::session::save_session(session_id, &memory, None);
+    }
+
     // 阻塞等待用户决策（通过 resolve_permission 回调）
     let decision = rx.await.unwrap_or_else(|_| "reject".to_string());
 

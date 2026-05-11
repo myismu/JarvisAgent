@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, computed, watch } from "vue";
 import { useI18n } from "vue-i18n";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useAgentEvents } from "./composables/useAgentEvents";
 import { usePreferences } from "./composables/usePreferences";
 import { useWindow } from "./composables/useWindow";
@@ -34,6 +37,7 @@ const {
 const hasUnseenFinish = ref(false);
 let unlistenMonitorWindowClosed: (() => void) | null = null;
 let unwatchWindowState: (() => void) | null = null;
+let unlistenSessionCompacted: UnlistenFn | null = null;
 
 // 恢复持久化的 Agent 面板可见性
 agent.showAgentPanel = prefs.agentPanelVisible;
@@ -120,6 +124,15 @@ onMounted(async () => {
   unlistenMonitorWindowClosed = await onMonitorWindowClosed(() => {
     agent.showAgentPanel = false;
   });
+  // 监听监控窗口的上下文压缩完成事件，刷新主窗口聊天历史
+  unlistenSessionCompacted = await listen<{ sessionId: string }>('session-compacted', async (event) => {
+    const sid = event.payload.sessionId;
+    if (!sid || sid !== session.activeSessionId) return;
+    try {
+      const history = await invoke<string>('get_session_history', { sessionId: sid });
+      session.replaceSessionHistory(sid, history);
+    } catch { /* ignore */ }
+  });
   await initListeners();
   if (agent.showAgentPanel) {
     try {
@@ -135,6 +148,7 @@ onBeforeUnmount(() => {
   removeFinishAcknowledgementListeners();
   unlistenMonitorWindowClosed?.();
   unwatchWindowState?.();
+  unlistenSessionCompacted?.();
 });
 </script>
 

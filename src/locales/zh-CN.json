@@ -265,6 +265,8 @@
     },
     "context": {
       "emptyContent": "（空）",
+      "compact": "压缩上下文",
+      "compactDisabled": "无快照数据，无法判断",
       "critical": "需要关注",
       "warning": "接近阈值",
       "safe": "健康",

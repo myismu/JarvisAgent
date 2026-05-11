@@ -62,8 +62,8 @@ const BASE_SYSTEM_PROMPT: &str = "你是 AI 管家贾维斯。
 【禁止事项】
 - 禁止在回复正文中模拟工具调用；正文内容只会作为文本展示
 
-【沙箱限制】
-如果提示中包含【会话沙箱】，所有操作被限制在指定目录内，禁止访问沙箱外路径。";
+【会话沙箱】
+如果提示中包含【会话沙箱】，你的工作目录已锁定在沙箱内。沙箱内可以自由操作文件，只有沙箱外路径会被拦截。";
 
 /// Audience 追加：User（普通用户风格）
 const USER_AUDIENCE_PROMPT: &str = "
@@ -212,15 +212,16 @@ fn detect_os() -> &'static str {
 /// 生成沙箱环境专属指令（仅在沙箱模式下注入）
 fn sandbox_rules(workspace: &str) -> String {
     format!(
-        "【沙箱限制 - 必须遵守】
-- 文件操作限制在 '{}' 内，禁止访问沙箱外路径
-- 绝对禁止使用 cd / Set-Location / chdir 切换目录，命令会被拦截
-- 需要在特定目录执行命令时，使用 StartBackgroundCommand 的 dir 参数指定工作目录
-  - 正确示例: StartBackgroundCommand(command=\"npm install\", dir=\"{}/subdir\")
-- npm 在特定目录操作时，使用 --prefix 参数（如果 RunCommand 在沙箱根目录下执行）
-  - 正确示例: RunCommand(command=\"npm install --prefix {}/frontend\")
-- RunCommand 中的命令会以沙箱根目录为当前目录执行",
-        workspace, workspace, workspace
+        "【会话沙箱 — 重要】
+当前工作目录已锁定为沙箱：'{}'
+- 沙箱内你可以自由操作：读写文件、创建目录、执行命令，没有限制
+- 当前工作目录就是沙箱根目录，所有相对路径都从这个目录出发
+- 只需注意：不要访问沙箱外的路径（系统会自动拦截），沙箱内的操作完全自由
+- 绝对禁止使用 cd / Set-Location / chdir 切换目录（会被拦截）
+- 如果在子目录执行命令，用 dir 参数：
+  - StartBackgroundCommand(command=\"npm install\", dir=\"{}/subdir\")
+  - RunCommand 会在沙箱根目录执行，可用 --prefix 指定子目录",
+        workspace, workspace
     )
 }
 
@@ -341,10 +342,25 @@ pub fn get_subagent_system_prompt(cwd: &str, workspace: Option<&str>) -> String 
 /// 记忆代理系统提示词 - 指导记忆的分类与更新决策
 pub const MEMORY_AGENT_SYSTEM: &str = "你是记忆维护系统。分析对话，决定是否更新用户全局记忆。
 
-记录范围：用户身份、通用偏好、性格特征、工作习惯、技术栈偏好。
+你应该记录（跨项目通用）：
+- 用户身份（名字、角色、职业阶段）
+- 通用偏好（语言、编辑器、代码风格、交互方式）
+- 工作习惯（喜欢先看方案再执行、偏好简洁回复等）
+- 技术栈偏好（常用语言、框架倾向）
+- 长期有效的环境信息（操作系统、常用工具路径）
+
+绝对不要记录（这些属于当前会话/项目，会话结束时自然丢弃）：
+- 当前项目的技术栈和端口号
+- 当前任务的进度和状态
+- 某个具体文件的路径或内容
+- 当前 bug 的修复过程
+- 任何只在本次会话中有意义的临时信息
 
 规则:
-1. 有新信息时更新记忆
+1. 只记录跨会话仍然有用的信息
+2. 项目相关的一律跳过（存 session_memory 即可）
+3. 不确定时宁可少记，不要多记
+4. 有新信息时更新记忆
 2. 生成更新后的完整 Markdown 内容
 3. 无新信息则不操作
 4. 通过 update_memory 工具提交更新

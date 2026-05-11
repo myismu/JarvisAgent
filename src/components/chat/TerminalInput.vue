@@ -265,6 +265,17 @@ onMounted(async () => {
     currentWorkMode.value = event.payload.to as AgentWorkMode;
   });
 
+  // 监听监控窗口上下文压缩状态，压缩期间禁用输入
+  unlistenCompacting = await listen<{ compacting: boolean }>('bg-compacting-changed', (event) => {
+    isCompacting.value = event.payload.compacting;
+  });
+  // 挂载时主动查询后端，防止 F5 刷新丢失"压缩中"状态
+  if (session.activeSessionId) {
+    try {
+      isCompacting.value = await invoke<boolean>('is_session_compacting', { sessionId: session.activeSessionId });
+    } catch { /* ignore */ }
+  }
+
   document.addEventListener('click', closeMenuOnOutsideClick);
 
   const appWindow = getCurrentWindow();
@@ -290,6 +301,7 @@ onUnmounted(() => {
   if (unlistenDragDrop) unlistenDragDrop();
   if (unlistenConfig) unlistenConfig();
   if (unlistenWorkMode) unlistenWorkMode();
+  if (unlistenCompacting) unlistenCompacting();
 });
 
 onBeforeUnmount(() => {
@@ -311,7 +323,7 @@ const handleInput = () => {
 const handleKeydown = (e: KeyboardEvent) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
-    if (!isRunning.value) {
+    if (!isRunning.value && !isCompacting.value) {
       handleSubmit();
     }
   }
@@ -337,6 +349,8 @@ const handleSubmit = () => {
 };
 
 const isCancelling = ref(false);
+const isCompacting = ref(false);
+let unlistenCompacting: UnlistenFn | null = null;
 
 const handleCancel = async () => {
   if (isCancelling.value) return;
@@ -507,18 +521,26 @@ const handleRecallEdit = async () => {
       </div>
 
       <div class="input-row" @click="inputRef?.focus()">
-        <textarea 
+        <textarea
           ref="inputRef"
-          v-model="userInput" 
-          :placeholder="t('input.placeholder')"
+          v-model="userInput"
+          :placeholder="isCompacting ? '上下文压缩中，请稍候...' : t('input.placeholder')"
           class="editor-input"
+          :class="{ 'input-disabled': isCompacting }"
           autofocus
           rows="1"
+          :disabled="isCompacting"
           @input="handleInput"
           @keydown="handleKeydown"
         ></textarea>
-        
-        <button v-if="!isRunning" class="send-btn" :class="{ active: userInput.trim() || mediaFiles.length > 0 }" @click="handleSubmit" :title="t('input.send')">
+
+        <button v-if="isCompacting" class="send-btn compacting-state" disabled :title="'上下文压缩中'">
+          <svg class="spinner-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle>
+            <path d="M12 2a10 10 0 0 1 10 10"></path>
+          </svg>
+        </button>
+        <button v-else-if="!isRunning" class="send-btn" :class="{ active: userInput.trim() || mediaFiles.length > 0 }" @click="handleSubmit" :title="t('input.send')">
           <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <line x1="22" y1="2" x2="11" y2="13"></line>
             <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
@@ -870,9 +892,14 @@ const handleRecallEdit = async () => {
   max-height: 200px;
 }
 
-.editor-input::placeholder { 
-  color: var(--text-muted); 
+.editor-input::placeholder {
+  color: var(--text-muted);
   opacity: 0.6;
+}
+
+.editor-input.input-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .send-btn {

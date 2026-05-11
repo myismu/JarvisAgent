@@ -68,14 +68,18 @@ const showInlineStatus = computed(() => {
 
 const thinkingElapsed = ref(0);
 let thinkingTimer: ReturnType<typeof setInterval> | null = null;
+let waitStartMs = 0; // 等待开始的毫秒时间戳
+let accumulatedWaitMs = 0; // 累计等待时长
+
+const isWaitingForUser = computed(() => {
+  return Boolean(perm.planProposal || perm.permissionRequest);
+});
 
 const updateThinkingElapsed = () => {
   const view = session.getSessionView(session.activeSessionId);
-  if (view.runStartTime) {
-    thinkingElapsed.value = Math.floor((Date.now() - view.runStartTime) / 1000);
-  } else {
-    thinkingElapsed.value = 0;
-  }
+  if (!view.runStartTime) { thinkingElapsed.value = 0; return; }
+  const elapsed = Date.now() - view.runStartTime - accumulatedWaitMs;
+  thinkingElapsed.value = Math.max(0, Math.floor(elapsed / 1000));
 };
 
 watch(showInlineStatus, (running) => {
@@ -85,6 +89,18 @@ watch(showInlineStatus, (running) => {
   } else {
     if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
     thinkingElapsed.value = 0;
+    waitStartMs = 0;
+    accumulatedWaitMs = 0;
+  }
+});
+
+// 等待用户决策期间暂停读秒
+watch(isWaitingForUser, (waiting) => {
+  if (waiting) {
+    waitStartMs = Date.now();
+  } else if (waitStartMs > 0) {
+    accumulatedWaitMs += Date.now() - waitStartMs;
+    waitStartMs = 0;
   }
 });
 
@@ -639,6 +655,7 @@ onMounted(() => {
             :display-mode="prefs.agentAudience.value"
             :show-status="showInlineStatus"
             :elapsed="thinkingElapsed"
+            :paused="isWaitingForUser"
           />
         </div>
       </div>

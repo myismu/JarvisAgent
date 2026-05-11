@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "jarvisagent",
+  "productName": "JarvisAgent",
   "version": "0.1.0",
   "identifier": "com.jarvis.agent",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "jarvisagent",
+        "title": "JarvisAgent",
         "width": 1600,
         "height": 1000,
         "minWidth": 1000,

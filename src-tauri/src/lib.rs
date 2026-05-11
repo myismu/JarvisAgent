@@ -15,7 +15,8 @@ use crate::infra::state::state::{
     WorkspaceState,
 };
 use crate::infra::config::config::{load_config, ConfigState, RuntimeConfigState, RuntimeSettings};
-use crate::infra::background::BackgroundState;
+use tauri::Manager;
+use crate::infra::background::{BackgroundState, CompactingState};
 use crate::core::orchestration::subagents::SubAgentMonitorState;
 use crate::core::rollback::session_manager::SnapshotManagerRegistry;
 
@@ -78,6 +79,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(SessionManager::new())
         .manage(BackgroundState::default())
+        .manage(CompactingState::default())
         .manage(SubAgentMonitorState::default())
         .manage(ConfigState(std::sync::Arc::new(Mutex::new(load_config()))))
         .manage(RuntimeConfigState(RuntimeSettings::default()))
@@ -122,6 +124,8 @@ pub fn run() {
             command::session::list_subagent_events,
             command::session::cancel_subagent_run,
             command::session::get_session_todos,
+            command::session::compact_conversation,
+            command::session::is_session_compacting,
             command::config::get_config,
             command::config::save_config_cmd,
             command::config::get_image_compress_config,
@@ -167,6 +171,17 @@ pub fn run() {
             infra::llm::registry::get_model_capabilities,
             infra::llm::registry::list_model_registry,
         ])
-        .run(tauri::generate_context!())
-        .expect("运行失败");
+        .build(tauri::generate_context!())
+        .expect("构建失败")
+        .run(|handle, event| {
+            if let tauri::RunEvent::ExitRequested { .. } = &event {
+                if let Some(bg) = handle.try_state::<crate::infra::background::BackgroundState>() {
+                    // 用 blocking_lock 确保即使有其他任务持有锁也能等待获取后清理
+                    // blocking_lock 不返回 Result，始终能获取锁（可能阻塞等待）
+                    let mut guard = bg.0.blocking_lock();
+                    guard.kill_all_process_tree();
+                    println!("[System] 已清理所有后台任务进程");
+                }
+            }
+        });
 }

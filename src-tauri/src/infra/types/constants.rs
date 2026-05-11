@@ -33,9 +33,11 @@ pub const FILE_THOUGHTS_LOG: &str = "thoughts_and_plans.md";
 
 // --- Limits & Thresholds ---
 pub const MAX_TOKENS_CONTEXT: i32 = 8192;
-pub const MAX_TOKENS_COMPACT_TRIGGER: usize = 50000;
+pub const MAX_TOKENS_COMPACT_TRIGGER: usize = 100_000;
 pub const MAX_AGENT_LOOP_BEFORE_CONFIRM: usize = 30;
 pub const MAX_AGENT_LOOP_ABSOLUTE: usize = 500;
 pub const MAX_SESSION_TITLE_LEN: usize = 30;
 pub const MAX_BACKGROUND_OUTPUT_LEN: usize = 50000;
 pub const MAX_BACKGROUND_NOTIFY_LEN: usize = 500;
+pub const COMPACT_KEEP_RECENT_MESSAGES: usize = 6;
+pub const SUBAGENT_TIMEOUT_SECS: u64 = 480;

@@ -91,8 +91,17 @@ function buildFinalResponseParts(
   return { finalContent, finalToolBuffer };
 }
 
-const ASSISTANT_MESSAGE_CONTENT_CLASS = "message-content current-turn-content";
+/** agent 完成后拉取最新上下文快照，使监控面板显示完整的最后一轮回复 */
+async function refreshContextSnapshot(sessionId: string) {
+  try {
+    const snapshot = await invoke<any>('get_session_context_snapshot', { sessionId });
+    if (snapshot) {
+      useAgentStore().upsertContextSnapshot(snapshot);
+    }
+  } catch { /* 快照拉取不影响主流程 */ }
+}
 
+const ASSISTANT_MESSAGE_CONTENT_CLASS = "message-content current-turn-content";
 export const useChatStore = defineStore("chat", () => {
   const parsedCurrentTurnHtml = ref("");
   let throttlePending = false;
@@ -613,8 +622,9 @@ export const useChatStore = defineStore("chat", () => {
         },
       );
 
-      // 标记流结束，但暂不清空缓冲区——让 live AgentTurn 保持可见，
-      // 等后端历史加载完成再替换，避免 DOM 空窗期导致的闪烁
+      // 先清空 live 缓冲区，避免 AgentTurn 与追加到历史的同一段内容同时渲染
+      session.clearSessionBuffers(sessionIdAtStart);
+
       requestView.status = res.status;
       session.runningSessionId = null;
       requestView.activeRunId = null;
@@ -623,12 +633,9 @@ export const useChatStore = defineStore("chat", () => {
       requestView.runStartTime = null;
       requestView.latestCheckpoint = null;
 
-      // 用前端构建的完整 HTML 追加到历史（保持和前端的 AgentTurn.vue 渲染一致）
-      // 不再从后端拉取历史替换，避免后端重建快照和前端实时状态产生差异
+      // 用前端构建的完整 HTML 追加到历史
       session.appendSessionHistory(sessionIdAtStart, agentResponse);
 
-      // 历史已就位，现在安全清空 live 缓冲区
-      session.clearSessionBuffers(sessionIdAtStart);
       resetRenderState();
 
       if (!sessionSwitched) {
@@ -640,6 +647,8 @@ export const useChatStore = defineStore("chat", () => {
       if (sessionIdAtStart === sessionAfterSave.activeSessionId) {
         sessionAfterSave.setSessionUsageTotals(sessionInputTokens, sessionOutputTokens);
       }
+      // agent 完成后主动拉取最新上下文快照，使监控面板的 Session Messages 包含完整最后一轮回复
+      refreshContextSnapshot(sessionIdAtStart);
     } catch (err) {
       session.clearSessionBuffers(sessionIdAtStart);
       resetRenderState();

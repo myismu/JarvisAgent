@@ -14,6 +14,7 @@
 //! - Internal: `crate::infra::db`, `crate::infra::types::models`
 //! - External: `rusqlite`, `serde`
 
+use std::collections::HashMap;
 use rusqlite::{params, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 
@@ -390,10 +391,8 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
             serde_json::from_str(&json).map_err(|e| e.to_string())?;
 
         // 从 session_messages 表重建 messages
-        // 新方案：按 active_message_ids 读取
-        // 向后兼容：如果 message_ids 为空（旧会话），加载所有可见消息
+        // 按 message_ids 的顺序加载，而非依赖 seq（seq 可能因 upsert 错位）
         if !memory.message_ids.is_empty() {
-            // ?1 = session_id, ?2.. = message_ids
             let placeholders: Vec<String> = memory
                 .message_ids
                 .iter()
@@ -401,9 +400,8 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
                 .map(|(i, _)| format!("?{}", i + 2))
                 .collect();
             let sql = format!(
-                "SELECT content_json FROM session_messages
-                 WHERE session_id = ?1 AND message_id IN ({})
-                 ORDER BY seq ASC",
+                "SELECT message_id, content_json FROM session_messages
+                 WHERE session_id = ?1 AND message_id IN ({})",
                 placeholders.join(",")
             );
             let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
@@ -415,13 +413,23 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
             let rows = stmt
                 .query_map(
                     rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
-                    |row| row.get::<_, String>(0),
+                    |row| Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                    )),
                 )
                 .map_err(|e| e.to_string())?;
+            let mut content_by_id: HashMap<String, String> = HashMap::new();
             for row in rows {
-                let content_json = row.map_err(|e| e.to_string())?;
-                if let Ok(msg) = serde_json::from_str::<Message>(&content_json) {
-                    memory.messages.push(msg);
+                let (mid, content_json) = row.map_err(|e| e.to_string())?;
+                content_by_id.insert(mid, content_json);
+            }
+            // 严格按 message_ids 数组顺序重建 messages，保证顺序一致
+            for mid in &memory.message_ids {
+                if let Some(content_json) = content_by_id.get(mid) {
+                    if let Ok(msg) = serde_json::from_str::<Message>(content_json) {
+                        memory.messages.push(msg);
+                    }
                 }
             }
         }

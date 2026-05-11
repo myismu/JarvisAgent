@@ -15,6 +15,51 @@ use tauri::{Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::Mutex;
 
+fn kill_process_tree(pid: u32) {
+    if pid == 0 { return; }
+    if cfg!(target_os = "windows") {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+/// 递归查找指定 PID 的所有子孙进程（Windows WMI）
+/// 用于确保能定位并终止整棵进程树，防止 node/npm 等子进程变孤儿
+fn find_descendant_pids(parent_pid: u32) -> Vec<u32> {
+    if !cfg!(target_os = "windows") || parent_pid == 0 {
+        return vec![];
+    }
+    let mut all = Vec::new();
+    let mut queue = vec![parent_pid];
+    // 限制递归深度防止无限循环
+    for _ in 0..10 {
+        if queue.is_empty() { break; }
+        let current = std::mem::take(&mut queue);
+        for pid in &current {
+            if let Ok(out) = std::process::Command::new("powershell")
+                .args(["-NoProfile", "-Command", &format!(
+                    "(Get-CimInstance Win32_Process -Filter \"ParentProcessId={}\").ProcessId", pid
+                )])
+                .output()
+            {
+                let text = String::from_utf8_lossy(&out.stdout);
+                for line in text.lines().map(|l| l.trim()) {
+                    if let Ok(c) = line.parse::<u32>() {
+                        if c > 0 && !all.contains(&c) {
+                            all.push(c);
+                            queue.push(c);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    all
+}
+
 /// 后台任务信息
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BackgroundTask {
@@ -25,6 +70,10 @@ pub struct BackgroundTask {
     pub result: Option<String>,
     pub port: Option<u16>,
     pub task_type: Option<String>,
+    #[serde(default)]
+    pub pid: Option<u32>,
+    #[serde(default)]
+    pub pids: Vec<u32>,
 }
 
 /// 任务完成通知（Tauri 事件推送 + 轮询兼容）
@@ -59,19 +108,43 @@ impl BackgroundManager {
 
     /// 终止单个后台任务进程（内部方法）
     async fn kill_inner(&mut self, task_id: &str) {
-        if let Some(child_arc) = self.child_processes.remove(task_id) {
-            let mut child_guard = child_arc.lock().await;
-            if let Some(ref mut child) = *child_guard {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                println!("[BACKGROUND] Killed task {}", task_id);
+        // 优先通过 task.pids（完整进程树）终止
+        let pids: Vec<u32> = self
+            .tasks
+            .get(task_id)
+            .map(|t| t.pids.clone())
+            .unwrap_or_default();
+
+        // 递归查找所有存活后代一并终止
+        let mut all_targets: Vec<u32> = pids.clone();
+        for pid in &pids {
+            for d in find_descendant_pids(*pid) {
+                if !all_targets.contains(&d) {
+                    all_targets.push(d);
+                }
             }
         }
+
+        // 自底向上杀：先杀后代再杀根
+        for pid in all_targets.iter() {
+            kill_process_tree(*pid);
+        }
+
+        // 最后尝试通过 child 句柄终止
+        if let Some(child_arc) = self.child_processes.remove(task_id) {
+            if let Ok(mut guard) = child_arc.try_lock() {
+                if let Some(ref mut child) = *guard {
+                    let _ = child.start_kill();
+                }
+            }
+        }
+
         if let Some(task) = self.tasks.get_mut(task_id) {
             if task.status == "running" {
                 task.status = "killed".to_string();
             }
         }
+        println!("[BACKGROUND] Killed task {} (pids: {:?})", task_id, all_targets);
     }
 
     /// 终止所有运行中的后台任务进程（撤回前调用，释放文件锁）
@@ -203,6 +276,8 @@ impl BackgroundManager {
                         result: None,
                         port: detected_port,
                         task_type: task_type.clone(),
+                        pid: None,
+                        pids: vec![],
                     },
                 );
             }
@@ -235,7 +310,7 @@ impl BackgroundManager {
                 let mut cmd = tokio::process::Command::new(&shell);
                 cmd.current_dir(&target_dir).args(&shell_args);
 
-                let child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
+                let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
                 {
                     Ok(c) => c,
                     Err(e) => {
@@ -259,31 +334,30 @@ impl BackgroundManager {
                     }
                 };
 
-                // 保存子进程句柄，用于撤回前安全终止
+                // 保存子进程句柄和 PID，用于终止和退出清理
+                let child_pid = child.id();
+                // 先提取 stdout/stderr pipe，避免延迟期间管道缓冲区满导致进程阻塞
+                let child_stdout = child.stdout.take();
+                let child_stderr = child.stderr.take();
                 let child_arc = Arc::new(tokio::sync::Mutex::new(Some(child)));
                 {
                     let mut bg = state_clone.lock().await;
                     bg.child_processes.insert(task_id_async.clone(), child_arc.clone());
+                    if let (Some(pid), Some(task)) = (child_pid, bg.tasks.get_mut(&task_id_async)) {
+                        // 先存 PowerShell PID 作为 root，稍后延迟捕获完整进程树
+                        task.pid = Some(pid);
+                    }
                 }
 
-                // 取出 child 用于后续流式读取
-                let mut child_owned = {
-                    let mut guard = child_arc.lock().await;
-                    guard.take().expect("child just inserted")
-                };
-
+                // 立即启动 stdout/stderr 读取，避免管道阻塞
                 let output_buffer = Arc::new(tokio::sync::Mutex::new(String::new()));
                 let max_output = crate::infra::types::constants::MAX_BACKGROUND_OUTPUT_LEN;
 
-                let stdout = child_owned.stdout.take();
-                let stderr = child_owned.stderr.take();
-
-                if let Some(stdout) = stdout {
+                if let Some(stdout) = child_stdout {
                     let reader = BufReader::new(stdout);
                     let mut lines = reader.lines();
                     let task_id_for_stdout = task_id_async.clone();
                     let buf = output_buffer.clone();
-
                     tokio::spawn(async move {
                         while let Ok(Some(line)) = lines.next_line().await {
                             println!("[bg:{}] {}", task_id_for_stdout, line);
@@ -296,12 +370,11 @@ impl BackgroundManager {
                     });
                 }
 
-                if let Some(stderr) = stderr {
+                if let Some(stderr) = child_stderr {
                     let reader = BufReader::new(stderr);
                     let mut lines = reader.lines();
                     let task_id_for_stderr = task_id_async.clone();
                     let buf = output_buffer.clone();
-
                     tokio::spawn(async move {
                         while let Ok(Some(line)) = lines.next_line().await {
                             println!("[bg:{} ERR] {}", task_id_for_stderr, line);
@@ -313,6 +386,31 @@ impl BackgroundManager {
                         }
                     });
                 }
+
+                // 延迟等待子进程树完全展开（npm/node 等需要时间启动），再递归捕获全部 PID
+                // 此时 stdout/stderr 已在后台读取，不会阻塞进程
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                if let Some(root_pid) = child_pid {
+                    let descendants = find_descendant_pids(root_pid);
+                    let mut all_pids = vec![root_pid];
+                    all_pids.extend(descendants);
+                    let mut bg = state_clone.lock().await;
+                    if let Some(task) = bg.tasks.get_mut(&task_id_async) {
+                        task.pids = all_pids.clone();
+                    }
+                }
+
+                // 取出 child 进行 wait
+                let mut child_owned = {
+                    let mut guard = child_arc.lock().await;
+                    match guard.take() {
+                        Some(c) => c,
+                        None => {
+                            // child 已被 kill_task 取走，直接退出
+                            return;
+                        }
+                    }
+                };
 
                 let status = match child_owned.wait().await {
                     Ok(s) => {
@@ -356,7 +454,9 @@ impl BackgroundManager {
                         task.status = status.to_string();
                         task.result = Some(notif.result.clone());
                     }
-                    bg.child_processes.remove(&task_id_async);
+                    // 不删 child_processes：服务类后台任务（npm run dev 等）的
+                    // 子进程（node/nodemon）会随 PowerShell 退出而 orphan，
+                    // handle 是最后能杀进程树的手段，保留待用户主动 dismiss/kill
                     bg.notification_queue.push(notif);
                 }
             });
@@ -487,13 +587,67 @@ impl BackgroundManager {
         }
     }
 
+    /// 同步杀所有运行中任务的进程树（用于退出时清理，不依赖 tokio runtime）
+    pub fn kill_all_process_tree(&mut self) {
+        for (task_id, task) in &self.tasks {
+            if task.status != "running" { continue; }
+            // 通过存储的完整 PID 列表终止
+            let mut all_targets: Vec<u32> = task.pids.clone();
+            for pid in &task.pids {
+                for d in find_descendant_pids(*pid) {
+                    if !all_targets.contains(&d) { all_targets.push(d); }
+                }
+            }
+            for pid in &all_targets {
+                kill_process_tree(*pid);
+            }
+            // 再通过 child 句柄尝试
+            if let Some(child_arc) = self.child_processes.remove(task_id) {
+                if let Ok(mut guard) = child_arc.try_lock() {
+                    if let Some(ref mut child) = *guard {
+                        let _ = child.start_kill();
+                    }
+                }
+            }
+        }
+        self.tasks.clear();
+        self.child_processes.clear();
+    }
+
     /// 终止并移除单个后台任务（杀进程 + 清理记录）
     pub async fn kill_task(app: &tauri::AppHandle, task_id: &str) -> bool {
         if let Some(state) = app.try_state::<BackgroundState>() {
             let mut bg = state.0.lock().await;
-            bg.kill_inner(task_id).await;
+
+            // 收集全部待杀 PID：从 task.pids + 递归查找存活后代
+            let mut all_targets: Vec<u32> = Vec::new();
+            if let Some(task) = bg.tasks.get(task_id) {
+                all_targets.extend(&task.pids);
+                for pid in &task.pids {
+                    for d in find_descendant_pids(*pid) {
+                        if !all_targets.contains(&d) { all_targets.push(d); }
+                    }
+                }
+            }
+
+            // 自底向上杀干净整个进程树
+            for pid in &all_targets {
+                kill_process_tree(*pid);
+            }
+
+            // 再通过 child 句柄兜底
+            if let Some(child_arc) = bg.child_processes.remove(task_id) {
+                if let Ok(mut guard) = child_arc.try_lock() {
+                    if let Some(ref mut child) = *guard {
+                        let _ = child.start_kill();
+                    }
+                }
+            }
+
+            let killed = !all_targets.is_empty();
             bg.remove_task(task_id);
-            true
+            println!("[BACKGROUND] Killed task {} (pids: {:?}, effective: {})", task_id, all_targets, killed);
+            killed
         } else {
             false
         }
@@ -518,5 +672,26 @@ pub struct BackgroundState(pub Arc<Mutex<BackgroundManager>>);
 impl Default for BackgroundState {
     fn default() -> Self {
         Self(Arc::new(Mutex::new(BackgroundManager::new())))
+    }
+}
+
+/// 记录当前正在进行上下文压缩的会话，用于前端 F5 刷新后恢复"压缩中"状态
+pub struct CompactingState(pub std::sync::Mutex<std::collections::HashSet<String>>);
+
+impl Default for CompactingState {
+    fn default() -> Self {
+        Self(std::sync::Mutex::new(std::collections::HashSet::new()))
+    }
+}
+
+impl CompactingState {
+    pub fn is_compacting(&self, session_id: &str) -> bool {
+        self.0.lock().unwrap().contains(session_id)
+    }
+
+    pub fn set_compacting(&self, session_id: &str, active: bool) {
+        let mut set = self.0.lock().unwrap();
+        if active { set.insert(session_id.to_string()); }
+        else { set.remove(session_id); }
     }
 }

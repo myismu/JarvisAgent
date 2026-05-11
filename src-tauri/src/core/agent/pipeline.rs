@@ -669,7 +669,6 @@ impl PipelineState {
             );
         }
 
-        // 保存会话
         let session_meta = {
             let memory = self.ctx.memory.lock().await.clone();
             let meta = if was_cancelled {
@@ -1006,6 +1005,117 @@ impl PipelineState {
         self.prepare_history_snapshot_from_messages(messages)
     }
 
+    /// 将消息列表转换为人类可读的对话文本，用于上下文快照展示
+    fn format_messages_readable(messages: &[Message]) -> String {
+        let mut out = String::new();
+        for (i, msg) in messages.iter().enumerate() {
+            let idx = i + 1;
+            match msg {
+                Message::User { content } => {
+                    out.push_str(&format!("[User] (msg {})\n", idx));
+                    match content {
+                        Content::Single(text) => {
+                            let trimmed = text.trim();
+                            if !trimmed.is_empty() {
+                                out.push_str(trimmed);
+                                out.push('\n');
+                            }
+                        }
+                        Content::Multiple(blocks) => {
+                            for block in blocks {
+                                match block {
+                                    ContentBlock::Text { text } => {
+                                        let trimmed = text.trim();
+                                        if !trimmed.is_empty() {
+                                            out.push_str(trimmed);
+                                            out.push('\n');
+                                        }
+                                    }
+                                    ContentBlock::ToolResult {
+                                        tool_use_id,
+                                        content: tc,
+                                    } => {
+                                        let tc_lines: Vec<&str> = tc.lines().collect();
+                                        let preview = if tc_lines.len() > 3 {
+                                            format!("{}\n  …", tc_lines[..3].join("\n"))
+                                        } else {
+                                            tc_lines.join("\n")
+                                        };
+                                        let short_id = &tool_use_id[tool_use_id.len().saturating_sub(12)..];
+                                        out.push_str(&format!(
+                                            "  ← ToolResult: {}\n    {}\n",
+                                            short_id, preview
+                                        ));
+                                    }
+                                    ContentBlock::Image { .. } => {
+                                        out.push_str("  ← [Image]\n");
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+                Message::Assistant { content } => {
+                    out.push_str(&format!("[Assistant] (msg {})\n", idx));
+                    match content {
+                        Content::Single(text) => {
+                            let trimmed = text.trim();
+                            if !trimmed.is_empty() {
+                                out.push_str(trimmed);
+                                out.push('\n');
+                            }
+                        }
+                        Content::Multiple(blocks) => {
+                            for block in blocks {
+                                match block {
+                                    ContentBlock::Text { text } => {
+                                        let trimmed = text.trim();
+                                        if !trimmed.is_empty() {
+                                            out.push_str(trimmed);
+                                            out.push('\n');
+                                        }
+                                    }
+                                    ContentBlock::ToolUse {
+                                        id: _,
+                                        name,
+                                        input,
+                                    } => {
+                                        let input_str =
+                                            serde_json::to_string(input).unwrap_or_default();
+                                        let truncated = if input_str.len() > 200 {
+                                            format!("{}…", &input_str[..200])
+                                        } else {
+                                            input_str
+                                        };
+                                        out.push_str(&format!(
+                                            "  → ToolCall: {}({})\n",
+                                            name, truncated
+                                        ));
+                                    }
+                                    ContentBlock::Thinking { thinking, .. } => {
+                                        let preview = if thinking.len() > 80 {
+                                            format!("{}…", &thinking[..80])
+                                        } else {
+                                            thinking.clone()
+                                        };
+                                        out.push_str(&format!(
+                                            "  … Thinking: {}\n",
+                                            preview.replace('\n', " ")
+                                        ));
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            out.push('\n');
+        }
+        out
+    }
+
     fn build_context_estimate(
         &self,
         history_snapshot: &[Message],
@@ -1092,7 +1202,7 @@ impl PipelineState {
         );
         let (tool_call_count, tool_result_count, image_count, thinking_count) =
             count_blocks(history_snapshot);
-        let messages_json = serde_json::to_string_pretty(&cleaned_messages).unwrap_or_default();
+        let messages_text = Self::format_messages_readable(&cleaned_messages);
         let tools_json = serde_json::to_string_pretty(tools).unwrap_or_default();
         let mut sections = vec![
             section(
@@ -1113,7 +1223,7 @@ impl PipelineState {
                 &self.model_id,
                 "messages",
                 "Session Messages",
-                messages_json,
+                messages_text,
                 cleaned_messages.len(),
             ),
             section(

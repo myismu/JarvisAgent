@@ -16,7 +16,7 @@ use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{
     encode_text_preserve_encoding, is_locked_file_error, normalize_line_endings, normalize_quotes,
-    read_text_preserve_encoding,
+    read_text_preserve_encoding, resolve_path,
 };
 use super::diff::compute_diff;
 use crate::core::tools::notebook_tools::notebook_guard::{
@@ -30,7 +30,7 @@ pub async fn edit_file(
     input: &serde_json::Value,
     session_id: &str,
 ) -> String {
-    let path = input["path"].as_str().unwrap_or("");
+    let path = resolve_path(input);
     let old_text = input["old_text"].as_str().unwrap_or("");
     let new_text = normalize_line_endings(input["new_text"].as_str().unwrap_or(""));
     let ws = get_workspace(app, session_id).await;

@@ -4,6 +4,7 @@ import { computed } from 'vue';
 const props = defineProps<{
   running: boolean;
   elapsed: number;
+  paused: boolean;
 }>();
 
 const formattedTime = computed(() => {
@@ -14,9 +15,10 @@ const formattedTime = computed(() => {
 </script>
 
 <template>
-  <div v-if="running" class="thinking-inline-status" aria-label="Jarvis is thinking">
+  <div v-if="running" class="thinking-inline-status" :class="{ paused }" aria-label="Jarvis is thinking">
     <span class="thinking-spinner"></span>
     <span class="thinking-timer">{{ formattedTime }}</span>
+    <span v-if="paused" class="thinking-paused-label">等待决策</span>
   </div>
 </template>
 
@@ -27,6 +29,20 @@ const formattedTime = computed(() => {
   gap: 6px;
   font-size: 12px;
   color: var(--accent-blue);
+  margin-top: 8px;
+}
+.thinking-inline-status.paused {
+  color: var(--accent-yellow);
+}
+.thinking-inline-status.paused .thinking-spinner {
+  border-top-color: var(--accent-yellow);
+  border-color: rgba(245, 158, 11, 0.2);
+  border-top-color: var(--accent-yellow);
+  animation-play-state: paused;
+}
+.thinking-paused-label {
+  font-size: 11px;
+  opacity: 0.8;
 }
 .thinking-spinner {
   width: 12px;

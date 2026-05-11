@@ -12,8 +12,8 @@
 use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{
-    binary_file_read_error, is_locked_file_error, read_text_preserve_encoding, MAX_FILE_SIZE_BYTES,
-    MAX_LINES_DEFAULT,
+    binary_file_read_error, is_locked_file_error, read_text_preserve_encoding, resolve_path,
+    MAX_FILE_SIZE_BYTES, MAX_LINES_DEFAULT,
 };
 use super::workspace::get_workspace;
 
@@ -215,7 +215,7 @@ pub async fn read_file(
     input: &serde_json::Value,
     session_id: &str,
 ) -> String {
-    let path = input["path"].as_str().unwrap_or("");
+    let path = resolve_path(input);
     let start_line = input["start_line"].as_u64().unwrap_or(1) as usize;
     let end_line = input["end_line"].as_u64().unwrap_or(usize::MAX as u64) as usize;
 
@@ -305,7 +305,7 @@ pub async fn read_file_skeleton(
     input: &serde_json::Value,
     session_id: &str,
 ) -> String {
-    let path = input["path"].as_str().unwrap_or("");
+    let path = resolve_path(input);
     let ws = get_workspace(app, session_id).await;
     if let Err(e) = ensure_path_permission(app, path, "读取", ws.as_deref()).await {
         return e;

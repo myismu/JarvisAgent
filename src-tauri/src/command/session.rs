@@ -384,8 +384,96 @@ pub async fn get_session_meta(id: String) -> Result<session::SessionMeta, String
 #[tauri::command]
 pub async fn get_session_context_snapshot(
     session_id: String,
+    session_manager: tauri::State<'_, SessionManager>,
 ) -> Result<Option<crate::infra::types::models::SessionContextSnapshot>, String> {
-    session::get_context_snapshot(&session_id)
+    let mut snapshot = match session::get_context_snapshot(&session_id)? {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    // 从当前 session memory 重建 "Session Messages" 段，
+    // 确保包含完整的最后一轮 assistant 回复
+    let ctx = session_manager.get_or_create(&session_id).await;
+    let memory = ctx.memory.lock().await;
+    if !memory.messages.is_empty() {
+        let messages_text = {
+            let mut out = String::new();
+            for (i, msg) in memory.messages.iter().enumerate() {
+                let idx = i + 1;
+                let role = match msg {
+                    Message::User { .. } => "User",
+                    Message::Assistant { .. } => "Assistant",
+                };
+                out.push_str(&format!("[{}] (msg {})\n", role, idx));
+                let content = match msg {
+                    Message::User { content } | Message::Assistant { content } => content,
+                };
+                match content {
+                    Content::Single(text) => {
+                        if !text.trim().is_empty() {
+                            out.push_str(text.trim());
+                            out.push('\n');
+                        }
+                    }
+                    Content::Multiple(blocks) => {
+                        for block in blocks {
+                            match block {
+                                ContentBlock::Text { text } => {
+                                    if !text.trim().is_empty() {
+                                        out.push_str(text.trim());
+                                        out.push('\n');
+                                    }
+                                }
+                                ContentBlock::ToolUse { name, input, .. } => {
+                                    let s = serde_json::to_string(input).unwrap_or_default();
+                                    let t = if s.len() > 120 { &s[..120] } else { &s };
+                                    out.push_str(&format!("  → {}({})\n", name, t));
+                                }
+                                ContentBlock::ToolResult { tool_use_id, content: tc } => {
+                                    let sid = &tool_use_id[tool_use_id.len().saturating_sub(12)..];
+                                    let lines: Vec<&str> = tc.lines().collect();
+                                    let preview = if lines.len() > 2 {
+                                        format!("{}\n  …", lines[..2].join("\n"))
+                                    } else { tc.clone() };
+                                    out.push_str(&format!("  ← {}: {}\n", sid, preview));
+                                }
+                                ContentBlock::Thinking { thinking, .. } => {
+                                    let p = if thinking.len() > 80 { &thinking[..80] } else { thinking };
+                                    out.push_str(&format!("  … {}\n", p));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                out.push('\n');
+            }
+            out
+        };
+        let new_chars = messages_text.chars().count();
+        let token_count = crate::infra::llm::token_count::count_text(
+            &snapshot.model, &messages_text,
+        );
+        // 更新 messages 段
+        let old_msg_chars: usize = snapshot.sections.iter()
+            .find(|s| s.key == "messages")
+            .map(|s| s.chars)
+            .unwrap_or(0);
+        snapshot.total_chars = snapshot.total_chars.saturating_sub(old_msg_chars).saturating_add(new_chars);
+        snapshot.sections.retain(|s| s.key != "messages");
+        snapshot.sections.push(crate::infra::types::models::ContextSectionSnapshot {
+            key: "messages".to_string(),
+            label: "Session Messages".to_string(),
+            chars: new_chars,
+            estimated_tokens: token_count.tokens,
+            token_count_method: token_count.method.as_str().to_string(),
+            item_count: memory.messages.len(),
+            content: messages_text,
+            truncated: false,
+        });
+        snapshot.estimated_tokens = snapshot.sections.iter().map(|s| s.estimated_tokens).sum();
+        snapshot.message_count = memory.messages.len();
+    }
+    Ok(Some(snapshot))
 }
 
 #[tauri::command]
@@ -686,4 +774,62 @@ pub async fn get_session_todos(
     let ctx = session_manager.get_or_create(&session_id).await;
     let todos = ctx.todos.lock().await;
     Ok(todos.clone())
+}
+
+#[tauri::command]
+pub async fn compact_conversation(
+    session_id: String,
+    session_manager: tauri::State<'_, SessionManager>,
+    compacting: tauri::State<'_, crate::infra::background::CompactingState>,
+) -> Result<String, String> {
+    compacting.set_compacting(&session_id, true);
+    let result = compact_inner(&session_id, session_manager).await;
+    compacting.set_compacting(&session_id, false);
+    result
+}
+
+async fn compact_inner(
+    session_id: &str,
+    session_manager: tauri::State<'_, SessionManager>,
+) -> Result<String, String> {
+    let ctx = session_manager.get_or_create(session_id).await;
+    let mut memory = ctx.memory.lock().await;
+    let keep = crate::infra::types::constants::COMPACT_KEEP_RECENT_MESSAGES;
+    if memory.messages.len() <= keep {
+        return Ok(format!("消息不足（仅有 {} 条，保留阈值 {} 条），无需压缩。", memory.messages.len(), keep));
+    }
+    let client = reqwest::Client::new();
+    let cfg = {
+        let config = crate::infra::config::config::load_config();
+        config.active_config().clone()
+    };
+    crate::core::session::memory::compact_messages(
+        &mut memory.messages,
+        &client,
+        &cfg.api_key,
+        &cfg.base_url,
+        &cfg.utility_model,
+        crate::infra::llm::api_format::ApiFormat::OpenAI,
+    )
+    .await
+    .map_err(|e| format!("压缩失败: {}", e))?;
+
+    let ids: Vec<String> = (0..memory.messages.len())
+        .map(|i| format!("compact:{}:{}", i, uuid::Uuid::new_v4().simple()))
+        .collect();
+    memory.message_ids = ids;
+    let cloned = memory.clone();
+    drop(memory);
+    drop(ctx);
+
+    let _ = crate::core::session::save_session(session_id, &cloned, None);
+    Ok("上下文已压缩。".to_string())
+}
+
+#[tauri::command]
+pub fn is_session_compacting(
+    session_id: String,
+    compacting: tauri::State<'_, crate::infra::background::CompactingState>,
+) -> bool {
+    compacting.is_compacting(&session_id)
 }

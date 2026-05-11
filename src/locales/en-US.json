@@ -265,6 +265,8 @@
     },
     "context": {
       "emptyContent": "(empty)",
+      "compact": "Compact context",
+      "compactDisabled": "No snapshot data",
       "critical": "Needs attention",
       "warning": "Near limit",
       "safe": "Healthy",

@@ -20,7 +20,7 @@ import { useWindow } from '../../composables/useWindow';
 import { useSessionStore } from '../../stores/session';
 import { useAgentStore } from '../../stores/agent';
 import { usePermissionStore } from '../../stores/permission';
-import type { BackgroundTask, PlanDocument, SubAgentEvent } from '../../types';
+import type { BackgroundTask, PlanDocument, SessionContextSnapshot, SubAgentEvent } from '../../types';
 import ContextInspector from './ContextInspector.vue';
 
 const session = useSessionStore();
@@ -69,6 +69,16 @@ let backgroundTimer: ReturnType<typeof setInterval> | null = null;
 const panelVisible = computed(() => props.standalone || agent.showAgentPanel);
 const standalone = computed(() => props.standalone);
 const currentContextSnapshot = computed(() => agent.currentContextSnapshot);
+
+const refreshContextSnapshot = async () => {
+  if (!session.activeSessionId) return;
+  try {
+    const snapshot = await invoke<SessionContextSnapshot | null>('get_session_context_snapshot', {
+      sessionId: session.activeSessionId,
+    });
+    agent.upsertContextSnapshot(snapshot);
+  } catch { /* ignore */ }
+};
 const currentSubAgents = computed(() => agent.currentSubAgentRuns.slice(0, 12));
 const activeSubAgentCount = computed(() => agent.currentSubAgentRuns.filter((run) => run.status === 'running').length);
 const recentBackgroundTasks = computed(() => backgroundTasks.value.slice(0, 4));
@@ -311,7 +321,7 @@ const backgroundStatusLabel = (status: string): string => {
               <strong>{{ t('monitor.contextBudget') }}</strong>
             </div>
           </div>
-          <ContextInspector :snapshot="currentContextSnapshot" />
+          <ContextInspector :snapshot="currentContextSnapshot" :session-id="session.activeSessionId" @compacted="refreshContextSnapshot" />
         </section>
 
         <div class="monitor-grid">

@@ -14,6 +14,7 @@ const props = defineProps<{
   displayMode: AgentDisplayMode;
   showStatus: boolean;
   elapsed: number;
+  paused: boolean;
 }>();
 
 const assistantText = computed(() =>
@@ -123,7 +124,7 @@ const hasDeveloperSegments = computed(() => developerTimeline.value.length > 0);
 
     <div v-if="tokenUsageHtml" class="agent-turn-tokens" v-html="tokenUsageHtml"></div>
 
-    <ThinkingStatus :running="showStatus" :elapsed="elapsed" />
+    <ThinkingStatus :running="showStatus" :elapsed="elapsed" :paused="paused" />
   </div>
 </template>
 

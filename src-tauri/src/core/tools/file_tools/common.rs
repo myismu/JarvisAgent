@@ -23,6 +23,14 @@ pub(super) const MAX_FILE_SIZE_BYTES: u64 = 256 * 1024;
 /// 输出行数限制：超过此行数自动截断
 pub(super) const MAX_LINES_DEFAULT: usize = 2000;
 
+/// 从工具调用参数中提取 file path，兼容 path / file_path / filePath 三种命名
+pub(super) fn resolve_path(input: &serde_json::Value) -> &str {
+    input["path"].as_str()
+        .or_else(|| input["file_path"].as_str())
+        .or_else(|| input["filePath"].as_str())
+        .unwrap_or("")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TextEncoding {
     Utf8,

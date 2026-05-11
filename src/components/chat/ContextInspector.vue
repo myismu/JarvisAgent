@@ -13,12 +13,19 @@
 - 只展示后端提供的估算值，不改变 Agent 请求或压缩策略
 -->
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { invoke } from '@tauri-apps/api/core';
+import { emit as tauriEmit } from '@tauri-apps/api/event';
 import type { ContextSectionSnapshot, SessionContextSnapshot } from '../../types';
 
 const props = defineProps<{
   snapshot: SessionContextSnapshot | null;
+  sessionId?: string | null;
+}>();
+
+const emit = defineEmits<{
+  (e: 'compacted'): void;
 }>();
 
 const { t } = useI18n();
@@ -116,6 +123,68 @@ const usageTone = computed(() => {
   return 'safe';
 });
 
+const compacting = ref(false);
+const compactError = ref('');
+const compactMessage = ref('');
+
+const compactThreshold = 70; // 达到上下文窗口 70% 才建议压缩
+
+const canCompact = computed(() => {
+  if (!props.snapshot) return false;
+  const tokens = props.snapshot.estimatedTokens || 0;
+  const max = props.snapshot.maxContextTokens;
+  if (max && tokens > 0) return tokens >= max * compactThreshold / 100;
+  // 如果不知道上下文窗口大小，用 token 绝对值判断: > 30k 可压缩
+  return tokens > 30_000;
+});
+
+const compactHint = computed(() => {
+  if (!props.snapshot) return t('monitor.context.compactDisabled');
+  const tokens = props.snapshot.estimatedTokens || 0;
+  const max = props.snapshot.maxContextTokens;
+  if (max) {
+    const pct = Math.round(tokens / max * 100);
+    if (pct >= 90) return `Token 占用 ${pct}%，建议立即压缩`;
+    if (pct >= compactThreshold) return `${t('monitor.context.compact')}（${pct}%）`;
+    return `Token 占用 ${pct}%，可手动压缩`;
+  }
+  if (tokens >= 50_000) return `Token 占用 ${formatNumber(tokens)}，建议立即压缩`;
+  if (tokens >= 30_000) return t('monitor.context.compact');
+  return `Token 占用 ${formatNumber(tokens)}，可手动压缩`;
+});
+
+const triggerCompact = async () => {
+  if (!props.sessionId || compacting.value) return;
+  if (!confirm(`确定压缩上下文？\n当前 ${formatToken(props.snapshot?.estimatedTokens || 0)} tokens\n压缩期间请勿操作，压缩完成后需要刷新上下文。`)) return;
+
+  compacting.value = true;
+  compactError.value = '';
+  compactMessage.value = '';
+  tauriEmit('bg-compacting-changed', { compacting: true });
+  try {
+    const result = await invoke<string>('compact_conversation', { sessionId: props.sessionId });
+    compactMessage.value = result;
+    setTimeout(() => { compactMessage.value = ''; }, 4000);
+    tauriEmit('session-compacted', { sessionId: props.sessionId });
+    emit('compacted');
+  } catch (err) {
+    compactError.value = String(err);
+    setTimeout(() => { compactError.value = ''; }, 6000);
+  } finally {
+    compacting.value = false;
+    tauriEmit('bg-compacting-changed', { compacting: false });
+  }
+};
+
+// 挂载时查询后端，恢复 F5 刷新前的压缩状态
+watch(() => props.sessionId, async (sid) => {
+  if (!sid) return;
+  try {
+    const active = await invoke<boolean>('is_session_compacting', { sessionId: sid });
+    compacting.value = active;
+  } catch { /* ignore */ }
+}, { immediate: true });
+
 const usageLabel = computed(() => {
   switch (usageTone.value) {
     case 'critical': return t('monitor.context.critical');
@@ -165,7 +234,28 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
             </template>
           </div>
         </div>
-        <span class="context-health">{{ usageLabel }}</span>
+        <div class="context-hero-actions">
+          <button
+            v-if="sessionId"
+            class="compact-btn"
+            :class="{ 'compact-ready': canCompact, 'is-compacting': compacting }"
+            :disabled="compacting"
+            @click="triggerCompact"
+            :title="compacting ? '压缩中...' : compactHint"
+          >
+            <svg v-if="compacting" class="compact-spinner" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+              <circle cx="12" cy="12" r="10" stroke-opacity="0.2" />
+              <path d="M12 2a10 10 0 0 1 10 10" />
+            </svg>
+            <span v-else class="compact-btn-icon">&#9881;</span>
+            <span class="compact-btn-text">{{ compacting ? '压缩中' : '压缩' }}</span>
+          </button>
+          <span class="context-health">{{ usageLabel }}</span>
+        </div>
+        <Transition name="toast-fade">
+          <div v-if="compactMessage" class="compact-toast compact-toast-success">{{ compactMessage }}</div>
+          <div v-else-if="compactError" class="compact-toast compact-toast-error">{{ compactError }}</div>
+        </Transition>
       </div>
 
       <div class="context-overview-grid">
@@ -317,6 +407,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 }
 
 .context-hero {
+  position: relative;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -369,6 +460,98 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 .context-subtitle {
   margin-top: 3px;
   font-variant-numeric: tabular-nums;
+}
+
+.context-hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.compact-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--glass-bg);
+  color: var(--text-muted);
+  font-size: 0.65rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.compact-btn:hover {
+  color: var(--accent-yellow);
+  border-color: var(--accent-yellow);
+}
+.compact-btn.compact-ready {
+  color: var(--accent-yellow);
+  border-color: color-mix(in srgb, var(--accent-yellow) 50%, transparent);
+}
+.compact-btn.is-compacting {
+  color: var(--accent-blue);
+  border-color: color-mix(in srgb, var(--accent-blue) 40%, transparent);
+  cursor: wait;
+}
+.compact-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+.compact-btn-icon {
+  font-size: 0.75rem;
+  line-height: 1;
+}
+.compact-btn-text {
+  line-height: 1;
+}
+.compact-spinner {
+  flex-shrink: 0;
+  animation: compact-spin 0.8s linear infinite;
+}
+@keyframes compact-spin {
+  to { transform: rotate(360deg); }
+}
+
+.compact-toast {
+  position: absolute;
+  bottom: -36px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  max-width: 340px;
+  padding: 5px 14px;
+  border-radius: 6px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 1.4;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
+}
+.compact-toast-success {
+  color: #22c55e;
+  background: color-mix(in srgb, #22c55e 14%, var(--surface-strong));
+  border: 1px solid color-mix(in srgb, #22c55e 30%, transparent);
+}
+.compact-toast-error {
+  color: #ef4444;
+  background: color-mix(in srgb, #ef4444 14%, var(--surface-strong));
+  border: 1px solid color-mix(in srgb, #ef4444 30%, transparent);
+}
+
+.toast-fade-enter-active,
+.toast-fade-leave-active {
+  transition: all 0.2s ease;
+}
+.toast-fade-enter-from,
+.toast-fade-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(4px);
 }
 
 .context-health {

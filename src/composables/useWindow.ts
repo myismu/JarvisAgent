@@ -322,11 +322,19 @@ export function useWindow() {
         event.preventDefault();
         closingMainWindow = true;
         await lastSave;
-        await closeMonitorWindow();
+        // 关闭监控窗口加超时，防止 addEventListener 挂起导致主窗口关不掉
+        // 2 秒后无论监控窗口是否关闭成功，都继续关闭主窗口
+        await Promise.race([
+          closeMonitorWindow(),
+          new Promise((resolve) => window.setTimeout(resolve, 2000)),
+        ]);
         await currentWindow.close();
       }));
       unlisteners.push(await listen(TauriEvent.WINDOW_DESTROYED, async () => {
-        await closeMonitorWindow();
+        await Promise.race([
+          closeMonitorWindow(),
+          new Promise((resolve) => window.setTimeout(resolve, 2000)),
+        ]);
       }, { target: { kind: "Window", label: MAIN_WINDOW_LABEL } }));
     }
 

@@ -77,15 +77,29 @@ pub async fn compact_messages(
     model_id: &str,
     api_format: ApiFormat,
 ) -> Result<(), MemoryError> {
+    // 保留最近 N 条消息不参与压缩
+    let keep_recent = crate::infra::types::constants::COMPACT_KEEP_RECENT_MESSAGES;
+    let recent: Vec<_> = if messages.len() > keep_recent {
+        messages.drain(messages.len() - keep_recent..).collect()
+    } else {
+        Vec::new()
+    };
+
     let summary = call_summarize_llm(messages, client, api_key, base_url, model_id, api_format).await?;
 
     messages.clear();
     messages.push(Message::User {
-        content: Content::Single(format!("[Conversation compressed.]\n\n{}", summary)),
+        content: Content::Single("[用户请求压缩上下文]".to_string()),
     });
     messages.push(Message::Assistant {
-        content: Content::Single("Understood. Continuing.".to_string()),
+        content: Content::Single(format!(
+            "[上下文压缩摘要]\n\n以下是对此前对话内容的自动摘要，用于保持上下文连贯性。\n\n---\n{}",
+            summary
+        )),
     });
+
+    // 把保留的最近消息追加回来
+    messages.extend(recent);
 
     Ok(())
 }
@@ -240,26 +254,25 @@ pub async fn auto_compact(
     let transcript_path = append_transcript(session_id, &json_content)?;
     println!("[auto_compact] Transcript saved to {}", transcript_path);
 
-    // 委托核心压缩逻辑
+    // 委托核心压缩逻辑（内部保留最近 N 条不压缩）
     compact_messages(&mut memory.messages, client, api_key, base_url, model_id, api_format).await?;
 
-    // 视图引用方案：压缩消息写入 session_messages 表（source='compact'），
-    // message_ids 指向它们，LLM 读这些消息，UI 自动跳过（filter source != 'compact'）
-    let compact_ids = vec![
-        format!("compact:{}:user", uuid::Uuid::new_v4().simple()),
-        format!("compact:{}:asst", uuid::Uuid::new_v4().simple()),
-    ];
+    // 生成 message_ids（前两条是压缩摘要，后面是保留的最近消息）
+    let message_ids: Vec<String> = (0..memory.messages.len())
+        .map(|i| format!("compact:{}:{}", i, uuid::Uuid::new_v4().simple()))
+        .collect();
 
-    // 将转录路径补充到摘要消息中
-    if let Some(msg) = memory.messages.first_mut() {
-        if let Message::User {
+    // 将转录路径补充到 Assistant 摘要消息中（messages[1]）
+    if memory.messages.len() >= 2 {
+        if let Message::Assistant {
             content: Content::Single(ref mut text),
-        } = msg
+        } = memory.messages[1]
         {
+            let prefix = "[上下文压缩摘要]\n\n以下是对此前对话内容的自动摘要，用于保持上下文连贯性。\n\n---\n";
+            let summary_body = text.strip_prefix(prefix).unwrap_or(text);
             *text = format!(
-                "[Conversation compressed. Transcript: {:?}]\n\n{}",
-                transcript_path,
-                text.trim_start_matches("[Conversation compressed.]\n\n")
+                "[上下文压缩摘要 · 转录: {:?}]\n\n以下是对此前对话内容的自动摘要，用于保持上下文连贯性。\n\n---\n{}",
+                transcript_path, summary_body
             );
         }
     }
@@ -272,14 +285,14 @@ pub async fn auto_compact(
     if let Err(e) = crate::core::session::repository::append_or_upsert_session_messages(
         session_id,
         &memory.messages,
-        &compact_ids,
+        &message_ids,
         "compact",
         now,
     ) {
         println!("[auto_compact] 保存压缩消息到 session_messages 失败: {}", e);
     }
 
-    memory.message_ids = compact_ids;
+    memory.message_ids = message_ids;
 
     Ok(())
 }

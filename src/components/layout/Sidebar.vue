@@ -214,7 +214,6 @@ const createNewSession = async (withSandbox: boolean = false) => {
     chat.triggerRender();
     await notifyMonitorSessionChanged(null);
 
-    showSessionActionMessage(withSandbox ? t('sidebar.sandboxReady') : t('sidebar.newReady'));
     requestAnimationFrame(() => chat.forceScrollToBottom());
   } catch (err) {
     console.error('准备新会话失败:', err);
