@@ -30,6 +30,10 @@ fn is_file_mutation_command(cmd: &str) -> Option<&'static str> {
     if lower.contains("set-content") || lower.contains("out-file") || lower.contains("add-content") {
         return Some("请使用 WriteFile 或 EditFile 工具，不要用 PowerShell cmdlet 写文件");
     }
+    // New-Item -ItemType File 创建文件需拦，-ItemType Directory 放行
+    if lower.contains("new-item") && lower.contains("file") {
+        return Some("请使用 WriteFile 工具，不要用 New-Item 创建文件");
+    }
     if lower.contains("remove-item") || lower.contains("del ") || lower.contains("rm ") || lower.contains("rmdir ") {
         return Some("请使用 DeleteFile 工具，不要用 shell 命令删除文件");
     }

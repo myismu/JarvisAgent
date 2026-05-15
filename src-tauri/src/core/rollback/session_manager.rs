@@ -16,7 +16,7 @@ use crate::core::orchestration::multi_agent::{
     AgentSandbox, Conflict, ConflictResolution, MergeEngine, MergeResult,
     SandboxComparison, SandboxManager,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -369,21 +369,25 @@ impl SessionSnapshotManager {
         let tree = self.tree.read().await;
         // 收集每个文件的最早 old_content 作为初始状态
         let mut initial_files: HashMap<String, String> = HashMap::new();
+        let mut created_paths: HashSet<String> = HashSet::new();
         for snapshot in tree.nodes.values() {
             for patch in &snapshot.patches {
-                let (path, old_content) = match patch {
-                    Patch::UpdateFile { path, old_content, .. } => (path, old_content),
-                    Patch::DeleteFile { .. } => {
-                        continue;
+                match patch {
+                    Patch::UpdateFile { path, old_content, .. } => {
+                        initial_files.entry(path.clone()).or_insert_with(|| old_content.clone());
                     }
-                    Patch::CreateFile { .. } => {
-                        continue;
+                    Patch::DeleteFile { path, content_hash } => {
+                        if let Some(hash) = content_hash {
+                            if let Ok(Some(content)) = crate::core::rollback::store::load_content(&self.session_id, hash) {
+                                initial_files.entry(path.clone()).or_insert_with(|| content);
+                            }
+                        }
                     }
-                    Patch::RenameFile { .. } => {
-                        continue;
+                    Patch::CreateFile { path, .. } => {
+                        created_paths.insert(path.clone());
                     }
-                };
-                initial_files.entry(path.clone()).or_insert_with(|| old_content.clone());
+                    _ => {}
+                }
             }
         }
         drop(tree);
@@ -391,6 +395,7 @@ impl SessionSnapshotManager {
         // 用每个文件的最早状态构建初始工作区
         let mut workspace = Workspace::new();
         workspace.files = initial_files;
+        workspace.delete_paths = created_paths;
 
         self.replay_engine
             .rollback_to_initial_state(&workspace, target_dir)

@@ -322,7 +322,6 @@ pub async fn propose_plan(
         let _ = crate::core::session::save_session(session_id, &memory, None);
     }
 
-    // 断点续传：方案已保存，Agent 主动停止。用户决策触发新 ask_jarvis。
-    crate::jarvis_info!("JARVIS", "[JARVIS] 方案已提交，Agent 暂停等待审批: {} ({})", title, id);
-    format!("方案「{}」已提交审批面板。Agent 已停止等待用户决策。用户决策后将自动断点续传。", title)
+    crate::jarvis_info!("JARVIS", "[JARVIS] 方案已提交审批面板: {} ({})", title, id);
+    format!("方案「{}」已提交审批面板。请等待用户查阅后做出决策。", title)
 }

@@ -811,29 +811,6 @@ impl PipelineState {
             // 存储助手回复
             self.store_assistant_response(current_blocks).await;
 
-            // 检测方案审批等待标记（断点续传：Agent 主动停止）
-            let plan_awaiting = tool_results.iter().any(|b| {
-                matches!(b, ContentBlock::ToolResult { content, .. }
-                    if content.contains("Agent 已停止等待用户决策"))
-            });
-            if plan_awaiting {
-                self.final_answer = "方案已提交到审批面板，等待您的决策。".to_string();
-                let _ = self.app.emit("chat-stream", json!({
-                    "content": self.final_answer,
-                    "sessionId": self.sid,
-                }));
-                {
-                    let mut session = self.ctx.memory.lock().await;
-                    append_message(&mut session, Message::User {
-                        content: Content::Multiple(tool_results),
-                    });
-                    append_message(&mut session, Message::Assistant {
-                        content: Content::Single(self.final_answer.clone()),
-                    });
-                }
-                break;
-            }
-
             // 判断是否继续循环
             if tool_results.is_empty() {
                 self.final_answer = current_text_this_turn;
@@ -845,10 +822,11 @@ impl PipelineState {
                     self.final_answer = std::mem::take(&mut current_thinking_this_turn);
                 }
 
-                // 第3层防御：响应后置拦截 — 检测正文中的计划模式
+                // 第3层防御：响应后置拦截 — 仅在编辑模式下检测正文中的计划模式
+                // plan 模式下 LLM 自然收尾会提到方案细节，不应拦截
                 let work_mode = self.ctx.agent_work_mode.lock().await.clone();
-                if crate::core::intent::plan_detector::detect_plan_in_text(&self.final_answer)
-                    && work_mode != "chat"
+                if work_mode == "edit"
+                    && crate::core::intent::plan_detector::detect_plan_in_text(&self.final_answer)
                 {
                     println!(
                         "[JARVIS] 响应后置拦截：检测到正文中的计划内容，重定向到 ProposePlan"

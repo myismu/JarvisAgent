@@ -367,21 +367,20 @@ onUnmounted(() => {
     <div v-if="!collapsed" class="sidebar-content">
       <div class="sidebar-main">
       <div class="sidebar-section">
-        <div class="sidebar-title">
-          <span>{{ t('sidebar.sessions') }}</span>
-          <div class="session-btn-group">
-            <button type="button" class="new-session-btn" @click.stop="createNewSession(false)" :title="t('sidebar.newSession')">
-              <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none">
-                <line x1="12" y1="5" x2="12" y2="19"></line>
-                <line x1="5" y1="12" x2="19" y2="12"></line>
-              </svg>
-            </button>
-            <button type="button" class="new-session-btn sandbox-btn" @click.stop="createNewSession(true)" :title="t('sidebar.newSandboxSession')">
-              <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-              </svg>
-            </button>
-          </div>
+        <div class="session-btn-group">
+          <button type="button" class="new-session-btn" @click.stop="createNewSession(false)">
+            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            <span>{{ t('sidebar.newSession') }}</span>
+          </button>
+          <button type="button" class="new-session-btn sandbox-btn" @click.stop="createNewSession(true)">
+            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+            </svg>
+            <span>{{ t('sidebar.newSandboxSession') }}</span>
+          </button>
         </div>
         <div
           v-if="sessionActionMessage"
@@ -637,7 +636,9 @@ onUnmounted(() => {
 
 .session-btn-group {
   display: flex;
-  gap: 2px;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 12px;
 }
 
 .session-feedback {
@@ -661,30 +662,33 @@ onUnmounted(() => {
 }
 
 .new-session-btn {
-  background: var(--glass-bg-light);
-  border: 1px solid var(--glass-border-subtle);
-  color: var(--text-muted);
+  background: transparent;
+  border: 1px dashed var(--glass-border-subtle);
+  color: var(--text-main);
   cursor: pointer;
-  padding: 4px;
-  display: inline-flex;
+  padding: 10px 12px;
+  display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 8px;
+  width: 100%;
   border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  font-weight: 500;
   transition: all var(--transition-fast);
   -webkit-app-region: no-drag;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  text-align: left;
 }
-.new-session-btn:hover {
-  color: var(--accent-blue);
-  background: var(--glass-bg);
-  border-color: var(--glass-border);
-  transform: scale(1.05);
+
+.new-session-btn span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+.new-session-btn:hover,
 .sandbox-btn:hover {
-  color: var(--accent-green);
-  background: rgba(34, 197, 94, 0.1);
-  border-color: rgba(34, 197, 94, 0.2);
+  background: var(--glass-bg-light);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
 }
 
 .sandbox-badge {

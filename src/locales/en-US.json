@@ -11,7 +11,7 @@
   "sidebar": {
     "sessions": "Sessions",
     "newSession": "New session",
-    "newSandboxSession": "New sandbox session (choose workspace)",
+    "newSandboxSession": "New sandbox session",
     "selectWorkspace": "Select session workspace (sandbox)",
     "dialogOpenError": "Failed to open directory picker.",
     "renameRequired": "Session name is required.",

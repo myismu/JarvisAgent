@@ -129,7 +129,13 @@ fn migrate_v7_decouple_session_messages(conn: &Connection) -> Result<(), rusqlit
             "trigger_user_message_id TEXT",
         ),
     ] {
-        if !has_column(conn, table, column)? {
+        // 表可能不存在（新数据库已改为 agent_run_patches）→ 先检查表
+        let table_exists: bool = conn
+            .prepare(&format!("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='{}'", table))
+            .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        if table_exists && !has_column(conn, table, column)? {
             conn.execute(&format!("ALTER TABLE {} ADD COLUMN {}", table, definition), [])?;
         }
     }
@@ -162,11 +168,12 @@ fn migrate_v7_decouple_session_messages(conn: &Connection) -> Result<(), rusqlit
          ON checkpoint_user_message_links(session_id, message_id)",
         [],
     )?;
-    conn.execute(
+    // pending_snapshot_patches 已在 v9 重命名为 agent_run_patches，表不存在时跳过
+    let _ = conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_pending_snapshot_patches_trigger_message_id
          ON pending_snapshot_patches(session_id, trigger_user_message_id)",
         [],
-    )?;
+    );
 
     Ok(())
 }
@@ -197,11 +204,31 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
     if current_version < 9 {
         conn.execute("DROP TABLE IF EXISTS snapshots", [])
             .map_err(|e| format!("v9 迁移失败: {}", e))?;
-        // 重命名 pending_snapshot_patches → agent_run_patches
         let _ = conn.execute(
             "ALTER TABLE pending_snapshot_patches RENAME TO agent_run_patches",
             [],
         );
+        // 重建 checkpoint_user_message_links，移除指向 snapshots 的外键
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS checkpoint_user_message_links_new (
+                session_id TEXT NOT NULL,
+                user_message_index INTEGER NOT NULL,
+                checkpoint_id TEXT NOT NULL,
+                has_file_edits INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                message_id TEXT,
+                updated_at INTEGER,
+                PRIMARY KEY(session_id, user_message_index),
+                UNIQUE(session_id, checkpoint_id),
+                FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            INSERT OR IGNORE INTO checkpoint_user_message_links_new
+                SELECT session_id, user_message_index, checkpoint_id, has_file_edits, created_at, message_id, updated_at
+                FROM checkpoint_user_message_links;
+            DROP TABLE checkpoint_user_message_links;
+            ALTER TABLE checkpoint_user_message_links_new RENAME TO checkpoint_user_message_links;",
+        )
+        .map_err(|e| format!("v9 迁移失败: {}", e))?;
     }
 
     conn.execute_batch(

@@ -11,7 +11,7 @@
   "sidebar": {
     "sessions": "会话",
     "newSession": "新建会话",
-    "newSandboxSession": "新建沙箱会话（指定工作目录）",
+    "newSandboxSession": "新建沙箱会话",
     "selectWorkspace": "选择会话工作目录（沙箱）",
     "dialogOpenError": "目录选择器调用失败。",
     "renameRequired": "会话名称不能为空。",
