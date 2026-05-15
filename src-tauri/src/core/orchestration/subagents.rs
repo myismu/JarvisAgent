@@ -43,7 +43,7 @@ pub struct SubAgentRun {
     pub session_id: String,
     pub task_id: Option<i32>,
     pub label: String,
-    pub agent_type: String,
+    pub agent_role: String,
     pub prompt_preview: String,
     pub read_only: bool,
     pub status: SubAgentStatus,
@@ -154,7 +154,7 @@ impl SubAgentMonitor {
         read_only: bool,
         task_id: Option<i32>,
         label: Option<String>,
-        agent_type: String,
+        agent_role: String,
         max_loops: usize,
     ) -> String {
         let run_id = format!("sa_{}", uuid::Uuid::new_v4().to_string()[..8].to_string());
@@ -170,7 +170,7 @@ impl SubAgentMonitor {
             session_id: session_id.to_string(),
             task_id,
             label,
-            agent_type,
+            agent_role,
             prompt_preview,
             read_only,
             status: SubAgentStatus::Running,

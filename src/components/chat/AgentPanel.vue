@@ -106,9 +106,11 @@ const formatDuration = (timestamp?: number | null): string => {
 
 const formatCountdown = (run: { status: string; startedAt: number; timeoutSecs: number }): string => {
   if (run.status !== 'running') return '';
+  if (!run.startedAt || !run.timeoutSecs) return '';
   void elapsed.value; // 每 1s 刷新，利用现有 timer
   const deadline = run.startedAt + run.timeoutSecs * 1000;
   const remaining = Math.max(0, Math.floor((deadline - Date.now()) / 1000));
+  if (!isFinite(remaining)) return '';
   if (remaining > 3600) return `${Math.floor(remaining / 3600)}h`;
   return `${Math.floor(remaining / 60)}:${(remaining % 60).toString().padStart(2, '0')}`;
 };
@@ -164,6 +166,12 @@ const toolEventIcon = (eventType: string): string => {
 };
 
 const toolEventClass = (eventType: string): string => `tl-${eventType}`;
+
+const agentRoleLabel = (agentRole: string): string => {
+  const key = `monitor.subAgentType.${agentRole}`;
+  const translated = t(key);
+  return translated === key ? agentRole : translated;
+};
 
 const subAgentStatusLabel = (status: string): string => {
   switch (status) {
@@ -344,7 +352,7 @@ const backgroundStatusLabel = (status: string): string => {
                 <div class="subagent-header" @click="toggleExpand(run.runId)">
                   <span class="status-dot"></span>
                   <strong>{{ run.label || run.runId }}</strong>
-                  <span class="agent-type-badge" :title="`Agent: ${run.agentType}`">{{ run.agentType }}</span>
+                  <span class="agent-type-badge" :title="`Agent: ${run.agentRole}`">{{ agentRoleLabel(run.agentRole) }}</span>
                   <span v-if="run.readOnly" class="readonly-badge" :title="t('monitor.readOnly')">R</span>
                   <span v-if="run.status === 'running'" class="phase-badge" :class="phaseClass(run.phase)">{{ phaseLabel(run.phase) }}</span>
                   <span class="status-label">{{ subAgentStatusLabel(run.status) }}</span>

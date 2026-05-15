@@ -129,8 +129,8 @@ onMounted(async () => {
     const sid = event.payload.sessionId;
     if (!sid || sid !== session.activeSessionId) return;
     try {
-      const history = await invoke<string>('get_session_history', { sessionId: sid });
-      session.replaceSessionHistory(sid, history);
+      const messages = await invoke<any[]>('get_session_messages', { sessionId: sid });
+      session.replaceSessionMessages(sid, messages);
     } catch { /* ignore */ }
   });
   await initListeners();

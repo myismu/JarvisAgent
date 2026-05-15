@@ -52,6 +52,32 @@ export const usePermissionStore = defineStore("permission", () => {
     }
   }
 
+  function updatePlanProposalStreamingContent(sessionId: string, chunk: string) {
+    if (!sessionId) return;
+    const existing = planProposals.value[sessionId];
+    if (existing) {
+      planProposals.value = {
+        ...planProposals.value,
+        [sessionId]: { ...existing, content: existing.content + chunk },
+      };
+    } else {
+      planProposals.value = {
+        ...planProposals.value,
+        [sessionId]: {
+          id: `plan_stream_${Date.now()}`,
+          title: "方案生成中...",
+          content: chunk,
+          sessionId,
+        },
+      };
+    }
+  }
+
+  function finalizePlanProposal(sessionId: string, proposal: PlanProposal) {
+    if (!sessionId) return;
+    planProposals.value[sessionId] = proposal;
+  }
+
   return {
     permissionRequests,
     planProposals,
@@ -61,5 +87,7 @@ export const usePermissionStore = defineStore("permission", () => {
     currentPlanDocuments,
     upsertPlanDocument,
     updatePlanProposalContent,
+    updatePlanProposalStreamingContent,
+    finalizePlanProposal,
   };
 });

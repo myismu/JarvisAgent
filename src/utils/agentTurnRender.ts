@@ -1,5 +1,4 @@
 import type {
-  AgentCurrentTurn,
   AgentDisplayMode,
   AgentExecutionLog,
   AgentTextBlock,
@@ -50,19 +49,6 @@ function describeThinking(content: string) {
 
   const sentence = text.split(/[。.!?？；;]/)[0]?.trim() || text;
   return sentence.length > 28 ? `${sentence.slice(0, 28)}...` : sentence;
-}
-
-export function snapshotFromTurn(turn: AgentCurrentTurn): AgentTurnSnapshot {
-  return {
-    version: 1,
-    status: turn.isRunning ? "RUNNING" : "DONE",
-    textBlocks: turn.textBlocks,
-    thinkingBlocks: turn.thinkingBlocks,
-    toolCalls: turn.toolCalls,
-    logs: turn.logs,
-    tokens: turn.tokens,
-    createdAt: Date.now(),
-  };
 }
 
 function renderTextBlocks(blocks: AgentTextBlock[]) {
@@ -210,7 +196,7 @@ ${body}
 </details>`;
 }
 
-function describeThinkingStatic(content: string) {
+export function describeThinkingStatic(content: string) {
   const text = content.replace(/\s+/g, " ").trim();
   if (!text) return "分析中...";
   if (/(方案|计划|审批|plan|proposal)/i.test(text)) return "制定方案";
@@ -222,32 +208,6 @@ function describeThinkingStatic(content: string) {
   return sentence.length > 20 ? `${sentence.slice(0, 20)}...` : sentence;
 }
 
-function renderDeveloperToolCall(tool: AgentToolCallView, live: boolean) {
-  const statusLabel = tool.status === "completed" ? "完成" : tool.status === "running" ? "执行中" : tool.status === "error" ? "失败" : "";
-  const label = toolActionLabel(tool.name, tool.status, tool);
-  const open = live && (tool.status === "running" || tool.status === "error");
-
-  const paramsHtml = tool.inputSummary
-    ? `<div class="dev-tool-section"><div class="dev-tool-section-label">参数</div><pre class="dev-tool-pre">${escapeHtml(tool.inputSummary)}</pre></div>`
-    : "";
-  const outputHtml = tool.outputSummary
-    ? `<div class="dev-tool-section"><div class="dev-tool-section-label">输出</div><pre class="dev-tool-pre">${escapeHtml(tool.outputSummary)}</pre></div>`
-    : "";
-  const errorHtml = tool.error
-    ? `<div class="dev-tool-section error"><div class="dev-tool-section-label">错误</div><pre class="dev-tool-pre">${escapeHtml(tool.error)}</pre></div>`
-    : "";
-  const bodyHtml = paramsHtml + outputHtml + errorHtml;
-
-  return `<details class="dev-tool ${escapeHtml(tool.status)}" ${open ? "open" : ""}>
-<summary class="dev-tool-summary">
-  <span class="dev-status-dot ${escapeHtml(tool.status)}"></span>
-  <code class="dev-tool-name">${escapeHtml(tool.name)}</code>
-  <span class="dev-tool-action">${escapeHtml(label)}</span>
-  <span class="dev-tool-status">${escapeHtml(statusLabel)}</span>
-</summary>
-${bodyHtml ? `<div class="dev-tool-body">${bodyHtml}</div>` : ""}
-</details>`;
-}
 
 export function renderAgentTurnSnapshot(
   snapshot: AgentTurnSnapshot,
@@ -269,11 +229,11 @@ export function renderAgentTurnSnapshot(
 
   // 开发者模式：所有块按时间戳交错渲染
   if (displayMode === "developer") {
-    return renderDeveloperTimeline(snapshot, tokenHtml, noticeHtml);
+    return renderDeveloperTimeline(snapshot, tokenHtml, noticeHtml, live);
   }
 
   // 用户模式：execution 面板 + 回答文本
-  const answerHtml = renderTextBlocks(snapshot.textBlocks);
+  const answerHtml = snapshot.toolCalls.length > 0 ? "" : renderTextBlocks(snapshot.textBlocks);
   const executionHtml = renderExecutionPanel(snapshot, displayMode, live);
 
   return `<div class="agent-turn-render ${displayMode}">
@@ -284,42 +244,11 @@ ${noticeHtml}
 </div>`;
 }
 
-const renderer = {
-  text(block: { content: string }) {
-    return renderMarkdown(block.content.trim());
-  },
-  thinking(block: { content: string; status: string }, live: boolean) {
-    const open = live && block.status === "streaming";
-    return `<details class="dev-thinking${open ? " streaming" : ""}" ${open ? "open" : ""}>
-<summary class="dev-thinking-summary">
-  <span class="dev-status-dot${open ? " running" : ""}"></span>
-  <span class="dev-thinking-label">${escapeHtml(describeThinkingStatic(block.content))}</span>
-</summary>
-<div class="dev-thinking-body">${renderMarkdown(block.content)}</div>
-</details>`;
-  },
-  tool(tool: AgentToolCallView, live: boolean) {
-    return renderDeveloperToolCall(tool, live);
-  },
-  log(log: { content: string; loop?: number }) {
-    return `<div class="dev-log">
-<div class="dev-log-header">
-  <span class="dev-log-dot red"></span>
-  <span class="dev-log-dot yellow"></span>
-  <span class="dev-log-dot green"></span>
-  <span class="dev-log-title">输出 #${log.loop || 1}</span>
-</div>
-<div class="dev-log-body">${renderMarkdown(log.content)}</div>
-</div>`;
-  },
-};
-
-/** 统一的开发者时间线条目，直播和历史共用 */
-export interface DevTimelineItem {
-  type: "text" | "thinking" | "tool" | "log";
-  timestamp: number;
-  html: string;
-}
+export type DevTimelineItem =
+  | { type: "text"; timestamp: number; content: string }
+  | { type: "thinking"; timestamp: number; content: string; status: string; streaming: boolean }
+  | { type: "tool"; timestamp: number; tool: AgentToolCallView; streaming: boolean }
+  | { type: "log"; timestamp: number; content: string; loop: number };
 
 /** 从快照数据构建开发者时间线（按时间戳交错排序），直播和历史共用 */
 export function buildDeveloperTimeline(
@@ -335,21 +264,37 @@ export function buildDeveloperTimeline(
 
   snapshot.textBlocks.forEach((block) => {
     if (!block.content.trim()) return;
-    timeline.push({ type: "text", timestamp: block.timestamp, html: renderer.text(block) });
+    timeline.push({ type: "text", timestamp: block.timestamp, content: block.content.trim() });
   });
 
   snapshot.thinkingBlocks.forEach((block) => {
     if (!block.content.trim()) return;
-    timeline.push({ type: "thinking", timestamp: block.timestamp, html: renderer.thinking(block, live) });
+    timeline.push({
+      type: "thinking",
+      timestamp: block.timestamp,
+      content: block.content,
+      status: block.status,
+      streaming: live && block.status === "streaming",
+    });
   });
 
   snapshot.toolCalls.forEach((tool) => {
-    timeline.push({ type: "tool", timestamp: tool.timestamp, html: renderer.tool(tool, live) });
+    timeline.push({
+      type: "tool",
+      timestamp: tool.timestamp,
+      tool,
+      streaming: live && (tool.status === "running" || tool.status === "error"),
+    });
   });
 
   snapshot.logs.forEach((log) => {
     if (!log.content.trim()) return;
-    timeline.push({ type: "log", timestamp: log.timestamp, html: renderer.log(log) });
+    timeline.push({
+      type: "log",
+      timestamp: log.timestamp,
+      content: log.content,
+      loop: log.loop || 1,
+    });
   });
 
   timeline.sort((a, b) => a.timestamp - b.timestamp);
@@ -357,12 +302,17 @@ export function buildDeveloperTimeline(
 }
 
 function splitTimeline(timeline: DevTimelineItem[]) {
-  // 最后一个 text 块始终在折叠外（最终总结），其余全进折叠
   let lastTextIdx = -1;
   for (let i = timeline.length - 1; i >= 0; i--) {
-    if (timeline[i].type === "text") { lastTextIdx = i; break; }
+    if (timeline[i].type === "text") {
+      lastTextIdx = i;
+      break;
+    }
   }
   if (lastTextIdx < 0) return { execItems: timeline, finalItems: [] };
+
+  const hasLaterToolOrLog = timeline.slice(lastTextIdx + 1).some((item) => item.type === "tool" || item.type === "log");
+  if (hasLaterToolOrLog) return { execItems: timeline, finalItems: [] };
 
   const execItems: DevTimelineItem[] = [];
   const finalItems: DevTimelineItem[] = [];
@@ -373,23 +323,78 @@ function splitTimeline(timeline: DevTimelineItem[]) {
   return { execItems, finalItems };
 }
 
+function renderDevItemToHtml(item: DevTimelineItem): string {
+  switch (item.type) {
+    case "text":
+      return renderMarkdown(item.content);
+    case "thinking": {
+      const open = item.streaming;
+      return `<details class="dev-thinking${open ? " streaming" : ""}" ${open ? "open" : ""}>
+<summary class="dev-thinking-summary">
+  <span class="dev-status-dot${open ? " running" : ""}"></span>
+  <span class="dev-thinking-label">${escapeHtml(describeThinkingStatic(item.content))}</span>
+</summary>
+<div class="dev-thinking-body">${renderMarkdown(item.content)}</div>
+</details>`;
+    }
+    case "tool": {
+      const tool = item.tool;
+      const statusLabel = tool.status === "completed" ? "完成" : tool.status === "running" ? "执行中" : tool.status === "error" ? "失败" : "";
+      const label = toolActionLabel(tool.name, tool.status, tool);
+      const open = item.streaming;
+
+      const paramsHtml = tool.inputSummary
+        ? `<div class="dev-tool-section"><div class="dev-tool-section-label">参数</div><pre class="dev-tool-pre">${escapeHtml(tool.inputSummary)}</pre></div>`
+        : "";
+      const outputHtml = tool.outputSummary
+        ? `<div class="dev-tool-section"><div class="dev-tool-section-label">输出</div><pre class="dev-tool-pre">${escapeHtml(tool.outputSummary)}</pre></div>`
+        : "";
+      const errorHtml = tool.error
+        ? `<div class="dev-tool-section error"><div class="dev-tool-section-label">错误</div><pre class="dev-tool-pre">${escapeHtml(tool.error)}</pre></div>`
+        : "";
+      const bodyHtml = paramsHtml + outputHtml + errorHtml;
+
+      return `<details class="dev-tool ${escapeHtml(tool.status)}" ${open ? "open" : ""}>
+<summary class="dev-tool-summary">
+  <span class="dev-status-dot ${escapeHtml(tool.status)}"></span>
+  <code class="dev-tool-name">${escapeHtml(tool.name)}</code>
+  <span class="dev-tool-action">${escapeHtml(label)}</span>
+  <span class="dev-tool-status">${escapeHtml(statusLabel)}</span>
+</summary>
+${bodyHtml ? `<div class="dev-tool-body">${bodyHtml}</div>` : ""}
+</details>`;
+    }
+    case "log":
+      return `<div class="dev-log">
+<div class="dev-log-header">
+  <span class="dev-log-dot red"></span>
+  <span class="dev-log-dot yellow"></span>
+  <span class="dev-log-dot green"></span>
+  <span class="dev-log-title">输出 #${item.loop || 1}</span>
+</div>
+<div class="dev-log-body">${renderMarkdown(item.content)}</div>
+</div>`;
+  }
+}
+
 function renderDeveloperTimeline(
   snapshot: AgentTurnSnapshot,
   tokenHtml: string,
   noticeHtml: string,
+  live = false,
 ) {
-  const timeline = buildDeveloperTimeline(snapshot, false);
+  const timeline = buildDeveloperTimeline(snapshot, live);
   const { execItems, finalItems } = splitTimeline(timeline);
 
   const execHtml =
     execItems.length > 0
       ? `<details class="dev-execution-fold">
 <summary class="dev-execution-summary">执行过程（${execItems.length} 步）</summary>
-<div class="dev-layout">${execItems.map((e) => e.html).join("")}</div>
+<div class="dev-layout">${execItems.map(renderDevItemToHtml).join("")}</div>
 </details>`
       : "";
 
-  const finalHtml = finalItems.map((e) => e.html).join("");
+  const finalHtml = finalItems.map(renderDevItemToHtml).join("");
 
   return `<div class="agent-turn-render ${"developer"}">
 ${execHtml}
@@ -397,13 +402,6 @@ ${finalHtml}
 ${tokenHtml}
 ${noticeHtml}
 </div>`;
-}
-
-export function renderAgentCurrentTurn(
-  turn: AgentCurrentTurn,
-  displayMode: AgentDisplayMode,
-) {
-  return renderAgentTurnSnapshot(snapshotFromTurn(turn), displayMode, turn.isRunning);
 }
 
 export function serializeAgentTurnSnapshot(snapshot: AgentTurnSnapshot) {

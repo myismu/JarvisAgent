@@ -3,16 +3,11 @@ import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { JarvisResult } from "../types";
 import { useSessionStore } from "./session";
-import type { SessionViewState } from "./session";
 import { useAgentStore } from "./agent";
 import { usePermissionStore } from "./permission";
 import { usePreferences } from "../composables/usePreferences";
-import { renderMarkdown, renderToolDetails, renderTokenUsage, renderToolStatusLine } from "../utils/markdown";
-import { renderStoredHistory } from "../utils/historyRender";
 import { buildAgentTurnSnapshot } from "../utils/agentTurnState";
 import {
-  renderAgentTurnSnapshot,
-  serializeAgentTurnSnapshot,
   stripPseudoToolCalls,
 } from "../utils/agentTurnRender";
 
@@ -101,16 +96,11 @@ async function refreshContextSnapshot(sessionId: string) {
   } catch { /* 快照拉取不影响主流程 */ }
 }
 
-const ASSISTANT_MESSAGE_CONTENT_CLASS = "message-content current-turn-content";
 export const useChatStore = defineStore("chat", () => {
-  const parsedCurrentTurnHtml = ref("");
   let throttlePending = false;
   let lastRenderTime = 0;
   let scrollToBottomCb: ((force?: boolean) => void) | null = null;
-
-  // 增量渲染状态——只渲染新到达的文本，避免每次全量 markdown 解析
-  let renderedContentStableLen = 0;
-  let cachedContentHtml = "";
+  let sendGeneration = 0;
 
   const rollbackRecalledMessage = ref("");
 
@@ -231,37 +221,7 @@ export const useChatStore = defineStore("chat", () => {
     },
   });
 
-  function buildStructuredAgentResponseHtml(
-    view: SessionViewState,
-    finalContent: string,
-    finalToolBuffer: string,
-    status: string,
-    tokens?: { input: number; output: number; sessionInput?: number; sessionOutput?: number },
-    notice?: string,
-  ) {
-    const prefs = usePreferences();
-    const snapshot = buildAgentTurnSnapshot(view.currentTurn, finalContent, finalToolBuffer, tokens, status);
-    if (notice) {
-      snapshot.notice = notice;
-    }
-    // 渲染快照 HTML
-    const rendered = renderAgentTurnSnapshot(snapshot, prefs.agentAudience.value, false);
-    
-    // 如果快照里有 tokens 但渲染结果里没包含 token-usage 类（可能被 renderAgentTurnSnapshot 内部逻辑跳过），我们强制补上
-    let finalHtml = rendered;
-    if (tokens && (tokens.input > 0 || tokens.output > 0) && !rendered.includes('token-usage')) {
-       finalHtml += renderTokenUsage(tokens.input, tokens.output, tokens.sessionInput, tokens.sessionOutput);
-    }
-
-    return `<div class="chat-message agent-message"><div class="${ASSISTANT_MESSAGE_CONTENT_CLASS}">\n\n${serializeAgentTurnSnapshot(snapshot)}\n${finalHtml}\n\n</div></div>\n\n`;
-  }
-
   function resetRenderState() {
-    renderedContentStableLen = 0;
-    cachedContentHtml = "";
-    toolStatusMap.value = new Map();
-    parsedCurrentTurnHtml.value = "";
-    // 重置节流状态，确保切换会话后 triggerRender 不会被跳过
     throttlePending = false;
     lastRenderTime = 0;
   }
@@ -279,44 +239,7 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   function flushCurrentTurnRender() {
-    const session = useSessionStore();
-    const view = session.getSessionView(session.activeSessionId);
-    let html = "";
-
-    // === 先渲染工具/思考缓冲区（在上方，与最终组装顺序一致） ===
-    const liveToolBuffer = `${renderToolStatusLines()}${view.toolBuffer}${view.thinkingBuffer}`;
-    if (liveToolBuffer.trim()) {
-      // 工具状态行、思考提交会改变内容前缀，不能使用按长度切片的增量缓存。
-      html += renderToolDetails(liveToolBuffer, view.streamActive ? "live" : "done", view.streamActive);
-    }
-
-    // === 再渲染正文内容（在下方） ===
-    const fullContent = stripPseudoToolCalls(`${view.contentBuffer}${view.tempBuffer}`);
-    if (fullContent.length < renderedContentStableLen) {
-      renderedContentStableLen = 0;
-      cachedContentHtml = "";
-    }
-    if (fullContent.length > 0) {
-      const lastNewline = fullContent.lastIndexOf("\n");
-      const stableLen = lastNewline >= 0 ? lastNewline + 1 : 0;
-
-      if (stableLen > renderedContentStableLen) {
-        const newStablePart = fullContent.slice(renderedContentStableLen, stableLen);
-        cachedContentHtml += renderMarkdown(newStablePart);
-        renderedContentStableLen = stableLen;
-      }
-
-      html += cachedContentHtml;
-      const tail = fullContent.slice(renderedContentStableLen);
-      if (tail) {
-        html += renderMarkdown(tail);
-      }
-    } else {
-      renderedContentStableLen = 0;
-      cachedContentHtml = "";
-    }
-
-    parsedCurrentTurnHtml.value = html;
+    renderTick.value++;
     throttlePending = false;
   }
 
@@ -339,46 +262,8 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  // 结构化工具状态——用 Map 替代 HTML 字符串拼接，消除 indexOf 操作
-  const toolStatusMap = ref<Map<string, { tool: string; status: string }>>(new Map());
-
-  function upsertToolStatusLine(_view: any, toolCallId: string, tool: string, status: string) {
-    const next = new Map(toolStatusMap.value);
-    next.set(toolCallId, { tool, status });
-    toolStatusMap.value = next;
-  }
-
-  function renderToolStatusLines(): string {
-    if (toolStatusMap.value.size === 0) return "";
-    let html = "";
-    toolStatusMap.value.forEach((item, toolCallId) => {
-      html += renderToolStatusLine(toolCallId, item.tool, item.status);
-    });
-    return html;
-  }
-
-  const parsedHistory = computed(() => {
-    const session = useSessionStore();
-    const prefs = usePreferences();
-    const view = session.currentSessionView;
-    if (view.messages.length === 0) {
-      return renderStoredHistory(view.jarvisResponse, session.READY_TEXT, prefs.agentAudience.value);
-    }
-    return view.messages
-      .map((msg) => {
-        const roleClass = msg.role === "user" ? "user-message" : "agent-message";
-        let content = renderMarkdown(msg.content);
-        if (msg.thinkingContent) {
-          content = content + renderToolDetails(msg.thinkingContent, "done");
-        }
-        let tokenInfo = "";
-        if (msg.tokens) {
-          tokenInfo = `\n\n${renderTokenUsage(msg.tokens.input, msg.tokens.output)}`;
-        }
-        return `<div class="chat-message ${roleClass}" data-msg-id="${msg.id}" data-snapshot-id="${msg.snapshotId || ""}"><div class="message-content">\n\n${content}${tokenInfo}\n\n</div></div>`;
-      })
-      .join("\n\n");
-  });
+  // 渲染 tick，用于触发流式滚动
+  const renderTick = ref(0);
 
   async function resolvePermission(decision: string) {
     const perm = usePermissionStore();
@@ -396,21 +281,47 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  async function resolvePlan(decision: string, modifiedContent?: string) {
+  async function resolvePlan(decision: string, modifiedContent?: string, planDoc?: { id: string; sessionId?: string }) {
     const perm = usePermissionStore();
     const session = useSessionStore();
-    if (perm.planProposal) {
-      const sid = perm.planProposals[session.activeSessionId!]?.sessionId ?? session.activeSessionId;
-      await invoke("resolve_permission", {
-        id: perm.planProposals[session.activeSessionId!].id,
-        sessionId: sid,
-        decision,
-        content: modifiedContent ?? null,
-      });
-      if (sid) {
-        delete perm.planProposals[sid];
-      }
+    const planId = perm.planProposal?.id || planDoc?.id;
+    const sid = perm.planProposal?.sessionId || planDoc?.sessionId || session.activeSessionId;
+    if (!planId || !sid) return null;
+
+    const result = await invoke<{ needsResume?: boolean; resumeMessage?: string }>("resolve_permission", {
+      id: planId,
+      sessionId: sid,
+      decision,
+      content: modifiedContent ?? null,
+    });
+    if (sid && perm.planProposals[sid]?.id === planId) {
+      delete perm.planProposals[sid];
     }
+    return result;
+  }
+
+  async function continueFromApprovedPlan(title: string, _content: string) {
+    return sendToJarvis(
+      `用户已同意方案「${title}」。请按照上文中的方案内容立即开始执行。`,
+      undefined,
+      undefined,
+      false,
+      true, // skipRunningCheck — 方案审批续跑是新的用户轮次，不应取消前一轮
+    );
+  }
+
+  async function requestPlanRevision(title: string, feedback: string) {
+    return sendToJarvis(
+      `用户要求修改方案「${title}」。修改意见：${feedback}\n\n请根据以上意见重新提交一份可审批方案，不要直接执行。`,
+      undefined,
+      undefined,
+      false,
+      true, // skipRunningCheck
+    );
+  }
+
+  async function resumeFromPlan(resumeMessage: string) {
+    return sendToJarvis(resumeMessage);
   }
 
   async function ensureActiveSessionForSend() {
@@ -436,10 +347,27 @@ export const useChatStore = defineStore("chat", () => {
     return meta.id as string;
   }
 
-  async function sendToJarvis(msg: string, thinkingOverride?: boolean, imageBase64List?: string[]) {
+  async function sendToJarvis(msg: string, thinkingOverride?: boolean, imageBase64List?: string[], resumeOnly = false, skipRunningCheck = false) {
     const session = useSessionStore();
 
     if (!msg && (!imageBase64List || imageBase64List.length === 0)) return;
+
+    if (!skipRunningCheck) {
+      if (session.runningSessionId && session.runningSessionId === session.activeSessionId) {
+        const runningView = session.getSessionView(session.runningSessionId);
+        if (runningView.status === "RUNNING") {
+          await cancelJarvis();
+        } else {
+          session.runningSessionId = null;
+          runningView.runStartTime = null;
+          runningView.streamActive = false;
+          runningView.activeRunId = null;
+        }
+      }
+    }
+
+    const myGeneration = ++sendGeneration;
+
     const sessionIdAtStart = await ensureActiveSessionForSend();
     const requestView = session.getSessionView(sessionIdAtStart);
 
@@ -448,8 +376,13 @@ export const useChatStore = defineStore("chat", () => {
         sessionId: sessionIdAtStart,
       });
       if (recovered) {
-        const history = await invoke<string>("get_session_history", { sessionId: sessionIdAtStart });
-        session.replaceSessionHistory(sessionIdAtStart, history);
+        try {
+          const messages = await invoke<any[]>("get_session_messages", { sessionId: sessionIdAtStart });
+          session.replaceSessionMessages(sessionIdAtStart, messages);
+        } catch {
+          const history = await invoke<string>("get_session_history", { sessionId: sessionIdAtStart });
+          session.replaceSessionHistory(sessionIdAtStart, history);
+        }
         session.clearSessionBuffers(sessionIdAtStart);
         resetRenderState();
       }
@@ -471,51 +404,68 @@ export const useChatStore = defineStore("chat", () => {
     session.clearSessionBuffers(sessionIdAtStart);
     resetRenderState();
 
-    let displayMsg = msg;
-    if (imageBase64List && imageBase64List.length > 0) {
-      const imageHtml = imageBase64List
-        .map(
-          (b64) =>
-            `<img src="${b64}" style="max-width: 200px; max-height: 200px; border-radius: 8px; margin: 4px 4px 4px 0; display: inline-block; vertical-align: middle;" alt="用户发送的图片" />`
-        )
-        .join("");
-      displayMsg = imageHtml + (msg ? `\n\n${msg}` : "");
+    if (!resumeOnly) {
+      let displayMsg = msg;
+      const userImages = imageBase64List && imageBase64List.length > 0 ? [...imageBase64List] : null;
+      if (userImages) {
+        const imageHtml = userImages
+          .map(
+            (b64) =>
+              `<img src="${b64}" style="max-width: 200px; max-height: 200px; border-radius: 8px; margin: 4px 4px 4px 0; display: inline-block; vertical-align: middle;" alt="用户发送的图片" />`
+          )
+          .join("");
+        displayMsg = imageHtml + (msg ? `\n\n${msg}` : "");
+      }
+
+      // 长消息自动折叠：超过6行或500字符时折叠
+      const COLLAPSE_LINE_THRESHOLD = 6;
+      const COLLAPSE_CHAR_THRESHOLD = 500;
+      const plainText = msg.replace(/<[^>]*>/g, '').replace(/\n{3,}/g, '\n\n');
+      const lineCount = plainText.split('\n').length;
+      const shouldCollapse = lineCount > COLLAPSE_LINE_THRESHOLD || plainText.length > COLLAPSE_CHAR_THRESHOLD;
+      const userMsgHtml = shouldCollapse
+        ? `<div class="chat-message user-message" style="position: relative;"><div class="message-content"><div class="user-msg-collapsed" data-collapsed="true"><div class="user-msg-preview">\n\n${displayMsg}\n\n</div><div class="user-msg-fade"></div></div><button class="user-msg-toggle" onclick="this.previousElementSibling.dataset.collapsed=this.previousElementSibling.dataset.collapsed==='true'?'false':'true';this.textContent=this.previousElementSibling.dataset.collapsed==='true'?'展开全部':'收起'">展开全部</button></div></div>\n\n`
+        : `<div class="chat-message user-message" style="position: relative;"><div class="message-content">\n\n${displayMsg}\n\n</div></div>\n\n`;
+      session.appendSessionHistory(
+        sessionIdAtStart,
+        userMsgHtml
+      );
+
+      // 同时添加到结构化消息数组（供 Vue 组件渲染）
+      session.appendSessionMessage(sessionIdAtStart, {
+        role: "user",
+        id: `user_${Date.now()}`,
+        text: msg || "",
+        images: userImages,
+      });
     }
 
-    // 长消息自动折叠：超过6行或500字符时折叠
-    const COLLAPSE_LINE_THRESHOLD = 6;
-    const COLLAPSE_CHAR_THRESHOLD = 500;
-    const plainText = msg.replace(/<[^>]*>/g, '').replace(/\n{3,}/g, '\n\n');
-    const lineCount = plainText.split('\n').length;
-    const shouldCollapse = lineCount > COLLAPSE_LINE_THRESHOLD || plainText.length > COLLAPSE_CHAR_THRESHOLD;
-    const userMsgHtml = shouldCollapse
-      ? `<div class="chat-message user-message" style="position: relative;"><div class="message-content"><div class="user-msg-collapsed" data-collapsed="true"><div class="user-msg-preview">\n\n${displayMsg}\n\n</div><div class="user-msg-fade"></div></div><button class="user-msg-toggle" onclick="this.previousElementSibling.dataset.collapsed=this.previousElementSibling.dataset.collapsed==='true'?'false':'true';this.textContent=this.previousElementSibling.dataset.collapsed==='true'?'展开全部':'收起'">展开全部</button></div></div>\n\n`
-      : `<div class="chat-message user-message" style="position: relative;"><div class="message-content">\n\n${displayMsg}\n\n</div></div>\n\n`;
-    session.appendSessionHistory(
-      sessionIdAtStart,
-      userMsgHtml
-    );
-
-    requestView.lastUserMessage = msg;
+    requestView.lastUserMessage = resumeOnly ? "" : msg;
     if (sessionIdAtStart === session.activeSessionId) {
       triggerRender();
       scrollToBottomCb?.(true);
     }
 
     try {
-      const res = await invoke<JarvisResult>("ask_jarvis", {
-        sessionId: sessionIdAtStart,
-        msg,
-        thinkingOverride: thinkingOverride ?? null,
-        imageBase64List: imageBase64List ?? null,
-        agentDisplayMode: usePreferences().agentAudience.value,
-      });
+      const res = resumeOnly
+        ? await invoke<JarvisResult>("resume_jarvis", {
+            sessionId: sessionIdAtStart,
+            reason: msg,
+          })
+        : await invoke<JarvisResult>("ask_jarvis", {
+            sessionId: sessionIdAtStart,
+            msg,
+            thinkingOverride: thinkingOverride ?? null,
+            imageBase64List: imageBase64List ?? null,
+            agentDisplayMode: usePreferences().agentAudience.value,
+            reflectionMode: usePreferences().reflectionMode ?? "smart",
+          });
 
       const sessionSwitched = sessionIdAtStart !== session.activeSessionId;
       if (!sessionSwitched) {
         session.setSessionUsageTotals(res.session_input_tokens || 0, res.session_output_tokens || 0);
       }
-      requestView.lastUserMessage = msg;
+      requestView.lastUserMessage = resumeOnly ? "" : msg;
 
       if (res.status === "CANCELLED") {
         if (!requestView.cancelHandled) {
@@ -523,71 +473,60 @@ export const useChatStore = defineStore("chat", () => {
           const { finalContent, finalToolBuffer } = buildFinalResponseParts(requestView, cancellationFallback);
           const hasPartialContent = finalContent || finalToolBuffer;
           if (hasPartialContent) {
-            const partialResponse = buildStructuredAgentResponseHtml(
-              requestView,
-              finalContent,
-              finalToolBuffer,
-              "CANCELLED",
-              undefined,
-              "用户已取消执行，以上为部分结果",
-            );
-            session.appendSessionHistory(sessionIdAtStart, partialResponse);
-            parsedCurrentTurnHtml.value = "";
+            const canceledSnapshot = buildAgentTurnSnapshot(requestView.currentTurn, finalContent, finalToolBuffer, undefined, "CANCELLED");
+            canceledSnapshot.notice = "用户已取消执行，以上为部分结果";
+            session.appendSessionMessage(sessionIdAtStart, { role: "agent", id: `agent_${Date.now()}`, snapshot: canceledSnapshot });
           } else if (res.content && res.content !== "用户已取消执行。") {
-            const partialResponse = buildStructuredAgentResponseHtml(
-              requestView,
-              stripPseudoToolCalls(res.content),
-              "",
-              "CANCELLED",
-              undefined,
-              "用户已取消执行，以上为部分结果",
-            );
-            session.appendSessionHistory(sessionIdAtStart, partialResponse);
-            parsedCurrentTurnHtml.value = "";
+            const canceledSnapshot = buildAgentTurnSnapshot(requestView.currentTurn, stripPseudoToolCalls(res.content), "", undefined, "CANCELLED");
+            canceledSnapshot.notice = "用户已取消执行，以上为部分结果";
+            session.appendSessionMessage(sessionIdAtStart, { role: "agent", id: `agent_${Date.now()}`, snapshot: canceledSnapshot });
           }
           requestView.latestCheckpoint = null;
           session.clearSessionBuffers(sessionIdAtStart);
           resetRenderState();
-          requestView.lastUserMessage = msg;
-          requestView.showRecallEdit = true;
+          requestView.lastUserMessage = resumeOnly ? "" : msg;
+          requestView.showRecallEdit = !resumeOnly;
           requestView.hydrated = true;
         }
-        requestView.runStartTime = null;
-        requestView.streamActive = false;
-        requestView.status = "IDLE";
-        session.runningSessionId = null;
-        requestView.activeRunId = null;
+        if (myGeneration === sendGeneration) {
+          requestView.runStartTime = null;
+          requestView.streamActive = false;
+          requestView.status = "IDLE";
+          session.runningSessionId = null;
+          requestView.activeRunId = null;
+        }
         requestView.cancelHandled = false;
-        if (!sessionSwitched) {
+        if (!sessionSwitched && myGeneration === sendGeneration) {
           triggerRender();
           scrollToBottomCb?.();
         }
-        // steps persist removed — session_messages is the source of truth
         return;
       }
 
       if (res.status === "CLARIFICATION_NEEDED") {
-        const clarificationResponse = buildStructuredAgentResponseHtml(
-          requestView,
+        const clarificationSnapshot = buildAgentTurnSnapshot(
+          requestView.currentTurn,
           stripPseudoToolCalls(res.content || ""),
           "",
-          res.status,
           {
             input: res.input_tokens || 0,
             output: res.output_tokens || 0,
             sessionInput: res.session_input_tokens || 0,
             sessionOutput: res.session_output_tokens || 0,
           },
+          res.status,
         );
         requestView.latestCheckpoint = null;
         session.clearSessionBuffers(sessionIdAtStart);
-        session.appendSessionHistory(sessionIdAtStart, clarificationResponse);
+        session.appendSessionMessage(sessionIdAtStart, { role: "agent", id: `agent_${Date.now()}`, snapshot: clarificationSnapshot });
         resetRenderState();
-        requestView.streamActive = false;
-        requestView.status = "IDLE";
-        session.runningSessionId = null;
-        requestView.activeRunId = null;
-        if (!sessionSwitched) {
+        if (myGeneration === sendGeneration) {
+          requestView.streamActive = false;
+          requestView.status = "IDLE";
+          session.runningSessionId = null;
+          requestView.activeRunId = null;
+        }
+        if (!sessionSwitched && myGeneration === sendGeneration) {
           triggerRender();
           scrollToBottomCb?.();
         }
@@ -609,36 +548,30 @@ export const useChatStore = defineStore("chat", () => {
         sessionOutput: sessionOutputTokens,
       };
 
-      const agentResponse = buildStructuredAgentResponseHtml(
-        requestView,
-        finalContent,
-        finalToolBuffer,
-        res.status,
-        {
-          input: inputTokens,
-          output: outputTokens,
-          sessionInput: sessionInputTokens,
-          sessionOutput: sessionOutputTokens,
-        },
-      );
-
       // 先清空 live 缓冲区，避免 AgentTurn 与追加到历史的同一段内容同时渲染
       session.clearSessionBuffers(sessionIdAtStart);
 
-      requestView.status = res.status;
-      session.runningSessionId = null;
-      requestView.activeRunId = null;
-      requestView.resumableRunId = null;
-      requestView.streamActive = false;
-      requestView.runStartTime = null;
-      requestView.latestCheckpoint = null;
+      if (myGeneration === sendGeneration) {
+        requestView.status = "IDLE";
+        session.runningSessionId = null;
+        requestView.activeRunId = null;
+        requestView.resumableRunId = null;
+        requestView.streamActive = false;
+        requestView.runStartTime = null;
+        requestView.latestCheckpoint = null;
+      }
 
-      // 用前端构建的完整 HTML 追加到历史
-      session.appendSessionHistory(sessionIdAtStart, agentResponse);
+      // 同时添加到结构化消息数组（供 Vue 组件渲染）
+      const snapshot = buildAgentTurnSnapshot(requestView.currentTurn, finalContent, finalToolBuffer, undefined, res.status);
+      session.appendSessionMessage(sessionIdAtStart, {
+        role: "agent",
+        id: `agent_${Date.now()}`,
+        snapshot,
+      });
 
       resetRenderState();
 
-      if (!sessionSwitched) {
+      if (!sessionSwitched && myGeneration === sendGeneration) {
         triggerRender();
         scrollToBottomCb?.();
       }
@@ -659,15 +592,16 @@ export const useChatStore = defineStore("chat", () => {
       const escapedErr = errMsg.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
       const errorHtml = `<div class="chat-message agent-message"><div class="message-content"><div class="agent-error-banner">${escapedErr}</div></div></div>\n\n`;
       session.appendSessionHistory(sessionIdAtStart, errorHtml);
-      requestView.showRecallEdit = true;
-      requestView.status = "ERROR";
-      session.runningSessionId = null;
-      requestView.activeRunId = null;
-      requestView.streamActive = false;
-      if (sessionIdAtStart === session.activeSessionId) {
+      if (myGeneration === sendGeneration) {
+        requestView.showRecallEdit = !resumeOnly;
+        requestView.status = "ERROR";
+        session.runningSessionId = null;
+        requestView.activeRunId = null;
+        requestView.streamActive = false;
+      }
+      if (sessionIdAtStart === session.activeSessionId && myGeneration === sendGeneration) {
         triggerRender();
       }
-      // agent_steps persist removed
     }
   }
 
@@ -701,6 +635,20 @@ export const useChatStore = defineStore("chat", () => {
       });
       const view = session.getSessionView(session.activeSessionId);
 
+      // 从 messages 数组中移除最后一条 agent 消息和用户消息
+      while (view.messages.length > 0) {
+        const last = view.messages[view.messages.length - 1];
+        if (last.role === "agent") {
+          view.messages.pop();
+        } else {
+          break;
+        }
+      }
+      if (view.messages.length > 0 && view.messages[view.messages.length - 1].role === "user") {
+        view.messages.pop();
+      }
+
+      // 仍保留 jarvisResponse 操作以兼容后端持久化
       const lastUserIdx = view.jarvisResponse.lastIndexOf('<div class="chat-message user-message"');
       if (lastUserIdx !== -1) {
         view.jarvisResponse = view.jarvisResponse.substring(0, lastUserIdx);
@@ -712,7 +660,6 @@ export const useChatStore = defineStore("chat", () => {
       }
       view.showRecallEdit = false;
       view.lastUserMessage = "";
-      // steps persist removed — session_messages is the source of truth
       triggerRender();
 
       return recalledText || "";
@@ -750,8 +697,13 @@ export const useChatStore = defineStore("chat", () => {
         console.warn("恢复执行的会话不是当前会话", plan.sessionId);
         return;
       }
-      const history = await invoke<string>("get_session_history", { sessionId: plan.sessionId });
-      session.replaceSessionHistory(plan.sessionId, history);
+      try {
+        const messages = await invoke<any[]>("get_session_messages", { sessionId: plan.sessionId });
+        session.replaceSessionMessages(plan.sessionId, messages);
+      } catch {
+        const history = await invoke<string>("get_session_history", { sessionId: plan.sessionId });
+        session.replaceSessionHistory(plan.sessionId, history);
+      }
       session.clearSessionBuffers(plan.sessionId);
       resetRenderState();
       triggerRender();
@@ -762,7 +714,7 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   return {
-    parsedCurrentTurnHtml,
+    renderTick,
     rollbackRecalledMessage,
     jarvisResponse,
     toolBuffer,
@@ -773,15 +725,16 @@ export const useChatStore = defineStore("chat", () => {
     showRecallEdit,
     latestCheckpoint,
     messages,
-    parsedHistory,
     resetRenderState,
     registerScrollCb,
     forceScrollToBottom,
     followScrollToBottom,
     triggerRender,
-    upsertToolStatusLine,
     resolvePermission,
     resolvePlan,
+    continueFromApprovedPlan,
+    requestPlanRevision,
+    resumeFromPlan,
     sendToJarvis,
     cancelJarvis,
     recallAndEdit,

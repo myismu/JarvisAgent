@@ -8,9 +8,9 @@ import type {
   AgentThinkingBlock,
   AgentToolCallView,
 } from "../../types";
-import { renderMarkdown } from "../../utils/markdown";
 import { groupAdjacentToolCalls, summarizeToolGroupsForPanel } from "../../utils/toolDisplay";
 import ToolCallGroup from "./ToolCallGroup.vue";
+import StreamingMarkdown from "../common/StreamingMarkdown.vue";
 
 const props = defineProps<{
   mode: AgentDisplayMode;
@@ -42,8 +42,6 @@ const summaryText = computed(() => {
   const logPart = props.mode === "developer" && logItems.value.length > 0 ? ` · ${logItems.value.length} ${t('execution.logCount')}` : "";
   return `${state} · ${toolPart}${thinkingPart}${logPart}`;
 });
-
-const markdown = (content?: string) => renderMarkdown(content || "");
 </script>
 
 <template>
@@ -84,17 +82,17 @@ const markdown = (content?: string) => renderMarkdown(content || "");
       :open="shouldExpand"
     >
       <summary>{{ t('execution.thinkingTitle', { loop: block.loop || 1 }) }}</summary>
-      <div v-html="markdown(block.content)"></div>
+      <StreamingMarkdown :content="block.content" />
     </details>
 
     <details v-if="logItems.length" class="agent-execution-logs" :open="shouldExpand">
       <summary>{{ t('execution.executionLogsTitle', { count: logItems.length }) }}</summary>
-      <div
+      <StreamingMarkdown
         v-for="log in logItems"
         :key="log.id"
         class="agent-execution-log"
-        v-html="markdown(log.content)"
-      ></div>
+        :content="log.content"
+      />
     </details>
   </details>
 </template>

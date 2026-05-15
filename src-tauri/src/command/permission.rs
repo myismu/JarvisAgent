@@ -1,4 +1,4 @@
-﻿//! # permission.rs — 权限确认与取消 Tauri 命令
+//! # permission.rs — 权限确认与取消 Tauri 命令
 //!
 //! 处理前端用户对工具执行权限的审批决策（allow/reject），
 //! 以及 Agent 执行的取消操作（含级联取消子 Agent）。
@@ -10,7 +10,8 @@
 use crate::infra::state::state::SessionManager;
 use tauri::Emitter;
 
-/// 前端提交权限决策，通过 oneshot channel 通知等待中的 Agent
+/// 前端提交权限决策，通过 oneshot channel 通知等待中的 Agent。
+/// 方案审批采用产品层状态机：只更新方案状态，后续由前端发起新的用户轮次。
 #[tauri::command]
 pub async fn resolve_permission(
     id: String,
@@ -19,45 +20,40 @@ pub async fn resolve_permission(
     content: Option<String>,
     session_manager: tauri::State<'_, SessionManager>,
     app: tauri::AppHandle,
-) -> Result<(), String> {
+) -> Result<serde_json::Value, String> {
     let ctx = session_manager.get_or_create(&session_id).await;
     if id.starts_with("plan_") {
-        let status = if decision == "allow" {
-            "approved"
-        } else {
-            "rejected"
-        };
-        if let Ok(Some(document)) = crate::core::session::update_plan_document_status(
-            &session_id,
-            &id,
-            status,
-            content.clone(),
+        let status = if decision == "allow" { "approved" } else { "revision_requested" };
+        if let Ok(Some(doc)) = crate::core::session::update_plan_document_status(
+            &session_id, &id, status, content.clone(),
         ) {
             {
                 let mut memory = ctx.memory.lock().await;
-                if let Some(existing) = memory
-                    .plan_documents
-                    .iter_mut()
-                    .find(|item| item.id == document.id)
-                {
-                    *existing = document.clone();
+                if let Some(existing) = memory.plan_documents.iter_mut().find(|item| item.id == doc.id) {
+                    *existing = doc.clone();
                 } else {
-                    memory.plan_documents.push(document.clone());
+                    memory.plan_documents.push(doc.clone());
                 }
             }
-            let _ = app.emit("plan-document-updated", document);
+            let _ = app.emit("plan-document-updated", &doc);
         }
     }
 
-    if let Some((_, tx)) = ctx.pending_permissions.lock().await.remove(&id) {
-        let response = if let Some(modified_content) = content {
-            format!("{}|||{}", decision, modified_content)
-        } else {
-            decision
-        };
-        let _ = tx.send(response);
+    let _channel_alive = if let Some((_, tx)) = ctx.pending_permissions.lock().await.remove(&id) {
+        let resp = if let Some(ref mc) = content { format!("{}|||{}", decision, mc) } else { decision.clone() };
+        tx.send(resp).is_ok()
+    } else {
+        false
+    };
+
+    // 产品层审批：方案决策只更新方案文档/清理权限通道，后续由前端发起新的用户轮次。
+    // 同时清理 cancel_token，确保审批续跑的 ask_jarvis 不会因 has_active_run 被拦截。
+    if id.starts_with("plan_") {
+        *ctx.cancel_token.lock().await = None;
+        return Ok(serde_json::json!({ "needsResume": false }));
     }
-    Ok(())
+
+    Ok(serde_json::json!({ "needsResume": false }))
 }
 
 /// 取消 Agent 执行：触发取消令牌、拒绝所有待处理权限、级联取消子 Agent
@@ -69,10 +65,10 @@ pub async fn cancel_jarvis(
 ) -> Result<(), String> {
     println!("[JARVIS] 收到取消请求: {}", session_id);
     let ctx = session_manager.get_or_create(&session_id).await;
-    // 触发取消令牌，Agent 主循环会在下一次检查点退出
     if let Some(token) = ctx.cancel_token.lock().await.as_ref() {
         token.cancel();
     }
+    *ctx.cancel_token.lock().await = None;
     // 拒绝所有等待用户决策的权限请求
     let pending = ctx
         .pending_permissions

@@ -45,7 +45,7 @@
   --glass-border-subtle: rgba(255, 255, 255, 0.15);
   --glass-blur: 16px;
   --glass-blur-heavy: 24px;
-  --msg-bg-rgb: 255, 255, 255;
+  --msg-bg-rgb: 218, 218, 228;
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.06);
 
   /* 渐变光晕 */
@@ -104,7 +104,7 @@ body.dark-mode {
   --glass-border-subtle: rgba(255, 255, 255, 0.05);
   --glass-blur: 20px;
   --glass-blur-heavy: 28px;
-  --msg-bg-rgb: 39, 39, 42;
+  --msg-bg-rgb: 52, 52, 58;
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
 
   --glow-blue: rgba(59, 130, 246, 0.08);
@@ -335,13 +335,13 @@ body.dragging-active .editor-container {
 /* 消息背景透明度 */
 :root {
   --agent-message-opacity: 0;
-  --user-message-opacity: 100;
+  --user-message-opacity: 0;
 }
 .chat-message.agent-message .message-content {
-  background: rgba(var(--msg-bg-rgb), calc(0.85 * var(--agent-message-opacity) / 100));
+  background: rgba(var(--msg-bg-rgb), calc(var(--agent-message-opacity) / 100));
 }
 .chat-message.user-message .message-content {
-  background: rgba(var(--msg-bg-rgb), calc(0.80 * var(--user-message-opacity) / 100));
+  background: rgba(var(--msg-bg-rgb), calc(var(--user-message-opacity) / 100));
   border: none;
 }
 
@@ -511,19 +511,19 @@ body.dragging-active .editor-container {
 
 /* 执行日志终端 */
 .dev-log {
-  background: rgba(15, 23, 42, calc(var(--agent-message-opacity) / 100));
+  background: var(--glass-bg-light);
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--glass-border-subtle);
   overflow: hidden;
   margin: 8px 0;
 }
 .dev-log-header {
-  background: rgba(255, 255, 255, calc(0.04 * var(--agent-message-opacity) / 100));
+  background: color-mix(in srgb, var(--surface-strong) 18%, transparent);
   padding: 6px 10px;
   display: flex;
   align-items: center;
   gap: 6px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--glass-border-subtle);
 }
 .dev-log-dot {
   width: 8px;
@@ -536,14 +536,14 @@ body.dragging-active .editor-container {
 .dev-log-title {
   font-family: var(--font-mono);
   font-size: 0.68rem;
-  color: rgba(255, 255, 255, 0.35);
+  color: var(--text-muted);
   letter-spacing: 1px;
 }
 .dev-log-body {
   padding: 8px 12px;
   font-family: var(--font-mono);
   font-size: 0.78rem;
-  color: #e2e8f0;
+  color: var(--text-main);
   max-height: 160px;
   overflow-y: auto;
   line-height: 1.5;

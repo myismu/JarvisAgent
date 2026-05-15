@@ -260,6 +260,40 @@
                     <span class="font-size-value">{{ userMessageOpacity }}%</span>
                   </div>
                 </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.general.reflectionMode') }}</label>
+                  <div class="custom-select" :class="{ open: reflectionMenuOpen }">
+                    <button
+                      class="custom-select-trigger"
+                      :title="t('settings.general.reflectionModeDesc')"
+                      @click="reflectionMenuOpen = !reflectionMenuOpen"
+                    >
+                      <span>{{ t(reflectionMode === 'always' ? 'settings.general.reflectionAlways' : reflectionMode === 'off' ? 'settings.general.reflectionOff' : 'settings.general.reflectionSmart') }}</span>
+                      <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                    </button>
+                    <div v-if="reflectionMenuOpen" class="custom-select-menu">
+                      <div
+                        class="custom-select-option"
+                        :class="{ active: reflectionMode === 'smart' }"
+                        :title="t('settings.general.reflectionSmart') + ': LLM 不确定时自动触发反思，平衡效果与 Token 消耗'"
+                        @click="setReflectionMode('smart'); reflectionMenuOpen = false"
+                      >{{ t('settings.general.reflectionSmart') }}</div>
+                      <div
+                        class="custom-select-option"
+                        :class="{ active: reflectionMode === 'always' }"
+                        :title="t('settings.general.reflectionAlways') + ': 每次工具调用后都触发反思，最谨慎但 Token 消耗增加'"
+                        @click="setReflectionMode('always'); reflectionMenuOpen = false"
+                      >{{ t('settings.general.reflectionAlways') }}</div>
+                      <div
+                        class="custom-select-option"
+                        :class="{ active: reflectionMode === 'off' }"
+                        :title="t('settings.general.reflectionOff') + ': 完全关闭反思，恢复默认 Agent 行为'"
+                        @click="setReflectionMode('off'); reflectionMenuOpen = false"
+                      >{{ t('settings.general.reflectionOff') }}</div>
+                    </div>
+                  </div>
+                  <div class="setting-desc">{{ t('settings.general.reflectionModeDesc') }}</div>
+                </div>
               </div>
 
               <div class="setting-card">
@@ -479,7 +513,10 @@ const agentMessageOpacity = computed(() => uiPrefs.agentMessageOpacity)
 const setAgentMessageOpacity = (val: number) => uiPrefs.setAgentMessageOpacity(val)
 const userMessageOpacity = computed(() => uiPrefs.userMessageOpacity)
 const setUserMessageOpacity = (val: number) => uiPrefs.setUserMessageOpacity(val)
+const reflectionMode = computed(() => uiPrefs.reflectionMode)
+const setReflectionMode = (val: "always" | "smart" | "off") => uiPrefs.setReflectionMode(val)
 const langMenuOpen = ref(false)
+const reflectionMenuOpen = ref(false)
 const localeOptions: Record<string, string> = { 'zh-CN': '简体中文', 'en-US': 'English' }
 const appLocale = uiPrefs.locale
 watch(appLocale, (val) => {
@@ -781,8 +818,9 @@ const onWindowMouseUp = (e: MouseEvent) => {
     dragOffsetY.value = 0
     dragMoved = false
   }
-  if (langMenuOpen.value && e.target instanceof HTMLElement && !e.target.closest('.custom-select')) {
-    langMenuOpen.value = false
+  if (e.target instanceof HTMLElement && !e.target.closest('.custom-select')) {
+    if (langMenuOpen.value) langMenuOpen.value = false
+    if (reflectionMenuOpen.value) reflectionMenuOpen.value = false
   }
 }
 
@@ -1313,15 +1351,14 @@ const save = async () => {
 /* ── 自定义下拉（替代原生 select）── */
 .custom-select {
   position: relative;
-  width: auto;
-  min-width: 160px;
+  width: fit-content;
 }
 
 .custom-select-trigger {
   width: 100%;
-  height: 38px;
-  padding: 0 12px;
-  padding-right: 32px;
+  height: 34px;
+  padding: 0 10px;
+  padding-right: 28px;
   background-color: var(--glass-bg-light);
   border: 1px solid var(--glass-border);
   border-radius: 8px;
@@ -1330,9 +1367,10 @@ const save = async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   cursor: pointer;
   transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s;
+  white-space: nowrap;
 }
 
 .custom-select-trigger:hover {
@@ -1359,7 +1397,7 @@ const save = async () => {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
-  right: 0;
+  min-width: 100%;
   z-index: 110;
   background: var(--surface-strong);
   backdrop-filter: blur(var(--glass-blur-heavy));
@@ -1369,6 +1407,7 @@ const save = async () => {
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
   overflow: hidden;
   padding: 4px;
+  white-space: nowrap;
   animation: popIn var(--transition-fast);
 }
 

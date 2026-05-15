@@ -160,6 +160,10 @@ export function useAgentEvents() {
     );
 
     if (running) {
+      // 如果前端已确认结束（IDLE / FINISH / ERROR），不再被后端事件覆写
+      if (view.status !== "RUNNING" && view.status !== "INTERRUPTED") {
+        return;
+      }
       const previousActiveRunId = view.activeRunId;
       if (view.resumableRunId) {
         dismissedInterruptedRuns.add(view.resumableRunId);
@@ -203,8 +207,13 @@ export function useAgentEvents() {
   }
 
   async function refreshSessionHistory(sessionId: string) {
-    const history = await invoke<string>("get_session_history", { sessionId });
-    session.replaceSessionHistory(sessionId, history);
+    try {
+      const messages = await invoke<any[]>("get_session_messages", { sessionId });
+      session.replaceSessionMessages(sessionId, messages);
+    } catch {
+      const history = await invoke<string>("get_session_history", { sessionId });
+      session.replaceSessionHistory(sessionId, history);
+    }
   }
 
   async function loadSubAgentRunsFromBackend(sid?: string | null) {
@@ -284,7 +293,7 @@ export function useAgentEvents() {
     try {
       const effectiveSid = sid ?? session.activeSessionId;
       if (!effectiveSid) return;
-      const beforeHistory = session.getSessionView(effectiveSid).jarvisResponse;
+      const beforeMsgCount = session.getSessionView(effectiveSid).messages.length;
       const runs = await invoke<AgentRun[]>("list_agent_runs", { sessionId: effectiveSid });
       const otherRuns = Object.fromEntries(
         Object.entries(agent.agentRuns).filter(([, run]) => run.sessionId !== effectiveSid)
@@ -297,7 +306,7 @@ export function useAgentEvents() {
       if (options.refreshHistory !== false) {
         await refreshSessionHistory(effectiveSid);
         applyAgentRunState(effectiveSid, runs);
-        if (session.getSessionView(effectiveSid).jarvisResponse !== beforeHistory) {
+        if (session.getSessionView(effectiveSid).messages.length !== beforeMsgCount) {
           chat.triggerRender();
         }
       }
@@ -398,13 +407,24 @@ export function useAgentEvents() {
       }
     });
 
+    // plan proposal stream (chunked)
+    await on<{ sessionId?: string; content: string }>("plan-proposal-stream", (event) => {
+      const sid = event.payload.sessionId ?? session.activeSessionId;
+      if (sid) {
+        perm.updatePlanProposalStreamingContent(sid, event.payload.content);
+        const view = session.getSessionView(sid);
+        view.hydrated = true;
+        syncActiveSessionView(sid, false);
+      }
+    });
+
     // plan proposal
     await on<PlanProposal>("plan-proposal", (event) => {
       const sid = event.payload.sessionId ?? session.activeSessionId;
       if (sid) {
         const view = session.getSessionView(sid);
         hideSubmittedPlanFromChat(view, event.payload);
-        perm.planProposals[sid] = event.payload;
+        perm.finalizePlanProposal(sid, event.payload);
         perm.upsertPlanDocument(
           {
             id: event.payload.id,
@@ -533,7 +553,6 @@ export function useAgentEvents() {
       const view = session.getSessionView(sessionId);
       const { content, kind, toolCallId, tool, status } = event.payload;
       if (kind === "tool_status" && toolCallId && tool && status) {
-        chat.upsertToolStatusLine(view, String(toolCallId), String(tool), String(status));
         upsertAgentToolCall(view, String(toolCallId), String(tool), String(status), payloadLoop(event.payload));
       } else if (content) {
         view.toolBuffer += content;
@@ -679,8 +698,13 @@ export function useAgentEvents() {
           session.setSessionUsageTotals(meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
 
           if (!session.hasHydratedSessionView(nextActiveSessionId)) {
-            const history = await invoke<string>("get_session_history", { sessionId: nextActiveSessionId });
-            session.replaceSessionHistory(nextActiveSessionId, history);
+            try {
+              const messages = await invoke<any[]>("get_session_messages", { sessionId: nextActiveSessionId });
+              session.replaceSessionMessages(nextActiveSessionId, messages);
+            } catch {
+              const history = await invoke<string>("get_session_history", { sessionId: nextActiveSessionId });
+              session.replaceSessionHistory(nextActiveSessionId, history);
+            }
           }
           await Promise.all([
             loadSubAgentRunsFromBackend(nextActiveSessionId),

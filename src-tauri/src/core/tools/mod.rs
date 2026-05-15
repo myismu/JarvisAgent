@@ -35,7 +35,7 @@ use crate::get_agent_home;
 // Re-export 供外部使用的公开接口
 pub use agent_tools::run_subagent;
 pub use file_tools::{generate_repo_map, search_in_dir};
-pub use framework::agent_registry::{AgentRegistry, DEFAULT_AGENT_TYPE, IMPLEMENTATION_AGENT_TYPE};
+pub use framework::agent_registry::{AgentRegistry, DEFAULT_AGENT_ROLE, IMPLEMENTATION_AGENT_ROLE};
 pub use framework::permission::{ensure_path_permission, is_path_safe, request_permission};
 pub use framework::tool_search::{
     get_core_tool_definitions, get_deferred_tool_full_schema, get_deferred_tool_list,
@@ -191,17 +191,17 @@ pub async fn handle_tool_call(
 ) -> (String, u64, u64) {
     if name == "RunSubagent" {
         let prompt = input["prompt"].as_str().unwrap_or("");
-        let requested_agent_type = framework::agent_registry::normalize_agent_type(
-            input["subagent_type"]
+        let requested_agent_role = framework::agent_registry::normalize_agent_role(
+            input["subagent_role"]
                 .as_str()
-                .or_else(|| input["agent_type"].as_str()),
+                .or_else(|| input["agent_role"].as_str()),
         );
         let agent_registry = AgentRegistry::global();
-        let Some(agent) = agent_registry.get(requested_agent_type) else {
+        let Some(agent) = agent_registry.get(requested_agent_role) else {
             return (
                 format!(
-                    "Unknown subagent_type '{}'. Available types: {}",
-                    requested_agent_type,
+                    "Unknown subagent_role '{}'. Available types: {}",
+                    requested_agent_role,
                     agent_registry.available_types().join(", ")
                 ),
                 0,
@@ -230,7 +230,7 @@ pub async fn handle_tool_call(
             session_id.to_string(),
             task_id,
             label,
-            Some(agent.agent_type.to_string()),
+            Some(agent.agent_role.to_string()),
             model_override,
         );
         Box::pin(fut).await

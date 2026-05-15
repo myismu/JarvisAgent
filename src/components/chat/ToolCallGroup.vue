@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
 import type { AgentToolCallView, AgentDisplayMode } from "../../types";
-import { renderMarkdown, renderToolStatusIcon } from "../../utils/markdown";
 import {
   hasToolDetails,
   isSubAgentToolGroup,
@@ -12,6 +11,7 @@ import {
   toolGroupTitle,
   type ToolCallGroup,
 } from "../../utils/toolDisplay";
+import StreamingMarkdown from "../common/StreamingMarkdown.vue";
 
 defineProps<{
   group: ToolCallGroup;
@@ -19,8 +19,6 @@ defineProps<{
 }>();
 
 const { t } = useI18n();
-
-const markdown = (content?: string) => renderMarkdown(content || "");
 
 const toolKey = (tool: AgentToolCallView, index: number) => `${tool.id}-${index}`;
 
@@ -37,7 +35,20 @@ const technicalOpen = (group: ToolCallGroup) => group.status === "error";
     :open="shouldOpenToolGroup(group, mode)"
   >
     <summary class="agent-tool-row" :class="group.status">
-      <span class="agent-tool-icon" v-html="renderToolStatusIcon(group.status)"></span>
+      <span class="agent-tool-icon">
+        <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <polyline v-if="group.status === 'completed'" points="20 6 9 17 4 12" />
+          <template v-else-if="group.status === 'error'">
+            <circle cx="12" cy="12" r="9" />
+            <line x1="15" y1="9" x2="9" y2="15" />
+            <line x1="9" y1="9" x2="15" y2="15" />
+          </template>
+          <template v-else>
+            <circle cx="12" cy="12" r="9" stroke-opacity="0.3" />
+            <path d="M12 3a9 9 0 0 1 0 18" />
+          </template>
+        </svg>
+      </span>
       <span class="agent-tool-title">{{ toolGroupTitle(group) }}</span>
       <span class="agent-tool-summary">{{ toolGroupActionLabel(group) }}</span>
     </summary>
@@ -49,7 +60,20 @@ const technicalOpen = (group: ToolCallGroup) => group.status === "error";
         class="agent-tool-action-row"
         :class="action.status"
       >
-        <span class="agent-tool-icon" v-html="renderToolStatusIcon(action.status)"></span>
+        <span class="agent-tool-icon">
+          <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <polyline v-if="action.status === 'completed'" points="20 6 9 17 4 12" />
+            <template v-else-if="action.status === 'error'">
+              <circle cx="12" cy="12" r="9" />
+              <line x1="15" y1="9" x2="9" y2="15" />
+              <line x1="9" y1="9" x2="15" y2="15" />
+            </template>
+            <template v-else>
+              <circle cx="12" cy="12" r="9" stroke-opacity="0.3" />
+              <path d="M12 3a9 9 0 0 1 0 18" />
+            </template>
+          </svg>
+        </span>
         <span>{{ toolActionCountLabel(action) }}</span>
         <span class="agent-tool-action-summary">{{ action.summary }}</span>
       </div>
@@ -65,28 +89,41 @@ const technicalOpen = (group: ToolCallGroup) => group.status === "error";
           :class="{ 'has-details': hasToolDetails(tool) }"
         >
           <div class="agent-tool-child-row" :class="tool.status">
-            <span class="agent-tool-icon" v-html="renderToolStatusIcon(tool.status)"></span>
+            <span class="agent-tool-icon">
+              <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <polyline v-if="tool.status === 'completed'" points="20 6 9 17 4 12" />
+                <template v-else-if="tool.status === 'error'">
+                  <circle cx="12" cy="12" r="9" />
+                  <line x1="15" y1="9" x2="9" y2="15" />
+                  <line x1="9" y1="9" x2="15" y2="15" />
+                </template>
+                <template v-else>
+                  <circle cx="12" cy="12" r="9" stroke-opacity="0.3" />
+                  <path d="M12 3a9 9 0 0 1 0 18" />
+                </template>
+              </svg>
+            </span>
             <span>{{ toolActionLabel(tool.name, tool.status, tool) }}</span>
             <code>{{ tool.name }}</code>
           </div>
           <div v-if="tool.inputSummary" class="agent-tool-field">
             <span>{{ t('execution.parameters') }}</span>
-            <div v-html="markdown(tool.inputSummary)"></div>
+            <StreamingMarkdown :content="tool.inputSummary" />
           </div>
           <div v-if="tool.outputSummary" class="agent-tool-field">
             <span>{{ t('execution.output') }}</span>
-            <div v-html="markdown(tool.outputSummary)"></div>
+            <StreamingMarkdown :content="tool.outputSummary" />
           </div>
           <div v-if="tool.error" class="agent-tool-field error">
             <span>{{ t('execution.error') }}</span>
-            <div v-html="markdown(tool.error)"></div>
+            <StreamingMarkdown :content="tool.error" />
           </div>
-          <div
+          <StreamingMarkdown
             v-for="(log, logIndex) in tool.logs"
             :key="`${tool.id}_${logIndex}`"
             class="agent-tool-log"
-            v-html="markdown(log)"
-          ></div>
+            :content="log"
+          />
         </div>
       </div>
     </details>

@@ -354,6 +354,14 @@ export function buildAgentTurnSnapshot(
   }
 
   const hasExecution = thinkingBlocks.length > 0 || toolCalls.length > 0 || logs.length > 0;
+  if (toolCalls.length > 0) {
+    const latestToolTs = Math.max(...toolCalls.map((tool) => tool.timestamp));
+    for (let i = textBlocks.length - 1; i >= 0; i--) {
+      if (textBlocks[i].timestamp < latestToolTs) {
+        textBlocks.splice(i, 1);
+      }
+    }
+  }
   if (fallbackExecution.trim() && !hasExecution) {
     logs.push({
       id: nextId("log_fallback"),

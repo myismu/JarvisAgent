@@ -20,6 +20,7 @@ interface UiPreferences {
   locale: AppLocale;
   agentMessageOpacity: number;
   userMessageOpacity: number;
+  reflectionMode: "always" | "smart" | "off";
 }
 
 const defaults: UiPreferences = {
@@ -35,7 +36,8 @@ const defaults: UiPreferences = {
   agentWorkMode: "edit",
   locale: DEFAULT_LOCALE,
   agentMessageOpacity: 0,
-  userMessageOpacity: 100,
+  userMessageOpacity: 0,
+  reflectionMode: "smart",
 };
 
 function normalizePrefs(value: Partial<UiPreferences> & { agentDisplayMode?: string }): UiPreferences {
@@ -203,5 +205,7 @@ export function usePreferences() {
     setAgentMessageOpacity: (val: number) => { prefs.value.agentMessageOpacity = Math.round(val); },
     get userMessageOpacity() { return prefs.value.userMessageOpacity; },
     setUserMessageOpacity: (val: number) => { prefs.value.userMessageOpacity = Math.round(val); },
+    get reflectionMode() { return prefs.value.reflectionMode; },
+    setReflectionMode: (val: "always" | "smart" | "off") => { prefs.value.reflectionMode = val; },
   };
 }

@@ -102,7 +102,7 @@ export interface PlanProposal {
   sessionId?: string;
 }
 
-export type PlanDocumentStatus = "pending" | "approved" | "rejected";
+export type PlanDocumentStatus = "pending" | "approved" | "rejected" | "revision_requested";
 
 export interface PlanDocument {
   id: string;
@@ -303,7 +303,7 @@ export interface SubAgentRun {
   sessionId: string;
   taskId?: number | null;
   label: string;
-  agentType: string;
+  agentRole: string;
   prompt?: string | null;
   promptPreview: string;
   readOnly: boolean;

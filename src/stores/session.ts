@@ -144,6 +144,30 @@ export const useSessionStore = defineStore("session", () => {
     resetAgentCurrentTurn(view);
   }
 
+  function replaceSessionMessages(sessionId: string | null | undefined, messages: any[]) {
+    const view = getSessionView(sessionId);
+    view.messages = messages.map((msg) => ({
+      ...msg,
+      // 后端返回 userContent，前端 Vue 组件使用 text/images（或 content 作为兼容）
+      content: msg.content ?? msg.userContent,
+      text: msg.text ?? (msg.role === 'user' ? msg.userContent?.replace(/<[^>]*>/g, '') : undefined),
+    }));
+    view.jarvisResponse = READY_TEXT;
+    view.hydrated = true;
+    // 清除 live turn 缓冲区
+    view.contentBuffer = "";
+    view.tempBuffer = "";
+    view.toolBuffer = "";
+    view.thinkingBuffer = "";
+    view.streamActive = false;
+    resetAgentCurrentTurn(view);
+  }
+
+  function appendSessionMessage(sessionId: string | null | undefined, message: any) {
+    const view = getSessionView(sessionId);
+    view.messages.push(message);
+  }
+
   function appendSessionHistory(sessionId: string | null | undefined, html: string) {
     const view = getSessionView(sessionId);
     if (view.jarvisResponse === READY_TEXT) {
@@ -203,6 +227,8 @@ export const useSessionStore = defineStore("session", () => {
     deleteSessionView,
     clearSessionBuffers,
     replaceSessionHistory,
+    replaceSessionMessages,
+    appendSessionMessage,
     appendSessionHistory,
     removeTrailingUserMessageFromView,
     setSessionUsageTotals,

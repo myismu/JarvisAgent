@@ -166,6 +166,9 @@ pub fn inject_context_into_history(
             content: Content::Multiple(ref mut blocks),
         } = initial_msg
         {
+            if blocks.iter().any(|block| matches!(block, ContentBlock::ToolResult { .. })) {
+                return;
+            }
             blocks.insert(
                 0,
                 ContentBlock::Text {
@@ -279,6 +282,26 @@ mod tests {
                 _ => panic!("Expected single text"),
             },
             _ => panic!("Expected user message"),
+        }
+    }
+
+    #[test]
+    fn inject_context_skips_tool_result_messages() {
+        let mut history = vec![Message::User {
+            content: Content::Multiple(vec![ContentBlock::ToolResult {
+                tool_use_id: "call_1".to_string(),
+                content: "工具结果".to_string(),
+            }]),
+        }];
+        let ctx = "<intent>\nPROJECT_ACTION\n</intent>\n";
+
+        inject_context_into_history(&mut history, 0, ctx);
+        match &history[0] {
+            Message::User { content: Content::Multiple(blocks) } => {
+                assert_eq!(blocks.len(), 1);
+                assert!(matches!(blocks[0], ContentBlock::ToolResult { .. }));
+            }
+            _ => panic!("Expected tool result user message"),
         }
     }
 }

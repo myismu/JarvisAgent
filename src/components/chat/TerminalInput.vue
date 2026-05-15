@@ -153,9 +153,15 @@ const switchProfile = async (id: string) => {
       // 切模型后刷新历史，确保 data-user-message-index 同步
       try {
         if (session.activeSessionId) {
-          const history = await invoke<string>('get_session_history', { sessionId: session.activeSessionId });
-          session.clearSessionBuffers(session.activeSessionId);
-          session.replaceSessionHistory(session.activeSessionId, history);
+          try {
+            const messages = await invoke<any[]>('get_session_messages', { sessionId: session.activeSessionId });
+            session.clearSessionBuffers(session.activeSessionId);
+            session.replaceSessionMessages(session.activeSessionId, messages);
+          } catch {
+            const history = await invoke<string>('get_session_history', { sessionId: session.activeSessionId });
+            session.clearSessionBuffers(session.activeSessionId);
+            session.replaceSessionHistory(session.activeSessionId, history);
+          }
         }
       } catch { /* ignore */ }
     } catch (e) {
@@ -253,9 +259,15 @@ onMounted(async () => {
     loadImageCompressConfig();
     try {
       if (session.activeSessionId) {
-        const history = await invoke<string>('get_session_history', { sessionId: session.activeSessionId });
-        session.clearSessionBuffers(session.activeSessionId);
-        session.replaceSessionHistory(session.activeSessionId, history);
+        try {
+          const messages = await invoke<any[]>('get_session_messages', { sessionId: session.activeSessionId });
+          session.clearSessionBuffers(session.activeSessionId);
+          session.replaceSessionMessages(session.activeSessionId, messages);
+        } catch {
+          const history = await invoke<string>('get_session_history', { sessionId: session.activeSessionId });
+          session.clearSessionBuffers(session.activeSessionId);
+          session.replaceSessionHistory(session.activeSessionId, history);
+        }
       }
     } catch { /* ignore */ }
   });

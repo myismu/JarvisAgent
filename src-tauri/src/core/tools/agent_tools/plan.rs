@@ -1,4 +1,4 @@
-﻿//! # plan.rs — 方案审批工具
+//! # plan.rs — 方案审批工具
 //!
 //! 推送实施方案到前端预览面板，通过 oneshot channel 阻塞等待用户决策。
 //!
@@ -106,8 +106,8 @@ pub async fn propose_plan(
         entry.id = id.clone();
     }
 
-    // 创建 oneshot channel 等待用户决策
-    let (tx, rx) = tokio::sync::oneshot::channel();
+    // 创建 oneshot channel（保留通道用于 resolve_permission 检测 Agent 是否存活）
+    let (tx, _rx) = tokio::sync::oneshot::channel();
     {
         let mut perms = ctx.pending_permissions.lock().await;
         let now = std::time::Instant::now();
@@ -180,79 +180,7 @@ pub async fn propose_plan(
         let _ = crate::core::session::save_session(session_id, &memory, None);
     }
 
-    // 阻塞等待用户决策（通过 resolve_permission 回调）
-    let decision = rx.await.unwrap_or_else(|_| "reject".to_string());
-
-    // 解析决策和可能的修改内容
-    let (final_decision, modified_content) = if decision.contains("|||") {
-        let parts: Vec<&str> = decision.splitn(2, "|||").collect();
-        (parts[0].to_string(), Some(parts[1].to_string()))
-    } else {
-        (decision, None)
-    };
-    ctx.pending_plan_state
-        .lock()
-        .await
-        .remove(&plan_fingerprint);
-    let decided_status = if final_decision == "reject" {
-        "rejected"
-    } else {
-        "approved"
-    };
-    let decided_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let decided_doc = {
-        let mut memory = ctx.memory.lock().await;
-        memory
-            .plan_documents
-            .iter_mut()
-            .find(|item| item.id == id)
-            .map(|item| {
-                item.status = decided_status.to_string();
-                item.updated_at = decided_at;
-                item.decided_at = Some(decided_at);
-                item.clone()
-            })
-    };
-    if let Some(doc) = decided_doc {
-        let _ = crate::core::session::upsert_plan_document(session_id, doc.clone());
-        let _ = app.emit("plan-document-updated", &doc);
-    }
-
-    if final_decision == "reject" {
-        crate::jarvis_info!("JARVIS", "[JARVIS] 用户拒绝了方案: {}", title);
-        format!("用户已拒绝此方案「{}」。请根据用户意见进行调整，或询问用户想要修改的部分。严禁继续创建 CreateTask 任务！", title)
-    } else {
-        crate::jarvis_info!("JARVIS", "[JARVIS] 用户同意了方案: {}", title);
-        if let Some(content) = modified_content {
-            format!(
-                "用户已同意方案「{}」并做了修改！修改后的方案内容：\n\n{}\n\n现在请按以下步骤执行：\n\
-                 1. 使用 SwitchWorkMode 切换到编辑模式（mode=\"edit\", reason=\"方案已审批，开始执行\"）\n\
-                 2. 使用 CreateTask 逐个创建任务，每个任务必须是单一变更单元\n\
-                 3. 使用 UpdateTask 的 add_blocked_by 建立依赖关系\n\
-                 4. 确认所有任务和依赖后，调用 RunSubagentsSequentially 启动调度器\n\
-                 5. 无依赖的任务会被自动并行执行，有依赖的任务按序执行\n\
-                 6. ⚠️ 调度完成后，你必须根据返回的调度报告，用中文向用户简洁总结：\n\
-                    - 哪些任务成功\n\
-                    - 哪些失败（如有）\n\
-                    - 最终产出了什么（文件/功能）",
-                title, content
-            )
-        } else {
-            format!(
-                "用户已同意方案「{}」！现在请按以下步骤执行：\n\
-                 1. 使用 SwitchWorkMode 切换到编辑模式（mode=\"edit\", reason=\"方案已审批，开始执行\"）\n\
-                 2. 使用 CreateTask 逐个创建任务，每个任务必须是单一变更单元\n\
-                 3. 使用 UpdateTask 的 add_blocked_by 建立依赖关系\n\
-                 4. 确认所有任务和依赖后，调用 RunSubagentsSequentially 启动调度器\n\
-                 5. ⚠️ 调度完成后，你必须根据返回的调度报告，用中文向用户简洁总结：\n\
-                    - 哪些任务成功\n\
-                    - 哪些失败（如有）\n\
-                    - 最终产出了什么（文件/功能）",
-                title
-            )
-        }
-    }
+    // 断点续传：方案已保存，Agent 主动停止。用户决策触发新 ask_jarvis。
+    crate::jarvis_info!("JARVIS", "[JARVIS] 方案已提交，Agent 暂停等待审批: {} ({})", title, id);
+    format!("方案「{}」已提交审批面板。Agent 已停止等待用户决策。用户决策后将自动断点续传。", title)
 }

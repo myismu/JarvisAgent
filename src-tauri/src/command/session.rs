@@ -425,7 +425,7 @@ pub async fn get_session_context_snapshot(
                                 }
                                 ContentBlock::ToolUse { name, input, .. } => {
                                     let s = serde_json::to_string(input).unwrap_or_default();
-                                    let t = if s.len() > 120 { &s[..120] } else { &s };
+                                    let t = if s.len() > 120 { let mut e=120; while e>0 && !s.is_char_boundary(e) { e-=1; } &s[..e] } else { &s };
                                     out.push_str(&format!("  → {}({})\n", name, t));
                                 }
                                 ContentBlock::ToolResult { tool_use_id, content: tc } => {
@@ -437,7 +437,7 @@ pub async fn get_session_context_snapshot(
                                     out.push_str(&format!("  ← {}: {}\n", sid, preview));
                                 }
                                 ContentBlock::Thinking { thinking, .. } => {
-                                    let p = if thinking.len() > 80 { &thinking[..80] } else { thinking };
+                                    let p = if thinking.len() > 80 { let mut e=80; while e>0 && !thinking.is_char_boundary(e) { e-=1; } &thinking[..e] } else { thinking };
                                     out.push_str(&format!("  … {}\n", p));
                                 }
                                 _ => {}

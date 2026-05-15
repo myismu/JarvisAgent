@@ -47,6 +47,9 @@ pub struct AgentConfig {
     pub top_p: Option<f32>,
     /// 模型生成的 Top K 参数
     pub top_k: Option<u32>,
+    /// Reflection 模式: "always" | "smart" | "off"
+    #[serde(default = "default_reflection_mode")]
+    pub reflection_mode: String,
     /// [兼容旧配置] 旧版图片/子模型字段，读取后忽略
     #[serde(default, skip_serializing)]
     pub image_max_width: Option<u32>,
@@ -77,6 +80,7 @@ impl Default for AgentConfig {
             temperature: None,
             top_p: None,
             top_k: None,
+            reflection_mode: default_reflection_mode(),
             image_max_width: None,
             image_max_height: None,
             image_quality: None,
@@ -92,6 +96,10 @@ pub struct ModelProfile {
     pub id: String,
     pub name: String,
     pub config: AgentConfig,
+}
+
+fn default_reflection_mode() -> String {
+    "smart".to_string()
 }
 
 fn default_global_profile_id() -> String {

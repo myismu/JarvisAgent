@@ -9,8 +9,8 @@ use std::sync::OnceLock;
 
 use super::registry::ToolRegistry;
 
-pub const DEFAULT_AGENT_TYPE: &str = "general";
-pub const IMPLEMENTATION_AGENT_TYPE: &str = "implementation";
+pub const DEFAULT_AGENT_ROLE: &str = "general";
+pub const IMPLEMENTATION_AGENT_ROLE: &str = "implementation";
 
 const GENERAL_TOOLS: &[&str] = &[
     "GetSystemInfo",
@@ -71,7 +71,7 @@ const VERIFICATION_TOOLS: &[&str] = &[
 
 #[derive(Debug, Clone)]
 pub struct AgentDefinition {
-    pub agent_type: &'static str,
+    pub agent_role: &'static str,
     pub when_to_use: &'static str,
     pub system_prompt: &'static str,
     pub tools: &'static [&'static str],
@@ -97,7 +97,7 @@ impl AgentRegistry {
             };
 
             registry.register(AgentDefinition {
-                agent_type: DEFAULT_AGENT_TYPE,
+                agent_role: DEFAULT_AGENT_ROLE,
                 when_to_use: "General delegated work. Defaults to read-only unless the caller explicitly allows writes.",
                 system_prompt: "You are a general-purpose subagent. Complete the delegated task directly and report only the useful result.",
                 tools: GENERAL_TOOLS,
@@ -108,7 +108,7 @@ impl AgentRegistry {
             });
 
             registry.register(AgentDefinition {
-                agent_type: "explore",
+                agent_role: "explore",
                 when_to_use: "Read-only codebase exploration, file discovery, and focused research.",
                 system_prompt: "You are an exploration subagent. Inspect the codebase, gather evidence, and return concise findings with file paths. Do not modify files.",
                 tools: READ_ONLY_RESEARCH_TOOLS,
@@ -119,7 +119,7 @@ impl AgentRegistry {
             });
 
             registry.register(AgentDefinition {
-                agent_type: "plan",
+                agent_role: "plan",
                 when_to_use: "Read-only planning before implementation. Produce an actionable plan, not code changes.",
                 system_prompt: "You are a planning subagent. Analyze the requested change and return a concrete implementation plan. Do not modify files.",
                 tools: READ_ONLY_RESEARCH_TOOLS,
@@ -130,7 +130,7 @@ impl AgentRegistry {
             });
 
             registry.register(AgentDefinition {
-                agent_type: "review",
+                agent_role: "review",
                 when_to_use: "Independent read-only code review focused on bugs, risks, regressions, and missing tests.",
                 system_prompt: "You are a code review subagent. Prioritize concrete defects with file references. Do not modify files.",
                 tools: READ_ONLY_RESEARCH_TOOLS,
@@ -141,7 +141,7 @@ impl AgentRegistry {
             });
 
             registry.register(AgentDefinition {
-                agent_type: "verification",
+                agent_role: "verification",
                 when_to_use: "Verify behavior after changes by inspecting code and running targeted checks or tests.",
                 system_prompt: "You are a verification subagent. Run targeted checks when useful, inspect failures, and report pass/fail evidence. Do not edit files.",
                 tools: VERIFICATION_TOOLS,
@@ -152,7 +152,7 @@ impl AgentRegistry {
             });
 
             registry.register(AgentDefinition {
-                agent_type: IMPLEMENTATION_AGENT_TYPE,
+                agent_role: IMPLEMENTATION_AGENT_ROLE,
                 when_to_use: "Concrete implementation work that may edit files or run commands.",
                 system_prompt: "You are an implementation subagent. Make the requested changes, keep scope tight, and verify the result when practical.",
                 tools: GENERAL_TOOLS,
@@ -167,18 +167,18 @@ impl AgentRegistry {
     }
 
     fn register(&mut self, agent: AgentDefinition) {
-        if !self.agents.contains_key(agent.agent_type) {
-            self.insertion_order.push(agent.agent_type);
+        if !self.agents.contains_key(agent.agent_role) {
+            self.insertion_order.push(agent.agent_role);
         }
-        self.agents.insert(agent.agent_type, agent);
+        self.agents.insert(agent.agent_role, agent);
     }
 
-    pub fn get(&self, agent_type: &str) -> Option<&AgentDefinition> {
-        self.agents.get(agent_type)
+    pub fn get(&self, agent_role: &str) -> Option<&AgentDefinition> {
+        self.agents.get(agent_role)
     }
 
     pub fn default_agent(&self) -> &AgentDefinition {
-        self.get(DEFAULT_AGENT_TYPE)
+        self.get(DEFAULT_AGENT_ROLE)
             .expect("default subagent definition must exist")
     }
 
@@ -189,8 +189,8 @@ impl AgentRegistry {
     pub fn prompt_listing(&self) -> String {
         self.insertion_order
             .iter()
-            .filter_map(|agent_type| self.agents.get(agent_type))
-            .map(|agent| format!("- {}: {}", agent.agent_type, agent.when_to_use))
+            .filter_map(|agent_role| self.agents.get(agent_role))
+            .map(|agent| format!("- {}: {}", agent.agent_role, agent.when_to_use))
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -226,11 +226,11 @@ impl AgentRegistry {
     }
 }
 
-pub fn normalize_agent_type(value: Option<&str>) -> &str {
+pub fn normalize_agent_role(value: Option<&str>) -> &str {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or(DEFAULT_AGENT_TYPE)
+        .unwrap_or(DEFAULT_AGENT_ROLE)
 }
 
 #[cfg(test)]
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn default_agent_exists() {
         let registry = AgentRegistry::global();
-        assert_eq!(registry.default_agent().agent_type, DEFAULT_AGENT_TYPE);
+        assert_eq!(registry.default_agent().agent_role, DEFAULT_AGENT_ROLE);
         assert!(registry.available_types().contains(&"implementation"));
     }
 
@@ -299,7 +299,7 @@ mod tests {
         let properties = &task.schema["input_schema"]["properties"];
 
         assert!(properties["description"].is_object());
-        assert!(properties["subagent_type"].is_object());
+        assert!(properties["subagent_role"].is_object());
         assert!(properties["model"].is_object());
         assert!(properties["read_only"].is_object());
     }

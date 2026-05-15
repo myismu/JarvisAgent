@@ -15,14 +15,14 @@
 //! - 取消令牌（`CancellationToken`）贯穿全流程，支持用户随时中断
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eventsource_stream::Eventsource;
 use serde_json::json;
 use tauri::Emitter;
 
 use crate::infra::config::config::AgentConfig;
-use crate::infra::types::error::AgentError;
+use crate::infra::types::error::{AgentError, ApiError};
 use crate::infra::debug_logger;
 use crate::core::intent;
 use crate::infra::llm::api_client;
@@ -104,6 +104,8 @@ impl PipelineState {
         thinking_override: Option<bool>,
         image_base64_list: Option<Vec<String>>,
         _agent_display_mode: Option<String>,
+        _reflection_mode_override: Option<String>,
+        _inject_user_message: bool,
         app: tauri::AppHandle,
         session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
         config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
@@ -187,9 +189,17 @@ impl PipelineState {
         } else {
             msg.clone()
         };
+        let is_approval_continuation = msg_for_intent.starts_with("用户已同意方案")
+                || msg_for_intent.starts_with("用户要求修改方案");
         let detected_intent = if work_mode != "chat" {
-            println!("[JARVIS] {} 模式：跳过意图分类，直接进入项目操作流程", work_mode);
-            DIRECT_DEVELOPER_INTENT.to_string()
+            let rule_intent = crate::core::intent::rules::classify_by_rules(&msg_for_intent);
+            if matches!(rule_intent, crate::core::intent::rules::Intent::TaskPlan) && !is_approval_continuation {
+                println!("[JARVIS] {} 模式：规则检测到复杂任务，首轮直接进入方案审批流程", work_mode);
+                "TASK_PLAN".to_string()
+            } else {
+                println!("[JARVIS] {} 模式：跳过 LLM 意图分类，直接进入项目操作流程", work_mode);
+                DIRECT_DEVELOPER_INTENT.to_string()
+            }
         } else {
             let history_for_classification = ctx.memory.lock().await.messages.clone();
             intent::classify_intent(
@@ -207,7 +217,7 @@ impl PipelineState {
 
         let activated_tools = ctx.memory.lock().await.activated_tools.clone();
 
-        Ok(Self {
+        let mut state = Self {
             app,
             sid,
             ctx,
@@ -223,7 +233,7 @@ impl PipelineState {
             msg,
             image_base64_list,
             thinking_override,
-            detected_intent,
+            detected_intent: detected_intent.clone(),
             // 以下字段在后续阶段填充
             dynamic_context_str: String::new(),
             user_msg_for_memory: String::new(),
@@ -237,7 +247,26 @@ impl PipelineState {
             req_output_tokens: 0,
             final_answer: String::new(),
             activated_tools,
-        })
+        };
+
+        if detected_intent == "TASK_PLAN" && work_mode != "plan" {
+            println!("[JARVIS] 意图前置拦截：TASK_PLAN 意图，首轮强制切换到 Plan 模式");
+            *state.ctx.agent_work_mode.lock().await = "plan".to_string();
+            state.system_prompt = crate::core::agent::prompts::get_system_prompt(&audience, "plan");
+            state.detected_intent = "TASK_PLAN".to_string();
+            state.should_think = true;
+            let _ = state.app.emit(
+                "agent-work-mode-changed",
+                json!({
+                    "sessionId": state.sid,
+                    "from": work_mode,
+                    "to": "plan",
+                    "reason": "意图分类检测到复杂任务，自动切换到计划模式",
+                }),
+            );
+        }
+
+        Ok(state)
     }
 
     /// 阶段 2: 意图验证 — DANGEROUS 权限确认 / UNCLEAR 澄清
@@ -564,6 +593,25 @@ impl PipelineState {
             // 存储助手回复
             self.store_assistant_response(current_blocks).await;
 
+            // 检测方案审批等待标记（断点续传：Agent 主动停止）
+            let plan_awaiting = tool_results.iter().any(|b| {
+                matches!(b, ContentBlock::ToolResult { content, .. }
+                    if content.contains("Agent 已停止等待用户决策"))
+            });
+            if plan_awaiting {
+                self.final_answer = "方案已提交到审批面板，等待您的决策。".to_string();
+                {
+                    let mut session = self.ctx.memory.lock().await;
+                    append_message(&mut session, Message::User {
+                        content: Content::Multiple(tool_results),
+                    });
+                    append_message(&mut session, Message::Assistant {
+                        content: Content::Single(self.final_answer.clone()),
+                    });
+                }
+                break;
+            }
+
             // 判断是否继续循环
             if tool_results.is_empty() {
                 self.final_answer = current_text_this_turn;
@@ -574,6 +622,52 @@ impl PipelineState {
                 {
                     self.final_answer = std::mem::take(&mut current_thinking_this_turn);
                 }
+
+                // 第3层防御：响应后置拦截 — 检测正文中的计划模式
+                // 仅在首轮响应时触发：已执行过工具（total_loop_count > 0）说明正在总结，不拦截
+                let work_mode = self.ctx.agent_work_mode.lock().await.clone();
+                if self.total_loop_count == 0
+                    && crate::core::intent::plan_detector::detect_plan_in_text(&self.final_answer)
+                    && work_mode != "chat"
+                {
+                    println!(
+                        "[JARVIS] 响应后置拦截：检测到正文中的计划内容，重定向到 ProposePlan"
+                    );
+                    let _ = self.app.emit(
+                        "chat-stream",
+                        json!({
+                            "content": "\n> ⚠️ **检测到计划性内容，正在重定向到方案审批流程...**\n",
+                            "sessionId": self.sid,
+                            "loopCount": self.total_loop_count + 1
+                        }),
+                    );
+
+                    let redirect_msg = format!(
+                        "【系统拦截通知】\n\
+                        你刚才在回复正文中输出了计划/步骤/方案内容，这违反了规则。\n\
+                        计划必须通过 ProposePlan 工具提交到审批面板，不能写在正文里。\n\
+                        \n\
+                        请立即执行以下操作：\n\
+                        1. 如果当前不在 Plan 模式，先调用 SwitchWorkMode(mode=\"plan\") 切换\n\
+                        2. 调用 ProposePlan 工具，将你刚才的计划内容作为 content 参数提交\n\
+                        3. 等待用户审批\n\
+                        \n\
+                        你刚才输出的内容摘要：\n{}",
+                        self.final_answer.chars().take(500).collect::<String>()
+                    );
+
+                    {
+                        let mut session = self.ctx.memory.lock().await;
+                        append_message(&mut session, Message::User {
+                            content: Content::Single(redirect_msg),
+                        });
+                    }
+
+                    self.loop_count += 1;
+                    self.total_loop_count += 1;
+                    continue;
+                }
+
                 {
                     let session = self.ctx.memory.lock().await;
                     agent_runs::save_checkpoint(
@@ -1084,7 +1178,11 @@ impl PipelineState {
                                         let input_str =
                                             serde_json::to_string(input).unwrap_or_default();
                                         let truncated = if input_str.len() > 200 {
-                                            format!("{}…", &input_str[..200])
+                                            let mut end = 200;
+                                            while end > 0 && !input_str.is_char_boundary(end) {
+                                                end -= 1;
+                                            }
+                                            format!("{}…", &input_str[..end])
                                         } else {
                                             input_str
                                         };
@@ -1095,7 +1193,11 @@ impl PipelineState {
                                     }
                                     ContentBlock::Thinking { thinking, .. } => {
                                         let preview = if thinking.len() > 80 {
-                                            format!("{}…", &thinking[..80])
+                                            let mut end = 80;
+                                            while end > 0 && !thinking.is_char_boundary(end) {
+                                                end -= 1;
+                                            }
+                                            format!("{}…", &thinking[..end])
                                         } else {
                                             thinking.clone()
                                         };
@@ -1436,7 +1538,17 @@ impl PipelineState {
         );
 
         match tokio::select! {
-            result = api_request => result,
+            result = tokio::time::timeout(Duration::from_secs(120), api_request) => {
+                match result {
+                    Ok(result) => result,
+                    Err(_) => {
+                        let error = ApiError::Network("API 请求超过 120 秒未返回响应头，已自动终止。".to_string());
+                        agent_runs::fail_run(&self.app, &self.run_id, error.to_string());
+                        *self.ctx.cancel_token.lock().await = None;
+                        return Err(error.into());
+                    }
+                }
+            }
             _ = self.cancel_token.cancelled() => {
                 return Ok(None);
             }
@@ -1478,6 +1590,56 @@ pub async fn run_pipeline(
     thinking_override: Option<bool>,
     image_base64_list: Option<Vec<String>>,
     agent_display_mode: Option<String>,
+    reflection_mode_override: Option<String>,
+    app: tauri::AppHandle,
+    session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
+    config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
+) -> Result<JarvisResult, AgentError> {
+    run_pipeline_inner(
+        session_id,
+        msg,
+        thinking_override,
+        image_base64_list,
+        agent_display_mode,
+        reflection_mode_override,
+        true,
+        app,
+        session_manager,
+        config_state,
+    )
+    .await
+}
+
+pub async fn resume_pipeline(
+    session_id: String,
+    reason: String,
+    app: tauri::AppHandle,
+    session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
+    config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
+) -> Result<JarvisResult, AgentError> {
+    run_pipeline_inner(
+        session_id,
+        reason,
+        None,
+        None,
+        None,
+        None,
+        false,
+        app,
+        session_manager,
+        config_state,
+    )
+    .await
+}
+
+async fn run_pipeline_inner(
+    session_id: String,
+    msg: String,
+    thinking_override: Option<bool>,
+    image_base64_list: Option<Vec<String>>,
+    agent_display_mode: Option<String>,
+    reflection_mode_override: Option<String>,
+    inject_user_message: bool,
     app: tauri::AppHandle,
     session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
     config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
@@ -1489,6 +1651,8 @@ pub async fn run_pipeline(
         thinking_override,
         image_base64_list,
         agent_display_mode,
+        reflection_mode_override,
+        inject_user_message,
         app,
         session_manager,
         config_state,

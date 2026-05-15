@@ -19,7 +19,7 @@ use eventsource_stream::Eventsource;
 use serde_json::json;
 use tauri::{Emitter, Manager};
 
-use super::super::framework::agent_registry::{normalize_agent_type, AgentRegistry};
+use super::super::framework::agent_registry::{normalize_agent_role, AgentRegistry};
 use super::super::{handle_tool_call_inner_owned, load_all_skills};
 use crate::core::agent::{process_stream, StreamConfig};
 use crate::infra::config::config::ConfigState;
@@ -380,11 +380,11 @@ pub async fn run_subagent(
     model_override: Option<String>,
 ) -> (String, u64, u64) {
     let agent_registry = AgentRegistry::global();
-    let requested_agent_type = normalize_agent_type(subagent_type.as_deref());
+    let requested_agent_role = normalize_agent_role(subagent_type.as_deref());
     let agent = agent_registry
-        .get(requested_agent_type)
+        .get(requested_agent_role)
         .unwrap_or_else(|| agent_registry.default_agent());
-    let agent_type = agent.agent_type.to_string();
+    let agent_role = agent.agent_role.to_string();
     let max_loops = agent
         .max_turns
         .unwrap_or(crate::infra::types::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM);
@@ -397,7 +397,7 @@ pub async fn run_subagent(
         read_only,
         task_id,
         label,
-        agent_type.clone(),
+        agent_role.clone(),
         max_loops,
     )
     .await;
@@ -430,7 +430,7 @@ pub async fn run_subagent(
     let mut system_prompt = get_subagent_system_prompt(&cwd, ws_str.as_deref());
     system_prompt.push_str(&format!(
         "\n\n[Subagent type]\n- type: {}\n- when to use: {}\n\n[Role instructions]\n{}\n\n[Tool boundary]\nOnly use the tools provided in this run. Do not attempt to call parent-control tools such as RunSubagent, RunSubagentsSequentially, UpdateTodos, CompactConversation, or ConsolidateMemory.",
-        agent.agent_type, agent.when_to_use, agent.system_prompt
+        agent.agent_role, agent.when_to_use, agent.system_prompt
     ));
 
     let skills = load_all_skills();
@@ -464,7 +464,7 @@ pub async fn run_subagent(
     if tools.is_empty() {
         let msg = format!(
             "Subagent '{}' has no available tools after permission filtering.",
-            agent.agent_type
+            agent.agent_role
         );
         SubAgentMonitor::fail_run(&app, &run_id, msg.clone(), 0, 0).await;
         return (msg, 0, 0);
@@ -478,7 +478,7 @@ pub async fn run_subagent(
     let _ = app.emit(
         "chat-stream",
         json!({
-            "content": format!("\n> ◆ **[启动子代理]** ({}, {}) 任务: `{}`\n", agent_type, mode_str, prompt),
+            "content": format!("\n> ◆ **[启动子代理]** ({}, {}) 任务: `{}`\n", agent_role, mode_str, prompt),
             "sessionId": session_id.clone(),
             "isSubAgent": true
         }),
@@ -487,7 +487,7 @@ pub async fn run_subagent(
         "agent-step",
         json!({
             "type": "subagent_start",
-            "task": format!("{} {} - {}", agent_type, mode_str, prompt.chars().take(100).collect::<String>()),
+            "task": format!("{} {} - {}", agent_role, mode_str, prompt.chars().take(100).collect::<String>()),
             "sessionId": session_id.clone(),
             "isSubAgent": true
         }),

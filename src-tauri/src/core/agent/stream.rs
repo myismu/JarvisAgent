@@ -1,4 +1,4 @@
-﻿//! # stream.rs — SSE 流式响应处理
+//! # stream.rs — SSE 流式响应处理
 //!
 //! 解析 LLM 返回的 SSE 流式响应，支持 Anthropic 和 OpenAI 两种格式。
 //! 实时提取文本、思考过程、工具调用等 ContentBlock，并通过 Tauri 事件推送到前端。
@@ -41,6 +41,75 @@ fn looks_like_textual_tool_call(text: &str) -> bool {
     text.contains("<tool_call") || text.contains("<function=") || text.contains("<parameter=")
 }
 
+/// 尝试从累积的 partial_json 中提取 ProposePlan 的 content 字段内容
+/// 返回已累积的 content 字符串（可能不完整）
+fn extract_propose_plan_content(partial_json: &str) -> Option<String> {
+    // 快速过滤：必须包含 content 关键字
+    if !partial_json.contains("content") {
+        return None;
+    }
+
+    // 尝试解析为完整 JSON
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(partial_json) {
+        if let Some(content) = parsed.get("content").and_then(|v| v.as_str()) {
+            return Some(content.to_string());
+        }
+        return None;
+    }
+
+    // 不完整 JSON：尝试提取 content 字段的值
+    // 匹配 "content": "..." 或 "content":"..."
+    if let Some(start) = partial_json.find("\"content\"") {
+        let after_key = &partial_json[start + 9..];
+        // 跳过空白和冒号
+        let after_colon = after_key.trim_start().strip_prefix(':')?;
+        let after_colon = after_colon.trim_start();
+
+        // 检查是否是字符串值
+        if after_colon.starts_with('"') {
+            let after_quote = &after_colon[1..];
+            // 找到字符串的结束位置（正确处理 JSON 转义序列）
+            let mut content = String::new();
+            let mut chars = after_quote.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c == '\\' {
+                    if let Some(next) = chars.next() {
+                        match next {
+                            'n' => content.push('\n'),
+                            't' => content.push('\t'),
+                            'r' => content.push('\r'),
+                            '\\' => content.push('\\'),
+                            '"' => content.push('"'),
+                            '/' => content.push('/'),
+                            'u' => {
+                                let mut hex = String::new();
+                                for _ in 0..4 {
+                                    if let Some(hc) = chars.next() {
+                                        hex.push(hc);
+                                    }
+                                }
+                                if let Ok(code) = u32::from_str_radix(&hex, 16) {
+                                    if let Some(ch) = char::from_u32(code) {
+                                        content.push(ch);
+                                    }
+                                }
+                            }
+                            _ => content.push(next),
+                        }
+                    }
+                } else if c == '"' {
+                    break;
+                } else {
+                    content.push(c);
+                }
+            }
+            return Some(content);
+        }
+    }
+
+    None
+}
+
 /// 流式处理结果
 pub struct StreamResult {
     pub blocks: Vec<ContentBlock>,
@@ -76,6 +145,8 @@ pub async fn process_stream(
     let mut req_input_tokens: u64 = 0;
     let mut req_output_tokens: u64 = 0;
     let mut logged_textual_tool_violation = false;
+    // 追踪 ProposePlan 工具调用的流式内容，用于实时推送到前端
+    let mut propose_plan_stream_sent: HashMap<usize, usize> = HashMap::new();
 
     let logger = DebugLogger::new();
     if !config.is_subagent {
@@ -234,6 +305,25 @@ pub async fn process_stream(
                                     {
                                         if let Some(buf) = tool_input_buffers.get_mut(block_index) {
                                             buf.push_str(args);
+                                            // 实时提取 ProposePlan 的 content 并推送到前端
+                                            if let Some(ContentBlock::ToolUse { name, .. }) = current_blocks.get(*block_index) {
+                                                if name == "ProposePlan" {
+                                                    if let Some(content) = extract_propose_plan_content(buf) {
+                                                        let sent_len = propose_plan_stream_sent.get(block_index).copied().unwrap_or(0);
+                                                        if content.len() > sent_len {
+                                                            let new_chunk = &content[sent_len..];
+                                                            let _ = app.emit(
+                                                                "plan-proposal-stream",
+                                                                json!({
+                                                                    "content": new_chunk,
+                                                                    "sessionId": sid
+                                                                }),
+                                                            );
+                                                            propose_plan_stream_sent.insert(*block_index, content.len());
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -353,10 +443,27 @@ pub async fn process_stream(
                                     }
                                 }
                             }
-                            ContentBlock::ToolUse { .. } => {
+                            ContentBlock::ToolUse { name, .. } => {
                                 if let Some(partial) = delta["partial_json"].as_str() {
                                     if let Some(buf) = tool_input_buffers.get_mut(&index) {
                                         buf.push_str(partial);
+                                        // 实时提取 ProposePlan 的 content 并推送到前端
+                                        if name == "ProposePlan" {
+                                            if let Some(content) = extract_propose_plan_content(buf) {
+                                                let sent_len = propose_plan_stream_sent.get(&index).copied().unwrap_or(0);
+                                                if content.len() > sent_len {
+                                                    let new_chunk = &content[sent_len..];
+                                                    let _ = app.emit(
+                                                        "plan-proposal-stream",
+                                                        json!({
+                                                            "content": new_chunk,
+                                                            "sessionId": sid
+                                                        }),
+                                                    );
+                                                    propose_plan_stream_sent.insert(index, content.len());
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }

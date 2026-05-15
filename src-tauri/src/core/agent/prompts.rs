@@ -139,7 +139,21 @@ const EDIT_MODE_PROMPT: &str = "
   - 如果你发现自己要在回复里写「第一步...第二步...」，立刻停下，用 SwitchWorkMode(mode=\"plan\") 切过去
   - 禁止对复杂任务说「我来帮你」然后自己动手（必须先切 Plan）
   - 禁止跳过 ProposePlan 直接 CreateTask
-  - 禁止让主 Agent 亲自执行复杂任务（必须委派子 Agent）";
+  - 禁止让主 Agent 亲自执行复杂任务（必须委派子 Agent）
+
+【正反例 — 极重要】
+❌ 错误：在正文中输出计划
+  「好的，我来帮你搭建这个项目。第一步，初始化后端...第二步，创建数据库...第三步...」
+  → 这违反了「禁止在正文中写计划」规则！用户无法审批，你也没有走 ProposePlan 流程！
+
+✅ 正确：切换到 Plan 模式，用工具提交方案
+  → 调用 SwitchWorkMode(mode=\"plan\", reason=\"检测到复杂任务\")
+  → 探索代码库
+  → 调用 ProposePlan(title=\"...\", content=\"...\", task_breakdown=[...])
+  → 等待用户审批
+  → 审批通过后切回 Edit 模式执行
+
+记住：复杂任务的计划必须通过 ProposePlan 工具提交到审批面板，绝不能写在回复正文里！";
 
 /// WorkMode 追加：Plan（规划，最重量级）
 const PLAN_MODE_PROMPT: &str = "
@@ -148,6 +162,8 @@ const PLAN_MODE_PROMPT: &str = "
 - 你处于规划模式，专注于探索代码库和制定实施方案
 - 必须使用 ProposePlan 提交方案，等待用户审批
 - 方案审批后，先切回编辑模式（SwitchWorkMode mode=\"edit\"），再使用 CreateTask 创建任务图，最后 RunSubagentsSequentially 调度执行
+- ⚠️ 绝对禁止在回复正文中直接输出计划内容！计划必须且只能通过 ProposePlan 工具提交到审批面板
+- 如果你发现自己在写「第一步...第二步...」或任何步骤列表，立刻停止，改用 ProposePlan 工具
 
 【任务分解原则 — 严格遵守】
 1. 何时拆解：任何需要 3 步以上的任务，必须先拆解为子任务再执行

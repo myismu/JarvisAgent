@@ -1,4 +1,4 @@
-﻿//! # 意图分类模块 (Intent Classification)
+//! # 意图分类模块 (Intent Classification)
 //!
 //! 采用三层分级策略将用户输入归类为预定义意图：
 //! 1. 规则层 — 关键词正则匹配（覆盖 ~90% 明确请求，零延迟）
@@ -8,6 +8,7 @@
 //! 返回值为意图字符串（如 `"CODE_READ"`、`"DANGEROUS"`），供下游
 //! 工具加载和 Agent 路由使用。
 
+pub mod plan_detector;
 pub mod rules;
 
 use crate::infra::debug_logger;

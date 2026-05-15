@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { AgentCurrentTurn, AgentDisplayMode } from "../../types";
-import { renderMarkdown, renderTokenUsage } from "../../utils/markdown";
 import {
   stripPseudoToolCalls,
   buildDeveloperTimeline,
+  describeThinkingStatic,
 } from "../../utils/agentTurnRender";
+import { toolActionLabel } from "../../utils/toolDisplay";
 import ExecutionPanel from "./ExecutionPanel.vue";
-import ThinkingStatus from "./ThinkingStatus.vue";
+import StreamingMarkdown from "../common/StreamingMarkdown.vue";
 
 const props = defineProps<{
   turn: AgentCurrentTurn;
@@ -26,7 +27,6 @@ const assistantText = computed(() =>
   ),
 );
 
-const renderedAssistantText = computed(() => renderMarkdown(assistantText.value));
 const hasAssistantText = computed(() => assistantText.value.trim().length > 0);
 const hasExecution = computed(() => {
   return Boolean(
@@ -36,19 +36,10 @@ const hasExecution = computed(() => {
   );
 });
 
-const tokenUsageHtml = computed(() => {
-  if (!props.turn.tokens) return "";
-  return renderTokenUsage(
-    props.turn.tokens.input,
-    props.turn.tokens.output,
-    props.turn.tokens.sessionInput,
-    props.turn.tokens.sessionOutput,
-  );
-});
+const hasTurnTokens = computed(() => !!props.turn.tokens);
 
 const isDeveloperMode = computed(() => props.displayMode === "developer");
 
-// 统一时间线：直播和历史共用 buildDeveloperTimeline
 const developerTimeline = computed(() =>
   buildDeveloperTimeline(
     {
@@ -64,7 +55,6 @@ const developerTimeline = computed(() =>
   ),
 );
 
-// 最后一个 text 块始终在折叠外，其余全进折叠
 const timelineSplit = computed(() => {
   const items = developerTimeline.value;
   let lastTextIdx = -1;
@@ -78,6 +68,13 @@ const timelineSplit = computed(() => {
   };
 });
 const hasDeveloperSegments = computed(() => developerTimeline.value.length > 0);
+
+function toolStatusLabel(status: string): string {
+  if (status === "completed") return "完成";
+  if (status === "running") return "执行中";
+  if (status === "error") return "失败";
+  return "";
+}
 </script>
 
 <template>
@@ -87,7 +84,6 @@ const hasDeveloperSegments = computed(() => developerTimeline.value.length > 0);
   >
     <!-- 开发者模式 -->
     <div v-if="isDeveloperMode && hasDeveloperSegments">
-      <!-- 执行过程大折叠：直播时展开，完成后折叠 -->
       <details
         v-if="timelineSplit.execItems.length > 0"
         class="dev-execution-fold"
@@ -95,19 +91,120 @@ const hasDeveloperSegments = computed(() => developerTimeline.value.length > 0);
       >
         <summary class="dev-execution-summary">执行过程（{{ timelineSplit.execItems.length }} 步）</summary>
         <div class="dev-layout">
-          <div
-            v-for="(item, i) in timelineSplit.execItems"
-            :key="`exec-${item.type}-${item.timestamp}-${i}`"
-            v-html="item.html"
-          ></div>
+          <template v-for="(item, i) in timelineSplit.execItems" :key="`exec-${item.type}-${item.timestamp}-${i}`">
+            <StreamingMarkdown v-if="item.type === 'text'" :content="item.content" />
+
+            <details v-else-if="item.type === 'thinking'"
+              class="dev-thinking"
+              :class="{ streaming: item.streaming }"
+              :open="item.streaming"
+            >
+              <summary class="dev-thinking-summary">
+                <span class="dev-status-dot" :class="{ running: item.streaming }"></span>
+                <span class="dev-thinking-label">{{ describeThinkingStatic(item.content) }}</span>
+              </summary>
+              <div class="dev-thinking-body">
+                <StreamingMarkdown :content="item.content" />
+              </div>
+            </details>
+
+            <details v-else-if="item.type === 'tool'"
+              class="dev-tool"
+              :class="[item.tool.status]"
+              :open="item.streaming"
+            >
+              <summary class="dev-tool-summary">
+                <span class="dev-status-dot" :class="item.tool.status"></span>
+                <code class="dev-tool-name">{{ item.tool.name }}</code>
+                <span class="dev-tool-action">{{ toolActionLabel(item.tool.name, item.tool.status, item.tool) }}</span>
+                <span class="dev-tool-status">{{ toolStatusLabel(item.tool.status) }}</span>
+              </summary>
+              <div v-if="item.tool.inputSummary || item.tool.outputSummary || item.tool.error" class="dev-tool-body">
+                <div v-if="item.tool.inputSummary" class="dev-tool-section">
+                  <div class="dev-tool-section-label">参数</div>
+                  <StreamingMarkdown :content="item.tool.inputSummary" />
+                </div>
+                <div v-if="item.tool.outputSummary" class="dev-tool-section">
+                  <div class="dev-tool-section-label">输出</div>
+                  <StreamingMarkdown :content="item.tool.outputSummary" />
+                </div>
+                <div v-if="item.tool.error" class="dev-tool-section error">
+                  <div class="dev-tool-section-label">错误</div>
+                  <StreamingMarkdown :content="item.tool.error" />
+                </div>
+              </div>
+            </details>
+
+            <div v-else-if="item.type === 'log'" class="dev-log">
+              <div class="dev-log-header">
+                <span class="dev-log-dot red"></span>
+                <span class="dev-log-dot yellow"></span>
+                <span class="dev-log-dot green"></span>
+                <span class="dev-log-title">输出 #{{ item.loop || 1 }}</span>
+              </div>
+              <div class="dev-log-body">
+                <StreamingMarkdown :content="item.content" />
+              </div>
+            </div>
+          </template>
         </div>
       </details>
-      <!-- 最终总结 -->
-      <div
-        v-for="(item, i) in timelineSplit.finalItems"
-        :key="`final-${item.timestamp}-${i}`"
-        v-html="item.html"
-      ></div>
+      <template v-for="(item, i) in timelineSplit.finalItems" :key="`final-${item.type}-${item.timestamp}-${i}`">
+        <StreamingMarkdown v-if="item.type === 'text'" :content="item.content" />
+
+        <details v-else-if="item.type === 'thinking'"
+          class="dev-thinking"
+          :class="{ streaming: item.streaming }"
+          :open="item.streaming"
+        >
+          <summary class="dev-thinking-summary">
+            <span class="dev-status-dot" :class="{ running: item.streaming }"></span>
+            <span class="dev-thinking-label">{{ describeThinkingStatic(item.content) }}</span>
+          </summary>
+          <div class="dev-thinking-body">
+            <StreamingMarkdown :content="item.content" />
+          </div>
+        </details>
+
+        <details v-else-if="item.type === 'tool'"
+          class="dev-tool"
+          :class="[item.tool.status]"
+          :open="item.streaming"
+        >
+          <summary class="dev-tool-summary">
+            <span class="dev-status-dot" :class="item.tool.status"></span>
+            <code class="dev-tool-name">{{ item.tool.name }}</code>
+            <span class="dev-tool-action">{{ toolActionLabel(item.tool.name, item.tool.status, item.tool) }}</span>
+            <span class="dev-tool-status">{{ toolStatusLabel(item.tool.status) }}</span>
+          </summary>
+          <div v-if="item.tool.inputSummary || item.tool.outputSummary || item.tool.error" class="dev-tool-body">
+            <div v-if="item.tool.inputSummary" class="dev-tool-section">
+              <div class="dev-tool-section-label">参数</div>
+              <StreamingMarkdown :content="item.tool.inputSummary" />
+            </div>
+            <div v-if="item.tool.outputSummary" class="dev-tool-section">
+              <div class="dev-tool-section-label">输出</div>
+              <StreamingMarkdown :content="item.tool.outputSummary" />
+            </div>
+            <div v-if="item.tool.error" class="dev-tool-section error">
+              <div class="dev-tool-section-label">错误</div>
+              <StreamingMarkdown :content="item.tool.error" />
+            </div>
+          </div>
+        </details>
+
+        <div v-else-if="item.type === 'log'" class="dev-log">
+          <div class="dev-log-header">
+            <span class="dev-log-dot red"></span>
+            <span class="dev-log-dot yellow"></span>
+            <span class="dev-log-dot green"></span>
+            <span class="dev-log-title">输出 #{{ item.loop || 1 }}</span>
+          </div>
+          <div class="dev-log-body">
+            <StreamingMarkdown :content="item.content" />
+          </div>
+        </div>
+      </template>
     </div>
 
     <!-- 普通模式 -->
@@ -119,12 +216,15 @@ const hasDeveloperSegments = computed(() => developerTimeline.value.length > 0);
         :tool-calls="turn.toolCalls"
         :logs="turn.logs"
       />
-      <div v-if="hasAssistantText" class="agent-turn-answer" v-html="renderedAssistantText"></div>
+      <StreamingMarkdown v-if="hasAssistantText" class="agent-turn-answer" :content="assistantText" />
     </template>
 
-    <div v-if="tokenUsageHtml" class="agent-turn-tokens" v-html="tokenUsageHtml"></div>
-
-    <ThinkingStatus :running="showStatus" :elapsed="elapsed" :paused="paused" />
+    <div v-if="hasTurnTokens && turn.tokens" class="agent-turn-tokens">
+      输入 {{ turn.tokens.input }} / 输出 {{ turn.tokens.output }} Token
+      <template v-if="turn.tokens.sessionInput">
+        &nbsp;|&nbsp;会话累计: 输入 {{ turn.tokens.sessionInput }} / 输出 {{ turn.tokens.sessionOutput }} Token
+      </template>
+    </div>
   </div>
 </template>
 
@@ -137,6 +237,8 @@ const hasDeveloperSegments = computed(() => developerTimeline.value.length > 0);
 .agent-turn-tokens {
   margin-top: 16px;
   width: 100%;
+  font-size: 0.75rem;
+  color: var(--text-muted);
 }
 
 .agent-turn.waiting-only {
@@ -148,18 +250,7 @@ const hasDeveloperSegments = computed(() => developerTimeline.value.length > 0);
 }
 
 .agent-turn:not(.developer) .agent-turn-answer {
-  padding-bottom: 24px;
-}
-
-.agent-turn > :deep(.thinking-inline-status) {
-  position: absolute;
-  bottom: 0;
-  right: 0;
-  z-index: 1;
-}
-
-.agent-turn.waiting-only > :deep(.thinking-inline-status) {
-  position: static;
+  padding-bottom: 4px;
 }
 
 /* ══════════════════════════════════════════════
@@ -308,6 +399,23 @@ const hasDeveloperSegments = computed(() => developerTimeline.value.length > 0);
 .dev-tool-section {
   margin-top: 8px;
 }
+.dev-tool-section :deep(.streaming-markdown) {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  background: color-mix(in srgb, var(--surface-strong) calc(50 * var(--agent-message-opacity) / 100), transparent);
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: 4px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  max-height: 240px;
+  overflow-y: auto;
+  color: var(--text-main);
+}
+.dev-tool-section.error :deep(.streaming-markdown) {
+  border-color: color-mix(in srgb, var(--accent-red) 30%, transparent);
+  background: color-mix(in srgb, var(--accent-red) calc(5 * var(--agent-message-opacity) / 100), transparent);
+}
 .dev-tool-section-label {
   font-size: 0.7rem;
   font-weight: 600;
@@ -319,42 +427,22 @@ const hasDeveloperSegments = computed(() => developerTimeline.value.length > 0);
 .dev-tool-section.error .dev-tool-section-label {
   color: var(--accent-red);
 }
-.dev-tool-pre {
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  line-height: 1.5;
-  background: color-mix(in srgb, var(--surface-strong) calc(50 * var(--agent-message-opacity) / 100), transparent);
-  border: 1px solid var(--glass-border-subtle);
-  border-radius: 4px;
-  padding: 8px 10px;
-  overflow-x: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 240px;
-  overflow-y: auto;
-  color: var(--text-main);
-  margin: 0;
-}
-.dev-tool-section.error .dev-tool-pre {
-  border-color: color-mix(in srgb, var(--accent-red) 30%, transparent);
-  background: color-mix(in srgb, var(--accent-red) calc(5 * var(--agent-message-opacity) / 100), transparent);
-}
 
 /* 执行日志终端 */
 .dev-log {
-  background: rgba(15, 23, 42, calc(var(--agent-message-opacity) / 100));
+  background: var(--glass-bg-light);
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--glass-border-subtle);
   overflow: hidden;
   margin: 8px 0;
 }
 .dev-log-header {
-  background: rgba(255, 255, 255, calc(0.04 * var(--agent-message-opacity) / 100));
+  background: color-mix(in srgb, var(--surface-strong) 18%, transparent);
   padding: 6px 10px;
   display: flex;
   align-items: center;
   gap: 6px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--glass-border-subtle);
 }
 .dev-log-dot {
   width: 8px;
@@ -367,14 +455,14 @@ const hasDeveloperSegments = computed(() => developerTimeline.value.length > 0);
 .dev-log-title {
   font-family: var(--font-mono);
   font-size: 0.68rem;
-  color: rgba(255, 255, 255, 0.35);
+  color: var(--text-muted);
   letter-spacing: 1px;
 }
 .dev-log-body {
   padding: 8px 12px;
   font-family: var(--font-mono);
   font-size: 0.78rem;
-  color: #e2e8f0;
+  color: var(--text-main);
   max-height: 160px;
   overflow-y: auto;
   line-height: 1.5;

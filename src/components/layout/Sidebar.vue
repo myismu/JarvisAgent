@@ -242,8 +242,13 @@ const switchToSession = async (id: string) => {
     // 已渲染过的会话保留原有 UI，不覆盖（特别是正在运行的会话）
     const wasHydrated = sessionStore.hasHydratedSessionView(id);
     if (!wasHydrated) {
-      const history = await invoke<string>('get_session_history', { sessionId: id });
-      sessionStore.replaceSessionHistory(id, history || 'Ready for input...');
+      try {
+        const messages = await invoke<any[]>('get_session_messages', { sessionId: id });
+        sessionStore.replaceSessionMessages(id, messages);
+      } catch {
+        const history = await invoke<string>('get_session_history', { sessionId: id });
+        sessionStore.replaceSessionHistory(id, history || 'Ready for input...');
+      }
     }
 
     await Promise.all([
@@ -302,11 +307,16 @@ onMounted(async () => {
         sessionStore.setSessionUsageTotals(meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
 
         // 加载会话历史
-        const history = await invoke<string>('get_session_history', { sessionId: activeId });
-        if (history && history.trim()) {
-          chat.jarvisResponse = history;
-        } else {
-          chat.jarvisResponse = 'Ready for input...';
+        try {
+          const messages = await invoke<any[]>('get_session_messages', { sessionId: activeId });
+          sessionStore.replaceSessionMessages(activeId, messages);
+        } catch {
+          const history = await invoke<string>('get_session_history', { sessionId: activeId });
+          if (history && history.trim()) {
+            chat.jarvisResponse = history;
+          } else {
+            chat.jarvisResponse = 'Ready for input...';
+          }
         }
       } catch (switchErr) {
         console.error('同步会话状态失败:', switchErr);

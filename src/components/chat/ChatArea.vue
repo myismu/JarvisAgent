@@ -8,11 +8,12 @@ import { usePreferences } from '../../composables/usePreferences';
 import { invoke } from '@tauri-apps/api/core';
 import ConfirmModal from '../common/ConfirmModal.vue';
 import AgentTurn from './AgentTurn.vue';
+import ThinkingStatus from './ThinkingStatus.vue';
 import TodoPanel from './TodoPanel.vue';
 import SessionTaskBoard from './SessionTaskBoard.vue';
 import PermissionCard from './PermissionCard.vue';
 import WelcomeScreen from './WelcomeScreen.vue';
-import type { PlanDocument } from '../../types';
+import type { PlanDocument, AgentTurnSnapshot } from '../../types';
 
 interface RollbackPreviewFile {
   path: string;
@@ -58,7 +59,12 @@ const hasCurrentTurnContent = computed(() => {
       turn.logs.some((log) => log.content.trim())
   );
 });
+const isWaitingForUser = computed(() => {
+  return Boolean(perm.planProposal || perm.permissionRequest);
+});
+
 const showInlineStatus = computed(() => {
+  if (isWaitingForUser.value) return false;
   const view = session.currentSessionView;
   return Boolean(
     view.runStartTime &&
@@ -66,14 +72,45 @@ const showInlineStatus = computed(() => {
   );
 });
 
+// 控制 Live Turn 显示/隐藏
+const showAgentTurn = ref(false);
+
+watch(
+  () => hasCurrentTurnContent.value || showInlineStatus.value,
+  (shouldShow) => {
+    if (shouldShow) {
+      showAgentTurn.value = true;
+    } else if (showAgentTurn.value) {
+      // 立即隐藏：agent 快照已通过 messages 数组的 v-for 渲染，无需延迟
+      showAgentTurn.value = false;
+    }
+  },
+  { immediate: true }
+);
+
 const thinkingElapsed = ref(0);
 let thinkingTimer: ReturnType<typeof setInterval> | null = null;
-let waitStartMs = 0; // 等待开始的毫秒时间戳
-let accumulatedWaitMs = 0; // 累计等待时长
+let waitStartMs = 0;
+let accumulatedWaitMs = 0;
 
-const isWaitingForUser = computed(() => {
-  return Boolean(perm.planProposal || perm.permissionRequest);
-});
+// 将 AgentTurnSnapshot 转换为 AgentCurrentTurn 格式（供 AgentTurn 组件渲染历史消息）
+function convertSnapshotToTurn(snapshot: AgentTurnSnapshot): any {
+  return {
+    id: snapshot.createdAt.toString(),
+    loop: 1,
+    revision: 1,
+    isRunning: false,
+    hasToolActivity: snapshot.toolCalls.length > 0,
+    activeTextBlockId: null,
+    activeThinkingBlockId: null,
+    textBlocks: snapshot.textBlocks,
+    thinkingBlocks: snapshot.thinkingBlocks,
+    toolCalls: snapshot.toolCalls,
+    logs: snapshot.logs,
+    tokens: snapshot.tokens,
+    startedAt: snapshot.createdAt,
+  };
+}
 
 const updateThinkingElapsed = () => {
   const view = session.getSessionView(session.activeSessionId);
@@ -120,6 +157,29 @@ onUnmounted(() => {
   if (thinkingTimer) clearInterval(thinkingTimer);
 });
 
+const expandedUserMsgs = ref(new Set<string>());
+
+function getUserMsgText(message: any): string {
+  const raw = message.text ?? message.userContent ?? message.content ?? '';
+  return String(raw).replace(/<[^>]*>/g, '');
+}
+
+function isUserMsgLong(text: string): boolean {
+  if (!text) return false;
+  const plain = text.replace(/<[^>]*>/g, '').replace(/\n{3,}/g, '\n\n');
+  return plain.split('\n').length > 6 || plain.length > 500;
+}
+
+function toggleUserMsgExpand(msgId: string) {
+  const next = new Set(expandedUserMsgs.value);
+  if (next.has(msgId)) {
+    next.delete(msgId);
+  } else {
+    next.add(msgId);
+  }
+  expandedUserMsgs.value = next;
+}
+
 const rollbackMenu = ref<{
   visible: boolean;
   x: number;
@@ -162,47 +222,6 @@ const rollbackPreview = ref<RollbackPreviewState>({
 });
 const rollbackLoading = ref(false);
 const rollbackError = ref('');
-function ensureRollbackButtons() {
-  const root = responseAreaRef.value?.querySelector('.history-html');
-  if (!root) return;
-
-  root.querySelectorAll('.user-message').forEach((messageEl, index) => {
-    const existingButtons = Array.from(messageEl.querySelectorAll('.rollback-trigger'));
-    existingButtons.slice(1).forEach((button) => button.remove());
-
-    const contentEl = messageEl.querySelector('.message-content');
-    if (contentEl && !contentEl.getAttribute('data-user-message-index')) {
-      contentEl.setAttribute('data-user-message-index', String(index));
-    }
-
-    // 从后端渲染的 message-content 属性中读取回滚信息
-    const rollbackCheckpointId = contentEl?.getAttribute('data-rollback-checkpoint-id') || '';
-
-    if (existingButtons.length > 0) {
-      // 已有按钮时同步最新的回滚属性（后端刷新历史后属性可能更新）
-      const existingBtn = existingButtons[0] as HTMLElement;
-      existingBtn.setAttribute('data-cp-id', rollbackCheckpointId);
-      return;
-    }
-
-    const button = document.createElement('button');
-    button.className = 'rollback-trigger';
-    button.setAttribute('data-cp-id', rollbackCheckpointId);
-    button.setAttribute('data-latest-snapshot-id', '');
-    button.setAttribute('title', t('rollback.trigger'));
-    messageEl.appendChild(button);
-  });
-}
-
-watch(
-  () => chat.parsedHistory,
-  async () => {
-    await nextTick();
-    ensureRollbackButtons();
-  },
-  { immediate: true, flush: 'post' }
-);
-
 const displayWorkingDir = computed(() => {
   if (!session.workingDirectory) return null;
   const path = session.workingDirectory;
@@ -253,7 +272,7 @@ const handleResponseScroll = () => {
 };
 
 const showScrollToBottom = computed(() => {
-  return !shouldFollowStream.value && (chat.parsedHistory || hasCurrentTurnContent.value);
+  return !shouldFollowStream.value && (chat.messages.length > 0 || hasCurrentTurnContent.value);
 });
 
 watch(() => session.isCurrentSessionRunning, (running) => {
@@ -273,12 +292,12 @@ watch(
   () => [
     currentSessionKey.value,
     session.currentSessionView.hydrated,
-    chat.parsedHistory,
+    chat.messages.length,
     hasCurrentTurnContent.value,
   ],
-  async ([key, hydrated, history, hasTurnContent]) => {
+  async ([key, hydrated, msgCount, hasTurnContent]) => {
     if (pendingInitialScrollSessionKey.value !== key) return;
-    if (!hydrated && !history && !hasTurnContent) return;
+    if (!hydrated && !msgCount && !hasTurnContent) return;
 
     pendingInitialScrollSessionKey.value = null;
     await forceScrollToBottomAfterRender();
@@ -286,7 +305,7 @@ watch(
   { immediate: true, flush: 'post' }
 );
 
-watch(() => [chat.parsedCurrentTurnHtml, currentTurn.value.revision], () => {
+watch(() => [chat.renderTick, currentTurn.value.revision], () => {
   if (shouldFollowStream.value) {
     scrollToBottom();
   }
@@ -314,20 +333,11 @@ const handleContextMenu = (e: MouseEvent) => {
   };
 };
 
-// 点击撤回图标按钮
-const handleRollbackClick = async (e: MouseEvent) => {
-  const target = e.target as HTMLElement;
-  const btn = target.closest('.rollback-trigger');
-  if (!btn) return;
-  const userMessageEl = btn.closest('.user-message');
-  const contentEl = userMessageEl?.querySelector('.message-content');
-  const userMessageIndexAttr = contentEl?.getAttribute('data-user-message-index');
-  const messageId = contentEl?.getAttribute('data-message-id') || null;
-  const userMessageIndex = userMessageIndexAttr ? Number(userMessageIndexAttr) : null;
-  const rollbackTarget = Number.isInteger(userMessageIndex) ? userMessageIndex : null;
-  const rollbackMode = contentEl?.getAttribute('data-rollback-mode') === 'both' ? 'both' : 'session';
-  const rollbackCheckpointId = contentEl?.getAttribute('data-rollback-checkpoint-id') || '';
-  const position = getRollbackMenuPosition(e.clientX, e.clientY, rollbackMode);
+// 使用 Vue 数据驱动的回滚按钮点击
+const handleRollbackClickVue = (index: number, message: any, event: MouseEvent) => {
+  const rollbackMode = message.rollbackMode === 'both' ? 'both' : 'session';
+  const rollbackCheckpointId = message.rollbackCheckpointId || '';
+  const position = getRollbackMenuPosition(event.clientX, event.clientY, rollbackMode);
 
   rollbackMenu.value = {
     visible: true,
@@ -335,10 +345,15 @@ const handleRollbackClick = async (e: MouseEvent) => {
     y: position.top,
     snapshotId: rollbackCheckpointId,
     rollbackMode,
-    userMessageIndex: rollbackTarget,
-    messageId,
+    userMessageIndex: index,
+    messageId: message.messageId || null,
     fallbackSnapshotId: '',
   };
+};
+
+// handleRollbackClick 保留用于 @click 委托（旧 DOM 路径兼容）
+const handleRollbackClick = (_e: MouseEvent) => {
+  /* now handled by handleRollbackClickVue via @click.stop */
 };
 
 const copyText = async (text: string, html?: string) => {
@@ -384,7 +399,7 @@ const showCopiedState = (button: HTMLButtonElement) => {
 };
 
 const copyCodeBlock = async (button: HTMLButtonElement) => {
-  const block = button.closest('.markdown-code-block');
+  const block = button.closest('.markdown-code-block, .md-code-block');
   const code = block?.querySelector('pre code')?.textContent || '';
   if (!code.trim()) return;
   await copyText(code);
@@ -427,8 +442,8 @@ const tableToMarkdown = (table: HTMLTableElement) => {
 };
 
 const copyTable = async (button: HTMLButtonElement) => {
-  const wrap = button.closest('.markdown-table-wrap');
-  const table = wrap?.querySelector('table');
+  const wrap = button.closest('.markdown-table-wrap, .md-table-wrap');
+  const table = wrap?.querySelector('table') as HTMLTableElement | null | undefined;
   if (!table) return;
   await copyText(tableToMarkdown(table), table.outerHTML);
   showCopiedState(button);
@@ -597,8 +612,13 @@ const confirmRollback = async () => {
     }
 
     try {
-      const history = await invoke<string>('get_session_history', { sessionId });
-      session.replaceSessionHistory(sessionId, history || 'Ready for input...');
+      try {
+        const messages = await invoke<any[]>('get_session_messages', { sessionId });
+        session.replaceSessionMessages(sessionId, messages);
+      } catch {
+        const history = await invoke<string>('get_session_history', { sessionId });
+        session.replaceSessionHistory(sessionId, history || 'Ready for input...');
+      }
       const planDocuments = await invoke<PlanDocument[]>('list_plan_documents', { sessionId });
       perm.planDocumentsBySession = {
         ...perm.planDocumentsBySession,
@@ -642,10 +662,69 @@ onMounted(() => {
     </div>
     <TodoPanel />
     <SessionTaskBoard />
-    <WelcomeScreen v-if="!chat.parsedHistory || chat.parsedHistory === '<p>Ready for input...</p>\n'" />
+    <WelcomeScreen v-if="!chat.messages.length && !showAgentTurn" />
     <div class="response-text markdown-body" v-else>
-      <div class="history-html" v-html="chat.parsedHistory"></div>
-      <div v-if="hasCurrentTurnContent || showInlineStatus" class="chat-message agent-message current-turn-message">
+      <!-- 结构化消息列表（Vue 组件渲染） -->
+      <template v-for="(message, index) in chat.messages" :key="message.id">
+        <!-- 用户消息 -->
+        <div
+          v-if="message.role === 'user'"
+          class="chat-message user-message"
+          :data-msg-id="message.id"
+        >
+          <div
+            class="message-content"
+            :data-user-message-index="index"
+            :data-message-id="message.messageId"
+            :data-rollback-checkpoint-id="message.rollbackCheckpointId || ''"
+            :data-rollback-mode="message.rollbackMode || 'session'"
+          >
+            <!-- 图片 -->
+            <div v-if="message.images && message.images.length > 0" class="user-images">
+              <img
+                v-for="(img, imgIdx) in message.images"
+                :key="`img-${imgIdx}`"
+                :src="img"
+                class="user-image"
+                alt="用户发送的图片"
+              />
+            </div>
+            <!-- 文本 -->
+            <div class="user-text" :class="{ collapsed: isUserMsgLong(getUserMsgText(message)) && !expandedUserMsgs.has(message.id) }">
+              {{ getUserMsgText(message) }}
+            </div>
+            <button
+              v-if="isUserMsgLong(getUserMsgText(message))"
+              class="user-msg-toggle"
+              @click="toggleUserMsgExpand(message.id)"
+            >
+              {{ expandedUserMsgs.has(message.id) ? '收起' : '展开全部' }}
+            </button>
+          </div>
+          <button
+            v-if="message.rollbackCheckpointId || message.messageId"
+            class="rollback-trigger"
+            :data-cp-id="message.rollbackCheckpointId || ''"
+            :title="t('rollback.trigger')"
+            @click.stop="handleRollbackClickVue(index, message, $event)"
+          ></button>
+        </div>
+        <!-- Agent 消息 -->
+        <div v-else-if="message.role === 'agent' && message.snapshot" class="chat-message agent-message" :data-msg-id="message.id">
+          <div class="message-content">
+            <AgentTurn
+              :turn="convertSnapshotToTurn(message.snapshot)"
+              :display-mode="prefs.agentAudience.value"
+              :show-status="false"
+              :elapsed="0"
+              :paused="false"
+            />
+          </div>
+        </div>
+      </template>
+
+      <!-- Live 当前 Turn -->
+      <div v-if="showAgentTurn" class="chat-message agent-message current-turn-message">
         <div
           class="message-content current-turn-content"
           :class="{ 'waiting-only': !hasCurrentTurnContent && showInlineStatus }"
@@ -660,6 +739,7 @@ onMounted(() => {
         </div>
       </div>
       <PermissionCard />
+      <ThinkingStatus :running="showInlineStatus" :elapsed="thinkingElapsed" :paused="isWaitingForUser" />
     </div>
 
     <Teleport to="body">
@@ -1056,23 +1136,34 @@ onMounted(() => {
   color: var(--accent-blue-hover);
 }
 
+/* 用户图片 */
+:deep(.user-images) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+:deep(.user-image) {
+  max-width: 200px;
+  max-height: 200px;
+  border-radius: 8px;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+:deep(.user-text) {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* 长消息折叠 */
-:deep(.user-msg-collapsed) {
-  position: relative;
+:deep(.user-text.collapsed) {
   max-height: 180px;
   overflow: hidden;
-  transition: max-height 0.3s ease;
+  position: relative;
 }
-:deep(.user-msg-collapsed[data-collapsed="false"]) {
-  max-height: none;
-}
-:deep(.user-msg-collapsed[data-collapsed="true"] .user-msg-fade) {
-  display: block;
-}
-:deep(.user-msg-collapsed[data-collapsed="false"] .user-msg-fade) {
-  display: none;
-}
-:deep(.user-msg-fade) {
+:deep(.user-text.collapsed::after) {
+  content: '';
   position: absolute;
   bottom: 0;
   left: 0;
@@ -1105,7 +1196,7 @@ onMounted(() => {
 .response-text :deep(details) {
   margin: 12px 0;
   padding: 8px 12px;
-  background: var(--glass-bg-light);
+  background: color-mix(in srgb, var(--glass-bg-light) calc(var(--agent-message-opacity, 0) * 1%), transparent);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border-radius: var(--radius-md);
@@ -1113,7 +1204,7 @@ onMounted(() => {
 }
 
 .response-text :deep(details:hover) {
-  background: var(--glass-bg);
+  background: color-mix(in srgb, var(--glass-bg) calc(var(--agent-message-opacity, 0) * 1%), transparent);
 }
 
 .response-text :deep(summary) {
@@ -1131,7 +1222,7 @@ onMounted(() => {
 }
 
 .response-text :deep(details[open]) {
-  background: var(--glass-bg);
+  background: color-mix(in srgb, var(--glass-bg) calc(var(--agent-message-opacity, 0) * 1%), transparent);
 }
 
 .current-turn-content,
@@ -1158,22 +1249,36 @@ onMounted(() => {
   padding-right: 0;
 }
 
-.response-text :deep(strong) {
+.response-text :deep(a) {
   color: var(--accent-blue);
-  font-weight: 600;
+  text-decoration: none;
+}
+
+.response-text :deep(a:hover) {
+  text-decoration: underline;
+}
+
+.response-text :deep(strong) {
+  color: var(--text-main);
+  font-weight: 760;
+}
+
+.response-text :deep(em) {
+  font-style: italic;
 }
 
 .response-text :deep(code) {
-  background: var(--glass-bg-light);
-  padding: 0.2em 0.4em;
-  border-radius: 4px;
+  padding: 2px 6px;
+  color: var(--text-main);
   font-family: var(--font-mono);
   font-size: 0.85em;
-  color: var(--accent-red);
   border: 1px solid var(--glass-border-subtle);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--text-muted) 15%, transparent);
 }
 
 .response-text :deep(.markdown-code-block),
+.response-text :deep(.md-code-block),
 .response-text :deep(.markdown-table-wrap) {
   margin: 12px 0 16px;
   overflow: hidden;
@@ -1184,6 +1289,7 @@ onMounted(() => {
 }
 
 .response-text :deep(.markdown-code-header),
+.response-text :deep(.md-code-header),
 .response-text :deep(.markdown-table-header) {
   min-height: 34px;
   padding: 6px 8px 6px 12px;
@@ -1199,6 +1305,7 @@ onMounted(() => {
 }
 
 .response-text :deep(.markdown-code-language),
+.response-text :deep(.md-code-lang),
 .response-text :deep(.markdown-table-header span) {
   min-width: 0;
   overflow: hidden;
@@ -1246,7 +1353,8 @@ onMounted(() => {
   box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
 }
 
-.response-text :deep(.markdown-code-block pre) {
+.response-text :deep(.markdown-code-block pre),
+.response-text :deep(.md-code-block pre) {
   margin: 0;
   padding: 14px 16px;
   border: 0;
@@ -1263,11 +1371,20 @@ onMounted(() => {
   border: none;
 }
 
-.response-text :deep(.markdown-table-scroll) {
+.response-text :deep(.markdown-table-scroll),
+.response-text :deep(.md-table-wrap) {
   overflow-x: auto;
 }
 
-.response-text :deep(table) {
+.response-text :deep(.md-table-wrap) {
+  margin: 12px 0;
+  overflow-x: auto;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+}
+
+.response-text :deep(table),
+.response-text :deep(.md-table) {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
@@ -1275,7 +1392,9 @@ onMounted(() => {
 }
 
 .response-text :deep(th),
-.response-text :deep(td) {
+.response-text :deep(td),
+.response-text :deep(.md-table th),
+.response-text :deep(.md-table td) {
   padding: 9px 12px;
   text-align: left;
   vertical-align: top;
@@ -1284,22 +1403,32 @@ onMounted(() => {
 }
 
 .response-text :deep(th:last-child),
-.response-text :deep(td:last-child) {
+.response-text :deep(td:last-child),
+.response-text :deep(.md-table th:last-child),
+.response-text :deep(.md-table td:last-child) {
   border-right: 0;
 }
 
-.response-text :deep(tr:last-child td) {
+.response-text :deep(tr:last-child td),
+.response-text :deep(.md-table tr:last-child td) {
   border-bottom: 0;
 }
 
-.response-text :deep(th) {
+.response-text :deep(th),
+.response-text :deep(.md-table th) {
   color: var(--text-main);
   font-weight: 700;
   background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
 }
 
-.response-text :deep(td code) {
+.response-text :deep(td code),
+.response-text :deep(.md-table td code) {
   white-space: nowrap;
+}
+
+.response-text :deep(del) {
+  text-decoration: line-through;
+  color: var(--text-muted);
 }
 
 .response-text :deep(ul), .response-text :deep(ol) {

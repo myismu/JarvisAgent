@@ -10,7 +10,7 @@ use tauri::Emitter;
 
 use crate::infra::types::models::TaskStatus;
 use crate::core::orchestration::tasks::{TaskManager, TaskUpdateParams};
-use crate::core::tools::{run_subagent, IMPLEMENTATION_AGENT_TYPE};
+use crate::core::tools::{run_subagent, IMPLEMENTATION_AGENT_ROLE};
 
 pub struct TaskScheduler;
 
@@ -246,7 +246,7 @@ fn spawn_into_set(
             run_subagent(
                 app_clone, prompt, false, sid,
                 Some(tid), Some(label),
-                Some(IMPLEMENTATION_AGENT_TYPE.to_string()), None,
+                Some(IMPLEMENTATION_AGENT_ROLE.to_string()), None,
             ),
         ).await;
         let (answer, si, so) = match result {

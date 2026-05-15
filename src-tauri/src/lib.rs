@@ -93,6 +93,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             core::agent::ask_jarvis,
+            core::agent::resume_jarvis,
             command::permission::cancel_jarvis,
             command::permission::resolve_permission,
             command::permission::get_permission_state,
@@ -130,6 +131,7 @@ pub fn run() {
             command::config::save_config_cmd,
             command::config::get_image_compress_config,
             command::history::get_session_history,
+            command::history::get_session_messages,
             command::checkpoint::list_checkpoints,
             command::checkpoint::get_checkpoint_tree,
             command::checkpoint::rollback_to_checkpoint,
