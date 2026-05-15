@@ -28,6 +28,15 @@ fn migrate_v3_drop_deprecated_tables(conn: &Connection) -> Result<(), rusqlite::
 
 /// agent_runs 增加 message_id 关联 session_messages（v8 迁移）
 fn migrate_v8_agent_runs_message_id(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let table_exists: bool = conn
+        .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='agent_runs'")
+        .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(());
+    }
+
     let has_column = {
         let mut stmt = conn.prepare("PRAGMA table_info(agent_runs)")?;
         let found = stmt
@@ -44,6 +53,16 @@ fn migrate_v8_agent_runs_message_id(conn: &Connection) -> Result<(), rusqlite::E
 
 /// 为 session_messages 增加稳定 message_id（v6 迁移）
 fn migrate_v6_add_session_message_id(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // 新数据库表尚未创建 → 跳过
+    let table_exists: bool = conn
+        .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_messages'")
+        .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(());
+    }
+
     let mut stmt = conn.prepare("PRAGMA table_info(session_messages)")?;
     let has_message_id = stmt
         .query_map([], |row| row.get::<_, String>(1))?
@@ -90,6 +109,16 @@ fn migrate_v6_add_session_message_id(conn: &Connection) -> Result<(), rusqlite::
 
 /// 为 session_messages 和 checkpoint 链接增加 message_id 解耦字段（v7 迁移）
 fn migrate_v7_decouple_session_messages(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // 新数据库表尚未创建 → 跳过
+    let table_exists: bool = conn
+        .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_messages'")
+        .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(());
+    }
+
     fn has_column(
         conn: &Connection,
         table: &str,
@@ -208,8 +237,14 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             "ALTER TABLE pending_snapshot_patches RENAME TO agent_run_patches",
             [],
         );
-        // 重建 checkpoint_user_message_links，移除指向 snapshots 的外键
-        conn.execute_batch(
+        // 重建 checkpoint_user_message_links，移除指向 snapshots 的外键（旧库才有）
+        if conn
+            .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='checkpoint_user_message_links'")
+            .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
+            .map(|c| c > 0)
+            .unwrap_or(false)
+        {
+            conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS checkpoint_user_message_links_new (
                 session_id TEXT NOT NULL,
                 user_message_index INTEGER NOT NULL,
@@ -229,6 +264,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             ALTER TABLE checkpoint_user_message_links_new RENAME TO checkpoint_user_message_links;",
         )
         .map_err(|e| format!("v9 迁移失败: {}", e))?;
+        }
     }
 
     conn.execute_batch(

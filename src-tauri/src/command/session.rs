@@ -92,31 +92,19 @@ pub async fn switch_away_and_delete_empty_session(
         .into_iter()
         .find(|session| session.id != deleted_session_id);
 
-    if let Some(meta) = fallback {
-        // 有其他会话 → 删空会话，切换到备份会话
-        session::delete_session(deleted_session_id)?;
-        if let Some(manager) = app.try_state::<SessionManager>() {
-            manager.remove(deleted_session_id).await;
-        }
-        let _ = app.emit(
-            "active-session-changed",
-            SessionCleanupResult {
-                deleted_session_id: Some(deleted_session_id.to_string()),
-                active_session_id: Some(meta.id),
-            },
-        );
-    } else {
-        // 唯一会话 → 不删，原地清空消息
-        let ctx = app
-            .state::<SessionManager>()
-            .get_or_create(deleted_session_id)
-            .await;
-        let mut memory = ctx.memory.lock().await;
-        memory.messages.clear();
-        memory.message_ids.clear();
-        let _ = crate::core::session::save_session(deleted_session_id, &memory, None);
+    // 删空会话
+    session::delete_session(deleted_session_id)?;
+    if let Some(manager) = app.try_state::<SessionManager>() {
+        manager.remove(deleted_session_id).await;
     }
 
+    let _ = app.emit(
+        "active-session-changed",
+        SessionCleanupResult {
+            deleted_session_id: Some(deleted_session_id.to_string()),
+            active_session_id: fallback.map(|m| m.id),
+        },
+    );
     let _ = app.emit("session-updated", ());
 
     Ok(())
