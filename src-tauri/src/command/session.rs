@@ -176,72 +176,34 @@ pub async fn auto_name_session(
 
 /// 撤回最后一条用户消息，返回撤回的文本内容
 #[tauri::command]
+/// 撤回最后一条用户消息。委托给 recall_message 统一处理。
 pub async fn recall_last_message(
     session_id: String,
     session_manager: tauri::State<'_, SessionManager>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
     let ctx = session_manager.get_or_create(&session_id).await;
-    let recalled_text;
-    let is_empty;
-    {
-        let mut session = ctx.memory.lock().await;
-        // 从后往前找最后一条用户消息
-        let last_user_idx = session
+    let last_user_idx = {
+        let session = ctx.memory.lock().await;
+        session
             .messages
             .iter()
-            .rposition(|m| matches!(m, Message::User { .. }));
-        if let Some(idx) = last_user_idx {
-            if let Message::User { content } = &session.messages[idx] {
-                recalled_text = match content {
-                    Content::Single(s) => s.clone(),
-                    Content::Multiple(blocks) => blocks
-                        .iter()
-                        .filter_map(|b| {
-                            if let ContentBlock::Text { text } = b {
-                                Some(text.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                };
-            } else {
-                recalled_text = String::new();
-            }
-            session.messages.truncate(idx);
-            let message_count = session.messages.len();
-            session.message_ids.truncate(message_count);
-        } else {
-            return Err("没有可撤回的用户消息".to_string());
-        }
-        is_empty = session.messages.is_empty();
-    }
-
-    if is_empty {
-        switch_away_and_delete_empty_session(&session_id, &app).await?;
-    } else {
-        {
-            let memory = ctx.memory.lock().await.clone();
-            session::save_session(&session_id, &memory, None);
-        }
-        // 保存后从 DB 重新加载，确保内存与持久化数据完全一致
-        if let Ok(reloaded) = session::load_session(&session_id) {
-            let mut session = ctx.memory.lock().await;
-            *session = reloaded;
-        }
-        let _ = app.emit("session-updated", ());
-    }
-
-    Ok(recalled_text)
+            .rposition(|m| matches!(m, Message::User { .. }))
+            .ok_or_else(|| "没有可撤回的用户消息".to_string())?
+    };
+    recall_message(
+        session_id, None, Some(last_user_idx), None,
+        session_manager, app,
+    ).await
 }
 
+/// 统一撤回入口。recall_last_message / rollback_to_checkpoint_with_recall 均委托至此。
 #[tauri::command]
 pub async fn recall_message(
     session_id: String,
     message_id: Option<String>,
     user_message_index: Option<usize>,
+    prune_metadata_cutoff: Option<u64>,
     session_manager: tauri::State<'_, SessionManager>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
@@ -289,11 +251,27 @@ pub async fn recall_message(
         } else {
             return Err("撤回目标不是用户消息".to_string());
         }
+
+        // 清理对应 agent_run 及其 events/checkpoints
+        if let Some(mid) = message_id.as_ref()
+            .or_else(|| session.message_ids.get(user_message_index.unwrap_or(0)).filter(|s| !s.is_empty()))
+        {
+            crate::core::orchestration::agent_runs::cleanup_by_message_id(mid);
+        }
+
+        // checkpoint 回滚时的元数据清理
+        if let Some(cutoff) = prune_metadata_cutoff {
+            if cutoff == 0 {
+                session.plan_documents.clear();
+            } else {
+                session.plan_documents.retain(|d| d.created_at <= cutoff);
+            }
+        }
+
         is_empty = session.messages.is_empty();
     }
 
     if let Some(stored) = stored_target {
-        // 使用 stored.seq 而非 user_message_index，因为 seq 是 DB 中精确的行号
         session::delete_session_messages_from_seq(&session_id, stored.seq)?;
     } else if let Some(user_message_index) = user_message_index {
         session::delete_session_messages_from_seq(&session_id, user_message_index)?;
@@ -320,23 +298,6 @@ pub async fn recall_message(
     }
 
     Ok(recalled_text)
-}
-
-#[tauri::command]
-pub async fn recall_message_from_index(
-    session_id: String,
-    user_message_index: usize,
-    session_manager: tauri::State<'_, SessionManager>,
-    app: tauri::AppHandle,
-) -> Result<String, String> {
-    recall_message(
-        session_id,
-        None,
-        Some(user_message_index),
-        session_manager,
-        app,
-    )
-    .await
 }
 
 fn message_text_content(content: &Content) -> String {

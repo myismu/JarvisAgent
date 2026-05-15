@@ -15,6 +15,6 @@ mod persistent;
 mod registry;
 mod todo_write;
 
-pub use persistent::{task_create, task_delete, task_get, task_list, task_summary, task_update};
+pub use persistent::{task_batch_create, task_create, task_delete, task_get, task_list, task_summary, task_update};
 pub use registry::register_tools;
 pub use todo_write::todo_write;

@@ -145,7 +145,7 @@ impl ToolRegistry {
     /// 按意图过滤工具可用性
     fn is_available_for_intent(tool: &ToolDef, intent: &str) -> bool {
         match intent {
-            "CHAT" | "MEMORY_QUERY" | "QUESTION" => false,
+            "CHAT" | "QUESTION" => false,
             "SUBAGENT" => {
                 // 子代理只能执行具体操作，不能调用主控/调度/会话管理工具
                 !matches!(

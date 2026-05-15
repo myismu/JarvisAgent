@@ -35,6 +35,7 @@ pub struct AgentRun {
     pub session_id: String,
     pub status: AgentRunStatus,
     pub user_message_preview: String,
+    pub message_id: Option<String>,
     pub loop_count: usize,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -98,6 +99,7 @@ pub fn start_run(
     session_id: &str,
     user_message: &str,
     resumed_from_run_id: Option<String>,
+    message_id: Option<String>,
 ) -> String {
     let run_id = format!("ar_{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let now = now_millis();
@@ -120,6 +122,7 @@ pub fn start_run(
         summary: None,
         resumable: false,
         resumed_from_run_id,
+        message_id,
     };
     let _ = write_run(&run);
     emit_run(app, &run);
@@ -145,6 +148,25 @@ pub fn start_run(
 /// 自动将超时未更新的 Running 状态标记为 Interrupted
 pub fn list_runs(session_id: Option<&str>) -> Vec<AgentRun> {
     agent_run_repository::list_runs(session_id).unwrap_or_default()
+}
+
+/// 根据 message_id 查找对应的 agent_run
+pub fn find_run_by_message_id(message_id: &str) -> Option<AgentRun> {
+    agent_run_repository::find_by_message_id(message_id).ok().flatten()
+}
+
+/// 根据 message_id 清理对应的 agent_run、events、checkpoints
+pub fn cleanup_by_message_id(message_id: &str) {
+    if let Some(run) = find_run_by_message_id(message_id) {
+        let _ = agent_run_repository::delete_events_by_run(&run.run_id);
+        let _ = agent_run_repository::delete_checkpoints_by_run(&run.run_id);
+        let _ = agent_run_repository::delete_run(&run.run_id);
+    }
+}
+
+/// 删除 agent_run 及其关联的 events 和 checkpoints
+pub fn delete_run(run_id: &str) -> Result<(), String> {
+    agent_run_repository::delete_run(run_id)
 }
 
 pub fn mark_active_run(app: &tauri::AppHandle, run_id: &str) -> Option<AgentRun> {

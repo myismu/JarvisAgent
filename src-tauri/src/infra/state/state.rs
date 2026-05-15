@@ -79,6 +79,8 @@ pub struct SessionContext {
     pub agent_audience: Mutex<String>,
     /// 工作模式（"chat" / "edit" / "plan"），用户可手动切换，Edit 下 Agent 可自动切 Plan
     pub agent_work_mode: Mutex<String>,
+    /// 调度器事件接收端（异步模式）：RunSubagentsSequentially 存，pipeline 取
+    pub scheduler_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::core::orchestration::scheduler::SchedulerEvent>>>,
 }
 
 impl SessionContext {
@@ -97,6 +99,7 @@ impl SessionContext {
             dedupe_cache: Mutex::new(HashMap::new()),
             agent_audience: Mutex::new("developer".to_string()),
             agent_work_mode: Mutex::new("edit".to_string()),
+            scheduler_rx: Mutex::new(None),
         }
     }
 }

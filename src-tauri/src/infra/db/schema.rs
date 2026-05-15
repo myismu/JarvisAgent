@@ -10,7 +10,7 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// 删除废弃的旧 checkpoint 表（v3 迁移）
 fn migrate_v3_drop_deprecated_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -22,6 +22,22 @@ fn migrate_v3_drop_deprecated_tables(conn: &Connection) -> Result<(), rusqlite::
     ];
     for table in &tables_to_drop {
         conn.execute(&format!("DROP TABLE IF EXISTS {}", table), [])?;
+    }
+    Ok(())
+}
+
+/// agent_runs 增加 message_id 关联 session_messages（v8 迁移）
+fn migrate_v8_agent_runs_message_id(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let has_column = {
+        let mut stmt = conn.prepare("PRAGMA table_info(agent_runs)")?;
+        let found = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .any(|c| c == "message_id");
+        found
+    };
+    if !has_column {
+        conn.execute("ALTER TABLE agent_runs ADD COLUMN message_id TEXT", [])?;
     }
     Ok(())
 }
@@ -175,6 +191,9 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
     if current_version < 7 {
         migrate_v7_decouple_session_messages(conn).map_err(|e| format!("v7 迁移失败: {}", e))?;
     }
+    if current_version < 8 {
+        migrate_v8_agent_runs_message_id(conn).map_err(|e| format!("v8 迁移失败: {}", e))?;
+    }
 
     conn.execute_batch(
         r#"
@@ -226,6 +245,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             session_id TEXT NOT NULL,
             status TEXT NOT NULL,
             user_message_preview TEXT NOT NULL,
+            message_id TEXT,
             loop_count INTEGER NOT NULL,
             input_tokens INTEGER NOT NULL,
             output_tokens INTEGER NOT NULL,

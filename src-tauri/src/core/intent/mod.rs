@@ -5,7 +5,7 @@
 //! 2. 上下文层 — 结合上一轮对话特征解析短回复歧义
 //! 3. LLM 层 — 轻量模型兜底处理真正模糊的输入
 //!
-//! 返回值为意图字符串（如 `"CODE_READ"`、`"DANGEROUS"`），供下游
+//! 返回值为意图字符串（如 `"ACTION"`、`"DANGEROUS"`），供下游
 //! 工具加载和 Agent 路由使用。
 
 pub mod plan_detector;
@@ -20,7 +20,7 @@ fn fallback_intent_for_unresolved(msg: &str) -> String {
 
     let rules = classify_by_rules(msg);
     match rules {
-        Intent::NeedsContext => {
+        Intent::Unclear => {
             if msg.trim().is_empty() {
                 "UNCLEAR".to_string()
             } else {
@@ -52,7 +52,7 @@ pub async fn classify_intent(
     let rule_intent = classify_by_rules(msg);
     println!("[INTENT] Rule-based classification: {:?}", rule_intent);
 
-    if rule_intent != Intent::NeedsContext {
+    if rule_intent != Intent::Unclear {
         let result = rule_intent.as_str().to_string();
         println!("[INTENT] Final intent (by rules): {}", result);
         logger.log_intent_classifier(msg, "RULE", "", "", &result);
@@ -86,7 +86,7 @@ pub async fn classify_intent(
         context_intent
     );
 
-    if context_intent != Intent::NeedsContext {
+    if context_intent != Intent::Unclear {
         let result = context_intent.as_str().to_string();
         println!("[INTENT] Final intent (by context): {}", result);
         logger.log_intent_classifier(msg, "CONTEXT", "", "", &result);
@@ -238,29 +238,29 @@ async fn classify_intent_by_llm(
             let detected_intent = match serde_json::from_str::<serde_json::Value>(cleaned) {
                 Ok(val) => {
                     let category = val["category"].as_str().unwrap_or("").to_uppercase();
-                    match category.as_str() {
-                        "CODE_READ" | "CODE_WRITE" | "CODE_REVIEW" | "TASK_EXECUTE"
-                        | "TASK_PLAN" | "TASK_CONTINUE" | "QUESTION" | "MEMORY_QUERY"
-                        | "SETTINGS" | "CHAT" | "DANGEROUS" | "UNCLEAR" => category,
-                        _ => fallback_intent_for_unresolved(msg),
-                    }
+                    // LLM 可能返回旧 13 标签或新 6 标签，统一映射到 6 标签
+                    let mapped = match category.as_str() {
+                        "CHAT" | "GENERAL_CHAT" => "CHAT",
+                        "QUESTION" | "MEMORY_QUERY" | "SETTINGS" => "QUESTION",
+                        "CODE_READ" | "CODE_WRITE" | "CODE_REVIEW" | "TASK_EXECUTE" | "TASK_CONTINUE" | "PROJECT_ACTION" => "ACTION",
+                        "TASK_PLAN" => "TASK_PLAN",
+                        "DANGEROUS" | "DANGEROUS_ACTION" => "DANGEROUS",
+                        "UNCLEAR" | "NEEDS_CONTEXT" => "UNCLEAR",
+                        _ => return fallback_intent_for_unresolved(msg),
+                    };
+                    mapped.to_string()
                 }
                 Err(_) => {
                     // JSON 解析失败，按优先级做边界匹配（用 split_whitespace 防子串误匹配）
                     let t = cleaned.to_uppercase();
                     let words: Vec<&str> = t.split(|c: char| !c.is_alphanumeric()).collect();
                     let has = |w: &str| words.contains(&w);
-                    // 优先级：DANGEROUS > CODE_REVIEW > CODE_READ > CODE_WRITE > TASK_PLAN > TASK_EXECUTE > TASK_CONTINUE > MEMORY_QUERY > QUESTION > SETTINGS > CHAT
+                    // 优先级：DANGEROUS > PLAN > QUESTION > ACTION > CHAT
                     if has("DANGEROUS") { "DANGEROUS".to_string() }
-                    else if has("CODE_REVIEW") { "CODE_REVIEW".to_string() }
-                    else if has("CODE_READ") { "CODE_READ".to_string() }
-                    else if has("CODE_WRITE") { "CODE_WRITE".to_string() }
                     else if has("TASK_PLAN") { "TASK_PLAN".to_string() }
-                    else if has("TASK_EXECUTE") { "TASK_EXECUTE".to_string() }
-                    else if has("TASK_CONTINUE") { "TASK_CONTINUE".to_string() }
-                    else if has("MEMORY_QUERY") { "MEMORY_QUERY".to_string() }
-                    else if has("QUESTION") { "QUESTION".to_string() }
-                    else if has("SETTINGS") { "SETTINGS".to_string() }
+                    else if has("QUESTION") || has("MEMORY_QUERY") || has("SETTINGS") { "QUESTION".to_string() }
+                    else if has("CODE_READ") || has("CODE_WRITE") || has("CODE_REVIEW")
+                        || has("TASK_EXECUTE") || has("TASK_CONTINUE") { "ACTION".to_string() }
                     else if has("CHAT") { "CHAT".to_string() }
                     else { fallback_intent_for_unresolved(msg) }
                 }

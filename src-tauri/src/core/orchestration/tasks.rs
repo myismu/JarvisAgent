@@ -156,6 +156,37 @@ impl TaskManager {
             updated_fields.push("metadata".to_string());
         }
 
+        // 依赖引用校验：引用的 task ID 必须存在，且不能自引用
+        let mut invalid_ids: Vec<i32> = Vec::new();
+        if let Some(ref abb) = params.add_blocked_by {
+            for &dep_id in abb {
+                if dep_id == id {
+                    return Err(format!("任务不能依赖自身：blocked_by 中包含自己的 ID ({})", id));
+                }
+                if self._load(dep_id).is_err() {
+                    invalid_ids.push(dep_id);
+                }
+            }
+        }
+        if let Some(ref ab) = params.add_blocks {
+            for &blocked_id in ab {
+                if blocked_id == id {
+                    return Err(format!("任务不能阻塞自身：add_blocks 中包含自己的 ID ({})", id));
+                }
+                if self._load(blocked_id).is_err() {
+                    invalid_ids.push(blocked_id);
+                }
+            }
+        }
+        if !invalid_ids.is_empty() {
+            invalid_ids.sort();
+            invalid_ids.dedup();
+            return Err(format!(
+                "以下任务 ID 不存在：{:?}。请用 ListTasks 确认已有任务的 ID，或先 CreateTask 创建这些前置任务。",
+                invalid_ids
+            ));
+        }
+
         // 添加 blocked_by
         if let Some(mut abb) = params.add_blocked_by {
             task.blocked_by.append(&mut abb);
@@ -331,6 +362,11 @@ impl TaskManager {
         let mut tasks = resource_repository::list_tasks(&self.session_id).unwrap_or_default();
         tasks.sort_by_key(|t| t.id);
         tasks
+    }
+
+    /// 获取所有任务
+    pub fn get_all_tasks(&self) -> Vec<Task> {
+        self._load_all_tasks()
     }
 
     /// 获取所有就绪任务（Pending 且 blocked_by 为空）

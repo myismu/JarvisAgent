@@ -3,7 +3,7 @@
 //! 基于正则关键词的快速意图匹配引擎。
 //! 定义了 12 种意图类型及其匹配规则，按优先级依次匹配：
 //!
-//! `Dangerous > TaskPlan > MemoryQuery > CodeReview > CodeRead > CodeWrite > Question > TaskExecute > Settings > Affirmative > Chat > Unclear`
+//! `Dangerous > Plan > Question > Action > Chat > Unclear`
 //!
 //! 三种核心函数：
 //! - `classify_by_rules` — 纯规则匹配（第一层）
@@ -243,57 +243,35 @@ fn has_development_context(input: &str) -> bool {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Intent {
-    CodeRead,        // 读取文件/代码
-    CodeWrite,       // 写/改文件
-    CodeReview,      // 审查代码/找bug
-    TaskExecute,     // 运行命令/脚本
-    TaskPlan,        // 新功能/复杂任务规划
-    TaskContinue,    // 任务延续/确认
-    Question,        // 技术问题
-    MemoryQuery,     // 历史对话查询
-    Settings,        // 配置修改
-    GeneralChat,     // 闲聊
-    DangerousAction, // 危险操作
-    Unclear,         // 不明确
-    NeedsContext,    // 需要上下文
+    Chat,       // 闲聊
+    Question,   // 技术问题 + 记忆查询 + 设置
+    Action,     // 代码读写/审查/命令执行/任务延续
+    Plan,       // 复杂任务规划
+    Dangerous,  // 危险操作
+    Unclear,    // 不明确 + 需要上下文
 }
 
 impl Intent {
-    /// 从字符串标签恢复意图枚举（用于外部规则加载）
     pub fn from_str(s: &str) -> Option<Intent> {
         match s {
-            "CODE_READ" => Some(Intent::CodeRead),
-            "CODE_WRITE" => Some(Intent::CodeWrite),
-            "CODE_REVIEW" => Some(Intent::CodeReview),
-            "TASK_EXECUTE" => Some(Intent::TaskExecute),
-            "TASK_PLAN" => Some(Intent::TaskPlan),
-            "TASK_CONTINUE" => Some(Intent::TaskContinue),
-            "QUESTION" => Some(Intent::Question),
-            "MEMORY_QUERY" => Some(Intent::MemoryQuery),
-            "SETTINGS" => Some(Intent::Settings),
-            "CHAT" | "GENERAL_CHAT" => Some(Intent::GeneralChat),
-            "DANGEROUS" | "DANGEROUS_ACTION" => Some(Intent::DangerousAction),
-            "UNCLEAR" => Some(Intent::Unclear),
+            "CHAT" | "GENERAL_CHAT" => Some(Intent::Chat),
+            "QUESTION" | "MEMORY_QUERY" | "SETTINGS" => Some(Intent::Question),
+            "CODE_READ" | "CODE_WRITE" | "CODE_REVIEW" | "TASK_EXECUTE" | "TASK_CONTINUE" | "PROJECT_ACTION" => Some(Intent::Action),
+            "TASK_PLAN" => Some(Intent::Plan),
+            "DANGEROUS" | "DANGEROUS_ACTION" => Some(Intent::Dangerous),
+            "UNCLEAR" | "NEEDS_CONTEXT" => Some(Intent::Unclear),
             _ => None,
         }
     }
 
-    /// 转为字符串标签，用于日志和下游路由
     pub fn as_str(&self) -> &'static str {
         match self {
-            Intent::CodeRead => "CODE_READ",
-            Intent::CodeWrite => "CODE_WRITE",
-            Intent::CodeReview => "CODE_REVIEW",
-            Intent::TaskExecute => "TASK_EXECUTE",
-            Intent::TaskPlan => "TASK_PLAN",
-            Intent::TaskContinue => "TASK_CONTINUE",
+            Intent::Chat => "CHAT",
             Intent::Question => "QUESTION",
-            Intent::MemoryQuery => "MEMORY_QUERY",
-            Intent::Settings => "SETTINGS",
-            Intent::GeneralChat => "CHAT",
-            Intent::DangerousAction => "DANGEROUS",
+            Intent::Action => "ACTION",
+            Intent::Plan => "TASK_PLAN",
+            Intent::Dangerous => "DANGEROUS",
             Intent::Unclear => "UNCLEAR",
-            Intent::NeedsContext => "NEEDS_CONTEXT",
         }
     }
 }
@@ -342,9 +320,9 @@ pub fn classify_by_rules(input: &str) -> Intent {
     // 短输入（纯数字/单字母/纯符号）无法独立判断，交给上下文层
     // 匹配纯数字/单字母/纯符号等短输入
     // 这些输入可能是有意义的（如"1"=同意，"666"=厉害），
-    // 返回 NeedsContext 让上下文层或 LLM 层判断
+    // 返回 Unclear 让上下文层或 LLM 层判断
     if SHORT_UNCLEAR.is_match(trimmed) {
-        return Intent::NeedsContext;
+        return Intent::Unclear;
     }
 
     // 外部规则检查（JSON 配置的规则，覆盖/补充编译规则）
@@ -357,21 +335,21 @@ pub fn classify_by_rules(input: &str) -> Intent {
     // 优先级1：危险操作（最高优先级）
     for pattern in DANGEROUS_PATTERNS.iter() {
         if pattern.is_match(trimmed) {
-            return Intent::DangerousAction;
+            return Intent::Dangerous;
         }
     }
 
     // 优先级2：复杂项目/方案审批
     for pattern in COMPLEX_TASK_KEYWORDS.iter() {
         if pattern.is_match(trimmed) {
-            return Intent::TaskPlan;
+            return Intent::Plan;
         }
     }
 
     // 优先级3：记忆查询
     for pattern in MEMORY_QUERY_KEYWORDS.iter() {
         if pattern.is_match(trimmed) {
-            return Intent::MemoryQuery;
+            return Intent::Question;
         }
     }
 
@@ -380,7 +358,7 @@ pub fn classify_by_rules(input: &str) -> Intent {
     for pattern in CODE_REVIEW_KEYWORDS.iter() {
         if pattern.is_match(trimmed) {
             if has_dev_context {
-                return Intent::CodeReview;
+                return Intent::Action;
             }
             matched_dev_rule_without_context = true;
             break;
@@ -391,7 +369,7 @@ pub fn classify_by_rules(input: &str) -> Intent {
     for pattern in CODE_READ_KEYWORDS.iter() {
         if pattern.is_match(trimmed) {
             if has_dev_context {
-                return Intent::CodeRead;
+                return Intent::Action;
             }
             matched_dev_rule_without_context = true;
             break;
@@ -402,7 +380,7 @@ pub fn classify_by_rules(input: &str) -> Intent {
     for pattern in CODE_WRITE_KEYWORDS.iter() {
         if pattern.is_match(trimmed) {
             if has_dev_context {
-                return Intent::CodeWrite;
+                return Intent::Action;
             }
             matched_dev_rule_without_context = true;
             break;
@@ -419,37 +397,37 @@ pub fn classify_by_rules(input: &str) -> Intent {
     // 优先级8：任务执行（命令/脚本）
     for pattern in TASK_EXECUTE_KEYWORDS.iter() {
         if pattern.is_match(trimmed) {
-            return Intent::TaskExecute;
+            return Intent::Action;
         }
     }
 
     // 优先级9：设置配置
     for pattern in SETTINGS_KEYWORDS.iter() {
         if pattern.is_match(trimmed) {
-            return Intent::Settings;
+            return Intent::Question;
         }
     }
 
     // 优先级10：肯定延续词（需要上下文才能确定）
     for pattern in AFFIRMATIVE_CONTINUATION.iter() {
         if pattern.is_match(trimmed) {
-            return Intent::NeedsContext;
+            return Intent::Unclear;
         }
     }
 
     // 优先级11：闲聊关键词
     for pattern in GENERAL_CHAT_KEYWORDS.iter() {
         if pattern.is_match(trimmed) {
-            return Intent::GeneralChat;
+            return Intent::Chat;
         }
     }
 
     if matched_dev_rule_without_context {
-        return Intent::NeedsContext;
+        return Intent::Unclear;
     }
 
     // 默认：需要上下文或LLM判断
-    Intent::NeedsContext
+    Intent::Unclear
 }
 
 /// 带上下文的分类（第二层）
@@ -470,14 +448,14 @@ pub fn classify_with_context(
     for action in recent_assistant_actions {
         // 最近 N 轮中有提问且用户有回复 → 视为任务延续
         if action.was_asking_question && !input.trim().is_empty() {
-            return Intent::TaskContinue;
+            return Intent::Action;
         }
 
         // 最近 N 轮中有项目操作或计划提议，且用户回复确认词 → 任务延续
         if action.was_project_action || action.was_proposing_plan {
             for pattern in AFFIRMATIVE_CONTINUATION.iter() {
                 if pattern.is_match(input.trim()) {
-                    return Intent::TaskContinue;
+                    return Intent::Action;
                 }
             }
         }
@@ -486,11 +464,11 @@ pub fn classify_with_context(
     // 上下文未命中，回退到纯规则分类
     let base_intent = classify_by_rules(input);
 
-    if base_intent != Intent::NeedsContext {
+    if base_intent != Intent::Unclear {
         return base_intent;
     }
 
-    Intent::NeedsContext
+    Intent::Unclear
 }
 
 /// 分析上一轮助手消息
@@ -640,49 +618,49 @@ mod tests {
 
     #[test]
     fn test_dangerous_action() {
-        assert_eq!(classify_by_rules("删除所有文件"), Intent::DangerousAction);
-        assert_eq!(classify_by_rules("清空数据库"), Intent::DangerousAction);
-        assert_eq!(classify_by_rules("rm -rf /"), Intent::DangerousAction);
+        assert_eq!(classify_by_rules("删除所有文件"), Intent::Dangerous);
+        assert_eq!(classify_by_rules("清空数据库"), Intent::Dangerous);
+        assert_eq!(classify_by_rules("rm -rf /"), Intent::Dangerous);
     }
 
     #[test]
     fn test_code_read() {
-        assert_eq!(classify_by_rules("读取 main.rs"), Intent::CodeRead);
-        assert_eq!(classify_by_rules("看看这个文件"), Intent::CodeRead);
-        assert_eq!(classify_by_rules("打开日志看看"), Intent::CodeRead);
+        assert_eq!(classify_by_rules("读取 main.rs"), Intent::Action);
+        assert_eq!(classify_by_rules("看看这个文件"), Intent::Action);
+        assert_eq!(classify_by_rules("打开日志看看"), Intent::Action);
     }
 
     #[test]
     fn test_code_write() {
-        assert_eq!(classify_by_rules("帮我创建一个文件"), Intent::CodeWrite);
-        assert_eq!(classify_by_rules("修改这个函数"), Intent::CodeWrite);
-        assert_eq!(classify_by_rules("改一下这个逻辑"), Intent::CodeWrite);
+        assert_eq!(classify_by_rules("帮我创建一个文件"), Intent::Action);
+        assert_eq!(classify_by_rules("修改这个函数"), Intent::Action);
+        assert_eq!(classify_by_rules("改一下这个逻辑"), Intent::Action);
     }
 
     #[test]
     fn test_complex_task_plan() {
         assert_eq!(
             classify_by_rules("请先提交一份可审批的实施方案，然后创建一个完整最小可用项目"),
-            Intent::TaskPlan
+            Intent::Plan
         );
         assert_eq!(
             classify_by_rules("在桌面创建一个包含前端和后端的任务管理系统"),
-            Intent::TaskPlan
+            Intent::Plan
         );
     }
 
     #[test]
     fn test_code_review() {
-        assert_eq!(classify_by_rules("检查一下代码"), Intent::CodeReview);
-        assert_eq!(classify_by_rules("这段代码好像有问题"), Intent::CodeReview);
-        assert_eq!(classify_by_rules("这里好像有问题"), Intent::NeedsContext);
+        assert_eq!(classify_by_rules("检查一下代码"), Intent::Action);
+        assert_eq!(classify_by_rules("这段代码好像有问题"), Intent::Action);
+        assert_eq!(classify_by_rules("这里好像有问题"), Intent::Unclear);
     }
 
     #[test]
     fn test_task_execute() {
-        assert_eq!(classify_by_rules("运行测试"), Intent::TaskExecute);
-        assert_eq!(classify_by_rules("git push"), Intent::TaskExecute);
-        assert_eq!(classify_by_rules("npm install"), Intent::TaskExecute);
+        assert_eq!(classify_by_rules("运行测试"), Intent::Action);
+        assert_eq!(classify_by_rules("git push"), Intent::Action);
+        assert_eq!(classify_by_rules("npm install"), Intent::Action);
     }
 
     #[test]
@@ -694,45 +672,45 @@ mod tests {
 
     #[test]
     fn test_settings() {
-        assert_eq!(classify_by_rules("帮我改一下配置"), Intent::Settings);
-        assert_eq!(classify_by_rules("切换模型"), Intent::Settings);
-        assert_eq!(classify_by_rules("打开设置面板"), Intent::Settings);
+        assert_eq!(classify_by_rules("帮我改一下配置"), Intent::Question);
+        assert_eq!(classify_by_rules("切换模型"), Intent::Question);
+        assert_eq!(classify_by_rules("打开设置面板"), Intent::Question);
     }
 
     #[test]
     fn test_memory_query() {
-        assert_eq!(classify_by_rules("之前我们讨论了什么"), Intent::MemoryQuery);
+        assert_eq!(classify_by_rules("之前我们讨论了什么"), Intent::Question);
         assert_eq!(
             classify_by_rules("上次说的那个文件是什么"),
-            Intent::MemoryQuery
+            Intent::Question
         );
-        assert_eq!(classify_by_rules("这个项目有哪些文件"), Intent::CodeRead);
+        assert_eq!(classify_by_rules("这个项目有哪些文件"), Intent::Action);
     }
 
     #[test]
     fn test_general_user_content_creation_is_not_code_write() {
-        assert_eq!(classify_by_rules("帮我写一封邮件"), Intent::NeedsContext);
-        assert_eq!(classify_by_rules("修改一下这段文案"), Intent::NeedsContext);
-        assert_eq!(classify_by_rules("帮我写一个脚本"), Intent::CodeWrite);
+        assert_eq!(classify_by_rules("帮我写一封邮件"), Intent::Unclear);
+        assert_eq!(classify_by_rules("修改一下这段文案"), Intent::Unclear);
+        assert_eq!(classify_by_rules("帮我写一个脚本"), Intent::Action);
     }
 
     #[test]
     fn test_general_chat() {
-        assert_eq!(classify_by_rules("你好"), Intent::GeneralChat);
-        assert_eq!(classify_by_rules("讲个笑话"), Intent::GeneralChat);
-        assert_eq!(classify_by_rules("谢谢"), Intent::GeneralChat);
+        assert_eq!(classify_by_rules("你好"), Intent::Chat);
+        assert_eq!(classify_by_rules("讲个笑话"), Intent::Chat);
+        assert_eq!(classify_by_rules("谢谢"), Intent::Chat);
     }
 
     #[test]
     fn test_unclear() {
         assert_eq!(classify_by_rules(""), Intent::Unclear);
-        assert_eq!(classify_by_rules("a"), Intent::NeedsContext);
+        assert_eq!(classify_by_rules("a"), Intent::Unclear);
     }
 
     #[test]
     fn test_needs_context() {
-        assert_eq!(classify_by_rules("继续"), Intent::NeedsContext);
-        assert_eq!(classify_by_rules("好的"), Intent::NeedsContext);
+        assert_eq!(classify_by_rules("继续"), Intent::Unclear);
+        assert_eq!(classify_by_rules("好的"), Intent::Unclear);
     }
 
     #[test]
@@ -746,11 +724,11 @@ mod tests {
         let actions = vec![action];
         assert_eq!(
             classify_with_context("继续", &actions),
-            Intent::TaskContinue
+            Intent::Action
         );
         assert_eq!(
             classify_with_context("好的", &actions),
-            Intent::TaskContinue
+            Intent::Action
         );
     }
 
@@ -765,7 +743,7 @@ mod tests {
         let actions = vec![action];
         assert_eq!(
             classify_with_context("好的", &actions),
-            Intent::NeedsContext
+            Intent::Unclear
         );
     }
 
@@ -780,11 +758,11 @@ mod tests {
         let actions = vec![action];
         assert_eq!(
             classify_with_context("备忘txt", &actions),
-            Intent::TaskContinue
+            Intent::Action
         );
         assert_eq!(
             classify_with_context("test.md", &actions),
-            Intent::TaskContinue
+            Intent::Action
         );
     }
 }

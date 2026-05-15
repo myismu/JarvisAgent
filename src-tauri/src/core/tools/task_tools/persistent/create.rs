@@ -36,6 +36,12 @@ pub async fn task_create(
     session_id: &str,
 ) -> String {
     let subject = input["subject"].as_str().unwrap_or("").to_string();
+    if subject.trim().is_empty() {
+        return serde_json::json!({
+            "success": false,
+            "error": "subject 不能为空 — 每个任务必须有明确标题，例如「实现 /api/users POST 路由」"
+        }).to_string();
+    }
     let description = input["description"].as_str().unwrap_or("").to_string();
     let active_form = optional_string(input, "activeForm");
     let metadata = input.get("metadata").cloned();

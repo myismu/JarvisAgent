@@ -24,14 +24,15 @@ pub fn upsert_run(run: &AgentRun) -> Result<(), String> {
     crate::infra::db::with_connection(|conn| {
         conn.execute(
             "INSERT INTO agent_runs(
-                run_id, session_id, status, user_message_preview, loop_count, input_tokens, output_tokens,
+                run_id, session_id, status, user_message_preview, message_id, loop_count, input_tokens, output_tokens,
                 started_at, updated_at, finished_at, last_safe_point, live_thinking, live_tool_buffer,
                 live_content, error, summary, resumable, resumed_from_run_id
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
             ON CONFLICT(run_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 status = excluded.status,
                 user_message_preview = excluded.user_message_preview,
+                message_id = excluded.message_id,
                 loop_count = excluded.loop_count,
                 input_tokens = excluded.input_tokens,
                 output_tokens = excluded.output_tokens,
@@ -51,6 +52,7 @@ pub fn upsert_run(run: &AgentRun) -> Result<(), String> {
                 run.session_id,
                 status_to_str(&run.status),
                 run.user_message_preview,
+                run.message_id,
                 run.loop_count as i64,
                 run.input_tokens as i64,
                 run.output_tokens as i64,
@@ -75,12 +77,12 @@ pub fn upsert_run(run: &AgentRun) -> Result<(), String> {
 pub fn list_runs(session_id: Option<&str>) -> Result<Vec<AgentRun>, String> {
     crate::infra::db::with_connection(|conn| {
         let sql = if session_id.is_some() {
-            "SELECT run_id, session_id, status, user_message_preview, loop_count, input_tokens, output_tokens,
+            "SELECT run_id, session_id, status, user_message_preview, message_id, loop_count, input_tokens, output_tokens,
                     started_at, updated_at, finished_at, last_safe_point, live_thinking, live_tool_buffer,
                     live_content, error, summary, resumable, resumed_from_run_id
              FROM agent_runs WHERE session_id = ?1 ORDER BY started_at"
         } else {
-            "SELECT run_id, session_id, status, user_message_preview, loop_count, input_tokens, output_tokens,
+            "SELECT run_id, session_id, status, user_message_preview, message_id, loop_count, input_tokens, output_tokens,
                     started_at, updated_at, finished_at, last_safe_point, live_thinking, live_tool_buffer,
                     live_content, error, summary, resumable, resumed_from_run_id
              FROM agent_runs ORDER BY started_at"
@@ -104,7 +106,7 @@ pub fn list_runs(session_id: Option<&str>) -> Result<Vec<AgentRun>, String> {
 pub fn load_run(run_id: &str) -> Result<Option<AgentRun>, String> {
     crate::infra::db::with_connection(|conn| {
         conn.query_row(
-            "SELECT run_id, session_id, status, user_message_preview, loop_count, input_tokens, output_tokens,
+            "SELECT run_id, session_id, status, user_message_preview, message_id, loop_count, input_tokens, output_tokens,
                     started_at, updated_at, finished_at, last_safe_point, live_thinking, live_tool_buffer,
                     live_content, error, summary, resumable, resumed_from_run_id
              FROM agent_runs WHERE run_id = ?1",
@@ -113,6 +115,50 @@ pub fn load_run(run_id: &str) -> Result<Option<AgentRun>, String> {
         )
         .optional()
         .map_err(|e| e.to_string())
+    })
+}
+
+/// 根据 message_id 查找 agent_run
+pub fn find_by_message_id(message_id: &str) -> Result<Option<AgentRun>, String> {
+    if message_id.is_empty() { return Ok(None); }
+    crate::infra::db::with_connection(|conn| {
+        conn.query_row(
+            "SELECT run_id, session_id, status, user_message_preview, message_id, loop_count, input_tokens, output_tokens,
+                    started_at, updated_at, finished_at, last_safe_point, live_thinking, live_tool_buffer,
+                    live_content, error, summary, resumable, resumed_from_run_id
+             FROM agent_runs WHERE message_id = ?1 ORDER BY started_at DESC LIMIT 1",
+            [message_id],
+            run_from_row,
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    })
+}
+
+/// 删除指定 run 的 events
+pub fn delete_events_by_run(run_id: &str) -> Result<(), String> {
+    crate::infra::db::with_connection(|conn| {
+        conn.execute("DELETE FROM agent_run_events WHERE run_id = ?1", [run_id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+/// 删除指定 run 的 checkpoints
+pub fn delete_checkpoints_by_run(run_id: &str) -> Result<(), String> {
+    crate::infra::db::with_connection(|conn| {
+        conn.execute("DELETE FROM agent_run_checkpoints WHERE run_id = ?1", [run_id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+/// 删除 agent_run 记录
+pub fn delete_run(run_id: &str) -> Result<(), String> {
+    crate::infra::db::with_connection(|conn| {
+        conn.execute("DELETE FROM agent_runs WHERE run_id = ?1", [run_id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
     })
 }
 
@@ -243,20 +289,21 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<AgentRun> {
         session_id: row.get(1)?,
         status: status_from_str(row.get::<_, String>(2)?.as_str()),
         user_message_preview: row.get(3)?,
-        loop_count: row.get::<_, i64>(4)? as usize,
-        input_tokens: row.get::<_, i64>(5)? as u64,
-        output_tokens: row.get::<_, i64>(6)? as u64,
-        started_at: row.get::<_, i64>(7)? as u64,
-        updated_at: row.get::<_, i64>(8)? as u64,
-        finished_at: row.get::<_, Option<i64>>(9)?.map(|value| value as u64),
-        last_safe_point: row.get(10)?,
-        live_thinking: row.get(11)?,
-        live_tool_buffer: row.get(12)?,
-        live_content: row.get(13)?,
-        error: row.get(14)?,
-        summary: row.get(15)?,
-        resumable: row.get::<_, i64>(16)? != 0,
-        resumed_from_run_id: row.get(17)?,
+        message_id: row.get(4)?,
+        loop_count: row.get::<_, i64>(5)? as usize,
+        input_tokens: row.get::<_, i64>(6)? as u64,
+        output_tokens: row.get::<_, i64>(7)? as u64,
+        started_at: row.get::<_, i64>(8)? as u64,
+        updated_at: row.get::<_, i64>(9)? as u64,
+        finished_at: row.get::<_, Option<i64>>(10)?.map(|value| value as u64),
+        last_safe_point: row.get(11)?,
+        live_thinking: row.get(12)?,
+        live_tool_buffer: row.get(13)?,
+        live_content: row.get(14)?,
+        error: row.get(15)?,
+        summary: row.get(16)?,
+        resumable: row.get::<_, i64>(17)? != 0,
+        resumed_from_run_id: row.get(18)?,
     })
 }
 

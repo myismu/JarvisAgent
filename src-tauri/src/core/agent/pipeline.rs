@@ -193,7 +193,7 @@ impl PipelineState {
                 || msg_for_intent.starts_with("用户要求修改方案");
         let detected_intent = if work_mode != "chat" {
             let rule_intent = crate::core::intent::rules::classify_by_rules(&msg_for_intent);
-            if matches!(rule_intent, crate::core::intent::rules::Intent::TaskPlan) && !is_approval_continuation {
+            if matches!(rule_intent, crate::core::intent::rules::Intent::Plan) && !is_approval_continuation {
                 println!("[JARVIS] {} 模式：规则检测到复杂任务，首轮直接进入方案审批流程", work_mode);
                 "TASK_PLAN".to_string()
             } else {
@@ -214,6 +214,65 @@ impl PipelineState {
             .await
         };
         println!("[JARVIS] Detected intent: {}", detected_intent);
+
+        // 输入框自然语言审批：
+        // 仅在三种条件同时满足时自动更新 plan status：
+        // 1. 短消息（≤5 字），长消息不可能是纯粹审批回复
+        // 2. 上一轮助手刚提交了方案（history 最后一条 assistant 含 ProposePlan 或方案提交文本）
+        // 3. plan_documents 中存在 pending 方案
+        if msg.trim().chars().count() <= 5 {
+            // 上一轮 Agent 最后一次工具行动是否为提方案
+            // 找最后一条含 tool_use 的 assistant 消息，检查是否为 ProposePlan
+            let was_proposing_plan = {
+                let memory = ctx.memory.lock().await;
+                memory.messages.iter().rev()
+                    .find_map(|m| {
+                        if let Message::Assistant { content } = m {
+                            if let Content::Multiple(blocks) = content {
+                                let has_tool = blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+                                if has_tool {
+                                    let is_plan = blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { name, .. } if name == "ProposePlan"));
+                                    return Some(is_plan);
+                                }
+                            }
+                        }
+                        None
+                    })
+                    .unwrap_or(false)
+            };
+
+            if was_proposing_plan {
+                let mut memory = ctx.memory.lock().await;
+                let pending_plans: Vec<_> = memory
+                    .plan_documents
+                    .iter()
+                    .filter(|doc| doc.status == "pending")
+                    .map(|doc| (doc.id.clone(), doc.title.clone()))
+                    .collect();
+
+                if !pending_plans.is_empty() {
+                    // 区分同意/拒绝：意图分类器对两类都返回 ACTION，需靠消息文本判断
+                    let msg_trim = msg.trim();
+                    let is_reject = msg_trim.starts_with("不")
+                        || msg_trim == "拒绝"
+                        || msg_trim == "reject"
+                        || msg_trim == "no";
+                    let new_status = if is_reject { "revision_requested" } else { "approved" };
+
+                    for (plan_id, plan_title) in &pending_plans {
+                        if let Ok(Some(doc)) = crate::core::session::update_plan_document_status(
+                            &session_id, plan_id, new_status, None,
+                        ) {
+                            if let Some(existing) = memory.plan_documents.iter_mut().find(|d| d.id == doc.id) {
+                                *existing = doc.clone();
+                            }
+                            let _ = app.emit("plan-document-updated", &doc);
+                        }
+                        println!("[JARVIS] 输入框审批：方案「{}」→ {}", plan_title, new_status);
+                    }
+                }
+            }
+        }
 
         let activated_tools = ctx.memory.lock().await.activated_tools.clone();
 
@@ -340,6 +399,36 @@ impl PipelineState {
                 if let Some(interrupted_run) = agent_runs::find_interrupted_run(&self.sid) {
                     let _ = agent_runs::mark_run_recovered(&interrupted_run.run_id);
                 }
+
+                // 检测程序崩溃时残留的 InProgress 任务，注入恢复指令给 LLM
+                let tm = crate::core::orchestration::tasks::TaskManager::for_session(&self.sid);
+                let in_progress: Vec<_> = tm.get_all_tasks()
+                    .into_iter()
+                    .filter(|t| t.status == crate::infra::types::models::TaskStatus::InProgress)
+                    .collect();
+                if !in_progress.is_empty() {
+                    let task_list: String = in_progress.iter()
+                        .map(|t| format!("  • Task #{}: {}", t.id, t.subject))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let recovery_msg = format!(
+                        "【系统恢复通知】\n\
+                        程序上次非正常结束（崩溃/强退），以下 {} 个任务在执行中被中断：\n\
+                        {}\n\n\
+                        请按以下步骤处理：\n\
+                        1. 检查工作目录中的实际文件状态，判断哪些任务已完成、部分完成、未开始\n\
+                        2. 已完成的任务 → 用 UpdateTask 标为 completed\n\
+                        3. 部分完成的任务 → 用 UpdateTask 标为 pending（或保持 InProgress 不处理），评估剩余工作\n\
+                        4. 未开始的任务 → 保持 pending\n\
+                        5. 完成状态整理后，重新调用 RunSubagentsSequentially 继续执行未完成的任务",
+                        in_progress.len(), task_list
+                    );
+                    append_message(&mut session, Message::Assistant {
+                        content: Content::Single(recovery_msg),
+                    });
+                    println!("[JARVIS] 恢复：检测到 {} 个 InProgress 任务，已注入恢复指令", in_progress.len());
+                }
+
                 let _ = self.app.emit("session-updated", ());
             }
             let mut active_sid = Some(self.sid.clone());
@@ -355,15 +444,19 @@ impl PipelineState {
         let _ = self.app.emit("session-updated", ());
 
         self.should_think = self.thinking_override.unwrap_or_else(|| {
-            // 用户未手动切换时，根据意图自动决定
             match self.detected_intent.as_str() {
-                "CODE_WRITE" | "TASK_PLAN" | "PROJECT_ACTION" | "TASK_EXECUTE" => true,
-                "CODE_READ" | "CODE_REVIEW" | "QUESTION" | "CHAT" | "MEMORY_QUERY" | "SETTINGS" => false,
+                "ACTION" | "TASK_PLAN" | "DANGEROUS" => true,
+                "CHAT" | "QUESTION" | "UNCLEAR" => false,
                 _ => self.cfg.enable_thinking.unwrap_or(false),
             }
         });
 
-        self.run_id = agent_runs::start_run(&self.app, &self.sid, &self.msg, None);
+        let user_message_id = {
+            let session = self.ctx.memory.lock().await;
+            session.message_ids.get(self.initial_msg_index).cloned()
+        };
+        println!("[JARVIS] start_run: message_id={:?} initial_msg_index={}", user_message_id, self.initial_msg_index);
+        self.run_id = agent_runs::start_run(&self.app, &self.sid, &self.msg, None, user_message_id);
         *self.ctx.active_run_id.lock().await = Some(self.run_id.clone());
         {
             let session = self.ctx.memory.lock().await;
@@ -377,6 +470,52 @@ impl PipelineState {
                 self.req_output_tokens,
                 "用户消息已写入",
             );
+        }
+    }
+
+    /// 处理调度器事件，返回 true 表示有实质性事件被注入对话
+    async fn handle_sched_event(&mut self, event: crate::core::orchestration::scheduler::SchedulerEvent) -> bool {
+        use crate::core::orchestration::scheduler::SchedulerEvent;
+        match event {
+            SchedulerEvent::TaskCompleted { task_id, subject, tokens: _ } => {
+                println!("[JARVIS] 调度器: Task #{} ({}) 完成", task_id, subject);
+                let _ = self.app.emit("chat-stream", json!({
+                    "content": format!("\n> [OK] Task #{} 完成: {}\n", task_id, subject),
+                    "sessionId": self.sid,
+                }));
+                false // 完成不需要中断 LLM
+            }
+            SchedulerEvent::TaskFailed { task_id, subject, reason, error_detail } => {
+                println!("[JARVIS] 调度器: Task #{} ({}) 失败: {}", task_id, subject, reason);
+                let _ = self.app.emit("chat-stream", json!({
+                    "content": format!("\n> [FAIL] Task #{} 失败({}): {}\n", task_id, reason, subject),
+                    "sessionId": self.sid,
+                }));
+                let mut session = self.ctx.memory.lock().await;
+                append_message(&mut session, Message::Assistant {
+                    content: Content::Single(format!(
+                        "调度器通知：Task #{}「{}」执行失败（原因：{}）。\n错误详情：\n{}\n\n请根据以上信息决策：重试该任务 / 将其拆分为更小子任务 / 跳过该任务继续执行其他任务。",
+                        task_id, subject, reason, error_detail
+                    )),
+                });
+                true // 需要 LLM 立即处理
+            }
+            SchedulerEvent::AllDone { completed, failed, report } => {
+                println!("[JARVIS] 调度器: 全部完成 {}成功 {}失败", completed, failed);
+                *self.ctx.scheduler_rx.lock().await = None;
+                let _ = self.app.emit("chat-stream", json!({
+                    "content": format!("\n> [调度报告] {}成功 {}失败\n\n{}\n", completed, failed, report),
+                    "sessionId": self.sid,
+                }));
+                let mut session = self.ctx.memory.lock().await;
+                append_message(&mut session, Message::Assistant {
+                    content: Content::Single(format!(
+                        "调度器报告：所有任务已执行完毕。\n{}",
+                        report
+                    )),
+                });
+                true // 需要 LLM 处理最终报告
+            }
         }
     }
 
@@ -421,11 +560,82 @@ impl PipelineState {
                 continue;
             }
 
-            // API 调用（含重试）
-            let response = match self.call_api_with_retry(&req_json).await? {
-                Some(resp) => resp,
-                None => continue,
+            // 调度器 channel 接收端（异步 select! 用）
+            let sched_rx = self.ctx.scheduler_rx.lock().await.take();
+
+            // API 调用 + 调度器事件 select!：spawn API 到后台 task，select! 等结果
+            let (response, sched_rx) = if let Some(mut rx) = sched_rx {
+                let req_json_clone = req_json.clone();
+                let client = self.client.clone();
+                let base_url = self.base_url.clone();
+                let api_key = self.api_key.clone();
+                let api_format = self.api_format;
+                let app = self.app.clone();
+                let sid = self.sid.clone();
+                let run_id_clone = self.run_id.clone();
+                let cancel_token = self.cancel_token.clone();
+                let ctx = self.ctx.clone();
+                let api_handle = tokio::spawn(async move {
+                    let api_request = api_client::api_call_with_retry(
+                        &client, &base_url, &req_json_clone, &api_key, api_format, 3, &app, &sid,
+                    );
+                    let timeout_result = tokio::time::timeout(Duration::from_secs(120), api_request);
+                    tokio::select! {
+                        result = timeout_result => {
+                            match result {
+                                Ok(inner) => inner.map(|r| Some(r)),
+                                Err(_) => {
+                                    let error = ApiError::Network("API 请求超过 120 秒未返回响应头，已自动终止。".to_string());
+                                    let _ = agent_runs::fail_run(&app, &run_id_clone, error.to_string());
+                                    *ctx.cancel_token.lock().await = None;
+                                    Err(error.into())
+                                }
+                            }
+                        }
+                        _ = cancel_token.cancelled() => {
+                            Ok(None)
+                        }
+                    }
+                });
+
+                tokio::select! {
+                    result = api_handle => {
+                        match result {
+                            Ok(Ok(Some(resp))) => (Some(resp), Some(rx)),
+                            Ok(Ok(None)) => { *self.ctx.scheduler_rx.lock().await = Some(rx); continue; },
+                            Ok(Err(e)) => {
+                                agent_runs::fail_run(&self.app, &self.run_id, e.to_string());
+                                *self.ctx.cancel_token.lock().await = None;
+                                *self.ctx.scheduler_rx.lock().await = Some(rx);
+                                return Err(e.into());
+                            }
+                            Err(_) => { *self.ctx.scheduler_rx.lock().await = Some(rx); continue; },
+                        }
+                    }
+                    event = rx.recv() => {
+                        if let Some(ev) = event {
+                            self.handle_sched_event(ev).await;
+                        }
+                        *self.ctx.scheduler_rx.lock().await = Some(rx);
+                        self.loop_count += 1;
+                        self.total_loop_count += 1;
+                        continue;
+                    }
+                    _ = self.cancel_token.cancelled() => {
+                        *self.ctx.scheduler_rx.lock().await = Some(rx);
+                        continue;
+                    }
+                }
+            } else {
+                // 无活跃调度器，正常阻塞等待 LLM
+                let resp = match self.call_api_with_retry(&req_json).await? {
+                    Some(r) => r,
+                    None => continue,
+                };
+                (Some(resp), None)
             };
+
+            let Some(response) = response else { continue; };
 
             // 流式处理（含一次断流重试）
             let stream_result = {
@@ -586,6 +796,14 @@ impl PipelineState {
                 }),
             );
 
+            // 调度器 receiver 放回 ctx，下一轮 select! 继续用
+            if let Some(rx) = sched_rx {
+                let mut slot = self.ctx.scheduler_rx.lock().await;
+                if slot.is_none() {
+                    *slot = Some(rx);
+                }
+            }
+
             if self.cancel_token.is_cancelled() {
                 continue;
             }
@@ -624,10 +842,8 @@ impl PipelineState {
                 }
 
                 // 第3层防御：响应后置拦截 — 检测正文中的计划模式
-                // 仅在首轮响应时触发：已执行过工具（total_loop_count > 0）说明正在总结，不拦截
                 let work_mode = self.ctx.agent_work_mode.lock().await.clone();
-                if self.total_loop_count == 0
-                    && crate::core::intent::plan_detector::detect_plan_in_text(&self.final_answer)
+                if crate::core::intent::plan_detector::detect_plan_in_text(&self.final_answer)
                     && work_mode != "chat"
                 {
                     println!(
@@ -636,7 +852,7 @@ impl PipelineState {
                     let _ = self.app.emit(
                         "chat-stream",
                         json!({
-                            "content": "\n> ⚠️ **检测到计划性内容，正在重定向到方案审批流程...**\n",
+                            "content": "\n> [!] **检测到计划性内容，正在重定向到方案审批流程...**\n",
                             "sessionId": self.sid,
                             "loopCount": self.total_loop_count + 1
                         }),

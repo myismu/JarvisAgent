@@ -8,4 +8,5 @@ pub fn register_tools(registry: &mut ToolRegistry) {
     registry.register(super::persistent::task_list_tool_def());
     registry.register(super::persistent::task_summary_tool_def());
     registry.register(super::persistent::task_get_tool_def());
+    registry.register(super::persistent::task_batch_create_tool_def());
 }

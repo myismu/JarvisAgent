@@ -100,7 +100,6 @@ pub fn run() {
             command::permission::revoke_session_permission,
             command::session::recall_last_message,
             command::session::recall_message,
-            command::session::recall_message_from_index,
             command::session::get_active_session_id,
             command::session::list_sessions,
             command::session::create_session,

@@ -252,11 +252,11 @@
     "noPlans": "No plans",
     "subAgentType": {
       "general-purpose": "General",
-      "explore": "Explore",
-      "plan": "Plan",
-      "review": "Review",
-      "verification": "Verify",
-      "implementation": "Implement"
+      "explore": "Explore Code",
+      "plan": "Design Plan",
+      "review": "Review Code",
+      "verification": "Verify Result",
+      "implementation": "Write Code"
     },
     "subAgentStatus": {
       "running": "Running",

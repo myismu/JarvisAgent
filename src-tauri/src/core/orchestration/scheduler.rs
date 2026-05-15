@@ -7,10 +7,22 @@
 //! 4. JoinSet 自然耗尽 = 全部完成
 
 use tauri::Emitter;
+use tokio::sync::mpsc;
 
 use crate::infra::types::models::TaskStatus;
 use crate::core::orchestration::tasks::{TaskManager, TaskUpdateParams};
 use crate::core::tools::{run_subagent, IMPLEMENTATION_AGENT_ROLE};
+
+/// 调度器 → 主 Agent 的实时事件
+#[derive(Debug, Clone)]
+pub enum SchedulerEvent {
+    /// 子任务完成（含 token 统计）
+    TaskCompleted { task_id: i32, subject: String, tokens: (u64, u64) },
+    /// 子任务失败/超时/取消
+    TaskFailed { task_id: i32, subject: String, reason: String, error_detail: String },
+    /// 全部任务结束（含汇总报告）
+    AllDone { completed: usize, failed: usize, report: String },
+}
 
 pub struct TaskScheduler;
 
@@ -23,7 +35,7 @@ impl TaskScheduler {
         cancel_token: &tokio_util::sync::CancellationToken,
     ) -> (String, u64, u64) {
         let tm = TaskManager::for_session(session_id);
-        let mut total_in: u64 = 0;
+        let mut _total_in: u64 = 0;
         let mut total_out: u64 = 0;
         let mut completed_count: usize = 0;
         let mut failed_count: usize = 0;
@@ -49,7 +61,7 @@ impl TaskScheduler {
                 remaining
             );
             println!("{}", msg);
-            return (msg, total_in, total_out);
+            return (msg, _total_in, total_out);
         }
 
         println!(
@@ -68,7 +80,7 @@ impl TaskScheduler {
                 "chat-stream",
                 serde_json::json!({
                     "content": format!(
-                        "\n> 📋 调度启动：{} 个就绪任务\n{}\n",
+                        "\n> [调度启动] {} 个就绪任务\n{}\n",
                         ready_tasks.len(),
                         lines.join("\n")
                     ),
@@ -103,8 +115,16 @@ impl TaskScheduler {
                 break;
             }
 
-            if let Ok((task_id, answer, si, so)) = result {
-                total_in += si;
+            let (task_id, answer, si, so) = match result {
+                Ok(r) => r,
+                Err(e) => {
+                    println!("[SCHEDULER] 子 Agent panic/cancel: {}", e);
+                    failed_count += 1;
+                    continue;
+                }
+            };
+            {
+                _total_in += si;
                 total_out += so;
 
                 let status_msg = if answer.contains("任务超时") {
@@ -145,7 +165,7 @@ impl TaskScheduler {
                         let summary: String = answer.chars().take(500).collect();
                         completed_results.insert(task_id, (subject.clone(), summary));
                     }
-                    let icon = if status_msg == "完成" { "✓" } else { "✗" };
+                    let icon = if status_msg == "完成" { "[OK]" } else { "[FAIL]" };
                     let _ = app.emit("chat-stream", serde_json::json!({
                         "content": format!(
                             "\n> {} Task #{}: {} ({}, {} tokens)\n",
@@ -183,7 +203,7 @@ impl TaskScheduler {
             );
             println!("{}", msg);
             let summary = tm.summary().unwrap_or_default();
-            return (format!("{}\n\n{}", msg, summary), total_in, total_out);
+            return (format!("{}\n\n{}", msg, summary), _total_in, total_out);
         }
 
         let summary = tm.summary().unwrap_or_else(|e| format!("获取任务摘要失败: {}", e));
@@ -197,7 +217,193 @@ impl TaskScheduler {
             completed_count, failed_count
         );
 
-        (report, total_in, total_out)
+        (report, _total_in, total_out)
+    }
+
+    /// 异步调度：将调度逻辑 spawn 为后台 task，通过 channel 实时推送事件给主 Agent
+    pub fn run_schedule_async(
+        app: tauri::AppHandle,
+        session_id: String,
+        cancel_token: tokio_util::sync::CancellationToken,
+        event_tx: mpsc::UnboundedSender<SchedulerEvent>,
+    ) {
+        tokio::spawn(async move {
+            let tm = TaskManager::for_session(&session_id);
+            let _ = 0u64; // total_in placeholder (async模式下token统计暂不追踪)
+            let mut completed_count: usize = 0;
+            let mut failed_count: usize = 0;
+            let mut task_subjects: std::collections::HashMap<i32, String> =
+                std::collections::HashMap::new();
+            if cancel_token.is_cancelled() {
+                let _ = event_tx.send(SchedulerEvent::AllDone {
+                    completed: 0, failed: 0,
+                    report: "调度已取消".to_string(),
+                });
+                return;
+            }
+
+            let ready_tasks = tm.get_ready_tasks();
+            if ready_tasks.is_empty() {
+                let remaining = tm.count_incomplete();
+                if remaining == 0 {
+                    let _ = event_tx.send(SchedulerEvent::AllDone {
+                        completed: 0, failed: 0,
+                        report: "无待执行任务".to_string(),
+                    });
+                    return;
+                }
+                let _ = event_tx.send(SchedulerEvent::AllDone {
+                    completed: 0, failed: remaining,
+                    report: format!("{} 个任务因循环依赖无法调度", remaining),
+                });
+                return;
+            }
+
+            for task in &ready_tasks {
+                task_subjects.insert(task.id, task.subject.clone());
+                let _ = tm.update(task.id, TaskUpdateParams {
+                    status: Some(TaskStatus::InProgress),
+                    subject: None, description: None, active_form: None,
+                    owner: None, add_blocked_by: None, add_blocks: None, metadata: None,
+                });
+            }
+
+            // spawn 所有就绪任务到 JoinSet
+            let mut set = tokio::task::JoinSet::new();
+            for task in ready_tasks {
+                let tid = task.id;
+                let prompt = if task.description.is_empty() {
+                    task.subject.clone()
+                } else {
+                    format!("{}\n\n{}", task.subject, task.description)
+                };
+                let app_c = app.clone();
+                let sid = session_id.clone();
+                set.spawn(async move {
+                    let fut = run_subagent(
+                        app_c, prompt, false, sid,
+                        Some(tid), None,
+                        Some(IMPLEMENTATION_AGENT_ROLE.to_string()), None,
+                    );
+                    let result = tokio::time::timeout(
+                        std::time::Duration::from_secs(300),
+                        fut,
+                    ).await;
+                    match result {
+                        Ok(r) => (tid, r.0, r.1, r.2),
+                        Err(_) => (tid, "任务超时（超过 5 分钟）".to_string(), 0, 0),
+                    }
+                });
+            }
+
+            // 流式级联
+            while let Some(result) = set.join_next().await {
+                if cancel_token.is_cancelled() { break; }
+
+                let (task_id, answer, si, so) = match result {
+                    Ok(r) => r,
+                    Err(e) => {
+                        println!("[SCHEDULER] 子 Agent panic/cancel: {}", e);
+                        let _ = event_tx.send(SchedulerEvent::TaskFailed {
+                            task_id: 0,
+                            subject: "子 Agent 进程崩溃".to_string(),
+                            reason: "panic".to_string(),
+                            error_detail: format!("{}", e),
+                        });
+                        continue;
+                    }
+                };
+
+                let subject = task_subjects.get(&task_id).cloned()
+                        .unwrap_or_else(|| format!("Task #{}", task_id));
+
+                    let (is_fail, reason) = if answer.contains("任务超时") {
+                        (true, "超时")
+                    } else if answer.contains("子代理已取消") {
+                        (true, "取消")
+                    } else if answer.contains("子代理执行达到") {
+                        (true, "达到循环上限")
+                    } else if answer.contains("失败") || answer.contains("error") {
+                        (true, "执行错误")
+                    } else {
+                        (false, "")
+                    };
+
+                    let status = if is_fail { TaskStatus::Pending } else { TaskStatus::Completed };
+                    let _ = tm.update(task_id, TaskUpdateParams {
+                        status: Some(status),
+                        subject: None, description: None, active_form: None,
+                        owner: None, add_blocked_by: None, add_blocks: None, metadata: None,
+                    });
+
+                    if is_fail {
+                        failed_count += 1;
+                        let error_detail: String = answer.chars().take(500).collect();
+                        let _ = event_tx.send(SchedulerEvent::TaskFailed {
+                            task_id, subject: subject.clone(),
+                            reason: reason.to_string(),
+                            error_detail,
+                        });
+                    } else {
+                        completed_count += 1;
+                        let _summary: String = answer.chars().take(500).collect();
+                        let _ = event_tx.send(SchedulerEvent::TaskCompleted {
+                            task_id, subject: subject.clone(),
+                            tokens: (si, so),
+                        });
+                    }
+
+                    // 只有成功完成才级联解锁新任务
+                    if !is_fail {
+                        let new_ready = tm.get_ready_tasks();
+                        for task in &new_ready {
+                            if cancel_token.is_cancelled() { break; }
+                            task_subjects.insert(task.id, task.subject.clone());
+                            let _ = tm.update(task.id, TaskUpdateParams {
+                                status: Some(TaskStatus::InProgress),
+                                subject: None, description: None, active_form: None,
+                                owner: None, add_blocked_by: None, add_blocks: None, metadata: None,
+                            });
+                            let tid = task.id;
+                            let prompt = if task.description.is_empty() {
+                                task.subject.clone()
+                            } else {
+                                format!("{}\n\n{}", task.subject, task.description)
+                            };
+                            let app_c = app.clone();
+                            let sid = session_id.clone();
+                            set.spawn(async move {
+                                let fut = run_subagent(
+                                    app_c, prompt, false, sid,
+                                    Some(tid), None,
+                                    Some(IMPLEMENTATION_AGENT_ROLE.to_string()), None,
+                                );
+                                let result = tokio::time::timeout(
+                                    std::time::Duration::from_secs(300),
+                                    fut,
+                                ).await;
+                                match result {
+                                    Ok(r) => (tid, r.0, r.1, r.2),
+                                    Err(_) => (tid, "任务超时（超过 5 分钟）".to_string(), 0, 0),
+                                }
+                            });
+                        }
+                    }
+                }
+
+            let remaining = tm.count_incomplete();
+            let report = if remaining > 0 {
+                format!("调度结束：{} 成功，{} 失败，{} 个未完成", completed_count, failed_count, remaining)
+            } else {
+                format!("调度结束：{} 成功，{} 失败", completed_count, failed_count)
+            };
+
+            let _ = event_tx.send(SchedulerEvent::AllDone {
+                completed: completed_count,
+                failed: failed_count,
+                report,
+            });
+        });
     }
 }
 

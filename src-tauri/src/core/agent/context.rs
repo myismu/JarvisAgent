@@ -27,13 +27,6 @@ pub fn build_dynamic_context(
 ) -> String {
     match intent {
         "CHAT" => "<intent>\nCHAT\n</intent>\n".to_string(),
-        "MEMORY_QUERY" => {
-            let global_content = read_memory_file(&get_global_memory_path(), "Global Memory");
-            format!(
-                "<intent>\nMEMORY_QUERY\n</intent>\n\n<global_context>\n{}\n</global_context>\n",
-                global_content
-            )
-        }
         "QUESTION" => {
             let global_content = read_memory_file(&get_global_memory_path(), "Global Memory");
             format!(

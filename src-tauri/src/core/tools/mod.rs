@@ -117,8 +117,8 @@ pub fn get_tools_definition(intent: &str, activated_tools: &[String]) -> Vec<ser
         return vec![];
     }
 
-    // MEMORY_QUERY / QUESTION 工具集小，直接返回完整 schema
-    if intent == "MEMORY_QUERY" {
+    // QUESTION（含记忆查询）工具集小，直接返回完整 schema
+    if intent == "QUESTION" {
         let mut tools = get_core_tool_definitions();
         // 核心工具中移除 SearchTools（记忆查询不需要渐进式披露）
         tools.retain(|t| t["name"] != "SearchTools");
@@ -235,12 +235,17 @@ pub async fn handle_tool_call(
         );
         Box::pin(fut).await
     } else if name == "RunSubagentsSequentially" {
-        use crate::core::orchestration::scheduler::TaskScheduler;
+        use tauri::Manager;
+        use crate::core::orchestration::scheduler::{TaskScheduler, SchedulerEvent};
+        use crate::infra::state::state::SessionManager;
+        let ctx = app.state::<SessionManager>().get_or_create(session_id).await;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SchedulerEvent>();
+        *ctx.scheduler_rx.lock().await = Some(rx);
         let cancel_token = tokio_util::sync::CancellationToken::new();
-        let (summary, si, so) = TaskScheduler::run_schedule(
-            app, session_id, "", &cancel_token,
-        ).await;
-        (summary, si, so)
+        TaskScheduler::run_schedule_async(
+            app.clone(), session_id.to_string(), cancel_token, tx,
+        );
+        ("调度已启动，任务正在后台执行。你将实时收到每个任务的完成/失败通知。".to_string(), 0, 0)
     } else {
         (
             handle_tool_call_inner(app, name, input, session_id, intent).await,
@@ -310,6 +315,7 @@ pub async fn handle_tool_call_inner(
 
         // 任务工具
         "UpdateTodos" => task_tools::todo_write(app, input, session_id).await,
+        "BatchCreateTasks" => task_tools::task_batch_create(app, input, session_id).await,
         "CreateTask" => task_tools::task_create(app, input, session_id).await,
         "UpdateTask" => task_tools::task_update(app, input, session_id).await,
         "DeleteTask" => task_tools::task_delete(app, input, session_id).await,

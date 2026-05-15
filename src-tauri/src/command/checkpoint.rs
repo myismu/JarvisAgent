@@ -101,7 +101,6 @@ struct RollbackTarget {
     truncate_index: usize,
     recalled_text: String,
     effective_checkpoint_id: String,
-    message_seq: Option<usize>,
 }
 
 fn message_text(content: &crate::infra::types::models::Content) -> String {
@@ -284,7 +283,6 @@ async fn resolve_rollback_target(
         truncate_index,
         recalled_text,
         effective_checkpoint_id,
-        message_seq,
     })
 }
 
@@ -593,9 +591,6 @@ pub async fn rollback_to_checkpoint_with_recall(
     registry: tauri::State<'_, SnapshotRegistry>,
     app: tauri::AppHandle,
 ) -> Result<RollbackRecallResult, String> {
-    use crate::command::session::switch_away_and_delete_empty_session;
-    use tauri::Emitter;
-
     let mut restored_files = Vec::new();
 
     let ctx = session_manager.get_or_create(&session_id).await;
@@ -614,7 +609,6 @@ pub async fn rollback_to_checkpoint_with_recall(
     let truncate_index = target.truncate_index;
     let recalled_text = target.recalled_text.clone();
     let effective_checkpoint_id = target.effective_checkpoint_id.clone();
-    let message_seq = target.message_seq;
 
     let cutoff = if !checkpoint_id.is_empty() {
         match registry.0.read().await.get_or_create(&session_id).await {
@@ -643,49 +637,20 @@ pub async fn rollback_to_checkpoint_with_recall(
                 .await?;
     }
 
-    let is_empty;
-    {
-        let mut session = ctx.memory.lock().await;
-        session.messages.truncate(truncate_index);
-        session.message_ids.truncate(truncate_index);
-        if cutoff > 0 {
-            prune_metadata_after_checkpoint(&mut session, cutoff);
-        }
-        is_empty = session.messages.is_empty();
-    }
+    // 委托 recall_message 统一处理：agent_runs清理 → 截断 → DB同步 → 保存重载 → prune_metadata
+    crate::command::session::recall_message(
+        session_id.clone(),
+        message_id.clone(),
+        user_message_index,
+        Some(cutoff),
+        session_manager,
+        app.clone(),
+    )
+    .await?;
 
-    if let Some(seq) = message_seq {
-        crate::core::session::delete_session_messages_from_seq(&session_id, seq)?;
-    } else {
-        crate::core::session::delete_session_messages_from_seq(&session_id, truncate_index)?;
-    }
-
-    if is_empty {
-        switch_away_and_delete_empty_session(&session_id, &app).await?;
-    } else {
-        let memory = ctx.memory.lock().await.clone();
-        crate::core::session::save_session(&session_id, &memory, None);
-        let _ = app.emit("session-updated", ());
-
-        if rollback_files.unwrap_or(false) && effective_checkpoint_id.is_empty() {
-            let manager = registry.0.read().await.get_or_create(&session_id).await?;
-            manager.clear_snapshots_for_initial_state().await?;
-            println!(
-                "[Rollback] 会话 {} 已撤回到初始状态并清理快照记录",
-                session_id
-            );
-        }
-
-        // 保存后从 DB 重新加载到内存，确保 ctx.memory 与 session_memory 表完全一致
-        match crate::core::session::load_session(&session_id) {
-            Ok(reloaded) => {
-                let mut session = ctx.memory.lock().await;
-                *session = reloaded;
-            }
-            Err(e) => {
-                println!("[Rollback] 撤回后重新加载会话内存失败: {}", e);
-            }
-        }
+    if rollback_files.unwrap_or(false) && effective_checkpoint_id.is_empty() {
+        let manager = registry.0.read().await.get_or_create(&session_id).await?;
+        manager.clear_snapshots_for_initial_state().await?;
     }
 
     Ok(RollbackRecallResult {
