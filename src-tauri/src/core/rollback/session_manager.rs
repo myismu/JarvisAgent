@@ -117,10 +117,6 @@ impl SessionSnapshotManager {
         }
 
         self.store
-            .save_snapshot(&snapshot)
-            .map_err(|e| format!("保存快照失败: {}", e))?;
-
-        self.store
             .save_tree(&tree)
             .map_err(|e| format!("保存树失败: {}", e))?;
         if let Some(index) = trigger_user_memory_index {
@@ -249,10 +245,6 @@ impl SessionSnapshotManager {
             }
             snapshot.workspace_state = Some(WorkspaceState { files });
         }
-
-        self.store
-            .save_snapshot(&snapshot)
-            .map_err(|e| format!("保存快照失败: {}", e))?;
 
         self.store
             .save_tree(&tree)

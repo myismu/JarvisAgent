@@ -268,6 +268,47 @@ crate::define_tools! {
             is_read_only: true,
             is_concurrency_safe: true,
             is_enabled: true,
+        },
+        ToolDef {
+            name: "DeleteFile",
+            description: "删除指定文件",
+            search_hint: "delete file remove rm",
+            schema: json!({
+                "name": "DeleteFile",
+                "description": "删除指定文件。删除前会自动备份文件内容用于快照回滚。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "要删除的文件路径"}
+                    },
+                    "required": ["path"]
+                }
+            }),
+            should_defer: true,
+            is_read_only: false,
+            is_concurrency_safe: false,
+            is_enabled: true,
+        },
+        ToolDef {
+            name: "RenameFile",
+            description: "重命名或移动指定文件",
+            search_hint: "rename move file mv ren",
+            schema: json!({
+                "name": "RenameFile",
+                "description": "重命名或移动指定文件到新路径。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "要重命名的文件路径"},
+                        "new_path": {"type": "string", "description": "新的文件路径"}
+                    },
+                    "required": ["path", "new_path"]
+                }
+            }),
+            should_defer: true,
+            is_read_only: false,
+            is_concurrency_safe: false,
+            is_enabled: true,
         }
     }
 }

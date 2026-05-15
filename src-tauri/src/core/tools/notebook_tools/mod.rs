@@ -95,18 +95,6 @@ async fn record_patch_to_snapshot(
                 .map_or(0, |seq| seq + 1)
         };
 
-        if let Err(err) = crate::infra::db::insert_pending_snapshot_patch(
-            session_id,
-            &run_id,
-            seq,
-            &patch,
-            message.as_deref(),
-            trigger_user_memory_index,
-            trigger_user_message_id.as_deref(),
-        ) {
-            eprintln!("[Snapshot] 持久化 Notebook pending patch 失败: {}", err);
-        }
-
         ctx.pending_patches.lock().await.push(PendingSnapshotPatch {
             run_id,
             seq,

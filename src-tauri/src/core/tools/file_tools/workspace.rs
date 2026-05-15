@@ -82,6 +82,8 @@ async fn active_run_id(app: &tauri::AppHandle, session_id: &str) -> Option<Strin
     run_id
 }
 
+/// 工具层调用：只发布 Patch 到内存队列，不持久化。
+/// pipeline 会在本轮结束时统一调用 commit_pending_snapshot 持久化。
 async fn persist_pending_patch(
     app: &tauri::AppHandle,
     session_id: &str,
@@ -112,18 +114,6 @@ async fn persist_pending_patch(
                 .max()
                 .map_or(0, |seq| seq + 1)
         };
-
-        if let Err(err) = crate::infra::db::insert_pending_snapshot_patch(
-            session_id,
-            &run_id,
-            seq,
-            &patch,
-            message.as_deref(),
-            trigger_user_memory_index,
-            trigger_user_message_id.as_deref(),
-        ) {
-            eprintln!("[Snapshot] 持久化 pending patch 失败: {}", err);
-        }
 
         ctx.pending_patches.lock().await.push(PendingSnapshotPatch {
             run_id,
@@ -169,7 +159,7 @@ pub async fn has_pending_patches(app: &tauri::AppHandle, session_id: &str) -> bo
             return true;
         }
     }
-    crate::infra::db::list_pending_snapshot_patches(session_id, None)
+    crate::infra::db::list_agent_run_patches(session_id, None)
         .map(|records| !records.is_empty())
         .unwrap_or(false)
 }
@@ -187,7 +177,7 @@ pub async fn commit_pending_snapshot(
         let mut guard = ctx.pending_patches.lock().await;
         if guard.is_empty() {
             let records =
-                crate::infra::db::list_pending_snapshot_patches(session_id, run_id.as_deref())
+                crate::infra::db::list_agent_run_patches(session_id, run_id.as_deref())
                     .unwrap_or_else(|err| {
                         eprintln!("[Snapshot] 读取 pending patch 失败: {}", err);
                         Vec::new()
@@ -244,7 +234,7 @@ pub async fn commit_pending_snapshot(
             {
                 Ok(snapshot) => {
                     let snapshot_id = snapshot.id.clone();
-                    if let Err(err) = crate::infra::db::delete_pending_snapshot_patches(
+                    if let Err(err) = crate::infra::db::delete_agent_run_patches(
                         session_id,
                         Some(&commit_run_id),
                     ) {

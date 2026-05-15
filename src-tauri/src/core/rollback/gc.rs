@@ -4,8 +4,7 @@
 //!
 //! GC 分三个阶段：
 //! 1. 清理快照树中脱离分支链路且超期的快照节点
-//! 2. 清理 snapshots 表中不在快照树 nodes 中的孤儿记录
-//! 3. 清理 snapshot_content 表中未被任何 workspaceState 引用的孤儿内容
+//! 2. 清理 snapshot_content 表中未被任何 workspaceState 引用的孤儿内容
 
 use super::snapshot::SnapshotTree;
 use std::collections::HashSet;
@@ -47,8 +46,6 @@ impl Default for GcConfig {
 pub struct GcResult {
     /// 从快照树中移除的过期快照数
     pub removed_tree_snapshots: usize,
-    /// 从 snapshots 表中清理的孤儿记录数
-    pub removed_orphan_snapshots: usize,
     /// 从 snapshot_content 表中清理的孤儿内容数
     pub removed_orphan_contents: usize,
     /// 清理的孤立分支数
@@ -68,8 +65,7 @@ impl GarbageCollector {
     /// 执行完整垃圾回收（三阶段）
     ///
     /// 阶段 1：清理快照树中脱离链路且超期的快照节点
-    /// 阶段 2：清理 snapshots 表中不在 tree.nodes 中的孤儿记录
-    /// 阶段 3：清理 snapshot_content 表中未被任何 workspaceState 引用的孤儿内容
+    /// 阶段 2：清理 snapshot_content 表中未被任何 workspaceState 引用的孤儿内容
     pub fn collect(&self, tree: &mut SnapshotTree, session_id: &str) -> GcResult {
         let mut result = GcResult::default();
 
@@ -92,12 +88,8 @@ impl GarbageCollector {
             }
         }
 
-        for (id, branch_name) in &to_remove {
+        for (id, _branch_name) in &to_remove {
             tree.nodes.remove(id);
-            // 同步删除 snapshots 表中的对应记录
-            if let Err(e) = delete_snapshot_from_db(session_id, branch_name, id) {
-                eprintln!("[GC] 删除快照 {} 失败: {}", id, e);
-            }
             result.removed_tree_snapshots += 1;
         }
 
@@ -110,10 +102,7 @@ impl GarbageCollector {
             }
         }
 
-        // ═══ 阶段 2：清理 snapshots 表中的孤儿记录 ═══
-        result.removed_orphan_snapshots = self.cleanup_orphan_snapshots(session_id, tree);
-
-        // ═══ 阶段 3：清理 snapshot_content 表中的孤儿内容 ═══
+        // ═══ 阶段 2：清理 snapshot_content 表中的孤儿内容 ═══
         result.removed_orphan_contents = self.cleanup_orphan_contents(session_id, tree);
 
         result
@@ -146,46 +135,7 @@ impl GarbageCollector {
             .collect()
     }
 
-    /// 阶段 2：清理 snapshots 表中不在 tree.nodes 中的孤儿记录
-    ///
-    /// 扫描 snapshots 表中的所有 snapshot_id，与 tree.nodes 做差集，
-    /// 不在 tree.nodes 中的即为孤儿，直接删除。
-    fn cleanup_orphan_snapshots(&self, session_id: &str, tree: &SnapshotTree) -> usize {
-        let tree_node_ids: HashSet<String> = tree.nodes.keys().cloned().collect();
-
-        crate::infra::db::with_connection(|conn| {
-            // 查询该会话的所有 snapshot_id
-            let mut stmt = conn
-                .prepare("SELECT snapshot_id, branch_name FROM snapshots WHERE session_id = ?1")
-                .map_err(|e| e.to_string())?;
-
-            let rows: Vec<(String, String)> = stmt
-                .query_map([session_id], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .map_err(|e| e.to_string())?
-                .filter_map(|r| r.ok())
-                .collect();
-
-            let mut removed = 0;
-            for (snapshot_id, _branch_name) in rows {
-                if !tree_node_ids.contains(&snapshot_id) {
-                    match conn.execute(
-                        "DELETE FROM snapshots WHERE session_id = ?1 AND snapshot_id = ?2",
-                        rusqlite::params![session_id, snapshot_id],
-                    ) {
-                        Ok(_) => removed += 1,
-                        Err(e) => eprintln!("[GC] 删除孤儿快照 {} 失败: {}", snapshot_id, e),
-                    }
-                }
-            }
-
-            Ok(removed)
-        })
-        .unwrap_or(0)
-    }
-
-    /// 阶段 3：清理 snapshot_content 表中未被任何 workspaceState 引用的孤儿内容
+    /// 阶段 2：清理 snapshot_content 表中未被任何 workspaceState 引用的孤儿内容
     ///
     /// 收集 tree.nodes 中所有 workspaceState 引用的 hash，
     /// 然后删除 snapshot_content 表中不在该集合中的记录。
@@ -232,20 +182,6 @@ impl GarbageCollector {
 }
 
 /// 从数据库删除单条快照记录
-fn delete_snapshot_from_db(
-    session_id: &str,
-    branch_name: &str,
-    snapshot_id: &str,
-) -> Result<(), String> {
-    crate::infra::db::with_connection(|conn| {
-        conn.execute(
-            "DELETE FROM snapshots WHERE session_id = ?1 AND branch_name = ?2 AND snapshot_id = ?3",
-            rusqlite::params![session_id, branch_name, snapshot_id],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
-    })
-}
 
 fn current_timestamp() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};

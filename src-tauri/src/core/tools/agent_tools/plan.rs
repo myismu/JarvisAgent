@@ -311,7 +311,7 @@ pub async fn propose_plan(
     let _ = app.emit(
         "chat-stream",
         json!({
-            "content": format!("\n> 📋 **方案已提交审阅**: 「{}」\n> 请在弹出的方案预览面板中查看详情并决策。\n", title),
+            "content": format!("\n> [方案已提交] **{}**\n> 请在弹出的方案预览面板中查看详情并决策。\n", title),
             "sessionId": session_id
         }),
     );

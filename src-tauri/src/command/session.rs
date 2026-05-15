@@ -234,10 +234,14 @@ pub async fn recall_message(
                 return Err("撤回消息不存在".to_string());
             }
             let target = session.messages[idx].clone();
-            // 保留 idx 及之前（即丢弃 idx 之后的），因为要撤回的是 idx 这条消息，
-            // 所以保留到 idx-1
+            // 截断前提取 message_id，截断后 idx 就没了
+            let mid_for_cleanup = session.message_ids.get(idx).cloned();
             session.messages.truncate(idx);
             session.message_ids.truncate(idx);
+            // 清理 agent_run（在截断前已拿到 message_id）
+            if let Some(ref mid) = mid_for_cleanup.filter(|s| !s.is_empty()) {
+                crate::core::orchestration::agent_runs::cleanup_by_message_id(mid);
+            }
             Some(target)
         } else {
             return Err("撤回消息不存在".to_string());
@@ -252,10 +256,8 @@ pub async fn recall_message(
             return Err("撤回目标不是用户消息".to_string());
         }
 
-        // 清理对应 agent_run 及其 events/checkpoints
-        if let Some(mid) = message_id.as_ref()
-            .or_else(|| session.message_ids.get(user_message_index.unwrap_or(0)).filter(|s| !s.is_empty()))
-        {
+        // 非 user_message_index 路径：用传入的 message_id 清理
+        if let Some(mid) = message_id.as_ref().filter(|s| !s.is_empty()) {
             crate::core::orchestration::agent_runs::cleanup_by_message_id(mid);
         }
 

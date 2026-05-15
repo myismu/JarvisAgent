@@ -138,7 +138,7 @@ impl ReplayEngine {
 
         let mut workspace = Workspace::new();
         for snapshot in &chain {
-            workspace.apply_patches(&snapshot.patches)?;
+            workspace.apply_patches(&snapshot.patches, &tree.session_id)?;
         }
 
         Ok(workspace)
@@ -192,12 +192,12 @@ impl ReplayEngine {
         };
 
         for patch in &patches_since_checkpoint {
-            workspace.apply_patch(patch)?;
+            workspace.apply_patch(patch, &tree.session_id)?;
         }
 
         // 应用 target 自身的补丁（如果 target 有补丁）
         for patch in &target.patches {
-            workspace.apply_patch(patch)?;
+            workspace.apply_patch(patch, &tree.session_id)?;
         }
 
         Ok(workspace)
@@ -216,7 +216,7 @@ impl ReplayEngine {
         }
 
         for snapshot in chain.iter().rev() {
-            workspace.apply_patches(&snapshot.patches)?;
+            workspace.apply_patches(&snapshot.patches, &self.session_id)?;
         }
 
         Ok(workspace)
@@ -434,6 +434,27 @@ impl AtomicFileRollback {
                         },
                     });
                 }
+            }
+        }
+
+        // 精准删除孤儿文件（如 RenameFile 留下的旧/新路径）
+        for path in &workspace.delete_paths {
+            let exist_path = if PathBuf::from(path).is_absolute() {
+                PathBuf::from(path)
+            } else {
+                target_dir.join(path)
+            };
+            if exist_path.exists() {
+                undo_log.push(UndoEntry {
+                    path: if has_target_dir {
+                        path.clone()
+                    } else {
+                        exist_path.to_string_lossy().to_string()
+                    },
+                    action: UndoAction::Delete {
+                        backup_path: exist_path.to_string_lossy().to_string(),
+                    },
+                });
             }
         }
 

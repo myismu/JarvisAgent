@@ -93,7 +93,7 @@ fn now_ts() -> u64 {
         .as_secs()
 }
 
-pub fn insert_pending_snapshot_patch(
+pub fn insert_agent_run_patch(
     session_id: &str,
     run_id: &str,
     seq: usize,
@@ -105,7 +105,7 @@ pub fn insert_pending_snapshot_patch(
     let patch_json = serde_json::to_string(patch).map_err(|e| e.to_string())?;
     with_connection(|conn| {
         conn.execute(
-            "INSERT INTO pending_snapshot_patches(
+            "INSERT INTO agent_run_patches(
                 session_id, run_id, seq, patch_json, message, trigger_user_memory_index,
                 trigger_user_message_id, created_at
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -131,7 +131,7 @@ pub fn insert_pending_snapshot_patch(
     })
 }
 
-pub fn list_pending_snapshot_patches(
+pub fn list_agent_run_patches(
     session_id: &str,
     run_id: Option<&str>,
 ) -> Result<Vec<PendingSnapshotPatchRecord>, String> {
@@ -142,13 +142,13 @@ pub fn list_pending_snapshot_patches(
                 .prepare(
                     "SELECT run_id, seq, patch_json, message, trigger_user_memory_index,
                             trigger_user_message_id, created_at
-                     FROM pending_snapshot_patches
+                     FROM agent_run_patches
                      WHERE session_id = ?1 AND run_id = ?2
                      ORDER BY seq",
                 )
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map(params![session_id, run_id], pending_snapshot_patch_from_row)
+                .query_map(params![session_id, run_id], agent_run_patch_from_row)
                 .map_err(|e| e.to_string())?;
             for row in rows {
                 patches.push(row.map_err(|e| e.to_string())?);
@@ -158,13 +158,13 @@ pub fn list_pending_snapshot_patches(
                 .prepare(
                     "SELECT run_id, seq, patch_json, message, trigger_user_memory_index,
                             trigger_user_message_id, created_at
-                     FROM pending_snapshot_patches
+                     FROM agent_run_patches
                      WHERE session_id = ?1
                      ORDER BY created_at, seq",
                 )
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map([session_id], pending_snapshot_patch_from_row)
+                .query_map([session_id], agent_run_patch_from_row)
                 .map_err(|e| e.to_string())?;
             for row in rows {
                 patches.push(row.map_err(|e| e.to_string())?);
@@ -174,7 +174,7 @@ pub fn list_pending_snapshot_patches(
     })
 }
 
-fn pending_snapshot_patch_from_row(
+fn agent_run_patch_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<PendingSnapshotPatchRecord> {
     let seq: i64 = row.get(1)?;
@@ -196,19 +196,19 @@ fn pending_snapshot_patch_from_row(
     })
 }
 
-pub fn delete_pending_snapshot_patches(
+pub fn delete_agent_run_patches(
     session_id: &str,
     run_id: Option<&str>,
 ) -> Result<(), String> {
     with_connection(|conn| {
         if let Some(run_id) = run_id {
             conn.execute(
-                "DELETE FROM pending_snapshot_patches WHERE session_id = ?1 AND run_id = ?2",
+                "DELETE FROM agent_run_patches WHERE session_id = ?1 AND run_id = ?2",
                 params![session_id, run_id],
             )
         } else {
             conn.execute(
-                "DELETE FROM pending_snapshot_patches WHERE session_id = ?1",
+                "DELETE FROM agent_run_patches WHERE session_id = ?1",
                 params![session_id],
             )
         }

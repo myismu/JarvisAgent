@@ -19,7 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eventsource_stream::Eventsource;
 use serde_json::json;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 use crate::infra::config::config::AgentConfig;
 use crate::infra::types::error::{AgentError, ApiError};
@@ -818,6 +818,10 @@ impl PipelineState {
             });
             if plan_awaiting {
                 self.final_answer = "方案已提交到审批面板，等待您的决策。".to_string();
+                let _ = self.app.emit("chat-stream", json!({
+                    "content": self.final_answer,
+                    "sessionId": self.sid,
+                }));
                 {
                     let mut session = self.ctx.memory.lock().await;
                     append_message(&mut session, Message::User {
@@ -944,6 +948,24 @@ impl PipelineState {
     /// 阶段 5: 检查点创建 + 会话保存 + 记忆代理 + 结果组装
     async fn finalize(self) -> JarvisResult {
         let was_cancelled = self.cancel_token.is_cancelled();
+
+        // 崩溃兜底：提交前先把补丁持久化到 agent_run_patches 表
+        {
+            let manager = self.app.state::<crate::infra::state::state::SessionManager>();
+            let ctx = manager.get_or_create(&self.sid).await;
+            let patches: Vec<_> = ctx.pending_patches.lock().await.clone();
+            for p in &patches {
+                let _ = crate::infra::db::insert_agent_run_patch(
+                    &self.sid,
+                    &p.run_id,
+                    p.seq,
+                    &p.patch,
+                    p.message.as_deref(),
+                    p.trigger_user_memory_index,
+                    p.trigger_user_message_id.as_deref(),
+                );
+            }
+        }
 
         // 创建检查点快照（仅在有文件编辑时创建实快照，纯聊天轮次不创建）
         {

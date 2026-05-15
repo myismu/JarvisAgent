@@ -16,6 +16,8 @@ pub enum Patch {
     },
     DeleteFile {
         path: String,
+        /// 原文件内容 hash（snapshot_content 表），None 表示读取失败
+        content_hash: Option<String>,
     },
     UpdateFile {
         path: String,
@@ -85,7 +87,7 @@ impl Patch {
     pub fn touched_paths(&self) -> Vec<&str> {
         match self {
             Patch::CreateFile { path, .. } => vec![path.as_str()],
-            Patch::DeleteFile { path } => vec![path.as_str()],
+            Patch::DeleteFile { path, .. } => vec![path.as_str()],
             Patch::UpdateFile { path, .. } => vec![path.as_str()],
             Patch::RenameFile { old_path, new_path } => vec![old_path.as_str(), new_path.as_str()],
         }
@@ -100,7 +102,7 @@ impl Patch {
                 lines_added: content.lines().count(),
                 lines_removed: 0,
             },
-            Patch::DeleteFile { path } => PatchSummary {
+            Patch::DeleteFile { path, .. } => PatchSummary {
                 path: path.clone(),
                 operation: "delete".to_string(),
                 lines_added: 0,
@@ -155,6 +157,7 @@ mod tests {
     fn test_patch_summary_delete() {
         let patch = Patch::DeleteFile {
             path: "old.rs".to_string(),
+            content_hash: None,
         };
         let summary = patch.to_summary();
         assert_eq!(summary.operation, "delete");

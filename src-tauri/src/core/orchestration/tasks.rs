@@ -331,7 +331,7 @@ impl TaskManager {
         ));
 
         if !active_tasks.is_empty() {
-            report.push_str("🔥 Bottlenecks (Blocking others):\n");
+            report.push_str("[!] Bottlenecks (Blocking others):\n");
             for t in active_tasks.iter().take(3) {
                 report.push_str(&format!(
                     "  - Task #{} (Blocks {} tasks): {}\n",
@@ -351,7 +351,7 @@ impl TaskManager {
         } else if pending > 0 || in_progress > 0 {
             report.push_str("⏳ No completely unblocked pending tasks. Check bottlenecks!\n");
         } else {
-            report.push_str("🎉 All tasks completed!\n");
+            report.push_str("[OK] All tasks completed!\n");
         }
 
         Ok(report)

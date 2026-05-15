@@ -45,6 +45,8 @@ pub struct FileInfo {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Workspace {
     pub files: HashMap<String, String>,
+    /// 回滚时需要删除的孤儿文件路径（如 RenameFile 留下的旧路径）
+    pub delete_paths: HashSet<String>,
 }
 
 /// 快照版本树，管理所有快照和分支
@@ -126,11 +128,12 @@ impl Workspace {
     pub fn new() -> Self {
         Self {
             files: HashMap::new(),
+            delete_paths: HashSet::new(),
         }
     }
 
     /// 应用单个补丁到工作区
-    pub fn apply_patch(&mut self, patch: &Patch) -> Result<(), super::patch::PatchError> {
+    pub fn apply_patch(&mut self, patch: &Patch, session_id: &str) -> Result<(), super::patch::PatchError> {
         use super::patch::PatchError;
 
         match patch {
@@ -141,9 +144,14 @@ impl Workspace {
                 self.files.insert(path.clone(), content.clone());
                 Ok(())
             }
-            Patch::DeleteFile { path } => {
+            Patch::DeleteFile { path, content_hash } => {
                 if self.files.remove(path).is_none() {
-                    return Err(PatchError::FileNotFound(path.clone()));
+                    if let Some(hash) = content_hash {
+                        if let Ok(Some(c)) = crate::core::rollback::store::load_content(session_id, hash) {
+                            self.files.insert(path.clone(), c);
+                            self.files.remove(path);
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -180,27 +188,35 @@ impl Workspace {
                     return Err(PatchError::FileAlreadyExists(new_path.clone()));
                 }
                 self.files.insert(new_path.clone(), content);
+                self.delete_paths.insert(old_path.clone());
                 Ok(())
             }
         }
     }
 
     /// 批量应用补丁
-    pub fn apply_patches(&mut self, patches: &[Patch]) -> Result<(), super::patch::PatchError> {
+    pub fn apply_patches(&mut self, patches: &[Patch], session_id: &str) -> Result<(), super::patch::PatchError> {
         for patch in patches {
-            self.apply_patch(patch)?;
+            self.apply_patch(patch, session_id)?;
         }
         Ok(())
     }
 
     /// 撤销单个补丁（用于回滚）
-    pub fn undo_patch(&mut self, patch: &Patch) -> Result<(), super::patch::PatchError> {
+    pub fn undo_patch(&mut self, patch: &Patch, session_id: &str) -> Result<(), super::patch::PatchError> {
         match patch {
             Patch::CreateFile { path, .. } => {
                 self.files.remove(path);
                 Ok(())
             }
-            Patch::DeleteFile { path: _ } => Ok(()),
+            Patch::DeleteFile { path, content_hash } => {
+                if let Some(hash) = content_hash {
+                    if let Ok(Some(c)) = crate::core::rollback::store::load_content(session_id, hash) {
+                        self.files.insert(path.clone(), c);
+                    }
+                }
+                Ok(())
+            }
             Patch::UpdateFile {
                 path, old_content, ..
             } => {
@@ -210,6 +226,7 @@ impl Workspace {
             Patch::RenameFile { old_path, new_path } => {
                 if let Some(content) = self.files.remove(new_path) {
                     self.files.insert(old_path.clone(), content);
+                    self.delete_paths.insert(new_path.clone());
                 }
                 Ok(())
             }

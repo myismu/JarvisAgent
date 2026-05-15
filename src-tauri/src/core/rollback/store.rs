@@ -1,6 +1,6 @@
 ﻿//! SQLite-backed snapshot persistence.
 
-use super::{Snapshot, SnapshotTree};
+use super::SnapshotTree;
 use rusqlite::{params, OptionalExtension};
 
 #[derive(Debug, thiserror::Error)]
@@ -39,69 +39,6 @@ impl SnapshotStore {
         }
     }
 
-    pub fn save_snapshot(&self, snapshot: &Snapshot) -> Result<(), StoreError> {
-        ensure_session_record(&self.session_id).map_err(StoreError::DbError)?;
-        let json = serde_json::to_string(snapshot)?;
-        crate::infra::db::with_connection(|conn| {
-            conn.execute(
-                "INSERT INTO snapshots(session_id, snapshot_id, branch_name, snapshot_json, created_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(session_id, snapshot_id) DO UPDATE SET
-                    branch_name = excluded.branch_name,
-                    snapshot_json = excluded.snapshot_json,
-                    created_at = excluded.created_at",
-                params![
-                    self.session_id.as_str(),
-                    snapshot.id.as_str(),
-                    snapshot.branch_name.as_str(),
-                    json,
-                    snapshot.created_at as i64,
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-            Ok(())
-        })
-        .map_err(StoreError::DbError)
-    }
-
-    pub fn load_snapshot(
-        &self,
-        branch_name: &str,
-        snapshot_id: &str,
-    ) -> Result<Option<Snapshot>, StoreError> {
-        let json = crate::infra::db::with_connection(|conn| {
-            conn.query_row(
-                "SELECT snapshot_json FROM snapshots
-                 WHERE session_id = ?1 AND branch_name = ?2 AND snapshot_id = ?3",
-                params![self.session_id.as_str(), branch_name, snapshot_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())
-        })
-        .map_err(StoreError::DbError)?;
-
-        json.map(|value| serde_json::from_str(&value).map_err(StoreError::JsonError))
-            .transpose()
-    }
-
-    pub fn delete_snapshot(&self, branch_name: &str, snapshot_id: &str) -> Result<(), StoreError> {
-        crate::infra::db::with_connection(|conn| {
-            conn.execute(
-                "DELETE FROM checkpoint_user_message_links WHERE session_id = ?1 AND checkpoint_id = ?2",
-                params![self.session_id.as_str(), snapshot_id],
-            )
-            .map_err(|e| e.to_string())?;
-            conn.execute(
-                "DELETE FROM snapshots WHERE session_id = ?1 AND branch_name = ?2 AND snapshot_id = ?3",
-                params![self.session_id.as_str(), branch_name, snapshot_id],
-            )
-            .map_err(|e| e.to_string())?;
-            Ok(())
-        })
-        .map_err(StoreError::DbError)
-    }
-
     pub fn delete_all_for_session(&self) -> Result<(), StoreError> {
         crate::infra::db::with_transaction(|tx| {
             tx.execute(
@@ -120,12 +57,7 @@ impl SnapshotStore {
             )
             .map_err(|e| e.to_string())?;
             tx.execute(
-                "DELETE FROM pending_snapshot_patches WHERE session_id = ?1",
-                [self.session_id.as_str()],
-            )
-            .map_err(|e| e.to_string())?;
-            tx.execute(
-                "DELETE FROM snapshots WHERE session_id = ?1",
+                "DELETE FROM agent_run_patches WHERE session_id = ?1",
                 [self.session_id.as_str()],
             )
             .map_err(|e| e.to_string())?;
@@ -175,30 +107,6 @@ impl SnapshotStore {
         }
     }
 
-    pub fn list_snapshots(&self, branch_name: &str) -> Result<Vec<Snapshot>, StoreError> {
-        crate::infra::db::with_connection(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT snapshot_json FROM snapshots
-                     WHERE session_id = ?1 AND branch_name = ?2
-                     ORDER BY created_at",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map(params![self.session_id.as_str(), branch_name], |row| {
-                    row.get::<_, String>(0)
-                })
-                .map_err(|e| e.to_string())?;
-
-            let mut snapshots = Vec::new();
-            for row in rows {
-                let json = row.map_err(|e| e.to_string())?;
-                snapshots.push(serde_json::from_str(&json).map_err(|e| e.to_string())?);
-            }
-            Ok(snapshots)
-        })
-        .map_err(StoreError::DbError)
-    }
 }
 
 pub fn save_content(session_id: &str, hash: &str, content: &str) -> Result<(), String> {

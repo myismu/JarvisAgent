@@ -303,6 +303,8 @@ pub async fn handle_tool_call_inner(
         "ReadSymbol" => file_tools::read_symbol(app, input, session_id).await,
         "FindReferences" => file_tools::find_references(app, input, session_id).await,
         "CodeSearch" => file_tools::code_search(app, input, session_id).await,
+        "DeleteFile" => file_tools::delete_file(app, input, session_id).await,
+        "RenameFile" => file_tools::rename_file(app, input, session_id).await,
         "WriteFile" => file_tools::write_file(app, input, session_id).await,
         "EditFile" => file_tools::edit_file(app, input, session_id).await,
         "ApplyPatch" => file_tools::apply_patch(app, input, session_id).await,

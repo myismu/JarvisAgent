@@ -275,7 +275,7 @@ impl MergeEngine {
     fn get_patch_path(&self, patch: &Patch) -> String {
         match patch {
             Patch::CreateFile { path, .. } => path.clone(),
-            Patch::DeleteFile { path } => path.clone(),
+            Patch::DeleteFile { path, .. } => path.clone(),
             Patch::UpdateFile { path, .. } => path.clone(),
             Patch::RenameFile { old_path, .. } => old_path.clone(),
         }
@@ -303,9 +303,9 @@ impl MergeEngine {
                     ..
                 },
             ) => p1 == p2 && c1 != c2,
-            (Patch::DeleteFile { path: p1 }, Patch::UpdateFile { path: p2, .. })
-            | (Patch::UpdateFile { path: p1, .. }, Patch::DeleteFile { path: p2 }) => p1 == p2,
-            (Patch::DeleteFile { path: p1 }, Patch::DeleteFile { path: p2 }) => p1 == p2,
+            (Patch::DeleteFile { path: p1, .. }, Patch::UpdateFile { path: p2, .. })
+            | (Patch::UpdateFile { path: p1, .. }, Patch::DeleteFile { path: p2, .. }) => p1 == p2,
+            (Patch::DeleteFile { path: p1, .. }, Patch::DeleteFile { path: p2, .. }) => p1 == p2,
             (Patch::CreateFile { path: p1, .. }, Patch::CreateFile { path: p2, .. }) => p1 == p2,
             _ => false,
         }

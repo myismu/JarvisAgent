@@ -14,22 +14,26 @@
 //! - `register_tools()`: 注册文件工具 schema 与路由元数据
 
 mod common;
+mod delete;
 mod diff;
 mod directory;
 mod edit;
 mod patch;
 mod read;
 mod registry;
+mod rename;
 mod search;
 mod symbol;
 pub mod workspace;
 mod write;
 
+pub use delete::delete_file;
 pub use directory::{generate_repo_map, list_directory};
 pub use edit::edit_file;
 pub use patch::apply_patch;
 pub use read::{read_file, read_file_skeleton};
 pub use registry::register_tools;
+pub use rename::rename_file;
 pub use search::{search_in_dir, search_repo};
 pub use symbol::{code_search, find_references, find_symbol, read_symbol};
 pub use workspace::{commit_pending_snapshot, has_pending_patches};

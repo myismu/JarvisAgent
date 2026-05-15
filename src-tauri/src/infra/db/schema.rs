@@ -10,7 +10,7 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// 删除废弃的旧 checkpoint 表（v3 迁移）
 fn migrate_v3_drop_deprecated_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -194,6 +194,15 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
     if current_version < 8 {
         migrate_v8_agent_runs_message_id(conn).map_err(|e| format!("v8 迁移失败: {}", e))?;
     }
+    if current_version < 9 {
+        conn.execute("DROP TABLE IF EXISTS snapshots", [])
+            .map_err(|e| format!("v9 迁移失败: {}", e))?;
+        // 重命名 pending_snapshot_patches → agent_run_patches
+        let _ = conn.execute(
+            "ALTER TABLE pending_snapshot_patches RENAME TO agent_run_patches",
+            [],
+        );
+    }
 
     conn.execute_batch(
         r#"
@@ -356,16 +365,6 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
 
-        CREATE TABLE IF NOT EXISTS snapshots (
-            session_id TEXT NOT NULL,
-            snapshot_id TEXT NOT NULL,
-            branch_name TEXT NOT NULL,
-            snapshot_json TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            PRIMARY KEY(session_id, snapshot_id),
-            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
-        );
-
         CREATE TABLE IF NOT EXISTS checkpoint_user_message_links (
             session_id TEXT NOT NULL,
             user_message_index INTEGER NOT NULL,
@@ -376,11 +375,10 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             updated_at INTEGER,
             PRIMARY KEY(session_id, user_message_index),
             UNIQUE(session_id, checkpoint_id),
-            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-            FOREIGN KEY(session_id, checkpoint_id) REFERENCES snapshots(session_id, snapshot_id) ON DELETE CASCADE
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
 
-        CREATE TABLE IF NOT EXISTS pending_snapshot_patches (
+        CREATE TABLE IF NOT EXISTS agent_run_patches (
             session_id TEXT NOT NULL,
             run_id TEXT NOT NULL,
             seq INTEGER NOT NULL,
@@ -433,11 +431,10 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
 
         CREATE INDEX IF NOT EXISTS idx_session_attachments_session ON session_attachments(session_id);
         CREATE INDEX IF NOT EXISTS idx_session_transcripts_session_time ON session_transcripts(session_id, created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_snapshots_session_branch_time ON snapshots(session_id, branch_name, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_checkpoint_user_message_links_session ON checkpoint_user_message_links(session_id, user_message_index);
         CREATE INDEX IF NOT EXISTS idx_checkpoint_user_message_links_message_id ON checkpoint_user_message_links(session_id, message_id);
-        CREATE INDEX IF NOT EXISTS idx_pending_snapshot_patches_session_run ON pending_snapshot_patches(session_id, run_id, seq);
-        CREATE INDEX IF NOT EXISTS idx_pending_snapshot_patches_trigger_message_id ON pending_snapshot_patches(session_id, trigger_user_message_id);
+        CREATE INDEX IF NOT EXISTS idx_agent_run_patches_session_run ON agent_run_patches(session_id, run_id, seq);
+        CREATE INDEX IF NOT EXISTS idx_agent_run_patches_trigger_message_id ON agent_run_patches(session_id, trigger_user_message_id);
         CREATE INDEX IF NOT EXISTS idx_snapshot_journal_session ON snapshot_journal(session_id, id);
         "#,
     )
