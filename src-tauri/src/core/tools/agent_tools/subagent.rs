@@ -513,9 +513,16 @@ pub async fn run_subagent(
         )
         .await;
 
+        let max_tokens = cfg.max_tokens
+            .or_else(|| {
+                crate::infra::llm::registry::query_capabilities(&model_id)
+                    .map(|cap| cap.max_tokens as i32)
+            })
+            .unwrap_or(crate::infra::types::constants::MAX_TOKENS_CONTEXT);
+
         let mut request_body = AnthropicRequest {
             model: model_id.clone(),
-            max_tokens: crate::infra::types::constants::MAX_TOKENS_CONTEXT,
+            max_tokens,
             system: system_prompt.clone(),
             messages: messages.clone(),
             tools: tools.clone(),
@@ -555,7 +562,7 @@ pub async fn run_subagent(
             let openai_tools = translate_tools_to_openai(&request_body.tools);
             let mut openai_req = OpenAIRequest {
                 model: model_id.clone(),
-                max_tokens: Some(crate::infra::types::constants::MAX_TOKENS_CONTEXT),
+                max_tokens: Some(max_tokens),
                 messages: openai_msgs,
                 tools: if openai_tools.is_empty() {
                     None

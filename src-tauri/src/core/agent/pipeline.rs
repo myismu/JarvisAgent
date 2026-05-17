@@ -1686,6 +1686,16 @@ impl PipelineState {
         }
     }
 
+    /// 解析 max_tokens：用户覆盖 > 模型注册表 > 常量兜底
+    fn resolve_max_tokens(&self) -> i32 {
+        self.cfg.max_tokens
+            .or_else(|| {
+                crate::infra::llm::registry::query_capabilities(&self.model_id)
+                    .map(|cap| cap.max_tokens as i32)
+            })
+            .unwrap_or(crate::infra::types::constants::MAX_TOKENS_CONTEXT)
+    }
+
     /// 构建 LLM API 请求体
     fn build_llm_request(
         &self,
@@ -1698,9 +1708,11 @@ impl PipelineState {
         let tools = filter_tools_by_work_mode(tools, work_mode);
         self.update_context_snapshot(&history_snapshot, &tools);
 
+        let max_tokens = self.resolve_max_tokens();
+
         let mut request_body = AnthropicRequest {
             model: self.model_id.clone(),
-            max_tokens: crate::infra::types::constants::MAX_TOKENS_CONTEXT,
+            max_tokens,
             system: system_prompt.clone(),
             messages: history_snapshot,
             tools,
@@ -1738,7 +1750,7 @@ impl PipelineState {
             let openai_tools = translate_tools_to_openai(&request_body.tools);
             let mut openai_req = OpenAIRequest {
                 model: self.model_id.clone(),
-                max_tokens: Some(crate::infra::types::constants::MAX_TOKENS_CONTEXT),
+                max_tokens: Some(max_tokens),
                 messages: openai_msgs,
                 tools: if openai_tools.is_empty() {
                     None

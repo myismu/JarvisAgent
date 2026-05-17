@@ -412,6 +412,18 @@
                       <span class="badge badge-info">{{ t('settings.profileEditor.outputTokens', { count: mainModelCaps.maxTokens.toLocaleString() }) }}</span>
                     </template>
                   </div>
+                  <div class="setting-item" v-if="mainModelCaps !== null">
+                    <label>输出上限 (max_tokens)</label>
+                    <input
+                      type="number"
+                      v-model.number="editingProfile.config.maxTokens"
+                      :placeholder="String(mainModelCaps?.maxTokens ?? '')"
+                      min="1"
+                      :max="mainModelCaps?.maxTokens || 32768"
+                      step="1"
+                    />
+                    <div class="setting-desc">留空使用模型默认值（{{ mainModelCaps?.maxTokens?.toLocaleString() ?? '未知' }}），填写则覆盖</div>
+                  </div>
                 </div>
                 <div class="setting-item">
                   <label>{{ t('settings.profileEditor.utilityModel') }}</label>
@@ -550,6 +562,7 @@ interface AgentConfig {
   temperature?: number | null
   topP?: number | null
   topK?: number | null
+  maxTokens?: number | null
 }
 
 interface ModelCapabilities {
@@ -594,6 +607,7 @@ const createBlankProfile = (id: string): ModelProfile => ({
     temperature: null,
     topP: null,
     topK: null,
+    maxTokens: null,
   }
 })
 
@@ -604,6 +618,7 @@ const normalizeProfileConfig = (config: AppConfig) => {
     p.config.temperature = p.config.temperature == null ? null : Number(p.config.temperature)
     p.config.topP = p.config.topP == null ? null : Number(p.config.topP)
     p.config.topK = p.config.topK == null ? null : Number(p.config.topK)
+    p.config.maxTokens = p.config.maxTokens == null ? null : Number(p.config.maxTokens)
   })
   return config
 }
@@ -922,6 +937,7 @@ const hasNewProfileContent = (profile: ModelProfile): boolean => {
     'temperature',
     'topP',
     'topK',
+    'maxTokens',
   ]
 
   return contentKeys.some((key) => hasMeaningfulDraftValue(profile.config[key]))

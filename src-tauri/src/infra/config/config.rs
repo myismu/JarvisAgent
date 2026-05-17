@@ -50,6 +50,8 @@ pub struct AgentConfig {
     /// Reflection 模式: "always" | "smart" | "off"
     #[serde(default = "default_reflection_mode")]
     pub reflection_mode: String,
+    /// 用户自定义 max_tokens（覆盖模型注册表默认值），None 表示使用注册表值
+    pub max_tokens: Option<i32>,
     /// [兼容旧配置] 旧版图片/子模型字段，读取后忽略
     #[serde(default, skip_serializing)]
     pub image_max_width: Option<u32>,
@@ -81,6 +83,7 @@ impl Default for AgentConfig {
             top_p: None,
             top_k: None,
             reflection_mode: default_reflection_mode(),
+            max_tokens: None,
             image_max_width: None,
             image_max_height: None,
             image_quality: None,
