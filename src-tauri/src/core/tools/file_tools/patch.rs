@@ -623,13 +623,13 @@ pub async fn apply_patch(
 
     for plan in planned {
         let patch = if plan.loaded.existed {
-            Patch::UpdateFile {
-                path: plan.loaded.path.clone(),
-                old_content: plan.loaded.old_content.clone(),
-                new_content: plan.new_content.clone(),
-                diff: Some(compute_diff(&plan.loaded.old_content, &plan.new_content)),
-                content_hash: None,
-            }
+            Patch::update_file_patch(
+                session_id,
+                plan.loaded.path.clone(),
+                plan.loaded.old_content.clone(),
+                plan.new_content.clone(),
+                Some(compute_diff(&plan.loaded.old_content, &plan.new_content)),
+            )
         } else {
             Patch::CreateFile {
                 path: plan.loaded.path.clone(),

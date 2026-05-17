@@ -136,6 +136,14 @@ impl Workspace {
     pub fn apply_patch(&mut self, patch: &Patch, session_id: &str) -> Result<(), super::patch::PatchError> {
         use super::patch::PatchError;
 
+        let resolve_content = |inline: &str, hash: Option<&String>| -> String {
+            if !inline.is_empty() {
+                return inline.to_string();
+            }
+            hash.and_then(|h| crate::core::rollback::store::load_content(session_id, h).ok().flatten())
+                .unwrap_or_default()
+        };
+
         match patch {
             Patch::CreateFile { path, content } => {
                 if self.files.contains_key(path) {
@@ -159,23 +167,25 @@ impl Workspace {
                 path,
                 old_content,
                 new_content,
+                content_hash,
                 ..
             } => {
+                let old = resolve_content(old_content, content_hash.as_ref().map(|h| &h.0));
+                let new = resolve_content(new_content, content_hash.as_ref().map(|h| &h.1));
                 match self.files.get(path) {
                     Some(current) => {
-                        if current != old_content {
+                        if *current != old {
                             return Err(PatchError::HashMismatch {
-                                expected: Patch::content_hash(old_content),
+                                expected: Patch::content_hash(&old),
                                 actual: Patch::content_hash(current),
                             });
                         }
                     }
                     None => {
-                        // 链中第一个补丁，old_content 就是文件初始状态，直接写入
-                        self.files.insert(path.clone(), old_content.clone());
+                        self.files.insert(path.clone(), old.clone());
                     }
                 }
-                self.files.insert(path.clone(), new_content.clone());
+                self.files.insert(path.clone(), new.clone());
                 Ok(())
             }
             Patch::RenameFile { old_path, new_path } => {
@@ -204,6 +214,14 @@ impl Workspace {
 
     /// 撤销单个补丁（用于回滚）
     pub fn undo_patch(&mut self, patch: &Patch, session_id: &str) -> Result<(), super::patch::PatchError> {
+        let resolve_content = |inline: &str, hash: Option<&String>| -> String {
+            if !inline.is_empty() {
+                return inline.to_string();
+            }
+            hash.and_then(|h| crate::core::rollback::store::load_content(session_id, h).ok().flatten())
+                .unwrap_or_default()
+        };
+
         match patch {
             Patch::CreateFile { path, .. } => {
                 self.files.remove(path);
@@ -218,9 +236,10 @@ impl Workspace {
                 Ok(())
             }
             Patch::UpdateFile {
-                path, old_content, ..
+                path, old_content, content_hash, ..
             } => {
-                self.files.insert(path.clone(), old_content.clone());
+                let old = resolve_content(old_content, content_hash.as_ref().map(|h| &h.0));
+                self.files.insert(path.clone(), old.clone());
                 Ok(())
             }
             Patch::RenameFile { old_path, new_path } => {

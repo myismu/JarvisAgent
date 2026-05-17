@@ -128,11 +128,47 @@ impl Patch {
         }
     }
 
+    /// 超过此大小的文件内容存入 snapshot_content 表，patch 仅保留 hash
+    pub const LARGE_CONTENT_THRESHOLD: usize = 64 * 1024; // 64 KiB
+
     /// 计算内容哈希（用于变更检测）
     pub fn content_hash(content: &str) -> String {
         let mut hasher = DefaultHasher::new();
         content.hash(&mut hasher);
         format!("{:016x}", hasher.finish())
+    }
+
+    /// 构建 UpdateFile patch：大文件自动写入 snapshot_content 仅保留 hash
+    pub fn update_file_patch(
+        session_id: &str,
+        path: String,
+        old_content: String,
+        new_content: String,
+        diff: Option<TextDiff>,
+    ) -> Self {
+        let need_dedup = old_content.len() > Self::LARGE_CONTENT_THRESHOLD
+            || new_content.len() > Self::LARGE_CONTENT_THRESHOLD;
+        if need_dedup {
+            let old_hash = Patch::content_hash(&old_content);
+            let new_hash = Patch::content_hash(&new_content);
+            let _ = crate::core::rollback::store::save_content(session_id, &old_hash, &old_content);
+            let _ = crate::core::rollback::store::save_content(session_id, &new_hash, &new_content);
+            Patch::UpdateFile {
+                path,
+                old_content: String::new(),
+                new_content: String::new(),
+                diff,
+                content_hash: Some((old_hash, new_hash)),
+            }
+        } else {
+            Patch::UpdateFile {
+                path,
+                old_content,
+                new_content,
+                diff,
+                content_hash: None,
+            }
+        }
     }
 }
 

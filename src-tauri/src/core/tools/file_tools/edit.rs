@@ -162,13 +162,13 @@ pub async fn edit_file(
 
             match std::fs::write(path, bytes) {
                 Ok(_) => {
-                    let patch = Patch::UpdateFile {
-                        path: path.to_string(),
-                        old_content: content.clone(),
-                        new_content: updated_content.clone(),
-                        diff: Some(compute_diff(&content, &updated_content)),
-                        content_hash: None,
-                    };
+                    let patch = Patch::update_file_patch(
+                        session_id,
+                        path.to_string(),
+                        content.clone(),
+                        updated_content.clone(),
+                        Some(compute_diff(&content, &updated_content)),
+                    );
                     let msg = if replace_all && match_count > 1 {
                         Some(format!("全局替换 {} 处 → {}", match_count, path))
                     } else {

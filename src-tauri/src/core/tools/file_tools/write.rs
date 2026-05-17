@@ -97,13 +97,13 @@ pub async fn write_file(
                     path: path.to_string(),
                     content: content.to_string(),
                 },
-                Some(old) => Patch::UpdateFile {
-                    path: path.to_string(),
-                    old_content: old.clone(),
-                    new_content: content.to_string(),
-                    diff: Some(compute_diff(old, &content)),
-                    content_hash: None,
-                },
+                Some(old) => Patch::update_file_patch(
+                    session_id,
+                    path.to_string(),
+                    old.clone(),
+                    content.to_string(),
+                    Some(compute_diff(old, &content)),
+                ),
             };
             let action = if file_exists { "写入" } else { "创建" };
             let msg = Some(format!("{} {}", action, path));
