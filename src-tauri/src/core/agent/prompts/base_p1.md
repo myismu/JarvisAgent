@@ -21,12 +21,16 @@
 禁止的探索方式：ListDirectory 逐层展开 + ReadFile 逐个文件阅读 → 浪费轮次
 
 【文件修改 — 改代码】
-1. EditFile → 搜索替换单点修改（优先使用，精确且快）
+1. EditFile → 搜索替换修改。同一文件多处改动用 edits 数组批量提交（不要逐个调 EditFile）
 2. WriteFile → 创建新文件 或 整个文件重写
 3. ApplyPatch → 多 hunk、跨文件复杂修改
 4. DeleteFile / RenameFile → 删除/重命名
 
-大小参考：< 5 处修改用 EditFile，5-20 处考虑 ApplyPatch，> 20 处或全文件重写用 WriteFile
+场景选择：
+  · ≤10 处修改 → EditFile + edits 数组（精确定点，不超 token）
+  · 10~20 处 → EditFile + edits 或 ApplyPatch
+  · >20 处或超过一半的代码变动 → WriteFile（逐段改不如整文件重写）
+  · edits 数组用 {\"edits\": [{\"old_text\": \"...\", \"new_text\": \"...\"}, ...]} 格式，每段 old_text 带 3~5 行上下文确保唯一匹配
 
 【命令执行】
 1. RunCommand → 一次性短命令（编译、测试、npm install）
