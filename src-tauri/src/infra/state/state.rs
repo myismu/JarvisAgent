@@ -83,6 +83,8 @@ pub struct SessionContext {
     pub scheduler_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::core::orchestration::scheduler::SchedulerEvent>>>,
     /// ReadFile 探索拦截：记录本会话已读取的文件路径，用于检测逐文件遍历模式
     pub read_file_paths: Mutex<Vec<String>>,
+    /// 循环上限续跑标记：超时后用户仍可点"允许"来 resume
+    pub loop_continuation_pending: Mutex<bool>,
 }
 
 impl SessionContext {
@@ -103,6 +105,7 @@ impl SessionContext {
             agent_work_mode: Mutex::new("edit".to_string()),
             scheduler_rx: Mutex::new(None),
             read_file_paths: Mutex::new(Vec::new()),
+            loop_continuation_pending: Mutex::new(false),
         }
     }
 }

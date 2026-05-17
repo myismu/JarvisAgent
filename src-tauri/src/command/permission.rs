@@ -39,7 +39,7 @@ pub async fn resolve_permission(
         }
     }
 
-    let _channel_alive = if let Some((_, tx)) = ctx.pending_permissions.lock().await.remove(&id) {
+    let channel_alive = if let Some((_, tx)) = ctx.pending_permissions.lock().await.remove(&id) {
         let resp = if let Some(ref mc) = content { format!("{}|||{}", decision, mc) } else { decision.clone() };
         tx.send(resp).is_ok()
     } else {
@@ -51,6 +51,19 @@ pub async fn resolve_permission(
     if id.starts_with("plan_") {
         *ctx.cancel_token.lock().await = None;
         return Ok(serde_json::json!({ "needsResume": false }));
+    }
+
+    // 循环上限续跑：超时后用户点了"允许"，channel 已死但标记还在 → 通知前端 resume
+    if !channel_alive && decision == "allow" {
+        let pending = *ctx.loop_continuation_pending.lock().await;
+        if pending {
+            *ctx.loop_continuation_pending.lock().await = false;
+            *ctx.cancel_token.lock().await = None;
+            return Ok(serde_json::json!({
+                "needsResume": true,
+                "resumeWith": "用户已授权继续执行，请继续之前未完成的任务。"
+            }));
+        }
     }
 
     Ok(serde_json::json!({ "needsResume": false }))

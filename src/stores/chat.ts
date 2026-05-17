@@ -270,14 +270,32 @@ export const useChatStore = defineStore("chat", () => {
     const perm = usePermissionStore();
     const session = useSessionStore();
     if (perm.permissionRequest) {
+      const reqId = perm.permissionRequests[session.activeSessionId!]?.id;
       const sid = perm.permissionRequests[session.activeSessionId!]?.sessionId ?? session.activeSessionId;
-      await invoke("resolve_permission", {
-        id: perm.permissionRequests[session.activeSessionId!].id,
+      const result = await invoke<{ needsResume?: boolean; resumeWith?: string }>("resolve_permission", {
+        id: reqId,
         sessionId: sid,
         decision,
       });
       if (sid) {
         delete perm.permissionRequests[sid];
+      }
+      // 循环上限超时后续跑：用 resume_jarvis 续跑，不注入新的用户消息
+      if (result?.needsResume && result?.resumeWith && sid) {
+        const session = useSessionStore();
+        const requestView = session.getSessionView(sid);
+        requestView.status = "RUNNING";
+        requestView.streamActive = false;
+        const res = await invoke<JarvisResult>("resume_jarvis", {
+          sessionId: sid,
+          reason: result.resumeWith,
+        });
+        if (res.status !== "PAUSED_LOOP_LIMIT") {
+          const snapshot = buildAgentTurnSnapshot(requestView.currentTurn, stripPseudoToolCalls(res.content), "", undefined, res.status);
+          session.appendSessionMessage(sid, { role: "agent", id: `agent_${Date.now()}`, snapshot });
+          session.clearSessionBuffers(sid);
+          resetRenderState(sid);
+        }
       }
     }
   }

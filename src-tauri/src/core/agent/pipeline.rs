@@ -936,8 +936,9 @@ impl PipelineState {
     }
 
     /// 阶段 5: 检查点创建 + 会话保存 + 记忆代理 + 结果组装
-    async fn finalize(self) -> JarvisResult {
+    async fn finalize(mut self) -> JarvisResult {
         let was_cancelled = self.cancel_token.is_cancelled();
+        let was_loop_timeout = *self.ctx.loop_continuation_pending.lock().await;
 
         // 崩溃兜底：提交前先把补丁持久化到 agent_run_patches 表
         {
@@ -1035,7 +1036,19 @@ impl PipelineState {
             run_memory_agent(self.user_msg_for_memory, reply_for_memory, cfg_clone).await;
         });
 
-        let status = if was_cancelled { "CANCELLED" } else { "FINISH" };
+        let status = if was_cancelled {
+            "CANCELLED"
+        } else if was_loop_timeout {
+            "PAUSED_LOOP_LIMIT"
+        } else {
+            "FINISH"
+        };
+        if was_loop_timeout {
+            self.final_answer = format!(
+                "代理执行已达到 {} 回合上限，等待用户确认是否继续。",
+                crate::infra::types::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM
+            );
+        }
 
         // 会话日志
         {
@@ -1043,8 +1056,8 @@ impl PipelineState {
             logger.log_session_summary(self.req_input_tokens, self.req_output_tokens, status);
         }
 
-        // Agent Run 完成
-        if !was_cancelled {
+        // Agent Run 完成（超时续跑不标记完成）
+        if !was_cancelled && !was_loop_timeout {
             agent_runs::complete_run(
                 &self.app,
                 &self.run_id,
@@ -1185,6 +1198,8 @@ impl PipelineState {
         )
         .await;
         if decision == "allow" || decision == "allow_session" {
+            // 清除待续跑标记（用户及时响应了）
+            *self.ctx.loop_continuation_pending.lock().await = false;
             self.loop_count = 0;
             let _ = self.app.emit(
                 "chat-stream",
@@ -1196,7 +1211,9 @@ impl PipelineState {
             );
             true
         } else {
-            self.final_answer = "用户已终止代理的继续执行。".to_string();
+            // 超时或用户拒绝 — 标记待续跑，不立即设 final_answer
+            // 如果是超时：用户稍后仍可通过 resolve_permission 发出 allow 来 resume
+            *self.ctx.loop_continuation_pending.lock().await = true;
             false
         }
     }
