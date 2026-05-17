@@ -76,8 +76,8 @@ function renderToolDetailHtml(tool: AgentToolCallView) {
     tool.input
       ? `<div class="agent-tool-field"><span>参数</span>${renderMarkdown(tool.input)}</div>`
       : "",
-    tool.outputSummary
-      ? `<div class="agent-tool-field"><span>输出</span>${renderMarkdown(tool.outputSummary)}</div>`
+    tool.output
+      ? `<div class="agent-tool-field"><span>输出</span>${renderMarkdown(tool.output)}</div>`
       : "",
     tool.error ? `<div class="agent-tool-field error"><span>错误</span>${renderMarkdown(tool.error)}</div>` : "",
     ...tool.logs.map((log) => `<div class="agent-tool-log">${renderMarkdown(log)}</div>`),
@@ -346,8 +346,8 @@ function renderDevItemToHtml(item: DevTimelineItem): string {
       const paramsHtml = tool.input
         ? `<div class="dev-tool-section"><div class="dev-tool-section-label">参数</div><pre class="dev-tool-pre">${escapeHtml(tool.input)}</pre></div>`
         : "";
-      const outputHtml = tool.outputSummary
-        ? `<div class="dev-tool-section"><div class="dev-tool-section-label">输出</div><pre class="dev-tool-pre">${escapeHtml(tool.outputSummary)}</pre></div>`
+      const outputHtml = tool.output
+        ? `<div class="dev-tool-section"><div class="dev-tool-section-label">输出</div><pre class="dev-tool-pre">${escapeHtml(tool.output)}</pre></div>`
         : "";
       const errorHtml = tool.error
         ? `<div class="dev-tool-section error"><div class="dev-tool-section-label">错误</div><pre class="dev-tool-pre">${escapeHtml(tool.error)}</pre></div>`

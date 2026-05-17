@@ -152,7 +152,7 @@ const copiedTimeline = ref<string | null>(null);
 const copyTimeline = async (runId: string) => {
   const events = getToolTimeline(runId);
   const text = events.map((ev) =>
-    `L${ev.loopCount} ${ev.eventType === 'tool_call' ? '▸' : '✓'} ${ev.tool}: ${ev.inputSummary || ev.outputSummary || ev.message}`
+    `L${ev.loopCount} ${ev.eventType === 'tool_call' ? '▸' : '✓'} ${ev.tool}: ${ev.input || ev.output || ev.message}`
   ).join('\n');
   try {
     await navigator.clipboard.writeText(text);
@@ -391,7 +391,7 @@ const backgroundStatusLabel = (status: string): string => {
                       <span class="tl-loop">L{{ event.loopCount }}</span>
                       <span class="tl-icon">{{ toolEventIcon(event.eventType) }}</span>
                       <span class="tl-tool">{{ event.tool }}</span>
-                      <span class="tl-summary">{{ event.inputSummary || event.outputSummary || event.message }}</span>
+                      <span class="tl-summary">{{ event.input || event.output || event.message }}</span>
                     </div>
                   </div>
                   <div v-else class="tool-timeline-empty">{{ t('monitor.noToolEvents') }}</div>

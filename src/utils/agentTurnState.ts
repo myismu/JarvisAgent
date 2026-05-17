@@ -284,7 +284,7 @@ export function applyAgentStepToCurrentTurn(
     );
     if (item) {
       item.status = step.status === "完成" ? "completed" : "error";
-      item.outputSummary = step.status;
+      item.output = step.status;
       item.updatedAt = now();
     }
   }

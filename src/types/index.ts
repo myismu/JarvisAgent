@@ -286,8 +286,8 @@ export interface AgentRunEvent {
   eventType: string;
   message: string;
   tool?: string | null;
-  inputSummary?: string | null;
-  outputSummary?: string | null;
+  input?: string | null;
+  output?: string | null;
   error?: string | null;
   loopCount: number;
   inputTokens: number;
@@ -347,8 +347,8 @@ export interface SubAgentEvent {
   eventType: SubAgentEventType | string;
   message: string;
   tool?: string | null;
-  inputSummary?: string | null;
-  outputSummary?: string | null;
+  input?: string | null;
+  output?: string | null;
   error?: string | null;
   loopCount: number;
   inputTokens: number;

@@ -106,13 +106,13 @@ const technicalOpen = (group: ToolCallGroup) => group.status === "error";
             <span>{{ toolActionLabel(tool.name, tool.status, tool) }}</span>
             <code>{{ tool.name }}</code>
           </div>
-          <div v-if="tool.inputSummary" class="agent-tool-field">
+          <div v-if="tool.input" class="agent-tool-field">
             <span>{{ t('execution.parameters') }}</span>
-            <StreamingMarkdown :content="tool.inputSummary" />
+            <StreamingMarkdown :content="tool.input" />
           </div>
-          <div v-if="tool.outputSummary" class="agent-tool-field">
+          <div v-if="tool.output" class="agent-tool-field">
             <span>{{ t('execution.output') }}</span>
-            <StreamingMarkdown :content="tool.outputSummary" />
+            <StreamingMarkdown :content="tool.output" />
           </div>
           <div v-if="tool.error" class="agent-tool-field error">
             <span>{{ t('execution.error') }}</span>
