@@ -87,16 +87,29 @@ crate::define_tools! {
             category: "文件操作",
             schema: json!({
                 "name": "EditFile",
-                "description": "基于搜索与替换修改普通文本文件中的特定文本片段。old_text 必须在文件中唯一匹配（包含足够多的上下文行，通常 3~5 行），否则会返回所有匹配位置让你修正。小范围单点修改优先使用此工具；多处修改或跨文件修改应使用 ApplyPatch。",
+                "description": "基于搜索与替换修改文件中的文本片段。支持两种模式：单条编辑（old_text+new_text）和批量编辑（edits 数组）。每段 old_text 必须在文件中唯一匹配（3~5 行上下文），否则返回所有匹配位置。同一文件多处修改优先用 edits 数组批量提交，不要逐个调用。小范围单点可继续用 old_text+new_text。跨文件修改用 ApplyPatch。",
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "path": {"type": "string", "description": "要编辑的文件路径（必填）"},
-                        "old_text": {"type": "string", "description": "（必填）要替换的旧文本，必须包含足够上下文（3~5 行）确保在文件中唯一匹配。注意：参数名必须为 old_text，不可省略"},
-                        "new_text": {"type": "string", "description": "（必填）替换后的新文本。注意：参数名必须为 new_text，不可省略"},
-                        "replace_all": {"type": "boolean", "description": "是否替换所有匹配项。默认 false（仅替换第一个唯一匹配）。设置为 true 可一次性替换文件中所有出现的 old_text"}
+                        "old_text": {"type": "string", "description": "单条编辑：要替换的原文片段，必须包含 3~5 行上下文确保唯一匹配"},
+                        "new_text": {"type": "string", "description": "单条编辑：替换后的新内容"},
+                        "replace_all": {"type": "boolean", "description": "单条编辑：是否替换所有匹配项。默认 false"},
+                        "edits": {
+                            "type": "array",
+                            "description": "批量编辑：多条替换的列表。优先于 old_text/new_text。每个元素包含 {old_text, new_text, replace_all?}",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "old_text": {"type": "string", "description": "要替换的原文片段"},
+                                    "new_text": {"type": "string", "description": "替换后的新内容"},
+                                    "replace_all": {"type": "boolean", "description": "是否替换所有匹配项。默认 false"}
+                                },
+                                "required": ["old_text", "new_text"]
+                            }
+                        }
                     },
-                    "required": ["path", "old_text", "new_text"]
+                    "required": ["path"]
                 }
             }),
             should_defer: true,
