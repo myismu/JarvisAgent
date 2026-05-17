@@ -822,10 +822,10 @@ impl PipelineState {
                     self.final_answer = std::mem::take(&mut current_thinking_this_turn);
                 }
 
-                // 第3层防御：响应后置拦截 — 仅在编辑模式下检测正文中的计划模式
-                // plan 模式下 LLM 自然收尾会提到方案细节，不应拦截
+                // 第3层防御：响应后置拦截 — 仅在 Edit/Plan 模式下检测 LLM 是否绕过 ProposePlan
+                // tool_results 为空说明 LLM 没用任何工具，纯文本输出了方案
                 let work_mode = self.ctx.agent_work_mode.lock().await.clone();
-                if work_mode == "edit"
+                if (work_mode == "edit" || work_mode == "plan")
                     && crate::core::intent::plan_detector::detect_plan_in_text(&self.final_answer)
                 {
                     println!(
@@ -840,19 +840,31 @@ impl PipelineState {
                         }),
                     );
 
-                    let redirect_msg = format!(
-                        "【系统拦截通知】\n\
-                        你刚才在回复正文中输出了计划/步骤/方案内容，这违反了规则。\n\
-                        计划必须通过 ProposePlan 工具提交到审批面板，不能写在正文里。\n\
-                        \n\
-                        请立即执行以下操作：\n\
-                        1. 如果当前不在 Plan 模式，先调用 SwitchWorkMode(mode=\"plan\") 切换\n\
-                        2. 调用 ProposePlan 工具，将你刚才的计划内容作为 content 参数提交\n\
-                        3. 等待用户审批\n\
-                        \n\
-                        你刚才输出的内容摘要：\n{}",
-                        self.final_answer.chars().take(500).collect::<String>()
-                    );
+                    let redirect_msg = if work_mode == "plan" {
+                        format!(
+                            "【系统拦截通知】\n\
+                            你当前处于规划模式，必须通过 ProposePlan 工具提交方案，不能在正文中直接输出计划内容。\n\
+                            \n\
+                            请调用 ProposePlan 工具，将你刚才的计划内容作为 content 参数提交。\n\
+                            \n\
+                            你刚才输出的内容摘要：\n{}",
+                            self.final_answer.chars().take(500).collect::<String>()
+                        )
+                    } else {
+                        format!(
+                            "【系统拦截通知】\n\
+                            你刚才在回复正文中输出了计划/步骤/方案内容，这违反了规则。\n\
+                            计划必须通过 ProposePlan 工具提交到审批面板，不能写在正文里。\n\
+                            \n\
+                            请立即执行以下操作：\n\
+                            1. 如果当前不在 Plan 模式，先调用 SwitchWorkMode(mode=\"plan\") 切换\n\
+                            2. 调用 ProposePlan 工具，将你刚才的计划内容作为 content 参数提交\n\
+                            3. 等待用户审批\n\
+                            \n\
+                            你刚才输出的内容摘要：\n{}",
+                            self.final_answer.chars().take(500).collect::<String>()
+                        )
+                    };
 
                     {
                         let mut session = self.ctx.memory.lock().await;
@@ -979,8 +991,10 @@ impl PipelineState {
             );
         }
 
-        let session_meta = {
-            let memory = self.ctx.memory.lock().await.clone();
+        let memory = self.ctx.memory.lock().await.clone();
+        let session_meta = if memory.messages.is_empty() && was_cancelled {
+            None
+        } else {
             let meta = if was_cancelled {
                 crate::core::session::save_session(&self.sid, &memory, None)
             } else {
@@ -991,6 +1005,9 @@ impl PipelineState {
                 )
             };
             println!("[JARVIS] 会话 {} 已自动保存", self.sid);
+            Some(meta)
+        };
+        if let Some(ref meta) = session_meta {
             let _ = self.app.emit("session-updated", ());
 
             if !was_cancelled && meta.message_count >= 2 && meta.title_source == "default" {
@@ -1009,9 +1026,7 @@ impl PipelineState {
                     }
                 });
             }
-
-            Some(meta)
-        };
+        }
 
         // 记忆代理
         let reply_for_memory = self.final_answer.clone();

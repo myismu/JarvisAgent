@@ -10,7 +10,7 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// 删除废弃的旧 checkpoint 表（v3 迁移）
 fn migrate_v3_drop_deprecated_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -207,6 +207,87 @@ fn migrate_v7_decouple_session_messages(conn: &Connection) -> Result<(), rusqlit
     Ok(())
 }
 
+/// 引入 projects 表，sessions 增加 project_id 关联（v10 迁移）
+fn migrate_v10_add_projects(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            path TEXT NOT NULL UNIQUE,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );",
+    )?;
+
+    let has_project_id = {
+        let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .collect();
+        columns.iter().any(|c| c == "project_id")
+    };
+    if !has_project_id {
+        conn.execute("ALTER TABLE sessions ADD COLUMN project_id TEXT", [])?;
+    }
+
+    // 将旧 working_directory 数据迁移到 projects
+    let has_wd = {
+        let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .collect();
+        columns.iter().any(|c| c == "working_directory")
+    };
+
+    if has_wd {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT working_directory FROM sessions
+             WHERE working_directory IS NOT NULL AND working_directory != ''
+               AND deleted_at IS NULL",
+        )?;
+        let dirs: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(Result::ok)
+            .collect();
+
+        for dir in &dirs {
+            let name = std::path::Path::new(dir)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| dir.clone());
+            let id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+            conn.execute(
+                "INSERT OR IGNORE INTO projects (id, name, path, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?4)",
+                rusqlite::params![id, name, dir, now],
+            )?;
+        }
+
+        conn.execute(
+            "UPDATE sessions SET project_id = (
+                SELECT projects.id FROM projects WHERE projects.path = sessions.working_directory
+            ) WHERE working_directory IS NOT NULL AND working_directory != ''",
+            [],
+        )?;
+
+        conn.execute("ALTER TABLE sessions DROP COLUMN working_directory", [])?;
+    }
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id, updated_at DESC)",
+        [],
+    )?;
+
+    Ok(())
+}
+
 pub fn init_schema(conn: &Connection) -> Result<(), String> {
     // 获取当前 schema 版本
     let current_version: i64 = conn
@@ -266,12 +347,23 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
         .map_err(|e| format!("v9 迁移失败: {}", e))?;
         }
     }
+    if current_version < 10 {
+        migrate_v10_add_projects(conn).map_err(|e| format!("v10 迁移失败: {}", e))?;
+    }
 
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS app_state (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            path TEXT NOT NULL UNIQUE,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS sessions (
@@ -285,8 +377,9 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             total_input_tokens INTEGER NOT NULL DEFAULT 0,
             total_output_tokens INTEGER NOT NULL DEFAULT 0,
             title_source TEXT NOT NULL DEFAULT 'default',
-            working_directory TEXT,
-            deleted_at INTEGER
+            project_id TEXT,
+            deleted_at INTEGER,
+            FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE SET NULL
         );
 
         CREATE TABLE IF NOT EXISTS session_memory (
@@ -483,6 +576,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at);
         CREATE INDEX IF NOT EXISTS idx_sessions_profile_updated ON sessions(profile_id, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_session_messages_session_seq ON session_messages(session_id, seq);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_session_messages_session_message_id ON session_messages(session_id, message_id);
         CREATE INDEX IF NOT EXISTS idx_session_messages_visible_seq ON session_messages(session_id, hidden_at, recalled_at, source, seq);

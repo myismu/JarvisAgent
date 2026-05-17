@@ -9,8 +9,8 @@ import { invoke } from '@tauri-apps/api/core';
 import ConfirmModal from '../common/ConfirmModal.vue';
 import AgentTurn from './AgentTurn.vue';
 import ThinkingStatus from './ThinkingStatus.vue';
-import TodoPanel from './TodoPanel.vue';
 import SessionTaskBoard from './SessionTaskBoard.vue';
+import TodoPanel from './TodoPanel.vue';
 import PermissionCard from './PermissionCard.vue';
 import WelcomeScreen from './WelcomeScreen.vue';
 import type { PlanDocument, AgentTurnSnapshot } from '../../types';
@@ -222,13 +222,6 @@ const rollbackPreview = ref<RollbackPreviewState>({
 });
 const rollbackLoading = ref(false);
 const rollbackError = ref('');
-const displayWorkingDir = computed(() => {
-  if (!session.workingDirectory) return null;
-  const path = session.workingDirectory;
-  const parts = path.replace(/\\/g, '/').split('/');
-  if (parts.length <= 3) return path;
-  return '.../' + parts.slice(-3).join('/');
-});
 
 const isResponseAtBottom = () => {
   if (!responseAreaRef.value) return false;
@@ -653,13 +646,6 @@ onMounted(() => {
 
 <template>
   <div class="response-area" ref="responseAreaRef" @scroll="handleResponseScroll" @contextmenu="handleContextMenu" @click="handleResponseClick">
-    <div class="working-dir-indicator" v-if="session.workingDirectory">
-      <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-      </svg>
-      <span class="working-dir-label">{{ t('rollback.sandbox') }}</span>
-      <span class="working-dir-path" :title="session.workingDirectory || undefined">{{ displayWorkingDir }}</span>
-    </div>
     <TodoPanel />
     <SessionTaskBoard />
     <WelcomeScreen v-if="!chat.messages.length && !showAgentTurn" />
@@ -711,7 +697,7 @@ onMounted(() => {
         </div>
         <!-- Agent 消息 -->
         <div v-else-if="message.role === 'agent' && message.snapshot" class="chat-message agent-message" :data-msg-id="message.id">
-          <div class="message-content">
+          <div class="message-content current-turn-content">
             <AgentTurn
               :turn="convertSnapshotToTurn(message.snapshot)"
               :display-mode="prefs.agentAudience.value"
@@ -821,6 +807,7 @@ onMounted(() => {
   min-height: 0;
   scroll-behavior: smooth;
 }
+
 
 .welcome-screen {
   flex: 1;
@@ -1016,46 +1003,6 @@ onMounted(() => {
   color: var(--text-muted);
 }
 
-.working-dir-indicator {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  margin: 0 16px 8px;
-  background: var(--glass-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--glass-border-subtle);
-  border-radius: var(--radius-md);
-  font-size: 0.8rem;
-  color: var(--text-muted);
-  box-shadow: var(--shadow-sm);
-}
-
-.working-dir-indicator svg {
-  flex-shrink: 0;
-  color: var(--accent-green);
-}
-
-.working-dir-indicator .working-dir-label {
-  color: var(--accent-green);
-  font-weight: 600;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.working-dir-indicator .working-dir-path {
-  font-family: var(--font-mono);
-  color: var(--text-main);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 300px;
-}
 
 .response-text {
   flex: 1;

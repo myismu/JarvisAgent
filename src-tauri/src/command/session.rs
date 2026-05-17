@@ -21,9 +21,12 @@ use tauri::{Emitter, Manager};
 
 #[tauri::command]
 pub async fn get_active_session_id() -> Result<Option<String>, String> {
-    // 前端自行维护 active_session_id。
-    // 如果前端需要读取最后一次的 session：
     Ok(session::get_last_active_session_id())
+}
+
+#[tauri::command]
+pub async fn clear_active_session_id() -> Result<(), String> {
+    crate::core::session::repository::clear_last_active_session_id()
 }
 
 #[tauri::command]
@@ -34,30 +37,56 @@ pub async fn list_sessions() -> Result<Vec<session::SessionMeta>, String> {
 #[tauri::command]
 pub async fn create_session(
     session_manager: tauri::State<'_, SessionManager>,
-    working_directory: Option<String>,
+    project_id: Option<String>,
 ) -> Result<session::SessionMeta, String> {
     println!(
-        "[DEBUG] create_session called with working_directory: {:?}",
-        working_directory
+        "[DEBUG] create_session called with project_id: {:?}",
+        project_id
     );
 
-    let validated_dir = if let Some(ref dir) = working_directory {
-        let path = std::path::Path::new(dir);
-        if !path.exists() || !path.is_dir() {
-            return Err(format!("目录不存在或不是文件夹: {}", dir));
-        }
-        Some(dir.clone())
-    } else {
-        None
-    };
-
-    let meta = session::create_session(validated_dir.clone());
+    let meta = session::create_session(project_id);
 
     // 初始化上下文
     let ctx = session_manager.get_or_create(&meta.id).await;
-    *ctx.workspace.lock().await = validated_dir.map(std::path::PathBuf::from);
+    *ctx.workspace.lock().await = meta.working_directory.clone().map(std::path::PathBuf::from);
 
     Ok(meta)
+}
+
+#[tauri::command]
+pub async fn open_project(
+    path: String,
+) -> Result<session::ProjectMeta, String> {
+    let normalized = std::path::Path::new(&path);
+    if !normalized.exists() || !normalized.is_dir() {
+        return Err(format!("目录不存在或不是文件夹: {}", path));
+    }
+    let abs = normalized.canonicalize()
+        .map_err(|e| format!("解析路径失败: {}", e))?
+        .to_string_lossy()
+        .to_string();
+
+    // 已存在则直接返回
+    if let Ok(Some(project)) = crate::core::session::repository::get_project_by_path(&abs) {
+        return Ok(project);
+    }
+
+    let name = std::path::Path::new(&abs)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| abs.clone());
+
+    crate::core::session::repository::create_project(&name, &abs)
+}
+
+#[tauri::command]
+pub async fn list_projects() -> Result<Vec<session::ProjectMeta>, String> {
+    crate::core::session::repository::list_projects()
+}
+
+#[tauri::command]
+pub async fn delete_project(id: String) -> Result<(), String> {
+    crate::core::session::repository::delete_project(&id)
 }
 
 #[tauri::command]
@@ -272,6 +301,10 @@ pub async fn recall_message(
     }
 
     if is_empty {
+        if let Some(token) = ctx.cancel_token.lock().await.as_ref() {
+            token.cancel();
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         switch_away_and_delete_empty_session(&session_id, &app).await?;
     } else {
         {

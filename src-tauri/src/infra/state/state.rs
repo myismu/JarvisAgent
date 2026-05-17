@@ -81,6 +81,8 @@ pub struct SessionContext {
     pub agent_work_mode: Mutex<String>,
     /// 调度器事件接收端（异步模式）：RunSubagentsSequentially 存，pipeline 取
     pub scheduler_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::core::orchestration::scheduler::SchedulerEvent>>>,
+    /// ReadFile 探索拦截：记录本会话已读取的文件路径，用于检测逐文件遍历模式
+    pub read_file_paths: Mutex<Vec<String>>,
 }
 
 impl SessionContext {
@@ -100,6 +102,7 @@ impl SessionContext {
             agent_audience: Mutex::new("developer".to_string()),
             agent_work_mode: Mutex::new("edit".to_string()),
             scheduler_rx: Mutex::new(None),
+            read_file_paths: Mutex::new(Vec::new()),
         }
     }
 }

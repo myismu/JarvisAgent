@@ -8,19 +8,26 @@ pub(super) fn tool_def() -> ToolDef {
         name: "CreateTask",
         description: "创建持久化任务条目到任务看板",
         search_hint: "create task todo 创建 任务",
+        category: "任务管理",
         schema: json!({
             "name": "CreateTask",
-            "description": "Create one persistent task entry on the task board. Use this for complex workflows that need persistence, dependency graph tracking, or subagent scheduling.\n\nUse for:\n- Complex work that should persist on the task board.\n- Work that needs blockedBy/blocks dependency relationships.\n- Work that should be delegated through RunSubagent/RunSubagentsSequentially.\n\nDo not use for:\n- A short checklist that the main agent will execute directly; use UpdateTodos instead.\n- A single trivial task.\n- Purely conversational work.\n\nNotes:\n- After creating tasks, use UpdateTask to add dependency relationships with add_blocked_by/add_blocks.\n- Use ListTasks or GetTask first when needed to avoid duplicate tasks.\n- This tool creates records only; it does not execute the task.",
+            "description": "创建持久化任务条目。支持批量创建：传 tasks 数组可一次创建多个任务并自动建立依赖关系，代替多次调用。\n\n单个任务示例：{\"subject\": \"修复登录Bug\", \"description\": \"...\"}\n批量任务示例：{\"tasks\": [{\"subject\": \"初始化后端\", \"depends_on\": []}, {\"subject\": \"实现API\", \"depends_on\": [1]}]}",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "subject": {"type": "string", "description": "Short imperative task title, e.g. \"Fix authentication bug\"."},
-                    "description": {"type": "string", "description": "Detailed description of the work to complete."},
-                    "activeForm": {"type": "string", "description": "Present-continuous text shown while active, e.g. \"Fixing authentication bug\"."},
-                    "metadata": {"type": "object", "description": "Optional metadata key/value object."},
-                    "owner": {"type": "string", "description": "Responsible agent name."}
-                },
-                "required": ["subject"]
+                    "subject": {"type": "string", "description": "单个任务标题。与 tasks 二选一。"},
+                    "description": {"type": "string", "description": "单个任务描述。"},
+                    "activeForm": {"type": "string", "description": "进行时描述，如\"修复登录Bug中\"。"},
+                    "metadata": {"type": "object", "description": "可选元数据。"},
+                    "owner": {"type": "string", "description": "负责人名称。"},
+                    "tasks": {"type": "array", "items": {"type": "object", "properties": {
+                        "subject": {"type": "string"},
+                        "description": {"type": "string"},
+                        "activeForm": {"type": "string"},
+                        "depends_on": {"type": "array", "items": {"type": "integer"}, "description": "依赖的任务在数组中的 1-based 索引"},
+                        "owner": {"type": "string"}
+                    }, "required": ["subject"]}, "description": "批量创建的任务列表。每项的 depends_on 为数组内索引。"}
+                }
             }
         }),
         should_defer: true,
@@ -35,6 +42,48 @@ pub async fn task_create(
     input: &serde_json::Value,
     session_id: &str,
 ) -> String {
+    // 批量模式
+    if let Some(tasks) = input["tasks"].as_array() {
+        if tasks.is_empty() {
+            return serde_json::json!({"success": false, "error": "tasks 数组不能为空"}).to_string();
+        }
+        let tm = TaskManager::for_session(session_id);
+        let mut created_ids: Vec<i32> = Vec::new();
+        for item in tasks {
+            let subject = item["subject"].as_str().unwrap_or("").to_string();
+            if subject.trim().is_empty() { continue; }
+            let description = item["description"].as_str().unwrap_or("").to_string();
+            let active_form = optional_string(item, "activeForm");
+            let metadata = item.get("metadata").cloned();
+            let owner = optional_string(item, "owner");
+            match tm.create(subject, description, active_form, metadata, owner) {
+                Ok(t) => created_ids.push(t.id),
+                Err(_) => {}
+            }
+        }
+        // 处理 depends_on 依赖
+        for (idx, item) in tasks.iter().enumerate() {
+            if let Some(task_id) = created_ids.get(idx) {
+                if let Some(deps) = item["depends_on"].as_array() {
+                    let blocked_by: Vec<i32> = deps.iter()
+                        .filter_map(|d| d.as_u64().map(|n| (n as usize).saturating_sub(1)))
+                        .filter_map(|di| created_ids.get(di).copied())
+                        .map(|id| id as i32)
+                        .collect();
+                    if !blocked_by.is_empty() {
+                        let _ = tm.update(*task_id, crate::core::orchestration::tasks::TaskUpdateParams {
+                            status: None, subject: None, description: None, active_form: None,
+                            owner: None, metadata: None, add_blocked_by: Some(blocked_by),
+                            add_blocks: None,
+                        });
+                    }
+                }
+            }
+        }
+        return serde_json::json!({"success": true, "created": created_ids.len()}).to_string();
+    }
+
+    // 单个模式
     let subject = input["subject"].as_str().unwrap_or("").to_string();
     if subject.trim().is_empty() {
         return serde_json::json!({

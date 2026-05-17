@@ -26,6 +26,13 @@ pub fn is_path_safe(path_str: &str) -> bool {
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
+    // 剥掉 Windows 长路径前缀 \\?\，否则组件序列不匹配
+    let path_str = path.to_string_lossy();
+    let path = if path_str.starts_with(r"\\?\") {
+        Path::new(&path_str[4..])
+    } else {
+        path
+    };
     let mut components = Vec::new();
     for comp in path.components() {
         match comp {

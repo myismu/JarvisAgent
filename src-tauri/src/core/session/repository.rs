@@ -63,7 +63,7 @@ pub fn upsert_session(meta: &SessionMeta, memory: &SessionMemory) -> Result<(), 
         tx.execute(
             "INSERT INTO sessions(
                 id, title, created_at, updated_at, message_count, is_smart_named,
-                profile_id, total_input_tokens, total_output_tokens, title_source, working_directory, deleted_at
+                profile_id, total_input_tokens, total_output_tokens, title_source, project_id, deleted_at
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
@@ -75,7 +75,7 @@ pub fn upsert_session(meta: &SessionMeta, memory: &SessionMemory) -> Result<(), 
                 total_input_tokens = excluded.total_input_tokens,
                 total_output_tokens = excluded.total_output_tokens,
                 title_source = excluded.title_source,
-                working_directory = excluded.working_directory,
+                project_id = excluded.project_id,
                 deleted_at = NULL",
             params![
                 meta.id,
@@ -88,7 +88,7 @@ pub fn upsert_session(meta: &SessionMeta, memory: &SessionMemory) -> Result<(), 
                 meta.total_input_tokens as i64,
                 meta.total_output_tokens as i64,
                 meta.title_source,
-                meta.working_directory,
+                meta.project_id,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -520,9 +520,12 @@ pub fn get_context_snapshot(session_id: &str) -> Result<Option<SessionContextSna
 pub fn get_session_meta(id: &str) -> Result<SessionMeta, String> {
     crate::infra::db::with_connection(|conn| {
         conn.query_row(
-            "SELECT id, title, created_at, updated_at, message_count, is_smart_named,
-                    profile_id, total_input_tokens, total_output_tokens, title_source, working_directory
-             FROM sessions WHERE id = ?1 AND deleted_at IS NULL",
+            "SELECT s.id, s.title, s.created_at, s.updated_at, s.message_count, s.is_smart_named,
+                    s.profile_id, s.total_input_tokens, s.total_output_tokens, s.title_source,
+                    s.project_id, p.path
+             FROM sessions s
+             LEFT JOIN projects p ON s.project_id = p.id
+             WHERE s.id = ?1 AND s.deleted_at IS NULL",
             [id],
             session_meta_from_row,
         )
@@ -537,11 +540,13 @@ pub fn list_sessions(filter: Option<&SessionListFilter>) -> Result<Vec<SessionMe
         let mut sessions = Vec::new();
         let mut stmt = conn
             .prepare(
-                "SELECT id, title, created_at, updated_at, message_count, is_smart_named,
-                        profile_id, total_input_tokens, total_output_tokens, title_source, working_directory
-                 FROM sessions
-                 WHERE deleted_at IS NULL
-                 ORDER BY updated_at DESC",
+                "SELECT s.id, s.title, s.created_at, s.updated_at, s.message_count, s.is_smart_named,
+                        s.profile_id, s.total_input_tokens, s.total_output_tokens, s.title_source,
+                        s.project_id, p.path
+                 FROM sessions s
+                 LEFT JOIN projects p ON s.project_id = p.id
+                 WHERE s.deleted_at IS NULL
+                 ORDER BY s.updated_at DESC",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
@@ -581,7 +586,7 @@ pub fn ensure_session_exists(id: &str, title: Option<&str>, created_at: u64) -> 
         conn.execute(
             "INSERT INTO sessions(
                 id, title, created_at, updated_at, message_count, is_smart_named,
-                profile_id, total_input_tokens, total_output_tokens, title_source, working_directory, deleted_at
+                profile_id, total_input_tokens, total_output_tokens, title_source, project_id, deleted_at
             ) VALUES(?1, ?2, ?3, ?3, 0, 0, NULL, 0, 0, 'default', NULL, NULL)",
             params![id, title, created_at as i64],
         )
@@ -629,9 +634,12 @@ pub fn rename_session(
             return Err(format!("会话 {} 不存在", id));
         }
         conn.query_row(
-            "SELECT id, title, created_at, updated_at, message_count, is_smart_named,
-                    profile_id, total_input_tokens, total_output_tokens, title_source, working_directory
-             FROM sessions WHERE id = ?1 AND deleted_at IS NULL",
+            "SELECT s.id, s.title, s.created_at, s.updated_at, s.message_count, s.is_smart_named,
+                    s.profile_id, s.total_input_tokens, s.total_output_tokens, s.title_source,
+                    s.project_id, p.path
+             FROM sessions s
+             LEFT JOIN projects p ON s.project_id = p.id
+             WHERE s.id = ?1 AND s.deleted_at IS NULL",
             [id],
             session_meta_from_row,
         )
@@ -680,6 +688,14 @@ pub fn set_last_active_session_id(id: &str) -> Result<(), String> {
     })
 }
 
+pub fn clear_last_active_session_id() -> Result<(), String> {
+    crate::infra::db::with_connection(|conn| {
+        conn.execute("DELETE FROM app_state WHERE key = 'last_active_session_id'", [])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
 fn session_meta_from_row(row: &Row<'_>) -> rusqlite::Result<SessionMeta> {
     Ok(SessionMeta {
         id: row.get(0)?,
@@ -692,7 +708,101 @@ fn session_meta_from_row(row: &Row<'_>) -> rusqlite::Result<SessionMeta> {
         total_input_tokens: row.get::<_, i64>(7)? as u64,
         total_output_tokens: row.get::<_, i64>(8)? as u64,
         title_source: row.get(9)?,
-        working_directory: row.get(10)?,
+        project_id: row.get(10)?,
+        working_directory: row.get(11)?,
+    })
+}
+
+// ── Project operations ──
+
+pub fn get_project_path(project_id: &str) -> Result<Option<String>, String> {
+    crate::infra::db::with_connection(|conn| {
+        conn.query_row(
+            "SELECT path FROM projects WHERE id = ?1",
+            [project_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    })
+}
+
+pub fn get_project_by_path(path: &str) -> Result<Option<crate::core::session::ProjectMeta>, String> {
+    crate::infra::db::with_connection(|conn| {
+        conn.query_row(
+            "SELECT p.id, p.name, p.path, p.created_at, p.updated_at,
+                    (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id AND s.deleted_at IS NULL) as session_count
+             FROM projects p WHERE p.path = ?1",
+            [path],
+            project_meta_from_row,
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    })
+}
+
+pub fn create_project(name: &str, path: &str) -> Result<crate::core::session::ProjectMeta, String> {
+    let id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    crate::infra::db::with_connection(|conn| {
+        conn.execute(
+            "INSERT INTO projects (id, name, path, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+            rusqlite::params![id, name, path, now],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(crate::core::session::ProjectMeta {
+            id,
+            name: name.to_string(),
+            path: path.to_string(),
+            created_at: now as u64,
+            updated_at: now as u64,
+            session_count: 0,
+        })
+    })
+}
+
+pub fn list_projects() -> Result<Vec<crate::core::session::ProjectMeta>, String> {
+    crate::infra::db::with_connection(|conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT p.id, p.name, p.path, p.created_at, p.updated_at,
+                        (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id AND s.deleted_at IS NULL) as session_count
+                 FROM projects p
+                 ORDER BY p.updated_at DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], project_meta_from_row)
+            .map_err(|e| e.to_string())?;
+        let mut projects = Vec::new();
+        for row in rows {
+            projects.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(projects)
+    })
+}
+
+pub fn delete_project(id: &str) -> Result<(), String> {
+    crate::infra::db::with_connection(|conn| {
+        conn.execute("DELETE FROM sessions WHERE project_id = ?1", [id])
+            .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM projects WHERE id = ?1", [id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+fn project_meta_from_row(row: &Row<'_>) -> rusqlite::Result<crate::core::session::ProjectMeta> {
+    Ok(crate::core::session::ProjectMeta {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        path: row.get(2)?,
+        created_at: row.get::<_, i64>(3)? as u64,
+        updated_at: row.get::<_, i64>(4)? as u64,
+        session_count: row.get::<_, i64>(5)? as usize,
     })
 }
 

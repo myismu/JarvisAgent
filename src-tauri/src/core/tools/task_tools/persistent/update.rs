@@ -9,6 +9,7 @@ pub(super) fn tool_def() -> ToolDef {
         name: "UpdateTask",
         description: "更新任务状态、字段或依赖关系",
         search_hint: "update task status progress 更新 任务 状态 进度",
+        category: "任务管理",
         schema: json!({
             "name": "UpdateTask",
             "description": "Update task status, editable fields, or dependency relationships.\n\nStatus flow: pending -> in_progress -> completed. Setting status to deleted permanently deletes the task.\n\nEditable fields:\n- status: task status.\n- subject: task title.\n- description: task description.\n- activeForm: present-continuous status text.\n- owner: responsible agent.\n- metadata: metadata object to merge; use null values to delete keys when supported by the task manager.\n- add_blocked_by: add prerequisite task IDs.\n- add_blocks: add downstream blocked task IDs.\n\nImportant:\n- Mark completed only when the task is fully done.\n- Keep in_progress when blocked by errors or incomplete work.\n- Use GetTask first when you need to confirm the latest task state.",

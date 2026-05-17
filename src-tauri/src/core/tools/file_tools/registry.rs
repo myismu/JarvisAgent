@@ -20,6 +20,7 @@ crate::define_tools! {
             name: "ReadFile",
             description: "读取文件内容，支持按行号精确读取",
             search_hint: "read file content view",
+            category: "文件操作",
             schema: json!({
                 "name": "ReadFile",
                 "description": "读取文件内容。支持语义化点读技术，可通过 start_line 和 end_line 获取特定代码块，避免 Context 过长。",
@@ -42,6 +43,7 @@ crate::define_tools! {
             name: "ReadFileSkeleton",
             description: "提取文件结构骨架（类、函数签名及行号）",
             search_hint: "skeleton structure class function signature",
+            category: "文件操作",
             schema: json!({
                 "name": "ReadFileSkeleton",
                 "description": "提取文件结构骨架（Skeleton）。快速扫描并返回文件的类、函数签名及其行号，结合 read_file 进行精确片段阅读。",
@@ -60,6 +62,7 @@ crate::define_tools! {
             name: "WriteFile",
             description: "写入普通文本文件内容；不得用于 .ipynb/Jupyter Notebook JSON",
             search_hint: "write file create new",
+            category: "文件操作",
             schema: json!({
                 "name": "WriteFile",
                 "description": "写入普通文本文件内容。优先用于创建新文件；修改已有文件时应优先使用 EditFile，除非用户明确要求重写整个文件，或文件很小且已经完整读取过。大量修改应使用 ApplyPatch。不要用于 .ipynb/Jupyter Notebook 或 notebook-shaped JSON；Notebook 必须使用 notebook_edit 进行 cell 级 replace/insert/delete。",
@@ -81,15 +84,16 @@ crate::define_tools! {
             name: "EditFile",
             description: "基于搜索与替换修改普通文本；不得用于 .ipynb/Jupyter Notebook JSON",
             search_hint: "edit file replace search modify",
+            category: "文件操作",
             schema: json!({
                 "name": "EditFile",
-                "description": "基于搜索与替换修改普通文本文件中的特定文本片段。小范围单点修改优先使用此工具；多处修改或跨文件修改应使用 ApplyPatch。不要用于 .ipynb/Jupyter Notebook 或 notebook-shaped JSON；Notebook 必须使用 notebook_edit 按 cell_id 修改，避免破坏 cells、metadata、outputs。",
+                "description": "基于搜索与替换修改普通文本文件中的特定文本片段。old_text 必须在文件中唯一匹配（包含足够多的上下文行，通常 3~5 行），否则会返回所有匹配位置让你修正。小范围单点修改优先使用此工具；多处修改或跨文件修改应使用 ApplyPatch。",
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "path": {"type": "string"},
-                        "old_text": {"type": "string", "description": "要替换的确切旧文本内容"},
-                        "new_text": {"type": "string", "description": "替换后的新文本内容"}
+                        "old_text": {"type": "string", "description": "要替换的旧文本，必须包含足够上下文（3~5 行）确保在文件中唯一匹配"},
+                        "new_text": {"type": "string", "description": "替换后的新文本"}
                     },
                     "required": ["path", "old_text", "new_text"]
                 }
@@ -103,6 +107,7 @@ crate::define_tools! {
             name: "ApplyPatch",
             description: "事务式应用 unified diff 多文件补丁",
             search_hint: "apply patch diff multi file hunk dry run preview edit",
+            category: "文件操作",
             schema: json!({
                 "name": "ApplyPatch",
                 "description": "事务式应用 unified diff / *** Begin Patch 格式补丁。适合多 hunk、多文件复杂修改；小范围单点替换优先使用 EditFile。支持 dry_run 预览；仍会执行 workspace 权限校验、Notebook 拦截、编码保留、TOCTOU 检查和快照记录。",
@@ -124,6 +129,7 @@ crate::define_tools! {
             name: "SearchRepo",
             description: "在指定目录下全局搜索包含关键词的文本",
             search_hint: "search find grep text pattern",
+            category: "搜索检索",
             schema: json!({
                 "name": "SearchRepo",
                 "description": "在指定目录下全局搜索包含特定关键词或正则表达式的文本内容。自动忽略编译产物和静态资源。",
@@ -153,6 +159,7 @@ crate::define_tools! {
             name: "FindSymbol",
             description: "查找符号定义候选位置",
             search_hint: "find symbol definition function class type component variable",
+            category: "搜索检索",
             schema: json!({
                 "name": "FindSymbol",
                 "description": "查找符号定义候选位置。初版基于扩展名和轻量规则识别 function/class/type/component/variable，并返回文件、行号、签名和置信度。",
@@ -180,6 +187,7 @@ crate::define_tools! {
             name: "ReadSymbol",
             description: "读取指定符号所在代码块",
             search_hint: "read symbol definition block function class type",
+            category: "搜索检索",
             schema: json!({
                 "name": "ReadSymbol",
                 "description": "读取指定文件中符号所在的完整代码块。初版基于括号或缩进推断范围，适合函数、类、类型、组件等常见代码块。",
@@ -201,6 +209,7 @@ crate::define_tools! {
             name: "FindReferences",
             description: "查找符号引用关系",
             search_hint: "find references usages import export reference symbol",
+            category: "搜索检索",
             schema: json!({
                 "name": "FindReferences",
                 "description": "查找符号的引用关系。初版基于文本搜索，将结果区分为可能定义、可能引用和 import/export。",
@@ -227,6 +236,7 @@ crate::define_tools! {
             name: "CodeSearch",
             description: "组合代码搜索并给出下一步读取建议",
             search_hint: "code search combined find files symbol text read next",
+            category: "搜索检索",
             schema: json!({
                 "name": "CodeSearch",
                 "description": "组合代码搜索：先按 include/exclude/type/ignore_dirs 过滤文件，再同时查找符号定义和文本匹配，输出可直接用于 ReadFile/ReadSymbol 的下一步建议。",
@@ -253,6 +263,7 @@ crate::define_tools! {
             name: "ListDirectory",
             description: "列出指定目录下的所有文件和文件夹",
             search_hint: "list directory folder files ls",
+            category: "文件操作",
             schema: json!({
                 "name": "ListDirectory",
                 "description": "列出指定目录下的所有文件和文件夹。",
@@ -273,6 +284,7 @@ crate::define_tools! {
             name: "DeleteFile",
             description: "删除指定文件",
             search_hint: "delete file remove rm",
+            category: "文件操作",
             schema: json!({
                 "name": "DeleteFile",
                 "description": "删除指定文件。删除前会自动备份文件内容用于快照回滚。",
@@ -293,6 +305,7 @@ crate::define_tools! {
             name: "RenameFile",
             description: "重命名或移动指定文件",
             search_hint: "rename move file mv ren",
+            category: "文件操作",
             schema: json!({
                 "name": "RenameFile",
                 "description": "重命名或移动指定文件到新路径。",

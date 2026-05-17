@@ -7,6 +7,7 @@ pub(super) fn tool_def() -> ToolDef {
         name: "SummarizeTasks",
         description: "生成任务全景报告（进度、瓶颈、下一步）",
         search_hint: "summary report progress 总结 报告 进度",
+        category: "任务管理",
         schema: json!({
             "name": "SummarizeTasks",
             "description": "Generate a task overview report, including progress, critical path, bottlenecks, and recommended next work. Use this before starting a new work batch or after completing significant tasks.",

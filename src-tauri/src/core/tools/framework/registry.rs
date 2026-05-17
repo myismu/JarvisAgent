@@ -25,6 +25,8 @@ pub struct ToolDef {
     pub search_hint: &'static str,
     /// 完整 JSON Schema（符合 Anthropic tool_use 规范）
     pub schema: serde_json::Value,
+    /// 工具分类（用于延迟工具列表分组展示）
+    pub category: &'static str,
     /// 是否延迟加载（true = 需通过 SearchTools 获取后才能调用）
     pub should_defer: bool,
     /// 是否只读（read_only 子代理会过滤掉非只读工具）
@@ -132,6 +134,27 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// 获取延迟工具分组（按 category），保持插入顺序
+    pub fn get_deferred_by_category(
+        &self,
+        intent: &str,
+    ) -> Vec<(&'static str, Vec<&'static str>)> {
+        let mut groups: Vec<(&'static str, Vec<&'static str>)> = Vec::new();
+        for name in &self.insertion_order {
+            if let Some(t) = self.tools.get(name) {
+                if t.should_defer && t.is_enabled && Self::is_available_for_intent(t, intent) {
+                    let cat = if t.category.is_empty() { "其他" } else { t.category };
+                    if let Some((_, names)) = groups.iter_mut().find(|(c, _)| *c == cat) {
+                        names.push(t.name);
+                    } else {
+                        groups.push((cat, vec![t.name]));
+                    }
+                }
+            }
+        }
+        groups
+    }
+
     /// 获取可写工具名列表（供子代理 read_only 模式过滤）
     pub fn get_writable_tools(&self) -> Vec<&'static str> {
         self.insertion_order
@@ -199,6 +222,7 @@ macro_rules! tool_def {
             $( $prop_name:ident : $prop_type:ident $(enum expr $enum_expr:expr)? => $prop_desc:expr ),* $(,)?
         }, )?
         $( required: $required:expr, )?
+        $( category: $category:expr, )?
         $( defer: $defer:expr, )?
         $( read_only: $read_only:expr, )?
         $( concurrency_safe: $concurrency_safe:expr $(,)? )?
@@ -235,11 +259,14 @@ macro_rules! tool_def {
         $( is_read_only = $read_only; )?
         let mut is_concurrency_safe = false;
         $( is_concurrency_safe = $concurrency_safe; )?
+        let mut category = "";
+        $( category = $category; )?
 
         $crate::core::tools::framework::registry::ToolDef {
             name: $name,
             description: $desc,
             search_hint: $hint,
+            category,
             schema,
             should_defer,
             is_read_only,

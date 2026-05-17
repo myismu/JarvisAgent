@@ -457,6 +457,7 @@ crate::define_tools! {
             name: "EditNotebook",
             description: "Cell 级别编辑 Jupyter Notebook，避免直接文本修改 .ipynb JSON",
             search_hint: "notebook edit jupyter ipynb cell json replace insert delete",
+            category: "系统",
             schema: json!({
                 "name": "EditNotebook",
                 "description": "Cell-level editor for Jupyter Notebook (.ipynb) files. Use this tool instead of edit_file or write_file for any .ipynb notebook or notebook-shaped JSON. It preserves notebook JSON structure, targets a single cell, can replace/insert/delete cells, and clears execution_count/outputs when code cells are modified.",

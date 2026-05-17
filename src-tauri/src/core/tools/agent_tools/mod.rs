@@ -41,6 +41,7 @@ crate::define_tools! {
                 name: string => "要加载的技能名称",
             },
             required: ["name"],
+            category: "系统",
             read_only: true,
             concurrency_safe: true,
         ),
@@ -52,6 +53,7 @@ crate::define_tools! {
             props: {
                 focus: string => "摘要时需要特别保留的重点方向",
             },
+            category: "系统",
             defer: true,
         ),
         crate::tool_def!(
@@ -59,6 +61,7 @@ crate::define_tools! {
             desc: "主动触发记忆整理（Dream Agent）",
             hint: "dream memory organize consolidate",
             schema_desc: "主动触发记忆整理（Dream Agent）。将当前的零散碎片记忆提炼并合并进结构化用户画像中。",
+            category: "系统",
             defer: true,
         ),
         crate::tool_def!(
@@ -72,6 +75,7 @@ crate::define_tools! {
                 task_breakdown: array => "结构化任务分解列表，每项包含 subject、description、depends_on（前置任务序号数组）、can_parallel_with（可并行序号数组）",
             },
             required: ["title", "content"],
+            category: "Agent 调度",
             defer: true,
         ),
         crate::tool_def!(
@@ -84,6 +88,7 @@ crate::define_tools! {
                 reason: string => "切换原因，会展示给用户",
             },
             required: ["mode", "reason"],
+            category: "系统",
             defer: true,
             read_only: true,
             concurrency_safe: true,
@@ -103,6 +108,7 @@ crate::define_tools! {
                 read_only: boolean => "Optional permission override. If omitted, the selected subagent_type default is used. true filters out every tool whose registry metadata is not read-only; false still respects the selected agent allowlist/denylist.",
             },
             required: ["prompt"],
+            category: "Agent 调度",
             defer: true,
             concurrency_safe: true,
         ),
@@ -111,6 +117,7 @@ crate::define_tools! {
             desc: "启动任务调度器，根据依赖关系自动并行执行任务",
             hint: "run tasks scheduler execute parallel",
             schema_desc: "【任务调度器】启动自动任务调度。系统将根据任务依赖关系（blocked_by）自动执行：无依赖的任务并行运行，阻塞任务等待前置完成后自动启动。创建完所有任务和依赖关系后调用此工具一次性调度执行。不要用于简单启动项目/运行命令；这类任务应直接用 StartBackgroundCommand/RunCommand。若调度返回失败，禁止继续创建重复任务，应复用现有任务 ID 修复或报告阻塞。",
+            category: "Agent 调度",
             defer: true,
         )
     }

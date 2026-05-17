@@ -143,6 +143,7 @@ const handleApprove = async () => {
   const proposal = activeProposal.value;
   const doc = viewedDocument.value;
   if (isResolving.value || (!proposal && !doc)) return;
+  isMinimized.value = true;
   isResolving.value = true;
   const planId = proposal?.id || doc!.id;
   const title = proposal?.title || doc!.title;
@@ -177,6 +178,7 @@ const handleReject = async () => {
     isRequestingRevision.value = true;
     return;
   }
+  isMinimized.value = true;
   const feedback = revisionFeedback.value.trim();
   if (!feedback) return;
 
@@ -284,16 +286,9 @@ const toggleMinimize = () => {
         <div class="plan-toolbar">
           <div class="plan-toolbar-copy">
             <span class="plan-toolbar-title">{{ isEditing ? t('plan.editMode') : t('plan.previewMode') }}</span>
-            <span class="plan-toolbar-subtitle">{{ isEditing ? t('plan.editSubtitle') : t('plan.previewSubtitle') }}</span>
           </div>
 
-          <div class="plan-edit-actions">
-            <template v-if="!activeProposal">
-              <button class="plan-mini-btn" @click="isMinimized = true; selectedPlanId = null" :title="t('plan.close')">
-                {{ t('plan.close') }}
-              </button>
-            </template>
-            <template v-else>
+          <div v-if="activeProposal" class="plan-edit-actions">
               <button
                 v-if="!isEditing && !isStreaming"
                 class="plan-mini-btn"
@@ -314,7 +309,6 @@ const toggleMinimize = () => {
                   {{ t('plan.save') }}
                 </button>
               </template>
-            </template>
           </div>
         </div>
 
@@ -378,14 +372,12 @@ const toggleMinimize = () => {
       </aside>
 
       <!-- 最小化悬浮按钮 -->
-      <button v-else class="plan-minimized-float" @click="toggleMinimize" :title="t('plan.restore')">
-        <div class="plan-minimized-icon">
-          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"></path>
-            <polyline points="14 2 14 7 19 7"></polyline>
-          </svg>
-        </div>
-        <span class="plan-minimized-label">{{ activeProposal?.title || viewedDocument?.title || planDocs[0]?.title || t('plan.title') }}</span>
+      <button v-else class="plan-minimized-float" @click="toggleMinimize" :title="(activeProposal?.title || viewedDocument?.title || planDocs[0]?.title || t('plan.title')) + ' — ' + t('plan.restore')">
+        <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
+          <rect x="9" y="3" width="6" height="4" rx="1" />
+          <path d="M9 14l2 2 4-4" />
+        </svg>
         <span v-if="isStreaming" class="streaming-indicator-mini">
           <span class="streaming-dot-mini"></span>
         </span>
@@ -407,8 +399,8 @@ const toggleMinimize = () => {
 
 .plan-overlay.minimized {
   justify-content: flex-end;
-  align-items: flex-end;
-  padding: 16px;
+  align-items: flex-start;
+  padding: 54px 16px 16px;
   pointer-events: none;
 }
 
@@ -694,12 +686,6 @@ const toggleMinimize = () => {
   color: var(--text-main);
   font-size: 0.84rem;
   font-weight: 700;
-}
-
-.plan-toolbar-subtitle {
-  color: var(--text-muted);
-  font-size: 0.72rem;
-  line-height: 1.35;
 }
 
 .plan-edit-actions {
@@ -1096,46 +1082,28 @@ const toggleMinimize = () => {
   pointer-events: auto;
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 16px;
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-xl);
+  padding: 7px;
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: var(--radius-lg);
   background: var(--glass-bg-heavy);
   backdrop-filter: blur(var(--glass-blur-heavy)) saturate(1.28);
   -webkit-backdrop-filter: blur(var(--glass-blur-heavy)) saturate(1.28);
-  box-shadow: var(--glass-shadow), 0 8px 32px rgba(0, 0, 0, 0.2);
-  color: var(--text-main);
+  box-shadow: var(--glass-shadow), 0 4px 16px rgba(0, 0, 0, 0.12);
+  color: var(--text-muted);
   cursor: pointer;
   transition: all var(--transition-fast);
   animation: float-in 300ms ease-out;
 }
 
 .plan-minimized-float:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--glass-shadow), 0 12px 40px rgba(0, 0, 0, 0.25);
-  border-color: var(--accent-blue);
+  color: var(--text-main);
+  border-color: var(--glass-border);
+  box-shadow: var(--glass-shadow), 0 6px 20px rgba(0, 0, 0, 0.15);
 }
 
 @keyframes float-in {
   from { opacity: 0; transform: translateY(20px) scale(0.95); }
   to { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-.plan-minimized-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--accent-blue);
-  flex-shrink: 0;
-}
-
-.plan-minimized-label {
-  font-size: 0.82rem;
-  font-weight: 700;
-  max-width: 160px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .streaming-indicator-mini {

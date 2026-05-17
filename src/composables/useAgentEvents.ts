@@ -164,17 +164,18 @@ export function useAgentEvents() {
       if (view.status !== "RUNNING" && view.status !== "INTERRUPTED") {
         return;
       }
-      const previousActiveRunId = view.activeRunId;
       if (view.resumableRunId) {
         dismissedInterruptedRuns.add(view.resumableRunId);
       }
+      const prevRunId = view.activeRunId;
       view.status = "RUNNING";
       view.activeRunId = running.runId;
       view.resumableRunId = null;
       view.runStartTime = running.startedAt || Date.now();
       view.streamActive = true;
       view.cancelHandled = false;
-      if (!hasCurrentTurnContent(view) || previousActiveRunId !== running.runId) {
+      // 只在 runId 真的切了才重建（首次运行由 streaming 事件构建，不从 DB 覆盖）
+      if (prevRunId && prevRunId !== running.runId) {
         hydrateCurrentTurnFromRun(view, running);
       }
       view.hydrated = true;
@@ -654,7 +655,10 @@ export function useAgentEvents() {
         };
       }
       view.hydrated = true;
-      await refreshSessionHistory(sessionId);
+      // 会话仍在运行时不刷新消息——checkpoint 的部分回复会和 live currentTurn 重叠
+      if (view.status !== 'RUNNING') {
+        await refreshSessionHistory(sessionId);
+      }
       syncActiveSessionView(sessionId, false);
     });
 
@@ -695,7 +699,7 @@ export function useAgentEvents() {
         if (nextActiveSessionId) {
           const meta = await invoke<any>("get_session_meta", { id: nextActiveSessionId });
           session.workingDirectory = meta.workingDirectory || null;
-          session.setSessionUsageTotals(meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
+          session.setSessionUsageTotals(nextActiveSessionId, meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
 
           if (!session.hasHydratedSessionView(nextActiveSessionId)) {
             try {
@@ -716,13 +720,13 @@ export function useAgentEvents() {
           ]);
         } else {
           session.workingDirectory = null;
-          session.setSessionUsageTotals(0, 0);
+          session.setSessionUsageTotals(null, 0, 0);
           session.resetSessionView(null, session.READY_TEXT);
         }
       } catch (err) {
         console.error("同步清理后的会话失败:", err);
         session.workingDirectory = null;
-        session.setSessionUsageTotals(0, 0);
+        session.setSessionUsageTotals(null, 0, 0);
         if (nextActiveSessionId) {
           session.resetSessionView(nextActiveSessionId, session.READY_TEXT);
         } else {

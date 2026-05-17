@@ -7,6 +7,7 @@ pub(super) fn tool_def() -> ToolDef {
         name: "ListTasks",
         description: "列出所有任务及其状态概要",
         search_hint: "list tasks status overview 列出 任务 状态",
+        category: "任务管理",
         schema: json!({
             "name": "ListTasks",
             "description": "List all tasks and their status summary.\n\nReturned information includes:\n- id: task identifier used by GetTask and UpdateTask.\n- subject: short task title.\n- status: pending/in_progress/completed.\n- owner: responsible agent when present.\n- blockedBy: incomplete prerequisite dependencies.\n\nGuidance:\n- Prefer processing in ID order when dependency constraints allow it.\n- Call this after completing a task to find the next available task.\n- Inspect blocked tasks to determine which prerequisite must be resolved first.",

@@ -79,6 +79,7 @@ crate::define_tools! {
             name: "SetWorkspace",
             description: "设置或更改全局工作区目录",
             search_hint: "set workspace directory working directory",
+            category: "系统",
             schema: json!({
                 "name": "SetWorkspace",
                 "description": "设置或更改大模型当前运作的全局工作区（Working Directory）目录。跨大项目切换或是初始化指定项目目录时使用。由于会改变全局环境且会被系统持久化记住，必须使用绝对路径。",

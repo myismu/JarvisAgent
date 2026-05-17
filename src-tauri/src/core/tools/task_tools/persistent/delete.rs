@@ -7,6 +7,7 @@ pub(super) fn tool_def() -> ToolDef {
         name: "DeleteTask",
         description: "永久删除一个任务",
         search_hint: "delete remove task 删除 任务",
+        category: "任务管理",
         schema: json!({
             "name": "DeleteTask",
             "description": "Permanently delete one task and clean up dependency references to it.",

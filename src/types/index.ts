@@ -1,5 +1,14 @@
 // === 核心会话类型 ===
 
+export interface ProjectMeta {
+  id: string;
+  name: string;
+  path: string;
+  createdAt: number;
+  updatedAt: number;
+  sessionCount: number;
+}
+
 export interface SessionMeta {
   id: string;
   title: string;
@@ -11,6 +20,7 @@ export interface SessionMeta {
   totalInputTokens?: number;
   totalOutputTokens?: number;
   titleSource?: string;
+  projectId?: string | null;
   workingDirectory?: string | null;
   lastModel?: string | null;
   lastTool?: string | null;

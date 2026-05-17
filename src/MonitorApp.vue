@@ -13,6 +13,7 @@
 import { onBeforeUnmount, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useAgentEvents } from "./composables/useAgentEvents";
 import { useWindow } from "./composables/useWindow";
 import { useTheme } from "./composables/useTheme";
@@ -51,13 +52,13 @@ const hydrateMonitorState = async (targetSessionId?: string | null) => {
 
   if (!activeSessionId) {
     session.workingDirectory = null;
-    session.setSessionUsageTotals(0, 0);
+    session.setSessionUsageTotals(activeSessionId, 0, 0);
     return;
   }
 
   const meta = await invoke<SessionMeta>("get_session_meta", { id: activeSessionId });
   session.workingDirectory = meta.workingDirectory || null;
-  session.setSessionUsageTotals(meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
+  session.setSessionUsageTotals(activeSessionId, meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
 
   await Promise.all([
     loadSubAgentRunsFromBackend(activeSessionId),
@@ -81,6 +82,9 @@ onMounted(async () => {
   unlistenLocaleChanged = await onMonitorLocaleChanged((nextLocale) => {
     locale.value = normalizeLocale(nextLocale);
   });
+  // 每次窗口可见时刷新上下文
+  const unlistenFocus = await getCurrentWindow().listen('tauri://focus', () => hydrateMonitorState());
+  onBeforeUnmount(() => { unlistenFocus(); });
 });
 
 onBeforeUnmount(() => {

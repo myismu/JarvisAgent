@@ -172,9 +172,43 @@ fn split_command_tokens(cmd: &str) -> Vec<String> {
 }
 
 /// 检查命令中的路径引用是否在沙箱内（检查绝对路径和 `..` 相对路径）
+/// 剥掉重定向前缀: >  >>  2>  1>  *>  n>  n>> 等
+fn strip_redirection_prefix(token: &str) -> &str {
+    let bytes = token.as_bytes();
+    let len = bytes.len();
+    if len == 0 {
+        return token;
+    }
+    // >>  2>>  1>>
+    if len >= 3 && bytes[0] == b'2' && bytes[1] == b'>' && bytes[2] == b'>'
+        || len >= 3 && bytes[0] == b'1' && bytes[1] == b'>' && bytes[2] == b'>'
+    {
+        return token[3..].trim_start();
+    }
+    // n> n>> (stdout/stderr numbered redirect)
+    if len >= 2 && bytes[0].is_ascii_digit() && bytes[1] == b'>' {
+        let start = if len > 2 && bytes[2] == b'>' { 3 } else { 2 };
+        return token[start..].trim_start();
+    }
+    // >>  >  *>  *>>
+    if len >= 2 && bytes[0] == b'>' && bytes[1] == b'>' {
+        return token[2..].trim_start();
+    }
+    if len >= 2 && bytes[0] == b'*' && bytes[1] == b'>' {
+        let start = if len > 2 && bytes[2] == b'>' { 3 } else { 2 };
+        return token[start..].trim_start();
+    }
+    if bytes[0] == b'>' {
+        return token[1..].trim_start();
+    }
+    token
+}
+
 pub fn check_command_paths(cmd: &str, workspace: &std::path::Path) -> Result<(), String> {
     for (i, part) in split_command_tokens(cmd).into_iter().enumerate() {
-        let trimmed = part.trim_matches('"').trim_matches('\'');
+        let mut trimmed = part.trim_matches('"').trim_matches('\'').to_string();
+        // 剥掉重定向前缀 (>  >>  2>  1>  *>  2>> 等)，避免路径被 ">C:\..." 格式隐藏
+        trimmed = strip_redirection_prefix(&trimmed).to_string();
 
         // 跳过第一个 token（命令可执行文件本身，如 "C:\Program Files\nodejs\npm.cmd"）
         if i == 0 {
@@ -231,7 +265,7 @@ pub fn check_command_paths(cmd: &str, workspace: &std::path::Path) -> Result<(),
             && trimmed.as_bytes()[1] == b':'
             && (trimmed.as_bytes()[2] == b'\\' || trimmed.as_bytes()[2] == b'/')
         {
-            if !is_within_workspace(trimmed, Some(workspace)) {
+            if !is_within_workspace(&trimmed, Some(workspace)) {
                 return Err(format!(
                     "沙箱限制：命令包含沙箱外路径 '{}'（沙箱目录为 '{}'）",
                     trimmed,
@@ -241,16 +275,38 @@ pub fn check_command_paths(cmd: &str, workspace: &std::path::Path) -> Result<(),
         }
         // 检查相对路径遍历：包含 ".."
         else if trimmed.contains("..") {
-            let combined = workspace.join(trimmed);
+            let combined = workspace.join(&trimmed);
             if !is_within_workspace(&combined.to_string_lossy(), Some(workspace)) {
                 return Err(format!(
                     "沙箱限制：命令包含越权相对路径 '{}'（解析后不在沙箱内）",
                     trimmed
                 ));
             }
+            // 沙箱内禁止使用环境变量构造路径（$env:VAR / %VAR%）
+            else if is_env_var_reference(&trimmed) {
+                return Err(format!(
+                    "沙箱限制：命令包含环境变量引用 '{}'，沙箱内禁止使用环境变量构造路径。请使用沙箱内的相对路径或绝对路径。",
+                    trimmed
+                ));
+            }
         }
     }
     Ok(())
+}
+
+/// 检测 token 是否包含环境变量引用（$env:VAR / %VAR% / ~ home）
+fn is_env_var_reference(token: &str) -> bool {
+    if token.contains("$env:") || token.contains("${env:") {
+        return true;
+    }
+    if token.starts_with('%') && token.contains('%') && token.len() > 2 {
+        return true;
+    }
+    // Unix/PowerShell home 目录展开: ~/Desktop, ~\Documents
+    if token.starts_with('~') {
+        return true;
+    }
+    false
 }
 
 /// 获取 run_shell 工具的平台适配描述

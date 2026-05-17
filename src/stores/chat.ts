@@ -97,10 +97,8 @@ async function refreshContextSnapshot(sessionId: string) {
 }
 
 export const useChatStore = defineStore("chat", () => {
-  let throttlePending = false;
-  let lastRenderTime = 0;
   let scrollToBottomCb: ((force?: boolean) => void) | null = null;
-  let sendGeneration = 0;
+  const sendGeneration: Record<string, number> = {};
 
   const rollbackRecalledMessage = ref("");
 
@@ -221,9 +219,11 @@ export const useChatStore = defineStore("chat", () => {
     },
   });
 
-  function resetRenderState() {
-    throttlePending = false;
-    lastRenderTime = 0;
+  function resetRenderState(sessionId?: string | null) {
+    const session = useSessionStore();
+    const view = session.getSessionView(sessionId ?? session.activeSessionId);
+    view.throttling = false;
+    view.lastRenderAt = 0;
   }
 
   function registerScrollCb(cb: (force?: boolean) => void) {
@@ -238,27 +238,28 @@ export const useChatStore = defineStore("chat", () => {
     scrollToBottomCb?.(false);
   }
 
-  function flushCurrentTurnRender() {
-    renderTick.value++;
-    throttlePending = false;
-  }
-
   function triggerRender() {
-    if (throttlePending) return;
+    const session = useSessionStore();
+    const view = session.getSessionView(session.activeSessionId);
+    if (view.throttling) return;
     const now = performance.now();
-    const elapsed = now - lastRenderTime;
-    // 节流到 ~30fps，减少 markdown 解析次数
+    const elapsed = now - view.lastRenderAt;
     const MIN_INTERVAL = 33;
     if (elapsed < MIN_INTERVAL) {
-      throttlePending = true;
+      view.throttling = true;
       setTimeout(() => {
-        lastRenderTime = performance.now();
-        flushCurrentTurnRender();
+        const view2 = session.getSessionView(session.activeSessionId);
+        view2.lastRenderAt = performance.now();
+        renderTick.value++;
+        view2.throttling = false;
       }, MIN_INTERVAL - elapsed);
     } else {
-      throttlePending = true;
-      lastRenderTime = now;
-      requestAnimationFrame(flushCurrentTurnRender);
+      view.throttling = true;
+      view.lastRenderAt = now;
+      requestAnimationFrame(() => {
+        renderTick.value++;
+        view.throttling = false;
+      });
     }
   }
 
@@ -331,13 +332,13 @@ export const useChatStore = defineStore("chat", () => {
     }
 
     const meta = await invoke<any>("create_session", {
-      workingDirectory: session.pendingWorkingDirectory,
+      projectId: session.pendingProjectId,
     });
     session.activeSessionId = meta.id;
     session.workingDirectory = meta.workingDirectory || null;
-    session.pendingWorkingDirectory = null;
+    session.pendingProjectId = null;
     session.resetSessionView(meta.id);
-    session.setSessionUsageTotals(meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
+    session.setSessionUsageTotals(meta.id, meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
 
     // 记录新建会话使用的模型，后续切回来时自动恢复
     const config = await invoke<any>("get_config");
@@ -353,22 +354,15 @@ export const useChatStore = defineStore("chat", () => {
     if (!msg && (!imageBase64List || imageBase64List.length === 0)) return;
 
     if (!skipRunningCheck) {
-      if (session.runningSessionId && session.runningSessionId === session.activeSessionId) {
-        const runningView = session.getSessionView(session.runningSessionId);
-        if (runningView.status === "RUNNING") {
-          await cancelJarvis();
-        } else {
-          session.runningSessionId = null;
-          runningView.runStartTime = null;
-          runningView.streamActive = false;
-          runningView.activeRunId = null;
-        }
+      const currentView = session.getSessionView(session.activeSessionId);
+      if (currentView.status === 'RUNNING') {
+        await cancelJarvis(session.activeSessionId ?? undefined);
       }
     }
 
-    const myGeneration = ++sendGeneration;
-
     const sessionIdAtStart = await ensureActiveSessionForSend();
+    sendGeneration[sessionIdAtStart] = (sendGeneration[sessionIdAtStart] || 0) + 1;
+    const myGeneration = sendGeneration[sessionIdAtStart];
     const requestView = session.getSessionView(sessionIdAtStart);
 
     try {
@@ -384,7 +378,7 @@ export const useChatStore = defineStore("chat", () => {
           session.replaceSessionHistory(sessionIdAtStart, history);
         }
         session.clearSessionBuffers(sessionIdAtStart);
-        resetRenderState();
+        resetRenderState(sessionIdAtStart);
       }
     } catch (err) {
       console.warn("恢复中断消息失败:", err);
@@ -395,14 +389,13 @@ export const useChatStore = defineStore("chat", () => {
     requestView.currentTurnStepsStart = requestView.agentSteps.length;
     requestView.hydrated = true;
     requestView.status = "RUNNING";
-    session.runningSessionId = sessionIdAtStart;
     requestView.activeRunId = null;
     requestView.resumableRunId = null;
     requestView.runStartTime = Date.now();
     requestView.streamActive = false;
     requestView.cancelHandled = false;
     session.clearSessionBuffers(sessionIdAtStart);
-    resetRenderState();
+    resetRenderState(sessionIdAtStart);
 
     if (!resumeOnly) {
       let displayMsg = msg;
@@ -463,7 +456,7 @@ export const useChatStore = defineStore("chat", () => {
 
       const sessionSwitched = sessionIdAtStart !== session.activeSessionId;
       if (!sessionSwitched) {
-        session.setSessionUsageTotals(res.session_input_tokens || 0, res.session_output_tokens || 0);
+        session.setSessionUsageTotals(sessionIdAtStart, res.session_input_tokens || 0, res.session_output_tokens || 0);
       }
       requestView.lastUserMessage = resumeOnly ? "" : msg;
 
@@ -483,20 +476,19 @@ export const useChatStore = defineStore("chat", () => {
           }
           requestView.latestCheckpoint = null;
           session.clearSessionBuffers(sessionIdAtStart);
-          resetRenderState();
+          resetRenderState(sessionIdAtStart);
           requestView.lastUserMessage = resumeOnly ? "" : msg;
           requestView.showRecallEdit = !resumeOnly;
           requestView.hydrated = true;
         }
-        if (myGeneration === sendGeneration) {
+        if (myGeneration === sendGeneration[sessionIdAtStart]) {
           requestView.runStartTime = null;
           requestView.streamActive = false;
           requestView.status = "IDLE";
-          session.runningSessionId = null;
           requestView.activeRunId = null;
         }
         requestView.cancelHandled = false;
-        if (!sessionSwitched && myGeneration === sendGeneration) {
+        if (!sessionSwitched && myGeneration === sendGeneration[sessionIdAtStart]) {
           triggerRender();
           scrollToBottomCb?.();
         }
@@ -519,14 +511,13 @@ export const useChatStore = defineStore("chat", () => {
         requestView.latestCheckpoint = null;
         session.clearSessionBuffers(sessionIdAtStart);
         session.appendSessionMessage(sessionIdAtStart, { role: "agent", id: `agent_${Date.now()}`, snapshot: clarificationSnapshot });
-        resetRenderState();
-        if (myGeneration === sendGeneration) {
+        resetRenderState(sessionIdAtStart);
+        if (myGeneration === sendGeneration[sessionIdAtStart]) {
           requestView.streamActive = false;
           requestView.status = "IDLE";
-          session.runningSessionId = null;
           requestView.activeRunId = null;
         }
-        if (!sessionSwitched && myGeneration === sendGeneration) {
+        if (!sessionSwitched && myGeneration === sendGeneration[sessionIdAtStart]) {
           triggerRender();
           scrollToBottomCb?.();
         }
@@ -548,43 +539,40 @@ export const useChatStore = defineStore("chat", () => {
         sessionOutput: sessionOutputTokens,
       };
 
-      // 先清空 live 缓冲区，避免 AgentTurn 与追加到历史的同一段内容同时渲染
+      // 先拍快照（保留执行过程），再清空 live 缓冲区
+      const snapshot = buildAgentTurnSnapshot(requestView.currentTurn, finalContent, finalToolBuffer, undefined, res.status);
       session.clearSessionBuffers(sessionIdAtStart);
 
-      if (myGeneration === sendGeneration) {
+      if (myGeneration === sendGeneration[sessionIdAtStart]) {
         requestView.status = "IDLE";
-        session.runningSessionId = null;
         requestView.activeRunId = null;
         requestView.resumableRunId = null;
         requestView.streamActive = false;
         requestView.runStartTime = null;
         requestView.latestCheckpoint = null;
       }
-
-      // 同时添加到结构化消息数组（供 Vue 组件渲染）
-      const snapshot = buildAgentTurnSnapshot(requestView.currentTurn, finalContent, finalToolBuffer, undefined, res.status);
       session.appendSessionMessage(sessionIdAtStart, {
         role: "agent",
         id: `agent_${Date.now()}`,
         snapshot,
       });
 
-      resetRenderState();
+      resetRenderState(sessionIdAtStart);
 
-      if (!sessionSwitched && myGeneration === sendGeneration) {
+      if (!sessionSwitched && myGeneration === sendGeneration[sessionIdAtStart]) {
         triggerRender();
         scrollToBottomCb?.();
       }
       // agent_steps persist removed
       const sessionAfterSave = useSessionStore();
       if (sessionIdAtStart === sessionAfterSave.activeSessionId) {
-        sessionAfterSave.setSessionUsageTotals(sessionInputTokens, sessionOutputTokens);
+        sessionAfterSave.setSessionUsageTotals(sessionIdAtStart, sessionInputTokens, sessionOutputTokens);
       }
       // agent 完成后主动拉取最新上下文快照，使监控面板的 Session Messages 包含完整最后一轮回复
       refreshContextSnapshot(sessionIdAtStart);
     } catch (err) {
       session.clearSessionBuffers(sessionIdAtStart);
-      resetRenderState();
+      resetRenderState(sessionIdAtStart);
 
       console.error("[chat] ask_jarvis 失败，原始错误:", err);
       const errMsg = extractErrorMessage(err);
@@ -592,39 +580,37 @@ export const useChatStore = defineStore("chat", () => {
       const escapedErr = errMsg.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
       const errorHtml = `<div class="chat-message agent-message"><div class="message-content"><div class="agent-error-banner">${escapedErr}</div></div></div>\n\n`;
       session.appendSessionHistory(sessionIdAtStart, errorHtml);
-      if (myGeneration === sendGeneration) {
+      if (myGeneration === sendGeneration[sessionIdAtStart]) {
         requestView.showRecallEdit = !resumeOnly;
         requestView.status = "ERROR";
-        session.runningSessionId = null;
         requestView.activeRunId = null;
         requestView.streamActive = false;
       }
-      if (sessionIdAtStart === session.activeSessionId && myGeneration === sendGeneration) {
+      if (sessionIdAtStart === session.activeSessionId && myGeneration === sendGeneration[sessionIdAtStart]) {
         triggerRender();
       }
     }
   }
 
-  async function cancelJarvis(): Promise<void> {
+  async function cancelJarvis(preferSessionId?: string): Promise<void> {
     const session = useSessionStore();
     const perm = usePermissionStore();
-    const runningSessionId = session.activeSessionId;
-    if (!runningSessionId) return;
-
-    const view = session.getSessionView(runningSessionId);
-
-    if (view.status !== "RUNNING") return;
+    // 优先取消指定会话，否则找到第一个正在运行的
+    const runningSid = (preferSessionId && session.sessionViews[preferSessionId]?.status === 'RUNNING')
+      ? preferSessionId
+      : Object.keys(session.sessionViews).find(
+          k => session.sessionViews[k].status === 'RUNNING' && k !== '__default__'
+        );
+    if (!runningSid) return;
+    const view = session.getSessionView(runningSid);
     view.cancelHandled = false;
-    if (runningSessionId) {
-      delete perm.permissionRequests[runningSessionId];
-      delete perm.planProposals[runningSessionId];
-    }
+    delete perm.permissionRequests[runningSid];
+    delete perm.planProposals[runningSid];
     try {
-      await invoke("cancel_jarvis", { sessionId: runningSessionId });
+      await invoke("cancel_jarvis", { sessionId: runningSid });
     } catch (err) {
       console.error("取消执行失败:", err);
     }
-    session.runningSessionId = null;
   }
 
   async function recallAndEdit(): Promise<string> {
@@ -705,7 +691,7 @@ export const useChatStore = defineStore("chat", () => {
         session.replaceSessionHistory(plan.sessionId, history);
       }
       session.clearSessionBuffers(plan.sessionId);
-      resetRenderState();
+      resetRenderState(plan.sessionId);
       triggerRender();
       await sendToJarvis(plan.prompt);
     } catch (err) {

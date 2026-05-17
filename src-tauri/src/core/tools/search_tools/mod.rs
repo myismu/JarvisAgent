@@ -891,7 +891,8 @@ crate::define_tools! {
                     "required": ["pattern"]
                 }
             }),
-            should_defer: true,
+            category: "搜索检索",
+            should_defer: false,
             is_read_only: true,
             is_concurrency_safe: true,
             is_enabled: true,
@@ -900,6 +901,7 @@ crate::define_tools! {
             name: "SearchText",
             description: "使用正则表达式搜索文件内容",
             search_hint: "grep ripgrep regex search file contents text pattern",
+            category: "系统",
             schema: json!({
                 "name": "SearchText",
                 "description": "A powerful search tool for file contents, modeled after Claude Code Grep. Supports regex syntax, glob/type filters, output modes, context lines, case-insensitive search, multiline search, and pagination.",

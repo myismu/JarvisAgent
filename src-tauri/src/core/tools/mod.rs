@@ -39,7 +39,8 @@ pub use framework::agent_registry::{AgentRegistry, DEFAULT_AGENT_ROLE, IMPLEMENT
 pub use framework::permission::{ensure_path_permission, is_path_safe, request_permission};
 pub use framework::tool_search::{
     get_core_tool_definitions, get_deferred_tool_full_schema, get_deferred_tool_list,
-    get_deferred_tool_search_entries, get_deferred_tools_context, handle_search_tools,
+    get_deferred_tool_search_entries, get_deferred_tools_context,
+    get_deferred_tools_context_compact, handle_search_tools,
     search_deferred_tools, DeferredToolSearchEntry,
 };
 
@@ -317,7 +318,6 @@ pub async fn handle_tool_call_inner(
 
         // 任务工具
         "UpdateTodos" => task_tools::todo_write(app, input, session_id).await,
-        "BatchCreateTasks" => task_tools::task_batch_create(app, input, session_id).await,
         "CreateTask" => task_tools::task_create(app, input, session_id).await,
         "UpdateTask" => task_tools::task_update(app, input, session_id).await,
         "DeleteTask" => task_tools::task_delete(app, input, session_id).await,

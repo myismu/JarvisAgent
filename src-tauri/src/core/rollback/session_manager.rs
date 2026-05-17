@@ -44,8 +44,6 @@ impl SessionSnapshotManager {
         let sandbox_base_dir = crate::infra::config::data_paths::tmp_dir()
             .join("sandboxes")
             .join(session_id);
-        std::fs::create_dir_all(&sandbox_base_dir)
-            .map_err(|e| format!("创建沙箱临时目录失败: {}", e))?;
 
         let journal = Journal::open(session_id).map_err(|e| format!("打开日志失败: {}", e))?;
 

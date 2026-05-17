@@ -8,6 +8,7 @@ pub(super) fn tool_def() -> ToolDef {
         name: "UpdateTodos",
         description: "更新当前会话的轻量待办清单，用于主 Agent 自己执行时展示进度",
         search_hint: "todo checklist progress lightweight task list activeForm 待办 进度",
+        category: "任务管理",
         schema: json!({
             "name": "UpdateTodos",
             "description": "Update the lightweight todo list for the current session. Use this for main-agent progress tracking on non-trivial work such as editing several files, running tests, or following a short checklist. This does not create persistent tasks, does not delegate to subagents, and does not participate in dependency scheduling. For complex work needing persistence, dependencies, or subagent execution, use CreateTask/UpdateTask/RunSubagent/RunSubagentsSequentially instead.\n\nRules:\n- Use proactively for tasks with roughly 3+ meaningful steps or multiple files.\n- Do not use for a single trivial task or purely conversational answers.\n- Keep exactly one item in_progress while actively working, unless the list is empty or all work is done.\n- Mark items completed immediately after finishing them.\n- Each item must include both content (imperative form, e.g. \"Run tests\") and activeForm (present continuous form, e.g. \"Running tests\").",

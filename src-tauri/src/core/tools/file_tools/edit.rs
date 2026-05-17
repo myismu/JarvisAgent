@@ -32,6 +32,9 @@ pub async fn edit_file(
 ) -> String {
     let path = resolve_path(input);
     let old_text = input["old_text"].as_str().unwrap_or("");
+    if old_text.trim().len() < 10 {
+        return "编辑失败: old_text 太短（< 10 个有效字符），请包含至少 3~5 行上下文使匹配唯一。".to_string();
+    }
     let new_text = normalize_line_endings(input["new_text"].as_str().unwrap_or(""));
     let ws = get_workspace(app, session_id).await;
     if let Err(e) = ensure_path_permission(app, path, "编辑", ws.as_deref()).await {

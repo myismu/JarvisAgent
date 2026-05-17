@@ -30,6 +30,10 @@ export interface SessionViewState {
   activeRunId: string | null;
   resumableRunId: string | null;
   currentTurn: AgentCurrentTurn;
+  throttling: boolean;
+  lastRenderAt: number;
+  sessionInputTokens: number;
+  sessionOutputTokens: number;
 }
 
 const READY_TEXT = "Ready for input...";
@@ -56,6 +60,10 @@ function createEmptySessionView(initialHistory = READY_TEXT, hydrated = false): 
     activeRunId: null,
     resumableRunId: null,
     currentTurn: createEmptyAgentCurrentTurn(),
+    throttling: false,
+    lastRenderAt: 0,
+    sessionInputTokens: 0,
+    sessionOutputTokens: 0,
   };
 }
 
@@ -68,10 +76,8 @@ export const useSessionStore = defineStore("session", () => {
     [DEFAULT_SESSION_KEY]: createEmptySessionView(READY_TEXT, true),
   });
   const activeSessionId = ref<string | null>(null);
-  const pendingWorkingDirectory = ref<string | null>(null);
+  const pendingProjectId = ref<string | null>(null);
   const workingDirectory = ref<string | null>(null);
-  const totalInputTokens = ref(0);
-  const totalOutputTokens = ref(0);
   const sessionListFilter = ref<SessionListFilter>({});
 
   function setSessionListFilter(filter: SessionListFilter) {
@@ -135,13 +141,14 @@ export const useSessionStore = defineStore("session", () => {
     view.jarvisResponse = history && history.trim() ? history : READY_TEXT;
     view.messages = [];
     view.hydrated = true;
-    // 清除 live turn 缓冲区，避免与历史 HTML 重复渲染最后一条 agent 回复
-    view.contentBuffer = "";
-    view.tempBuffer = "";
-    view.toolBuffer = "";
-    view.thinkingBuffer = "";
-    view.streamActive = false;
-    resetAgentCurrentTurn(view);
+    if (view.status !== 'RUNNING') {
+      view.contentBuffer = "";
+      view.tempBuffer = "";
+      view.toolBuffer = "";
+      view.thinkingBuffer = "";
+      view.streamActive = false;
+      resetAgentCurrentTurn(view);
+    }
   }
 
   function replaceSessionMessages(sessionId: string | null | undefined, messages: any[]) {
@@ -154,13 +161,15 @@ export const useSessionStore = defineStore("session", () => {
     }));
     view.jarvisResponse = READY_TEXT;
     view.hydrated = true;
-    // 清除 live turn 缓冲区
-    view.contentBuffer = "";
-    view.tempBuffer = "";
-    view.toolBuffer = "";
-    view.thinkingBuffer = "";
-    view.streamActive = false;
-    resetAgentCurrentTurn(view);
+    // 如果会话仍在运行，保留 currentTurn 避免和 checkpoint 快照产生重叠分裂
+    if (view.status !== 'RUNNING') {
+      view.contentBuffer = "";
+      view.tempBuffer = "";
+      view.toolBuffer = "";
+      view.thinkingBuffer = "";
+      view.streamActive = false;
+      resetAgentCurrentTurn(view);
+    }
   }
 
   function appendSessionMessage(sessionId: string | null | undefined, message: any) {
@@ -188,9 +197,10 @@ export const useSessionStore = defineStore("session", () => {
     }
   }
 
-  function setSessionUsageTotals(inputTokens: number, outputTokens: number) {
-    totalInputTokens.value = inputTokens || 0;
-    totalOutputTokens.value = outputTokens || 0;
+  function setSessionUsageTotals(sessionId: string | null | undefined, inputTokens: number, outputTokens: number) {
+    const view = getSessionView(sessionId);
+    view.sessionInputTokens = inputTokens || 0;
+    view.sessionOutputTokens = outputTokens || 0;
   }
 
   function isSessionRunning(sessionId: string): boolean {
@@ -207,13 +217,13 @@ export const useSessionStore = defineStore("session", () => {
     Object.values(sessionViews.value).some((v) => v.status === "RUNNING")
   );
 
-  const runningSessionId = ref<string | null>(null);
+  const totalInputTokens = computed(() => currentSessionView.value?.sessionInputTokens || 0);
+  const totalOutputTokens = computed(() => currentSessionView.value?.sessionOutputTokens || 0);
 
   return {
     sessionViews,
     activeSessionId,
-    runningSessionId,
-    pendingWorkingDirectory,
+    pendingProjectId,
     workingDirectory,
     totalInputTokens,
     totalOutputTokens,

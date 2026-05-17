@@ -560,6 +560,8 @@ impl AtomicFileRollback {
         }
 
         fs::remove_dir_all(&staging_dir)?;
+        // 清理临时目录（execute 完成后不再需要）
+        let _ = fs::remove_dir_all(&self.temp_dir);
 
         Ok(())
     }

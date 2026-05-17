@@ -59,6 +59,20 @@ pub fn delete_image_file(filename: &str) {
     let _ = resource_repository::delete_attachment(filename);
 }
 
+/// 项目元信息
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectMeta {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+    /// 项目下的会话数
+    #[serde(default)]
+    pub session_count: usize,
+}
+
 /// 会话元信息（用于列表展示，不含完整消息体）
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -78,7 +92,10 @@ pub struct SessionMeta {
     pub total_output_tokens: u64,
     #[serde(default = "default_title_source")]
     pub title_source: String,
-    /// 会话级工作目录沙箱，None 表示无限制
+    /// 所属项目 ID，None 表示无项目独立会话
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// 工作目录（从 projects 表派生，仅读）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_directory: Option<String>,
 }
@@ -158,8 +175,11 @@ pub fn list_sessions() -> Vec<SessionMeta> {
 }
 
 /// 创建新会话，返回元信息
-pub fn create_session(working_directory: Option<String>) -> SessionMeta {
+pub fn create_session(project_id: Option<String>) -> SessionMeta {
     let now = now_ts();
+    let working_directory = project_id
+        .as_ref()
+        .and_then(|pid| repository::get_project_path(pid).ok().flatten());
     let meta = SessionMeta {
         id: uuid::Uuid::new_v4().to_string()[..8].to_string(),
         title: "新会话".to_string(),
@@ -171,6 +191,7 @@ pub fn create_session(working_directory: Option<String>) -> SessionMeta {
         total_input_tokens: 0,
         total_output_tokens: 0,
         title_source: default_title_source(),
+        project_id,
         working_directory,
     };
     let memory = SessionMemory::default();
@@ -262,19 +283,26 @@ pub fn save_session(
     memory: &SessionMemory,
     token_usage_delta: Option<(u64, u64)>,
 ) -> SessionMeta {
-    let mut meta = repository::get_session_meta(id).unwrap_or_else(|_| SessionMeta {
-        id: id.to_string(),
-        title: "新会话".to_string(),
-        created_at: now_ts(),
-        updated_at: now_ts(),
-        message_count: memory.messages.len(),
-        is_smart_named: false,
-        profile_id: None,
-        total_input_tokens: 0,
-        total_output_tokens: 0,
-        title_source: default_title_source(),
-        working_directory: None,
-    });
+    let meta = match repository::get_session_meta(id) {
+        Ok(m) => m,
+        Err(_) => {
+            return SessionMeta {
+                id: id.to_string(),
+                title: String::new(),
+                created_at: 0,
+                updated_at: 0,
+                message_count: 0,
+                is_smart_named: false,
+                profile_id: None,
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+                title_source: default_title_source(),
+                project_id: None,
+                working_directory: None,
+            };
+        }
+    };
+    let mut meta = meta;
 
     let mut normalized_memory = memory.clone();
     normalize_message_ids(&mut normalized_memory);

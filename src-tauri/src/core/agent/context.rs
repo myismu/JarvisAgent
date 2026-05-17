@@ -26,7 +26,7 @@ pub fn build_dynamic_context(
     workspace: &Option<std::path::PathBuf>,
 ) -> String {
     match intent {
-        "CHAT" => "<intent>\nCHAT\n</intent>\n".to_string(),
+        "CHAT" => String::new(),
         "QUESTION" => {
             let global_content = read_memory_file(&get_global_memory_path(), "Global Memory");
             format!(
@@ -35,43 +35,48 @@ pub fn build_dynamic_context(
             )
         }
         _ => {
-            let global_content = read_memory_file(&get_global_memory_path(), "Global Memory");
-            let repo_dir = {
-                workspace
-                    .clone()
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
-            };
-            let repo_map = generate_repo_map(&repo_dir, "", 0, 3);
-            let mut ctx = format!(
-                "<intent>\nPROJECT_ACTION\n</intent>\n\n<global_context>\n{}\n</global_context>\n\n<project_context>\n# Dynamic Repo Map\n{}\n</project_context>\n",
-                global_content, repo_map
-            );
+            let mut ctx = String::new();
 
-            // 注入延迟加载工具名称列表（渐进式披露）
-            ctx.push_str(&get_deferred_tools_context(intent));
+            // ── 1. 行为约束（必定阅读，控制在 3 条）──
+            ctx.push_str("── 行为约束\n");
+            ctx.push_str("1. 代码探索优先用 FindFiles 获取结构，再 ReadFile 精准读取，禁止逐个文件遍历\n");
+            ctx.push_str("2. 复杂任务（3+文件改动/架构变更）必须先 ProposePlan 提交方案，审批后才能执行\n");
+            ctx.push_str("3. 当前模式：编辑（全工具可用，复杂任务切 Plan）\n");
 
-            let skills = load_all_skills();
-            if !skills.is_empty() {
-                println!(
-                    "[JARVIS] Loaded {} skills: {:?}",
-                    skills.len(),
-                    skills.iter().map(|s| &s.name).collect::<Vec<_>>()
-                );
-                ctx.push_str("\n\n【可用技能】 (使用 LoadSkill 工具获取完整内容)：\n");
-                for skill in &skills {
-                    ctx.push_str(&format!("  - {}: {}\n", skill.name, skill.description));
-                }
+            // ── 2. 环境信息 ──
+            ctx.push_str("\n── 环境\n");
+            if let Some(ref ws_path) = workspace {
+                ctx.push_str(&format!("工作目录: {}\n", ws_path.display()));
+            } else {
+                ctx.push_str("工作目录: 当前目录（无沙箱限制）\n");
             }
 
-            ctx.push_str("\n\n【重要提醒】对于复杂任务（涉及多步骤修改、架构变更等），必须使用 ProposePlan 工具提交实施方案，等待用户在预览面板中审批通过后，才能使用 CreateTask 创建持久化任务。严禁跳过 ProposePlan 直接创建任务！\n");
+            // ── 3. 参考索引（按需查阅，不重要可跳过）──
+            ctx.push_str("\n── 参考索引\n");
 
+            // 项目结构（仅在项目会话时生成）
             if let Some(ref ws_path) = workspace {
-                ctx.push_str(&format!(
-                    "\n\n【会话沙箱】当前会话配置了工作目录沙箱，路径为 '{}'。所有文件操作、命令执行都被限制在此目录内。尝试访问沙箱外的路径会被系统拦截。\n",
-                    ws_path.display()
-                ));
-            } else {
-                ctx.push_str("\n\n【无沙箱限制】当前会话没有沙箱限制，您可以自由访问系统上的任何路径和执行任何命令。工作目录仅作为默认起始位置，不构成访问限制。\n");
+                let repo_map = generate_repo_map(ws_path, "", 0, 2);
+                ctx.push_str("项目结构:\n");
+                ctx.push_str(&repo_map);
+            }
+
+            // 工具索引（紧凑格式）
+            ctx.push_str("可用工具:\n");
+            ctx.push_str(&get_deferred_tools_context_compact(intent));
+
+            // 技能（仅名称）
+            let skills = load_all_skills();
+            if !skills.is_empty() {
+                let names: Vec<String> = skills.iter().map(|s| s.name.to_string()).collect();
+                ctx.push_str(&format!("可用技能: {}\n", names.join(", ")));
+            }
+
+            // 全局记忆（压缩在末尾）
+            let global_content = read_memory_file(&get_global_memory_path(), "Global Memory");
+            let trimmed = global_content.trim();
+            if !trimmed.is_empty() {
+                ctx.push_str(&format!("\n── 全局记忆\n{}\n", trimmed));
             }
 
             ctx
@@ -154,7 +159,7 @@ pub fn inject_context_into_history(
             content: Content::Single(ref mut text),
         } = initial_msg
         {
-            *text = format!("{}\n\n[User Input]:\n{}", dynamic_context_str, text);
+            *text = format!("[User Input]:\n{}\n\n{}", text, dynamic_context_str);
         } else if let Message::User {
             content: Content::Multiple(ref mut blocks),
         } = initial_msg
@@ -162,10 +167,9 @@ pub fn inject_context_into_history(
             if blocks.iter().any(|block| matches!(block, ContentBlock::ToolResult { .. })) {
                 return;
             }
-            blocks.insert(
-                0,
+            blocks.push(
                 ContentBlock::Text {
-                    text: format!("{}\n\n", dynamic_context_str),
+                    text: format!("\n\n{}", dynamic_context_str),
                 },
             );
         }
@@ -269,7 +273,7 @@ mod tests {
         match &history[0] {
             Message::User { content } => match content {
                 Content::Single(text) => {
-                    assert!(text.contains("CHAT"));
+                    assert!(text.starts_with("[User Input]:"));
                     assert!(text.contains("原始消息"));
                 }
                 _ => panic!("Expected single text"),

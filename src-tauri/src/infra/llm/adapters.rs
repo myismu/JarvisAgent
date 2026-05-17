@@ -56,20 +56,72 @@ pub fn parse_streamed_tool_input(raw: &str) -> Result<(serde_json::Value, bool),
     match serde_json::from_str::<serde_json::Value>(raw) {
         Ok(value) => Ok((value, false)),
         Err(first_err) => {
+            // Pass 1: 控制字符规范化
             let normalized = normalize_json_string_control_chars(raw);
-            if normalized == raw {
-                return Err(first_err.to_string());
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&normalized) {
+                return Ok((value, normalized != raw));
             }
+            // Pass 2: 修复字符串值中未转义的双引号（常见于 HTML/XML 内容）
+            let repaired = repair_unescaped_quotes(&normalized);
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&repaired) {
+                return Ok((value, true));
+            }
+            Err(format!("工具参数解析失败：{}", first_err))
+        }
+    }
+}
 
-            match serde_json::from_str::<serde_json::Value>(&normalized) {
-                Ok(value) => Ok((value, true)),
-                Err(second_err) => Err(format!(
-                    "原始解析失败: {}; 规范化后仍失败: {}",
-                    first_err, second_err
-                )),
+/// 修复 JSON 字符串值中未转义的双引号（LLM 生成 HTML 时常漏掉）
+fn repair_unescaped_quotes(raw: &str) -> String {
+    let mut result = String::with_capacity(raw.len());
+    let mut in_string = false;
+    let mut escaping = false;
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        if escaping {
+            result.push(ch);
+            escaping = false;
+            i += 1;
+            continue;
+        }
+        match ch {
+            '\\' => {
+                result.push(ch);
+                if in_string { escaping = true; }
+                i += 1;
+            }
+            '"' => {
+                if in_string {
+                    // 在字符串内部遇到引号 → 检查是否为字符串结束
+                    // 向前看：跳过空白，下一个非空字符是 , } ] : → 字符串结束
+                    let next = skip_whitespace(raw, i + 1);
+                    if next == Some(',') || next == Some('}') || next == Some(']') || next == Some(':') || next.is_none() {
+                        in_string = false;
+                        result.push(ch);
+                    } else {
+                        // 字符串内的引号 → 转义它
+                        result.push('\\');
+                        result.push(ch);
+                    }
+                } else {
+                    in_string = true;
+                    result.push(ch);
+                }
+                i += 1;
+            }
+            _ => {
+                result.push(ch);
+                i += 1;
             }
         }
     }
+    result
+}
+
+fn skip_whitespace(raw: &str, start: usize) -> Option<char> {
+    raw[start..].chars().find(|c| !c.is_whitespace())
 }
 
 /// 为没有思考块的消息生成一个最小 reasoning_content，保持 OpenAI 对话格式一致

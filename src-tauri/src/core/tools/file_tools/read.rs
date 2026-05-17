@@ -10,6 +10,7 @@
 //! - Internal: `crate::core::tools::framework::permission`, `super::workspace`, `super::common`
 
 use crate::core::tools::framework::permission::ensure_path_permission;
+use tauri::Manager;
 
 use super::common::{
     binary_file_read_error, is_locked_file_error, read_text_preserve_encoding, resolve_path,
@@ -281,6 +282,25 @@ pub async fn read_file(
                     "\n... 输出已截断（显示 {} 行，总共 {} 行）。请使用 start_line={}/end_line={} 继续读取。",
                     MAX_LINES_DEFAULT, actual_end - start_idx, display_end + 1, actual_end
                 ));
+            }
+
+            // 探索模式拦截：记录文件目录，检测逐文件遍历
+            if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
+                let ctx = manager.get_or_create(session_id).await;
+                let dir = std::path::Path::new(path)
+                    .parent()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let mut paths = ctx.read_file_paths.lock().await;
+                if !paths.contains(&dir) {
+                    paths.push(dir);
+                }
+                if paths.len() >= 4 {
+                    let unique_dirs: std::collections::HashSet<_> = paths.iter().collect();
+                    if unique_dirs.len() >= 3 {
+                        result.push_str("\n\n💡 提示：你正在逐个读取不同目录下的文件。建议改用 FindFiles 先获取项目文件结构，再用 ReadFile 精准读取目标文件。");
+                    }
+                }
             }
 
             result

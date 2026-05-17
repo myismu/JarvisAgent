@@ -31,6 +31,12 @@ static PLAN_KEYWORDS: LazyLock<Vec<&str>> = LazyLock::new(|| {
         "我来帮你实现",
         "整体方案",
         "分步实施",
+        // 复杂任务拆解的特征标题
+        "任务拆解",
+        "依赖关系",
+        "子任务分配",
+        "执行计划",
+        "步骤拆解",
     ]
 });
 
@@ -40,12 +46,8 @@ pub fn detect_plan_in_text(text: &str) -> bool {
     }
 
     let keyword_hit = PLAN_KEYWORDS.iter().any(|kw| text.contains(kw));
-    if keyword_hit {
-        let pattern_hits: usize = PLAN_PATTERNS
-            .iter()
-            .map(|p| p.find_iter(text).count())
-            .sum();
-        return pattern_hits >= 1;
+    if !keyword_hit {
+        return false;
     }
 
     let pattern_hits: usize = PLAN_PATTERNS
@@ -53,7 +55,7 @@ pub fn detect_plan_in_text(text: &str) -> bool {
         .map(|p| p.find_iter(text).count())
         .sum();
 
-    pattern_hits >= 2
+    pattern_hits >= 1
 }
 
 #[cfg(test)]

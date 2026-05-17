@@ -34,6 +34,13 @@ const {
   restoreCurrentWindowState,
   watchCurrentWindowState,
 } = useWindow();
+const projectName = computed(() => {
+  const dir = session.workingDirectory;
+  if (!dir) return null;
+  const parts = dir.replace(/\\/g, '/').split('/').filter(Boolean);
+  return parts[parts.length - 1] || dir;
+});
+
 const hasUnseenFinish = ref(false);
 let unlistenMonitorWindowClosed: (() => void) | null = null;
 let unwatchWindowState: (() => void) | null = null;
@@ -167,6 +174,12 @@ onBeforeUnmount(() => {
                 <polyline :points="sidebarCollapsed ? '9 18 15 12 9 6' : '15 18 9 12 15 6'"></polyline>
               </svg>
             </button>
+            <div v-if="projectName" class="tab-bar-project">
+              <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+              </svg>
+              <span>{{ projectName }}</span>
+            </div>
             <div class="tab-bar-center">
               <div class="status-indicator" :class="displayStatus">
                 <svg class="status-light" viewBox="0 0 24 24" width="20" height="20">
@@ -191,7 +204,8 @@ onBeforeUnmount(() => {
           </div>
           
           <ChatArea />
-          
+          <PlanPreviewPanel />
+
           <div class="floating-terminal-container">
             <TerminalInput />
           </div>
@@ -199,7 +213,6 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <PlanPreviewPanel />
     <SettingsPanel v-model="showSettings" />
   </main>
 </template>
@@ -276,6 +289,25 @@ onBeforeUnmount(() => {
   color: var(--accent-blue);
   background: var(--glass-bg-light);
   border-color: var(--glass-border-subtle);
+}
+
+.tab-bar-project {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  background: var(--glass-bg-light);
+  border: 1px solid var(--glass-border-subtle);
+  user-select: none;
+  margin-left: 4px;
+}
+
+.tab-bar-project svg {
+  flex-shrink: 0;
+  opacity: 0.5;
 }
 
 .status-indicator {

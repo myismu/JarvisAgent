@@ -23,7 +23,7 @@ const chat = useChatStore();
 const uiPrefs = usePreferences();
 
 const isRunning = computed(() =>
-  session.runningSessionId != null && session.runningSessionId === session.activeSessionId
+  session.getSessionView(session.activeSessionId).status === 'RUNNING'
 );
 
 const sessionTokenTotal = computed(() => (session.totalInputTokens || 0) + (session.totalOutputTokens || 0));
@@ -153,14 +153,15 @@ const switchProfile = async (id: string) => {
       // 切模型后刷新历史，确保 data-user-message-index 同步
       try {
         if (session.activeSessionId) {
-          try {
-            const messages = await invoke<any[]>('get_session_messages', { sessionId: session.activeSessionId });
-            session.clearSessionBuffers(session.activeSessionId);
-            session.replaceSessionMessages(session.activeSessionId, messages);
-          } catch {
-            const history = await invoke<string>('get_session_history', { sessionId: session.activeSessionId });
-            session.clearSessionBuffers(session.activeSessionId);
-            session.replaceSessionHistory(session.activeSessionId, history);
+          const view = session.getSessionView(session.activeSessionId);
+          if (view.status !== 'RUNNING') {
+            try {
+              const messages = await invoke<any[]>('get_session_messages', { sessionId: session.activeSessionId });
+              session.replaceSessionMessages(session.activeSessionId, messages);
+            } catch {
+              const history = await invoke<string>('get_session_history', { sessionId: session.activeSessionId });
+              session.replaceSessionHistory(session.activeSessionId, history);
+            }
           }
         }
       } catch { /* ignore */ }
@@ -259,14 +260,15 @@ onMounted(async () => {
     loadImageCompressConfig();
     try {
       if (session.activeSessionId) {
-        try {
-          const messages = await invoke<any[]>('get_session_messages', { sessionId: session.activeSessionId });
-          session.clearSessionBuffers(session.activeSessionId);
-          session.replaceSessionMessages(session.activeSessionId, messages);
-        } catch {
-          const history = await invoke<string>('get_session_history', { sessionId: session.activeSessionId });
-          session.clearSessionBuffers(session.activeSessionId);
-          session.replaceSessionHistory(session.activeSessionId, history);
+        const view = session.getSessionView(session.activeSessionId);
+        if (view.status !== 'RUNNING') {
+          try {
+            const messages = await invoke<any[]>('get_session_messages', { sessionId: session.activeSessionId });
+            session.replaceSessionMessages(session.activeSessionId, messages);
+          } catch {
+            const history = await invoke<string>('get_session_history', { sessionId: session.activeSessionId });
+            session.replaceSessionHistory(session.activeSessionId, history);
+          }
         }
       }
     } catch { /* ignore */ }
@@ -434,7 +436,9 @@ const handleRecallEdit = async () => {
       <div class="input-toolbar">
         <div class="profile-selector">
           <button class="profile-btn" @click="showProfileMenu = !showProfileMenu">
-            <span class="profile-icon">✨</span>
+            <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round" class="profile-icon">
+              <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"></path>
+            </svg>
             {{ appConfig?.profiles.find((p: any) => p.id === appConfig?.activeProfileId)?.name || t('input.selectModel') }}
             <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none"><polyline points="6 9 12 15 18 9"></polyline></svg>
           </button>
@@ -668,7 +672,9 @@ const handleRecallEdit = async () => {
 }
 
 .profile-icon {
-  font-size: 0.9rem;
+  flex-shrink: 0;
+  color: var(--accent-blue);
+  opacity: 0.8;
 }
 
 .profile-menu {
@@ -694,7 +700,8 @@ const handleRecallEdit = async () => {
 }
 
 .profile-menu-item {
-  padding: 10px 14px;
+  position: relative;
+  padding: 10px 32px 10px 14px;
   cursor: pointer;
   border-bottom: 1px solid color-mix(in srgb, var(--text-muted) 12%, transparent);
   transition: background var(--transition-fast);
@@ -708,12 +715,12 @@ const handleRecallEdit = async () => {
 }
 
 .profile-menu-item:hover {
-  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+  background: color-mix(in srgb, var(--text-muted) 8%, transparent);
 }
 
 .profile-menu-item.active {
-  background: rgba(59, 130, 246, 0.12);
-  border-left: 3px solid var(--accent-blue);
+  background: color-mix(in srgb, var(--text-muted) 16%, transparent);
+  border: 1px solid var(--glass-border);
 }
 
 .profile-menu-name {
@@ -762,10 +769,9 @@ const handleRecallEdit = async () => {
 }
 
 .action-toggle-btn.active {
-  background: rgba(59, 130, 246, 0.12);
-  color: var(--accent-blue);
-  border-color: rgba(59, 130, 246, 0.35);
-  box-shadow: 0 0 12px rgba(59, 130, 246, 0.1);
+  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+  color: var(--text-main);
+  border-color: var(--glass-border);
 }
 
 .action-toggle-btn.disabled {

@@ -2,17 +2,17 @@
   "app": {
     "expandSidebar": "Expand sidebar",
     "collapseSidebar": "Collapse sidebar",
-    "showAgentPanel": "Show execution flow",
-    "hideAgentPanel": "Hide execution flow"
+    "showAgentPanel": "Open monitor window",
+    "hideAgentPanel": "Close monitor window"
   },
   "welcome": {
     "ready": "Ready to serve you, sir."
   },
   "sidebar": {
     "sessions": "Sessions",
-    "newSession": "New session",
-    "newSandboxSession": "New sandbox session",
-    "selectWorkspace": "Select session workspace (sandbox)",
+    "newSession": "New chat",
+    "openProject": "Open project",
+    "selectWorkspace": "Select project directory",
     "dialogOpenError": "Failed to open directory picker.",
     "renameRequired": "Session name is required.",
     "renamed": "Session renamed.",
@@ -33,8 +33,15 @@
     "hasToolCalls": "Has tool calls",
     "noMatchedSessions": "No matching sessions",
     "noSessions": "No sessions yet",
+    "projectSessions": "Project sessions",
+    "standaloneSessions": "Standalone sessions",
+    "newProjectSession": "New chat",
+    "collapseProject": "Collapse project",
+    "expandProject": "Expand project",
+    "deleteProject": "Close project",
+    "deleteProjectConfirm": "Delete project \"{name}\" and all its sessions? This action cannot be undone.",
     "sandbox": "Sandbox",
-    "sandboxTitle": "Sandbox: {path}",
+    "sandboxTitle": "{path}",
     "rename": "Rename session",
     "delete": "Delete session",
     "settings": "Settings",

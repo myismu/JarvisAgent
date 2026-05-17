@@ -2,17 +2,17 @@
   "app": {
     "expandSidebar": "展开侧栏",
     "collapseSidebar": "收起侧栏",
-    "showAgentPanel": "显示执行流程",
-    "hideAgentPanel": "隐藏执行流程"
+    "showAgentPanel": "打开监控窗口",
+    "hideAgentPanel": "关闭监控窗口"
   },
   "welcome": {
     "ready": "随时准备为您效劳，先生。"
   },
   "sidebar": {
     "sessions": "会话",
-    "newSession": "新建会话",
-    "newSandboxSession": "新建沙箱会话",
-    "selectWorkspace": "选择会话工作目录（沙箱）",
+    "newSession": "新建对话",
+    "openProject": "打开项目",
+    "selectWorkspace": "选择项目目录",
     "dialogOpenError": "目录选择器调用失败。",
     "renameRequired": "会话名称不能为空。",
     "renamed": "会话已重命名。",
@@ -33,8 +33,16 @@
     "hasToolCalls": "有工具调用",
     "noMatchedSessions": "无匹配会话",
     "noSessions": "暂无会话",
+    "projectSessions": "项目会话",
+    "standaloneSessions": "独立会话",
+    "newProjectSession": "新建对话",
+    "collapseProject": "收起项目",
+    "expandProject": "展开项目",
+    "projectDeleted": "项目已关闭",
+    "deleteProject": "关闭项目",
+    "deleteProjectConfirm": "确定要删除项目\"{name}\"吗？项目下的所有会话也会被一并删除，此操作不可撤销。",
     "sandbox": "沙盒",
-    "sandboxTitle": "沙箱: {path}",
+    "sandboxTitle": "{path}",
     "rename": "重命名会话",
     "delete": "删除会话",
     "settings": "设置",

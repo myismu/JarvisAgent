@@ -136,22 +136,43 @@ pub fn search_deferred_tools(
 
 /// 生成延迟工具名称列表上下文（注入到 system prompt 区域的用户消息中）
 pub fn get_deferred_tools_context(intent: &str) -> String {
-    let names: Vec<String> = ToolRegistry::global()
-        .get_all_deferred_names(intent)
-        .into_iter()
-        .map(|name| name.to_string())
-        .collect();
+    let groups = ToolRegistry::global().get_deferred_by_category(intent);
 
-    if names.is_empty() {
+    if groups.is_empty() {
         return String::new();
     }
 
-    let rendered: Vec<String> = names.iter().map(|name| format!("- **{}**", name)).collect();
+    let mut out = String::from(
+        "\n\n【延迟加载工具】（使用 SearchTools 获取完整参数定义后才能调用）:\n",
+    );
+    for (category, names) in &groups {
+        let name_list: Vec<String> = names.iter().map(|n| format!("`{}`", n)).collect();
+        out.push_str(&format!("- **{}**: {}\n", category, name_list.join(", ")));
+    }
+    out
+}
 
-    format!(
-        "\n\n【延迟加载工具】（使用 SearchTools 获取完整参数定义后才能调用）:\n{}\n",
-        rendered.join("\n")
-    )
+/// 生成延迟工具上下文（紧凑格式，用于 user message 参考索引）
+pub fn get_deferred_tools_context_compact(intent: &str) -> String {
+    let groups = ToolRegistry::global().get_deferred_by_category(intent);
+    if groups.is_empty() {
+        return String::new();
+    }
+    // 核心工具前置
+    let core = ToolRegistry::global().get_core_definitions();
+    let core_names: Vec<&str> = core
+        .iter()
+        .filter_map(|schema| schema["name"].as_str())
+        .filter(|n| *n != "SearchTools")
+        .collect();
+    let mut out = String::new();
+    if !core_names.is_empty() {
+        out.push_str(&format!("  · 核心: {}\n", core_names.join(", ")));
+    }
+    for (category, names) in &groups {
+        out.push_str(&format!("  · {}: {}\n", category, names.join(", ")));
+    }
+    out
 }
 
 /// SearchTools 工具的处理函数
@@ -198,9 +219,10 @@ crate::define_tools! {
             name: "SearchTools",
             description: "搜索并获取延迟加载工具的完整参数定义",
             search_hint: "search tools find discover lookup",
+            category: "",
             schema: json!({
                 "name": "SearchTools",
-                "description": "搜索并获取延迟加载工具的完整参数定义。在使用任何名称已知但参数未知的工具前，必须先调用此工具获取其完整 JSON Schema。支持 'select:ToolName1,ToolName2' 精确选择，或关键词搜索（如 'file read write'）。",
+                "description": "搜索并获取延迟加载工具的完整参数定义。代码搜索用 'FindSymbol FindReferences CodeSearch SearchRepo'，文件操作用 'ReadFile WriteFile EditFile'，命令执行用 'RunCommand RunGitCommand'，任务管理用 'CreateTask UpdateTask'，Agent 调度用 'RunSubagent ProposePlan'。支持 'select:ToolName1,ToolName2' 精确选择。",
                 "input_schema": {
                     "type": "object",
                     "properties": {
