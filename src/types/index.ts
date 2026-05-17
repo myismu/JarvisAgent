@@ -155,8 +155,7 @@ export type AgentStepType =
 export interface AgentStep {
   type: AgentStepType;
   tool?: string;
-  input_summary?: string;
-  output_summary?: string;
+  content?: string;
   error?: string;
   task?: string;
   taskId?: number;
@@ -164,7 +163,6 @@ export interface AgentStep {
   status?: string;
   attempt?: number;
   max?: number;
-  content?: string;
   timestamp: number;
 }
 
@@ -209,10 +207,8 @@ export interface AgentToolCallView {
   loop: number;
   name: string;
   status: AgentToolStatus;
-  inputSummary?: string;
-  fullInput?: string;
-  fullOutput?: string;
-  outputSummary?: string;
+  input?: string;
+  output?: string;
   error?: string;
   logs: string[];
   timestamp: number;

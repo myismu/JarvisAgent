@@ -73,8 +73,8 @@ ${renderMarkdown(content)}
 
 function renderToolDetailHtml(tool: AgentToolCallView) {
   return [
-    tool.inputSummary
-      ? `<div class="agent-tool-field"><span>参数</span>${renderMarkdown(tool.inputSummary)}</div>`
+    tool.input
+      ? `<div class="agent-tool-field"><span>参数</span>${renderMarkdown(tool.input)}</div>`
       : "",
     tool.outputSummary
       ? `<div class="agent-tool-field"><span>输出</span>${renderMarkdown(tool.outputSummary)}</div>`
@@ -343,8 +343,8 @@ function renderDevItemToHtml(item: DevTimelineItem): string {
       const label = toolActionLabel(tool.name, tool.status, tool);
       const open = item.streaming;
 
-      const paramsHtml = tool.inputSummary
-        ? `<div class="dev-tool-section"><div class="dev-tool-section-label">参数</div><pre class="dev-tool-pre">${escapeHtml(tool.inputSummary)}</pre></div>`
+      const paramsHtml = tool.input
+        ? `<div class="dev-tool-section"><div class="dev-tool-section-label">参数</div><pre class="dev-tool-pre">${escapeHtml(tool.input)}</pre></div>`
         : "";
       const outputHtml = tool.outputSummary
         ? `<div class="dev-tool-section"><div class="dev-tool-section-label">输出</div><pre class="dev-tool-pre">${escapeHtml(tool.outputSummary)}</pre></div>`

@@ -98,8 +98,8 @@ function toolStatusLabel(status: string): string {
         </details>
         <details v-else-if="item.type === 'tool'" class="dev-tool" :class="[item.tool.status]" :open="item.streaming">
           <summary class="dev-tool-summary"><span class="dev-status-dot" :class="item.tool.status"></span><code class="dev-tool-name">{{ item.tool.name }}</code><span class="dev-tool-action">{{ toolActionLabel(item.tool.name, item.tool.status, item.tool) }}</span><span class="dev-tool-status">{{ toolStatusLabel(item.tool.status) }}</span></summary>
-          <div v-if="item.tool.fullInput || item.tool.fullOutput || item.tool.error" class="dev-tool-body">
-            <div v-if="item.tool.fullInput" class="dev-tool-section"><div class="dev-tool-section-label">参数</div><StreamingMarkdown :content="item.tool.fullInput" /></div>
+          <div v-if="item.tool.input || item.tool.fullOutput || item.tool.error" class="dev-tool-body">
+            <div v-if="item.tool.input" class="dev-tool-section"><div class="dev-tool-section-label">参数</div><StreamingMarkdown :content="item.tool.input" /></div>
             <div v-if="item.tool.fullOutput" class="dev-tool-section"><div class="dev-tool-section-label">输出</div><StreamingMarkdown :content="item.tool.fullOutput" /></div>
             <div v-if="item.tool.error" class="dev-tool-section error"><div class="dev-tool-section-label">错误</div><StreamingMarkdown :content="item.tool.error" /></div>
           </div>
@@ -118,8 +118,8 @@ function toolStatusLabel(status: string): string {
             </details>
             <details v-else-if="item.type === 'tool'" class="dev-tool" :class="[item.tool.status]" :open="item.streaming">
               <summary class="dev-tool-summary"><span class="dev-status-dot" :class="item.tool.status"></span><code class="dev-tool-name">{{ item.tool.name }}</code><span class="dev-tool-action">{{ toolActionLabel(item.tool.name, item.tool.status, item.tool) }}</span><span class="dev-tool-status">{{ toolStatusLabel(item.tool.status) }}</span></summary>
-              <div v-if="item.tool.fullInput || item.tool.fullOutput || item.tool.error" class="dev-tool-body">
-                <div v-if="item.tool.fullInput" class="dev-tool-section"><div class="dev-tool-section-label">参数</div><StreamingMarkdown :content="item.tool.fullInput" /></div>
+              <div v-if="item.tool.input || item.tool.fullOutput || item.tool.error" class="dev-tool-body">
+                <div v-if="item.tool.input" class="dev-tool-section"><div class="dev-tool-section-label">参数</div><StreamingMarkdown :content="item.tool.input" /></div>
                 <div v-if="item.tool.fullOutput" class="dev-tool-section"><div class="dev-tool-section-label">输出</div><StreamingMarkdown :content="item.tool.fullOutput" /></div>
                 <div v-if="item.tool.error" class="dev-tool-section error"><div class="dev-tool-section-label">错误</div><StreamingMarkdown :content="item.tool.error" /></div>
               </div>

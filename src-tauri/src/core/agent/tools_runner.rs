@@ -89,15 +89,6 @@ pub async fn execute_tool_calls(
                         );
                     }
 
-                    let input_summary: String = {
-                        let s = input.to_string();
-                        if s.len() > 120 {
-                            format!("{}...", s.chars().take(120).collect::<String>())
-                        } else {
-                            s
-                        }
-                    };
-
                     // emit "running" 状态事件
                     let _ = app.emit(
                         "chat-tool-debug",
@@ -121,7 +112,6 @@ pub async fn execute_tool_calls(
                         json!({
                             "type": "tool_call",
                             "tool": name,
-                            "input_summary": input_summary,
                             "content": input.to_string(),
                             "sessionId": sid,
                             "loopCount": loop_count
@@ -131,7 +121,7 @@ pub async fn execute_tool_calls(
                         app,
                         run_id,
                         name,
-                        Some(input_summary.clone()),
+                        Some(input.to_string()),
                         loop_count,
                     );
 
@@ -313,31 +303,28 @@ pub async fn execute_tool_calls(
             loop_count,
         );
 
-        let output_summary: String = {
-            if result.output.len() > 150 {
-                format!("{}...", result.output.chars().take(150).collect::<String>())
-            } else {
-                result.output.clone()
-            }
-        };
         let is_error = status == "error";
         let _ = app.emit(
             "agent-step",
             json!({
                 "type": if is_error { "tool_error" } else { "tool_result" },
                 "tool": result.name,
-                "output_summary": output_summary,
                 "content": result.output,
-                "error": if is_error { Some(output_summary.clone()) } else { None },
+                "error": if is_error { Some(result.output.clone()) } else { None },
                 "sessionId": sid,
                 "loopCount": loop_count
             }),
         );
+        let db_summary = if result.output.len() > 200 {
+            format!("{}...", result.output.chars().take(200).collect::<String>())
+        } else {
+            result.output.clone()
+        };
         agent_runs::record_tool_result(
             app,
             run_id,
             &result.name,
-            Some(output_summary),
+            Some(db_summary),
             None,
             loop_count,
         );

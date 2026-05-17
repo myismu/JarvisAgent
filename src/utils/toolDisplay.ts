@@ -117,7 +117,7 @@ function toolKey(name: string) {
 
 function hasDependencyUpdate(tools: AgentToolCallView[]) {
   return tools.some((tool) => {
-    const text = `${tool.inputSummary || ""}\n${tool.outputSummary || ""}`.toLowerCase();
+    const text = `${tool.input || ""}\n${tool.output || ""}`.toLowerCase();
     return (
       text.includes("add_blocked_by") ||
       text.includes("add_blocks") ||
@@ -161,7 +161,7 @@ function formatCount(count: number, unit: string) {
 }
 
 function commandFromInput(tool: AgentToolCallView) {
-  const input = parseInputSummary(tool.inputSummary);
+  const input = parseInputSummary(tool.input);
   if (!input || typeof input !== "object" || Array.isArray(input)) return null;
 
   if (typeof input.command === "string" && input.command.trim()) {
@@ -180,7 +180,7 @@ function commandFromInput(tool: AgentToolCallView) {
 }
 
 function labelTargetFromInput(tool: AgentToolCallView) {
-  const input = parseInputSummary(tool.inputSummary);
+  const input = parseInputSummary(tool.input);
   if (!input || typeof input !== "object" || Array.isArray(input)) return null;
 
   const candidates = [
@@ -408,8 +408,16 @@ export function summarizeToolGroupsForPanel(groups: ToolCallGroup[], totalCount:
   return translate("tools.summary.panel", { categories: visible, count: totalCount });
 }
 
+/** 将全量参数/输出截断为摘要文本（前端自行控制显示长度） */
+export function truncateToolContent(content: string | undefined, maxLen = 120): string {
+  if (!content) return "";
+  const s = content.trim();
+  if (s.length <= maxLen) return s;
+  return s.slice(0, maxLen) + "...";
+}
+
 export function hasToolDetails(tool: AgentToolCallView) {
-  return Boolean(tool.inputSummary || tool.outputSummary || tool.error || tool.logs.length);
+  return Boolean(tool.input || tool.output || tool.error || tool.logs.length);
 }
 
 export function hasToolGroupDetails(group: ToolCallGroup) {
