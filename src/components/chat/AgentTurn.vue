@@ -62,6 +62,14 @@ const timelineSplit = computed(() => {
     if (items[i].type === "text") { lastTextIdx = i; break; }
   }
   if (lastTextIdx < 0) return { execItems: items, finalItems: [] as typeof items };
+  // 如果最后一个 text 之后还有 tool 或 log，说明本轮还未结束，
+  // 全部归入执行过程，避免工具调用跳到"最后回答"区域外面
+  const hasLaterToolOrLog = items.slice(lastTextIdx + 1).some(
+    (item) => item.type === "tool" || item.type === "log",
+  );
+  if (hasLaterToolOrLog) {
+    return { execItems: items, finalItems: [] as typeof items };
+  }
   return {
     execItems: items.filter((_, i) => i !== lastTextIdx),
     finalItems: [items[lastTextIdx]],
