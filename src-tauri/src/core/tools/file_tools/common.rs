@@ -425,6 +425,19 @@ pub(super) fn is_locked_file_error(err_msg: &str) -> bool {
         || err_msg.contains("being used by another process")
 }
 
+/// 检测 Windows UNC 路径 (\\server\share\...)
+pub(super) fn is_unc_path(path: &str) -> bool {
+    path.starts_with("\\\\") || path.starts_with("//")
+}
+
+/// UNC 路径拦截的通用错误消息
+pub(super) fn unc_path_rejection(tool: &str, path: &str) -> String {
+    format!(
+        "{}失败: 不支持 UNC 路径 ({})。请使用本地映射驱动器或复制文件到本地工作区。",
+        tool, path
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,5 +584,14 @@ mod tests {
     #[test]
     fn svg_is_not_binary() {
         assert!(!is_binary_extension(std::path::Path::new("icon.svg")));
+    }
+
+    #[test]
+    fn unc_path_detection() {
+        assert!(is_unc_path("\\\\server\\share\\file.txt"));
+        assert!(is_unc_path("//server/share/file.txt"));
+        assert!(!is_unc_path("C:\\Users\\test\\file.txt"));
+        assert!(!is_unc_path("/home/user/file.txt"));
+        assert!(!is_unc_path("./relative/path.txt"));
     }
 }

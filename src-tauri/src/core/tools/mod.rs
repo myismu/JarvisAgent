@@ -28,6 +28,7 @@ pub mod task_tools;
 
 use serde_json::json;
 use std::path::Path;
+use tauri::Manager;
 
 use crate::infra::types::models::Skill;
 use crate::get_agent_home;
@@ -288,6 +289,27 @@ pub async fn handle_tool_call_inner(
     session_id: &str,
     intent: &str,
 ) -> String {
+    // 延迟工具守卫：未通过 SearchTools 激活的工具不允许直接调用
+    if let Some(tool_def) = framework::registry::ToolRegistry::global().get(name) {
+        if tool_def.should_defer {
+            let activated = if let Some(manager) =
+                app.try_state::<crate::infra::state::state::SessionManager>()
+            {
+                let ctx = manager.get_or_create(session_id).await;
+                let guard = ctx.memory.lock().await;
+                guard.activated_tools.contains(&name.to_string())
+            } else {
+                true
+            };
+            if !activated {
+                return format!(
+                    "工具 '{}' 尚未激活。这是延迟加载工具，请先使用 SearchTools 搜索并获取其完整参数定义。\n示例: SearchTools(query=\"{}\")",
+                    name, name
+                );
+            }
+        }
+    }
+
     match name {
         // 系统工具
         "SetWorkspace" => system_tools::set_workspace(app, input, session_id).await,

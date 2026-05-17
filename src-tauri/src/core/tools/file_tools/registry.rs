@@ -91,9 +91,10 @@ crate::define_tools! {
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string"},
-                        "old_text": {"type": "string", "description": "要替换的旧文本，必须包含足够上下文（3~5 行）确保在文件中唯一匹配"},
-                        "new_text": {"type": "string", "description": "替换后的新文本"}
+                        "path": {"type": "string", "description": "要编辑的文件路径（必填）"},
+                        "old_text": {"type": "string", "description": "（必填）要替换的旧文本，必须包含足够上下文（3~5 行）确保在文件中唯一匹配。注意：参数名必须为 old_text，不可省略"},
+                        "new_text": {"type": "string", "description": "（必填）替换后的新文本。注意：参数名必须为 new_text，不可省略"},
+                        "replace_all": {"type": "boolean", "description": "是否替换所有匹配项。默认 false（仅替换第一个唯一匹配）。设置为 true 可一次性替换文件中所有出现的 old_text"}
                     },
                     "required": ["path", "old_text", "new_text"]
                 }

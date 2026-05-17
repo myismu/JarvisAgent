@@ -172,6 +172,7 @@ pub fn get_deferred_tools_context_compact(intent: &str) -> String {
     for (category, names) in &groups {
         out.push_str(&format!("  · {}: {}\n", category, names.join(", ")));
     }
+    out.push_str("（以上分类工具为延迟加载，使用时需先通过 SearchTools 激活后才可获得完整参数定义）\n");
     out
 }
 
