@@ -57,19 +57,16 @@ const developerTimeline = computed(() =>
 
 const timelineSplit = computed(() => {
   const items = developerTimeline.value;
+  // 本轮还在运行中 → 不分离，全部留在执行过程里
+  // 只有本轮彻底结束（!isRunning）才把最后一个 text 提升为"最后回答"
+  if (props.turn.isRunning) {
+    return { execItems: items, finalItems: [] as typeof items };
+  }
   let lastTextIdx = -1;
   for (let i = items.length - 1; i >= 0; i--) {
     if (items[i].type === "text") { lastTextIdx = i; break; }
   }
   if (lastTextIdx < 0) return { execItems: items, finalItems: [] as typeof items };
-  // 如果最后一个 text 之后还有 tool 或 log，说明本轮还未结束，
-  // 全部归入执行过程，避免工具调用跳到"最后回答"区域外面
-  const hasLaterToolOrLog = items.slice(lastTextIdx + 1).some(
-    (item) => item.type === "tool" || item.type === "log",
-  );
-  if (hasLaterToolOrLog) {
-    return { execItems: items, finalItems: [] as typeof items };
-  }
   return {
     execItems: items.filter((_, i) => i !== lastTextIdx),
     finalItems: [items[lastTextIdx]],
