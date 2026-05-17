@@ -89,24 +89,7 @@ function toolStatusLabel(status: string): string {
   >
     <!-- 开发者模式 -->
     <div v-if="isDeveloperMode && hasDeveloperSegments">
-      <!-- 主文本先渲染 -->
-      <template v-for="(item, i) in timelineSplit.finalItems" :key="`final-${item.type}-${item.timestamp}-${i}`">
-        <StreamingMarkdown v-if="item.type === 'text'" :content="item.content" />
-        <details v-else-if="item.type === 'thinking'" class="dev-thinking" :class="{ streaming: item.streaming }" :open="item.streaming">
-          <summary class="dev-thinking-summary"><span class="dev-status-dot" :class="{ running: item.streaming }"></span><span class="dev-thinking-label">{{ describeThinkingStatic(item.content) }}</span></summary>
-          <div class="dev-thinking-body"><StreamingMarkdown :content="item.content" /></div>
-        </details>
-        <details v-else-if="item.type === 'tool'" class="dev-tool" :class="[item.tool.status]" :open="item.streaming">
-          <summary class="dev-tool-summary"><span class="dev-status-dot" :class="item.tool.status"></span><code class="dev-tool-name">{{ item.tool.name }}</code><span class="dev-tool-action">{{ toolActionLabel(item.tool.name, item.tool.status, item.tool) }}</span><span class="dev-tool-status">{{ toolStatusLabel(item.tool.status) }}</span></summary>
-          <div v-if="item.tool.input || item.tool.fullOutput || item.tool.error" class="dev-tool-body">
-            <div v-if="item.tool.input" class="dev-tool-section"><div class="dev-tool-section-label">参数</div><StreamingMarkdown :content="item.tool.input" /></div>
-            <div v-if="item.tool.fullOutput" class="dev-tool-section"><div class="dev-tool-section-label">输出</div><StreamingMarkdown :content="item.tool.fullOutput" /></div>
-            <div v-if="item.tool.error" class="dev-tool-section error"><div class="dev-tool-section-label">错误</div><StreamingMarkdown :content="item.tool.error" /></div>
-          </div>
-        </details>
-        <div v-else-if="item.type === 'log'" class="dev-log"><div class="dev-log-header"><span class="dev-log-dot red"></span><span class="dev-log-dot yellow"></span><span class="dev-log-dot green"></span><span class="dev-log-title">输出 #{{ item.loop || 1 }}</span></div><div class="dev-log-body"><StreamingMarkdown :content="item.content" /></div></div>
-      </template>
-      <!-- 执行过程折叠面板放下面 -->
+      <!-- 执行过程折叠面板放上面 -->
       <details v-if="timelineSplit.execItems.length > 0" class="dev-execution-fold" :open="props.turn.isRunning">
         <summary class="dev-execution-summary">执行过程（{{ timelineSplit.execItems.length }} 步）</summary>
         <div class="dev-layout">
@@ -128,6 +111,23 @@ function toolStatusLabel(status: string): string {
           </template>
         </div>
       </details>
+      <!-- 最后回答放下面 -->
+      <template v-for="(item, i) in timelineSplit.finalItems" :key="`final-${item.type}-${item.timestamp}-${i}`">
+        <StreamingMarkdown v-if="item.type === 'text'" :content="item.content" />
+        <details v-else-if="item.type === 'thinking'" class="dev-thinking" :class="{ streaming: item.streaming }" :open="item.streaming">
+          <summary class="dev-thinking-summary"><span class="dev-status-dot" :class="{ running: item.streaming }"></span><span class="dev-thinking-label">{{ describeThinkingStatic(item.content) }}</span></summary>
+          <div class="dev-thinking-body"><StreamingMarkdown :content="item.content" /></div>
+        </details>
+        <details v-else-if="item.type === 'tool'" class="dev-tool" :class="[item.tool.status]" :open="item.streaming">
+          <summary class="dev-tool-summary"><span class="dev-status-dot" :class="item.tool.status"></span><code class="dev-tool-name">{{ item.tool.name }}</code><span class="dev-tool-action">{{ toolActionLabel(item.tool.name, item.tool.status, item.tool) }}</span><span class="dev-tool-status">{{ toolStatusLabel(item.tool.status) }}</span></summary>
+          <div v-if="item.tool.input || item.tool.fullOutput || item.tool.error" class="dev-tool-body">
+            <div v-if="item.tool.input" class="dev-tool-section"><div class="dev-tool-section-label">参数</div><StreamingMarkdown :content="item.tool.input" /></div>
+            <div v-if="item.tool.fullOutput" class="dev-tool-section"><div class="dev-tool-section-label">输出</div><StreamingMarkdown :content="item.tool.fullOutput" /></div>
+            <div v-if="item.tool.error" class="dev-tool-section error"><div class="dev-tool-section-label">错误</div><StreamingMarkdown :content="item.tool.error" /></div>
+          </div>
+        </details>
+        <div v-else-if="item.type === 'log'" class="dev-log"><div class="dev-log-header"><span class="dev-log-dot red"></span><span class="dev-log-dot yellow"></span><span class="dev-log-dot green"></span><span class="dev-log-title">输出 #{{ item.loop || 1 }}</span></div><div class="dev-log-body"><StreamingMarkdown :content="item.content" /></div></div>
+      </template>
     </div>
 
     <!-- 普通模式 -->
