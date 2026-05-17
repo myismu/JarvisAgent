@@ -257,20 +257,23 @@ export function applyAgentStepToCurrentTurn(
   if (step.type === "tool_call") {
     const updated = updateLatestToolByName(turn, step.tool, {
       inputSummary: step.input_summary,
+      fullInput: step.content,
       status: "running",
     });
     if (!updated && step.tool) {
       upsertAgentToolCall(view, `step_${nextId("tool")}`, step.tool, "running", turn.loop);
-      updateLatestToolByName(turn, step.tool, { inputSummary: step.input_summary });
+      updateLatestToolByName(turn, step.tool, { inputSummary: step.input_summary, fullInput: step.content });
     }
   } else if (step.type === "tool_result") {
     updateLatestToolByName(turn, step.tool, {
       outputSummary: step.output_summary,
+      fullOutput: step.content,
       status: "completed",
     });
   } else if (step.type === "tool_error") {
     updateLatestToolByName(turn, step.tool, {
       error: step.error,
+      fullOutput: step.content,
       status: "error",
     });
   } else if (step.type === "task_scheduled" && step.taskId != null) {

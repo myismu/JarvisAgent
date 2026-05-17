@@ -210,6 +210,8 @@ export interface AgentToolCallView {
   name: string;
   status: AgentToolStatus;
   inputSummary?: string;
+  fullInput?: string;
+  fullOutput?: string;
   outputSummary?: string;
   error?: string;
   logs: string[];
