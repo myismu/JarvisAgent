@@ -558,7 +558,6 @@ interface AgentConfig {
   baseUrl: string
   mainModel: string
   utilityModel: string
-  enableThinking?: boolean
   temperature?: number | null
   topP?: number | null
   topK?: number | null
@@ -603,7 +602,6 @@ const createBlankProfile = (id: string): ModelProfile => ({
     baseUrl: '',
     mainModel: '',
     utilityModel: '',
-    enableThinking: false,
     temperature: null,
     topP: null,
     topK: null,
@@ -927,7 +925,6 @@ const hasNewProfileContent = (profile: ModelProfile): boolean => {
   const blank = createBlankProfile(profile.id)
   if (profile.name.trim() && profile.name.trim() !== blank.name) return true
   if (profile.config.apiFormat !== blank.config.apiFormat) return true
-  if ((profile.config.enableThinking ?? false) !== (blank.config.enableThinking ?? false)) return true
 
   const contentKeys: Array<keyof AgentConfig> = [
     'apiKey',

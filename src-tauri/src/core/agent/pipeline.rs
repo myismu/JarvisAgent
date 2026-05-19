@@ -52,6 +52,8 @@ struct PipelineState {
     msg: String,
     image_base64_list: Option<Vec<String>>,
     thinking_override: Option<bool>,
+    /// 基于 audience 的 agent loop 默认思考状态（developer → true, user → false）
+    loop_think_default: bool,
     detected_intent: String,
     dynamic_context_str: String,
     user_msg_for_memory: String,
@@ -292,6 +294,7 @@ impl PipelineState {
             msg,
             image_base64_list,
             thinking_override,
+            loop_think_default: audience == "developer",
             detected_intent: detected_intent.clone(),
             // 以下字段在后续阶段填充
             dynamic_context_str: String::new(),
@@ -313,7 +316,6 @@ impl PipelineState {
             *state.ctx.agent_work_mode.lock().await = "plan".to_string();
             state.system_prompt = crate::core::agent::prompts::get_system_prompt(&audience, "plan");
             state.detected_intent = "TASK_PLAN".to_string();
-            state.should_think = true;
             let _ = state.app.emit(
                 "agent-work-mode-changed",
                 json!({
@@ -443,13 +445,15 @@ impl PipelineState {
         crate::core::session::save_session(&self.sid, &memory_after_user_message, None);
         let _ = self.app.emit("session-updated", ());
 
-        self.should_think = self.thinking_override.unwrap_or_else(|| {
-            match self.detected_intent.as_str() {
-                "ACTION" | "TASK_PLAN" | "DANGEROUS" => true,
-                "CHAT" | "QUESTION" | "UNCLEAR" => false,
-                _ => self.cfg.enable_thinking.unwrap_or(false),
-            }
-        });
+        // 深度思考决策：
+        // - 首轮：用户 thinking_override 优先（一次性），否则使用 audience 默认值
+        // - 后续轮：始终使用 audience 默认值（developer → true, user → false）
+        if let Some(override_val) = self.thinking_override {
+            self.should_think = override_val;
+            self.thinking_override = None; // 消费后清除，不再影响后续轮次
+        } else {
+            self.should_think = self.loop_think_default;
+        }
 
         let user_message_id = {
             let session = self.ctx.memory.lock().await;
@@ -541,6 +545,11 @@ impl PipelineState {
 
             // Token 压缩
             self.compact_if_needed().await;
+
+            // 后续轮次：重置 should_think 为 audience 默认值，确保 agent loop 思考状态一致
+            if self.loop_count > 0 {
+                self.should_think = self.loop_think_default;
+            }
 
             // 历史快照准备
             let history_snapshot = self.prepare_history_snapshot().await;

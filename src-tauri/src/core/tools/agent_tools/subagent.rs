@@ -493,6 +493,14 @@ pub async fn run_subagent(
         }),
     );
 
+    // 子代理深度思考：沿用主代理的 audience 逻辑
+    let should_think = {
+        let prefs = crate::command::window_state::get_ui_preferences()
+            .await
+            .unwrap_or_default();
+        prefs.agent_audience == "developer"
+    };
+
     while loop_count < max_loops {
         if SubAgentMonitor::is_cancelled(&app, &run_id).await {
             SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
@@ -533,7 +541,6 @@ pub async fn run_subagent(
             top_k: cfg.top_k,
         };
 
-        let should_think = cfg.enable_thinking.unwrap_or(false);
         request_body.thinking = Some(crate::infra::types::models::ThinkingConfig {
             r#type: Some(if should_think { "enabled" } else { "disabled" }.to_string()),
             budget_tokens: if should_think { Some(1024) } else { None },
@@ -552,7 +559,7 @@ pub async fn run_subagent(
             let backfill_reasoning_content = should_backfill_deepseek_reasoning_content(
                 &model_id,
                 &base_url,
-                cfg.enable_thinking.unwrap_or(false),
+                should_think,
             );
             let openai_msgs = translate_messages_to_openai_with_reasoning_backfill(
                 &request_body.system,
@@ -583,7 +590,6 @@ pub async fn run_subagent(
                 top_p: request_body.top_p,
             };
 
-            let should_think = cfg.enable_thinking.unwrap_or(false);
             crate::infra::llm::registry::apply_thinking_for_model(
                 &mut openai_req, &model_id, should_think,
             );

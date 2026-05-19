@@ -39,8 +39,6 @@ pub struct AgentConfig {
     pub main_model: String,
     /// 意图分类器 / 记忆 Agent 使用的模型 ID（可用更便宜的模型）
     pub utility_model: String,
-    /// 是否开启深度思考模式 (DeepSeek / Claude 3.7+)
-    pub enable_thinking: Option<bool>,
     /// 模型生成的温度参数
     pub temperature: Option<f32>,
     /// 模型生成的 Top P 参数
@@ -78,7 +76,6 @@ impl Default for AgentConfig {
             base_url: "https://api.xiaomimimo.com/v1/chat/completions".to_string(),
             main_model: "mimo-v2-flash".to_string(),
             utility_model: "mimo-v2-flash".to_string(),
-            enable_thinking: Some(false),
             temperature: None,
             top_p: None,
             top_k: None,
