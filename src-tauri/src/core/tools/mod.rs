@@ -1,10 +1,10 @@
 ﻿//! # mod.rs — 工具系统入口模块
 //!
 //! 工具系统的中央枢纽：模块注册、技能加载、工具定义组装、路由分发。
-//! 根据意图（intent）筛选工具集，支持渐进式披露（核心工具始终携带，延迟工具按需激活）。
+//! 工具参数（tools）始终不变以保证 prompt cache 命中，意图+工作模式仅影响上下文注入和 RunDeferredTool 运行时校验。
 //!
 //! ## 关键导出
-//! - `get_tools_definition()`: 按意图组装工具定义列表（含渐进式披露逻辑）
+//! - `get_tools_definition()`: 返回固定核心工具定义列表（不含意图参数，保证缓存命中）
 //! - `handle_tool_call()` / `handle_tool_call_owned()`: 工具调用路由入口
 //! - `load_all_skills()`: 从 skills 目录加载所有 SKILL.md 技能文件
 //!
@@ -13,8 +13,7 @@
 //! - External: `serde_json`, `tauri`
 //!
 //! ## 约束
-//! - CHAT 意图不返回任何工具
-//! - MEMORY_QUERY 意图只返回 ReadFile / CompactConversation / ConsolidateMemory
+//! - tools 参数始终不变，意图过滤仅通过上下文注入 + RunDeferredTool 运行时校验
 //! - 子代理（SUBAGENT）不能调用 RunSubagent / ConsolidateMemory / CompactConversation / RunSubagentsSequentially
 
 pub mod agent_tools;
@@ -26,9 +25,7 @@ pub mod shell_tools;
 pub mod system_tools;
 pub mod task_tools;
 
-use serde_json::json;
 use std::path::Path;
-use tauri::Manager;
 
 use crate::infra::types::models::Skill;
 use crate::get_agent_home;
@@ -112,75 +109,10 @@ pub fn parse_skill(text: &str, path: &Path) -> Option<Skill> {
     None
 }
 
-// 获取工具定义（按意图筛选 + 渐进式披露）
-// activated_tools: 由 SearchTools 激活的延迟工具名称列表
-pub fn get_tools_definition(intent: &str, activated_tools: &[String]) -> Vec<serde_json::Value> {
-    if intent == "CHAT" {
-        return vec![];
-    }
-
-    // QUESTION（含记忆查询）工具集小，直接返回完整 schema
-    if intent == "QUESTION" {
-        let mut tools = get_core_tool_definitions();
-        // 核心工具中移除 SearchTools（记忆查询不需要渐进式披露）
-        tools.retain(|t| t["name"] != "SearchTools");
-        tools.extend(vec![
-            json!({
-                "name": "ReadFile",
-                "description": "读取文件内容。支持语义化点读技术，可通过 start_line 和 end_line 获取特定代码块，避免 Context 过长。",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "start_line": {"type": "integer", "description": "可选。起始行号（从 1 开始）"},
-                        "end_line": {"type": "integer", "description": "可选。结束行号（包含）"}
-                    },
-                    "required": ["path"]
-                }
-            }),
-            json!({
-                "name": "CompactConversation",
-                "description": "手动触发对话上下文压缩。当对话上下文过长觉得需要清理或重置记忆时使用该工具。",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "focus": { "type": "string", "description": "摘要时需要特别保留的重点方向" }
-                    }
-                }
-            }),
-            json!({
-                "name": "ConsolidateMemory",
-                "description": "主动触发记忆整理（Dream Agent）。将当前的零散碎片记忆提炼并合并进结构化用户画像中。",
-                "input_schema": { "type": "object", "properties": {} }
-            })
-        ]);
-        return tools;
-    }
-
-    // PROJECT_ACTION / SUBAGENT: 渐进式披露
-    let mut tools = get_core_tool_definitions();
-    if intent != "SUBAGENT" {
-        if let Some(schema) = get_deferred_tool_full_schema("ProposePlan") {
-            tools.push(schema);
-        }
-    }
-
-    // 添加已激活的延迟工具（完整 schema）
-    let deferred_list = get_deferred_tool_list(intent);
-    let deferred_names: Vec<&str> = deferred_list.iter().map(|(n, _)| n.as_str()).collect();
-
-    for tool_name in activated_tools {
-        if deferred_names.contains(&tool_name.as_str()) {
-            if tool_name == "ProposePlan" && intent != "SUBAGENT" {
-                continue;
-            }
-            if let Some(schema) = get_deferred_tool_full_schema(tool_name) {
-                tools.push(schema);
-            }
-        }
-    }
-
-    tools
+// 获取工具定义（始终返回固定核心工具集，保证 prompt cache 命中）
+// 意图+工作模式过滤仅通过上下文注入 + RunDeferredTool 运行时校验实现
+pub fn get_tools_definition() -> Vec<serde_json::Value> {
+    get_core_tool_definitions()
 }
 
 /// 工具调用路由：根据工具名分发到对应模块
@@ -279,37 +211,15 @@ pub async fn handle_tool_call_inner_owned(
     handle_tool_call_inner(&app, &name, &input, &session_id, &intent).await
 }
 
-/// 内部工具调用分发（非子代理工具）
-/// 路由策略：match 分发（Rust 惯用方式）
-/// 工具注册信息（schema、元数据）通过 framework::registry::ToolRegistry 查询
-pub async fn handle_tool_call_inner(
+/// 工具调用核心分发（不含 RunDeferredTool 路由，避免递归）
+/// RunDeferredTool 代理执行时直接调用此函数
+pub async fn dispatch_tool_call(
     app: &tauri::AppHandle,
     name: &str,
     input: &serde_json::Value,
     session_id: &str,
     intent: &str,
 ) -> String {
-    // 延迟工具守卫：未通过 SearchTools 激活的工具不允许直接调用
-    if let Some(tool_def) = framework::registry::ToolRegistry::global().get(name) {
-        if tool_def.should_defer {
-            let activated = if let Some(manager) =
-                app.try_state::<crate::infra::state::state::SessionManager>()
-            {
-                let ctx = manager.get_or_create(session_id).await;
-                let guard = ctx.memory.lock().await;
-                guard.activated_tools.contains(&name.to_string())
-            } else {
-                true
-            };
-            if !activated {
-                return format!(
-                    "工具 '{}' 尚未激活。这是延迟加载工具，请先使用 SearchTools 搜索并获取其完整参数定义。\n示例: SearchTools(query=\"{}\")",
-                    name, name
-                );
-            }
-        }
-    }
-
     match name {
         // 系统工具
         "SetWorkspace" => system_tools::set_workspace(app, input, session_id).await,
@@ -365,43 +275,19 @@ pub async fn handle_tool_call_inner(
     }
 }
 
-/// 按 WorkMode 过滤工具名称列表
-pub fn allowed_tools_for_work_mode(mode: &str) -> Vec<&'static str> {
-    match mode {
-        "chat" => vec![
-            "ReadFile", "ReadFileSkeleton", "SearchText", "FindFiles", "ListDirectory",
-            "FindSymbol", "ReadSymbol", "FindReferences", "SearchRepo", "CodeSearch",
-            "LoadSkill", "SearchTools", "CompactConversation",
-        ],
-        "plan" => vec![
-            "ReadFile", "ReadFileSkeleton", "SearchText", "FindFiles", "ListDirectory",
-            "FindSymbol", "ReadSymbol", "FindReferences", "SearchRepo", "CodeSearch",
-            "LoadSkill",
-            "ProposePlan", "CreateTask", "UpdateTask", "ListTasks", "GetTask", "DeleteTask",
-            "SummarizeTasks",
-            "SearchTools", "CompactConversation",
-            "SwitchWorkMode",
-        ],
-        _ => vec![],  // edit = all tools (no filter)
+/// 内部工具调用分发（含 RunDeferredTool 路由）
+pub async fn handle_tool_call_inner(
+    app: &tauri::AppHandle,
+    name: &str,
+    input: &serde_json::Value,
+    session_id: &str,
+    intent: &str,
+) -> String {
+    // RunDeferredTool 单独路由，避免与 dispatch_tool_call 递归
+    if name == "RunDeferredTool" {
+        return framework::tool_search::handle_run_deferred_tool(app, input, session_id, intent)
+            .await;
     }
+    dispatch_tool_call(app, name, input, session_id, intent).await
 }
 
-/// 根据 WorkMode 过滤工具定义
-pub fn filter_tools_by_work_mode(
-    tools: Vec<serde_json::Value>,
-    work_mode: &str,
-) -> Vec<serde_json::Value> {
-    let allowed = allowed_tools_for_work_mode(work_mode);
-    if allowed.is_empty() {
-        return tools;  // edit mode = all tools
-    }
-    tools
-        .into_iter()
-        .filter(|t| {
-            t.get("name")
-                .and_then(|n| n.as_str())
-                .map(|name| allowed.contains(&name))
-                .unwrap_or(true)
-        })
-        .collect()
-}

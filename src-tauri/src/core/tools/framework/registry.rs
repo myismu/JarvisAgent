@@ -166,9 +166,16 @@ impl ToolRegistry {
     }
 
     /// 按意图过滤工具可用性
-    fn is_available_for_intent(tool: &ToolDef, intent: &str) -> bool {
+    pub fn is_available_for_intent(tool: &ToolDef, intent: &str) -> bool {
         match intent {
-            "CHAT" | "QUESTION" => false,
+            "CHAT" => false,
+            "QUESTION" => {
+                // 记忆查询只允许文件读取和会话管理
+                matches!(
+                    tool.name,
+                    "ReadFile" | "CompactConversation" | "ConsolidateMemory"
+                )
+            }
             "SUBAGENT" => {
                 // 子代理只能执行具体操作，不能调用主控/调度/会话管理工具
                 !matches!(

@@ -267,8 +267,6 @@ pub struct SessionMemory {
     #[serde(default)]
     pub message_ids: Vec<String>,
     #[serde(default)]
-    pub activated_tools: Vec<String>,
-    #[serde(default)]
     pub plan_documents: Vec<PlanDocument>,
 }
 

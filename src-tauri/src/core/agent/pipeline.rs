@@ -67,8 +67,6 @@ struct PipelineState {
     req_input_tokens: u64,
     req_output_tokens: u64,
     final_answer: String,
-    /// 渐进式工具披露：已通过 SearchTools 激活的工具名
-    activated_tools: Vec<String>,
 }
 
 struct ContextEstimate {
@@ -276,8 +274,6 @@ impl PipelineState {
             }
         }
 
-        let activated_tools = ctx.memory.lock().await.activated_tools.clone();
-
         let mut state = Self {
             app,
             sid,
@@ -308,7 +304,6 @@ impl PipelineState {
             req_input_tokens: 0,
             req_output_tokens: 0,
             final_answer: String::new(),
-            activated_tools,
         };
 
         if detected_intent == "TASK_PLAN" && work_mode != "plan" {
@@ -761,40 +756,6 @@ impl PipelineState {
             .await;
             self.req_input_tokens += sub_in;
             self.req_output_tokens += sub_out;
-
-            // 检测 SearchTools 调用，激活匹配的延迟工具到下一轮请求中
-            for block in current_blocks.iter() {
-                if let ContentBlock::ToolUse { name, input, .. } = block {
-                    if name == "SearchTools" {
-                        if let Some(query) = input.get("query").and_then(|v| v.as_str()) {
-                            let max_results = input
-                                .get("max_results")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(5)
-                                as usize;
-                            let deferred = get_deferred_tool_search_entries(&self.detected_intent);
-                            let matches = search_deferred_tools(query, &deferred, max_results);
-                            let mut activated_this_turn = Vec::new();
-                            for tool_name in matches {
-                                if !self.activated_tools.contains(&tool_name) {
-                                    println!("[JARVIS] 激活延迟工具: {}", tool_name);
-                                    self.activated_tools.push(tool_name.clone());
-                                    activated_this_turn.push(tool_name);
-                                }
-                            }
-                            if !activated_this_turn.is_empty() {
-                                let mut session = self.ctx.memory.lock().await;
-                                for tool_name in activated_this_turn {
-                                    if !session.activated_tools.contains(&tool_name) {
-                                        session.activated_tools.push(tool_name);
-                                    }
-                                }
-                                crate::core::session::save_session(&self.sid, &session, None);
-                            }
-                        }
-                    }
-                }
-            }
 
             let _ = self.app.emit(
                 "chat-turn-end",
@@ -1256,9 +1217,7 @@ impl PipelineState {
             session.messages.clone()
         };
         let history_snapshot = self.prepare_history_snapshot_from_messages(messages_for_estimate);
-        let work_mode_check = self.ctx.agent_work_mode.lock().await.clone();
         let tools = self.current_tools();
-        let tools = filter_tools_by_work_mode(tools, &work_mode_check);
         let estimate = self.build_context_estimate(&history_snapshot, &tools);
         let tokens = estimate.estimated_tokens;
         let trigger = crate::infra::types::constants::MAX_TOKENS_COMPACT_TRIGGER;
@@ -1311,7 +1270,7 @@ impl PipelineState {
     }
 
     fn current_tools(&self) -> Vec<serde_json::Value> {
-        get_tools_definition(&self.detected_intent, &self.activated_tools)
+        get_tools_definition()
     }
 
     fn prepare_history_snapshot_from_messages(&self, messages: Vec<Message>) -> Vec<Message> {
@@ -1714,7 +1673,6 @@ impl PipelineState {
     ) -> (serde_json::Value, bool) {
         let system_prompt = crate::core::agent::prompts::get_system_prompt(audience, work_mode);
         let tools = self.current_tools();
-        let tools = filter_tools_by_work_mode(tools, work_mode);
         self.update_context_snapshot(&history_snapshot, &tools);
 
         let max_tokens = self.resolve_max_tokens();

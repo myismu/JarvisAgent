@@ -1,7 +1,7 @@
 //! # tool_search.rs — 渐进式工具披露模块
 //!
-//! 核心工具始终携带完整 schema，延迟工具仅先暴露名称，
-//! LLM 通过 `SearchTools` 按需获取完整参数定义后再调用。
+//! 核心工具始终携带完整 schema（在 tools 参数中，保证缓存命中），
+//! 延迟工具通过 `SearchTools` 搜索获取参数定义，再通过 `RunDeferredTool` 代理执行。
 //!
 //! 所有工具的 schema 和元数据已迁移到各模块的 `define_tools!` 注册，
 //! 本模块从 `ToolRegistry` 统一查询，不再维护硬编码的 JSON Schema。
@@ -13,14 +13,16 @@
 //! - `get_deferred_tool_full_schema()`: 按名称获取延迟工具的完整 Schema
 //! - `search_deferred_tools()`: 关键词搜索延迟工具（支持 `select:` 精确选择）
 //! - `get_deferred_tools_context()`: 生成延迟工具名称列表（注入 system prompt）
-//! - `handle_SearchTools()`: SearchTools 工具的处理函数
+//! - `handle_search_tools()`: SearchTools 处理函数（纯搜索指引）
+//! - `handle_run_deferred_tool()`: RunDeferredTool 处理函数（代理执行延迟工具）
 //!
 //! ## 依赖
 //! - Internal: `registry::ToolRegistry`
 //! - External: `serde_json`
 //!
 //! ## 约束
-//! - 首轮上下文只披露延迟工具名称，避免把所有简述灌入 prompt
+//! - tools 参数始终不变，保证 prompt cache 命中
+//! - 延迟工具只能通过 RunDeferredTool 间接调用
 //! - 搜索评分：精确名称匹配 12 分，名称包含 5 分，搜索提示包含 3 分，描述包含 2 分
 //! - `select:` 前缀支持精确选择多个工具（逗号分隔）
 
@@ -143,12 +145,13 @@ pub fn get_deferred_tools_context(intent: &str) -> String {
     }
 
     let mut out = String::from(
-        "\n\n【延迟加载工具】（使用 SearchTools 获取完整参数定义后才能调用）:\n",
+        "\n\n【延迟加载工具】（需通过 RunDeferredTool 执行）:\n",
     );
     for (category, names) in &groups {
         let name_list: Vec<String> = names.iter().map(|n| format!("`{}`", n)).collect();
         out.push_str(&format!("- **{}**: {}\n", category, name_list.join(", ")));
     }
+    out.push_str("使用方式: 先用 SearchTools 了解工具参数，再用 RunDeferredTool(name=\"工具名\", args={...}) 执行\n");
     out
 }
 
@@ -163,20 +166,20 @@ pub fn get_deferred_tools_context_compact(intent: &str) -> String {
     let core_names: Vec<&str> = core
         .iter()
         .filter_map(|schema| schema["name"].as_str())
-        .filter(|n| *n != "SearchTools")
         .collect();
     let mut out = String::new();
     if !core_names.is_empty() {
-        out.push_str(&format!("  · 核心: {}\n", core_names.join(", ")));
+        out.push_str(&format!("  核心工具（可直接调用）: {}\n", core_names.join(", ")));
     }
+    out.push_str("  延迟工具（需通过 RunDeferredTool 执行）:\n");
     for (category, names) in &groups {
-        out.push_str(&format!("  · {}: {}\n", category, names.join(", ")));
+        out.push_str(&format!("    · {}: {}\n", category, names.join(", ")));
     }
-    out.push_str("（以上分类工具为延迟加载，使用时需先通过 SearchTools 激活后才可获得完整参数定义）\n");
+    out.push_str("  使用方式: 先用 SearchTools 了解工具参数，再用 RunDeferredTool(name=\"工具名\", args={...}) 执行\n");
     out
 }
 
-/// SearchTools 工具的处理函数
+/// SearchTools 工具的处理函数（纯搜索指引，不触发激活）
 pub async fn handle_search_tools(input: &serde_json::Value, intent: &str) -> String {
     let query = input["query"].as_str().unwrap_or("");
     let max_results = input["max_results"].as_u64().unwrap_or(5).clamp(1, 20) as usize;
@@ -207,10 +210,57 @@ pub async fn handle_search_tools(input: &serde_json::Value, intent: &str) -> Str
         }
     }
 
-    result
-        .push_str("\n以上工具已经激活；需要使用时请发起结构化工具调用，不要把工具调用写在正文里。");
+    result.push_str(&format!(
+        "\n需要使用以上工具时，请调用 RunDeferredTool 执行。示例: RunDeferredTool(name=\"{}\", args={{...}})",
+        matches.first().unwrap_or(&String::new())
+    ));
 
     result
+}
+
+/// RunDeferredTool 工具的处理函数（代理执行延迟工具）
+pub async fn handle_run_deferred_tool(
+    app: &tauri::AppHandle,
+    input: &serde_json::Value,
+    session_id: &str,
+    intent: &str,
+) -> String {
+    let name = match input["name"].as_str() {
+        Some(n) => n,
+        None => return "缺少必填参数 'name'（要执行的工具名称）。".to_string(),
+    };
+    let args = input.get("args").cloned().unwrap_or(serde_json::json!({}));
+
+    // 校验：工具是否存在
+    let tool_def = match ToolRegistry::global().get(name) {
+        Some(def) => def,
+        None => return format!("工具 '{}' 不存在。请使用 SearchTools 查询可用工具。", name),
+    };
+
+    // 校验：是否为延迟工具
+    if !tool_def.should_defer {
+        return format!(
+            "工具 '{}' 是核心工具，请直接调用，无需通过 RunDeferredTool。",
+            name
+        );
+    }
+
+    // 校验：当前意图是否允许
+    if !super::registry::ToolRegistry::is_available_for_intent(tool_def, intent) {
+        let available: Vec<String> = get_deferred_tool_list(intent)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        return format!(
+            "工具 '{}' 在当前 {} 意图下不可用。\n当前可用的延迟工具: {}",
+            name,
+            intent,
+            available.join(", ")
+        );
+    }
+
+    // 执行工具（调用 dispatch_tool_call 避免递归）
+    crate::core::tools::dispatch_tool_call(app, name, &args, session_id, intent).await
 }
 
 // --- 工具注册 ---
@@ -218,12 +268,12 @@ crate::define_tools! {
     pub fn register_tools(registry) {
         ToolDef {
             name: "SearchTools",
-            description: "搜索并获取延迟加载工具的完整参数定义",
+            description: "搜索延迟加载工具，返回完整参数定义和用法示例",
             search_hint: "search tools find discover lookup",
             category: "",
             schema: json!({
                 "name": "SearchTools",
-                "description": "搜索并获取延迟加载工具的完整参数定义。代码搜索用 'FindSymbol FindReferences CodeSearch SearchRepo'，文件操作用 'ReadFile WriteFile EditFile'，命令执行用 'RunCommand RunGitCommand'，任务管理用 'CreateTask UpdateTask'，Agent 调度用 'RunSubagent ProposePlan'。支持 'select:ToolName1,ToolName2' 精确选择。",
+                "description": "搜索延迟加载工具，返回完整参数定义和用法示例。代码搜索用 'FindSymbol FindReferences CodeSearch SearchRepo'，文件操作用 'ReadFile WriteFile EditFile'，命令执行用 'RunCommand RunGitCommand'，任务管理用 'CreateTask UpdateTask'，Agent 调度用 'RunSubagent ProposePlan'。支持 'select:ToolName1,ToolName2' 精确选择。获取 schema 后使用 RunDeferredTool 执行。",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -242,6 +292,34 @@ crate::define_tools! {
             should_defer: false,
             is_read_only: true,
             is_concurrency_safe: true,
+            is_enabled: true,
+        },
+        ToolDef {
+            name: "RunDeferredTool",
+            description: "代理执行延迟加载工具（先用 SearchTools 获取参数定义，再用此工具执行）",
+            search_hint: "run execute deferred tool invoke call",
+            category: "",
+            schema: json!({
+                "name": "RunDeferredTool",
+                "description": "代理执行延迟加载工具。先用 SearchTools 了解工具参数，再用此工具执行。name 传工具名，args 传该工具的参数对象。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "要执行的延迟工具名称（如 'ReadFile'、'RunCommand'）"
+                        },
+                        "args": {
+                            "type": "object",
+                            "description": "该工具的输入参数（JSON 对象），具体参数请先通过 SearchTools 查询"
+                        }
+                    },
+                    "required": ["name"]
+                }
+            }),
+            should_defer: false,
+            is_read_only: false,
+            is_concurrency_safe: false,
             is_enabled: true,
         }
     }
