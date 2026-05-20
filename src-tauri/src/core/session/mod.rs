@@ -200,7 +200,7 @@ pub fn create_session(project_id: Option<String>) -> SessionMeta {
     meta
 }
 
-/// 保证会话消息 ID 与消息数组长度一致。
+/// 保证会话消息 ID、sources 与消息数组长度一致。
 pub fn normalize_message_ids(memory: &mut SessionMemory) {
     let msg_count = memory.messages.len();
     let id_count = memory.message_ids.len();
@@ -209,6 +209,12 @@ pub fn normalize_message_ids(memory: &mut SessionMemory) {
     if id_count > msg_count {
         let excess = id_count - msg_count;
         memory.message_ids.drain(0..excess);
+    }
+
+    // 同步 sources：多余部分从头部删除
+    if memory.sources.len() > msg_count {
+        let excess = memory.sources.len() - msg_count;
+        memory.sources.drain(0..excess);
     }
 
     // 填充空的 message_id
@@ -232,6 +238,11 @@ pub fn normalize_message_ids(memory: &mut SessionMemory) {
         ));
     }
 
+    // 补齐缺失的 sources
+    while memory.sources.len() < msg_count {
+        memory.sources.push("chat".to_string());
+    }
+
     // 最终对齐：如果仍有差异（不应发生），告警并强制对齐
     if memory.message_ids.len() != msg_count {
         eprintln!(
@@ -246,13 +257,18 @@ pub fn normalize_message_ids(memory: &mut SessionMemory) {
                 .push(uuid::Uuid::new_v4().to_string());
         }
     }
+    memory.sources.truncate(msg_count);
+    while memory.sources.len() < msg_count {
+        memory.sources.push("chat".to_string());
+    }
 }
 
-pub fn append_message(memory: &mut SessionMemory, message: Message) -> String {
+pub fn append_message(memory: &mut SessionMemory, message: Message, source: &str) -> String {
     normalize_message_ids(memory);
     let message_id = uuid::Uuid::new_v4().to_string();
     memory.messages.push(message);
     memory.message_ids.push(message_id.clone());
+    memory.sources.push(source.to_string());
     message_id
 }
 
@@ -260,18 +276,21 @@ pub fn pop_message(memory: &mut SessionMemory) -> Option<(Message, String)> {
     normalize_message_ids(memory);
     let message = memory.messages.pop()?;
     let message_id = memory.message_ids.pop().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    memory.sources.pop();
     Some((message, message_id))
 }
 
-pub fn restore_message(memory: &mut SessionMemory, message: Message, message_id: String) {
+pub fn restore_message(memory: &mut SessionMemory, message: Message, message_id: String, source: &str) {
     normalize_message_ids(memory);
     memory.messages.push(message);
     memory.message_ids.push(message_id);
+    memory.sources.push(source.to_string());
 }
 
 pub fn reset_message_ids(memory: &mut SessionMemory) {
     // 只清理超出 messages 范围的多余 id，保留已有配对
     memory.message_ids.truncate(memory.messages.len());
+    memory.sources.truncate(memory.messages.len());
     normalize_message_ids(memory);
 }
 
@@ -307,12 +326,13 @@ pub fn save_session(
     let mut normalized_memory = memory.clone();
     normalize_message_ids(&mut normalized_memory);
 
-    let filtered_pairs: Vec<(String, Message)> = normalized_memory
+    let filtered_triples: Vec<(String, Message, String)> = normalized_memory
         .messages
         .iter()
         .enumerate()
         .filter_map(|(idx, msg)| {
             let message_id = normalized_memory.message_ids[idx].clone();
+            let source = normalized_memory.sources.get(idx).cloned().unwrap_or_else(|| "chat".to_string());
             let filtered_message = match msg {
             Message::User { content } => match content {
                 Content::Single(_) => Some(msg.clone()),
@@ -406,11 +426,19 @@ pub fn save_session(
                 }
             },
         };
-            filtered_message.map(|message| (message_id, message))
+            filtered_message.map(|message| (message_id, message, source))
         })
         .collect();
-    let (filtered_message_ids, filtered_messages): (Vec<String>, Vec<Message>) =
-        filtered_pairs.into_iter().unzip();
+    let (filtered_message_ids, filtered_messages, filtered_sources): (Vec<String>, Vec<Message>, Vec<String>) =
+        filtered_triples.into_iter().fold(
+            (Vec::new(), Vec::new(), Vec::new()),
+            |(mut ids, mut msgs, mut srcs), (id, msg, src)| {
+                ids.push(id);
+                msgs.push(msg);
+                srcs.push(src);
+                (ids, msgs, srcs)
+            },
+        );
 
     if let Some((input_delta, output_delta)) = token_usage_delta {
         meta.total_input_tokens = meta.total_input_tokens.saturating_add(input_delta);
@@ -429,11 +457,13 @@ pub fn save_session(
     let filtered_memory = SessionMemory {
         messages: filtered_messages,
         message_ids: filtered_message_ids,
+        sources: filtered_sources.clone(),
         plan_documents: normalized_memory.plan_documents.clone(),
     };
 
     repository::upsert_session(&meta, &filtered_memory)
         .unwrap_or_else(|err| panic!("保存 SQLite 会话 {} 失败: {}", id, err));
+    let visible_sources: Vec<String> = filtered_memory.sources.clone();
     let (visible_message_ids, visible_messages): (Vec<String>, Vec<Message>) =
         filtered_memory.message_ids.iter().cloned()
         .zip(filtered_memory.messages.iter().cloned())
@@ -444,7 +474,7 @@ pub fn save_session(
         id,
         &visible_messages,
         &visible_message_ids,
-        "chat",
+        &visible_sources,
         meta.updated_at,
     )
     .unwrap_or_else(|err| panic!("保存 SQLite 会话历史 {} 失败: {}", id, err));

@@ -17,6 +17,7 @@ import {
   toolActionLabel,
   toolGroupActionLabel,
   toolGroupTitle,
+  unwrapDeferredTool,
   type ToolCallGroup,
 } from "./toolDisplay";
 
@@ -85,10 +86,11 @@ function renderToolDetailHtml(tool: AgentToolCallView) {
 }
 
 function renderToolRow(tool: AgentToolCallView) {
+  const displayName = unwrapDeferredTool(tool).displayName;
   return `<span class="agent-tool-child-row ${escapeHtml(tool.status)}">
 ${renderToolStatusIcon(tool.status)}
 <span>${escapeHtml(toolActionLabel(tool.name, tool.status, tool))}</span>
-<code>${escapeHtml(tool.name || "")}</code>
+<code>${escapeHtml(displayName)}</code>
 </span>`;
 }
 
@@ -339,6 +341,7 @@ function renderDevItemToHtml(item: DevTimelineItem): string {
     }
     case "tool": {
       const tool = item.tool;
+      const displayName = unwrapDeferredTool(tool).displayName;
       const statusLabel = tool.status === "completed" ? "完成" : tool.status === "running" ? "执行中" : tool.status === "error" ? "失败" : "";
       const label = toolActionLabel(tool.name, tool.status, tool);
       const open = item.streaming;
@@ -357,7 +360,7 @@ function renderDevItemToHtml(item: DevTimelineItem): string {
       return `<details class="dev-tool ${escapeHtml(tool.status)}" ${open ? "open" : ""}>
 <summary class="dev-tool-summary">
   <span class="dev-status-dot ${escapeHtml(tool.status)}"></span>
-  <code class="dev-tool-name">${escapeHtml(tool.name)}</code>
+  <code class="dev-tool-name">${escapeHtml(displayName)}</code>
   <span class="dev-tool-action">${escapeHtml(label)}</span>
   <span class="dev-tool-status">${escapeHtml(statusLabel)}</span>
 </summary>
@@ -367,9 +370,7 @@ ${bodyHtml ? `<div class="dev-tool-body">${bodyHtml}</div>` : ""}
     case "log":
       return `<div class="dev-log">
 <div class="dev-log-header">
-  <span class="dev-log-dot red"></span>
-  <span class="dev-log-dot yellow"></span>
-  <span class="dev-log-dot green"></span>
+  <span class="dev-status-dot"></span>
   <span class="dev-log-title">输出 #${item.loop || 1}</span>
 </div>
 <div class="dev-log-body">${renderMarkdown(item.content)}</div>

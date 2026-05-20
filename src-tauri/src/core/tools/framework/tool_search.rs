@@ -423,7 +423,6 @@ mod tests {
         let core = get_core_tool_definitions();
         let names: Vec<&str> = core.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"SearchTools"));
-        assert!(names.contains(&"GetSystemInfo"));
         assert!(names.contains(&"LoadSkill"));
     }
 }

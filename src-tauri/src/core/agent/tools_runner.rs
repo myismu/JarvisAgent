@@ -278,9 +278,18 @@ pub async fn execute_tool_calls(
         sub_out += result.output_tokens;
 
         // emit "completed" 或 "error" 事件
-        let status = if result.output.starts_with("工具 `")
-            && result.output.contains("参数解析失败")
-        {
+        // 判断工具执行是否失败：参数解析失败 或 工具返回错误信息
+        let is_parse_error = result.output.starts_with("工具 `")
+            && result.output.contains("参数解析失败");
+        let is_tool_error = result.output.contains("失败")
+            || result.output.contains("错误")
+            || result.output.contains("error")
+            || result.output.contains("Error")
+            || result.output.contains("denied")
+            || result.output.contains("拒绝")
+            || result.output.contains("无法")
+            || result.output.contains("不能");
+        let status = if is_parse_error || is_tool_error {
             "error"
         } else {
             "completed"
@@ -325,7 +334,7 @@ pub async fn execute_tool_calls(
             run_id,
             &result.name,
             Some(db_summary),
-            None,
+            None, // 不单独记录 error 字段，避免重复显示
             loop_count,
         );
 
@@ -346,6 +355,13 @@ pub async fn execute_tool_calls(
             tool_use_id: result.tool_use_id,
             content: output,
         });
+    }
+
+    println!("[JARVIS] execute_tool_calls 完成: tool_results 数量={}", tool_results.len());
+    for (i, tr) in tool_results.iter().enumerate() {
+        if let ContentBlock::ToolResult { content, .. } = tr {
+            println!("[JARVIS]   tool_results[{}]: {}...", i, content.chars().take(100).collect::<String>());
+        }
     }
 
     (tool_results, manual_compact, sub_in, sub_out)

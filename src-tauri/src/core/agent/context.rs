@@ -144,7 +144,7 @@ pub fn inject_user_message(
             content: Content::Single(msg.to_string()),
         }
     };
-    append_message(session, message);
+    append_message(session, message, "chat");
 
     initial_msg_index
 }
@@ -177,17 +177,27 @@ pub fn inject_context_into_history(
 }
 
 pub fn restore_image_data(history_snapshot: &mut Vec<Message>) {
-    let keep_recent_image_msgs = 2;
-    let total_msgs = history_snapshot.len();
+    // 找到最后一条 Assistant 消息的位置；
+    // 该位置之前的图片已被 LLM 处理过，折叠为文本摘要；
+    // 之后的图片 LLM 尚未看到，保留 base64。
+    let last_assistant_pos = history_snapshot
+        .iter()
+        .rposition(|msg| matches!(msg, Message::Assistant { .. }));
+
     for (i, msg) in history_snapshot.iter_mut().enumerate() {
         if let Message::User { content } = msg {
             if let Content::Multiple(blocks) = content {
-                let is_recent = i + keep_recent_image_msgs >= total_msgs;
+                let image_seen = last_assistant_pos
+                    .map(|pos| i < pos)
+                    .unwrap_or(false);
                 let mut new_blocks = Vec::new();
                 for block in blocks.drain(..) {
                     match block {
                         ContentBlock::Image { ref source } => {
-                            if is_recent {
+                            if image_seen {
+                                let summary = format!("[图片: {}]", source.media_type);
+                                new_blocks.push(ContentBlock::Text { text: summary });
+                            } else {
                                 let mut img_block = block.clone();
                                 if let ContentBlock::Image { ref mut source } = img_block {
                                     if source.data.is_empty() {
@@ -201,9 +211,6 @@ pub fn restore_image_data(history_snapshot: &mut Vec<Message>) {
                                     }
                                 }
                                 new_blocks.push(img_block);
-                            } else {
-                                let summary = format!("[图片: {}]", source.media_type);
-                                new_blocks.push(ContentBlock::Text { text: summary });
                             }
                         }
                         _ => {

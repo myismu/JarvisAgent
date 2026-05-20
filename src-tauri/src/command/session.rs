@@ -441,6 +441,7 @@ pub async fn get_session_context_snapshot(
         let token_count = crate::infra::llm::token_count::count_text(
             &snapshot.model, &messages_text,
         );
+        let messages_json = serde_json::to_string_pretty(&memory.messages).unwrap_or_default();
         // 更新 messages 段
         let old_msg_chars: usize = snapshot.sections.iter()
             .find(|s| s.key == "messages")
@@ -457,6 +458,7 @@ pub async fn get_session_context_snapshot(
             item_count: memory.messages.len(),
             content: messages_text,
             truncated: false,
+            raw_content: Some(messages_json),
         });
         snapshot.estimated_tokens = snapshot.sections.iter().map(|s| s.estimated_tokens).sum();
         snapshot.message_count = memory.messages.len();
@@ -587,11 +589,11 @@ pub(crate) fn recover_interrupted_into_memory(
         return false;
     };
     for message in extra_messages {
-        session::append_message(memory, message);
+        session::append_message(memory, message, "chat");
     }
     if let Some(message) = recovered_assistant_message(&live_content, &live_thinking) {
         if !assistant_message_exists_at_tail(&memory.messages, &message) {
-            session::append_message(memory, message);
+            session::append_message(memory, message, "chat");
         }
     }
     true
@@ -792,7 +794,7 @@ async fn compact_inner(
         config.active_config().clone()
     };
     crate::core::session::memory::compact_messages(
-        &mut memory.messages,
+        &mut *memory,
         &client,
         &cfg.api_key,
         &cfg.base_url,
@@ -801,6 +803,14 @@ async fn compact_inner(
     )
     .await
     .map_err(|e| format!("压缩失败: {}", e))?;
+
+    // 从 DB 中删除已清理的 internal/background 消息
+    if let Err(e) = crate::core::session::repository::delete_session_messages_by_source(
+        session_id,
+        &["internal", "background"],
+    ) {
+        println!("[compact] 清理 internal/background 消息失败: {}", e);
+    }
 
     let ids: Vec<String> = (0..memory.messages.len())
         .map(|i| format!("compact:{}:{}", i, uuid::Uuid::new_v4().simple()))

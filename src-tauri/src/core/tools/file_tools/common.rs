@@ -24,11 +24,22 @@ pub(super) const MAX_FILE_SIZE_BYTES: u64 = 256 * 1024;
 pub(super) const MAX_LINES_DEFAULT: usize = 2000;
 
 /// 从工具调用参数中提取 file path，兼容 path / file_path / filePath 三种命名
-pub(super) fn resolve_path(input: &serde_json::Value) -> &str {
-    input["path"].as_str()
+/// 自动剥离 \\?\ 前缀（Windows 扩展长度路径前缀，文件系统不识别）
+pub(super) fn resolve_path(input: &serde_json::Value) -> String {
+    let raw = input["path"].as_str()
         .or_else(|| input["file_path"].as_str())
         .or_else(|| input["filePath"].as_str())
-        .unwrap_or("")
+        .unwrap_or("");
+    strip_extended_path_prefix(raw)
+}
+
+/// 剥离 Windows 扩展长度路径前缀 \\?\
+fn strip_extended_path_prefix(path: &str) -> String {
+    if path.starts_with("\\\\?\\") {
+        path[4..].to_string()
+    } else {
+        path.to_string()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -426,8 +437,9 @@ pub(super) fn is_locked_file_error(err_msg: &str) -> bool {
 }
 
 /// 检测 Windows UNC 路径 (\\server\share\...)
+/// 排除 \\?\ 前缀（Windows 扩展长度路径前缀，不是 UNC 路径）
 pub(super) fn is_unc_path(path: &str) -> bool {
-    path.starts_with("\\\\") || path.starts_with("//")
+    (path.starts_with("\\\\") && !path.starts_with("\\\\?\\")) || path.starts_with("//")
 }
 
 /// UNC 路径拦截的通用错误消息

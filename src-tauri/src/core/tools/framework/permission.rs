@@ -57,12 +57,11 @@ pub fn is_within_workspace(path_str: &str, workspace_dir: Option<&Path>) -> bool
         None => return true,
     };
     let path = Path::new(path_str);
-    // 相对路径先拼接 CWD 再归一化
+    // 相对路径基于沙箱目录解析（而非进程 CWD）
     let resolved = if path.is_absolute() {
         normalize_path(path)
     } else {
-        let cwd = std::env::current_dir().unwrap_or_default();
-        normalize_path(&cwd.join(path))
+        normalize_path(&ws.join(path))
     };
     let ws_normalized = normalize_path(ws);
     resolved.starts_with(&ws_normalized)

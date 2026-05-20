@@ -9,8 +9,11 @@ import {
   toolActionLabel,
   toolGroupActionLabel,
   toolGroupTitle,
+  unwrapDeferredTool,
   type ToolCallGroup,
 } from "../../utils/toolDisplay";
+
+const toolDisplayName = (tool: AgentToolCallView) => unwrapDeferredTool(tool).displayName;
 import StreamingMarkdown from "../common/StreamingMarkdown.vue";
 
 defineProps<{
@@ -104,7 +107,7 @@ const technicalOpen = (group: ToolCallGroup) => group.status === "error";
               </svg>
             </span>
             <span>{{ toolActionLabel(tool.name, tool.status, tool) }}</span>
-            <code>{{ tool.name }}</code>
+            <code>{{ toolDisplayName(tool) }}</code>
           </div>
           <div v-if="tool.input" class="agent-tool-field">
             <span>{{ t('execution.parameters') }}</span>

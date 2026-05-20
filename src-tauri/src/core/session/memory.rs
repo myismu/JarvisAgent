@@ -70,17 +70,37 @@ pub fn append_transcript(session_id: &str, text: &str) -> Result<String, MemoryE
 
 /// 对消息列表执行 LLM 摘要压缩（会话无关，不保存转录，供子 Agent 等场景使用）
 pub async fn compact_messages(
-    messages: &mut Vec<Message>,
+    memory: &mut SessionMemory,
     client: &reqwest::Client,
     api_key: &str,
     base_url: &str,
     model_id: &str,
     api_format: ApiFormat,
 ) -> Result<(), MemoryError> {
-    // 保留最近 N 条消息不参与压缩
+    // 1. 清理 internal/background 消息（系统内部通知无需保留，直接删除）
+    let mut keep_indices = Vec::new();
+    for (i, src) in memory.sources.iter().enumerate() {
+        if matches!(src.as_str(), "chat" | "compact" | "context") {
+            keep_indices.push(i);
+        }
+    }
+    if keep_indices.len() < memory.messages.len() {
+        memory.messages = keep_indices.iter().map(|&i| memory.messages[i].clone()).collect();
+        memory.sources = keep_indices.iter().map(|&i| memory.sources[i].clone()).collect();
+    }
+
+    let messages = &mut memory.messages;
+    let sources = &mut memory.sources;
+
+    // 2. 保留最近 N 条消息不参与压缩
     let keep_recent = crate::infra::types::constants::COMPACT_KEEP_RECENT_MESSAGES;
     let recent: Vec<_> = if messages.len() > keep_recent {
         messages.drain(messages.len() - keep_recent..).collect()
+    } else {
+        Vec::new()
+    };
+    let recent_sources: Vec<_> = if sources.len() > keep_recent {
+        sources.drain(sources.len() - keep_recent..).collect()
     } else {
         Vec::new()
     };
@@ -88,18 +108,22 @@ pub async fn compact_messages(
     let summary = call_summarize_llm(messages, client, api_key, base_url, model_id, api_format).await?;
 
     messages.clear();
+    sources.clear();
     messages.push(Message::User {
         content: Content::Single("[用户请求压缩上下文]".to_string()),
     });
+    sources.push("compact".to_string());
     messages.push(Message::Assistant {
         content: Content::Single(format!(
             "[上下文压缩摘要]\n\n以下是对此前对话内容的自动摘要，用于保持上下文连贯性。\n\n---\n{}",
             summary
         )),
     });
+    sources.push("compact".to_string());
 
     // 把保留的最近消息追加回来
     messages.extend(recent);
+    sources.extend(recent_sources);
 
     Ok(())
 }
@@ -254,8 +278,16 @@ pub async fn auto_compact(
     let transcript_path = append_transcript(session_id, &json_content)?;
     println!("[auto_compact] Transcript saved to {}", transcript_path);
 
-    // 委托核心压缩逻辑（内部保留最近 N 条不压缩）
-    compact_messages(&mut memory.messages, client, api_key, base_url, model_id, api_format).await?;
+    // 委托核心压缩逻辑（内部保留最近 N 条不压缩，同时清理 internal/background）
+    compact_messages(memory, client, api_key, base_url, model_id, api_format).await?;
+
+    // 从 DB 中删除已清理的 internal/background 消息
+    if let Err(e) = crate::core::session::repository::delete_session_messages_by_source(
+        session_id,
+        &["internal", "background"],
+    ) {
+        println!("[auto_compact] 清理 internal/background 消息失败: {}", e);
+    }
 
     // 生成 message_ids（前两条是压缩摘要，后面是保留的最近消息）
     let message_ids: Vec<String> = (0..memory.messages.len())
@@ -286,7 +318,7 @@ pub async fn auto_compact(
         session_id,
         &memory.messages,
         &message_ids,
-        "compact",
+        &memory.sources,
         now,
     ) {
         println!("[auto_compact] 保存压缩消息到 session_messages 失败: {}", e);

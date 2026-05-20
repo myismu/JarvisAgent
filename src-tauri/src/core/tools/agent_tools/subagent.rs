@@ -980,8 +980,13 @@ pub async fn run_subagent(
                     crate::infra::types::constants::MAX_TOKENS_COMPACT_TRIGGER,
                     estimated
                 );
+                let mut temp_memory = crate::infra::types::models::SessionMemory {
+                    messages: std::mem::take(&mut messages),
+                    ..Default::default()
+                };
+                temp_memory.sources = temp_memory.messages.iter().map(|_| "chat".to_string()).collect();
                 let _ = compact_messages(
-                    &mut messages,
+                    &mut temp_memory,
                     &client,
                     &api_key,
                     &base_url,
@@ -989,6 +994,7 @@ pub async fn run_subagent(
                     api_format_enum,
                 )
                 .await;
+                messages = temp_memory.messages;
             }
         }
         loop_count += 1;

@@ -13,7 +13,6 @@ pub const DEFAULT_AGENT_ROLE: &str = "general";
 pub const IMPLEMENTATION_AGENT_ROLE: &str = "implementation";
 
 const GENERAL_TOOLS: &[&str] = &[
-    "GetSystemInfo",
     "LoadSkill",
     "ListDirectory",
     "FindFiles",
@@ -35,7 +34,6 @@ const GENERAL_TOOLS: &[&str] = &[
 ];
 
 const READ_ONLY_RESEARCH_TOOLS: &[&str] = &[
-    "GetSystemInfo",
     "LoadSkill",
     "ListDirectory",
     "FindFiles",
@@ -52,7 +50,6 @@ const READ_ONLY_RESEARCH_TOOLS: &[&str] = &[
 ];
 
 const VERIFICATION_TOOLS: &[&str] = &[
-    "GetSystemInfo",
     "LoadSkill",
     "ListDirectory",
     "FindFiles",
@@ -299,7 +296,7 @@ mod tests {
         let properties = &task.schema["input_schema"]["properties"];
 
         assert!(properties["description"].is_object());
-        assert!(properties["subagent_role"].is_object());
+        assert!(properties["subagent_type"].is_object());
         assert!(properties["model"].is_object());
         assert!(properties["read_only"].is_object());
     }

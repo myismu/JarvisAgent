@@ -142,12 +142,15 @@ fn display_path(path: &Path) -> String {
     display.to_string_lossy().replace('\\', "/")
 }
 
-fn resolve_dir(dir: &str) -> PathBuf {
+fn resolve_dir(dir: &str, workspace: Option<&Path>) -> PathBuf {
     let path = Path::new(dir);
     if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir().unwrap_or_default().join(path)
+        workspace
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+            .join(path)
     }
 }
 
@@ -527,7 +530,7 @@ pub async fn find_references(
         return e;
     }
 
-    let search_dir = resolve_dir(dir);
+    let search_dir = resolve_dir(dir, ws.as_deref());
     let include_patterns = input_patterns(input, "include");
     let exclude_patterns = input_patterns(input, "exclude");
     let ignore_dirs = input_string_list(input, "ignore_dirs");
@@ -576,7 +579,7 @@ pub async fn find_symbol(
         return e;
     }
 
-    let search_dir = resolve_dir(dir);
+    let search_dir = resolve_dir(dir, ws.as_deref());
     let include_patterns = input_patterns(input, "include");
     let exclude_patterns = input_patterns(input, "exclude");
     let ignore_dirs = input_string_list(input, "ignore_dirs");
@@ -623,7 +626,7 @@ pub async fn code_search(
         return e;
     }
 
-    let search_dir = resolve_dir(dir);
+    let search_dir = resolve_dir(dir, ws.as_deref());
     let mut include_patterns = input_patterns(input, "include");
     let exclude_patterns = input_patterns(input, "exclude");
     let ignore_dirs = input_string_list(input, "ignore_dirs");

@@ -525,14 +525,6 @@ body.dragging-active .editor-container {
   gap: 6px;
   border-bottom: 1px solid var(--glass-border-subtle);
 }
-.dev-log-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-.dev-log-dot.red   { background: #ef4444; }
-.dev-log-dot.yellow { background: #f59e0b; }
-.dev-log-dot.green  { background: #10b981; }
 .dev-log-title {
   font-family: var(--font-mono);
   font-size: 0.68rem;

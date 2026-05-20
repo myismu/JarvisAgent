@@ -17,6 +17,7 @@ import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { emit as tauriEmit } from '@tauri-apps/api/event';
+import ConfirmModal from '../common/ConfirmModal.vue';
 import type { ContextSectionSnapshot, SessionContextSnapshot } from '../../types';
 
 const props = defineProps<{
@@ -78,12 +79,11 @@ const methodLabel = (method?: string | null): string => {
 const totalTokens = computed(() => Math.max(0, props.snapshot?.estimatedTokens || 0));
 const providerInputTokens = computed(() => props.snapshot?.providerInputTokens ?? null);
 const providerTotalTokens = computed(() => props.snapshot?.providerTotalTokens ?? null);
-const displayInputTokens = computed(() => providerInputTokens.value ?? totalTokens.value);
 const maxContextTokens = computed(() => props.snapshot?.maxContextTokens ?? null);
 const contextUsagePercent = computed(() => {
   const max = maxContextTokens.value;
   if (!max) return null;
-  return Math.min(999, Math.round((displayInputTokens.value / max) * 1000) / 10);
+  return Math.min(999, Math.round((totalTokens.value / max) * 1000) / 10);
 });
 
 const sectionViews = computed<SectionView[]>(() => {
@@ -126,6 +126,7 @@ const usageTone = computed(() => {
 const compacting = ref(false);
 const compactError = ref('');
 const compactMessage = ref('');
+const showCompactConfirm = ref(false);
 
 const compactThreshold = 70; // 达到上下文窗口 70% 才建议压缩
 
@@ -153,10 +154,14 @@ const compactHint = computed(() => {
   return `Token 占用 ${formatNumber(tokens)}，可手动压缩`;
 });
 
-const triggerCompact = async () => {
+const triggerCompact = () => {
   if (!props.sessionId || compacting.value) return;
-  if (!confirm(`确定压缩上下文？\n当前 ${formatToken(props.snapshot?.estimatedTokens || 0)} tokens\n压缩期间请勿操作，压缩完成后需要刷新上下文。`)) return;
+  showCompactConfirm.value = true;
+};
 
+const confirmCompact = async () => {
+  showCompactConfirm.value = false;
+  if (!props.sessionId) return;
   compacting.value = true;
   compactError.value = '';
   compactMessage.value = '';
@@ -193,17 +198,11 @@ const usageLabel = computed(() => {
   }
 });
 
-const driftText = computed(() => {
-  const drift = props.snapshot?.driftPercent;
-  if (drift === null || drift === undefined) return t('monitor.context.waitingUsage');
-  const sign = drift > 0 ? '+' : '';
-  return `${sign}${drift.toFixed(1)}%`;
-});
-
 const copiedSection = ref<string | null>(null);
+const showRawContent = ref(true);
 
 const copySectionContent = async (section: ContextSectionSnapshot) => {
-  const text = sectionContent(section);
+  const text = showRawContent.value && section.rawContent ? section.rawContent : sectionContent(section);
   try {
     await navigator.clipboard.writeText(text);
     copiedSection.value = section.key;
@@ -228,10 +227,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
             <template v-else>
               / {{ t('monitor.context.unknownContextWindow') }}
             </template>
-            · {{ t('monitor.context.chars', { count: formatNumber(snapshot.totalChars) }) }} · {{ t('monitor.context.updated', { time: formatTime(snapshot.createdAt) }) }}
-            <template v-if="providerInputTokens !== null">
-              · {{ t('monitor.context.actualInput', { tokens: formatToken(providerInputTokens) }) }}
-            </template>
+            · {{ t('monitor.context.updated', { time: formatTime(snapshot.createdAt) }) }}
           </div>
         </div>
         <div class="context-hero-actions">
@@ -274,10 +270,6 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
         <div class="context-stat-card">
           <span>{{ t('monitor.context.providerActual') }}</span>
           <strong>{{ providerTotalTokens !== null ? formatToken(providerTotalTokens) : t('monitor.context.waitingUsage') }}</strong>
-        </div>
-        <div class="context-stat-card">
-          <span>{{ t('monitor.context.drift') }}</span>
-          <strong>{{ driftText }}</strong>
         </div>
       </div>
     </div>
@@ -333,7 +325,17 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
     </div>
 
     <div class="context-section-list">
-      <div class="context-detail-label">{{ t('monitor.context.details') }}</div>
+      <div class="context-detail-header">
+        <span class="context-detail-label">{{ t('monitor.context.details') }}</span>
+        <button
+          class="raw-toggle-btn"
+          :class="{ active: showRawContent }"
+          @click="showRawContent = !showRawContent"
+          :title="showRawContent ? '显示格式化内容' : '显示原始 JSON'"
+        >
+          {{ showRawContent ? 'Formatted' : 'Raw JSON' }}
+        </button>
+      </div>
       <details
         v-for="section in sectionViews"
         :key="section.key"
@@ -354,20 +356,31 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
           <span v-if="section.truncated">{{ t('monitor.context.truncated') }}</span>
         </div>
         <div class="context-section-body">
-          <pre>{{ sectionContent(section) }}</pre>
-          <button
-            class="copy-btn"
-            :class="{ copied: copiedSection === section.key }"
-            @click.stop="copySectionContent(section)"
-          >
-            {{ copiedSection === section.key ? '已复制' : '复制' }}
-          </button>
+          <pre>{{ showRawContent && section.rawContent ? section.rawContent : sectionContent(section) }}</pre>
+          <div class="context-section-actions">
+            <button
+              class="copy-btn"
+              :class="{ copied: copiedSection === section.key }"
+              @click.stop="copySectionContent(section)"
+            >
+              {{ copiedSection === section.key ? '已复制' : '复制' }}
+            </button>
+          </div>
         </div>
       </details>
     </div>
   </div>
 
   <div v-else class="section-empty">{{ t('monitor.context.emptySnapshot') }}</div>
+
+  <ConfirmModal
+    :open="showCompactConfirm"
+    :title="t('monitor.context.compact')"
+    :message="t('monitor.context.cacheWarning', { tokens: formatToken(snapshot?.estimatedTokens || 0) })"
+    confirm-kind="primary"
+    @cancel="showCompactConfirm = false"
+    @confirm="confirmCompact"
+  />
 </template>
 
 <style scoped>
@@ -751,12 +764,42 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   gap: 6px;
 }
 
+.context-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .context-detail-label {
   color: var(--text-muted);
   font-size: 0.58rem;
   font-weight: 850;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.raw-toggle-btn {
+  padding: 2px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--glass-bg);
+  color: var(--text-muted);
+  font-size: 0.55rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.raw-toggle-btn:hover {
+  color: var(--text-main);
+  border-color: var(--text-muted);
+}
+
+.raw-toggle-btn.active {
+  color: var(--accent-blue);
+  border-color: var(--accent-blue);
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
 }
 
 .context-section-item {
@@ -812,6 +855,14 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 
 .context-section-body {
   position: relative;
+}
+
+.context-section-actions {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  display: flex;
+  gap: 4px;
 }
 
 .context-section-item pre {

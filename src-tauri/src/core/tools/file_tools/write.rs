@@ -35,16 +35,16 @@ pub async fn write_file(
     // 统一行尾为 LF，避免 CRLF/LF 混乱
     let content = normalize_line_endings(content);
     let ws = get_workspace(app, session_id).await;
-    if let Err(e) = ensure_path_permission(app, path, "写入", ws.as_deref()).await {
+    if let Err(e) = ensure_path_permission(app, &path, "写入", ws.as_deref()).await {
         return e;
     }
-    if is_notebook_path(path) || looks_like_notebook_json(&content) {
-        return notebook_text_edit_rejection(path);
+    if is_notebook_path(&path) || looks_like_notebook_json(&content) {
+        return notebook_text_edit_rejection(&path);
     }
 
-    let file_exists = std::path::Path::new(path).exists();
+    let file_exists = std::path::Path::new(&path).exists();
     let old_decoded = if file_exists {
-        match read_text_preserve_encoding(path) {
+        match read_text_preserve_encoding(&path) {
             Ok(decoded) => Some(decoded),
             Err(e) => {
                 let err_msg = e.to_string();
@@ -68,13 +68,13 @@ pub async fn write_file(
 
     // TOCTOU 防护：记录读取时的 mtime
     let read_mtime = if file_exists {
-        std::fs::metadata(path).ok().and_then(|m| m.modified().ok())
+        std::fs::metadata(&path).ok().and_then(|m| m.modified().ok())
     } else {
         None
     };
 
     // TOCTOU 防护：写入前检查文件是否在读取后被外部修改
-    if let (Some(orig_mtime), Ok(current_meta)) = (read_mtime, std::fs::metadata(path)) {
+    if let (Some(orig_mtime), Ok(current_meta)) = (read_mtime, std::fs::metadata(&path)) {
         if let Ok(current_mtime) = current_meta.modified() {
             if current_mtime != orig_mtime {
                 return format!(
@@ -90,7 +90,7 @@ pub async fn write_file(
         Err(e) => return format!("写入失败: {}", e),
     };
 
-    match std::fs::write(path, bytes) {
+    match std::fs::write(&path, bytes) {
         Ok(_) => {
             let patch = match &old_content {
                 None => Patch::CreateFile {

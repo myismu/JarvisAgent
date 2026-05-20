@@ -1,18 +1,19 @@
 ﻿//! # pipeline.rs — Agent 主循环流水线
 //!
 //! 实现 Agent 的 5 阶段执行流水线：初始化 → 意图验证 → 上下文构建 → 主循环 → 收尾。
-//! 主循环阶段包含压缩检查、API 调用、流式处理、工具执行等完整 Agent Loop 逻辑。
+//! 主循环阶段包含压缩检查、API 调用、流式处理、工具执行、反思审查等完整 Agent Loop 逻辑。
 //!
 //! ## 关键导出
 //! - `run_pipeline()`: 主流程入口，依次执行 5 个阶段并返回 `JarvisResult`
 //!
 //! ## 依赖
-//! - Internal: `crate::core::orchestration::agent_runs`, `crate::infra::llm::api_client`, `crate::infra::config::config::AgentConfig`, `crate::core::intent`, `crate::core::session::memory`, `crate::core::tools`
+//! - Internal: `crate::core::orchestration::agent_runs`, `crate::infra::llm::api_client`, `crate::infra::config::config::AgentConfig`, `crate::core::intent`, `crate::core::session::memory`, `crate::core::tools`, `super::reflection`
 //! - External: `eventsource_stream`, `serde_json`, `tauri`, `tokio_util`, `reqwest`
 //!
 //! ## 约束
 //! - 循环次数受 `MAX_AGENT_LOOP_BEFORE_CONFIRM` 和 `MAX_AGENT_LOOP_ABSOLUTE` 常量限制
 //! - 取消令牌（`CancellationToken`）贯穿全流程，支持用户随时中断
+//! - 反思审查在工具执行后触发，受 `reflection_mode` 和防循环机制控制
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -67,6 +68,10 @@ struct PipelineState {
     req_input_tokens: u64,
     req_output_tokens: u64,
     final_answer: String,
+    /// 反思审查状态
+    reflection_mode: String,
+    total_reflections: usize,
+    consecutive_reflection_nos: usize,
 }
 
 struct ContextEstimate {
@@ -104,7 +109,7 @@ impl PipelineState {
         thinking_override: Option<bool>,
         image_base64_list: Option<Vec<String>>,
         _agent_display_mode: Option<String>,
-        _reflection_mode_override: Option<String>,
+        reflection_mode_override: Option<String>,
         _inject_user_message: bool,
         app: tauri::AppHandle,
         session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
@@ -274,6 +279,10 @@ impl PipelineState {
             }
         }
 
+        let resolved_reflection_mode = reflection_mode_override
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| cfg.reflection_mode.clone());
+
         let mut state = Self {
             app,
             sid,
@@ -304,6 +313,9 @@ impl PipelineState {
             req_input_tokens: 0,
             req_output_tokens: 0,
             final_answer: String::new(),
+            reflection_mode: resolved_reflection_mode,
+            total_reflections: 0,
+            consecutive_reflection_nos: 0,
         };
 
         if detected_intent == "TASK_PLAN" && work_mode != "plan" {
@@ -422,7 +434,7 @@ impl PipelineState {
                     );
                     append_message(&mut session, Message::Assistant {
                         content: Content::Single(recovery_msg),
-                    });
+                    }, "internal");
                     println!("[JARVIS] 恢复：检测到 {} 个 InProgress 任务，已注入恢复指令", in_progress.len());
                 }
 
@@ -496,7 +508,7 @@ impl PipelineState {
                         "调度器通知：Task #{}「{}」执行失败（原因：{}）。\n错误详情：\n{}\n\n请根据以上信息决策：重试该任务 / 将其拆分为更小子任务 / 跳过该任务继续执行其他任务。",
                         task_id, subject, reason, error_detail
                     )),
-                });
+                }, "internal");
                 true // 需要 LLM 立即处理
             }
             SchedulerEvent::AllDone { completed, failed, report } => {
@@ -512,7 +524,7 @@ impl PipelineState {
                         "调度器报告：所有任务已执行完毕。\n{}",
                         report
                     )),
-                });
+                }, "internal");
                 true // 需要 LLM 处理最终报告
             }
         }
@@ -521,8 +533,11 @@ impl PipelineState {
     /// 阶段 4: 主循环 — 压缩 → 请求构建 → API 调用 → 流处理 → 工具执行
     async fn run_main_loop(&mut self) -> Result<(), AgentError> {
         loop {
+            println!("[JARVIS] 主循环开始: loop_count={}, total_loop_count={}", self.loop_count, self.total_loop_count);
+
             // 取消检查
             if self.cancel_token.is_cancelled() {
+                println!("[JARVIS] 主循环: cancel_token 已取消，退出循环");
                 self.handle_cancellation().await;
                 break;
             }
@@ -608,10 +623,18 @@ impl PipelineState {
                             Ok(Ok(Some(resp))) => (Some(resp), Some(rx)),
                             Ok(Ok(None)) => { *self.ctx.scheduler_rx.lock().await = Some(rx); continue; },
                             Ok(Err(e)) => {
-                                agent_runs::fail_run(&self.app, &self.run_id, e.to_string());
-                                *self.ctx.cancel_token.lock().await = None;
+                                // API 调用失败，设置错误信息并退出循环
+                                println!("[JARVIS] API 调用失败，终止主循环: {}", e);
+                                self.final_answer = format!("API 调用失败: {}", e);
+                                let _ = self.app.emit(
+                                    "chat-stream",
+                                    json!({
+                                        "content": format!("\n> ✕ **API 调用失败:** {}\n", e),
+                                        "sessionId": self.sid,
+                                    }),
+                                );
                                 *self.ctx.scheduler_rx.lock().await = Some(rx);
-                                return Err(e.into());
+                                break;
                             }
                             Err(_) => { *self.ctx.scheduler_rx.lock().await = Some(rx); continue; },
                         }
@@ -632,9 +655,22 @@ impl PipelineState {
                 }
             } else {
                 // 无活跃调度器，正常阻塞等待 LLM
-                let resp = match self.call_api_with_retry(&req_json).await? {
-                    Some(r) => r,
-                    None => continue,
+                let resp = match self.call_api_with_retry(&req_json).await {
+                    Ok(Some(r)) => r,
+                    Ok(None) => continue,
+                    Err(e) => {
+                        // API 调用失败，设置错误信息并退出循环
+                        println!("[JARVIS] API 调用失败，终止主循环: {}", e);
+                        self.final_answer = format!("API 调用失败: {}", e);
+                        let _ = self.app.emit(
+                            "chat-stream",
+                            json!({
+                                "content": format!("\n> ✕ **API 调用失败:** {}\n", e),
+                                "sessionId": self.sid,
+                            }),
+                        );
+                        break;
+                    }
                 };
                 (Some(resp), None)
             };
@@ -660,21 +696,27 @@ impl PipelineState {
                 if result.text.is_empty() && !result.has_tool && !self.cancel_token.is_cancelled()
                 {
                     println!("[JARVIS] 流式响应提前终止，尝试重试一次...");
-                    if let Some(resp) = self.call_api_with_retry(&req_json).await? {
-                        let mut stream2 = resp.bytes_stream().eventsource();
-                        process_stream(
-                            &mut stream2,
-                            is_openai,
-                            &self.app,
-                            &self.sid,
-                            &self.run_id,
-                            self.total_loop_count + 1,
-                            &self.cancel_token,
-                            StreamConfig::default(),
-                        )
-                        .await
-                    } else {
-                        result
+                    match self.call_api_with_retry(&req_json).await {
+                        Ok(Some(resp)) => {
+                            let mut stream2 = resp.bytes_stream().eventsource();
+                            process_stream(
+                                &mut stream2,
+                                is_openai,
+                                &self.app,
+                                &self.sid,
+                                &self.run_id,
+                                self.total_loop_count + 1,
+                                &self.cancel_token,
+                                StreamConfig::default(),
+                            )
+                            .await
+                        }
+                        Ok(None) => result,
+                        Err(e) => {
+                            // 重试失败，使用原始结果
+                            println!("[JARVIS] 流式重试失败: {}", e);
+                            result
+                        }
                     }
                 } else {
                     result
@@ -716,6 +758,10 @@ impl PipelineState {
                     }
                 })
                 .collect();
+
+            // 提取工具名称供反思审查使用
+            let tool_names_for_reflection: Vec<String> =
+                tool_calls.iter().map(|(name, _)| name.clone()).collect();
 
             // 原始 SSE 事件已在 stream.rs 中实时记录，这里只标记流结束
             logger.log_response_to_file(
@@ -779,9 +825,10 @@ impl PipelineState {
             }
 
             // 存储助手回复
-            self.store_assistant_response(current_blocks).await;
+            self.store_assistant_response(&current_blocks).await;
 
             // 判断是否继续循环
+            println!("[JARVIS] 主循环: tool_results.is_empty()={}, tool_results.len()={}", tool_results.is_empty(), tool_results.len());
             if tool_results.is_empty() {
                 self.final_answer = current_text_this_turn;
                 // 模型可能只返回 thinking 而没有 text（DeepSeek 等模型常见）
@@ -840,7 +887,7 @@ impl PipelineState {
                         let mut session = self.ctx.memory.lock().await;
                         append_message(&mut session, Message::User {
                             content: Content::Single(redirect_msg),
-                        });
+                        }, "internal");
                     }
 
                     self.loop_count += 1;
@@ -863,10 +910,92 @@ impl PipelineState {
                 }
                 break;
             } else {
+                println!("[JARVIS] 主循环: tool_results 不为空，添加到历史消息并继续循环");
+                // 先检查是否需要反思审查（在获取 session 锁之前）
+                let should_reflect = super::reflection::strategy::should_reflect(
+                    &self.reflection_mode,
+                    self.loop_count,
+                    self.total_reflections,
+                    self.consecutive_reflection_nos,
+                    &tool_names_for_reflection,
+                    &current_thinking_this_turn,
+                );
+
+                // 添加工具结果到 session
+                {
+                    let mut session = self.ctx.memory.lock().await;
+                    append_message(&mut session, Message::User {
+                        content: Content::Multiple(tool_results),
+                    }, "chat");
+                } // session 锁在这里释放
+
+                // —— 反思审查：工具结果已写入 session，审查 Agent 携带完整上下文判断 ——
+                if should_reflect {
+                    println!("[审查 Agent] 触发反思 (mode={}, model={})", self.reflection_mode, self.cfg.utility_model);
+                    // 获取 session 消息用于审查
+                    let session_messages = {
+                        let session = self.ctx.memory.lock().await;
+                        session.messages.clone()
+                    };
+
+                    match super::reflection::strategy::execute_review(
+                        &self.client,
+                        &self.api_key,
+                        &self.base_url,
+                        &self.cfg.utility_model,
+                        self.api_format,
+                        &session_messages,
+                        &self.msg,
+                        &current_blocks,
+                        &[],
+                    )
+                    .await
+                    {
+                        Ok(super::reflection::ReflectionJudgment::Ok) => {
+                            println!("[审查 Agent] 判断: OK");
+                            self.total_reflections += 1;
+                            self.consecutive_reflection_nos = 0;
+                            let _ = self.app.emit("agent-step", json!({
+                                "type": "reflection",
+                                "sessionId": self.sid,
+                                "loopCount": self.total_loop_count + 1,
+                                "judgment": "ok",
+                            }));
+                        }
+                        Ok(super::reflection::ReflectionJudgment::NotOk { reason, suggestion }) => {
+                            println!(
+                                "[审查 Agent] 判断: NO — {}\n建议: {}",
+                                reason, suggestion
+                            );
+                            self.total_reflections += 1;
+                            self.consecutive_reflection_nos += 1;
+                            let _ = self.app.emit("agent-step", json!({
+                                "type": "reflection",
+                                "sessionId": self.sid,
+                                "loopCount": self.total_loop_count + 1,
+                                "judgment": "not_ok",
+                                "reason": reason,
+                                "suggestion": suggestion,
+                            }));
+
+                            // 注入修正建议到 session
+                            let mut session = self.ctx.memory.lock().await;
+                            append_message(&mut session, Message::User {
+                                content: Content::Single(format!(
+                                    "审查发现以下问题：{}\n建议修正：{}\n请根据建议修正后继续。",
+                                    reason, suggestion
+                                )),
+                            }, "internal");
+                        }
+                        Err(e) => {
+                            // 审查调用失败不影响主流程，仅记录日志
+                            println!("[审查 Agent] 调用失败: {}", e);
+                        }
+                    }
+                }
+
+                // 执行后续操作
                 let mut session = self.ctx.memory.lock().await;
-                append_message(&mut session, Message::User {
-                    content: Content::Multiple(tool_results),
-                });
                 if manual_compact {
                     let _ = auto_compact(
                         &self.sid,
@@ -892,6 +1021,7 @@ impl PipelineState {
             }
             self.loop_count += 1;
             self.total_loop_count += 1;
+            println!("[JARVIS] 主循环: 进入下一轮 loop_count={}, total_loop_count={}", self.loop_count, self.total_loop_count);
 
             if self.total_loop_count >= crate::infra::types::constants::MAX_AGENT_LOOP_ABSOLUTE {
                 self.final_answer = format!(
@@ -1066,9 +1196,18 @@ impl PipelineState {
 
     // ─── 主循环辅助方法 ───
 
-    /// 处理用户取消：保留本轮用户消息，清理本轮未完成的 agent 内部消息，并发送取消事件
+    /// 处理错误中止：记录错误事件、标记 run 失败、清理状态
     async fn abort_after_error(&self, error: &AgentError) {
         if !self.run_id.is_empty() {
+            // 记录错误事件到 agent_run_events 表
+            agent_runs::record_tool_result(
+                &self.app,
+                &self.run_id,
+                "pipeline",
+                Some(error.to_string()),
+                None,
+                self.total_loop_count,
+            );
             agent_runs::fail_run(&self.app, &self.run_id, error.to_string());
             let mut active_run_id = self.ctx.active_run_id.lock().await;
             if active_run_id.as_deref() == Some(&self.run_id) {
@@ -1120,7 +1259,7 @@ impl PipelineState {
             self.final_answer = answer.clone();
             append_message(&mut session, Message::Assistant {
                 content: Content::Single(self.final_answer.clone()),
-            });
+            }, "chat");
         }
         let _ = self.app.emit(
             "chat-stream",
@@ -1203,20 +1342,23 @@ impl PipelineState {
                     "<background-results>\n{}\n</background-results>",
                     notif_text
                 )),
-            });
+            }, "background");
             append_message(&mut session, Message::Assistant {
                 content: Content::Single("Noted background results.".to_string()),
-            });
+            }, "background");
         }
     }
 
     /// 检查 token 用量并在需要时执行压缩
     async fn compact_if_needed(&mut self) {
-        let messages_for_estimate = {
+        let (messages_for_estimate, sources_for_estimate) = {
             let session = self.ctx.memory.lock().await;
-            session.messages.clone()
+            (session.messages.clone(), session.sources.clone())
         };
-        let history_snapshot = self.prepare_history_snapshot_from_messages(messages_for_estimate);
+        let history_snapshot = self.prepare_history_snapshot_from_messages(
+            messages_for_estimate,
+            &sources_for_estimate,
+        );
         let tools = self.current_tools();
         let estimate = self.build_context_estimate(&history_snapshot, &tools);
         let tokens = estimate.estimated_tokens;
@@ -1261,10 +1403,10 @@ impl PipelineState {
                 if needs_assistant_pad {
                     append_message(&mut session, Message::Assistant {
                         content: Content::Single("Context compressed.".to_string()),
-                    });
+                    }, "internal");
                 }
                 self.initial_msg_index = session.messages.len();
-                restore_message(&mut session, msg, message_id);
+                restore_message(&mut session, msg, message_id, "chat");
             }
         }
     }
@@ -1273,10 +1415,27 @@ impl PipelineState {
         get_tools_definition()
     }
 
-    fn prepare_history_snapshot_from_messages(&self, messages: Vec<Message>) -> Vec<Message> {
+    fn prepare_history_snapshot_from_messages(
+        &self,
+        messages: Vec<Message>,
+        sources: &[String],
+    ) -> Vec<Message> {
+        // 过滤掉 internal/background 消息，LLM 不需要看到系统内部通知
+        // 同时计算 initial_msg_index 的偏移量
+        let mut filtered = Vec::new();
+        let mut index_shift = 0usize;
+        for (i, (msg, src)) in messages.into_iter().zip(sources.iter()).enumerate() {
+            if matches!(src.as_str(), "chat" | "compact" | "context") {
+                filtered.push(msg);
+            } else if i < self.initial_msg_index {
+                index_shift += 1;
+            }
+        }
+        let mut messages = filtered;
+        let adjusted_msg_index = self.initial_msg_index.saturating_sub(index_shift);
+
         let mut history_snapshot = if self.detected_intent == "CHAT" {
-            let mut pruned = messages;
-            for msg in &mut pruned {
+            for msg in &mut messages {
                 if let Message::User { content } = msg {
                     if let Content::Multiple(blocks) = content {
                         for block in blocks {
@@ -1284,15 +1443,24 @@ impl PipelineState {
                                 ref mut content, ..
                             } = block
                             {
-                                *content =
-                                    "[系统截断：为闲聊模式节省Token，工具返回的冗长详情已被折叠。]"
-                                        .to_string();
+                                // 错误信息对 LLM 决策至关重要，保留不截断
+                                let is_error = content.contains("错误")
+                                    || content.contains("失败")
+                                    || content.contains("error")
+                                    || content.contains("Error")
+                                    || content.contains("denied")
+                                    || content.contains("拒绝");
+                                if !is_error {
+                                    *content =
+                                        "[系统截断：为闲聊模式节省Token，工具返回的冗长详情已被折叠。]"
+                                            .to_string();
+                                }
                             }
                         }
                     }
                 }
             }
-            pruned
+            messages
         } else {
             messages
         };
@@ -1300,7 +1468,7 @@ impl PipelineState {
         restore_image_data(&mut history_snapshot);
         inject_context_into_history(
             &mut history_snapshot,
-            self.initial_msg_index,
+            adjusted_msg_index,
             &self.dynamic_context_str,
         );
 
@@ -1311,8 +1479,9 @@ impl PipelineState {
     async fn prepare_history_snapshot(&self) -> Vec<Message> {
         let session = self.ctx.memory.lock().await;
         let messages = session.messages.clone();
+        let sources = session.sources.clone();
         drop(session); // 释放锁
-        self.prepare_history_snapshot_from_messages(messages)
+        self.prepare_history_snapshot_from_messages(messages, &sources)
     }
 
     /// 将消息列表转换为人类可读的对话文本，用于上下文快照展示
@@ -1457,6 +1626,30 @@ impl PipelineState {
                 item_count,
                 content,
                 truncated: false,
+                raw_content: None,
+            }
+        }
+
+        fn section_with_raw(
+            model_id: &str,
+            key: &str,
+            label: &str,
+            content: String,
+            item_count: usize,
+            raw: String,
+        ) -> ContextSectionSnapshot {
+            let chars = content.chars().count();
+            let token_count = crate::infra::llm::token_count::count_text(model_id, &content);
+            ContextSectionSnapshot {
+                key: key.to_string(),
+                label: label.to_string(),
+                chars,
+                estimated_tokens: token_count.tokens,
+                token_count_method: token_count.method.as_str().to_string(),
+                item_count,
+                content,
+                truncated: false,
+                raw_content: Some(raw),
             }
         }
 
@@ -1521,6 +1714,7 @@ impl PipelineState {
         let (tool_call_count, tool_result_count, image_count, thinking_count) =
             count_blocks(history_snapshot);
         let messages_text = Self::format_messages_readable(&cleaned_messages);
+        let messages_json = serde_json::to_string_pretty(&cleaned_messages).unwrap_or_default();
         let tools_json = serde_json::to_string_pretty(tools).unwrap_or_default();
         let mut sections = vec![
             section(
@@ -1537,19 +1731,21 @@ impl PipelineState {
                 self.dynamic_context_str.clone(),
                 1,
             ),
-            section(
+            section_with_raw(
                 &self.model_id,
                 "messages",
                 "Session Messages",
                 messages_text,
                 cleaned_messages.len(),
+                messages_json,
             ),
-            section(
+            section_with_raw(
                 &self.model_id,
                 "tools",
                 "Tools Schema",
-                tools_json,
+                tools_json.clone(),
                 tools.len(),
+                tools_json,
             ),
         ];
         if image_count > 0 {
@@ -1770,6 +1966,15 @@ impl PipelineState {
                     Ok(result) => result,
                     Err(_) => {
                         let error = ApiError::Network("API 请求超过 120 秒未返回响应头，已自动终止。".to_string());
+                        // 记录错误事件到 agent_run_events 表
+                        agent_runs::record_tool_result(
+                            &self.app,
+                            &self.run_id,
+                            "api_call",
+                            Some(error.to_string()),
+                            None,
+                            self.total_loop_count,
+                        );
                         agent_runs::fail_run(&self.app, &self.run_id, error.to_string());
                         *self.ctx.cancel_token.lock().await = None;
                         return Err(error.into());
@@ -1782,6 +1987,15 @@ impl PipelineState {
         } {
             Ok(resp) => Ok(Some(resp)),
             Err(e) => {
+                // 记录错误事件到 agent_run_events 表
+                agent_runs::record_tool_result(
+                    &self.app,
+                    &self.run_id,
+                    "api_call",
+                    Some(e.to_string()),
+                    None,
+                    self.total_loop_count,
+                );
                 agent_runs::fail_run(&self.app, &self.run_id, e.to_string());
                 *self.ctx.cancel_token.lock().await = None;
                 Err(e.into())
@@ -1790,10 +2004,10 @@ impl PipelineState {
     }
 
     /// 存储助手回复到会话历史中
-    async fn store_assistant_response(&self, current_blocks: Vec<ContentBlock>) {
+    async fn store_assistant_response(&self, current_blocks: &[ContentBlock]) {
         let mut session = self.ctx.memory.lock().await;
         let filtered_blocks: Vec<ContentBlock> = current_blocks
-            .into_iter()
+            .iter()
             .filter(|block| match block {
                 ContentBlock::Text { text } => !text.trim().is_empty(),
                 ContentBlock::Thinking { thinking, .. } => !thinking.trim().is_empty(),
@@ -1801,11 +2015,12 @@ impl PipelineState {
                 | ContentBlock::ToolResult { .. }
                 | ContentBlock::Image { .. } => true,
             })
+            .cloned()
             .collect();
         if !filtered_blocks.is_empty() {
             append_message(&mut session, Message::Assistant {
                 content: Content::Multiple(filtered_blocks),
-            });
+            }, "chat");
         }
     }
 }

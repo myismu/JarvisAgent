@@ -1,10 +1,19 @@
-﻿//! LLM API 客户端
+﻿//! # api_client.rs — LLM API 客户端
 //!
 //! 提供与大语言模型交互的 HTTP 客户端功能：
 //! - `api_call_with_retry`: 带指数退避重试的流式请求
 //! - `call_llm_simple`: 简单的非流式单轮调用
+//! - `call_llm_with_messages`: 非流式多轮调用（审查 Agent 等场景）
 //!
 //! 自动处理不同 API 格式的认证头和版本头。
+//!
+//! ## 依赖
+//! - Internal: `crate::infra::types::error::ApiError`, `crate::infra::llm::api_format::ApiFormat`, `crate::infra::types::models`
+//! - External: `reqwest`, `serde_json`, `tauri`
+//!
+//! ## 约束
+//! - `call_llm_simple` 和 `call_llm_with_messages` 不注入 tools、不开启 thinking
+//! - `api_call_with_retry` 支持 429 限流自动等待，4xx 立即返回
 
 use serde_json::json;
 use tauri::Emitter;
@@ -187,6 +196,112 @@ pub async fn call_llm_simple(
     }
 
     log_model_request(model_id, base_url, "主agent");
+
+    let res = req
+        .json(&req_json)
+        .send()
+        .await
+        .map_err(|e| ApiError::Network(e.to_string()))?;
+
+    if !res.status().is_success() {
+        let status = res.status().as_u16();
+        let err_body = res.text().await.unwrap_or_default();
+        return Err(ApiError::HttpError {
+            status,
+            body: err_body,
+        });
+    }
+
+    let response_text = res
+        .text()
+        .await
+        .map_err(|e| ApiError::Parse(e.to_string()))?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&response_text).map_err(|e| ApiError::Parse(e.to_string()))?;
+
+    let text = if is_openai {
+        parsed["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string()
+    } else {
+        parsed["content"][0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .to_string()
+    };
+
+    Ok(text)
+}
+
+/// 非流式多轮 LLM 调用（审查 Agent 等场景）
+///
+/// 与 `call_llm_simple` 类似，但接受完整的消息历史而非单条 user message。
+/// 不注入 tools，不开启 thinking，适用于反思审查等轻量判断场景。
+pub async fn call_llm_with_messages(
+    client: &reqwest::Client,
+    api_key: &str,
+    base_url: &str,
+    model_id: &str,
+    api_format: ApiFormat,
+    system_prompt: &str,
+    messages: Vec<crate::infra::types::models::Message>,
+    max_tokens: i32,
+) -> Result<String, ApiError> {
+    use crate::infra::types::models::*;
+
+    let request_body = AnthropicRequest {
+        model: model_id.to_string(),
+        max_tokens,
+        system: system_prompt.to_string(),
+        messages,
+        tools: vec![],
+        stream: false,
+        thinking: None,
+        temperature: None,
+        top_p: None,
+        top_k: None,
+    };
+
+    let (req_json, is_openai) = match api_format {
+        ApiFormat::OpenAI => {
+            use crate::infra::llm::adapters::translate_messages_to_openai;
+            let openai_msgs = translate_messages_to_openai(system_prompt, &request_body.messages);
+            let mut openai_req = OpenAIRequest {
+                model: model_id.to_string(),
+                max_tokens: Some(max_tokens),
+                messages: openai_msgs,
+                tools: None,
+                stream: false,
+                stream_options: None,
+                reasoning_effort: None,
+                thinking: None,
+                thinking_budget: None,
+                enable_thinking: None,
+                extra_body: None,
+                parameters: None,
+                temperature: None,
+                top_p: None,
+            };
+            crate::infra::llm::registry::apply_thinking_for_model(
+                &mut openai_req, model_id, false,
+            );
+            (serde_json::to_value(openai_req).unwrap(), true)
+        }
+        ApiFormat::Anthropic => (serde_json::to_value(request_body).unwrap(), false),
+    };
+
+    let (auth_header_name, auth_header_value) = api_format.auth_header(api_key);
+    let mut req = client
+        .post(base_url)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(auth_header_name, &auth_header_value);
+
+    if api_format.requires_anthropic_version() {
+        req = req.header("anthropic-version", "2023-06-01");
+    }
+
+    log_model_request(model_id, base_url, "审查 Agent");
 
     let res = req
         .json(&req_json)

@@ -34,7 +34,7 @@ crate::define_tools! {
                     "required": ["path"]
                 }
             }),
-            should_defer: true,
+            should_defer: false,
             is_read_only: true,
             is_concurrency_safe: true,
             is_enabled: true,
@@ -75,7 +75,7 @@ crate::define_tools! {
                     "required": ["path", "content"]
                 }
             }),
-            should_defer: true,
+            should_defer: false,
             is_read_only: false,
             is_concurrency_safe: false,
             is_enabled: true,
@@ -112,7 +112,7 @@ crate::define_tools! {
                     "required": ["path"]
                 }
             }),
-            should_defer: true,
+            should_defer: false,
             is_read_only: false,
             is_concurrency_safe: false,
             is_enabled: true,
@@ -164,7 +164,7 @@ crate::define_tools! {
                     "required": ["pattern"]
                 }
             }),
-            should_defer: true,
+            should_defer: false,
             is_read_only: true,
             is_concurrency_safe: true,
             is_enabled: true,
@@ -192,7 +192,7 @@ crate::define_tools! {
                     "required": ["symbol"]
                 }
             }),
-            should_defer: true,
+            should_defer: false,
             is_read_only: true,
             is_concurrency_safe: true,
             is_enabled: true,
@@ -214,7 +214,7 @@ crate::define_tools! {
                     "required": ["path", "symbol"]
                 }
             }),
-            should_defer: true,
+            should_defer: false,
             is_read_only: true,
             is_concurrency_safe: true,
             is_enabled: true,
@@ -241,7 +241,7 @@ crate::define_tools! {
                     "required": ["symbol"]
                 }
             }),
-            should_defer: true,
+            should_defer: false,
             is_read_only: true,
             is_concurrency_safe: true,
             is_enabled: true,
@@ -268,7 +268,7 @@ crate::define_tools! {
                     "required": ["query"]
                 }
             }),
-            should_defer: true,
+            should_defer: false,
             is_read_only: true,
             is_concurrency_safe: true,
             is_enabled: true,
@@ -278,6 +278,7 @@ crate::define_tools! {
             description: "列出指定目录下的所有文件和文件夹",
             search_hint: "list directory folder files ls",
             category: "文件操作",
+            should_defer: false,
             schema: json!({
                 "name": "ListDirectory",
                 "description": "列出指定目录下的所有文件和文件夹。",
@@ -289,7 +290,6 @@ crate::define_tools! {
                     "required": ["path"]
                 }
             }),
-            should_defer: true,
             is_read_only: true,
             is_concurrency_safe: true,
             is_enabled: true,

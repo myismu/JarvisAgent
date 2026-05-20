@@ -8,6 +8,7 @@ import { usePreferences } from '../../composables/usePreferences';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { readFile } from '@tauri-apps/plugin-fs';
+import ConfirmModal from '../common/ConfirmModal.vue';
 import type { AgentWorkMode } from '../../types';
 
 const { t } = useI18n();
@@ -17,6 +18,8 @@ const isDragging = ref(false);
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 const mediaFiles = ref<{path: string, type: 'image' | 'video', url: string, base64: string}[]>([]);
 const showVisionWarning = ref(false);
+const showProfileCacheWarning = ref(false);
+const pendingProfileId = ref<string | null>(null);
 
 const session = useSessionStore();
 const chat = useChatStore();
@@ -137,37 +140,59 @@ const loadConfig = async () => {
 };
 
 const switchProfile = async (id: string) => {
-  if (appConfig.value) {
-    appConfig.value.activeProfileId = id;
+  if (!appConfig.value) return;
+  // 如果已有会话消息，切换模型会导致 prompt cache 失效，需确认
+  const currentSessionId = await invoke<string | null>('get_active_session_id').catch(() => null);
+  if (currentSessionId) {
+    const msgs = await invoke<any[]>('get_session_messages', { sessionId: currentSessionId }).catch(() => []);
+    if (msgs.length > 0) {
+      pendingProfileId.value = id;
+      showProfileCacheWarning.value = true;
+      return;
+    }
+  }
+  await doSwitchProfile(id);
+};
+
+const confirmSwitchProfile = async () => {
+  showProfileCacheWarning.value = false;
+  if (pendingProfileId.value) {
+    await doSwitchProfile(pendingProfileId.value);
+    pendingProfileId.value = null;
+  }
+};
+
+const doSwitchProfile = async (id: string) => {
+  if (!appConfig.value) return;
+  const currentSessionId = await invoke<string | null>('get_active_session_id').catch(() => null);
+  appConfig.value.activeProfileId = id;
+  try {
+    await invoke('save_config_cmd', { newConfig: appConfig.value });
+    if (currentSessionId) {
+      await invoke('update_session_profile', { id: currentSessionId, profileId: id });
+    }
+    showProfileMenu.value = false;
+    const activeProfile = appConfig.value.profiles.find((p: any) => p.id === id);
+    if (activeProfile) {
+      await checkModelCapabilities(activeProfile.config.mainModel);
+    }
+    // 切模型后刷新历史，确保 data-user-message-index 同步
     try {
-      await invoke('save_config_cmd', { newConfig: appConfig.value });
-      const activeSessionId = await invoke<string | null>('get_active_session_id');
-      if (activeSessionId) {
-        await invoke('update_session_profile', { id: activeSessionId, profileId: id });
-      }
-      showProfileMenu.value = false;
-      const activeProfile = appConfig.value.profiles.find((p: any) => p.id === id);
-      if (activeProfile) {
-        await checkModelCapabilities(activeProfile.config.mainModel);
-      }
-      // 切模型后刷新历史，确保 data-user-message-index 同步
-      try {
-        if (session.activeSessionId) {
-          const view = session.getSessionView(session.activeSessionId);
-          if (view.status !== 'RUNNING') {
-            try {
-              const messages = await invoke<any[]>('get_session_messages', { sessionId: session.activeSessionId });
-              session.replaceSessionMessages(session.activeSessionId, messages);
-            } catch {
-              const history = await invoke<string>('get_session_history', { sessionId: session.activeSessionId });
-              session.replaceSessionHistory(session.activeSessionId, history);
-            }
+      if (session.activeSessionId) {
+        const view = session.getSessionView(session.activeSessionId);
+        if (view.status !== 'RUNNING') {
+          try {
+            const messages = await invoke<any[]>('get_session_messages', { sessionId: session.activeSessionId });
+            session.replaceSessionMessages(session.activeSessionId, messages);
+          } catch {
+            const history = await invoke<string>('get_session_history', { sessionId: session.activeSessionId });
+            session.replaceSessionHistory(session.activeSessionId, history);
           }
         }
-      } catch { /* ignore */ }
-    } catch (e) {
-      console.error('Failed to switch profile:', e);
-    }
+      }
+    } catch { /* ignore */ }
+  } catch (e) {
+    console.error('Failed to switch profile:', e);
   }
 };
 
@@ -592,6 +617,15 @@ const handleRecallEdit = async () => {
 
     </div>
   </div>
+
+  <ConfirmModal
+    :open="showProfileCacheWarning"
+    :title="t('settings.presets')"
+    :message="t('settings.profiles.cacheWarning', { name: appConfig?.profiles.find((p: any) => p.id === pendingProfileId)?.name || '' })"
+    confirm-kind="primary"
+    @cancel="showProfileCacheWarning = false; pendingProfileId = null"
+    @confirm="confirmSwitchProfile"
+  />
 </template>
 
 <style scoped>

@@ -78,6 +78,8 @@
     "allowOnce": "Allow once",
     "allowSession": "Always allow this session",
     "sessionAllowedHint": "All permission requests are auto-allowed for this session",
+    "pendingRequests": "{count} permission request(s) pending",
+    "normalMode": "Permission control active",
     "revoke": "Revoke"
   },
   "plan": {
@@ -308,8 +310,8 @@
       "contextWindow": "Context window",
       "unknown": "Unknown",
       "usage": "Usage",
-      "providerActual": "Provider actual",
-      "drift": "Estimate drift",
+      "providerActual": "Last turn token usage",
+      "cacheWarning": "⚠ Compacting will change the context structure, invalidating the prompt cache for this session. The next request may consume significantly more tokens and take longer.\n\nCurrent {tokens} tokens, continue?",
       "sources": "Sources",
       "dominantSource": "Largest source",
       "dominantShare": "{tokens}, {percent}%",
@@ -352,7 +354,8 @@
       "deleteWarning": "This action is saved immediately and cannot be undone.",
       "deleteConfirm": "Delete",
       "deleteSuccess": "Configuration preset deleted and saved",
-      "globalUpdated": "Global default preset updated"
+      "globalUpdated": "Global default preset updated",
+      "cacheWarning": "⚠ Switching model presets will invalidate the prompt cache for this session. The next request may consume significantly more tokens and take longer.\n\nSwitch to \"{name}\"?"
     },
     "general": {
       "appearance": "Interface & Appearance",
@@ -383,10 +386,14 @@
       "agentMessageOpacity": "Agent message opacity",
       "userMessageOpacity": "User message opacity",
       "reflectionMode": "Reflection mode",
-      "reflectionModeDesc": "Smart: auto-reflect when LLM is uncertain; Always: reflect after every tool call; Off: no reflection.",
-      "reflectionAlways": "Always",
+      "reflectionModeTooltip": "Reviews tool execution results automatically and injects correction suggestions when deviations are detected. Uses a lightweight review model without tools.",
       "reflectionSmart": "Smart",
+      "reflectionSmartDesc": "Triggers when the model's thinking contains uncertainty keywords (e.g. 'maybe', 'perhaps', 'not sure', 'try'). Balances review effectiveness with token cost — suitable for most scenarios.",
+      "reflectionAlways": "Always",
+      "reflectionAlwaysDesc": "Triggers at semantic boundaries: after mutation tools (WriteFile, EditFile, ApplyPatch, DeleteFile, RenameFile, RunCommand, EditNotebook, ProposePlan) or sub-agent completion. Read-only operations are skipped. Most cautious but increases token usage.",
       "reflectionOff": "Off",
+      "reflectionOffDesc": "Disables reflection entirely — the agent continues directly after tool execution with no result validation. Zero additional token cost.",
+      "reflectionModeDesc": "Smart: review when model is uncertain; Always: review after mutations; Off: no review.",
       "behavior": "Behavior",
       "autoScroll": "Auto-scroll",
       "autoScrollDesc": "Automatically scroll to bottom when the agent outputs new content.",

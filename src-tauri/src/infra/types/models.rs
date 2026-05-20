@@ -231,6 +231,9 @@ pub struct ContextSectionSnapshot {
     pub item_count: usize,
     pub content: String,
     pub truncated: bool,
+    /// 原始 JSON 数据（仅 messages 和 tools section 有值）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_content: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -266,6 +269,9 @@ pub struct SessionMemory {
     /// LLM 活动视图索引 —— 指向 session_messages 表中 LLM 当前应看到的消息 ID
     #[serde(default)]
     pub message_ids: Vec<String>,
+    /// 每条消息的来源分类（与 messages 平行），从 session_messages 表重建，不序列化存储
+    #[serde(default, skip_serializing)]
+    pub sources: Vec<String>,
     #[serde(default)]
     pub plan_documents: Vec<PlanDocument>,
 }

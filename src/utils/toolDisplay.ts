@@ -115,6 +115,27 @@ function toolKey(name: string) {
   return normalizeToolName(name).toLowerCase();
 }
 
+/**
+ * RunDeferredTool 包装了真实工具调用，从 input JSON 中提取内部工具名。
+ * 返回 displayName 保留核心工具名，同时附加内部工具名：如 "RunDeferredTool → ReadFile"
+ * 同时返回解析后的内部 input（args 字段），用于生成 targeted 描述。
+ */
+export function unwrapDeferredTool(tool: AgentToolCallView): { displayName: string; innerName: string | null; input: Record<string, unknown> | null } {
+  const name = normalizeToolName(tool.name);
+  if (toolKey(name) !== "rundeferredtool") {
+    return { displayName: name, innerName: null, input: parseInputSummary(tool.input) };
+  }
+  const parsed = parseInputSummary(tool.input);
+  if (parsed && typeof parsed.name === "string" && parsed.name.trim()) {
+    const innerName = parsed.name.trim();
+    const innerInput = parsed.args && typeof parsed.args === "object" && !Array.isArray(parsed.args)
+      ? parsed.args as Record<string, unknown>
+      : parsed;
+    return { displayName: `${name} → ${innerName}`, innerName, input: innerInput };
+  }
+  return { displayName: name, innerName: null, input: parsed };
+}
+
 function hasDependencyUpdate(tools: AgentToolCallView[]) {
   return tools.some((tool) => {
     const text = `${tool.input || ""}\n${tool.output || ""}`.toLowerCase();
@@ -139,12 +160,16 @@ function descriptorForTools(name: string, tools: AgentToolCallView[] = []): Tool
 }
 
 function groupingKeyForTool(tool: AgentToolCallView) {
-  const descriptor = descriptorForTools(tool.name, [tool]);
-  return descriptor.category === "other" ? `other:${toolKey(tool.name)}` : descriptor.category;
+  const { innerName } = unwrapDeferredTool(tool);
+  const lookupName = innerName ?? tool.name;
+  const descriptor = descriptorForTools(lookupName, [tool]);
+  return descriptor.category === "other" ? `other:${toolKey(lookupName)}` : descriptor.category;
 }
 
 function actionKeyForTool(tool: AgentToolCallView) {
-  const descriptor = descriptorForTools(tool.name, [tool]);
+  const { innerName } = unwrapDeferredTool(tool);
+  const lookupName = innerName ?? tool.name;
+  const descriptor = descriptorForTools(lookupName, [tool]);
   return `${descriptor.category}:${descriptor.key}`;
 }
 
@@ -360,10 +385,16 @@ export function groupAdjacentToolCalls(tools: AgentToolCallView[]): ToolCallGrou
 }
 
 export function toolActionLabel(name: string, status: AgentToolStatus, tool?: AgentToolCallView) {
-  const descriptor = descriptorForTools(name, tool ? [tool] : []);
-  const targeted = tool ? targetedSentence(tool, descriptor, status) : null;
+  // RunDeferredTool: 用内部工具名查找 descriptor 和 targeted 描述
+  const unwrapped = tool ? unwrapDeferredTool(tool) : null;
+  const lookupName = unwrapped?.innerName ?? name;
+  const lookupTool = unwrapped?.innerName && tool
+    ? { ...tool, name: unwrapped.innerName, input: unwrapped.input ? JSON.stringify(unwrapped.input) : tool.input }
+    : tool;
+  const descriptor = descriptorForTools(lookupName, lookupTool ? [lookupTool] : []);
+  const targeted = lookupTool ? targetedSentence(lookupTool, descriptor, status) : null;
   if (targeted) return targeted;
-  return TOOL_DESCRIPTORS[toolKey(name)]
+  return TOOL_DESCRIPTORS[toolKey(lookupName)]
     ? phraseWithoutCount(descriptor, status)
     : defaultActionText(status);
 }

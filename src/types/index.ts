@@ -59,6 +59,8 @@ export interface ContextSectionSnapshot {
   itemCount: number;
   content: string;
   truncated: boolean;
+  /** 原始 JSON 数据（仅 messages 和 tools section 有值） */
+  rawContent?: string | null;
 }
 
 export interface SessionContextSnapshot {

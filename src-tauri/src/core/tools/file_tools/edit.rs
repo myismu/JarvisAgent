@@ -176,25 +176,25 @@ pub async fn edit_file(
         return "编辑失败: 缺少 old_text 或 edits 参数".to_string();
     }
 
-    if is_unc_path(path) {
-        return unc_path_rejection("编辑", path);
+    if is_unc_path(&path) {
+        return unc_path_rejection("编辑", &path);
     }
     let ws = get_workspace(app, session_id).await;
-    if let Err(e) = ensure_path_permission(app, path, "编辑", ws.as_deref()).await {
+    if let Err(e) = ensure_path_permission(app, &path, "编辑", ws.as_deref()).await {
         return e;
     }
-    if is_notebook_path(path) {
-        return notebook_text_edit_rejection(path);
+    if is_notebook_path(&path) {
+        return notebook_text_edit_rejection(&path);
     }
 
-    let read_mtime = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
+    let read_mtime = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
 
-    match read_text_preserve_encoding(path) {
+    match read_text_preserve_encoding(&path) {
         Ok(decoded) => {
             let content = decoded.content;
             let encoding = decoded.encoding;
 
-            let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             if file_size > MAX_FILE_SIZE_BYTES {
                 return format!(
                     "编辑失败: 文件 {} 过大 ({} bytes)，超过限制 {} bytes。",
@@ -203,13 +203,13 @@ pub async fn edit_file(
             }
 
             if looks_like_notebook_json(&content) {
-                return notebook_text_edit_rejection(path);
+                return notebook_text_edit_rejection(&path);
             }
 
             // 逐条校验
             let mut total_replacements = 0usize;
             for (i, edit) in edits.iter().enumerate() {
-                let count = match validate_single_edit(edit, &content, i, path, is_batch) {
+                let count = match validate_single_edit(edit, &content, i, &path, is_batch) {
                     Ok(c) => c,
                     Err(e) => return e,
                 };
@@ -224,7 +224,7 @@ pub async fn edit_file(
             let updated_content = apply_edits(&content, &edits);
 
             // TOCTOU 防护
-            if let (Some(orig_mtime), Ok(current_meta)) = (read_mtime, std::fs::metadata(path)) {
+            if let (Some(orig_mtime), Ok(current_meta)) = (read_mtime, std::fs::metadata(&path)) {
                 if let Ok(current_mtime) = current_meta.modified() {
                     if current_mtime != orig_mtime {
                         return format!(
@@ -240,7 +240,7 @@ pub async fn edit_file(
                 Err(e) => return format!("编辑并保存失败: {}", e),
             };
 
-            match std::fs::write(path, bytes) {
+            match std::fs::write(&path, bytes) {
                 Ok(_) => {
                     let patch = Patch::update_file_patch(
                         session_id,

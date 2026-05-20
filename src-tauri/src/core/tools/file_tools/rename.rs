@@ -22,21 +22,21 @@ pub async fn rename_file(
     let new_path = resolve_path(&new_path_value);
 
     let ws = get_workspace(app, session_id).await;
-    if let Err(e) = ensure_path_permission(app, path, "重命名", ws.as_deref()).await {
+    if let Err(e) = ensure_path_permission(app, &path, "重命名", ws.as_deref()).await {
         return e;
     }
-    if let Err(e) = ensure_path_permission(app, new_path, "重命名", ws.as_deref()).await {
+    if let Err(e) = ensure_path_permission(app, &new_path, "重命名", ws.as_deref()).await {
         return e;
     }
 
-    if !std::path::Path::new(path).exists() {
+    if !std::path::Path::new(&path).exists() {
         return format!("文件不存在: {}", path);
     }
-    if std::path::Path::new(new_path).exists() {
+    if std::path::Path::new(&new_path).exists() {
         return format!("目标路径已存在: {}", new_path);
     }
 
-    match std::fs::rename(path, new_path) {
+    match std::fs::rename(&path, &new_path) {
         Ok(()) => {
             record_patch_to_snapshot(
                 app,

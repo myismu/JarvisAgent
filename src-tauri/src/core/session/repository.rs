@@ -109,7 +109,7 @@ pub fn append_or_upsert_session_messages(
     session_id: &str,
     messages: &[Message],
     message_ids: &[String],
-    source: &str,
+    sources: &[String],
     now: u64,
 ) -> Result<(), String> {
     crate::infra::db::with_transaction(|tx| {
@@ -144,6 +144,7 @@ pub fn append_or_upsert_session_messages(
             let Some(message_id) = message_ids.get(idx).filter(|id| !id.trim().is_empty()) else {
                 continue;
             };
+            let source = sources.get(idx).map(|s| s.as_str()).unwrap_or("chat");
             let role = match message {
                 Message::User { .. } => "user",
                 Message::Assistant { .. } => "assistant",
@@ -295,6 +296,23 @@ pub fn delete_session_messages_from_seq(session_id: &str, seq: usize) -> Result<
     })
 }
 
+/// 删除 session_messages 中指定 source 的消息（压缩时清理 internal/background）
+pub fn delete_session_messages_by_source(
+    session_id: &str,
+    sources: &[&str],
+) -> Result<usize, String> {
+    crate::infra::db::with_connection(|conn| {
+        let mut deleted = 0usize;
+        for src in sources {
+            deleted += conn.execute(
+                "DELETE FROM session_messages WHERE session_id = ?1 AND source = ?2",
+                params![session_id, *src],
+            ).map_err(|e| e.to_string())?;
+        }
+        Ok(deleted)
+    })
+}
+
 /// 隐藏 session_messages 中已不在 memory.message_ids 里的孤儿行
 /// 压缩后 message_ids 被替换为新ID，旧行需要标记 hidden 以保持两表一致
 pub fn hide_orphan_session_messages(session_id: &str, alive_message_ids: &[String]) -> Result<usize, String> {
@@ -390,7 +408,7 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
         let mut memory: SessionMemory =
             serde_json::from_str(&json).map_err(|e| e.to_string())?;
 
-        // 从 session_messages 表重建 messages
+        // 从 session_messages 表重建 messages 和 sources
         // 按 message_ids 的顺序加载，而非依赖 seq（seq 可能因 upsert 错位）
         if !memory.message_ids.is_empty() {
             let placeholders: Vec<String> = memory
@@ -400,7 +418,7 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
                 .map(|(i, _)| format!("?{}", i + 2))
                 .collect();
             let sql = format!(
-                "SELECT message_id, content_json FROM session_messages
+                "SELECT message_id, content_json, source FROM session_messages
                  WHERE session_id = ?1 AND message_id IN ({})",
                 placeholders.join(",")
             );
@@ -416,19 +434,21 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
                     |row| Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
                     )),
                 )
                 .map_err(|e| e.to_string())?;
-            let mut content_by_id: HashMap<String, String> = HashMap::new();
+            let mut content_by_id: HashMap<String, (String, String)> = HashMap::new();
             for row in rows {
-                let (mid, content_json) = row.map_err(|e| e.to_string())?;
-                content_by_id.insert(mid, content_json);
+                let (mid, content_json, source) = row.map_err(|e| e.to_string())?;
+                content_by_id.insert(mid, (content_json, source));
             }
-            // 严格按 message_ids 数组顺序重建 messages，保证顺序一致
+            // 严格按 message_ids 数组顺序重建 messages 和 sources，保证顺序一致
             for mid in &memory.message_ids {
-                if let Some(content_json) = content_by_id.get(mid) {
+                if let Some((content_json, source)) = content_by_id.get(mid) {
                     if let Ok(msg) = serde_json::from_str::<Message>(content_json) {
                         memory.messages.push(msg);
+                        memory.sources.push(source.clone());
                     }
                 }
             }

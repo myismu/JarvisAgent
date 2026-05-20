@@ -19,6 +19,7 @@ use crate::infra::types::models::JarvisResult;
 mod context;
 mod pipeline;
 pub mod prompts;
+mod reflection;
 pub mod stream;
 mod tools_runner;
 

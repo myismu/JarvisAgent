@@ -6,7 +6,10 @@ import {
   buildDeveloperTimeline,
   describeThinkingStatic,
 } from "../../utils/agentTurnRender";
-import { toolActionLabel } from "../../utils/toolDisplay";
+import { toolActionLabel, unwrapDeferredTool } from "../../utils/toolDisplay";
+import type { AgentToolCallView } from "../../types";
+
+const toolDisplayName = (tool: AgentToolCallView) => unwrapDeferredTool(tool).displayName;
 import ExecutionPanel from "./ExecutionPanel.vue";
 import StreamingMarkdown from "../common/StreamingMarkdown.vue";
 
@@ -100,14 +103,14 @@ function toolStatusLabel(status: string): string {
               <div class="dev-thinking-body"><StreamingMarkdown :content="item.content" /></div>
             </details>
             <details v-else-if="item.type === 'tool'" class="dev-tool" :class="[item.tool.status]" :open="item.streaming">
-              <summary class="dev-tool-summary"><span class="dev-status-dot" :class="item.tool.status"></span><code class="dev-tool-name">{{ item.tool.name }}</code><span class="dev-tool-action">{{ toolActionLabel(item.tool.name, item.tool.status, item.tool) }}</span><span class="dev-tool-status">{{ toolStatusLabel(item.tool.status) }}</span></summary>
-              <div v-if="item.tool.input || item.tool.fullOutput || item.tool.error" class="dev-tool-body">
+              <summary class="dev-tool-summary"><span class="dev-status-dot" :class="item.tool.status"></span><code class="dev-tool-name">{{ toolDisplayName(item.tool) }}</code><span class="dev-tool-action">{{ toolActionLabel(item.tool.name, item.tool.status, item.tool) }}</span><span class="dev-tool-status">{{ toolStatusLabel(item.tool.status) }}</span></summary>
+              <div v-if="item.tool.input || item.tool.output || item.tool.error" class="dev-tool-body">
                 <div v-if="item.tool.input" class="dev-tool-section"><div class="dev-tool-section-label">参数</div><StreamingMarkdown :content="item.tool.input" /></div>
-                <div v-if="item.tool.fullOutput" class="dev-tool-section"><div class="dev-tool-section-label">输出</div><StreamingMarkdown :content="item.tool.fullOutput" /></div>
+                <div v-if="item.tool.output" class="dev-tool-section"><div class="dev-tool-section-label">输出</div><StreamingMarkdown :content="item.tool.output" /></div>
                 <div v-if="item.tool.error" class="dev-tool-section error"><div class="dev-tool-section-label">错误</div><StreamingMarkdown :content="item.tool.error" /></div>
               </div>
             </details>
-            <div v-else-if="item.type === 'log'" class="dev-log"><div class="dev-log-header"><span class="dev-log-dot red"></span><span class="dev-log-dot yellow"></span><span class="dev-log-dot green"></span><span class="dev-log-title">输出 #{{ item.loop || 1 }}</span></div><div class="dev-log-body"><StreamingMarkdown :content="item.content" /></div></div>
+            <div v-else-if="item.type === 'log'" class="dev-log"><div class="dev-log-header"><span class="dev-status-dot"></span><span class="dev-log-title">输出 #{{ item.loop || 1 }}</span></div><div class="dev-log-body"><StreamingMarkdown :content="item.content" /></div></div>
           </template>
         </div>
       </details>
@@ -119,14 +122,14 @@ function toolStatusLabel(status: string): string {
           <div class="dev-thinking-body"><StreamingMarkdown :content="item.content" /></div>
         </details>
         <details v-else-if="item.type === 'tool'" class="dev-tool" :class="[item.tool.status]" :open="item.streaming">
-          <summary class="dev-tool-summary"><span class="dev-status-dot" :class="item.tool.status"></span><code class="dev-tool-name">{{ item.tool.name }}</code><span class="dev-tool-action">{{ toolActionLabel(item.tool.name, item.tool.status, item.tool) }}</span><span class="dev-tool-status">{{ toolStatusLabel(item.tool.status) }}</span></summary>
-          <div v-if="item.tool.input || item.tool.fullOutput || item.tool.error" class="dev-tool-body">
+          <summary class="dev-tool-summary"><span class="dev-status-dot" :class="item.tool.status"></span><code class="dev-tool-name">{{ toolDisplayName(item.tool) }}</code><span class="dev-tool-action">{{ toolActionLabel(item.tool.name, item.tool.status, item.tool) }}</span><span class="dev-tool-status">{{ toolStatusLabel(item.tool.status) }}</span></summary>
+          <div v-if="item.tool.input || item.tool.output || item.tool.error" class="dev-tool-body">
             <div v-if="item.tool.input" class="dev-tool-section"><div class="dev-tool-section-label">参数</div><StreamingMarkdown :content="item.tool.input" /></div>
-            <div v-if="item.tool.fullOutput" class="dev-tool-section"><div class="dev-tool-section-label">输出</div><StreamingMarkdown :content="item.tool.fullOutput" /></div>
+            <div v-if="item.tool.output" class="dev-tool-section"><div class="dev-tool-section-label">输出</div><StreamingMarkdown :content="item.tool.output" /></div>
             <div v-if="item.tool.error" class="dev-tool-section error"><div class="dev-tool-section-label">错误</div><StreamingMarkdown :content="item.tool.error" /></div>
           </div>
         </details>
-        <div v-else-if="item.type === 'log'" class="dev-log"><div class="dev-log-header"><span class="dev-log-dot red"></span><span class="dev-log-dot yellow"></span><span class="dev-log-dot green"></span><span class="dev-log-title">输出 #{{ item.loop || 1 }}</span></div><div class="dev-log-body"><StreamingMarkdown :content="item.content" /></div></div>
+        <div v-else-if="item.type === 'log'" class="dev-log"><div class="dev-log-header"><span class="dev-status-dot"></span><span class="dev-log-title">输出 #{{ item.loop || 1 }}</span></div><div class="dev-log-body"><StreamingMarkdown :content="item.content" /></div></div>
       </template>
     </div>
 
@@ -238,21 +241,15 @@ function toolStatusLabel(status: string): string {
   display: none;
 }
 .dev-thinking-label {
-  color: var(--text-muted);
-}
-.dev-thinking.streaming .dev-thinking-label {
   color: var(--accent-yellow);
 }
 .dev-thinking-body {
   margin-top: 8px;
   padding: 10px 14px;
-  border-left: 2px solid var(--glass-border-subtle);
+  border-left: 2px solid var(--accent-yellow);
   font-size: 0.82rem;
   color: var(--text-muted);
   line-height: 1.6;
-}
-.dev-thinking.streaming .dev-thinking-body {
-  border-left-color: var(--accent-yellow);
 }
 
 /* 工具调用 */
@@ -367,14 +364,6 @@ function toolStatusLabel(status: string): string {
   gap: 6px;
   border-bottom: 1px solid var(--glass-border-subtle);
 }
-.dev-log-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-.dev-log-dot.red   { background: #ef4444; }
-.dev-log-dot.yellow { background: #f59e0b; }
-.dev-log-dot.green  { background: #10b981; }
 .dev-log-title {
   font-family: var(--font-mono);
   font-size: 0.68rem;

@@ -126,15 +126,16 @@ pub async fn handle_tool_call(
     if name == "RunSubagent" {
         let prompt = input["prompt"].as_str().unwrap_or("");
         let requested_agent_role = framework::agent_registry::normalize_agent_role(
-            input["subagent_role"]
+            input["subagent_type"]
                 .as_str()
+                .or_else(|| input["subagent_role"].as_str())
                 .or_else(|| input["agent_role"].as_str()),
         );
         let agent_registry = AgentRegistry::global();
         let Some(agent) = agent_registry.get(requested_agent_role) else {
             return (
                 format!(
-                    "Unknown subagent_role '{}'. Available types: {}",
+                    "Unknown subagent_type '{}'. Available types: {}",
                     requested_agent_role,
                     agent_registry.available_types().join(", ")
                 ),

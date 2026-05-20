@@ -221,18 +221,18 @@ pub async fn read_file(
     let end_line = input["end_line"].as_u64().unwrap_or(usize::MAX as u64) as usize;
 
     let ws = get_workspace(app, session_id).await;
-    if let Err(e) = ensure_path_permission(app, path, "读取", ws.as_deref()).await {
+    if let Err(e) = ensure_path_permission(app, &path, "读取", ws.as_deref()).await {
         return e;
     }
 
     // 二进制扩展名检查（在读取前拒绝）
-    let file_path = std::path::Path::new(path);
+    let file_path = std::path::Path::new(&path);
     if let Some(err_msg) = binary_file_read_error(file_path) {
         return err_msg;
     }
 
     // 文件大小限制检查
-    if let Ok(meta) = std::fs::metadata(path) {
+    if let Ok(meta) = std::fs::metadata(&path) {
         if meta.len() > MAX_FILE_SIZE_BYTES {
             return format!(
                 "读取错误: 文件 {} 过大 ({} bytes)，超过限制 {} bytes。\n请使用 start_line/end_line 参数分段读取。",
@@ -241,7 +241,7 @@ pub async fn read_file(
         }
     }
 
-    match read_text_preserve_encoding(path) {
+    match read_text_preserve_encoding(&path) {
         Ok(decoded) => {
             let content = decoded.content;
             let lines: Vec<&str> = content.lines().collect();
@@ -287,7 +287,7 @@ pub async fn read_file(
             // 探索模式拦截：记录文件目录，检测逐文件遍历
             if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
                 let ctx = manager.get_or_create(session_id).await;
-                let dir = std::path::Path::new(path)
+                let dir = std::path::Path::new(&path)
                     .parent()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default();
@@ -327,19 +327,19 @@ pub async fn read_file_skeleton(
 ) -> String {
     let path = resolve_path(input);
     let ws = get_workspace(app, session_id).await;
-    if let Err(e) = ensure_path_permission(app, path, "读取", ws.as_deref()).await {
+    if let Err(e) = ensure_path_permission(app, &path, "读取", ws.as_deref()).await {
         return e;
     }
-    let file_path = std::path::Path::new(path);
+    let file_path = std::path::Path::new(&path);
     if let Some(err_msg) = binary_file_read_error(file_path) {
         return err_msg;
     }
-    match read_text_preserve_encoding(path) {
+    match read_text_preserve_encoding(&path) {
         Ok(decoded) => {
             let content = decoded.content;
             let total_lines = content.lines().count();
             let mut skeleton = format!("[File: {}] (Total: {} lines)\n", path, total_lines);
-            let skeleton_lines = extract_skeleton_lines(path, &content);
+            let skeleton_lines = extract_skeleton_lines(&path, &content);
             if skeleton_lines.is_empty() {
                 format!("[File: {}] (Total: {} lines)\n未提取到明显的结构骨架（可能是纯文本或不支持的语言格式）", path, total_lines)
             } else {

@@ -445,21 +445,24 @@ fn apply_hunks(content: &str, hunks: &[PatchHunk]) -> Result<(String, usize, usi
     Ok((result, added_lines, removed_lines))
 }
 
-fn resolve_patch_path(path: &str) -> PathBuf {
+fn resolve_patch_path(path: &str, workspace: Option<&Path>) -> PathBuf {
     let path = Path::new(path);
     if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir().unwrap_or_default().join(path)
+        workspace
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+            .join(path)
     }
 }
 
-fn load_patch_file(path: &str) -> Result<LoadedFile, String> {
+fn load_patch_file(path: &str, workspace: Option<&Path>) -> Result<LoadedFile, String> {
     if is_notebook_path(path) {
         return Err(notebook_text_edit_rejection(path));
     }
 
-    let resolved = resolve_patch_path(path);
+    let resolved = resolve_patch_path(path, workspace);
     let existed = resolved.exists();
     if existed {
         let read_mtime = std::fs::metadata(&resolved).ok().and_then(|meta| meta.modified().ok());
@@ -496,8 +499,8 @@ fn load_patch_file(path: &str) -> Result<LoadedFile, String> {
     }
 }
 
-fn plan_patch(file_patch: &FilePatch) -> Result<PlannedFilePatch, String> {
-    let loaded = load_patch_file(&file_patch.path)?;
+fn plan_patch(file_patch: &FilePatch, workspace: Option<&Path>) -> Result<PlannedFilePatch, String> {
+    let loaded = load_patch_file(&file_patch.path, workspace)?;
     let (new_content, added_lines, removed_lines) = apply_hunks(&loaded.old_content, &file_patch.hunks)
         .map_err(|e| format!("{}\n文件: {}", e, file_patch.path))?;
     if looks_like_notebook_json(&new_content) {
@@ -520,9 +523,9 @@ fn preview_for(file_patch: &FilePatch, planned: &PlannedFilePatch) -> ApplyPrevi
     }
 }
 
-fn check_toctou(planned: &PlannedFilePatch) -> Result<(), String> {
+fn check_toctou(planned: &PlannedFilePatch, workspace: Option<&Path>) -> Result<(), String> {
     if !planned.loaded.existed {
-        if resolve_patch_path(&planned.loaded.path).exists() {
+        if resolve_patch_path(&planned.loaded.path, workspace).exists() {
             return Err(format!("应用中止: 文件 {} 在读取后被外部创建。", planned.loaded.path));
         }
         return Ok(());
@@ -531,7 +534,7 @@ fn check_toctou(planned: &PlannedFilePatch) -> Result<(), String> {
     let Some(read_mtime) = planned.loaded.read_mtime else {
         return Ok(());
     };
-    let current_mtime = std::fs::metadata(resolve_patch_path(&planned.loaded.path))
+    let current_mtime = std::fs::metadata(resolve_patch_path(&planned.loaded.path, workspace))
         .ok()
         .and_then(|meta| meta.modified().ok());
     if current_mtime != Some(read_mtime) {
@@ -543,10 +546,10 @@ fn check_toctou(planned: &PlannedFilePatch) -> Result<(), String> {
     Ok(())
 }
 
-fn write_planned_file(planned: &PlannedFilePatch) -> Result<(), String> {
+fn write_planned_file(planned: &PlannedFilePatch, workspace: Option<&Path>) -> Result<(), String> {
     let bytes = encode_text_preserve_encoding(&planned.new_content, planned.loaded.encoding)
         .map_err(|e| format!("编码失败: {}", e))?;
-    std::fs::write(resolve_patch_path(&planned.loaded.path), bytes).map_err(|e| {
+    std::fs::write(resolve_patch_path(&planned.loaded.path, workspace), bytes).map_err(|e| {
         let err_msg = e.to_string();
         if is_locked_file_error(&err_msg) {
             format!("写入失败: 文件被锁定，请稍后重试。详细错误: {}", e)
@@ -597,7 +600,7 @@ pub async fn apply_patch(
     let mut planned = Vec::new();
     let mut previews = Vec::new();
     for file_patch in &file_patches {
-        let plan = match plan_patch(file_patch) {
+        let plan = match plan_patch(file_patch, ws.as_deref()) {
             Ok(plan) => plan,
             Err(e) => return format!("ApplyPatch 预检失败: {}", e),
         };
@@ -610,13 +613,13 @@ pub async fn apply_patch(
     }
 
     for plan in &planned {
-        if let Err(e) = check_toctou(plan) {
+        if let Err(e) = check_toctou(plan, ws.as_deref()) {
             return e;
         }
     }
 
     for plan in &planned {
-        if let Err(e) = write_planned_file(plan) {
+        if let Err(e) = write_planned_file(plan, ws.as_deref()) {
             return format!("ApplyPatch 写入失败，已停止。可能已有部分文件写入，请检查工作区。{}", e);
         }
     }

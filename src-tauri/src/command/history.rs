@@ -117,9 +117,9 @@ pub struct AgentToolCallView {
     name: String,
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    input_summary: Option<String>,
+    input: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    output_summary: Option<String>,
+    output: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     logs: Vec<String>,
@@ -150,16 +150,6 @@ fn clean_user_text(value: &str) -> String {
     } else {
         value.trim().to_string()
     }
-}
-
-/// 判断是否为系统内部注入的消息（后台任务结果通知等）
-fn is_internal_user_text(value: &str) -> bool {
-    let trimmed = value.trim();
-    trimmed.starts_with("<background-results>") || trimmed.starts_with("<background-results")
-}
-
-fn is_internal_assistant_message(content: &Content) -> bool {
-    matches!(content, Content::Single(s) if s.trim() == "Noted background results.")
 }
 
 fn user_display_content(content: &Content) -> String {
@@ -248,19 +238,14 @@ fn append_assistant_content(
                         }
                     }
                     ContentBlock::ToolUse { id, name, input } => {
-                        let input_summary = serde_json::to_string_pretty(input).unwrap_or_default();
+                        let input_json = serde_json::to_string_pretty(input).unwrap_or_default();
                         target.tool_calls.push(AgentToolCallView {
                             id: id.clone(),
                             loop_: loop_idx,
                             name: name.clone(),
                             status: "running".to_string(),
-                            input_summary: Some(format!(
-                                "`json
-{}
-`",
-                                input_summary
-                            )),
-                            output_summary: None,
+                            input: Some(input_json),
+                            output: None,
                             error: None,
                             logs: vec![],
                             timestamp: ts,
@@ -282,12 +267,7 @@ fn append_tool_result(
 ) {
     if let Some(tool) = target.tool_calls.iter_mut().find(|t| t.id == tool_use_id) {
         tool.status = "completed".to_string();
-        tool.output_summary = Some(format!(
-            "`
-{}
-`",
-            content.trim()
-        ));
+        tool.output = Some(content.trim().to_string());
         tool.updated_at = timestamp;
     }
 }
@@ -547,7 +527,7 @@ pub async fn get_session_history(
             }
             session::append_message(&mut memory, Message::Assistant {
                 content: Content::Multiple(blocks),
-            });
+            }, "chat");
         }
 
         // 将恢复后的内存同步回去，并保存到数据库
@@ -609,7 +589,8 @@ pub async fn get_session_history(
             .iter()
             .enumerate()
             .map(|(idx, message)| {
-                (idx, memory.message_ids.get(idx).cloned(), None, message.clone())
+                let source = memory.sources.get(idx).cloned().unwrap_or_else(|| "chat".to_string());
+                (idx, memory.message_ids.get(idx).cloned(), None, message.clone(), source)
             })
             .collect()
     } else {
@@ -617,17 +598,17 @@ pub async fn get_session_history(
             .into_iter()
             .enumerate()
             .map(|(idx, stored)| {
-                (idx, Some(stored.message_id), Some(stored.seq), stored.content)
+                (idx, Some(stored.message_id), Some(stored.seq), stored.content, stored.source)
             })
             .collect()
     };
 
     let display_messages = render_messages
         .iter()
-        .filter_map(|(memory_index, message_id, seq, msg)| {
+        .filter_map(|(memory_index, message_id, seq, msg, source)| {
             if let Message::User { content } = msg {
                 let display = user_display_content(content);
-                if !is_internal_user_text(&display) && !display.trim().is_empty() {
+                if source == "chat" && !display.trim().is_empty() {
                     return Some(UserDisplayMessage {
                         memory_index: *memory_index,
                         message_id: message_id.clone(),
@@ -653,7 +634,7 @@ pub async fn get_session_history(
     let mut loop_idx = 1;
     let mut current_ts = 1000u64;
 
-    for (_, _, _, msg) in &render_messages {
+    for (_, _, _, msg, source) in &render_messages {
         current_ts += 1;
         match msg {
             Message::User { content } => {
@@ -677,7 +658,7 @@ pub async fn get_session_history(
                     }
                 }
 
-                if is_internal_user_text(&display) || display.trim().is_empty() {
+                if source.as_str() != "chat" || display.trim().is_empty() {
                     continue;
                 }
                 let Some(message) = display_messages.get(visible_user_index) else {
@@ -691,7 +672,7 @@ pub async fn get_session_history(
                 visible_user_index += 1;
             }
             Message::Assistant { content } => {
-                if is_internal_assistant_message(content) {
+                if source.as_str() != "chat" {
                     continue;
                 }
                 append_assistant_content(&mut pending_assistant, content, loop_idx, current_ts);
@@ -746,7 +727,7 @@ async fn extract_session_messages(
             }
             session::append_message(&mut memory, Message::Assistant {
                 content: Content::Multiple(blocks),
-            });
+            }, "chat");
         }
         *ctx.memory.lock().await = memory.clone();
         session::save_session(session_id, &memory, None);
@@ -802,7 +783,8 @@ async fn extract_session_messages(
             .iter()
             .enumerate()
             .map(|(idx, message)| {
-                (idx, memory.message_ids.get(idx).cloned(), None, message.clone())
+                let source = memory.sources.get(idx).cloned().unwrap_or_else(|| "chat".to_string());
+                (idx, memory.message_ids.get(idx).cloned(), None, message.clone(), source)
             })
             .collect()
     } else {
@@ -810,17 +792,17 @@ async fn extract_session_messages(
             .into_iter()
             .enumerate()
             .map(|(idx, stored)| {
-                (idx, Some(stored.message_id), Some(stored.seq), stored.content)
+                (idx, Some(stored.message_id), Some(stored.seq), stored.content, stored.source)
             })
             .collect()
     };
 
     let display_messages = render_messages
         .iter()
-        .filter_map(|(memory_index, message_id, seq, msg)| {
+        .filter_map(|(memory_index, message_id, seq, msg, source)| {
             if let Message::User { content } = msg {
                 let display = user_display_content(content);
-                if !is_internal_user_text(&display) && !display.trim().is_empty() {
+                if source == "chat" && !display.trim().is_empty() {
                     return Some(UserDisplayMessage {
                         memory_index: *memory_index,
                         message_id: message_id.clone(),
@@ -846,7 +828,7 @@ async fn extract_session_messages(
     let mut loop_idx = 1;
     let mut current_ts = 1000u64;
 
-    for (_, _, _, msg) in &render_messages {
+    for (_, _, _, msg, source) in &render_messages {
         current_ts += 1;
         match msg {
             Message::User { content } => {
@@ -860,7 +842,7 @@ async fn extract_session_messages(
                     }
                 }
 
-                if is_internal_user_text(&display) || display.trim().is_empty() {
+                if source.as_str() != "chat" || display.trim().is_empty() {
                     continue;
                 }
                 let Some(message) = display_messages.get(visible_user_index) else {
@@ -909,7 +891,7 @@ async fn extract_session_messages(
                 loop_idx = 1;
             }
             Message::Assistant { content } => {
-                if is_internal_assistant_message(content) {
+                if source.as_str() != "chat" {
                     continue;
                 }
                 append_assistant_content(&mut pending_assistant, content, loop_idx, current_ts);

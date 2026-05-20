@@ -17,25 +17,25 @@ pub async fn delete_file(
 ) -> String {
     let path = resolve_path(input);
     let ws = get_workspace(app, session_id).await;
-    if let Err(e) = ensure_path_permission(app, path, "删除", ws.as_deref()).await {
+    if let Err(e) = ensure_path_permission(app, &path, "删除", ws.as_deref()).await {
         return e;
     }
 
-    if !std::path::Path::new(path).exists() {
+    if !std::path::Path::new(&path).exists() {
         return format!("文件不存在: {}", path);
     }
 
     // 删除前备份原内容到 snapshot_content，快照只存 hash
-    let content_hash = read_text_preserve_encoding(path).ok().map(|d| {
+    let content_hash = read_text_preserve_encoding(&path).ok().map(|d| {
         let hash = Patch::content_hash(&d.content);
         let _ = crate::core::rollback::store::save_content(session_id, &hash, &d.content);
         hash
     });
 
-    let parent = std::path::Path::new(path)
+    let parent = std::path::Path::new(&path)
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
-    let filename = std::path::Path::new(path)
+    let filename = std::path::Path::new(&path)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
@@ -49,7 +49,7 @@ pub async fn delete_file(
     }
     let trash_path = trash_dir.join(format!("{}_{}", ts, filename));
 
-    match std::fs::rename(path, &trash_path) {
+    match std::fs::rename(&path, &trash_path) {
         Ok(()) => {
             record_patch_to_snapshot(
                 app,

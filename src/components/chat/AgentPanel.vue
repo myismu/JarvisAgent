@@ -29,6 +29,7 @@ const permission = usePermissionStore();
 
 // ── 权限状态 ──
 const permissionSessionAllowed = ref(false)
+const permissionPendingCount = ref(0)
 let permissionPollTimer: ReturnType<typeof setInterval> | null = null
 
 const loadPermissionState = async () => {
@@ -36,6 +37,7 @@ const loadPermissionState = async () => {
   try {
     const state = await invoke<any>('get_permission_state', { sessionId: session.activeSessionId })
     permissionSessionAllowed.value = state.sessionAllowed ?? false
+    permissionPendingCount.value = state.pendingCount ?? 0
   } catch { /* ignore */ }
 }
 
@@ -313,13 +315,15 @@ const backgroundStatusLabel = (status: string): string => {
         </button>
       </div>
 
-      <Transition name="fade">
-        <div v-if="permissionSessionAllowed" class="perm-session-bar">
-          <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-          <span>{{ t('permission.sessionAllowedHint') }}</span>
-          <button class="perm-revoke-btn" @click="revokeSessionPermission">{{ t('permission.revoke') }}</button>
-        </div>
-      </Transition>
+      <div class="perm-status-bar" :class="{ allowed: permissionSessionAllowed, pending: permissionPendingCount > 0 }">
+        <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+        <span v-if="permissionSessionAllowed">{{ t('permission.sessionAllowedHint') }}</span>
+        <span v-else-if="permissionPendingCount > 0">{{ t('permission.pendingRequests', { count: permissionPendingCount }) }}</span>
+        <span v-else>{{ t('permission.normalMode') }}</span>
+        <button v-if="permissionSessionAllowed" class="perm-revoke-btn" @click="revokeSessionPermission">{{ t('permission.revoke') }}</button>
+      </div>
 
       <div class="panel-body">
         <section class="monitor-section context-section">
@@ -597,19 +601,30 @@ const backgroundStatusLabel = (status: string): string => {
 }
 
 /* 权限状态条 */
-.perm-session-bar {
+.perm-status-bar {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 8px 14px;
   margin: 0 12px;
   border-radius: 8px;
-  background: rgba(245, 158, 11, 0.08);
-  border: 1px solid rgba(245, 158, 11, 0.2);
-  color: var(--accent-yellow);
+  background: var(--glass-bg-light);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
   font-size: 0.78rem;
+  transition: all 0.15s;
 }
-.perm-session-bar svg { flex-shrink: 0; }
+.perm-status-bar.allowed {
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.2);
+  color: var(--accent-yellow);
+}
+.perm-status-bar.pending {
+  background: rgba(59, 130, 246, 0.08);
+  border-color: rgba(59, 130, 246, 0.2);
+  color: var(--accent-blue);
+}
+.perm-status-bar svg { flex-shrink: 0; }
 .perm-revoke-btn {
   margin-left: auto;
   padding: 3px 10px;

@@ -79,6 +79,8 @@
     "allowOnce": "允许一次",
     "allowSession": "本次会话始终允许",
     "sessionAllowedHint": "当前会话已自动放行所有权限请求",
+    "pendingRequests": "{count} 个权限请求待处理",
+    "normalMode": "权限控制正常",
     "revoke": "撤销"
   },
   "plan": {
@@ -309,8 +311,8 @@
       "contextWindow": "上下文窗口",
       "unknown": "未知",
       "usage": "占用",
-      "providerActual": "Provider 实际",
-      "drift": "估算偏差",
+      "providerActual": "上轮会话的 token 消耗",
+      "cacheWarning": "⚠ 压缩后上下文结构将改变，当前会话的 prompt cache 将失效，下一次请求的 token 消耗和响应延迟可能显著增加。\n\n当前 {tokens} tokens，确定继续？",
       "sources": "来源",
       "dominantSource": "最大来源",
       "dominantShare": "{tokens}，占 {percent}%",
@@ -353,7 +355,8 @@
       "deleteWarning": "此操作会立即保存且不可撤销。",
       "deleteConfirm": "确认删除",
       "deleteSuccess": "配置预设已删除并保存",
-      "globalUpdated": "全局默认预设已更新"
+      "globalUpdated": "全局默认预设已更新",
+      "cacheWarning": "⚠ 切换模型预设后，当前会话的 prompt cache 将失效，下一次请求的 token 消耗和响应延迟可能显著增加。\n\n确定切换到「{name}」？"
     },
     "general": {
       "appearance": "界面与外观",
@@ -384,10 +387,14 @@
       "agentMessageOpacity": "Agent 回复透明度",
       "userMessageOpacity": "用户消息透明度",
       "reflectionMode": "Reflection 反思模式",
-      "reflectionModeDesc": "智能：LLM 不确定时自动反思；总是：每次工具调用后反思；关闭：不反思。",
-      "reflectionAlways": "总是",
+      "reflectionModeTooltip": "反思机制在工具执行后自动审查结果，发现偏差时注入修正建议引导 Agent 自纠。当前使用轻量审查模型，不注入工具。",
       "reflectionSmart": "智能",
+      "reflectionSmartDesc": "当模型思考过程中出现不确定关键词（如「也许」「试试」「maybe」「not sure」等）时自动触发审查。平衡审查效果与 Token 消耗，适合大多数场景。",
+      "reflectionAlways": "总是",
+      "reflectionAlwaysDesc": "在语义边界处自动触发审查：变更类工具执行后（WriteFile、EditFile、ApplyPatch、DeleteFile、RenameFile、RunCommand、EditNotebook、ProposePlan）或子 Agent 完成后。纯读取操作不触发。最谨慎但 Token 消耗增加。",
       "reflectionOff": "关闭",
+      "reflectionOffDesc": "完全关闭反思审查，Agent 执行工具后直接继续，不做任何结果校验。恢复默认 Agent 行为，零额外 Token 消耗。",
+      "reflectionModeDesc": "智能：模型不确定时自动审查；总是：变更操作后自动审查；关闭：不审查。",
       "behavior": "交互行为",
       "autoScroll": "自动跟随滚动",
       "autoScrollDesc": "Agent 输出新内容时自动滚动到底部。",

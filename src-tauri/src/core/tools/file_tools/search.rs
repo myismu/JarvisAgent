@@ -265,7 +265,10 @@ pub async fn search_repo(
     let search_dir = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir().unwrap_or_default().join(path)
+        ws.as_deref()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+            .join(path)
     };
 
     let limit = input_usize(input, "limit")
