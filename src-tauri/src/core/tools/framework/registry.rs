@@ -11,6 +11,7 @@
 //! ## 约束
 //! - 注册表通过 `OnceLock` 懒初始化，全局唯一
 //! - 保持插入顺序用于稳定输出
+//! - 写操作工具（WriteFile, EditFile）设为延迟工具，防止聊天模式下误操作
 
 use std::collections::HashMap;
 use std::sync::OnceLock;

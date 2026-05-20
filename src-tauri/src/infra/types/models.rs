@@ -214,9 +214,33 @@ pub struct ImageSource {
     pub file_path: Option<String>,
 }
 
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct Skill {
     pub name: String,
     pub description: String,
+    pub body: String,
+    pub path: String,
+}
+
+/// Skill 列表元数据（不含 body，用于列表展示）
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillMeta {
+    pub name: String,
+    pub description: String,
+    pub path: String,
+    pub body_tokens: usize,
+    pub active: bool,
+}
+
+/// Skill 完整详情（含 body，用于详情展示）
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillDetail {
+    pub name: String,
+    pub description: String,
+    pub path: String,
     pub body: String,
 }
 

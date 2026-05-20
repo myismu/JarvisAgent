@@ -14,6 +14,7 @@
 //! - 循环次数受 `MAX_AGENT_LOOP_BEFORE_CONFIRM` 和 `MAX_AGENT_LOOP_ABSOLUTE` 常量限制
 //! - 取消令牌（`CancellationToken`）贯穿全流程，支持用户随时中断
 //! - 反思审查在工具执行后触发，受 `reflection_mode` 和防循环机制控制
+//! - 传递 work_mode 到工具调用链路，支持兜底防护
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -171,7 +172,7 @@ impl PipelineState {
 
         // 读取双轴偏好
         let (audience, work_mode) = {
-            let prefs = crate::command::window_state::get_ui_preferences()
+            let prefs = crate::command::app_config::get_ui_preferences()
                 .await
                 .unwrap_or_default();
             let audience = normalize_agent_audience(&prefs.agent_audience).to_string();
@@ -789,6 +790,7 @@ impl PipelineState {
             );
 
             // 工具执行
+            let work_mode = self.ctx.agent_work_mode.lock().await.clone();
             let (tool_results, manual_compact, sub_in, sub_out) = execute_tool_calls(
                 &mut current_blocks,
                 tool_input_buffers,
@@ -798,6 +800,7 @@ impl PipelineState {
                 self.total_loop_count + 1,
                 &self.cancel_token,
                 &self.detected_intent,
+                &work_mode,
             )
             .await;
             self.req_input_tokens += sub_in;

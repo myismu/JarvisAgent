@@ -1,7 +1,6 @@
-﻿//! # window_state.rs — 窗口状态与 UI 偏好持久化
+//! # app_config.rs — 应用配置持久化
 //!
-//! 将主窗口/监控窗口的位置尺寸、以及 UI 偏好（字体、紧凑模式、交互行为等）
-//! 统一保存到 data/window-state.json，便于项目数据统一管理。
+//! 将窗口状态、UI 偏好、技能激活等用户配置统一保存到 data/app-config.json。
 //!
 //! ## 关键导出
 //! - `get_custom_window_state()`: 读取指定窗口状态
@@ -10,6 +9,12 @@
 //! - `list_custom_window_states()`: 返回所有已保存窗口状态
 //! - `get_ui_preferences()`: 读取 UI 偏好设置
 //! - `save_ui_preferences()`: 保存 UI 偏好设置并通知所有窗口
+//! - `get_skill_activations()`: 读取所有技能激活状态
+//! - `set_skill_active()`: 设置指定技能的激活状态
+//!
+//! ## 依赖
+//! - Internal: `infra::config::data_paths`
+//! - External: `serde`, `serde_json`, `tauri`
 
 use crate::infra::config::data_paths;
 use serde::{Deserialize, Serialize};
@@ -134,41 +139,77 @@ impl UiPreferences {
     }
 }
 
-/// 顶层文件结构
+/// 顶层配置文件结构
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct WindowStateFile {
+struct AppConfigFile {
     #[serde(default)]
     windows: HashMap<String, CustomWindowState>,
     #[serde(default = "UiPreferences::default")]
     ui_preferences: UiPreferences,
+    /// 技能激活状态：skill_name → active。未记录的技能默认激活。
+    #[serde(default)]
+    skills: HashMap<String, bool>,
 }
 
-fn window_state_path() -> std::path::PathBuf {
+fn app_config_path() -> std::path::PathBuf {
+    data_paths::data_root().join("app-config.json")
+}
+
+fn old_config_path() -> std::path::PathBuf {
     data_paths::data_root().join("window-state.json")
 }
 
-fn read_file() -> WindowStateFile {
-    let path = window_state_path();
-    let Ok(content) = fs::read_to_string(path) else {
-        return WindowStateFile {
+fn read_file() -> AppConfigFile {
+    let path = app_config_path();
+
+    // 旧文件迁移：如果新文件不存在但旧文件存在，重命名
+    if !path.exists() {
+        let old = old_config_path();
+        if old.exists() {
+            let _ = fs::rename(&old, &path);
+        }
+    }
+
+    let Ok(content) = fs::read_to_string(&path) else {
+        return AppConfigFile {
             windows: HashMap::new(),
             ui_preferences: UiPreferences::default(),
+            skills: HashMap::new(),
         };
     };
-    serde_json::from_str(&content).unwrap_or(WindowStateFile {
+    serde_json::from_str(&content).unwrap_or(AppConfigFile {
         windows: HashMap::new(),
         ui_preferences: UiPreferences::default(),
+        skills: HashMap::new(),
     })
 }
 
-fn write_file(file: &WindowStateFile) -> Result<(), String> {
-    let path = window_state_path();
+fn write_file(file: &AppConfigFile) -> Result<(), String> {
+    let path = app_config_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
     let content = serde_json::to_string_pretty(file).map_err(|err| err.to_string())?;
     fs::write(path, content).map_err(|err| err.to_string())
+}
+
+/// 读取技能激活状态，未记录的技能默认激活
+pub fn get_skill_activation(skill_name: &str) -> bool {
+    let file = read_file();
+    file.skills.get(skill_name).copied().unwrap_or(true)
+}
+
+/// 读取所有技能激活状态
+pub fn get_all_skill_activations() -> HashMap<String, bool> {
+    read_file().skills
+}
+
+/// 设置技能激活状态
+pub fn set_skill_activation(skill_name: &str, active: bool) -> Result<(), String> {
+    let mut file = read_file();
+    file.skills.insert(skill_name.to_string(), active);
+    write_file(&file)
 }
 
 // ── Window state commands ──
@@ -220,4 +261,16 @@ pub async fn save_ui_preferences(
     // 通知所有窗口（包括监控窗口）偏好已更新
     let _ = app.emit("ui-preferences-changed", ());
     Ok(())
+}
+
+// ── Skill activation commands ──
+
+#[tauri::command]
+pub async fn get_skill_activations() -> Result<HashMap<String, bool>, String> {
+    Ok(get_all_skill_activations())
+}
+
+#[tauri::command]
+pub async fn set_skill_active(skill_name: String, active: bool) -> Result<(), String> {
+    set_skill_activation(&skill_name, active)
 }

@@ -43,7 +43,7 @@ pub async fn save_config_cmd(
 /// 获取图片压缩配置（最大宽高、质量），从 UiPreferences 读取
 #[tauri::command]
 pub async fn get_image_compress_config() -> Result<serde_json::Value, String> {
-    let prefs = crate::command::window_state::get_ui_preferences()
+    let prefs = crate::command::app_config::get_ui_preferences()
         .await
         .unwrap_or_default();
     Ok(serde_json::json!({

@@ -283,7 +283,7 @@ impl TaskScheduler {
                     let fut = run_subagent(
                         app_c, prompt, false, sid,
                         Some(tid), None,
-                        Some(IMPLEMENTATION_AGENT_ROLE.to_string()), None,
+                        Some(IMPLEMENTATION_AGENT_ROLE.to_string()), None, None,
                     );
                     let result = tokio::time::timeout(
                         std::time::Duration::from_secs(300),
@@ -376,7 +376,7 @@ impl TaskScheduler {
                                 let fut = run_subagent(
                                     app_c, prompt, false, sid,
                                     Some(tid), None,
-                                    Some(IMPLEMENTATION_AGENT_ROLE.to_string()), None,
+                                    Some(IMPLEMENTATION_AGENT_ROLE.to_string()), None, None,
                                 );
                                 let result = tokio::time::timeout(
                                     std::time::Duration::from_secs(300),
@@ -452,7 +452,7 @@ fn spawn_into_set(
             run_subagent(
                 app_clone, prompt, false, sid,
                 Some(tid), Some(label),
-                Some(IMPLEMENTATION_AGENT_ROLE.to_string()), None,
+                Some(IMPLEMENTATION_AGENT_ROLE.to_string()), None, None,
             ),
         ).await;
         let (answer, si, so) = match result {

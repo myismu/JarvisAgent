@@ -13,6 +13,7 @@
 //! ## 约束
 //! - 工具结果按原始 index 排序，确保与 `tool_use_id` 一一对应
 //! - `RunSubagentsSequentially` 工具走独立调度路径，不进入通用并行执行
+//! - 传递 work_mode 参数到工具调用链路，支持兜底防护
 
 use serde_json::json;
 use tauri::Emitter;
@@ -56,6 +57,7 @@ pub async fn execute_tool_calls(
     loop_count: usize,
     cancel_token: &tokio_util::sync::CancellationToken,
     intent: &str,
+    work_mode: &str,
 ) -> (Vec<ContentBlock>, bool, u64, u64) {
     let mut manual_compact = false;
 
@@ -223,6 +225,7 @@ pub async fn execute_tool_calls(
                 let app_clone = app.clone();
                 let sid_clone = sid.to_string();
                 let intent_clone = intent.to_string();
+                let work_mode_clone = work_mode.to_string();
                 let cancel = cancel_token.clone();
                 tokio::spawn(async move {
                     // spawn 后立即检查取消
@@ -242,6 +245,7 @@ pub async fn execute_tool_calls(
                         task.input.clone(),
                         sid_clone,
                         intent_clone,
+                        work_mode_clone,
                     )
                     .await;
                     ToolTaskResult {

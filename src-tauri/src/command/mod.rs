@@ -20,5 +20,6 @@ pub mod merge;
 pub mod permission;
 pub mod sandbox;
 pub mod session;
+pub mod skill;
 pub mod snapshot;
-pub mod window_state;
+pub mod app_config;

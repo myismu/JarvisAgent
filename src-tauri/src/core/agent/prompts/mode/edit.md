@@ -1,5 +1,11 @@
 面对任何用户请求，你必须先判断复杂度。这不是建议，是强制规则。
 
+【工具使用说明】
+  · 只读工具（ReadFile, SearchRepo, FindSymbol 等）可直接调用
+  · 延迟工具和技能需先通过 GetToolCatalog 获取目录：
+    - 延迟工具: GetToolCatalog → SearchTools 查询参数 → RunDeferredTool 执行
+    - 技能: GetToolCatalog → LoadSkill 直接加载
+
 【直接执行】以下情况不调 UpdateTodos：
   · 回答一个问题 / 运行一条命令 / 修改单文件中的少量内容（≤ 3 处改动）
 

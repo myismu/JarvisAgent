@@ -46,7 +46,27 @@
     "rename": "重命名会话",
     "delete": "删除会话",
     "settings": "设置",
-    "settingsTitle": "系统设置"
+    "settingsTitle": "系统设置",
+    "skillManager": "技能管理"
+  },
+  "skillManager": {
+    "title": "技能管理",
+    "subtitle": "管理和浏览可用的 Agent 技能",
+    "localSkills": "本地技能",
+    "skillMarket": "技能市场",
+    "noSkills": "暂无技能",
+    "loading": "加载中...",
+    "backToChat": "返回对话",
+    "skillCount": "{count} 个技能",
+    "description": "描述",
+    "path": "路径",
+    "bodyTokens": "Token 数",
+    "viewDetail": "查看详情",
+    "activate": "启用",
+    "deactivate": "停用",
+    "close": "关闭",
+    "marketComingSoon": "技能市场即将开放",
+    "marketDescription": "接入主流 Skill 市场，一键安装到本地"
   },
   "input": {
     "recallHint": "已取消生成，可撤回上一条消息重新编辑",

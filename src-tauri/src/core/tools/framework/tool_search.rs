@@ -1,7 +1,9 @@
 //! # tool_search.rs — 渐进式工具披露模块
 //!
 //! 核心工具始终携带完整 schema（在 tools 参数中，保证缓存命中），
-//! 延迟工具通过 `SearchTools` 搜索获取参数定义，再通过 `RunDeferredTool` 代理执行。
+//! 延迟工具和技能通过 `GetToolCatalog` 统一发现：
+//!   - 延迟工具: `GetToolCatalog` → `SearchTools` → `RunDeferredTool`
+//!   - 技能: `GetToolCatalog` → `LoadSkill`
 //!
 //! 所有工具的 schema 和元数据已迁移到各模块的 `define_tools!` 注册，
 //! 本模块从 `ToolRegistry` 统一查询，不再维护硬编码的 JSON Schema。
@@ -12,9 +14,8 @@
 //! - `get_deferred_tool_search_entries()`: 获取延迟工具搜索索引（名称+简述+提示词）
 //! - `get_deferred_tool_full_schema()`: 按名称获取延迟工具的完整 Schema
 //! - `search_deferred_tools()`: 关键词搜索延迟工具（支持 `select:` 精确选择）
-//! - `get_deferred_tools_context()`: 生成延迟工具名称列表（注入 system prompt）
 //! - `handle_search_tools()`: SearchTools 处理函数（纯搜索指引）
-//! - `handle_run_deferred_tool()`: RunDeferredTool 处理函数（代理执行延迟工具）
+//! - `handle_run_deferred_tool()`: RunDeferredTool 处理函数（代理执行延迟工具，含兜底防护）
 //!
 //! ## 依赖
 //! - Internal: `registry::ToolRegistry`
@@ -25,6 +26,7 @@
 //! - 延迟工具只能通过 RunDeferredTool 间接调用
 //! - 搜索评分：精确名称匹配 12 分，名称包含 5 分，搜索提示包含 3 分，描述包含 2 分
 //! - `select:` 前缀支持精确选择多个工具（逗号分隔）
+//! - 兜底防护：CHAT/QUESTION 意图 或 chat 模式下禁止写操作
 
 use super::registry::{ToolDef, ToolRegistry};
 use serde_json::json;
@@ -136,49 +138,6 @@ pub fn search_deferred_tools(
     scored.into_iter().map(|(name, _)| name).collect()
 }
 
-/// 生成延迟工具名称列表上下文（注入到 system prompt 区域的用户消息中）
-pub fn get_deferred_tools_context(intent: &str) -> String {
-    let groups = ToolRegistry::global().get_deferred_by_category(intent);
-
-    if groups.is_empty() {
-        return String::new();
-    }
-
-    let mut out = String::from(
-        "\n\n【延迟加载工具】（需通过 RunDeferredTool 执行）:\n",
-    );
-    for (category, names) in &groups {
-        let name_list: Vec<String> = names.iter().map(|n| format!("`{}`", n)).collect();
-        out.push_str(&format!("- **{}**: {}\n", category, name_list.join(", ")));
-    }
-    out.push_str("使用方式: 先用 SearchTools 了解工具参数，再用 RunDeferredTool(name=\"工具名\", args={...}) 执行\n");
-    out
-}
-
-/// 生成延迟工具上下文（紧凑格式，用于 user message 参考索引）
-pub fn get_deferred_tools_context_compact(intent: &str) -> String {
-    let groups = ToolRegistry::global().get_deferred_by_category(intent);
-    if groups.is_empty() {
-        return String::new();
-    }
-    // 核心工具前置
-    let core = ToolRegistry::global().get_core_definitions();
-    let core_names: Vec<&str> = core
-        .iter()
-        .filter_map(|schema| schema["name"].as_str())
-        .collect();
-    let mut out = String::new();
-    if !core_names.is_empty() {
-        out.push_str(&format!("  核心工具（可直接调用）: {}\n", core_names.join(", ")));
-    }
-    out.push_str("  延迟工具（需通过 RunDeferredTool 执行）:\n");
-    for (category, names) in &groups {
-        out.push_str(&format!("    · {}: {}\n", category, names.join(", ")));
-    }
-    out.push_str("  使用方式: 先用 SearchTools 了解工具参数，再用 RunDeferredTool(name=\"工具名\", args={...}) 执行\n");
-    out
-}
-
 /// SearchTools 工具的处理函数（纯搜索指引，不触发激活）
 pub async fn handle_search_tools(input: &serde_json::Value, intent: &str) -> String {
     let query = input["query"].as_str().unwrap_or("");
@@ -218,12 +177,13 @@ pub async fn handle_search_tools(input: &serde_json::Value, intent: &str) -> Str
     result
 }
 
-/// RunDeferredTool 工具的处理函数（代理执行延迟工具）
+/// RunDeferredTool 工具的处理函数（代理执行延迟工具，含兜底防护）
 pub async fn handle_run_deferred_tool(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
     intent: &str,
+    work_mode: &str,
 ) -> String {
     let name = match input["name"].as_str() {
         Some(n) => n,
@@ -259,8 +219,21 @@ pub async fn handle_run_deferred_tool(
         );
     }
 
+    // 兜底防护：写操作工具在 CHAT/QUESTION 意图或聊天模式下被拦截
+    if crate::core::tools::should_block_write_tool(name, intent, work_mode) {
+        return format!(
+            "工具 '{}' 在当前状态下不可用。{}",
+            name,
+            if work_mode == "chat" {
+                "聊天模式下只能使用只读工具，请切换到编辑模式后再试。"
+            } else {
+                "当前意图下只能使用只读工具。"
+            }
+        );
+    }
+
     // 执行工具（调用 dispatch_tool_call 避免递归）
-    crate::core::tools::dispatch_tool_call(app, name, &args, session_id, intent).await
+    crate::core::tools::dispatch_tool_call(app, name, &args, session_id, intent, work_mode).await
 }
 
 // --- 工具注册 ---
@@ -273,7 +246,7 @@ crate::define_tools! {
             category: "",
             schema: json!({
                 "name": "SearchTools",
-                "description": "搜索延迟加载工具，返回完整参数定义和用法示例。代码搜索用 'FindSymbol FindReferences CodeSearch SearchRepo'，文件操作用 'ReadFile WriteFile EditFile'，命令执行用 'RunCommand RunGitCommand'，任务管理用 'CreateTask UpdateTask'，Agent 调度用 'RunSubagent ProposePlan'。支持 'select:ToolName1,ToolName2' 精确选择。获取 schema 后使用 RunDeferredTool 执行。",
+                "description": "搜索延迟加载工具，返回完整参数定义和用法示例。不确定有哪些可用工具时，先调用 GetToolCatalog 获取目录。支持 'select:ToolName1,ToolName2' 精确选择。获取 schema 后使用 RunDeferredTool 执行。",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -301,7 +274,7 @@ crate::define_tools! {
             category: "",
             schema: json!({
                 "name": "RunDeferredTool",
-                "description": "代理执行延迟加载工具。先用 SearchTools 了解工具参数，再用此工具执行。name 传工具名，args 传该工具的参数对象。",
+                "description": "代理执行延迟加载工具。先用 GetToolCatalog 获取可用工具目录，再用 SearchTools 了解工具参数，最后用此工具执行。name 传工具名，args 传该工具的参数对象。",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -332,15 +305,15 @@ mod tests {
     #[test]
     fn test_search_select_exact() {
         let deferred = get_deferred_tool_search_entries("PROJECT_ACTION");
-        let result = search_deferred_tools("select:ReadFile,WriteFile", &deferred, 5);
-        assert_eq!(result, vec!["ReadFile", "WriteFile"]);
+        let result = search_deferred_tools("select:ReadFileSkeleton,WriteFile", &deferred, 5);
+        assert_eq!(result, vec!["ReadFileSkeleton", "WriteFile"]);
     }
 
     #[test]
     fn test_search_select_case_insensitive() {
         let deferred = get_deferred_tool_search_entries("PROJECT_ACTION");
-        let result = search_deferred_tools("select:readfile", &deferred, 5);
-        assert_eq!(result, vec!["ReadFile"]);
+        let result = search_deferred_tools("select:readfileskeleton", &deferred, 5);
+        assert_eq!(result, vec!["ReadFileSkeleton"]);
     }
 
     #[test]
@@ -388,31 +361,22 @@ mod tests {
     }
 
     #[test]
-    fn test_deferred_context_exposes_names_without_descriptions() {
-        let context = get_deferred_tools_context("PROJECT_ACTION");
-        assert!(context.contains("ReadFile"));
-        assert!(context.contains("StartBackgroundCommand"));
-        assert!(!context.contains("读取文件内容"));
-        assert!(!context.contains("在后台执行长时间运行的命令"));
-    }
-
-    #[test]
     fn test_get_full_schema_returns_valid_json() {
-        let schema = get_deferred_tool_full_schema("ReadFile");
+        let schema = get_deferred_tool_full_schema("WriteFile");
         assert!(schema.is_some());
         let s = schema.unwrap();
-        assert_eq!(s["name"], "ReadFile");
+        assert_eq!(s["name"], "WriteFile");
         assert!(s["input_schema"]["properties"]["path"].is_object());
     }
 
     #[test]
     fn test_handle_search_tools_does_not_return_xml_function_wrappers() {
         let output = tauri::async_runtime::block_on(handle_search_tools(
-            &json!({ "query": "select:ReadFile" }),
+            &json!({ "query": "select:EditFile" }),
             "PROJECT_ACTION",
         ));
 
-        assert!(output.contains("工具: ReadFile"));
+        assert!(output.contains("工具: EditFile"));
         assert!(output.contains("```json"));
         assert!(!output.contains("<function>"));
         assert!(!output.contains("</function>"));
@@ -424,5 +388,16 @@ mod tests {
         let names: Vec<&str> = core.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"SearchTools"));
         assert!(names.contains(&"LoadSkill"));
+        assert!(names.contains(&"GetToolCatalog"));
+    }
+
+    #[test]
+    fn test_get_deferred_tools_list_returns_grouped_names() {
+        let groups = ToolRegistry::global().get_deferred_by_category("PROJECT_ACTION");
+        assert!(!groups.is_empty());
+        // 验证包含写操作工具
+        let all_names: Vec<&str> = groups.iter().flat_map(|(_, names)| names.iter().copied()).collect();
+        assert!(all_names.contains(&"WriteFile"));
+        assert!(all_names.contains(&"RunCommand"));
     }
 }

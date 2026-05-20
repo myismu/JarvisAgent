@@ -45,7 +45,27 @@
     "rename": "Rename session",
     "delete": "Delete session",
     "settings": "Settings",
-    "settingsTitle": "System Settings"
+    "settingsTitle": "System Settings",
+    "skillManager": "Skill Manager"
+  },
+  "skillManager": {
+    "title": "Skill Manager",
+    "subtitle": "Browse and manage available Agent skills",
+    "localSkills": "Local Skills",
+    "skillMarket": "Skill Market",
+    "noSkills": "No skills found",
+    "loading": "Loading...",
+    "backToChat": "Back to chat",
+    "skillCount": "{count} skills",
+    "description": "Description",
+    "path": "Path",
+    "bodyTokens": "Tokens",
+    "viewDetail": "View detail",
+    "activate": "Enable",
+    "deactivate": "Disable",
+    "close": "Close",
+    "marketComingSoon": "Skill Market Coming Soon",
+    "marketDescription": "Connect to popular Skill markets and install with one click"
   },
   "input": {
     "recallHint": "Generation was cancelled. You can recall the previous message and edit it.",

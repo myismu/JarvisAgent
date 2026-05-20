@@ -7,6 +7,8 @@
 //! - `get_tools_definition()`: 返回固定核心工具定义列表（不含意图参数，保证缓存命中）
 //! - `handle_tool_call()` / `handle_tool_call_owned()`: 工具调用路由入口
 //! - `load_all_skills()`: 从 skills 目录加载所有 SKILL.md 技能文件
+//! - `should_block_write_tool()`: 判断是否应该阻止写操作工具（兜底防护）
+//! - `is_write_tool()`: 判断是否是写操作工具
 //!
 //! ## 依赖
 //! - Internal: 各工具子模块（file_tools, shell_tools, task_tools, agent_tools, system_tools, tool_search）
@@ -15,6 +17,8 @@
 //! ## 约束
 //! - tools 参数始终不变，意图过滤仅通过上下文注入 + RunDeferredTool 运行时校验
 //! - 子代理（SUBAGENT）不能调用 RunSubagent / ConsolidateMemory / CompactConversation / RunSubagentsSequentially
+//! - 写操作工具（WriteFile, EditFile, RunCommand 等）是延迟工具，通过三步协议调用：GetToolCatalog → SearchTools → RunDeferredTool
+//! - 兜底防护：CHAT/QUESTION 意图 或 chat 模式下禁止写操作
 
 pub mod agent_tools;
 pub mod file_tools;
@@ -37,19 +41,18 @@ pub use framework::agent_registry::{AgentRegistry, DEFAULT_AGENT_ROLE, IMPLEMENT
 pub use framework::permission::{ensure_path_permission, is_path_safe, request_permission};
 pub use framework::tool_search::{
     get_core_tool_definitions, get_deferred_tool_full_schema, get_deferred_tool_list,
-    get_deferred_tool_search_entries, get_deferred_tools_context,
-    get_deferred_tools_context_compact, handle_search_tools,
+    get_deferred_tool_search_entries, handle_search_tools,
     search_deferred_tools, DeferredToolSearchEntry,
 };
 
 /// 递归扫描 skills 目录，解析所有 SKILL.md 文件
+///
+/// 从项目根目录的 `skills/` 文件夹加载（与 `data/` 同级）。
 pub fn load_all_skills() -> Vec<Skill> {
     let mut skills = Vec::new();
-    let home = get_agent_home();
-    let mut skills_dir = home.join(crate::infra::types::constants::DIR_SKILLS);
-    if !skills_dir.exists() {
-        skills_dir = home.join("..").join("skills");
-    }
+    let data_dir = get_agent_home();
+    // skills 目录与 data 目录同级，位于项目根目录
+    let skills_dir = data_dir.parent().unwrap_or(data_dir).join("skills");
 
     fn scan_skills(dir: &Path, skills: &mut Vec<Skill>) {
         if let Ok(entries) = std::fs::read_dir(dir) {
@@ -103,6 +106,7 @@ pub fn parse_skill(text: &str, path: &Path) -> Option<Skill> {
                 name,
                 description,
                 body,
+                path: path.to_string_lossy().to_string(),
             });
         }
     }
@@ -122,6 +126,7 @@ pub async fn handle_tool_call(
     input: &serde_json::Value,
     session_id: &str,
     intent: &str,
+    work_mode: &str,
 ) -> (String, u64, u64) {
     if name == "RunSubagent" {
         let prompt = input["prompt"].as_str().unwrap_or("");
@@ -158,6 +163,9 @@ pub async fn handle_tool_call(
             .as_str()
             .filter(|value| !value.trim().is_empty())
             .map(|value| value.to_string());
+        let skills: Option<Vec<String>> = input["skills"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect());
         let fut = run_subagent(
             app.clone(),
             prompt.to_string(),
@@ -167,6 +175,7 @@ pub async fn handle_tool_call(
             label,
             Some(agent.agent_role.to_string()),
             model_override,
+            skills,
         );
         Box::pin(fut).await
     } else if name == "RunSubagentsSequentially" {
@@ -183,7 +192,7 @@ pub async fn handle_tool_call(
         ("调度已启动，任务正在后台执行。你将实时收到每个任务的完成/失败通知。".to_string(), 0, 0)
     } else {
         (
-            handle_tool_call_inner(app, name, input, session_id, intent).await,
+            handle_tool_call_inner(app, name, input, session_id, intent, work_mode).await,
             0,
             0,
         )
@@ -197,8 +206,9 @@ pub async fn handle_tool_call_owned(
     input: serde_json::Value,
     session_id: String,
     intent: String,
+    work_mode: String,
 ) -> (String, u64, u64) {
-    handle_tool_call(&app, &name, &input, &session_id, &intent).await
+    handle_tool_call(&app, &name, &input, &session_id, &intent, &work_mode).await
 }
 
 /// 子Agent并行工具执行用的 owned 版本（不含 task 路由）
@@ -208,8 +218,9 @@ pub async fn handle_tool_call_inner_owned(
     input: serde_json::Value,
     session_id: String,
     intent: String,
+    work_mode: String,
 ) -> String {
-    handle_tool_call_inner(&app, &name, &input, &session_id, &intent).await
+    handle_tool_call_inner(&app, &name, &input, &session_id, &intent, &work_mode).await
 }
 
 /// 工具调用核心分发（不含 RunDeferredTool 路由，避免递归）
@@ -220,7 +231,21 @@ pub async fn dispatch_tool_call(
     input: &serde_json::Value,
     session_id: &str,
     intent: &str,
+    work_mode: &str,
 ) -> String {
+    // 兜底防护：CHAT/QUESTION 意图 或 chat 模式下禁止写操作
+    if should_block_write_tool(name, intent, work_mode) {
+        return format!(
+            "工具 '{}' 在当前状态下不可用。{}",
+            name,
+            if work_mode == "chat" {
+                "聊天模式下只能使用只读工具，请切换到编辑模式后再试。"
+            } else {
+                "当前意图下只能使用只读工具。"
+            }
+        );
+    }
+
     match name {
         // 系统工具
         "SetWorkspace" => system_tools::set_workspace(app, input, session_id).await,
@@ -260,6 +285,7 @@ pub async fn dispatch_tool_call(
 
         // Agent 工具
         "LoadSkill" => agent_tools::load_skill(app, input, session_id).await,
+        "GetToolCatalog" => agent_tools::get_tool_catalog(app, input, session_id, intent).await,
         "CompactConversation" => agent_tools::compact(app, input, session_id).await,
         "ConsolidateMemory" => agent_tools::dream(app, input, session_id).await,
 
@@ -283,12 +309,37 @@ pub async fn handle_tool_call_inner(
     input: &serde_json::Value,
     session_id: &str,
     intent: &str,
+    work_mode: &str,
 ) -> String {
     // RunDeferredTool 单独路由，避免与 dispatch_tool_call 递归
     if name == "RunDeferredTool" {
-        return framework::tool_search::handle_run_deferred_tool(app, input, session_id, intent)
+        return framework::tool_search::handle_run_deferred_tool(app, input, session_id, intent, work_mode)
             .await;
     }
-    dispatch_tool_call(app, name, input, session_id, intent).await
+    dispatch_tool_call(app, name, input, session_id, intent, work_mode).await
+}
+
+/// 判断是否应该阻止写操作工具
+pub fn should_block_write_tool(name: &str, intent: &str, work_mode: &str) -> bool {
+    // 条件1：意图是 CHAT 或 QUESTION
+    if matches!(intent, "CHAT" | "QUESTION") {
+        return is_write_tool(name);
+    }
+
+    // 条件2：工作模式是 chat
+    if work_mode == "chat" {
+        return is_write_tool(name);
+    }
+
+    false
+}
+
+/// 判断是否是写操作工具
+pub fn is_write_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "WriteFile" | "EditFile" | "DeleteFile" | "RenameFile" | "ApplyPatch"
+            | "RunCommand" | "StartBackgroundCommand" | "EditNotebook"
+    )
 }
 

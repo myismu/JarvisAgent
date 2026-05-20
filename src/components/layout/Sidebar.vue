@@ -18,6 +18,7 @@ import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useSessionStore } from '../../stores/session';
 import { useChatStore } from '../../stores/chat';
+import { useAppViewStore } from '../../stores/appView';
 import { useAgentEvents } from '../../composables/useAgentEvents';
 import { useWindow } from '../../composables/useWindow';
 
@@ -33,6 +34,7 @@ const { t } = useI18n();
 
 const sessionStore = useSessionStore();
 const chat = useChatStore();
+const appView = useAppViewStore();
 const events = useAgentEvents();
 const { notifyMonitorSessionChanged } = useWindow();
 
@@ -263,6 +265,10 @@ const openProject = async () => {
   }
 };
 
+const openSkillManager = () => {
+  appView.showSkillManager();
+};
+
 // 在项目下新建对话
 const createProjectSession = async (projectId: string) => {
   const project = projects.value.find(p => p.id === projectId);
@@ -312,6 +318,7 @@ const performDeleteProject = async (projectId: string) => {
 const switchToSession = async (id: string) => {
   if (id === sessionStore.activeSessionId) return;
   try {
+    appView.showChat(); // 切换会话时返回聊天视图
     const meta = await invoke<any>('switch_session', { id });
     sessionStore.activeSessionId = id;
     sessionStore.workingDirectory = meta.workingDirectory || null;
@@ -466,6 +473,12 @@ onUnmounted(() => {
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
             </svg>
             <span>{{ t('sidebar.openProject') }}</span>
+          </button>
+          <button type="button" class="new-session-btn skill-btn" @click.stop="openSkillManager()">
+            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
+              <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
+            </svg>
+            <span>{{ t('sidebar.skillManager') }}</span>
           </button>
         </div>
         <div

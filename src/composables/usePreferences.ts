@@ -84,7 +84,7 @@ function applyAll(p: UiPreferences) {
   applyMessageOpacity();
 }
 
-// ── 持久化（Rust 后端 → data/window-state.json） ──
+// ── 持久化（Rust 后端 → data/app-config.json） ──
 
 async function loadFromBackend() {
   try {

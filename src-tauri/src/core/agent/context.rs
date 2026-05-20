@@ -61,17 +61,6 @@ pub fn build_dynamic_context(
                 ctx.push_str(&repo_map);
             }
 
-            // 工具索引（紧凑格式）
-            ctx.push_str("可用工具:\n");
-            ctx.push_str(&get_deferred_tools_context_compact(intent));
-
-            // 技能（仅名称）
-            let skills = load_all_skills();
-            if !skills.is_empty() {
-                let names: Vec<String> = skills.iter().map(|s| s.name.to_string()).collect();
-                ctx.push_str(&format!("可用技能: {}\n", names.join(", ")));
-            }
-
             // 全局记忆（压缩在末尾）
             let global_content = read_memory_file(&get_global_memory_path(), "Global Memory");
             let trimmed = global_content.trim();

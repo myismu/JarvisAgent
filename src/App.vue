@@ -10,6 +10,7 @@ import { useWindow } from "./composables/useWindow";
 import { useTheme } from "./composables/useTheme";
 import { useSessionStore } from "./stores/session";
 import { useAgentStore } from "./stores/agent";
+import { useAppViewStore } from "./stores/appView";
 
 import TitleBar from "./components/layout/TitleBar.vue";
 import Sidebar from "./components/layout/Sidebar.vue";
@@ -17,6 +18,7 @@ import ChatArea from "./components/chat/ChatArea.vue";
 import TerminalInput from "./components/chat/TerminalInput.vue";
 import PlanPreviewPanel from "./components/common/PlanPreviewPanel.vue";
 import SettingsPanel from "./components/settings/SettingsPanel.vue";
+import SkillManager from "./components/skill/SkillManager.vue";
 
 const showSettings = ref(false);
 const { t } = useI18n();
@@ -26,6 +28,7 @@ useTheme(); // 初始化主题
 
 const session = useSessionStore();
 const agent = useAgentStore();
+const appView = useAppViewStore();
 const { initListeners } = useAgentEvents();
 const {
   openMonitorWindow,
@@ -202,13 +205,17 @@ onBeforeUnmount(() => {
               </svg>
             </button>
           </div>
-          
-          <ChatArea />
-          <PlanPreviewPanel />
 
-          <div class="floating-terminal-container">
-            <TerminalInput />
-          </div>
+          <template v-if="appView.isSkillManagerView">
+            <SkillManager />
+          </template>
+          <template v-else>
+            <ChatArea />
+            <PlanPreviewPanel />
+            <div class="floating-terminal-container">
+              <TerminalInput />
+            </div>
+          </template>
         </div>
       </div>
     </div>

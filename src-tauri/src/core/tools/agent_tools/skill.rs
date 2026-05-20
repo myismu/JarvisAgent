@@ -38,10 +38,21 @@ pub async fn load_skill(
         );
     }
     let skills = load_all_skills();
-    match skills.into_iter().find(|s| s.name == skill_name) {
-        Some(skill) => format!("<skill name=\"{}\">\n{}\n</skill>", skill.name, skill.body),
+    let activations = crate::command::app_config::get_all_skill_activations();
+    match skills.iter().find(|s| s.name == skill_name) {
+        Some(skill) => {
+            let active = activations.get(&skill.name).copied().unwrap_or(true);
+            if !active {
+                return format!("技能 '{}' 未激活，请在技能管理中启用后再使用。", skill_name);
+            }
+            format!("<skill name=\"{}\">\n{}\n</skill>", skill.name, skill.body)
+        }
         None => {
-            let available: Vec<String> = load_all_skills().into_iter().map(|s| s.name).collect();
+            let available: Vec<String> = skills
+                .iter()
+                .filter(|s| activations.get(&s.name).copied().unwrap_or(true))
+                .map(|s| s.name.clone())
+                .collect();
             format!(
                 "错误：未找到技能 '{}'。可用技能: {:?}",
                 skill_name, available

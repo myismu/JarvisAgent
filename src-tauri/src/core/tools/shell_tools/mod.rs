@@ -49,7 +49,7 @@ crate::define_tools! {
                     "required": ["command", "description"]
                 }
             }),
-            should_defer: false,
+            should_defer: true,
             is_read_only: false,
             is_concurrency_safe: false,
             is_enabled: true,

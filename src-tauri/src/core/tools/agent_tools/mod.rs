@@ -28,6 +28,40 @@ pub use subagent::run_subagent;
 pub use switch_mode::switch_work_mode;
 
 use super::framework::agent_registry::AgentRegistry;
+use super::framework::registry::ToolRegistry;
+
+/// GetToolCatalog 处理函数：从 ToolRegistry 获取延迟工具列表 + 从 skills 目录获取技能列表
+pub async fn get_tool_catalog(_app: &tauri::AppHandle, _input: &serde_json::Value, _session_id: &str, intent: &str) -> String {
+    let mut out = String::new();
+
+    // 延迟工具列表
+    let groups = ToolRegistry::global().get_deferred_by_category(intent);
+    if !groups.is_empty() {
+        out.push_str("【延迟工具】（需通过 RunDeferredTool 执行）:\n");
+        for (category, names) in &groups {
+            out.push_str(&format!("- {}: {}\n", category, names.join(", ")));
+        }
+    }
+
+    // 技能列表（只返回激活的技能）
+    let skills = super::load_all_skills();
+    let activations = crate::command::app_config::get_all_skill_activations();
+    let active_skills: Vec<String> = skills
+        .iter()
+        .filter(|s| activations.get(&s.name).copied().unwrap_or(true))
+        .map(|s| s.name.to_string())
+        .collect();
+    if !active_skills.is_empty() {
+        out.push_str(&format!("\n【可用技能】（通过 LoadSkill 加载）:\n- {}\n", active_skills.join(", ")));
+    }
+
+    if out.is_empty() {
+        return "当前意图下没有可用的延迟工具或技能。".to_string();
+    }
+
+    out.push_str("\n使用方式:\n- 延迟工具: 先 SearchTools 查询参数，再 RunDeferredTool(name=\"工具名\", args={...}) 执行\n- 技能: 直接 LoadSkill(name=\"技能名\") 加载");
+    out
+}
 
 // --- 工具注册 ---
 crate::define_tools! {
@@ -41,6 +75,15 @@ crate::define_tools! {
                 name: string => "要加载的技能名称",
             },
             required: ["name"],
+            category: "系统",
+            read_only: true,
+            concurrency_safe: true,
+        ),
+        crate::tool_def!(
+            "GetToolCatalog",
+            desc: "获取可用工具和技能目录",
+            hint: "get tool catalog available tools skills discover",
+            schema_desc: "获取当前可用的延迟工具列表（按分类分组）和技能列表。当你需要使用非核心工具（如 WriteFile、EditFile、RunCommand 等写操作工具）或加载技能时，必须先调用此工具获取可用资源目录。延迟工具通过 SearchTools + RunDeferredTool 两步执行，技能通过 LoadSkill 直接加载。",
             category: "系统",
             read_only: true,
             concurrency_safe: true,
@@ -106,6 +149,7 @@ crate::define_tools! {
                 task_id: integer => "Optional persistent task id for scheduler/board integration.",
                 label: string => "Deprecated alias for description; prefer description.",
                 read_only: boolean => "Optional permission override. If omitted, the selected subagent_type default is used. true filters out every tool whose registry metadata is not read-only; false still respects the selected agent allowlist/denylist.",
+                skills: array => "Optional list of skill names to make available to this subagent. Only specified skills will be injected into the subagent's context. If omitted, no skills are injected. Use GetToolCatalog to discover available skill names.",
             },
             required: ["prompt"],
             category: "Agent 调度",

@@ -556,3 +556,22 @@ export type ConflictResolution =
   | { type: "keep_both"; newPath: string }
   | { type: "manual"; resolvedContent: string }
   | { type: "custom"; content: string };
+
+// === Skill 管理类型 ===
+
+export interface SkillMeta {
+  name: string;
+  description: string;
+  path: string;
+  bodyTokens: number;
+  active: boolean;
+}
+
+export interface SkillDetail {
+  name: string;
+  description: string;
+  path: string;
+  body: string;
+}
+
+export type AppView = 'chat' | 'skill-manager';

@@ -14,13 +14,14 @@
 //! - 子代理与主代理共用同一模型（main_model）
 //! - 只读模式会过滤掉 write_file / edit_file / run_shell 等写操作工具
 //! - 子代理循环次数受 `MAX_AGENT_LOOP_BEFORE_CONFIRM` 限制
+//! - 子代理使用 "SUBAGENT" 意图和 "edit" 工作模式
 
 use eventsource_stream::Eventsource;
 use serde_json::json;
 use tauri::{Emitter, Manager};
 
 use super::super::framework::agent_registry::{normalize_agent_role, AgentRegistry};
-use super::super::{handle_tool_call_inner_owned, load_all_skills};
+use super::super::handle_tool_call_inner_owned;
 use crate::core::agent::{process_stream, StreamConfig};
 use crate::infra::config::config::ConfigState;
 use crate::core::agent::prompts::get_subagent_system_prompt;
@@ -378,6 +379,7 @@ pub async fn run_subagent(
     label: Option<String>,
     subagent_type: Option<String>,
     model_override: Option<String>,
+    skills: Option<Vec<String>>,
 ) -> (String, u64, u64) {
     let agent_registry = AgentRegistry::global();
     let requested_agent_role = normalize_agent_role(subagent_type.as_deref());
@@ -433,11 +435,20 @@ pub async fn run_subagent(
         agent.agent_role, agent.when_to_use, agent.system_prompt
     ));
 
-    let skills = load_all_skills();
-    if !skills.is_empty() {
-        system_prompt.push_str("\n\n可用技能 (使用 LoadSkill 工具获取完整内容)：\n");
-        for skill in &skills {
-            system_prompt.push_str(&format!("  - {}: {}\n", skill.name, skill.description));
+    // 注入主 Agent 指定的技能
+    if let Some(ref skill_names) = skills {
+        if !skill_names.is_empty() {
+            let all_skills = super::super::load_all_skills();
+            let matched: Vec<&crate::infra::types::models::Skill> = all_skills
+                .iter()
+                .filter(|s| skill_names.iter().any(|name| name == &s.name))
+                .collect();
+            if !matched.is_empty() {
+                system_prompt.push_str("\n\n[Available skills]\nUse LoadSkill tool to load full content.\n");
+                for skill in &matched {
+                    system_prompt.push_str(&format!("  - {}: {}\n", skill.name, skill.description));
+                }
+            }
         }
     }
 
@@ -495,7 +506,7 @@ pub async fn run_subagent(
 
     // 子代理深度思考：沿用主代理的 audience 逻辑
     let should_think = {
-        let prefs = crate::command::window_state::get_ui_preferences()
+        let prefs = crate::command::app_config::get_ui_preferences()
             .await
             .unwrap_or_default();
         prefs.agent_audience == "developer"
@@ -903,6 +914,7 @@ pub async fn run_subagent(
                             task.input.clone(),
                             sid_clone,
                             "SUBAGENT".to_string(),
+                            "edit".to_string(),  // 子agent使用 edit 模式
                         )
                         .await;
                         SubToolTaskResult {
