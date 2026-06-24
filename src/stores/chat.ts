@@ -472,6 +472,17 @@ export const useChatStore = defineStore("chat", () => {
             reflectionMode: usePreferences().reflectionMode ?? "smart",
           });
 
+      // 用后端返回的 user_message_id 更新前端用户消息，使撤回按钮立即可见
+      if (res.user_message_id && !resumeOnly) {
+        const msgs = requestView.messages;
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          if (msgs[i].role === "user" && !msgs[i].messageId) {
+            msgs[i].messageId = res.user_message_id;
+            break;
+          }
+        }
+      }
+
       const sessionSwitched = sessionIdAtStart !== session.activeSessionId;
       if (!sessionSwitched) {
         session.setSessionUsageTotals(sessionIdAtStart, res.session_input_tokens || 0, res.session_output_tokens || 0);
@@ -593,19 +604,33 @@ export const useChatStore = defineStore("chat", () => {
       resetRenderState(sessionIdAtStart);
 
       console.error("[chat] ask_jarvis 失败，原始错误:", err);
-      const errMsg = extractErrorMessage(err);
+      const errMsg = extractErrorMessage(err) || "未知错误";
       console.error("[chat] 格式化后:", errMsg);
-      const escapedErr = errMsg.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-      const errorHtml = `<div class="chat-message agent-message"><div class="message-content"><div class="agent-error-banner">${escapedErr}</div></div></div>\n\n`;
-      session.appendSessionHistory(sessionIdAtStart, errorHtml);
+
+      // 构建错误快照，追加到 chat.messages（而非遗留字段 jarvisResponse）
+      const snapshot = buildAgentTurnSnapshot(
+        requestView.currentTurn,
+        `> ✕ **${errMsg}**`,
+        "",
+        undefined,
+        "ERROR",
+      );
+      session.appendSessionMessage(sessionIdAtStart, {
+        role: "agent",
+        id: `agent_${Date.now()}`,
+        snapshot,
+      });
+
       if (myGeneration === sendGeneration[sessionIdAtStart]) {
         requestView.showRecallEdit = !resumeOnly;
         requestView.status = "ERROR";
         requestView.activeRunId = null;
         requestView.streamActive = false;
+        requestView.runStartTime = null;
       }
-      if (sessionIdAtStart === session.activeSessionId && myGeneration === sendGeneration[sessionIdAtStart]) {
+      if (sessionIdAtStart === session.activeSessionId) {
         triggerRender();
+        scrollToBottomCb?.();
       }
     }
   }

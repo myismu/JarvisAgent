@@ -457,7 +457,7 @@ fn create_memory_file(path: &Path, header: &str) -> String {
 use crate::infra::config::config::AgentConfig;
 
 /// 记忆 Agent：根据最新对话自动更新全局/项目记忆文件
-pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config: AgentConfig) {
+pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config: AgentConfig, session_id: String) {
     println!("\n[MEMORY] --- Memory Agent Started ---");
 
     if config.api_key.is_empty() {
@@ -540,8 +540,8 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
     };
 
     let request_json_str = serde_json::to_string_pretty(&req_json).unwrap_or_default();
-    let logger = crate::infra::debug_logger::DebugLogger::new();
-    logger.log_request_to_terminal("MEMORY AGENT", 1, &request_json_str);
+    println!("[MEMORY AGENT] request ({} bytes)", request_json_str.len());
+    crate::infra::debug_logger::debug_logger().log_request(&session_id, "MEMORY", 1, &request_json_str);
 
     let (auth_header, auth_value) = api_format.auth_header(&api_key);
     let mut req = client
@@ -574,7 +574,8 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
                                             if !content.is_empty() {
                                                 println!("[MEMORY] Updating global memory (OpenAI)...");
                                                 let _ = std::fs::write(&global_path, content);
-                                                logger.log_memory_agent(
+                                                crate::infra::debug_logger::debug_logger().log_memory(
+                                                    &session_id,
                                                     &request_json_str,
                                                     "Updated global memory",
                                                 );
@@ -594,7 +595,8 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
                             if !content.is_empty() {
                                 println!("[MEMORY] Updating global memory (Anthropic)...");
                                 let _ = std::fs::write(&global_path, content);
-                                logger.log_memory_agent(
+                                crate::infra::debug_logger::debug_logger().log_memory(
+                                    &session_id,
                                     &request_json_str,
                                     "Updated global memory",
                                 );

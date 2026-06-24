@@ -28,8 +28,6 @@ pub const FILE_WORKSPACE: &str = ".jarvis_workspace";
 pub const FILE_CONFIG: &str = "config.json";
 pub const FILE_GLOBAL_MEMORY: &str = "global_memory.md";
 pub const FILE_LAST_ACTIVE_SESSION: &str = "_last_active.txt";
-pub const FILE_AGENT_LOOP_DEBUG: &str = "agent_loop_debug.txt";
-pub const FILE_THOUGHTS_LOG: &str = "thoughts_and_plans.md";
 
 // --- Limits & Thresholds ---
 pub const MAX_TOKENS_CONTEXT: i32 = 8192;

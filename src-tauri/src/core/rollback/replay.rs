@@ -64,6 +64,7 @@ pub struct AtomicFileRollback {
     undo_log: Vec<UndoEntry>,
     temp_dir: PathBuf,
     target_dir: PathBuf,
+    session_id: String,
 }
 
 /// 带重试的文件操作（处理 Windows 文件锁，供回滚时使用）
@@ -348,7 +349,7 @@ impl ReplayEngine {
         workspace: &Workspace,
         target_dir: &PathBuf,
     ) -> Result<(), ReplayError> {
-        let atomic_rollback = AtomicFileRollback::prepare(workspace, target_dir)?;
+        let atomic_rollback = AtomicFileRollback::prepare(workspace, target_dir, &self.session_id)?;
         atomic_rollback.execute().await?;
         Ok(())
     }
@@ -362,7 +363,7 @@ impl ReplayEngine {
     ) -> Result<(), ReplayError> {
         let workspace = self.rebuild_workspace(tree, target_id)?;
 
-        let atomic_rollback = AtomicFileRollback::prepare(&workspace, target_dir)?;
+        let atomic_rollback = AtomicFileRollback::prepare(&workspace, target_dir, &self.session_id)?;
         atomic_rollback.execute().await?;
 
         tree.current_snapshot_id = target_id.to_string();
@@ -377,7 +378,7 @@ impl ReplayEngine {
 
 impl AtomicFileRollback {
     /// 准备回滚（生成 undo 日志），支持相对路径（工作区）和绝对路径（默认会话）
-    pub fn prepare(workspace: &Workspace, target_dir: &PathBuf) -> Result<Self, ReplayError> {
+    pub fn prepare(workspace: &Workspace, target_dir: &PathBuf, session_id: &str) -> Result<Self, ReplayError> {
         let temp_dir = if target_dir.as_os_str().is_empty() {
             std::env::temp_dir().join(format!("jarvis_rollback_{}", Uuid::new_v4()))
         } else {
@@ -462,6 +463,7 @@ impl AtomicFileRollback {
             undo_log,
             temp_dir,
             target_dir: target_dir.clone(),
+            session_id: session_id.to_string(),
         })
     }
 
@@ -476,91 +478,237 @@ impl AtomicFileRollback {
 
     /// 执行原子回滚（先写入临时目录，再批量重命名，遇文件锁自动重试）
     pub async fn execute(&self) -> Result<(), ReplayError> {
+        use super::rollback_logger::{self, FileAction, FileOpRecord, FileOpStatus, RollbackPhase, RollbackSummary};
+
+        let logger = rollback_logger::rollback_logger();
         let staging_dir = self.temp_dir.join(format!("staging-{}", Uuid::new_v4()));
         fs::create_dir_all(&staging_dir)?;
 
+        let total = self.undo_log.len() as u32;
+        let rollback_start = std::time::Instant::now();
+        let mut seq: u32 = 0;
+        let mut success_count: u32 = 0;
+        let mut skip_count: u32 = 0;
+        let mut failed_files: Vec<String> = Vec::new();
+
+        // Phase 1: 写入 staging 目录
         for entry in &self.undo_log {
-            let file_name = PathBuf::from(&entry.path)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| entry.path.clone());
-            let staging_path = staging_dir.join(&file_name);
+            seq += 1;
+            let staging_path = staging_dir.join(&entry.path);
             if let Some(parent) = staging_path.parent() {
                 fs::create_dir_all(parent)?;
             }
 
-            match &entry.action {
-                UndoAction::Create { content } => {
-                    let content_clone = content.clone();
-                    let p = staging_path.clone();
-                    retry_fs_op(
-                        || std::fs::write(&p, &content_clone),
-                        3,
-                    )
-                    .await?;
+            let (action, size) = match &entry.action {
+                UndoAction::Create { content } => (FileAction::Create, Some(content.len() as u64)),
+                UndoAction::Update { new_content, .. } => (FileAction::Update, Some(new_content.len() as u64)),
+                UndoAction::Delete { .. } => (FileAction::Delete, None),
+            };
+
+            // Delete 不需要 staging
+            if matches!(entry.action, UndoAction::Delete { .. }) {
+                logger.log_file_op(&FileOpRecord {
+                    ts: chrono::Utc::now().to_rfc3339(),
+                    session_id: self.session_id.clone(),
+                    rollback_seq: seq,
+                    phase: RollbackPhase::Staging,
+                    path: entry.path.clone(),
+                    action,
+                    status: FileOpStatus::Skip,
+                    size_bytes: None,
+                    error: None,
+                    duration_ms: 0,
+                });
+                continue;
+            }
+
+            let op_start = std::time::Instant::now();
+            let content = match &entry.action {
+                UndoAction::Create { content } => content.clone(),
+                UndoAction::Update { new_content, .. } => new_content.clone(),
+                UndoAction::Delete { .. } => unreachable!(),
+            };
+            let p = staging_path.clone();
+            let result = retry_fs_op(|| std::fs::write(&p, &content), 3).await;
+            let duration_ms = op_start.elapsed().as_millis() as u64;
+
+            match result {
+                Ok(_) => {
+                    logger.log_file_op(&FileOpRecord {
+                        ts: chrono::Utc::now().to_rfc3339(),
+                        session_id: self.session_id.clone(),
+                        rollback_seq: seq,
+                        phase: RollbackPhase::Staging,
+                        path: entry.path.clone(),
+                        action,
+                        status: FileOpStatus::Ok,
+                        size_bytes: size,
+                        error: None,
+                        duration_ms,
+                    });
                 }
-                UndoAction::Update { new_content, .. } => {
-                    let content_clone = new_content.clone();
-                    let p = staging_path.clone();
-                    retry_fs_op(
-                        || std::fs::write(&p, &content_clone),
-                        3,
-                    )
-                    .await?;
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    logger.log_file_op(&FileOpRecord {
+                        ts: chrono::Utc::now().to_rfc3339(),
+                        session_id: self.session_id.clone(),
+                        rollback_seq: seq,
+                        phase: RollbackPhase::Staging,
+                        path: entry.path.clone(),
+                        action,
+                        status: FileOpStatus::Error,
+                        size_bytes: size,
+                        error: Some(err_msg),
+                        duration_ms,
+                    });
+                    return Err(e);
                 }
-                UndoAction::Delete { .. } => {}
             }
         }
 
+        // Phase 2: 从 staging 应用到目标
         for entry in &self.undo_log {
-            let file_name = PathBuf::from(&entry.path)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| entry.path.clone());
-            let staging_path = staging_dir.join(&file_name);
+            seq += 1;
+            let staging_path = staging_dir.join(&entry.path);
             let target_path = self.resolve_target_path(&entry.path);
 
+            let action = match &entry.action {
+                UndoAction::Create { .. } => FileAction::Create,
+                UndoAction::Update { .. } => FileAction::Update,
+                UndoAction::Delete { .. } => FileAction::Delete,
+            };
+
+            let op_start = std::time::Instant::now();
+
             match &entry.action {
-                UndoAction::Create { .. } => {
-                    if let Some(parent) = target_path.parent() {
-                        fs::create_dir_all(parent)?;
+                UndoAction::Create { .. } | UndoAction::Update { .. } => {
+                    if !staging_path.exists() {
+                        skip_count += 1;
+                        logger.log_file_op(&FileOpRecord {
+                            ts: chrono::Utc::now().to_rfc3339(),
+                            session_id: self.session_id.clone(),
+                            rollback_seq: seq,
+                            phase: RollbackPhase::Apply,
+                            path: entry.path.clone(),
+                            action,
+                            status: FileOpStatus::Skip,
+                            size_bytes: None,
+                            error: Some("staging file not found".to_string()),
+                            duration_ms: 0,
+                        });
+                        continue;
                     }
-                    if staging_path.exists() {
-                        let sp = staging_path.clone();
-                        let tp = target_path.clone();
-                        retry_fs_op(
-                            || std::fs::rename(&sp, &tp),
-                            5,
-                        )
-                        .await?;
+                    if matches!(entry.action, UndoAction::Create { .. }) {
+                        if let Some(parent) = target_path.parent() {
+                            fs::create_dir_all(parent)?;
+                        }
                     }
-                }
-                UndoAction::Update { .. } => {
-                    if staging_path.exists() {
-                        let sp = staging_path.clone();
-                        let tp = target_path.clone();
-                        retry_fs_op(
-                            || std::fs::rename(&sp, &tp),
-                            5,
-                        )
-                        .await?;
+                    let sp = staging_path.clone();
+                    let tp = target_path.clone();
+                    match retry_fs_op(|| std::fs::rename(&sp, &tp), 5).await {
+                        Ok(_) => {
+                            success_count += 1;
+                            logger.log_file_op(&FileOpRecord {
+                                ts: chrono::Utc::now().to_rfc3339(),
+                                session_id: self.session_id.clone(),
+                                rollback_seq: seq,
+                                phase: RollbackPhase::Apply,
+                                path: entry.path.clone(),
+                                action,
+                                status: FileOpStatus::Ok,
+                                size_bytes: None,
+                                error: None,
+                                duration_ms: op_start.elapsed().as_millis() as u64,
+                            });
+                        }
+                        Err(e) => {
+                            let err_msg = e.to_string();
+                            failed_files.push(entry.path.clone());
+                            logger.log_file_op(&FileOpRecord {
+                                ts: chrono::Utc::now().to_rfc3339(),
+                                session_id: self.session_id.clone(),
+                                rollback_seq: seq,
+                                phase: RollbackPhase::Apply,
+                                path: entry.path.clone(),
+                                action,
+                                status: FileOpStatus::Error,
+                                size_bytes: None,
+                                error: Some(err_msg),
+                                duration_ms: op_start.elapsed().as_millis() as u64,
+                            });
+                            return Err(e);
+                        }
                     }
                 }
                 UndoAction::Delete { .. } => {
                     if target_path.exists() {
                         let tp = target_path.clone();
-                        retry_fs_op(
-                            || std::fs::remove_file(&tp),
-                            5,
-                        )
-                        .await?;
+                        match retry_fs_op(|| std::fs::remove_file(&tp), 5).await {
+                            Ok(_) => {
+                                success_count += 1;
+                                logger.log_file_op(&FileOpRecord {
+                                    ts: chrono::Utc::now().to_rfc3339(),
+                                    session_id: self.session_id.clone(),
+                                    rollback_seq: seq,
+                                    phase: RollbackPhase::Apply,
+                                    path: entry.path.clone(),
+                                    action,
+                                    status: FileOpStatus::Ok,
+                                    size_bytes: None,
+                                    error: None,
+                                    duration_ms: op_start.elapsed().as_millis() as u64,
+                                });
+                            }
+                            Err(e) => {
+                                let err_msg = e.to_string();
+                                failed_files.push(entry.path.clone());
+                                logger.log_file_op(&FileOpRecord {
+                                    ts: chrono::Utc::now().to_rfc3339(),
+                                    session_id: self.session_id.clone(),
+                                    rollback_seq: seq,
+                                    phase: RollbackPhase::Apply,
+                                    path: entry.path.clone(),
+                                    action,
+                                    status: FileOpStatus::Error,
+                                    size_bytes: None,
+                                    error: Some(err_msg),
+                                    duration_ms: op_start.elapsed().as_millis() as u64,
+                                });
+                                return Err(e);
+                            }
+                        }
+                    } else {
+                        skip_count += 1;
+                        logger.log_file_op(&FileOpRecord {
+                            ts: chrono::Utc::now().to_rfc3339(),
+                            session_id: self.session_id.clone(),
+                            rollback_seq: seq,
+                            phase: RollbackPhase::Apply,
+                            path: entry.path.clone(),
+                            action,
+                            status: FileOpStatus::Skip,
+                            size_bytes: None,
+                            error: Some("target file not found".to_string()),
+                            duration_ms: 0,
+                        });
                     }
                 }
             }
         }
 
+        // 写入汇总
+        logger.flush_summary(&RollbackSummary {
+            ts: chrono::Utc::now().to_rfc3339(),
+            session_id: self.session_id.clone(),
+            total,
+            success: success_count,
+            skipped: skip_count,
+            failed: failed_files.len() as u32,
+            total_duration_ms: rollback_start.elapsed().as_millis() as u64,
+            failed_files,
+        });
+
         fs::remove_dir_all(&staging_dir)?;
-        // 清理临时目录（execute 完成后不再需要）
         let _ = fs::remove_dir_all(&self.temp_dir);
 
         Ok(())
@@ -572,7 +720,7 @@ impl AtomicFileRollback {
         Ok(())
     }
 
-    pub fn load_undo_log(path: &PathBuf, target_dir: Option<PathBuf>) -> Result<Self, ReplayError> {
+    pub fn load_undo_log(path: &PathBuf, target_dir: Option<PathBuf>, session_id: &str) -> Result<Self, ReplayError> {
         let json = fs::read_to_string(path)?;
         let undo_log: Vec<UndoEntry> = serde_json::from_str(&json)?;
         let actual_target = target_dir
@@ -582,6 +730,7 @@ impl AtomicFileRollback {
             undo_log,
             temp_dir,
             target_dir: actual_target,
+            session_id: session_id.to_string(),
         })
     }
 }

@@ -216,6 +216,7 @@ impl PipelineState {
                 api_format,
                 &msg_for_intent,
                 &history_for_classification,
+                &session_id,
             )
             .await
         };
@@ -362,6 +363,7 @@ impl PipelineState {
                     output_tokens: 0,
                     session_input_tokens: 0,
                     session_output_tokens: 0,
+                    user_message_id: None,
                 }));
             }
             println!("[JARVIS] 用户确认了危险操作，继续执行");
@@ -378,6 +380,7 @@ impl PipelineState {
                 output_tokens: 0,
                 session_input_tokens: 0,
                 session_output_tokens: 0,
+                user_message_id: None,
             }));
         }
 
@@ -572,9 +575,8 @@ impl PipelineState {
 
             // 调试日志
             let request_json = serde_json::to_string_pretty(&req_json).unwrap_or_default();
-            let logger = debug_logger::DebugLogger::new();
-            logger.log_request_to_terminal("MAIN AGENT", self.total_loop_count + 1, &request_json);
-            logger.log_request_to_file("MAIN AGENT", self.total_loop_count + 1, &request_json);
+            println!("[MAIN AGENT] loop {} request ({} bytes)", self.total_loop_count + 1, request_json.len());
+            debug_logger::debug_logger().log_request(&self.sid, "MAIN", self.total_loop_count + 1, &request_json);
 
             if self.cancel_token.is_cancelled() {
                 continue;
@@ -764,23 +766,22 @@ impl PipelineState {
             let tool_names_for_reflection: Vec<String> =
                 tool_calls.iter().map(|(name, _)| name.clone()).collect();
 
-            // 原始 SSE 事件已在 stream.rs 中实时记录，这里只标记流结束
-            logger.log_response_to_file(
-                "MAIN AGENT",
+            // 记录响应摘要
+            debug_logger::debug_logger().log_response(
+                &self.sid,
+                "MAIN",
                 self.total_loop_count + 1,
-                &format!(
-                    "[流结束] text_len={} thinking_len={} tool_blocks={} input_tokens={} output_tokens={}",
-                    current_text_this_turn.len(),
-                    current_thinking_this_turn.len(),
-                    tool_calls.len(),
-                    turn_in_tokens,
-                    turn_out_tokens
-                ),
+                current_text_this_turn.len(),
+                current_thinking_this_turn.len(),
+                tool_calls.len(),
+                turn_in_tokens,
+                turn_out_tokens,
             );
 
-            // 记录思考过程到 thoughts 日志
-            logger.log_thoughts(
-                "MAIN AGENT",
+            // 记录思考过程
+            debug_logger::debug_logger().log_thoughts(
+                &self.sid,
+                "MAIN",
                 self.total_loop_count + 1,
                 &current_thinking_this_turn,
                 &current_text_this_turn,
@@ -829,6 +830,34 @@ impl PipelineState {
 
             // 存储助手回复
             self.store_assistant_response(&current_blocks).await;
+
+            // 检查工具是否请求结束本轮循环（如 ProposePlan 提交方案后等待用户审批）
+            {
+                let mut flags = self.ctx.tool_result_flags.lock().await;
+                let should_break = flags.values().any(|(brk, _)| *brk);
+                flags.clear();
+                if should_break {
+                    let tool_summary: String = tool_results.iter()
+                        .filter_map(|block| {
+                            if let ContentBlock::ToolResult { content, .. } = block {
+                                Some(content.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    self.final_answer = if current_text_this_turn.trim().is_empty() {
+                        tool_summary
+                    } else if tool_summary.is_empty() {
+                        current_text_this_turn
+                    } else {
+                        format!("{}\n\n{}", current_text_this_turn, tool_summary)
+                    };
+                    println!("[JARVIS] 主循环: 工具请求 break_loop，结束本轮");
+                    break;
+                }
+            }
 
             // 判断是否继续循环
             println!("[JARVIS] 主循环: tool_results.is_empty()={}, tool_results.len()={}", tool_results.is_empty(), tool_results.len());
@@ -1135,8 +1164,9 @@ impl PipelineState {
         // 记忆代理
         let reply_for_memory = self.final_answer.clone();
         let cfg_clone = self.cfg.clone();
+        let sid_for_memory = self.sid.clone();
         tokio::spawn(async move {
-            run_memory_agent(self.user_msg_for_memory, reply_for_memory, cfg_clone).await;
+            run_memory_agent(self.user_msg_for_memory, reply_for_memory, cfg_clone, sid_for_memory).await;
         });
 
         let status = if was_cancelled {
@@ -1155,8 +1185,12 @@ impl PipelineState {
 
         // 会话日志
         {
-            let logger = debug_logger::DebugLogger::new();
-            logger.log_session_summary(self.req_input_tokens, self.req_output_tokens, status);
+            debug_logger::debug_logger().log_session_summary(
+                &self.sid,
+                self.req_input_tokens,
+                self.req_output_tokens,
+                status,
+            );
         }
 
         // Agent Run 完成（超时续跑不标记完成）
@@ -1194,6 +1228,7 @@ impl PipelineState {
             output_tokens: self.req_output_tokens,
             session_input_tokens,
             session_output_tokens,
+            user_message_id: None,
         }
     }
 

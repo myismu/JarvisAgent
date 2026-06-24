@@ -1,137 +1,231 @@
-﻿//! 调试日志模块
+//! # debug_logger.rs — Agent 循环结构化日志模块
 //!
-//! 提供代理运行时的调试日志记录功能，包括：
-//! - 请求/响应日志（用于调试 API 交互）
-//! - 思考过程日志（记录 LLM 的推理和工具调用）
-//! - 意图分类日志（记录用户意图识别结果）
-//! - SSE 流式事件日志（调试流式响应）
+//! 记录 Agent 每轮循环的请求、响应、思考过程、意图分类等事件，
+//! 以 JSONL 格式写入 `data/logs/agent_loop/` 目录，按 session 隔离。
+//! 配套 HTML 查看器：`data/logs/log-viewer.html`（统一审计中心）
+//!
+//! ## Key Exports
+//! - `DebugLogger`: Agent 循环日志记录器
+//! - 事件类型：request / response / thinking / intent / memory / session_summary / sse_event / protocol_violation
+//!
+//! ## Constraints
+//! - append-only 写入，不持有文件句柄
+//! - 大字段（request_json, sse data）截断到指定长度，避免日志膨胀
+//! - session_id 由调用方传入，logger 本身不持有会话状态
 
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
-use crate::infra::types::constants::{FILE_AGENT_LOOP_DEBUG, FILE_THOUGHTS_LOG};
+use serde::Serialize;
 
-/// 调试日志记录器
-///
-/// 管理两个日志文件：
-/// - `agent_loop_debug.log`: 记录原始请求/响应 JSON
-/// - `thoughts.log`: 记录结构化的思考过程和决策
+// ───────────────────────── 事件结构 ─────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentEventType {
+    Request,
+    Response,
+    Thinking,
+    Intent,
+    Memory,
+    SessionSummary,
+    SseEvent,
+    ProtocolViolation,
+}
+
+/// 请求事件：LLM API 调用
+#[derive(Debug, Clone, Serialize)]
+pub struct RequestEvent {
+    #[serde(rename = "type")]
+    pub event_type: AgentEventType,
+    pub ts: String,
+    pub session_id: String,
+    pub agent_type: String,
+    pub loop_count: usize,
+    /// 请求 JSON 截断到 2KB
+    pub request_json: String,
+}
+
+/// 响应事件：流式响应摘要
+#[derive(Debug, Clone, Serialize)]
+pub struct ResponseEvent {
+    #[serde(rename = "type")]
+    pub event_type: AgentEventType,
+    pub ts: String,
+    pub session_id: String,
+    pub agent_type: String,
+    pub loop_count: usize,
+    pub text_len: usize,
+    pub thinking_len: usize,
+    pub tool_blocks: usize,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+/// 思考事件：Agent 推理过程
+#[derive(Debug, Clone, Serialize)]
+pub struct ThinkingEvent {
+    #[serde(rename = "type")]
+    pub event_type: AgentEventType,
+    pub ts: String,
+    pub session_id: String,
+    pub agent_type: String,
+    pub loop_count: usize,
+    pub thinking: String,
+    pub response_text: String,
+    pub tool_calls: Vec<(String, String)>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+/// 意图分类事件
+#[derive(Debug, Clone, Serialize)]
+pub struct IntentEvent {
+    #[serde(rename = "type")]
+    pub event_type: AgentEventType,
+    pub ts: String,
+    pub session_id: String,
+    pub user_input: String,
+    pub classifier: String,
+    pub detected_intent: String,
+    /// LLM 请求 JSON（仅 LLM 分类器有值）
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub request_json: String,
+    /// LLM 原始响应（仅 LLM 分类器有值）
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub llm_response: String,
+}
+
+/// 记忆代理事件
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryEvent {
+    #[serde(rename = "type")]
+    pub event_type: AgentEventType,
+    pub ts: String,
+    pub session_id: String,
+    pub request_json: String,
+    pub response_summary: String,
+}
+
+/// 会话汇总事件
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionSummaryEvent {
+    #[serde(rename = "type")]
+    pub event_type: AgentEventType,
+    pub ts: String,
+    pub session_id: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub status: String,
+}
+
+/// SSE 事件（截断到 500 字符）
+#[derive(Debug, Clone, Serialize)]
+pub struct SseEvent {
+    #[serde(rename = "type")]
+    pub event_type: AgentEventType,
+    pub ts: String,
+    pub session_id: String,
+    pub loop_count: usize,
+    pub data: String,
+}
+
+/// 协议违规事件
+#[derive(Debug, Clone, Serialize)]
+pub struct ProtocolViolationEvent {
+    #[serde(rename = "type")]
+    pub event_type: AgentEventType,
+    pub ts: String,
+    pub session_id: String,
+    pub agent_type: String,
+    pub loop_count: usize,
+    pub snippet: String,
+}
+
+// ───────────────────────── Logger ─────────────────────────
+
 pub struct DebugLogger {
-    thoughts_path: PathBuf,
-    debug_path: PathBuf,
+    log_dir: PathBuf,
 }
 
 impl DebugLogger {
-    /// 创建新的日志记录器实例
-    ///
-    /// 自动创建日志目录（如果不存在）
     pub fn new() -> Self {
-        let log_dir = crate::infra::config::data_paths::logs_dir();
-        Self {
-            thoughts_path: log_dir.join(FILE_THOUGHTS_LOG),
-            debug_path: log_dir.join(FILE_AGENT_LOOP_DEBUG),
+        let log_dir = crate::infra::config::data_paths::logs_dir().join("agent_loop");
+        let _ = std::fs::create_dir_all(&log_dir);
+        Self { log_dir }
+    }
+
+    /// 写入一条 JSONL 记录
+    fn write_record(&self, session_id: &str, record: &impl Serialize) {
+        let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let filename = format!("{}_{}.jsonl", date, session_id);
+        let path = self.log_dir.join(filename);
+
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
+            if let Ok(line) = serde_json::to_string(record) {
+                let _ = writeln!(file, "{}", line);
+            }
         }
     }
 
-    /// 将请求摘要输出到终端（用于实时监控）
-    pub fn log_request_to_terminal(
+    // ─────────── 公开 API ───────────
+
+    /// 记录 LLM 请求
+    pub fn log_request(
         &self,
+        session_id: &str,
         agent_type: &str,
-        _loop_count: usize,
+        loop_count: usize,
         request_json: &str,
     ) {
-        println!(
-            "[{}] request logged ({} bytes)",
-            agent_type,
-            request_json.len()
+        self.write_record(
+            session_id,
+            &RequestEvent {
+                event_type: AgentEventType::Request,
+                ts: chrono::Utc::now().to_rfc3339(),
+                session_id: session_id.to_string(),
+                agent_type: agent_type.to_string(),
+                loop_count,
+                request_json: request_json.to_string(),
+            },
         );
     }
 
-    /// 将完整请求 JSON 写入调试日志文件
-    pub fn log_request_to_file(&self, agent_type: &str, loop_count: usize, request_json: &str) {
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.debug_path)
-        {
-            let _ = writeln!(
-                file,
-                "\n{} [{}] LOOP {} - REQUEST {}\n{}\n",
-                "=".repeat(30),
-                agent_type,
-                loop_count,
-                "=".repeat(30),
-                request_json
-            );
-        }
-    }
-
-    /// 将完整响应 JSON 写入调试日志文件
-    pub fn log_response_to_file(&self, agent_type: &str, loop_count: usize, response_json: &str) {
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.debug_path)
-        {
-            let _ = writeln!(
-                file,
-                "\n{} [{}] LOOP {} - RESPONSE {}\n{}\n",
-                "=".repeat(30),
-                agent_type,
-                loop_count,
-                "=".repeat(30),
-                response_json
-            );
-        }
-    }
-
-    /// 记录原始 SSE 事件到调试日志（流式调试用）
-    pub fn log_raw_sse_event(&self, loop_count: usize, raw_data: &str) {
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.debug_path)
-        {
-            let truncated: String = if raw_data.len() > 2000 {
-                format!(
-                    "{}...(truncated, {} chars)",
-                    raw_data.chars().take(2000).collect::<String>(),
-                    raw_data.len()
-                )
-            } else {
-                raw_data.to_string()
-            };
-            let _ = writeln!(file, "[LOOP {} SSE] {}", loop_count, truncated);
-        }
-    }
-
-    /// 记录模型把工具调用写成普通文本的协议违规诊断
-    pub fn log_textual_tool_protocol_violation(
+    /// 记录流式响应摘要
+    pub fn log_response(
         &self,
+        session_id: &str,
         agent_type: &str,
         loop_count: usize,
-        snippet: &str,
+        text_len: usize,
+        thinking_len: usize,
+        tool_blocks: usize,
+        input_tokens: u64,
+        output_tokens: u64,
     ) {
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.debug_path)
-        {
-            let truncated: String = snippet.chars().take(500).collect();
-            let _ = writeln!(
-                file,
-                "[{} LOOP {} PROTOCOL VIOLATION] 模型输出疑似工具调用文本，但未返回结构化工具调用。Snippet: {}",
-                agent_type,
+        self.write_record(
+            session_id,
+            &ResponseEvent {
+                event_type: AgentEventType::Response,
+                ts: chrono::Utc::now().to_rfc3339(),
+                session_id: session_id.to_string(),
+                agent_type: agent_type.to_string(),
                 loop_count,
-                truncated.replace('\n', "\\n")
-            );
-        }
+                text_len,
+                thinking_len,
+                tool_blocks,
+                input_tokens,
+                output_tokens,
+            },
+        );
     }
 
-    /// 记录代理思考过程（包括 thinking、工具调用、token 使用）
+    /// 记录 Agent 思考过程
     pub fn log_thoughts(
         &self,
+        session_id: &str,
         agent_type: &str,
         loop_count: usize,
         thinking: &str,
@@ -140,111 +234,121 @@ impl DebugLogger {
         input_tokens: u64,
         output_tokens: u64,
     ) {
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.thoughts_path)
-        {
-            let mut content = format!("\n## [{}] Loop {}\n", agent_type, loop_count);
-
-            if !thinking.trim().is_empty() {
-                content.push_str(&format!("### Thinking\n{}\n\n", thinking.trim()));
-            }
-
-            if tool_calls.is_empty() {
-                content.push_str("### Decision\nReady to answer the user.\n");
-                if !response_text.trim().is_empty() {
-                    content.push_str(&format!("\n### Response\n{}\n", response_text.trim()));
-                }
-            } else {
-                content.push_str("### Tool calls\n");
-                for (name, args) in tool_calls {
-                    content.push_str(&format!("- Tool: `{}`\n  Args: `{}`\n", name, args));
-                }
-            }
-
-            content.push_str(&format!(
-                "\n### Token usage\n- Input: {} | Output: {}\n",
-                input_tokens, output_tokens
-            ));
-
-            let _ = writeln!(file, "{}\n---\n", content);
-        }
-    }
-
-    /// 记录意图分类结果（包括分类方法和检测到的意图）
-    pub fn log_intent_classifier(
-        &self,
-        user_input: &str,
-        method: &str,
-        request_json: &str,
-        llm_response: &str,
-        detected_intent: &str,
-    ) {
-        println!(
-            "[INTENT] {} => {} ({})",
-            method,
-            detected_intent,
-            user_input.chars().take(80).collect::<String>()
-        );
-
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.thoughts_path)
-        {
-            let mut content = format!(
-                "\n## [INTENT CLASSIFIER]\n**User input**: {}\n**Method**: {}\n**Detected intent**: {}\n",
-                user_input.chars().take(200).collect::<String>(),
-                method,
-                detected_intent
-            );
-            if method == "LLM" {
-                content.push_str(&format!(
-                    "**LLM raw response**: {}\n\n**Request**:\n```json\n{}\n```\n",
-                    llm_response, request_json
-                ));
-            }
-            let _ = writeln!(file, "{}\n---\n", content);
-        }
-    }
-
-    /// 记录记忆代理的请求和响应
-    pub fn log_memory_agent(&self, request_json: &str, response_summary: &str) {
-        println!(
-            "[MEMORY AGENT] {}",
-            response_summary.chars().take(160).collect::<String>()
-        );
-
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.thoughts_path)
-        {
-            let _ = writeln!(
-                file,
-                "\n## [MEMORY AGENT]\n**Request**:\n```json\n{}\n```\n\n**Response**: {}\n\n---\n",
-                request_json, response_summary
-            );
-        }
-    }
-
-    /// 记录会话结束时的 token 使用汇总
-    pub fn log_session_summary(&self, input_tokens: u64, output_tokens: u64, status: &str) {
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.thoughts_path)
-        {
-            let _ = writeln!(
-                file,
-                "\n## [SESSION SUMMARY]\n**Status**: {}\n**Total token usage**: input {} | output {} | total {}\n\n---\n",
-                status,
+        self.write_record(
+            session_id,
+            &ThinkingEvent {
+                event_type: AgentEventType::Thinking,
+                ts: chrono::Utc::now().to_rfc3339(),
+                session_id: session_id.to_string(),
+                agent_type: agent_type.to_string(),
+                loop_count,
+                thinking: thinking.to_string(),
+                response_text: response_text.to_string(),
+                tool_calls: tool_calls.to_vec(),
                 input_tokens,
                 output_tokens,
-                input_tokens + output_tokens
-            );
-        }
+            },
+        );
+    }
+
+    /// 记录意图分类结果
+    pub fn log_intent(
+        &self,
+        session_id: &str,
+        user_input: &str,
+        classifier: &str,
+        detected_intent: &str,
+        request_json: &str,
+        llm_response: &str,
+    ) {
+        self.write_record(
+            session_id,
+            &IntentEvent {
+                event_type: AgentEventType::Intent,
+                ts: chrono::Utc::now().to_rfc3339(),
+                session_id: session_id.to_string(),
+                user_input: user_input.to_string(),
+                classifier: classifier.to_string(),
+                detected_intent: detected_intent.to_string(),
+                request_json: request_json.to_string(),
+                llm_response: llm_response.to_string(),
+            },
+        );
+    }
+
+    /// 记录记忆代理操作
+    pub fn log_memory(
+        &self,
+        session_id: &str,
+        request_json: &str,
+        response_summary: &str,
+    ) {
+        self.write_record(
+            session_id,
+            &MemoryEvent {
+                event_type: AgentEventType::Memory,
+                ts: chrono::Utc::now().to_rfc3339(),
+                session_id: session_id.to_string(),
+                request_json: request_json.to_string(),
+                response_summary: response_summary.to_string(),
+            },
+        );
+    }
+
+    /// 记录会话结束汇总
+    pub fn log_session_summary(
+        &self,
+        session_id: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+        status: &str,
+    ) {
+        self.write_record(
+            session_id,
+            &SessionSummaryEvent {
+                event_type: AgentEventType::SessionSummary,
+                ts: chrono::Utc::now().to_rfc3339(),
+                session_id: session_id.to_string(),
+                input_tokens,
+                output_tokens,
+                status: status.to_string(),
+            },
+        );
+    }
+
+    /// 记录 SSE 原始事件（截断到 500 字符）
+    pub fn log_sse_event(&self, session_id: &str, loop_count: usize, data: &str) {
+        self.write_record(
+            session_id,
+            &SseEvent {
+                event_type: AgentEventType::SseEvent,
+                ts: chrono::Utc::now().to_rfc3339(),
+                session_id: session_id.to_string(),
+                loop_count,
+                data: truncate_str(data, 1000),
+            },
+        );
+    }
+
+    /// 记录协议违规（模型把工具调用写成普通文本）
+    pub fn log_protocol_violation(
+        &self,
+        session_id: &str,
+        agent_type: &str,
+        loop_count: usize,
+        snippet: &str,
+    ) {
+        self.write_record(
+            session_id,
+            &ProtocolViolationEvent {
+                event_type: AgentEventType::ProtocolViolation,
+                ts: chrono::Utc::now().to_rfc3339(),
+                session_id: session_id.to_string(),
+                agent_type: agent_type.to_string(),
+                loop_count,
+                snippet: snippet.to_string(),
+            },
+        );
     }
 }
 
@@ -252,4 +356,22 @@ impl Default for DebugLogger {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// ───────────────────────── 辅助函数 ─────────────────────────
+
+fn truncate_str(s: &str, max_chars: usize) -> String {
+    if s.len() <= max_chars {
+        s.to_string()
+    } else {
+        format!("{}...(truncated)", &s[..max_chars])
+    }
+}
+
+// ───────────────────────── 全局单例 ─────────────────────────
+
+static LOGGER: OnceLock<DebugLogger> = OnceLock::new();
+
+pub fn debug_logger() -> &'static DebugLogger {
+    LOGGER.get_or_init(DebugLogger::new)
 }

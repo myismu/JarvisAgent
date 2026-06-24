@@ -117,7 +117,7 @@ function toolKey(name: string) {
 
 /**
  * RunDeferredTool 包装了真实工具调用，从 input JSON 中提取内部工具名。
- * 返回 displayName 保留核心工具名，同时附加内部工具名：如 "RunDeferredTool → ReadFile"
+ * 返回 displayName 为核心工具名，同时附加内部工具名：如 "执行工具 → ReadFile"
  * 同时返回解析后的内部 input（args 字段），用于生成 targeted 描述。
  */
 export function unwrapDeferredTool(tool: AgentToolCallView): { displayName: string; innerName: string | null; input: Record<string, unknown> | null } {
@@ -131,7 +131,8 @@ export function unwrapDeferredTool(tool: AgentToolCallView): { displayName: stri
     const innerInput = parsed.args && typeof parsed.args === "object" && !Array.isArray(parsed.args)
       ? parsed.args as Record<string, unknown>
       : parsed;
-    return { displayName: `${name} → ${innerName}`, innerName, input: innerInput };
+    const deferredLabel = translate("tools.deferred.label");
+    return { displayName: `${deferredLabel} → ${innerName}`, innerName, input: innerInput };
   }
   return { displayName: name, innerName: null, input: parsed };
 }

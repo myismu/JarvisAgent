@@ -48,6 +48,7 @@ export interface JarvisResult {
   output_tokens: number;
   session_input_tokens: number;
   session_output_tokens: number;
+  user_message_id?: string | null;
 }
 
 export interface ContextSectionSnapshot {
@@ -126,6 +127,8 @@ export interface PlanDocument {
   createdAt: number;
   updatedAt: number;
   decidedAt?: number | null;
+  /** 用户拒绝方案时的修改意见（与 content 分离，不覆盖原始方案） */
+  rejectionFeedback?: string | null;
 }
 
 export interface BackgroundTask {

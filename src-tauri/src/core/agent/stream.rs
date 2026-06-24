@@ -19,7 +19,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use tauri::Emitter;
 
-use crate::infra::debug_logger::DebugLogger;
+use crate::infra::debug_logger;
 use crate::infra::types::models::*;
 use crate::core::orchestration::agent_runs;
 
@@ -148,7 +148,7 @@ pub async fn process_stream(
     // 追踪 ProposePlan 工具调用的流式内容，用于实时推送到前端
     let mut propose_plan_stream_sent: HashMap<usize, usize> = HashMap::new();
 
-    let logger = DebugLogger::new();
+    let logger = debug_logger::debug_logger();
     if !config.is_subagent {
         let _ = app.emit(
             "chat-turn-start",
@@ -173,7 +173,7 @@ pub async fn process_stream(
         };
         let data = event.data;
         // 记录原始 SSE 事件到调试日志
-        logger.log_raw_sse_event(loop_count, &data);
+        logger.log_sse_event(sid, loop_count, &data);
         if data == "[DONE]" {
             break;
         }
@@ -216,7 +216,8 @@ pub async fn process_stream(
                                         } else {
                                             "MAIN"
                                         };
-                                        logger.log_textual_tool_protocol_violation(
+                                        logger.log_protocol_violation(
+                                            sid,
                                             agent_type,
                                             loop_count,
                                             &current_text_this_turn,
@@ -411,7 +412,8 @@ pub async fn process_stream(
                                         } else {
                                             "MAIN"
                                         };
-                                        logger.log_textual_tool_protocol_violation(
+                                        logger.log_protocol_violation(
+                                            sid,
                                             agent_type,
                                             loop_count,
                                             &current_text_this_turn,

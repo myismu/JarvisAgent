@@ -40,13 +40,14 @@ pub async fn classify_intent(
     api_format: ApiFormat,
     msg: &str,
     history: &[Message],
+    session_id: &str,
 ) -> String {
     use crate::core::intent::rules::{
         analyze_last_assistant_message, classify_by_rules, classify_with_context, Intent,
         LastAssistantAction,
     };
 
-    let logger = debug_logger::DebugLogger::new();
+    let logger = debug_logger::debug_logger();
 
     // 第一层：纯规则匹配
     let rule_intent = classify_by_rules(msg);
@@ -55,7 +56,7 @@ pub async fn classify_intent(
     if rule_intent != Intent::Unclear {
         let result = rule_intent.as_str().to_string();
         println!("[INTENT] Final intent (by rules): {}", result);
-        logger.log_intent_classifier(msg, "RULE", "", "", &result);
+        logger.log_intent(session_id, msg, "RULE", &result, "", "");
         return result;
     }
 
@@ -89,14 +90,14 @@ pub async fn classify_intent(
     if context_intent != Intent::Unclear {
         let result = context_intent.as_str().to_string();
         println!("[INTENT] Final intent (by context): {}", result);
-        logger.log_intent_classifier(msg, "CONTEXT", "", "", &result);
+        logger.log_intent(session_id, msg, "CONTEXT", &result, "", "");
         return result;
     }
 
     // 第三层：规则和上下文均无法判定，调用轻量 LLM 兜底
     println!("[INTENT] Rules inconclusive, falling back to LLM...");
     classify_intent_by_llm(
-        client, api_key, base_url, model_id, api_format, msg, history,
+        client, api_key, base_url, model_id, api_format, msg, history, session_id,
     )
     .await
 }
@@ -110,6 +111,7 @@ async fn classify_intent_by_llm(
     api_format: ApiFormat,
     msg: &str,
     history: &[Message],
+    session_id: &str,
 ) -> String {
     let system_prompt = crate::core::agent::prompts::INTENT_CLASSIFIER_PROMPT_LIGHT;
 
@@ -266,13 +268,13 @@ async fn classify_intent_by_llm(
                 }
             };
 
-            let logger = debug_logger::DebugLogger::new();
-            logger.log_intent_classifier(
+            debug_logger::debug_logger().log_intent(
+                session_id,
                 msg,
                 "LLM",
+                &detected_intent,
                 &request_json_str,
                 &text_resp,
-                &detected_intent,
             );
 
             println!("[INTENT] Final intent (by LLM): {}", detected_intent);

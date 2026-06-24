@@ -191,11 +191,8 @@ pub async fn handle_tool_call(
         );
         ("调度已启动，任务正在后台执行。你将实时收到每个任务的完成/失败通知。".to_string(), 0, 0)
     } else {
-        (
-            handle_tool_call_inner(app, name, input, session_id, intent, work_mode).await,
-            0,
-            0,
-        )
+        let result = dispatch_tool_call(app, name, input, session_id, intent, work_mode).await;
+        (result.output, 0, 0)
     }
 }
 
@@ -225,6 +222,10 @@ pub async fn handle_tool_call_inner_owned(
 
 /// 工具调用核心分发（不含 RunDeferredTool 路由，避免递归）
 /// RunDeferredTool 代理执行时直接调用此函数
+///
+/// 返回 `ToolCallResult`，日志层通过 `is_error` 字段判断成败，
+/// 而非扫描返回文本中的关键词（工具 schema 描述中天然包含 "error" 等字样，
+/// 朴素字符串匹配会导致误判）。
 pub async fn dispatch_tool_call(
     app: &tauri::AppHandle,
     name: &str,
@@ -232,10 +233,10 @@ pub async fn dispatch_tool_call(
     session_id: &str,
     intent: &str,
     work_mode: &str,
-) -> String {
+) -> framework::ToolCallResult {
     // 兜底防护：CHAT/QUESTION 意图 或 chat 模式下禁止写操作
     if should_block_write_tool(name, intent, work_mode) {
-        return format!(
+        return framework::ToolCallResult::error(format!(
             "工具 '{}' 在当前状态下不可用。{}",
             name,
             if work_mode == "chat" {
@@ -243,10 +244,10 @@ pub async fn dispatch_tool_call(
             } else {
                 "当前意图下只能使用只读工具。"
             }
-        );
+        ));
     }
 
-    match name {
+    let output = match name {
         // 系统工具
         "SetWorkspace" => system_tools::set_workspace(app, input, session_id).await,
 
@@ -289,16 +290,48 @@ pub async fn dispatch_tool_call(
         "CompactConversation" => agent_tools::compact(app, input, session_id).await,
         "ConsolidateMemory" => agent_tools::dream(app, input, session_id).await,
 
-        // 方案审批工具
-        "ProposePlan" => agent_tools::propose_plan(app, input, session_id).await,
+        // 任务调度器（通过 RunDeferredTool 调用时需要在此路由）
+        "RunSubagentsSequentially" => {
+            use tauri::Manager;
+            use crate::core::orchestration::scheduler::{TaskScheduler, SchedulerEvent};
+            use crate::infra::state::state::SessionManager;
+            let ctx = app.state::<SessionManager>().get_or_create(session_id).await;
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SchedulerEvent>();
+            *ctx.scheduler_rx.lock().await = Some(rx);
+            let cancel_token = tokio_util::sync::CancellationToken::new();
+            TaskScheduler::run_schedule_async(
+                app.clone(), session_id.to_string(), cancel_token, tx,
+            );
+            return framework::ToolCallResult::ok("调度已启动，任务正在后台执行。你将实时收到每个任务的完成/失败通知。".to_string());
+        }
+
+        // 方案审批工具（提交后立即结束本轮循环，等待用户审批）
+        "ProposePlan" => {
+            return framework::ToolCallResult::ok_break(
+                agent_tools::propose_plan(app, input, session_id).await,
+            );
+        }
 
         // 工作模式切换
         "SwitchWorkMode" => agent_tools::switch_work_mode(app, input, session_id).await,
 
-        // 工具搜索
-        "SearchTools" => framework::tool_search::handle_search_tools(input, intent).await,
+        // 工具搜索（纯搜索，始终成功）
+        "SearchTools" => {
+            return framework::ToolCallResult::ok(
+                framework::tool_search::handle_search_tools(input, intent, session_id).await,
+            );
+        }
 
-        _ => format!("未知工具: {}", name),
+        _ => return framework::ToolCallResult::error(format!("未知工具: {}", name)),
+    };
+
+    // 通用错误检测（用于未特殊处理的工具）
+    let has_error = output.contains("错误") || output.contains("Error") || output.contains("error")
+        || output.contains("失败") || output.contains("Failed") || output.contains("failed");
+    if has_error {
+        framework::ToolCallResult::error(output)
+    } else {
+        framework::ToolCallResult::ok(output)
     }
 }
 
@@ -316,7 +349,32 @@ pub async fn handle_tool_call_inner(
         return framework::tool_search::handle_run_deferred_tool(app, input, session_id, intent, work_mode)
             .await;
     }
-    dispatch_tool_call(app, name, input, session_id, intent, work_mode).await
+
+    // 核心工具直接调用，通过 ToolCallResult 结构化判断成败
+    let result = dispatch_tool_call(app, name, input, session_id, intent, work_mode).await;
+    let logger = framework::tool_call_logger::tool_call_logger();
+    if result.is_error {
+        logger.log_core_call(
+            session_id, name, input, intent, work_mode,
+            framework::tool_call_logger::ToolCallStatus::Error,
+            Some(result.output.chars().take(500).collect()),
+        );
+    } else {
+        logger.log_core_call(
+            session_id, name, input, intent, work_mode,
+            framework::tool_call_logger::ToolCallStatus::Ok,
+            None,
+        );
+    }
+    // 将 break_loop/is_error 存入 session context，供 tools_runner 读取
+    {
+        use tauri::Manager;
+        let sm = app.state::<crate::infra::state::state::SessionManager>();
+        let ctx = sm.get_or_create(session_id).await;
+        let mut flags = ctx.tool_result_flags.lock().await;
+        flags.insert(name.to_string(), (result.break_loop, result.is_error));
+    }
+    result.output
 }
 
 /// 判断是否应该阻止写操作工具

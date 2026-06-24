@@ -139,6 +139,7 @@ pub async fn execute_tool_calls(
                             output,
                             input_tokens: si,
                             output_tokens: so,
+                            // flags removed from ToolTaskResult
                         });
                         continue;
                     }
@@ -237,6 +238,7 @@ pub async fn execute_tool_calls(
                             output: "已取消".to_string(),
                             input_tokens: 0,
                             output_tokens: 0,
+                            // flags removed from ToolTaskResult
                         };
                     }
                     let (output, si, so) = handle_tool_call_owned(
@@ -282,18 +284,17 @@ pub async fn execute_tool_calls(
         sub_out += result.output_tokens;
 
         // emit "completed" 或 "error" 事件
-        // 判断工具执行是否失败：参数解析失败 或 工具返回错误信息
+        // 从 session context 读取 dispatch_tool_call 写入的结构化标志
+        let tool_flags = {
+            use tauri::Manager;
+            let sm = app.state::<crate::infra::state::state::SessionManager>();
+            let ctx = sm.get_or_create(sid).await;
+            let mut flags = ctx.tool_result_flags.lock().await;
+            flags.remove(&result.name).unwrap_or((false, false))
+        };
         let is_parse_error = result.output.starts_with("工具 `")
             && result.output.contains("参数解析失败");
-        let is_tool_error = result.output.contains("失败")
-            || result.output.contains("错误")
-            || result.output.contains("error")
-            || result.output.contains("Error")
-            || result.output.contains("denied")
-            || result.output.contains("拒绝")
-            || result.output.contains("无法")
-            || result.output.contains("不能");
-        let status = if is_parse_error || is_tool_error {
+        let status = if is_parse_error || tool_flags.1 {
             "error"
         } else {
             "completed"

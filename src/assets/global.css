@@ -22,6 +22,7 @@
   --accent-green: #10b981;
   --accent-red: #ef4444;
   --accent-yellow: #f59e0b;
+  --accent-purple: #8b5cf6;
   --text-soft: #475569;
   --text-warning: #7c2d12;
   --text-on-danger: #ffffff;
@@ -69,6 +70,9 @@
   --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
   --transition-normal: 250ms cubic-bezier(0.4, 0, 0.2, 1);
   --transition-slow: 350ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Toggle 开关 */
+  --toggle-track-inactive: rgba(0, 0, 0, 0.18);
 }
 
 /* --- 2. 暗色模式变量 (Glassmorphism) --- */
@@ -87,6 +91,7 @@ body.dark-mode {
   --accent-green: #22c55e;
   --accent-red: #ef4444;
   --accent-yellow: #eab308;
+  --accent-purple: #a78bfa;
   --text-soft: #d4d4d8;
   --text-warning: #fef08a;
   --text-on-danger: #ffffff;
@@ -114,6 +119,9 @@ body.dark-mode {
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.5);
   --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
   --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 0, 0, 0.3);
+
+  /* Toggle 开关 */
+  --toggle-track-inactive: rgba(255, 255, 255, 0.15);
 }
 
 /* --- 3. 基础重置 --- */
@@ -295,11 +303,15 @@ body.dragging-active .editor-container {
 }
 
 .agent-turn-render {
-  min-width: min(560px, 85vw);
+  width: 100%;
+  max-width: 85%;
+  overflow: hidden;
 }
 
 .agent-turn-answer {
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 /* Agent 错误横幅 */
@@ -348,6 +360,8 @@ body.dragging-active .editor-container {
 /* 执行过程大折叠 */
 .dev-execution-fold {
   margin-bottom: 16px;
+  max-width: 100%;
+  overflow: hidden;
 }
 .dev-execution-summary {
   font-size: 0.75rem;
@@ -365,6 +379,8 @@ body.dragging-active .editor-container {
   flex-direction: column;
   gap: 2px;
   margin: 4px 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 .dev-execution-fold .dev-layout {
   margin: 0;
@@ -392,6 +408,8 @@ body.dragging-active .editor-container {
 /* 思考块 */
 .dev-thinking {
   padding: 6px 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 .dev-thinking-summary {
   display: inline-flex;
@@ -418,6 +436,8 @@ body.dragging-active .editor-container {
   font-size: 0.82rem;
   color: var(--text-muted);
   line-height: 1.6;
+  max-width: 100%;
+  overflow: hidden;
 }
 .dev-thinking.streaming .dev-thinking-body {
   border-left-color: var(--accent-yellow);
@@ -426,6 +446,8 @@ body.dragging-active .editor-container {
 /* 工具调用 */
 .dev-tool {
   border-radius: 6px;
+  max-width: 100%;
+  overflow: hidden;
 }
 .dev-tool[open] {
   background: color-mix(in srgb, var(--surface-strong) calc(30 * var(--agent-message-opacity) / 100), transparent);
@@ -473,9 +495,13 @@ body.dragging-active .editor-container {
 
 .dev-tool-body {
   padding: 0 8px 8px 24px;
+  max-width: 100%;
+  overflow: hidden;
 }
 .dev-tool-section {
   margin-top: 8px;
+  max-width: 100%;
+  overflow: hidden;
 }
 .dev-tool-section-label {
   font-size: 0.7rem;
@@ -496,6 +522,7 @@ body.dragging-active .editor-container {
   border: none;
   border-radius: 4px;
   padding: 8px 10px;
+  max-width: 100%;
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-word;
@@ -516,6 +543,7 @@ body.dragging-active .editor-container {
   border: 1px solid var(--glass-border-subtle);
   overflow: hidden;
   margin: 8px 0;
+  max-width: 100%;
 }
 .dev-log-header {
   background: color-mix(in srgb, var(--surface-strong) 18%, transparent);
@@ -539,6 +567,8 @@ body.dragging-active .editor-container {
   max-height: 160px;
   overflow-y: auto;
   line-height: 1.5;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 .dev-log-body pre,
 .dev-log-body code {

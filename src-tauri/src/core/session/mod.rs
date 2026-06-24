@@ -604,8 +604,18 @@ pub fn update_plan_document_status(
         .find(|item| item.id == plan_id)
     {
         document.status = status.to_string();
-        if let Some(content) = content {
-            document.content = content;
+        match status {
+            // 拒绝：content 作为反馈意见存储，不覆盖原始方案
+            "revision_requested" => {
+                document.rejection_feedback = content;
+            }
+            // 批准（含编辑修改）：content 覆盖原始方案
+            "approved" => {
+                if let Some(content) = content {
+                    document.content = content;
+                }
+            }
+            _ => {}
         }
         document.updated_at = now;
         document.decided_at = Some(now);

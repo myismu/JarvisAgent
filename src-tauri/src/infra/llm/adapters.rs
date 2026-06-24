@@ -124,11 +124,6 @@ fn skip_whitespace(raw: &str, start: usize) -> Option<char> {
     raw[start..].chars().find(|c| !c.is_whitespace())
 }
 
-/// 为没有思考块的消息生成一个最小 reasoning_content，保持 OpenAI 对话格式一致
-fn non_deepseek_reasoning_placeholder() -> serde_json::Value {
-    serde_json::Value::String(String::new())
-}
-
 /// 将思考块内容转为 reasoning_content 字符串（OpenAI 格式要求纯文本，不能是对象）
 fn reasoning_content_from_thinking(thinking: &str) -> serde_json::Value {
     serde_json::Value::String(thinking.to_string())
@@ -215,11 +210,7 @@ pub fn translate_messages_to_openai_with_reasoning_backfill(
                     openai_msgs.push(OpenAIMessage::Assistant {
                         content: Some(text.clone()),
                         tool_calls: None,
-                        reasoning_content: if backfill_assistant_reasoning_content {
-                            Some(non_deepseek_reasoning_placeholder())
-                        } else {
-                            None
-                        },
+                        reasoning_content: None,
                     });
                 }
                 Content::Multiple(blocks) => {
@@ -272,12 +263,8 @@ pub fn translate_messages_to_openai_with_reasoning_backfill(
                             } else {
                                 Some(tool_calls)
                             },
-                            reasoning_content: if backfill_assistant_reasoning_content {
-                                Some(if thinking_segments.is_empty() {
-                                    non_deepseek_reasoning_placeholder()
-                                } else {
-                                    reasoning_content_from_thinking(&thinking_segments.join("\n"))
-                                })
+                            reasoning_content: if backfill_assistant_reasoning_content && !thinking_segments.is_empty() {
+                                Some(reasoning_content_from_thinking(&thinking_segments.join("\n")))
                             } else {
                                 None
                             },

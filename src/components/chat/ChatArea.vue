@@ -1006,7 +1006,7 @@ onMounted(() => {
 
 .response-text {
   flex: 1;
-  padding: 0 40px; /* 与输入框左右间距一致 */
+  padding: 0 7.5%; /* 与输入框左右间距一致，使用百分比自适应 */
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -1040,7 +1040,7 @@ onMounted(() => {
 }
 
 :deep(.message-content) {
-  max-width: 94%; /* 允许会话内容占据更多宽度，匹配全宽输入框 */
+  max-width: 85%; /* 自适应宽度，留出边距 */
   padding: 14px 22px;
   border-radius: var(--radius-xl);
   font-size: 0.95rem;
@@ -1175,7 +1175,9 @@ onMounted(() => {
 .current-turn-content,
 .response-text :deep(.current-turn-content) {
   position: relative;
-  min-width: min(560px, 85vw);
+  width: 100%;
+  max-width: 85%;
+  overflow: hidden;
 }
 
 .current-turn-content.waiting-only {

@@ -139,7 +139,7 @@ pub fn search_deferred_tools(
 }
 
 /// SearchTools 工具的处理函数（纯搜索指引，不触发激活）
-pub async fn handle_search_tools(input: &serde_json::Value, intent: &str) -> String {
+pub async fn handle_search_tools(input: &serde_json::Value, intent: &str, session_id: &str) -> String {
     let query = input["query"].as_str().unwrap_or("");
     let max_results = input["max_results"].as_u64().unwrap_or(5).clamp(1, 20) as usize;
 
@@ -159,6 +159,9 @@ pub async fn handle_search_tools(input: &serde_json::Value, intent: &str) -> Str
             all_names.join(", ")
         );
     }
+
+    // 记录 SearchTools 命中的工具名，用于后续 RunDeferredTool 的协议遵从度诊断
+    super::tool_call_logger::tool_call_logger().record_search_tools(session_id, matches.clone());
 
     let mut result = format!("匹配到 {} 个工具，完整参数定义如下：\n", matches.len());
 
@@ -185,20 +188,50 @@ pub async fn handle_run_deferred_tool(
     intent: &str,
     work_mode: &str,
 ) -> String {
+    let logger = super::tool_call_logger::tool_call_logger();
+
     let name = match input["name"].as_str() {
         Some(n) => n,
-        None => return "缺少必填参数 'name'（要执行的工具名称）。".to_string(),
+        None => {
+            logger.log_deferred_call(
+                session_id, "", input, intent, work_mode,
+                super::tool_call_logger::ToolCallStatus::Error,
+                Some(super::tool_call_logger::ErrorType::MissingParam),
+                Some("缺少必填参数 'name'".to_string()),
+                false,
+            );
+            return "缺少必填参数 'name'（要执行的工具名称）。".to_string();
+        }
     };
     let args = input.get("args").cloned().unwrap_or(serde_json::json!({}));
+
+    // 诊断：本 session 内是否 SearchTools 过该工具
+    let searched_before = logger.has_searched(session_id, name);
 
     // 校验：工具是否存在
     let tool_def = match ToolRegistry::global().get(name) {
         Some(def) => def,
-        None => return format!("工具 '{}' 不存在。请使用 SearchTools 查询可用工具。", name),
+        None => {
+            logger.log_deferred_call(
+                session_id, name, &input, intent, work_mode,
+                super::tool_call_logger::ToolCallStatus::Error,
+                Some(super::tool_call_logger::ErrorType::ToolNotFound),
+                Some(format!("工具 '{}' 不存在", name)),
+                searched_before,
+            );
+            return format!("工具 '{}' 不存在。请使用 SearchTools 查询可用工具。", name);
+        }
     };
 
     // 校验：是否为延迟工具
     if !tool_def.should_defer {
+        logger.log_deferred_call(
+            session_id, name, &input, intent, work_mode,
+            super::tool_call_logger::ToolCallStatus::Error,
+            Some(super::tool_call_logger::ErrorType::NotDeferred),
+            Some(format!("工具 '{}' 是核心工具", name)),
+            searched_before,
+        );
         return format!(
             "工具 '{}' 是核心工具，请直接调用，无需通过 RunDeferredTool。",
             name
@@ -211,6 +244,13 @@ pub async fn handle_run_deferred_tool(
             .into_iter()
             .map(|(n, _)| n)
             .collect();
+        logger.log_deferred_call(
+            session_id, name, &input, intent, work_mode,
+            super::tool_call_logger::ToolCallStatus::Error,
+            Some(super::tool_call_logger::ErrorType::IntentBlocked),
+            Some(format!("工具 '{}' 在 {} 意图下不可用", name, intent)),
+            searched_before,
+        );
         return format!(
             "工具 '{}' 在当前 {} 意图下不可用。\n当前可用的延迟工具: {}",
             name,
@@ -221,19 +261,43 @@ pub async fn handle_run_deferred_tool(
 
     // 兜底防护：写操作工具在 CHAT/QUESTION 意图或聊天模式下被拦截
     if crate::core::tools::should_block_write_tool(name, intent, work_mode) {
-        return format!(
-            "工具 '{}' 在当前状态下不可用。{}",
-            name,
-            if work_mode == "chat" {
-                "聊天模式下只能使用只读工具，请切换到编辑模式后再试。"
-            } else {
-                "当前意图下只能使用只读工具。"
-            }
+        let msg = if work_mode == "chat" {
+            "聊天模式下只能使用只读工具，请切换到编辑模式后再试。"
+        } else {
+            "当前意图下只能使用只读工具。"
+        };
+        logger.log_deferred_call(
+            session_id, name, &input, intent, work_mode,
+            super::tool_call_logger::ToolCallStatus::Blocked,
+            Some(super::tool_call_logger::ErrorType::ModeBlocked),
+            Some(msg.to_string()),
+            searched_before,
         );
+        return format!("工具 '{}' 在当前状态下不可用。{}", name, msg);
     }
 
     // 执行工具（调用 dispatch_tool_call 避免递归）
-    crate::core::tools::dispatch_tool_call(app, name, &args, session_id, intent, work_mode).await
+    let result = crate::core::tools::dispatch_tool_call(app, name, &args, session_id, intent, work_mode).await;
+
+    // 记录执行结果（通过 ToolCallResult.is_error 结构化判断，不再扫描字符串关键词）
+    if result.is_error {
+        logger.log_deferred_call(
+            session_id, name, &input, intent, work_mode,
+            super::tool_call_logger::ToolCallStatus::Error,
+            Some(super::tool_call_logger::ErrorType::ExecutionFailed),
+            Some(result.output.chars().take(500).collect()),
+            searched_before,
+        );
+    } else {
+        logger.log_deferred_call(
+            session_id, name, &input, intent, work_mode,
+            super::tool_call_logger::ToolCallStatus::Ok,
+            None, None,
+            searched_before,
+        );
+    }
+
+    result.into_output()
 }
 
 // --- 工具注册 ---
@@ -374,6 +438,7 @@ mod tests {
         let output = tauri::async_runtime::block_on(handle_search_tools(
             &json!({ "query": "select:EditFile" }),
             "PROJECT_ACTION",
+            "test-session",
         ));
 
         assert!(output.contains("工具: EditFile"));

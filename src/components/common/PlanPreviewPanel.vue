@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { usePermissionStore } from '../../stores/permission';
 import { useSessionStore } from '../../stores/session';
@@ -65,30 +65,39 @@ const viewedDocument = computed(() => {
   return planDocs.value.find(d => d.id === selectedPlanId.value) ?? null;
 });
 
+// 用户主动选择历史方案时优先显示选中内容，否则显示活跃提案
 const activeContent = computed(() => {
-  if (activeProposal.value) {
-    return isEditing.value ? editedContent.value : activeProposal.value.content;
-  }
   if (viewedDocument.value) {
     return viewedDocument.value.content;
+  }
+  if (activeProposal.value) {
+    return isEditing.value ? editedContent.value : activeProposal.value.content;
   }
   return '';
 });
 
 const activeTitle = computed(() => {
-  if (activeProposal.value) return activeProposal.value.title;
   if (viewedDocument.value) return viewedDocument.value.title;
+  if (activeProposal.value) return activeProposal.value.title;
   return '';
 });
 
 const activeStatus = computed(() => {
-  if (activeProposal.value) return 'pending';
   if (viewedDocument.value) return viewedDocument.value.status;
+  if (activeProposal.value) return 'pending';
   return null;
 });
 
 const showPanel = computed(() => !!activeProposal.value || isMinimized.value === false);
 const hasPlanHistory = computed(() => planDocs.value.length > 0);
+// 是否应该显示审批按钮：正在查看活跃提案，或正在查看一个 pending 状态的历史方案（刷新后场景）
+const shouldShowApprovalActions = computed(() => {
+  // 有活跃提案且未选择历史方案 → 显示
+  if (!viewedDocument.value && activeProposal.value) return true;
+  // 用户主动查看一个 pending 状态的方案（含刷新后从 DB 恢复的场景）→ 显示
+  if (viewedDocument.value?.status === 'pending') return true;
+  return false;
+});
 
 // 如果没有活跃提案但存在历史计划，自动选中最近的一个用于展示
 watch([activeProposal, planDocs], ([proposal, docs]) => {
@@ -176,6 +185,8 @@ const handleReject = async () => {
   if (isResolving.value || (!proposal && !doc)) return;
   if (!isRequestingRevision.value) {
     isRequestingRevision.value = true;
+    // 反馈输入框出现在底部，滚动到位让用户看到
+    nextTick(() => scrollToBottom());
     return;
   }
   isMinimized.value = true;
@@ -197,6 +208,7 @@ const handleReject = async () => {
       createdAt: doc?.createdAt || Date.now(),
       updatedAt: Date.now(),
       decidedAt: Date.now(),
+      rejectionFeedback: feedback,
     });
     selectedPlanId.value = planId;
     isEditing.value = false;
@@ -288,7 +300,7 @@ const toggleMinimize = () => {
             <span class="plan-toolbar-title">{{ isEditing ? t('plan.editMode') : t('plan.previewMode') }}</span>
           </div>
 
-          <div v-if="activeProposal" class="plan-edit-actions">
+          <div v-if="shouldShowApprovalActions" class="plan-edit-actions">
               <button
                 v-if="!isEditing && !isStreaming"
                 class="plan-mini-btn"
@@ -335,7 +347,7 @@ const toggleMinimize = () => {
           </div>
           <Transition name="scroll-btn">
             <button
-              v-if="isStreaming && !isAtBottom"
+              v-if="!isAtBottom"
               class="plan-scroll-bottom"
               @click="scrollToBottom"
               :title="t('plan.scrollToBottom')"
@@ -347,7 +359,7 @@ const toggleMinimize = () => {
           </Transition>
         </main>
 
-        <footer v-if="(activeProposal || activeStatus === 'pending') && !isStreaming" class="plan-actions">
+        <footer v-if="shouldShowApprovalActions && !isStreaming" class="plan-actions">
           <button class="plan-btn plan-btn-reject" @click="handleReject" :disabled="isResolving || (isRequestingRevision && !revisionFeedback.trim())">
             <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10"></circle>
@@ -363,7 +375,7 @@ const toggleMinimize = () => {
             {{ t('plan.approve') }}
           </button>
         </footer>
-        <footer v-else-if="activeProposal && isStreaming" class="plan-actions plan-actions-streaming">
+        <footer v-else-if="shouldShowApprovalActions && isStreaming" class="plan-actions plan-actions-streaming">
           <span class="streaming-hint">
             <span class="streaming-dot"></span>
             {{ t('plan.streamingHint') }}
@@ -755,11 +767,11 @@ const toggleMinimize = () => {
 }
 
 .plan-scroll-bottom {
-  position: absolute;
+  position: sticky;
   bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
+  margin: -40px auto 0;
   z-index: 10;
+  pointer-events: auto;
   width: 36px;
   height: 36px;
   border-radius: 50%;
@@ -779,10 +791,10 @@ const toggleMinimize = () => {
   background: var(--glass-bg);
   border-color: var(--accent-blue);
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
-  transform: translateX(-50%) scale(1.08);
+  transform: scale(1.08);
 }
 .plan-scroll-bottom:active {
-  transform: translateX(-50%) scale(0.95);
+  transform: scale(0.95);
 }
 
 .plan-body.is-editing {

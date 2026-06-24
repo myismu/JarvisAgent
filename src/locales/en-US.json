@@ -75,7 +75,9 @@
     "thinkingUnsupportedTitle": "This model does not support extended thinking mode",
     "thinkingOnTitle": "Extended thinking: on",
     "thinkingOffTitle": "Extended thinking: off",
+    "thinkingForcedTitle": "This model enables extended thinking by default and it cannot be disabled",
     "thinkingUnsupported": "Thinking unsupported",
+    "thinkingForced": "Thinking (default)",
     "thinking": "Extended thinking",
     "remove": "Remove",
     "visionWarning": "The current model does not support multimodal input. Images/videos will be passed as file paths only.",
@@ -226,6 +228,9 @@
       "labelSeparator": ", ",
       "moreCategories": "{count} activity types",
       "panel": "{categories} · {count} steps"
+    },
+    "deferred": {
+      "label": "Run tool"
     },
     "actions": {
       "default": { "action": "Run tool", "unit": "times", "pendingVerb": "Waiting to run", "runningVerb": "Running", "completedVerb": "Completed", "errorVerb": "Failed", "pendingPhrase": "Waiting to run tool", "runningPhrase": "Running tool", "completedPhrase": "Tool completed", "errorPhrase": "Tool failed" },

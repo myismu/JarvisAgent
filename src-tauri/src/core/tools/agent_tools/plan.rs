@@ -272,6 +272,7 @@ pub async fn propose_plan(
         created_at: now,
         updated_at: now,
         decided_at: None,
+        rejection_feedback: None,
     };
     {
         let mut memory = ctx.memory.lock().await;
@@ -294,7 +295,10 @@ pub async fn propose_plan(
         id
     );
 
-    let _ = app.emit("plan-document-updated", &plan_document);
+    // 注意：这里不再发射 plan-document-updated 事件。
+    // plan-proposal 事件的前端处理器已经调用 upsertPlanDocument 完成持久化。
+    // 如果同时发射两个事件，会导致同一个 plan document 被插入两次。
+    // plan-document-updated 仅用于后续状态变更（approve/reject/revision_requested）。
 
     // 发送事件到前端，触发方案预览面板
     let _ = app.emit(
@@ -307,14 +311,8 @@ pub async fn propose_plan(
         }),
     );
 
-    // 在聊天流中也提示一下
-    let _ = app.emit(
-        "chat-stream",
-        json!({
-            "content": format!("\n> [方案已提交] **{}**\n> 请在弹出的方案预览面板中查看详情并决策。\n", title),
-            "sessionId": session_id
-        }),
-    );
+    // 注意：不在这里 emit chat-stream，由 pipeline 在 break_loop 时统一生成 turn 总结。
+    // 这样方案提交消息出现在执行过程之外，作为该轮会话的最终输出。
 
     // 方案审批可能持续较长时间，立即 flush 会话消息到 DB，防止切换会话时丢失
     {

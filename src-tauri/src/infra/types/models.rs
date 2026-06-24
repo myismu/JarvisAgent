@@ -30,6 +30,9 @@ pub struct JarvisResult {
     pub output_tokens: u64,
     pub session_input_tokens: u64,
     pub session_output_tokens: u64,
+    /// 后端为用户消息分配的 UUID，前端用于关联撤回按钮
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_message_id: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -329,6 +332,9 @@ pub struct PlanDocument {
     pub created_at: u64,
     pub updated_at: u64,
     pub decided_at: Option<u64>,
+    /// 用户拒绝方案时填写的修改意见（与 content 分离，不覆盖原始方案）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection_feedback: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

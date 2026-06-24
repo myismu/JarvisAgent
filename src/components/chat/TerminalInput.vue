@@ -53,6 +53,7 @@ const appConfig = ref<any>(null);
 const agentModel = computed(() => appConfig.value?.mainModel || '—');
 const showProfileMenu = ref(false);
 const isThinkingActive = ref(false);
+const isThinkingForced = ref(false);
 const canModelThink = ref(true);
 const canModelVision = ref(true);
 
@@ -113,17 +114,23 @@ const checkModelCapabilities = async (modelId: string) => {
     if (caps) {
       canModelThink.value = caps.thinking;
       canModelVision.value = caps.vision ?? true;
+      isThinkingForced.value = caps.thinkingForced ?? false;
       if (!caps.thinking) {
         isThinkingActive.value = false;
+        isThinkingForced.value = false;
+      } else if (isThinkingForced.value) {
+        isThinkingActive.value = true;
       }
     } else {
       canModelThink.value = true;
       canModelVision.value = true;
+      isThinkingForced.value = false;
     }
   } catch (e) {
     console.error('Failed to check model capabilities:', e);
     canModelThink.value = true;
     canModelVision.value = true;
+    isThinkingForced.value = false;
   }
 };
 
@@ -515,15 +522,15 @@ const handleRecallEdit = async () => {
             class="action-toggle-btn"
             :class="{
               active: isThinkingActive,
-              disabled: !canModelThink
+              disabled: !canModelThink || isThinkingForced
             }"
-            @click="canModelThink && (isThinkingActive = !isThinkingActive)"
-            :title="!canModelThink ? t('input.thinkingUnsupportedTitle') : (isThinkingActive ? t('input.thinkingOnTitle') : t('input.thinkingOffTitle'))"
+            @click="canModelThink && !isThinkingForced && (isThinkingActive = !isThinkingActive)"
+            :title="!canModelThink ? t('input.thinkingUnsupportedTitle') : isThinkingForced ? t('input.thinkingForcedTitle') : (isThinkingActive ? t('input.thinkingOnTitle') : t('input.thinkingOffTitle'))"
           >
             <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
               <path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27a5 5 0 1 1-7.14 7.14" />
             </svg>
-            <span>{{ !canModelThink ? t('input.thinkingUnsupported') : t('input.thinking') }}</span>
+            <span>{{ !canModelThink ? t('input.thinkingUnsupported') : isThinkingForced ? t('input.thinkingForced') : t('input.thinking') }}</span>
           </button>
         </div>
       </div>
@@ -645,7 +652,7 @@ const handleRecallEdit = async () => {
 
 .chat-input-wrapper {
   width: 100%;
-  max-width: 1000px;
+  max-width: 85%;
   background: var(--surface-strong);
   backdrop-filter: blur(var(--glass-blur-heavy));
   -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
@@ -660,13 +667,13 @@ const handleRecallEdit = async () => {
 }
 
 .chat-input-wrapper:hover {
-  border-color: color-mix(in srgb, var(--accent-blue) 40%, var(--glass-border));
+  border-color: var(--glass-border);
   box-shadow: 0 25px 60px rgba(0, 0, 0, 0.2), var(--glass-shadow);
 }
 
 .chat-input-wrapper:focus-within {
-  border-color: var(--accent-blue);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2), 0 30px 70px rgba(0, 0, 0, 0.25);
+  border-color: var(--glass-border);
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.2), var(--glass-shadow);
 }
 
 .input-toolbar {
@@ -803,9 +810,10 @@ const handleRecallEdit = async () => {
 }
 
 .action-toggle-btn.active {
-  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+  background: var(--glass-bg);
   color: var(--text-main);
-  border-color: var(--glass-border);
+  border-color: color-mix(in srgb, var(--accent-blue) 30%, transparent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent-blue) 10%, transparent), inset 0 1px 1px rgba(255, 255, 255, 0.15);
 }
 
 .action-toggle-btn.disabled {
@@ -932,6 +940,7 @@ const handleRecallEdit = async () => {
   flex: 1;
   background: transparent;
   border: none;
+  border-radius: var(--radius-md);
   color: var(--text-main);
   font-family: var(--font-mono);
   font-size: 0.95rem;
@@ -939,9 +948,16 @@ const handleRecallEdit = async () => {
   resize: none;
   overflow-y: auto;
   line-height: 1.6;
-  padding: 0;
+  padding: 10px 12px;
   margin: 0;
   max-height: 200px;
+  transition: all var(--transition-fast);
+}
+
+.editor-input:focus {
+  background: transparent;
+  border: none;
+  box-shadow: none;
 }
 
 .editor-input::placeholder {
@@ -1156,7 +1172,7 @@ const handleRecallEdit = async () => {
   align-items: center;
   gap: 6px;
   width: 100%;
-  max-width: 1000px;
+  max-width: 85%;
   padding: 4px 16px 0;
   font-size: 0.65rem;
   color: var(--text-muted);

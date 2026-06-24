@@ -13,6 +13,7 @@ pub mod gc;
 pub mod journal;
 pub mod patch;
 pub mod replay;
+pub mod rollback_logger;
 pub mod session_manager;
 pub mod snapshot;
 pub mod store;

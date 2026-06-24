@@ -152,7 +152,7 @@ const handleToggle = async (event: Event) => {
   width: 36px;
   height: 20px;
   border-radius: 10px;
-  background: var(--glass-border);
+  background: var(--toggle-track-inactive, rgba(0, 0, 0, 0.2));
   position: relative;
   transition: background var(--transition-fast);
 }

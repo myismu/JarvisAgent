@@ -315,6 +315,8 @@ function toolStatusLabel(status: string): string {
 /* 工具详情 */
 .dev-tool-body {
   padding: 0 8px 8px 24px;
+  max-width: 100%;
+  overflow: hidden;
 }
 .dev-tool-section {
   margin-top: 8px;
@@ -327,10 +329,25 @@ function toolStatusLabel(status: string): string {
   border: 1px solid var(--glass-border-subtle);
   border-radius: 4px;
   padding: 8px 10px;
-  overflow-x: auto;
+  overflow: hidden;
   max-height: 240px;
   overflow-y: auto;
   color: var(--text-main);
+  word-break: break-all;
+  overflow-wrap: break-word;
+}
+
+.dev-tool-section :deep(.streaming-markdown *) {
+  max-width: 100%;
+  word-break: break-all;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+}
+.dev-tool-section :deep(.streaming-markdown pre),
+.dev-tool-section :deep(.streaming-markdown code) {
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-wrap: break-word;
 }
 .dev-tool-section.error :deep(.streaming-markdown) {
   border-color: color-mix(in srgb, var(--accent-red) 30%, transparent);

@@ -656,7 +656,8 @@ export function useAgentEvents() {
       }
       view.hydrated = true;
       // 会话仍在运行时不刷新消息——checkpoint 的部分回复会和 live currentTurn 重叠
-      if (view.status !== 'RUNNING') {
+      // ERROR 状态不刷新——错误消息仅在客户端 messages 中，刷新会冲掉
+      if (view.status !== 'RUNNING' && view.status !== 'ERROR') {
         await refreshSessionHistory(sessionId);
       }
       syncActiveSessionView(sessionId, false);

@@ -76,7 +76,9 @@
     "thinkingUnsupportedTitle": "该模型不支持深度思考模式",
     "thinkingOnTitle": "深度思考模式: 已开启",
     "thinkingOffTitle": "深度思考模式: 已关闭",
+    "thinkingForcedTitle": "该模型默认开启深度思考，不可关闭",
     "thinkingUnsupported": "不支持思考",
+    "thinkingForced": "深度思考(默认)",
     "thinking": "深度思考",
     "remove": "移除",
     "visionWarning": "当前模型不支持多模态，图片/视频将仅作为文件路径传递",
@@ -227,6 +229,9 @@
       "labelSeparator": "、",
       "moreCategories": "等 {count} 类活动",
       "panel": "{categories} · {count} 步"
+    },
+    "deferred": {
+      "label": "执行工具"
     },
     "actions": {
       "default": { "action": "执行工具", "unit": "次", "pendingVerb": "等待执行", "runningVerb": "正在执行", "completedVerb": "已完成", "errorVerb": "执行失败", "pendingPhrase": "等待执行工具", "runningPhrase": "正在执行工具", "completedPhrase": "已完成工具", "errorPhrase": "工具执行失败" },

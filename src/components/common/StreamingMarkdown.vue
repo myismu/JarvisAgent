@@ -41,14 +41,25 @@ function findLastSafeBoundary(content: string): number {
   return lastBoundary;
 }
 
+// 记录上一次的内容，用于检测是增量追加还是整体切换
+let lastContent = '';
+
 watch(
   () => props.content,
   (newContent) => {
     if (!newContent) {
       frozenBoundary.value = 0;
       frozenTokens.value = [];
+      lastContent = '';
       return;
     }
+
+    // 内容不是从上次的末尾追加（而是整体切换）→ 清除缓存重新解析
+    if (!newContent.startsWith(lastContent)) {
+      frozenBoundary.value = 0;
+      frozenTokens.value = [];
+    }
+    lastContent = newContent;
 
     const boundary = findLastSafeBoundary(newContent);
 
@@ -314,9 +325,18 @@ function renderTableCell(cell: any): string {
   margin: 12px 0;
   padding: 10px 14px;
   color: var(--text-muted);
-  border-left: 3px solid var(--accent-blue);
-  border-radius: 0 var(--radius-md) var(--radius-md) 0;
-  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+  border-left: 3px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  background: var(--glass-bg-light);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* 错误信息样式：红色主题 */
+.md-blockquote:has(strong) {
+  border-left-color: var(--accent-red);
+  background: color-mix(in srgb, var(--accent-red) 8%, transparent);
+  color: var(--accent-red);
 }
 
 .md-blockquote :deep(p) {

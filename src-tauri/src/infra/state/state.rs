@@ -85,6 +85,9 @@ pub struct SessionContext {
     pub read_file_paths: Mutex<Vec<String>>,
     /// 循环上限续跑标记：超时后用户仍可点"允许"来 resume
     pub loop_continuation_pending: Mutex<bool>,
+    /// 工具调用的结构化标志 (break_loop, is_error)，按工具名索引
+    /// 由 dispatch_tool_call 写入，tools_runner 读取后清除
+    pub tool_result_flags: Mutex<HashMap<String, (bool, bool)>>,
 }
 
 impl SessionContext {
@@ -106,6 +109,7 @@ impl SessionContext {
             scheduler_rx: Mutex::new(None),
             read_file_paths: Mutex::new(Vec::new()),
             loop_continuation_pending: Mutex::new(false),
+            tool_result_flags: Mutex::new(HashMap::new()),
         }
     }
 }

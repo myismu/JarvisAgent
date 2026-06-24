@@ -610,9 +610,8 @@ pub async fn run_subagent(
         };
 
         let request_json_str = serde_json::to_string_pretty(&req_json).unwrap_or_default();
-        let logger = crate::infra::debug_logger::DebugLogger::new();
-        logger.log_request_to_terminal("SUB AGENT", loop_count + 1, &request_json_str);
-        logger.log_request_to_file("SUB AGENT", loop_count + 1, &request_json_str);
+        println!("[SUB AGENT] loop {} request ({} bytes)", loop_count + 1, request_json_str.len());
+        crate::infra::debug_logger::debug_logger().log_request(&session_id, "SUB", loop_count + 1, &request_json_str);
 
         let (auth_header, auth_value) = api_format_enum.auth_header(&api_key);
         let mut req = client
@@ -724,8 +723,9 @@ pub async fn run_subagent(
                 }
             })
             .collect();
-        logger.log_thoughts(
-            "SUB AGENT",
+        crate::infra::debug_logger::debug_logger().log_thoughts(
+            &session_id,
+            "SUB",
             loop_count + 1,
             &current_thinking_this_turn,
             &current_text_this_turn,

@@ -114,10 +114,10 @@ crate::define_tools! {
             schema_desc: "【方案审批工具】将实施方案提交给用户审阅。当面对复杂任务（涉及多步骤修改、架构变更等），必须使用此工具提交方案文档，等待用户确认后才能继续执行。方案内容使用 Markdown 格式。前端会以专门的预览面板展示方案，用户可以选择同意或拒绝。task_breakdown 字段用于结构化任务分解，每项包含 subject（任务名）、description（详情）、depends_on（前置任务序号数组，从1开始）、can_parallel_with（可并行任务序号数组）。",
             props: {
                 title: string => "方案标题",
-                content: string => "方案正文（Markdown 格式），包含需求理解、变更范围、具体步骤、风险评估等",
-                task_breakdown: array => "结构化任务分解列表，每项包含 subject、description、depends_on（前置任务序号数组）、can_parallel_with（可并行序号数组）",
+                content: string => "方案正文（Markdown 格式），必须包含：需求理解、变更范围、具体实现步骤、风险评估、任务拆分统计（任务数、阶段划分、预计耗时）、依赖关系图、并行执行策略",
+                task_breakdown: array => "【必填】结构化任务分解列表，每项包含 subject（任务名）、description（详情，含预计耗时）、depends_on（前置任务序号数组）、can_parallel_with（可并行任务序号数组）",
             },
-            required: ["title", "content"],
+            required: ["title", "content", "task_breakdown"],
             category: "Agent 调度",
             defer: true,
         ),

@@ -29,6 +29,9 @@ pub struct ModelCapabilities {
     /// 备注说明
     #[serde(default)]
     pub notes: String,
+    /// 是否强制开启思考（用户不可关闭，适用于 thinking + tool_calls 必须共存的模型如 DeepSeek）
+    #[serde(default)]
+    pub thinking_forced: bool,
 }
 
 /// 注册表中的单条模型记录
@@ -114,9 +117,11 @@ pub fn apply_thinking_for_model(
             }
         }
         Some("thinking") => {
+            // 保留调用方已设置的 budget_tokens（build_llm_request 会预设）
+            let existing_budget = req.thinking.as_ref().and_then(|t| t.budget_tokens);
             req.thinking = Some(crate::infra::types::models::ThinkingConfig {
                 r#type: Some(if should_think { "enabled" } else { "disabled" }.to_string()),
-                budget_tokens: None,
+                budget_tokens: if should_think { existing_budget.or(Some(1024)) } else { None },
                 enable: None,
             });
         }
@@ -138,9 +143,10 @@ pub fn apply_thinking_for_model(
             req.extra_body = Some(serde_json::json!({ "chain_of_thought": should_think }));
         }
         Some("thinking_enable") => {
+            let existing_budget = req.thinking.as_ref().and_then(|t| t.budget_tokens);
             req.thinking = Some(crate::infra::types::models::ThinkingConfig {
                 r#type: None,
-                budget_tokens: None,
+                budget_tokens: if should_think { existing_budget.or(Some(1024)) } else { None },
                 enable: Some(should_think),
             });
         }
