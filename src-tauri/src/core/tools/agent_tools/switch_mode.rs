@@ -3,6 +3,7 @@
 //! Agent 可在运行中通过此工具切换 WorkMode（chat/edit/plan），
 //! Audience（user/developer）不变。
 
+use crate::core::tools::framework;
 use serde_json::json;
 use tauri::{Emitter, Manager};
 
@@ -11,7 +12,7 @@ pub async fn switch_work_mode(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let session_manager = app.state::<crate::infra::state::state::SessionManager>();
     let ctx = session_manager.get_or_create(session_id).await;
     let current_mode = ctx.agent_work_mode.lock().await.clone();
@@ -19,19 +20,19 @@ pub async fn switch_work_mode(
     let reason = input["reason"].as_str().unwrap_or("").to_string();
 
     if !["chat", "edit", "plan"].contains(&target_mode.as_str()) {
-        return format!(
+        return framework::ToolCallResult::error(format!(
             "错误：不支持的工作模式「{}」。支持的模式：chat、edit、plan。",
             target_mode
-        );
+        ));
     }
 
     if current_mode == target_mode {
-        return format!("当前已经处于「{}」模式，无需切换。", current_mode);
+        return framework::ToolCallResult::ok(format!("当前已经处于「{}」模式，无需切换。", current_mode));
     }
 
     // Chat 禁止切到 Plan
     if current_mode == "chat" && target_mode == "plan" {
-        return "错误：聊天模式下不能切换到计划模式。请先切换到编辑模式。".to_string();
+        return framework::ToolCallResult::blocked("错误：聊天模式下不能切换到计划模式。请先切换到编辑模式。".to_string());
     }
 
     *ctx.agent_work_mode.lock().await = target_mode.clone();
@@ -46,7 +47,7 @@ pub async fn switch_work_mode(
         }),
     );
 
-    format!(
+    framework::ToolCallResult::ok(format!(
         "已从「{}」模式切换到「{}」模式。{}",
         current_mode,
         target_mode,
@@ -55,5 +56,5 @@ pub async fn switch_work_mode(
         } else {
             format!("原因：{}", reason)
         }
-    )
+    ))
 }

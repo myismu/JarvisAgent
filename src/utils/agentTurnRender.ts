@@ -77,10 +77,10 @@ function renderToolDetailHtml(tool: AgentToolCallView) {
     tool.input
       ? `<div class="agent-tool-field"><span>参数</span>${renderMarkdown(tool.input)}</div>`
       : "",
-    tool.output
+    tool.output && !tool.error
       ? `<div class="agent-tool-field"><span>输出</span>${renderMarkdown(tool.output)}</div>`
       : "",
-    tool.error ? `<div class="agent-tool-field error"><span>错误</span>${renderMarkdown(tool.error)}</div>` : "",
+    tool.error ? `<div class="agent-tool-field error"><span>未成功</span>${renderMarkdown(tool.error)}</div>` : "",
     ...tool.logs.map((log) => `<div class="agent-tool-log">${renderMarkdown(log)}</div>`),
   ].join("");
 }
@@ -342,18 +342,18 @@ function renderDevItemToHtml(item: DevTimelineItem): string {
     case "tool": {
       const tool = item.tool;
       const displayName = unwrapDeferredTool(tool).displayName;
-      const statusLabel = tool.status === "completed" ? "完成" : tool.status === "running" ? "执行中" : tool.status === "error" ? "失败" : "";
+      const statusLabel = tool.status === "completed" ? "完成" : tool.status === "running" ? "执行中" : tool.status === "error" ? "未成功" : "";
       const label = toolActionLabel(tool.name, tool.status, tool);
       const open = item.streaming;
 
       const paramsHtml = tool.input
         ? `<div class="dev-tool-section"><div class="dev-tool-section-label">参数</div><pre class="dev-tool-pre">${escapeHtml(tool.input)}</pre></div>`
         : "";
-      const outputHtml = tool.output
+      const outputHtml = (tool.output && !tool.error)
         ? `<div class="dev-tool-section"><div class="dev-tool-section-label">输出</div><pre class="dev-tool-pre">${escapeHtml(tool.output)}</pre></div>`
         : "";
       const errorHtml = tool.error
-        ? `<div class="dev-tool-section error"><div class="dev-tool-section-label">错误</div><pre class="dev-tool-pre">${escapeHtml(tool.error)}</pre></div>`
+        ? `<div class="dev-tool-section error"><div class="dev-tool-section-label">未成功</div><pre class="dev-tool-pre">${escapeHtml(tool.error)}</pre></div>`
         : "";
       const bodyHtml = paramsHtml + outputHtml + errorHtml;
 

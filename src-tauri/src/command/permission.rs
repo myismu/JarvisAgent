@@ -39,7 +39,7 @@ pub async fn resolve_permission(
         }
     }
 
-    let channel_alive = if let Some((_, tx)) = ctx.pending_permissions.lock().await.remove(&id) {
+    let channel_alive = if let Some((_, _, tx)) = ctx.pending_permissions.lock().await.remove(&id) {
         let resp = if let Some(ref mc) = content { format!("{}|||{}", decision, mc) } else { decision.clone() };
         tx.send(resp).is_ok()
     } else {
@@ -50,6 +50,9 @@ pub async fn resolve_permission(
     // 同时清理 cancel_token，确保审批续跑的 ask_jarvis 不会因 has_active_run 被拦截。
     if id.starts_with("plan_") {
         *ctx.cancel_token.lock().await = None;
+        let _ = app.emit("permission-resolved", serde_json::json!({
+            "id": id, "sessionId": session_id,
+        }));
         return Ok(serde_json::json!({ "needsResume": false }));
     }
 
@@ -59,6 +62,9 @@ pub async fn resolve_permission(
         if pending {
             *ctx.loop_continuation_pending.lock().await = false;
             *ctx.cancel_token.lock().await = None;
+            let _ = app.emit("permission-resolved", serde_json::json!({
+                "id": id, "sessionId": session_id,
+            }));
             return Ok(serde_json::json!({
                 "needsResume": true,
                 "resumeWith": "用户已授权继续执行，请继续之前未完成的任务。"
@@ -66,6 +72,9 @@ pub async fn resolve_permission(
         }
     }
 
+    let _ = app.emit("permission-resolved", serde_json::json!({
+        "id": id, "sessionId": session_id,
+    }));
     Ok(serde_json::json!({ "needsResume": false }))
 }
 
@@ -89,7 +98,7 @@ pub async fn cancel_jarvis(
         .await
         .drain()
         .collect::<Vec<_>>();
-    for (_, (_, tx)) in pending {
+    for (_, (_, _, tx)) in pending {
         let _ = tx.send("reject".to_string());
     }
     // 级联取消该会话下所有运行中的子 Agent
@@ -114,10 +123,19 @@ pub async fn get_permission_state(
 ) -> Result<serde_json::Value, String> {
     let ctx = session_manager.get_or_create(&session_id).await;
     let session_allowed = *ctx.session_allowed.lock().await;
-    let pending_count = ctx.pending_permissions.lock().await.len();
+    // 只统计普通权限请求，排除方案审批（plan proposals 有独立的审批面板）
+    let pending_list: Vec<serde_json::Value> = ctx.pending_permissions.lock().await
+        .iter()
+        .filter(|(k, _)| !k.starts_with("plan_"))
+        .map(|(id, (_, msg, _))| serde_json::json!({
+            "id": id,
+            "message": msg,
+        }))
+        .collect();
     Ok(serde_json::json!({
         "sessionAllowed": session_allowed,
-        "pendingCount": pending_count,
+        "pendingCount": pending_list.len(),
+        "pending": pending_list,
     }))
 }
 

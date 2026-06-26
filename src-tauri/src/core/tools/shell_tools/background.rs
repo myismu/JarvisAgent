@@ -11,6 +11,7 @@
 //! - Internal: crate::infra::background::BackgroundManager, crate::core::tools::framework::permission
 //! - External: serde_json, 	auri
 
+use super::super::framework;
 use super::super::framework::permission::is_within_workspace;
 use super::utils::*;
 
@@ -30,7 +31,7 @@ pub async fn background_run(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let cmd = input["command"].as_str().unwrap_or("");
     let dir = input["dir"].as_str().map(|s| s.to_string());
 
@@ -40,7 +41,7 @@ pub async fn background_run(
     if let Some(ref workspace) = ws {
         if let Some(ref d) = dir {
             if !is_within_workspace(d, Some(workspace)) {
-                return format!("沙箱限制：指定的目录 '{}' 不在沙箱内。", d);
+                return framework::ToolCallResult::blocked(format!("沙箱限制：指定的目录 '{}' 不在沙箱内。", d));
             }
         }
     }
@@ -52,8 +53,9 @@ pub async fn background_run(
         ws.map(|p| p.to_string_lossy().into_owned())
     };
 
-    crate::infra::background::BackgroundManager::run(app.clone(), cmd.to_string(), exec_dir, Some(session_id.to_string()))
-        .await
+    let output = crate::infra::background::BackgroundManager::run(app.clone(), cmd.to_string(), exec_dir, Some(session_id.to_string()))
+        .await;
+    framework::ToolCallResult::ok(output)
 }
 
 /// 检查后台任务状态
@@ -61,7 +63,8 @@ pub async fn check_background(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     _session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let task_id = input["task_id"].as_str().map(|s| s.to_string());
-    crate::infra::background::BackgroundManager::check(app, task_id).await
+    let output = crate::infra::background::BackgroundManager::check(app, task_id).await;
+    framework::ToolCallResult::ok(output)
 }

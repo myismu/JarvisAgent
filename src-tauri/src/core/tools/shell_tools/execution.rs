@@ -12,11 +12,12 @@
 //! ## Constraints
 //! - 执行时间受限于 DEFAULT_TIMEOUT_SECS 除非转为后台模式
 
+use super::super::framework;
 use super::super::framework::permission::request_permission;
 use super::background::background_run_internal;
 use super::readonly::is_readonly_command;
 use super::security::*;
-use super::utils::*;
+use super::utils::{*, is_exit_code_error};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -132,7 +133,7 @@ pub async fn run_shell(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let cmd = input["command"].as_str().unwrap_or("");
     let description = input["description"].as_str().unwrap_or("");
     let timeout_secs = input["timeout"]
@@ -145,7 +146,7 @@ pub async fn run_shell(
     let mut warnings: Vec<String> = Vec::new();
     match check_command_safety(cmd) {
         SafetyResult::Block(msg) => {
-            return format!("安全拦截：{}", msg);
+            return framework::ToolCallResult::blocked(format!("安全拦截：{}", msg));
         }
         SafetyResult::Warn(msg) => {
             warnings.push(msg);
@@ -158,13 +159,13 @@ pub async fn run_shell(
     // --- 2. 沙箱路径检查 ---
     if let Some(ref workspace) = ws {
         if let Err(e) = check_command_paths(cmd, workspace) {
-            return e;
+            return framework::ToolCallResult::error(e);
         }
 
         let lower_cmd = cmd.to_lowercase();
         let dir_change_keywords = ["cd ", "sl ", "chdir ", "set-location", "push-location"];
         if dir_change_keywords.iter().any(|k| lower_cmd.contains(k)) {
-            return "沙箱限制：禁止在沙箱会话中使用目录切换命令（cd/Set-Location）。".to_string();
+            return framework::ToolCallResult::blocked("沙箱限制：禁止在沙箱会话中使用目录切换命令（cd/Set-Location）。".to_string());
         }
     }
 
@@ -199,7 +200,7 @@ pub async fn run_shell(
 
             let decision = request_permission(app, session_id, &perm_msg).await;
             if decision == "reject" {
-                return "权限拒绝".to_string();
+                return framework::ToolCallResult::blocked("权限拒绝".to_string());
             }
         }
     }
@@ -207,17 +208,18 @@ pub async fn run_shell(
     // --- 4. 后台模式 → 委托 BackgroundManager ---
     if run_in_bg {
         let result = background_run_internal(app, cmd, &ws).await;
-        if warnings.is_empty() {
-            return result;
+        let output = if warnings.is_empty() {
+            result
         } else {
-            return format!("{}\n\n[警告]\n{}", result, warnings.join("\n"));
-        }
+            format!("{}\n\n[警告]\n{}", result, warnings.join("\n"))
+        };
+        return framework::ToolCallResult::ok(output);
     }
 
     // --- 5. 同步模式 → tokio::process::Command + timeout ---
     // 拦截文件修改类命令，引导 Agent 使用专用文件工具
     if let Some(hint) = is_file_mutation_command(cmd) {
-        return format!("被拦截：{}\n\nRunCommand 不支持文件写入/删除/重命名操作。请使用以下专用工具：\n- 创建/覆盖文件 → WriteFile\n- 修改文件内容 → EditFile\n- 删除文件 → DeleteFile\n- 重命名/移动文件 → RenameFile", hint);
+        return framework::ToolCallResult::blocked(format!("被拦截：{}\n\nRunCommand 不支持文件写入/删除/重命名操作。请使用以下专用工具：\n- 创建/覆盖文件 → WriteFile\n- 修改文件内容 → EditFile\n- 删除文件 → DeleteFile\n- 重命名/移动文件 → RenameFile", hint));
     }
 
     let exec_dir = ws.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
@@ -235,13 +237,15 @@ pub async fn run_shell(
             if !warnings.is_empty() {
                 output.push_str(&format!("\n\n[警告]\n{}", warnings.join("\n")));
             }
-            output
+            if is_exit_code_error(cmd, exit_code) {
+                framework::ToolCallResult::error(output)
+            } else {
+                framework::ToolCallResult::ok(output)
+            }
         }
-        Err(_) => {
-            format!(
-                "[exit code: -1]\n命令执行超时（{}秒）。如果是长周期任务，请使用 `run_in_background: true`。",
-                timeout_secs
-            )
-        }
+        Err(_) => framework::ToolCallResult::error(format!(
+            "[exit code: -1]\n命令执行超时（{}秒）。如果是长周期任务，请使用 `run_in_background: true`。",
+            timeout_secs
+        )),
     }
 }

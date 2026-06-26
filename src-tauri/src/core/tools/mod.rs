@@ -1,7 +1,7 @@
 ﻿//! # mod.rs — 工具系统入口模块
 //!
 //! 工具系统的中央枢纽：模块注册、技能加载、工具定义组装、路由分发。
-//! 工具参数（tools）始终不变以保证 prompt cache 命中，意图+工作模式仅影响上下文注入和 RunDeferredTool 运行时校验。
+//! 工具参数（tools）始终不变以保证 prompt cache 命中，意图+工作模式仅影响上下文注入和 ExecuteTool 运行时校验。
 //!
 //! ## 关键导出
 //! - `get_tools_definition()`: 返回固定核心工具定义列表（不含意图参数，保证缓存命中）
@@ -15,9 +15,9 @@
 //! - External: `serde_json`, `tauri`
 //!
 //! ## 约束
-//! - tools 参数始终不变，意图过滤仅通过上下文注入 + RunDeferredTool 运行时校验
+//! - tools 参数始终不变，意图过滤仅通过上下文注入 + ExecuteTool 运行时校验
 //! - 子代理（SUBAGENT）不能调用 RunSubagent / ConsolidateMemory / CompactConversation / RunSubagentsSequentially
-//! - 写操作工具（WriteFile, EditFile, RunCommand 等）是延迟工具，通过三步协议调用：GetToolCatalog → SearchTools → RunDeferredTool
+//! - 写操作工具（WriteFile, EditFile, RunCommand 等）是延迟工具，通过三步协议调用：GetToolCatalog → DiscoverTools → ExecuteTool
 //! - 兜底防护：CHAT/QUESTION 意图 或 chat 模式下禁止写操作
 
 pub mod agent_tools;
@@ -114,7 +114,7 @@ pub fn parse_skill(text: &str, path: &Path) -> Option<Skill> {
 }
 
 // 获取工具定义（始终返回固定核心工具集，保证 prompt cache 命中）
-// 意图+工作模式过滤仅通过上下文注入 + RunDeferredTool 运行时校验实现
+// 意图+工作模式过滤仅通过上下文注入 + ExecuteTool 运行时校验实现
 pub fn get_tools_definition() -> Vec<serde_json::Value> {
     get_core_tool_definitions()
 }
@@ -178,20 +178,89 @@ pub async fn handle_tool_call(
             skills,
         );
         Box::pin(fut).await
-    } else if name == "RunSubagentsSequentially" {
-        use tauri::Manager;
-        use crate::core::orchestration::scheduler::{TaskScheduler, SchedulerEvent};
-        use crate::infra::state::state::SessionManager;
-        let ctx = app.state::<SessionManager>().get_or_create(session_id).await;
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SchedulerEvent>();
-        *ctx.scheduler_rx.lock().await = Some(rx);
-        let cancel_token = tokio_util::sync::CancellationToken::new();
-        TaskScheduler::run_schedule_async(
-            app.clone(), session_id.to_string(), cancel_token, tx,
-        );
-        ("调度已启动，任务正在后台执行。你将实时收到每个任务的完成/失败通知。".to_string(), 0, 0)
+    } else if name == "ExecuteTool" {
+        let result = framework::tool_search::handle_execute_tool(
+            app, input, session_id, "main", intent, work_mode,
+        ).await;
+        // 记录审计日志
+        let logger = framework::tool_call_logger::tool_call_logger();
+        if result.is_blocked {
+            logger.log_core_call(
+                session_id, "main", name, input, intent, work_mode,
+                framework::tool_call_logger::ToolCallStatus::Blocked,
+                Some(result.output.chars().take(500).collect()),
+            );
+        } else if result.is_error {
+            logger.log_core_call(
+                session_id, "main", name, input, intent, work_mode,
+                framework::tool_call_logger::ToolCallStatus::Error,
+                Some(result.output.chars().take(500).collect()),
+            );
+        } else {
+            logger.log_core_call(
+                session_id, "main", name, input, intent, work_mode,
+                framework::tool_call_logger::ToolCallStatus::Ok,
+                None,
+            );
+        }
+        // 传播 is_error（如 ProposePlan 的 break_loop 已去掉）
+        {
+            use tauri::Manager;
+            let sm = app.state::<crate::infra::state::state::SessionManager>();
+            let ctx = sm.get_or_create(session_id).await;
+            let mut flags = ctx.tool_result_flags.lock().await;
+            flags.insert(name.to_string(), (result.break_loop, result.is_error));
+        }
+        (result.output, 0, 0)
     } else {
+        // 拦截直接调用延迟工具：延迟工具必须通过 ExecuteTool 代理执行
+        if let Some(tool_def) = framework::registry::ToolRegistry::global().get(name) {
+            if tool_def.should_defer {
+                let available = get_deferred_tool_list(intent);
+                let names: Vec<String> = available.iter().map(|(n, _)| n.clone()).collect();
+                return (
+                    format!(
+                        "工具 '{}' 是延迟工具，不能直接调用。请通过 ExecuteTool 代理执行。\n\
+                        用法: ExecuteTool(name=\"{}\", args={{...}})\n\
+                        当前意图下可用的延迟工具: {}",
+                        name, name,
+                        if names.is_empty() { "无".to_string() } else { names.join(", ") }
+                    ),
+                    0, 0,
+                );
+            }
+        }
+
         let result = dispatch_tool_call(app, name, input, session_id, intent, work_mode).await;
+        // 记录工具调用审计日志
+        let logger = framework::tool_call_logger::tool_call_logger();
+        if result.is_blocked {
+            logger.log_core_call(
+                session_id, "main", name, input, intent, work_mode,
+                framework::tool_call_logger::ToolCallStatus::Blocked,
+                Some(result.output.chars().take(500).collect()),
+            );
+        } else if result.is_error {
+            logger.log_core_call(
+                session_id, "main", name, input, intent, work_mode,
+                framework::tool_call_logger::ToolCallStatus::Error,
+                Some(result.output.chars().take(500).collect()),
+            );
+        } else {
+            logger.log_core_call(
+                session_id, "main", name, input, intent, work_mode,
+                framework::tool_call_logger::ToolCallStatus::Ok,
+                None,
+            );
+        }
+        // 将 break_loop/is_error 存入 session context，供 tools_runner 读取
+        {
+            use tauri::Manager;
+            let sm = app.state::<crate::infra::state::state::SessionManager>();
+            let ctx = sm.get_or_create(session_id).await;
+            let mut flags = ctx.tool_result_flags.lock().await;
+            flags.insert(name.to_string(), (result.break_loop, result.is_error));
+        }
         (result.output, 0, 0)
     }
 }
@@ -220,8 +289,8 @@ pub async fn handle_tool_call_inner_owned(
     handle_tool_call_inner(&app, &name, &input, &session_id, &intent, &work_mode).await
 }
 
-/// 工具调用核心分发（不含 RunDeferredTool 路由，避免递归）
-/// RunDeferredTool 代理执行时直接调用此函数
+/// 工具调用核心分发（不含 ExecuteTool 路由，避免递归）
+/// ExecuteTool 代理执行时直接调用此函数
 ///
 /// 返回 `ToolCallResult`，日志层通过 `is_error` 字段判断成败，
 /// 而非扫描返回文本中的关键词（工具 schema 描述中天然包含 "error" 等字样，
@@ -247,7 +316,7 @@ pub async fn dispatch_tool_call(
         ));
     }
 
-    let output = match name {
+    let result = match name {
         // 系统工具
         "SetWorkspace" => system_tools::set_workspace(app, input, session_id).await,
 
@@ -290,24 +359,19 @@ pub async fn dispatch_tool_call(
         "CompactConversation" => agent_tools::compact(app, input, session_id).await,
         "ConsolidateMemory" => agent_tools::dream(app, input, session_id).await,
 
-        // 任务调度器（通过 RunDeferredTool 调用时需要在此路由）
+        // 任务调度器 — 同步等待所有任务完成，实时推送进度到前端
         "RunSubagentsSequentially" => {
-            use tauri::Manager;
-            use crate::core::orchestration::scheduler::{TaskScheduler, SchedulerEvent};
-            use crate::infra::state::state::SessionManager;
-            let ctx = app.state::<SessionManager>().get_or_create(session_id).await;
-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SchedulerEvent>();
-            *ctx.scheduler_rx.lock().await = Some(rx);
+            use crate::core::orchestration::scheduler::TaskScheduler;
             let cancel_token = tokio_util::sync::CancellationToken::new();
-            TaskScheduler::run_schedule_async(
-                app.clone(), session_id.to_string(), cancel_token, tx,
-            );
-            return framework::ToolCallResult::ok("调度已启动，任务正在后台执行。你将实时收到每个任务的完成/失败通知。".to_string());
+            let (report, _in_tokens, _out_tokens) = TaskScheduler::run_schedule(
+                app, session_id, "", &cancel_token,
+            ).await;
+            return framework::ToolCallResult::ok(report);
         }
 
-        // 方案审批工具（提交后立即结束本轮循环，等待用户审批）
+        // 方案审批工具（提交后 LLM 自行决定结束 loop）
         "ProposePlan" => {
-            return framework::ToolCallResult::ok_break(
+            return framework::ToolCallResult::ok(
                 agent_tools::propose_plan(app, input, session_id).await,
             );
         }
@@ -316,7 +380,7 @@ pub async fn dispatch_tool_call(
         "SwitchWorkMode" => agent_tools::switch_work_mode(app, input, session_id).await,
 
         // 工具搜索（纯搜索，始终成功）
-        "SearchTools" => {
+        "DiscoverTools" => {
             return framework::ToolCallResult::ok(
                 framework::tool_search::handle_search_tools(input, intent, session_id).await,
             );
@@ -325,17 +389,11 @@ pub async fn dispatch_tool_call(
         _ => return framework::ToolCallResult::error(format!("未知工具: {}", name)),
     };
 
-    // 通用错误检测（用于未特殊处理的工具）
-    let has_error = output.contains("错误") || output.contains("Error") || output.contains("error")
-        || output.contains("失败") || output.contains("Failed") || output.contains("failed");
-    if has_error {
-        framework::ToolCallResult::error(output)
-    } else {
-        framework::ToolCallResult::ok(output)
-    }
+    // 所有工具已内置 ToolCallResult 错误标记，直接返回
+    result
 }
 
-/// 内部工具调用分发（含 RunDeferredTool 路由）
+/// 内部工具调用分发（含 ExecuteTool 路由）
 pub async fn handle_tool_call_inner(
     app: &tauri::AppHandle,
     name: &str,
@@ -344,10 +402,20 @@ pub async fn handle_tool_call_inner(
     intent: &str,
     work_mode: &str,
 ) -> String {
-    // RunDeferredTool 单独路由，避免与 dispatch_tool_call 递归
-    if name == "RunDeferredTool" {
-        return framework::tool_search::handle_run_deferred_tool(app, input, session_id, intent, work_mode)
+    // ExecuteTool 单独路由，避免与 dispatch_tool_call 递归
+    if name == "ExecuteTool" {
+        let result = framework::tool_search::handle_execute_tool(app, input, session_id, "subagent", intent, work_mode)
             .await;
+        // 子 Agent 不需要传播 break_loop，但需要记录 is_error
+        let logger = framework::tool_call_logger::tool_call_logger();
+        if result.is_error {
+            logger.log_core_call(
+                session_id, "subagent", name, input, intent, work_mode,
+                framework::tool_call_logger::ToolCallStatus::Error,
+                Some(result.output.chars().take(500).collect()),
+            );
+        }
+        return result.output;
     }
 
     // 核心工具直接调用，通过 ToolCallResult 结构化判断成败
@@ -355,13 +423,13 @@ pub async fn handle_tool_call_inner(
     let logger = framework::tool_call_logger::tool_call_logger();
     if result.is_error {
         logger.log_core_call(
-            session_id, name, input, intent, work_mode,
+            session_id, "subagent", name, input, intent, work_mode,
             framework::tool_call_logger::ToolCallStatus::Error,
             Some(result.output.chars().take(500).collect()),
         );
     } else {
         logger.log_core_call(
-            session_id, name, input, intent, work_mode,
+            session_id, "subagent", name, input, intent, work_mode,
             framework::tool_call_logger::ToolCallStatus::Ok,
             None,
         );

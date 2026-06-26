@@ -16,6 +16,8 @@ pub struct ToolCallResult {
     pub output: String,
     /// 是否为错误结果（由各工具处理器显式标记）
     pub is_error: bool,
+    /// 是否为安全/策略拦截（禁止执行，非工具自身失败）
+    pub is_blocked: bool,
     /// 是否要求 Agent Loop 立即结束本轮循环。
     /// 用于 ProposePlan 等需要等待用户操作的工具：
     /// 提交方案后立即结束 turn，用户审批后开启新 turn。
@@ -28,15 +30,27 @@ impl ToolCallResult {
         Self {
             output,
             is_error: false,
+            is_blocked: false,
             break_loop: false,
         }
     }
 
-    /// 构造一个错误结果
+    /// 构造一个错误结果（工具执行失败）
     pub fn error(output: String) -> Self {
         Self {
             output,
             is_error: true,
+            is_blocked: false,
+            break_loop: false,
+        }
+    }
+
+    /// 构造一个安全拦截结果（策略拒绝，非工具失败）
+    pub fn blocked(output: String) -> Self {
+        Self {
+            output,
+            is_error: true,
+            is_blocked: true,
             break_loop: false,
         }
     }
@@ -46,6 +60,7 @@ impl ToolCallResult {
         Self {
             output,
             is_error: false,
+            is_blocked: false,
             break_loop: true,
         }
     }

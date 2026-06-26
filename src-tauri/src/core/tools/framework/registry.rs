@@ -20,15 +20,15 @@ use std::sync::OnceLock;
 pub struct ToolDef {
     /// 工具唯一名称
     pub name: &'static str,
-    /// 简述（用于完整 schema 描述 + SearchTools 搜索评分）
+    /// 简述（用于完整 schema 描述 + DiscoverTools 搜索评分）
     pub description: &'static str,
-    /// 搜索提示词（供 SearchTools 关键词匹配的补充短语）
+    /// 搜索提示词（供 DiscoverTools 关键词匹配的补充短语）
     pub search_hint: &'static str,
     /// 完整 JSON Schema（符合 Anthropic tool_use 规范）
     pub schema: serde_json::Value,
     /// 工具分类（用于延迟工具列表分组展示）
     pub category: &'static str,
-    /// 是否延迟加载（true = 需通过 SearchTools 获取后才能调用）
+    /// 是否延迟加载（true = 需通过 DiscoverTools 获取后才能调用）
     pub should_defer: bool,
     /// 是否只读（read_only 子代理会过滤掉非只读工具）
     pub is_read_only: bool,

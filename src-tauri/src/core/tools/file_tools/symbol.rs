@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::core::tools::framework;
 use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{
@@ -515,10 +516,10 @@ pub async fn find_references(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let symbol = input["symbol"].as_str().unwrap_or("").trim();
     if symbol.is_empty() {
-        return "FindReferences 错误: symbol 不能为空。".to_string();
+        return framework::ToolCallResult::error("FindReferences 错误: symbol 不能为空。".to_string());
     }
 
     let dir = input["dir"].as_str().unwrap_or(".");
@@ -527,7 +528,7 @@ pub async fn find_references(
         .min(FIND_REFERENCES_MAX_LIMIT);
     let ws = get_workspace(app, session_id).await;
     if let Err(e) = ensure_path_permission(app, dir, "查找引用", ws.as_deref()).await {
-        return e;
+        return framework::ToolCallResult::error(e);
     }
 
     let search_dir = resolve_dir(dir, ws.as_deref());
@@ -543,7 +544,7 @@ pub async fn find_references(
     };
     let candidates = find_reference_candidates(&search_dir, symbol, limit, &options);
     if candidates.is_empty() {
-        return format!("未找到符号引用: {}", symbol);
+        return framework::ToolCallResult::ok(format!("未找到符号引用: {}", symbol));
     }
 
     let mut result = format!("Found {} occurrence(s) for symbol '{}':\n", candidates.len(), symbol);
@@ -556,17 +557,17 @@ pub async fn find_references(
             candidate.line
         ));
     }
-    result
+    framework::ToolCallResult::ok(result)
 }
 
 pub async fn find_symbol(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let symbol = input["symbol"].as_str().unwrap_or("").trim();
     if symbol.is_empty() {
-        return "FindSymbol 错误: symbol 不能为空。".to_string();
+        return framework::ToolCallResult::error("FindSymbol 错误: symbol 不能为空。".to_string());
     }
 
     let dir = input["dir"].as_str().unwrap_or(".");
@@ -576,7 +577,7 @@ pub async fn find_symbol(
         .min(FIND_SYMBOL_MAX_LIMIT);
     let ws = get_workspace(app, session_id).await;
     if let Err(e) = ensure_path_permission(app, dir, "查找符号", ws.as_deref()).await {
-        return e;
+        return framework::ToolCallResult::error(e);
     }
 
     let search_dir = resolve_dir(dir, ws.as_deref());
@@ -592,7 +593,7 @@ pub async fn find_symbol(
     };
     let candidates = find_symbol_candidates(&search_dir, symbol, expected_kind, limit, &options);
     if candidates.is_empty() {
-        return format!("未找到符号定义: {}", symbol);
+        return framework::ToolCallResult::ok(format!("未找到符号定义: {}", symbol));
     }
 
     let mut result = format!("Found {} candidate(s) for symbol '{}':\n", candidates.len(), symbol);
@@ -606,24 +607,24 @@ pub async fn find_symbol(
             candidate.signature
         ));
     }
-    result
+    framework::ToolCallResult::ok(result)
 }
 
 pub async fn code_search(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let query = input["query"].as_str().unwrap_or("").trim();
     if query.is_empty() {
-        return "CodeSearch 错误: query 不能为空。".to_string();
+        return framework::ToolCallResult::error("CodeSearch 错误: query 不能为空。".to_string());
     }
 
     let dir = input["dir"].as_str().unwrap_or(".");
     let limit = input_usize(input, "limit").unwrap_or(30).min(100);
     let ws = get_workspace(app, session_id).await;
     if let Err(e) = ensure_path_permission(app, dir, "组合代码搜索", ws.as_deref()).await {
-        return e;
+        return framework::ToolCallResult::error(e);
     }
 
     let search_dir = resolve_dir(dir, ws.as_deref());
@@ -678,7 +679,7 @@ pub async fn code_search(
     }
 
     if symbol_candidates.is_empty() && text_matches.is_empty() && files.is_empty() {
-        return format!("未找到与 '{}' 相关的代码结果。", query);
+        return framework::ToolCallResult::ok(format!("未找到与 '{}' 相关的代码结果。", query));
     }
 
     let mut result = format!("CodeSearch results for '{}':\n", query);
@@ -715,23 +716,23 @@ pub async fn code_search(
         }
     }
 
-    result
+    framework::ToolCallResult::ok(result)
 }
 
 pub async fn read_symbol(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let path = input["path"].as_str().unwrap_or("");
     let symbol = input["symbol"].as_str().unwrap_or("").trim();
     if path.is_empty() || symbol.is_empty() {
-        return "ReadSymbol 错误: path 和 symbol 不能为空。".to_string();
+        return framework::ToolCallResult::error("ReadSymbol 错误: path 和 symbol 不能为空。".to_string());
     }
 
     let ws = get_workspace(app, session_id).await;
     if let Err(e) = ensure_path_permission(app, path, "读取符号", ws.as_deref()).await {
-        return e;
+        return framework::ToolCallResult::error(e);
     }
 
     let path = Path::new(path);
@@ -740,17 +741,17 @@ pub async fn read_symbol(
         Err(e) => {
             let err_msg = e.to_string();
             if is_locked_file_error(&err_msg) {
-                return format!(
+                return framework::ToolCallResult::error(format!(
                     "读取错误: 文件可能被其他智能体或程序锁定，请稍后重试。详细错误: {}",
                     e
-                );
+                ));
             }
-            return format!("读取错误: {}", e);
+            return framework::ToolCallResult::error(format!("读取错误: {}", e));
         }
     };
     let lines: Vec<&str> = decoded.content.lines().collect();
     let Some((start_idx, kind, confidence)) = find_symbol_in_file(path, symbol) else {
-        return format!("未在文件中找到符号定义: {}", symbol);
+        return framework::ToolCallResult::error(format!("未在文件中找到符号定义: {}", symbol));
     };
     let (start_idx, end_idx) = symbol_block_range(&lines, start_idx);
 
@@ -766,7 +767,7 @@ pub async fn read_symbol(
     for (idx, line) in lines.iter().enumerate().take(end_idx + 1).skip(start_idx) {
         result.push_str(&format!("{:4} | {}\n", idx + 1, line));
     }
-    result
+    framework::ToolCallResult::ok(result)
 }
 
 #[cfg(test)]

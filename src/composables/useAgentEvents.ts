@@ -408,6 +408,24 @@ export function useAgentEvents() {
       }
     });
 
+    await on<{ id: string; sessionId: string }>("permission-resolved", (event) => {
+      const sid = event.payload.sessionId ?? session.activeSessionId;
+      if (sid && perm.permissionRequests[sid]?.id === event.payload.id) {
+        delete perm.permissionRequests[sid];
+      }
+    });
+
+    // memory update notice (transient, not persisted)
+    await on<{ sessionId?: string; summary: string }>("memory-updated", (event) => {
+      chat.memoryNotice = event.payload.summary;
+      // auto-dismiss after 30 seconds
+      setTimeout(() => {
+        if (chat.memoryNotice === event.payload.summary) {
+          chat.memoryNotice = null;
+        }
+      }, 30000);
+    });
+
     // plan proposal stream (chunked)
     await on<{ sessionId?: string; content: string }>("plan-proposal-stream", (event) => {
       const sid = event.payload.sessionId ?? session.activeSessionId;

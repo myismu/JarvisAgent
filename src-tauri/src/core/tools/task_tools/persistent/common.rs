@@ -1,4 +1,5 @@
 use crate::core::orchestration::tasks::TaskManager;
+use crate::core::tools::framework;
 
 pub(super) fn task_id(input: &serde_json::Value) -> i32 {
     input["task_id"].as_i64().unwrap_or(0) as i32
@@ -16,20 +17,20 @@ pub(super) fn optional_i32_vec(input: &serde_json::Value, key: &str) -> Option<V
     })
 }
 
-pub(super) fn task_delete_inner(session_id: &str, id: i32) -> String {
+pub(super) fn task_delete_inner(session_id: &str, id: i32) -> framework::ToolCallResult {
     match TaskManager::for_session(session_id).delete(id) {
-        Ok(deleted) => serde_json::json!({
+        Ok(deleted) => framework::ToolCallResult::ok(serde_json::json!({
             "success": deleted,
             "taskId": id,
             "updatedFields": ["deleted"],
             "statusChange": { "from": "unknown", "to": "deleted" },
         })
-        .to_string(),
-        Err(e) => serde_json::json!({
+        .to_string()),
+        Err(e) => framework::ToolCallResult::error(serde_json::json!({
             "success": false,
             "taskId": id,
             "error": e
         })
-        .to_string(),
+        .to_string()),
     }
 }

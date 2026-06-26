@@ -11,6 +11,7 @@
 //! - `set_workspace` 必须使用绝对路径，且需用户确认
 
 use super::framework::permission::request_permission;
+use crate::core::tools::framework;
 use crate::core::tools::framework::registry::ToolDef;
 use serde_json::json;
 use std::path::Path;
@@ -32,24 +33,24 @@ pub async fn set_workspace(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     // 沙箱会话中禁用此功能
     let ws = get_workspace(app, session_id).await;
     if ws.is_some() {
-        return "当前会话已配置沙箱，禁止修改全局工作区。如需更改工作目录，请创建新的沙箱会话。"
-            .to_string();
+        return framework::ToolCallResult::error("当前会话已配置沙箱，禁止修改全局工作区。如需更改工作目录，请创建新的沙箱会话。"
+            .to_string());
     }
 
     let path_str = input["path"].as_str().unwrap_or("");
     if path_str.contains("..") {
-        return "路径不安全".to_string();
+        return framework::ToolCallResult::error("路径不安全".to_string());
     }
     let path = Path::new(path_str);
     if !path.is_absolute() {
-        return "必须使用绝对路径".to_string();
+        return framework::ToolCallResult::error("必须使用绝对路径".to_string());
     }
     if !path.exists() || !path.is_dir() {
-        return format!("目录不存在或不是文件夹: {}", path_str);
+        return framework::ToolCallResult::error(format!("目录不存在或不是文件夹: {}", path_str));
     }
 
     if let Ok(cwd) = std::env::current_dir() {
@@ -57,7 +58,7 @@ pub async fn set_workspace(
             let msg = format!("警告：尝试将全局工作区更改为：{}", path_str);
             let decision = request_permission(app, session_id, &msg).await;
             if decision == "reject" {
-                return "权限拒绝".to_string();
+                return framework::ToolCallResult::error("权限拒绝".to_string());
             }
         }
     }
@@ -66,9 +67,9 @@ pub async fn set_workspace(
         Ok(_) => {
             let workspace_file = crate::infra::config::data_paths::workspace_file_path();
             let _ = std::fs::write(&workspace_file, path_str);
-            format!("全局工作区成功切换到: {}", path_str)
+            framework::ToolCallResult::ok(format!("全局工作区成功切换到: {}", path_str))
         }
-        Err(e) => format!("切换工作区失败: {}", e),
+        Err(e) => framework::ToolCallResult::error(format!("切换工作区失败: {}", e)),
     }
 }
 

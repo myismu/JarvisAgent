@@ -5,6 +5,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::rollback::Patch;
+use crate::core::tools::framework;
 use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{read_text_preserve_encoding, resolve_path};
@@ -14,15 +15,15 @@ pub async fn delete_file(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let path = resolve_path(input);
     let ws = get_workspace(app, session_id).await;
     if let Err(e) = ensure_path_permission(app, &path, "删除", ws.as_deref()).await {
-        return e;
+        return framework::ToolCallResult::error(e);
     }
 
     if !std::path::Path::new(&path).exists() {
-        return format!("文件不存在: {}", path);
+        return framework::ToolCallResult::error(format!("文件不存在: {}", path));
     }
 
     // 删除前备份原内容到 snapshot_content，快照只存 hash
@@ -45,7 +46,7 @@ pub async fn delete_file(
         .as_secs();
     let trash_dir = parent.join(".jarvis_trash");
     if let Err(e) = std::fs::create_dir_all(&trash_dir) {
-        return format!("删除失败，无法创建回收目录: {}", e);
+        return framework::ToolCallResult::error(format!("删除失败，无法创建回收目录: {}", e));
     }
     let trash_path = trash_dir.join(format!("{}_{}", ts, filename));
 
@@ -61,8 +62,8 @@ pub async fn delete_file(
                 Some(format!("删除 {} → {}", path, trash_path.display())),
             )
             .await;
-            format!("已删除文件: {}（移至 {})", path, trash_path.display())
+            framework::ToolCallResult::ok(format!("已删除文件: {}（移至 {})", path, trash_path.display()))
         }
-        Err(e) => format!("删除失败: {}", e),
+        Err(e) => framework::ToolCallResult::error(format!("删除失败: {}", e)),
     }
 }

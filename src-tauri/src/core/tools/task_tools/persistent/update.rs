@@ -1,6 +1,7 @@
 ﻿use super::common::{optional_i32_vec, optional_string, task_delete_inner, task_id};
 use crate::infra::types::models::TaskStatus;
 use crate::core::orchestration::tasks::{TaskManager, TaskUpdateParams};
+use crate::core::tools::framework;
 use crate::core::tools::framework::registry::ToolDef;
 use serde_json::json;
 
@@ -40,7 +41,7 @@ pub async fn task_update(
     _app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let id = task_id(input);
 
     if input["status"].as_str() == Some("deleted") {
@@ -102,14 +103,18 @@ pub async fn task_update(
                     result.updated_fields.join(", ")
                 ));
             }
-            output.to_string()
+            if result.success {
+                framework::ToolCallResult::ok(output.to_string())
+            } else {
+                framework::ToolCallResult::error(output.to_string())
+            }
         }
-        Err(e) => serde_json::json!({
+        Err(e) => framework::ToolCallResult::error(serde_json::json!({
             "success": false,
             "taskId": id,
             "updatedFields": [],
             "error": e
         })
-        .to_string(),
+        .to_string()),
     }
 }

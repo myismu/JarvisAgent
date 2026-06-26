@@ -116,17 +116,6 @@ impl AgentRegistry {
             });
 
             registry.register(AgentDefinition {
-                agent_role: "plan",
-                when_to_use: "Read-only planning before implementation. Produce an actionable plan, not code changes.",
-                system_prompt: "You are a planning subagent. Analyze the requested change and return a concrete implementation plan. Do not modify files.",
-                tools: READ_ONLY_RESEARCH_TOOLS,
-                disallowed_tools: &[],
-                model: None,
-                read_only_default: true,
-                max_turns: Some(15),
-            });
-
-            registry.register(AgentDefinition {
                 agent_role: "review",
                 when_to_use: "Independent read-only code review focused on bugs, risks, regressions, and missing tests.",
                 system_prompt: "You are a code review subagent. Prioritize concrete defects with file references. Do not modify files.",

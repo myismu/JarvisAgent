@@ -70,7 +70,7 @@ pub struct SessionContext {
     pub todos: Mutex<Vec<crate::infra::types::models::TodoItem>>,
     pub workspace: Mutex<Option<std::path::PathBuf>>,
     pub session_allowed: Mutex<bool>,
-    pub pending_permissions: Mutex<HashMap<String, (std::time::Instant, tokio::sync::oneshot::Sender<String>)>>,
+    pub pending_permissions: Mutex<HashMap<String, (std::time::Instant, String, tokio::sync::oneshot::Sender<String>)>>,
     pub pending_patches: Mutex<Vec<PendingSnapshotPatch>>,
     pub pending_plan_state: Mutex<HashMap<String, PendingPlanCacheEntry>>,
     /// 统一去重缓存：category → (key → entry)，替代分散的 compact/dream/skill/subagent 缓存

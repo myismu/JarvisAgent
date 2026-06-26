@@ -6,6 +6,7 @@
 //! - `load_skill()`: 按名称加载技能知识
 
 use super::super::load_all_skills;
+use crate::core::tools::framework;
 use tauri::Manager;
 
 /// 加载技能
@@ -13,7 +14,7 @@ pub async fn load_skill(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let skill_name = input["name"].as_str().unwrap_or("");
     if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
@@ -23,10 +24,10 @@ pub async fn load_skill(
         let state = cache.entry("skill".to_string()).or_default();
         if let Some(entry) = state.get_mut(&key) {
             entry.suppressed_count += 1;
-            return format!(
+            return framework::ToolCallResult::error(format!(
                 "Repeated LoadSkill blocked: skill '{}' was already loaded in this agent run. Use the previous skill content instead of loading it again. Suppressed duplicate #{}.",
                 entry.display, entry.suppressed_count
-            );
+            ));
         }
         state.insert(
             key,
@@ -43,9 +44,9 @@ pub async fn load_skill(
         Some(skill) => {
             let active = activations.get(&skill.name).copied().unwrap_or(true);
             if !active {
-                return format!("技能 '{}' 未激活，请在技能管理中启用后再使用。", skill_name);
+                return framework::ToolCallResult::error(format!("技能 '{}' 未激活，请在技能管理中启用后再使用。", skill_name));
             }
-            format!("<skill name=\"{}\">\n{}\n</skill>", skill.name, skill.body)
+            framework::ToolCallResult::ok(format!("<skill name=\"{}\">\n{}\n</skill>", skill.name, skill.body))
         }
         None => {
             let available: Vec<String> = skills
@@ -53,10 +54,10 @@ pub async fn load_skill(
                 .filter(|s| activations.get(&s.name).copied().unwrap_or(true))
                 .map(|s| s.name.clone())
                 .collect();
-            format!(
+            framework::ToolCallResult::error(format!(
                 "错误：未找到技能 '{}'。可用技能: {:?}",
                 skill_name, available
-            )
+            ))
         }
     }
 }

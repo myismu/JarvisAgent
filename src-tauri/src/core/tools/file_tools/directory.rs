@@ -11,6 +11,7 @@
 
 use std::path::Path;
 
+use crate::core::tools::framework;
 use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{is_ignored_entry_name, is_static_asset_extension};
@@ -21,11 +22,11 @@ pub async fn list_directory(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let path_str = input["path"].as_str().unwrap_or(".");
     let ws = get_workspace(app, session_id).await;
     if let Err(e) = ensure_path_permission(app, path_str, "列出", ws.as_deref()).await {
-        return e;
+        return framework::ToolCallResult::error(e);
     }
     match std::fs::read_dir(path_str) {
         Ok(entries) => {
@@ -40,12 +41,12 @@ pub async fn list_directory(
                 result.push_str(&format!("{} {}\n", file_type, file_name));
             }
             if result.is_empty() {
-                "目录为空".to_string()
+                framework::ToolCallResult::ok("目录为空".to_string())
             } else {
-                result
+                framework::ToolCallResult::ok(result)
             }
         }
-        Err(e) => format!("读取目录失败: {}", e),
+        Err(e) => framework::ToolCallResult::error(format!("读取目录失败: {}", e)),
     }
 }
 

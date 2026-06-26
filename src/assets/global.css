@@ -21,6 +21,7 @@
   --accent-blue-hover: #2563eb;
   --accent-green: #10b981;
   --accent-red: #ef4444;
+  --accent-orange: #f97316;
   --accent-yellow: #f59e0b;
   --accent-purple: #8b5cf6;
   --text-soft: #475569;
@@ -90,6 +91,7 @@ body.dark-mode {
   --accent-blue-hover: #60a5fa;
   --accent-green: #22c55e;
   --accent-red: #ef4444;
+  --accent-orange: #fb923c;
   --accent-yellow: #eab308;
   --accent-purple: #a78bfa;
   --text-soft: #d4d4d8;
@@ -299,7 +301,7 @@ body.dragging-active .editor-container {
 }
 
 .tool-status-line.error {
-  color: var(--accent-red);
+  color: var(--accent-orange);
 }
 
 .agent-turn-render {
@@ -399,7 +401,7 @@ body.dragging-active .editor-container {
   background: var(--accent-yellow);
 }
 .dev-status-dot.error {
-  background: var(--accent-red);
+  background: var(--accent-orange);
 }
 .dev-status-dot.completed {
   background: var(--accent-green);
@@ -427,7 +429,7 @@ body.dragging-active .editor-container {
   color: var(--text-muted);
 }
 .dev-thinking.streaming .dev-thinking-label {
-  color: var(--accent-yellow);
+  color: var(--accent-purple);
 }
 .dev-thinking-body {
   margin-top: 8px;
@@ -440,7 +442,7 @@ body.dragging-active .editor-container {
   overflow: hidden;
 }
 .dev-thinking.streaming .dev-thinking-body {
-  border-left-color: var(--accent-yellow);
+  border-left-color: var(--accent-purple);
 }
 
 /* 工具调用 */
@@ -490,8 +492,8 @@ body.dragging-active .editor-container {
 }
 .dev-tool.completed .dev-tool-status { color: var(--accent-green); }
 .dev-tool.running .dev-tool-status { color: var(--accent-yellow); }
-.dev-tool.error .dev-tool-status { color: var(--accent-red); }
-.dev-tool.error .dev-tool-name { color: var(--accent-red); }
+.dev-tool.error .dev-tool-status { color: var(--accent-orange); }
+.dev-tool.error .dev-tool-name { color: var(--accent-orange); }
 
 .dev-tool-body {
   padding: 0 8px 8px 24px;
@@ -512,7 +514,7 @@ body.dragging-active .editor-container {
   margin-bottom: 4px;
 }
 .dev-tool-section.error .dev-tool-section-label {
-  color: var(--accent-red);
+  color: var(--accent-orange);
 }
 .dev-tool-pre {
   font-family: var(--font-mono);
@@ -532,8 +534,8 @@ body.dragging-active .editor-container {
   margin: 0;
 }
 .dev-tool-section.error .dev-tool-pre {
-  border-color: color-mix(in srgb, var(--accent-red) 30%, transparent);
-  background: color-mix(in srgb, var(--accent-red) calc(5 * var(--agent-message-opacity) / 100), transparent);
+  border-color: color-mix(in srgb, var(--accent-orange) 30%, transparent);
+  background: color-mix(in srgb, var(--accent-orange) calc(5 * var(--agent-message-opacity) / 100), transparent);
 }
 
 /* 执行日志终端 */
@@ -641,7 +643,7 @@ body.dragging-active .editor-container {
 }
 
 .agent-tool-row.completed { color: var(--accent-green); }
-.agent-tool-row.error { color: var(--accent-red); }
+.agent-tool-row.error { color: var(--accent-orange); }
 .agent-tool-row.running { color: var(--accent-yellow); }
 
 .agent-tool-title {
@@ -683,7 +685,7 @@ body.dragging-active .editor-container {
 }
 
 .agent-tool-action-row.completed { color: var(--accent-green); }
-.agent-tool-action-row.error { color: var(--accent-red); }
+.agent-tool-action-row.error { color: var(--accent-orange); }
 .agent-tool-action-row.running { color: var(--accent-yellow); }
 
 .agent-tool-action-summary {
@@ -729,7 +731,7 @@ body.dragging-active .editor-container {
 }
 
 .agent-tool-child-row.completed { color: var(--accent-green); }
-.agent-tool-child-row.error { color: var(--accent-red); }
+.agent-tool-child-row.error { color: var(--accent-orange); }
 .agent-tool-child-row.running { color: var(--accent-yellow); }
 
 .agent-tool-field,
@@ -751,7 +753,7 @@ body.dragging-active .editor-container {
 }
 
 .agent-tool-field.error > span {
-  color: var(--accent-red);
+  color: var(--accent-orange);
 }
 
 .tool-status-icon {

@@ -12,6 +12,7 @@
 //! - 不得用于 `.ipynb` 或 notebook-shaped JSON，Notebook 必须通过 cell 级工具修改
 
 use crate::core::rollback::Patch;
+use crate::core::tools::framework;
 use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{
@@ -29,17 +30,17 @@ pub async fn write_file(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let path = resolve_path(input);
     let content = input["content"].as_str().unwrap_or("");
     // 统一行尾为 LF，避免 CRLF/LF 混乱
     let content = normalize_line_endings(content);
     let ws = get_workspace(app, session_id).await;
     if let Err(e) = ensure_path_permission(app, &path, "写入", ws.as_deref()).await {
-        return e;
+        return framework::ToolCallResult::error(e);
     }
     if is_notebook_path(&path) || looks_like_notebook_json(&content) {
-        return notebook_text_edit_rejection(&path);
+        return framework::ToolCallResult::error(notebook_text_edit_rejection(&path));
     }
 
     let file_exists = std::path::Path::new(&path).exists();
@@ -49,12 +50,12 @@ pub async fn write_file(
             Err(e) => {
                 let err_msg = e.to_string();
                 if is_locked_file_error(&err_msg) {
-                    return format!(
+                    return framework::ToolCallResult::error(format!(
                         "写入失败: 文件可能被其他智能体或程序锁定，请稍后重试。详细错误: {}",
                         e
-                    );
+                    ));
                 }
-                return format!("写入失败，无法读取原文件编码: {}", e);
+                return framework::ToolCallResult::error(format!("写入失败，无法读取原文件编码: {}", e));
             }
         }
     } else {
@@ -77,17 +78,17 @@ pub async fn write_file(
     if let (Some(orig_mtime), Ok(current_meta)) = (read_mtime, std::fs::metadata(&path)) {
         if let Ok(current_mtime) = current_meta.modified() {
             if current_mtime != orig_mtime {
-                return format!(
+                return framework::ToolCallResult::error(format!(
                     "写入中止: 文件 {} 在读取后被外部修改。请重新读取后再写入。",
                     path
-                );
+                ));
             }
         }
     }
 
     let bytes = match encode_text_preserve_encoding(&content, encoding) {
         Ok(bytes) => bytes,
-        Err(e) => return format!("写入失败: {}", e),
+        Err(e) => return framework::ToolCallResult::error(format!("写入失败: {}", e)),
     };
 
     match std::fs::write(&path, bytes) {
@@ -109,17 +110,17 @@ pub async fn write_file(
             let msg = Some(format!("{} {}", action, path));
             record_patch_to_snapshot(app, session_id, patch, msg).await;
 
-            format!("成功{} {}", action, path)
+            framework::ToolCallResult::ok(format!("成功{} {}", action, path))
         }
         Err(e) => {
             let err_msg = e.to_string();
             if is_locked_file_error(&err_msg) {
-                format!(
+                framework::ToolCallResult::error(format!(
                     "写入失败: 文件被其他智能体或程序锁定，请稍后重试。详细错误: {}",
                     e
-                )
+                ))
             } else {
-                format!("写入失败: {}", e)
+                framework::ToolCallResult::error(format!("写入失败: {}", e))
             }
         }
     }

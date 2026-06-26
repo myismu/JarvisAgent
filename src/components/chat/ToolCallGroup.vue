@@ -165,7 +165,7 @@ const technicalOpen = (group: ToolCallGroup) => group.status === "error";
 }
 
 .agent-tool-action-row.error {
-  color: var(--accent-red);
+  color: var(--accent-orange);
 }
 
 .agent-tool-action-row.running {
@@ -206,7 +206,7 @@ const technicalOpen = (group: ToolCallGroup) => group.status === "error";
 }
 
 .agent-tool-child-row.error {
-  color: var(--accent-red);
+  color: var(--accent-orange);
 }
 
 .agent-tool-child-row.running {

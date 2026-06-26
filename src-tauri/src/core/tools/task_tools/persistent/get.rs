@@ -1,5 +1,6 @@
 use super::common::task_id;
 use crate::core::orchestration::tasks::TaskManager;
+use crate::core::tools::framework;
 use crate::core::tools::framework::registry::ToolDef;
 use serde_json::json;
 
@@ -31,9 +32,9 @@ pub async fn task_get(
     _app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     match TaskManager::for_session(session_id).get(task_id(input)) {
-        Ok(task) => serde_json::to_string_pretty(&task).unwrap_or_default(),
-        Err(e) => e,
+        Ok(task) => framework::ToolCallResult::ok(serde_json::to_string_pretty(&task).unwrap_or_default()),
+        Err(e) => framework::ToolCallResult::error(e),
     }
 }

@@ -1,4 +1,5 @@
 ﻿use crate::infra::types::models::{TodoItem, TodoStatus};
+use crate::core::tools::framework;
 use crate::core::tools::framework::registry::ToolDef;
 use serde_json::json;
 use tauri::{Emitter, Manager};
@@ -134,15 +135,15 @@ pub async fn todo_write(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let todos = match parse_todos(input) {
         Ok(todos) => todos,
         Err(e) => {
-            return serde_json::json!({
+            return framework::ToolCallResult::error(serde_json::json!({
                 "success": false,
                 "error": e
             })
-            .to_string();
+            .to_string());
         }
     };
 
@@ -170,14 +171,14 @@ pub async fn todo_write(
         }),
     );
 
-    serde_json::json!({
+    framework::ToolCallResult::ok(serde_json::json!({
         "success": true,
         "oldTodos": old_todos,
         "newTodos": todos,
         "visibleTodos": visible_todos,
         "result": "Todos have been modified successfully. Continue using UpdateTodos to track progress for this session."
     })
-    .to_string()
+    .to_string())
 }
 
 #[cfg(test)]

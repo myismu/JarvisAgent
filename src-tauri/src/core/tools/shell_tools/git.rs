@@ -12,6 +12,7 @@
 //! ## Constraints
 //! - 仅允许部分安全的 read-only git 子命令
 
+use super::super::framework;
 use super::super::framework::permission::is_within_workspace;
 use super::utils::*;
 use std::process::Stdio;
@@ -24,7 +25,7 @@ pub async fn git_command(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let args_value = input["args"].as_array().unwrap();
     let args: Vec<&str> = args_value.iter().filter_map(|v| v.as_str()).collect();
 
@@ -35,10 +36,10 @@ pub async fn git_command(
         .iter()
         .any(|arg| dangerous_git_args.contains(&arg.to_lowercase().as_str()))
     {
-        return format!(
+        return framework::ToolCallResult::error(format!(
             "安全拦截：RunGitCommand 工具仅用于只读操作，禁止执行 '{}'。",
             args.join(" ")
-        );
+        ));
     }
 
     let ws = get_workspace(app, session_id).await;
@@ -48,7 +49,7 @@ pub async fn git_command(
         for arg in &args {
             if arg.contains(":") || arg.contains("..") {
                 if !is_within_workspace(arg, Some(workspace)) {
-                    return format!("沙箱限制：git 参数包含沙箱外路径 '{}'", arg);
+                    return framework::ToolCallResult::error(format!("沙箱限制：git 参数包含沙箱外路径 '{}'", arg));
                 }
             }
         }
@@ -107,14 +108,21 @@ pub async fn git_command(
                 .map(|s| s.code().unwrap_or(-1))
                 .unwrap_or(-1);
 
-            format_shell_output(
+            let output = format_shell_output(
                 &format!("git {}", args.join(" ")),
                 &stdout_out,
                 &stderr_out,
                 exit_code,
                 MAX_SHELL_OUTPUT_LEN,
-            )
+            );
+            // git 的只读命令（diff/grep/log 等）exit code 1 通常是信息性的
+            // 使用 is_exit_code_error 基于命令语义判断，而非简单的 exit_code == 0
+            if is_exit_code_error(&format!("git {}", args.join(" ")), exit_code) {
+                framework::ToolCallResult::error(output)
+            } else {
+                framework::ToolCallResult::ok(output)
+            }
         }
-        Err(e) => format!("[exit code: -1]\nGit 命令执行失败: {}", e),
+        Err(e) => framework::ToolCallResult::error(format!("[exit code: -1]\nGit 命令执行失败: {}", e)),
     }
 }

@@ -253,7 +253,7 @@ async fn extract_subagent_context(
                     {
                         if matches!(
                             name.as_str(),
-                            "SearchTools"
+                            "DiscoverTools"
                                 | "RunSubagent"
                                 | "RunSubagentsSequentially"
                                 | "CompactConversation"

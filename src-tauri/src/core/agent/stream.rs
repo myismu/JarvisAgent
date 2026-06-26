@@ -41,69 +41,95 @@ fn looks_like_textual_tool_call(text: &str) -> bool {
     text.contains("<tool_call") || text.contains("<function=") || text.contains("<parameter=")
 }
 
-/// 尝试从累积的 partial_json 中提取 ProposePlan 的 content 字段内容
-/// 返回已累积的 content 字符串（可能不完整）
-fn extract_propose_plan_content(partial_json: &str) -> Option<String> {
-    // 快速过滤：必须包含 content 关键字
-    if !partial_json.contains("content") {
+/// 尝试从 ExecuteTool 的参数中提取 ProposePlan 的 content 字段
+/// ExecuteTool 的参数格式: {"name": "ProposePlan", "args": {"title": "...", "content": "..."}}
+fn extract_deferred_propose_plan_content(partial_json: &str) -> Option<String> {
+    // 快速过滤：必须是 ExecuteTool 且包含 ProposePlan
+    if !partial_json.contains("ExecuteTool") && !partial_json.contains("\"name\"") {
+        return None;
+    }
+    if !partial_json.contains("ProposePlan") {
         return None;
     }
 
     // 尝试解析为完整 JSON
     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(partial_json) {
-        if let Some(content) = parsed.get("content").and_then(|v| v.as_str()) {
-            return Some(content.to_string());
+        if let Some(name) = parsed.get("name").and_then(|v| v.as_str()) {
+            if name == "ProposePlan" {
+                if let Some(args) = parsed.get("args") {
+                    if let Some(content) = args.get("content").and_then(|v| v.as_str()) {
+                        return Some(content.to_string());
+                    }
+                }
+            }
         }
         return None;
     }
 
-    // 不完整 JSON：尝试提取 content 字段的值
-    // 匹配 "content": "..." 或 "content":"..."
-    if let Some(start) = partial_json.find("\"content\"") {
-        let after_key = &partial_json[start + 9..];
-        // 跳过空白和冒号
-        let after_colon = after_key.trim_start().strip_prefix(':')?;
-        let after_colon = after_colon.trim_start();
-
-        // 检查是否是字符串值
-        if after_colon.starts_with('"') {
-            let after_quote = &after_colon[1..];
-            // 找到字符串的结束位置（正确处理 JSON 转义序列）
-            let mut content = String::new();
-            let mut chars = after_quote.chars().peekable();
-            while let Some(c) = chars.next() {
-                if c == '\\' {
-                    if let Some(next) = chars.next() {
-                        match next {
-                            'n' => content.push('\n'),
-                            't' => content.push('\t'),
-                            'r' => content.push('\r'),
-                            '\\' => content.push('\\'),
-                            '"' => content.push('"'),
-                            '/' => content.push('/'),
-                            'u' => {
-                                let mut hex = String::new();
-                                for _ in 0..4 {
-                                    if let Some(hc) = chars.next() {
-                                        hex.push(hc);
-                                    }
-                                }
-                                if let Ok(code) = u32::from_str_radix(&hex, 16) {
-                                    if let Some(ch) = char::from_u32(code) {
-                                        content.push(ch);
-                                    }
-                                }
-                            }
-                            _ => content.push(next),
-                        }
+    // 不完整 JSON：尝试提取 args.content 字段
+    // 先检查 name 是否为 ProposePlan
+    if let Some(name_start) = partial_json.find("\"name\"") {
+        let after_name = &partial_json[name_start + 6..];
+        if let Some(colon_pos) = after_name.find(':') {
+            let value_part = after_name[colon_pos + 1..].trim_start();
+            if value_part.starts_with('"') {
+                let name_value = &value_part[1..];
+                if let Some(end_quote) = name_value.find('"') {
+                    let name = &name_value[..end_quote];
+                    if name != "ProposePlan" {
+                        return None;
                     }
-                } else if c == '"' {
-                    break;
-                } else {
-                    content.push(c);
                 }
             }
-            return Some(content);
+        }
+    }
+
+    // 提取 args 中的 content
+    if let Some(args_start) = partial_json.find("\"args\"") {
+        let after_args = &partial_json[args_start + 6..];
+        if let Some(content_start) = after_args.find("\"content\"") {
+            let after_content_key = &after_args[content_start + 9..];
+            if let Some(colon_pos) = after_content_key.find(':') {
+                let value_part = after_content_key[colon_pos + 1..].trim_start();
+                if value_part.starts_with('"') {
+                    let after_quote = &value_part[1..];
+                    let mut content = String::new();
+                    let mut chars = after_quote.chars().peekable();
+                    while let Some(c) = chars.next() {
+                        if c == '\\' {
+                            if let Some(next) = chars.next() {
+                                match next {
+                                    'n' => content.push('\n'),
+                                    't' => content.push('\t'),
+                                    'r' => content.push('\r'),
+                                    '\\' => content.push('\\'),
+                                    '"' => content.push('"'),
+                                    '/' => content.push('/'),
+                                    'u' => {
+                                        let mut hex = String::new();
+                                        for _ in 0..4 {
+                                            if let Some(hc) = chars.next() {
+                                                hex.push(hc);
+                                            }
+                                        }
+                                        if let Ok(code) = u32::from_str_radix(&hex, 16) {
+                                            if let Some(ch) = char::from_u32(code) {
+                                                content.push(ch);
+                                            }
+                                        }
+                                    }
+                                    _ => content.push(next),
+                                }
+                            }
+                        } else if c == '"' {
+                            break;
+                        } else {
+                            content.push(c);
+                        }
+                    }
+                    return Some(content);
+                }
+            }
         }
     }
 
@@ -119,6 +145,9 @@ pub struct StreamResult {
     pub has_tool: bool,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// API 返回的终止原因（Anthropic: stop_reason, OpenAI: finish_reason）
+    /// 常见值: "end_turn", "tool_use", "max_tokens", "stop", "length"
+    pub stop_reason: Option<String>,
 }
 
 pub async fn process_stream(
@@ -144,6 +173,7 @@ pub async fn process_stream(
     let mut turn_has_tool = false;
     let mut req_input_tokens: u64 = 0;
     let mut req_output_tokens: u64 = 0;
+    let mut stop_reason: Option<String> = None;
     let mut logged_textual_tool_violation = false;
     // 追踪 ProposePlan 工具调用的流式内容，用于实时推送到前端
     let mut propose_plan_stream_sent: HashMap<usize, usize> = HashMap::new();
@@ -191,6 +221,10 @@ pub async fn process_stream(
 
             if let Some(choices) = json_val["choices"].as_array() {
                 if let Some(first) = choices.first() {
+                    // 提取终止原因（stop / length / tool_calls 等）
+                    if let Some(fr) = first["finish_reason"].as_str() {
+                        stop_reason = Some(fr.to_string());
+                    }
                     if let Some(delta) = first.get("delta") {
                         if let Some(t) = delta["content"].as_str() {
                             if !t.is_empty() {
@@ -306,22 +340,25 @@ pub async fn process_stream(
                                     {
                                         if let Some(buf) = tool_input_buffers.get_mut(block_index) {
                                             buf.push_str(args);
-                                            // 实时提取 ProposePlan 的 content 并推送到前端
+                                            // 实时提取 ProposePlan 的 content 并推送到前端（通过 ExecuteTool 调用）
                                             if let Some(ContentBlock::ToolUse { name, .. }) = current_blocks.get(*block_index) {
-                                                if name == "ProposePlan" {
-                                                    if let Some(content) = extract_propose_plan_content(buf) {
-                                                        let sent_len = propose_plan_stream_sent.get(block_index).copied().unwrap_or(0);
-                                                        if content.len() > sent_len {
-                                                            let new_chunk = &content[sent_len..];
-                                                            let _ = app.emit(
-                                                                "plan-proposal-stream",
-                                                                json!({
-                                                                    "content": new_chunk,
-                                                                    "sessionId": sid
-                                                                }),
-                                                            );
-                                                            propose_plan_stream_sent.insert(*block_index, content.len());
-                                                        }
+                                                let content = if name == "ExecuteTool" {
+                                                    extract_deferred_propose_plan_content(buf)
+                                                } else {
+                                                    None
+                                                };
+                                                if let Some(content) = content {
+                                                    let sent_len = propose_plan_stream_sent.get(block_index).copied().unwrap_or(0);
+                                                    if content.len() > sent_len {
+                                                        let new_chunk = &content[sent_len..];
+                                                        let _ = app.emit(
+                                                            "plan-proposal-stream",
+                                                            json!({
+                                                                "content": new_chunk,
+                                                                "sessionId": sid
+                                                            }),
+                                                        );
+                                                        propose_plan_stream_sent.insert(*block_index, content.len());
                                                     }
                                                 }
                                             }
@@ -352,6 +389,10 @@ pub async fn process_stream(
                         {
                             req_output_tokens += out_toks;
                         }
+                    }
+                    // 提取终止原因（end_turn / max_tokens / tool_use 等）
+                    if let Some(sr) = json_val["delta"]["stop_reason"].as_str() {
+                        stop_reason = Some(sr.to_string());
                     }
                 }
                 "content_block_start" => {
@@ -449,21 +490,24 @@ pub async fn process_stream(
                                 if let Some(partial) = delta["partial_json"].as_str() {
                                     if let Some(buf) = tool_input_buffers.get_mut(&index) {
                                         buf.push_str(partial);
-                                        // 实时提取 ProposePlan 的 content 并推送到前端
-                                        if name == "ProposePlan" {
-                                            if let Some(content) = extract_propose_plan_content(buf) {
-                                                let sent_len = propose_plan_stream_sent.get(&index).copied().unwrap_or(0);
-                                                if content.len() > sent_len {
-                                                    let new_chunk = &content[sent_len..];
-                                                    let _ = app.emit(
-                                                        "plan-proposal-stream",
-                                                        json!({
-                                                            "content": new_chunk,
-                                                            "sessionId": sid
-                                                        }),
-                                                    );
-                                                    propose_plan_stream_sent.insert(index, content.len());
-                                                }
+                                        // 实时提取 ProposePlan 的 content 并推送到前端（通过 ExecuteTool 调用）
+                                        let content = if name == "ExecuteTool" {
+                                            extract_deferred_propose_plan_content(buf)
+                                        } else {
+                                            None
+                                        };
+                                        if let Some(content) = content {
+                                            let sent_len = propose_plan_stream_sent.get(&index).copied().unwrap_or(0);
+                                            if content.len() > sent_len {
+                                                let new_chunk = &content[sent_len..];
+                                                let _ = app.emit(
+                                                    "plan-proposal-stream",
+                                                    json!({
+                                                        "content": new_chunk,
+                                                        "sessionId": sid
+                                                    }),
+                                                );
+                                                propose_plan_stream_sent.insert(index, content.len());
                                             }
                                         }
                                     }
@@ -505,6 +549,7 @@ pub async fn process_stream(
         has_tool: turn_has_tool,
         input_tokens: req_input_tokens,
         output_tokens: req_output_tokens,
+        stop_reason,
     }
 }
 

@@ -309,6 +309,21 @@ fn is_env_var_reference(token: &str) -> bool {
     false
 }
 
+/// 判断退出码是否代表真正的错误（基于命令语义）
+///
+/// `interpret_exit_code` 已知的特殊语义不算错误：
+/// - grep:1=无匹配, diff:1=不同, robocopy:1-7=成功, Test-Path:1=false 等
+/// - 只有语义为 "错误"/"失败"/"构建失败" 的才算真正的 error
+pub fn is_exit_code_error(cmd: &str, exit_code: i32) -> bool {
+    if exit_code == 0 {
+        return false;
+    }
+    let semantics = interpret_exit_code(cmd, exit_code);
+    // 只有语义明确是"错误"/"失败"/"构建失败"的才算 error
+    // "无匹配"/"不同"/"成功"/"true"/"false"/"有匹配"/"找到匹配" 等都不算
+    semantics == "错误" || semantics == "失败" || semantics == "构建失败"
+}
+
 /// 获取 run_shell 工具的平台适配描述
 pub fn shell_tool_description() -> &'static str {
     if cfg!(target_os = "windows") {

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::core::rollback::Patch;
+use crate::core::tools::framework;
 use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{
@@ -578,22 +579,22 @@ pub async fn apply_patch(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let patch = input["patch"].as_str().unwrap_or("");
     if patch.trim().is_empty() {
-        return "ApplyPatch 错误: patch 不能为空。".to_string();
+        return framework::ToolCallResult::error("ApplyPatch 错误: patch 不能为空。".to_string());
     }
     let dry_run = input_bool(input, "dry_run", false);
 
     let file_patches = match parse_apply_patch(patch) {
         Ok(patches) => patches,
-        Err(e) => return format!("ApplyPatch 解析失败: {}", e),
+        Err(e) => return framework::ToolCallResult::error(format!("ApplyPatch 解析失败: {}", e)),
     };
 
     let ws = get_workspace(app, session_id).await;
     for file_patch in &file_patches {
         if let Err(e) = ensure_path_permission(app, &file_patch.path, "应用 patch", ws.as_deref()).await {
-            return e;
+            return framework::ToolCallResult::error(e);
         }
     }
 
@@ -602,25 +603,25 @@ pub async fn apply_patch(
     for file_patch in &file_patches {
         let plan = match plan_patch(file_patch, ws.as_deref()) {
             Ok(plan) => plan,
-            Err(e) => return format!("ApplyPatch 预检失败: {}", e),
+            Err(e) => return framework::ToolCallResult::error(format!("ApplyPatch 预检失败: {}", e)),
         };
         previews.push(preview_for(file_patch, &plan));
         planned.push(plan);
     }
 
     if dry_run {
-        return format_preview(&previews, true);
+        return framework::ToolCallResult::ok(format_preview(&previews, true));
     }
 
     for plan in &planned {
         if let Err(e) = check_toctou(plan, ws.as_deref()) {
-            return e;
+            return framework::ToolCallResult::error(e);
         }
     }
 
     for plan in &planned {
         if let Err(e) = write_planned_file(plan, ws.as_deref()) {
-            return format!("ApplyPatch 写入失败，已停止。可能已有部分文件写入，请检查工作区。{}", e);
+            return framework::ToolCallResult::error(format!("ApplyPatch 写入失败，已停止。可能已有部分文件写入，请检查工作区。{}", e));
         }
     }
 
@@ -648,7 +649,7 @@ pub async fn apply_patch(
         .await;
     }
 
-    format_preview(&previews, false)
+    framework::ToolCallResult::ok(format_preview(&previews, false))
 }
 
 #[cfg(test)]

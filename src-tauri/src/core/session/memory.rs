@@ -13,6 +13,7 @@ use crate::infra::types::models::*;
 use reqwest::header::CONTENT_TYPE;
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use tauri::Emitter;
 
 /// 使用 tiktoken 精确计算 token 数，tokenizer 不可用时退化为 chars/4 估算
 pub fn estimate_tokens(messages: &[Message]) -> usize {
@@ -457,7 +458,7 @@ fn create_memory_file(path: &Path, header: &str) -> String {
 use crate::infra::config::config::AgentConfig;
 
 /// 记忆 Agent：根据最新对话自动更新全局/项目记忆文件
-pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config: AgentConfig, session_id: String) {
+pub async fn run_memory_agent(app: tauri::AppHandle, user_msg: String, assistant_reply: String, config: AgentConfig, session_id: String) {
     println!("\n[MEMORY] --- Memory Agent Started ---");
 
     if config.api_key.is_empty() {
@@ -579,6 +580,10 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
                                                     &request_json_str,
                                                     "Updated global memory",
                                                 );
+                                                let _ = app.emit("memory-updated", serde_json::json!({
+                                                    "sessionId": session_id,
+                                                    "summary": "全局记忆已更新",
+                                                }));
                                             }
                                         }
                                     }
@@ -600,6 +605,10 @@ pub async fn run_memory_agent(user_msg: String, assistant_reply: String, config:
                                     &request_json_str,
                                     "Updated global memory",
                                 );
+                                let _ = app.emit("memory-updated", serde_json::json!({
+                                    "sessionId": session_id,
+                                    "summary": "全局记忆已更新",
+                                }));
                             }
                         }
                     }

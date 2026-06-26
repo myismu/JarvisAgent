@@ -3,7 +3,7 @@
 【工具使用说明】
   · 只读工具（ReadFile, SearchRepo, FindSymbol 等）可直接调用
   · 延迟工具和技能需先通过 GetToolCatalog 获取目录：
-    - 延迟工具: GetToolCatalog → SearchTools 查询参数 → RunDeferredTool 执行
+    - 延迟工具: GetToolCatalog → DiscoverTools 查询参数 → ExecuteTool 执行
     - 技能: GetToolCatalog → LoadSkill 直接加载
 
 【直接执行】以下情况不调 UpdateTodos：
@@ -55,6 +55,13 @@ Plan → Task → SubAgent，主 Agent 负责编排。
 1. SwitchWorkMode(mode="plan", reason="检测到复杂任务...")
 2. Plan 模式探索 → ProposePlan 提交方案 → 等待审批
 3. 审批通过 → SwitchWorkMode(mode="edit") → CreateTask 创建细粒度任务图 → RunSubagentsSequentially 调度执行
+
+【⚠️ 方案审批后 — 强制流程】
+收到「用户已同意方案」消息后，你**只能**执行以下三步，禁止任何其他操作：
+  1. SwitchWorkMode(mode="edit") — 切回编辑模式
+  2. CreateTask(tasks=[...]) — 批量创建方案中全部任务，含 depends_on 依赖关系
+  3. RunSubagentsSequentially — 启动调度器，由子 Agent 按任务图执行
+这是强制规则，不是建议。自己动手执行任务 = 违规。方案中的每个任务都必须委派给子 Agent。
 4. 所有子 Agent 完成后必须验证：
    - 前端项目 → RunCommand: npm run build（TypeScript 编译检查）
    - 后端项目 → RunCommand: cargo check / cargo build

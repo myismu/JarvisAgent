@@ -30,6 +30,7 @@ const permission = usePermissionStore();
 // ── 权限状态 ──
 const permissionSessionAllowed = ref(false)
 const permissionPendingCount = ref(0)
+const pendingPermissions = ref<Array<{ id: string; message: string }>>([])
 let permissionPollTimer: ReturnType<typeof setInterval> | null = null
 
 const loadPermissionState = async () => {
@@ -38,6 +39,15 @@ const loadPermissionState = async () => {
     const state = await invoke<any>('get_permission_state', { sessionId: session.activeSessionId })
     permissionSessionAllowed.value = state.sessionAllowed ?? false
     permissionPendingCount.value = state.pendingCount ?? 0
+    pendingPermissions.value = (state.pending ?? []) as Array<{ id: string; message: string }>
+  } catch { /* ignore */ }
+}
+
+const resolvePermission = async (id: string, decision: string) => {
+  if (!session.activeSessionId) return
+  try {
+    await invoke('resolve_permission', { id, sessionId: session.activeSessionId, decision, content: null })
+    await loadPermissionState()
   } catch { /* ignore */ }
 }
 
@@ -320,9 +330,21 @@ const backgroundStatusLabel = (status: string): string => {
           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
         </svg>
         <span v-if="permissionSessionAllowed">{{ t('permission.sessionAllowedHint') }}</span>
-        <span v-else-if="permissionPendingCount > 0">{{ t('permission.pendingRequests', { count: permissionPendingCount }) }}</span>
-        <span v-else>{{ t('permission.normalMode') }}</span>
+        <span v-else-if="permissionPendingCount === 0">{{ t('permission.normalMode') }}</span>
+        <span v-else>{{ t('permission.pendingRequests', { count: permissionPendingCount }) }}</span>
         <button v-if="permissionSessionAllowed" class="perm-revoke-btn" @click="revokeSessionPermission">{{ t('permission.revoke') }}</button>
+      </div>
+
+      <!-- 权限请求卡片列表 -->
+      <div v-if="permissionPendingCount > 0 && pendingPermissions.length > 0" class="perm-cards">
+        <div v-for="req in pendingPermissions" :key="req.id" class="perm-card-inline">
+          <p class="perm-card-msg">{{ req.message }}</p>
+          <div class="perm-card-actions">
+            <button class="perm-card-btn reject" @click="resolvePermission(req.id, 'reject')">{{ t('permission.reject') }}</button>
+            <button class="perm-card-btn allow" @click="resolvePermission(req.id, 'allow')">{{ t('permission.allowOnce') }}</button>
+            <button class="perm-card-btn session" @click="resolvePermission(req.id, 'allow_session')">{{ t('permission.allowSession') }}</button>
+          </div>
+        </div>
       </div>
 
       <div class="panel-body">
@@ -641,6 +663,55 @@ const backgroundStatusLabel = (status: string): string => {
   background: rgba(245, 158, 11, 0.15);
   border-color: var(--accent-yellow);
 }
+
+/* 权限请求卡片列表（监控窗口内联展示） */
+.perm-cards {
+  padding: 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.perm-card-inline {
+  padding: 12px 14px;
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.06);
+}
+
+.perm-card-msg {
+  margin: 0 0 10px;
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.perm-card-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.perm-card-btn {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg-light);
+  font-size: 0.73rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.perm-card-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+.perm-card-btn.reject { color: var(--accent-red); border-color: rgba(239, 68, 68, 0.25); background: rgba(239, 68, 68, 0.06); }
+.perm-card-btn.reject:hover { background: rgba(239, 68, 68, 0.14); }
+.perm-card-btn.allow { color: var(--accent-blue); border-color: rgba(59, 130, 246, 0.25); background: rgba(59, 130, 246, 0.06); }
+.perm-card-btn.allow:hover { background: rgba(59, 130, 246, 0.14); }
+.perm-card-btn.session { color: var(--accent-yellow); border-color: rgba(245, 158, 11, 0.25); background: rgba(245, 158, 11, 0.06); }
+.perm-card-btn.session:hover { background: rgba(245, 158, 11, 0.14); }
 
 .panel-body {
   flex: 1;

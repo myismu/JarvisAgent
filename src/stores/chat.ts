@@ -101,6 +101,7 @@ export const useChatStore = defineStore("chat", () => {
   const sendGeneration: Record<string, number> = {};
 
   const rollbackRecalledMessage = ref("");
+  const memoryNotice = ref<string | null>(null);
 
   const jarvisResponse = computed({
     get: () => {
@@ -320,12 +321,20 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   async function continueFromApprovedPlan(title: string, _content: string) {
+    const fullMsg = [
+      `用户已同意方案「${title}」。严格按以下步骤执行，禁止自己直接执行任务：`,
+      `1. 用 ExecuteTool 执行 SwitchWorkMode(mode="edit", reason="方案已审批通过，切回编辑模式执行")`,
+      `2. 用 ExecuteTool 执行 CreateTask，批量创建方案中所有任务（传 tasks 数组，含 depends_on 依赖关系）`,
+      `3. 用 ExecuteTool 执行 RunSubagentsSequentially，启动调度器由子 Agent 执行任务`,
+      `4. 调度完成后读取报告，向用户汇报结果`,
+    ].join('\n');
     return sendToJarvis(
-      `用户已同意方案「${title}」。请按照上文中的方案内容立即开始执行。`,
+      fullMsg,
       undefined,
       undefined,
       false,
       true, // skipRunningCheck — 方案审批续跑是新的用户轮次，不应取消前一轮
+      `已同意方案「${title}」`, // 简短展示消息
     );
   }
 
@@ -366,7 +375,7 @@ export const useChatStore = defineStore("chat", () => {
     return meta.id as string;
   }
 
-  async function sendToJarvis(msg: string, thinkingOverride?: boolean, imageBase64List?: string[], resumeOnly = false, skipRunningCheck = false) {
+  async function sendToJarvis(msg: string, thinkingOverride?: boolean, imageBase64List?: string[], resumeOnly = false, skipRunningCheck = false, uiDisplayMsg?: string) {
     const session = useSessionStore();
 
     if (!msg && (!imageBase64List || imageBase64List.length === 0)) return;
@@ -416,7 +425,7 @@ export const useChatStore = defineStore("chat", () => {
     resetRenderState(sessionIdAtStart);
 
     if (!resumeOnly) {
-      let displayMsg = msg;
+      let displayMsg = uiDisplayMsg ?? msg;
       const userImages = imageBase64List && imageBase64List.length > 0 ? [...imageBase64List] : null;
       if (userImages) {
         const imageHtml = userImages
@@ -446,7 +455,7 @@ export const useChatStore = defineStore("chat", () => {
       session.appendSessionMessage(sessionIdAtStart, {
         role: "user",
         id: `user_${Date.now()}`,
-        text: msg || "",
+        text: (uiDisplayMsg ?? msg) || "",
         images: userImages,
       });
     }
@@ -470,6 +479,7 @@ export const useChatStore = defineStore("chat", () => {
             imageBase64List: imageBase64List ?? null,
             agentDisplayMode: usePreferences().agentAudience.value,
             reflectionMode: usePreferences().reflectionMode ?? "smart",
+            displayMsg: uiDisplayMsg ?? null,
           });
 
       // 用后端返回的 user_message_id 更新前端用户消息，使撤回按钮立即可见
@@ -554,7 +564,9 @@ export const useChatStore = defineStore("chat", () => {
         return;
       }
 
-      const { finalContent, finalToolBuffer } = buildFinalResponseParts(requestView, res.content);
+      const { finalContent, finalToolBuffer: streamedToolBuffer } = buildFinalResponseParts(requestView, res.content);
+      // break_loop 时后端通过 tool_execution_summary 传递工具结果，补充到 toolBuffer
+      const finalToolBuffer = streamedToolBuffer || (res as any).toolExecutionSummary || "";
       const inputTokens = res.input_tokens ?? (res as any).inputTokens ?? 0;
       const outputTokens = res.output_tokens ?? (res as any).outputTokens ?? 0;
       const sessionInputTokens = res.session_input_tokens ?? (res as any).sessionInputTokens ?? 0;
@@ -745,6 +757,7 @@ export const useChatStore = defineStore("chat", () => {
   return {
     renderTick,
     rollbackRecalledMessage,
+    memoryNotice,
     jarvisResponse,
     toolBuffer,
     contentBuffer,

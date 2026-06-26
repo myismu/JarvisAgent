@@ -33,6 +33,7 @@ pub enum AgentEventType {
     SessionSummary,
     SseEvent,
     ProtocolViolation,
+    ApiError,
 }
 
 /// 请求事件：LLM API 调用
@@ -142,6 +143,20 @@ pub struct ProtocolViolationEvent {
     pub agent_type: String,
     pub loop_count: usize,
     pub snippet: String,
+}
+
+/// API 错误事件：记录导致失败的错误详情和消息序列快照
+#[derive(Debug, Clone, Serialize)]
+pub struct ApiErrorEvent {
+    #[serde(rename = "type")]
+    pub event_type: AgentEventType,
+    pub ts: String,
+    pub session_id: String,
+    pub agent_type: String,
+    pub loop_count: usize,
+    pub error_message: String,
+    /// 最后一轮请求的 messages 数组摘要（截断到 8KB）
+    pub messages_snapshot: String,
 }
 
 // ───────────────────────── Logger ─────────────────────────
@@ -312,6 +327,36 @@ impl DebugLogger {
                 input_tokens,
                 output_tokens,
                 status: status.to_string(),
+            },
+        );
+    }
+
+    /// 记录 API 错误（含消息序列快照，用于诊断 400 等错误）
+    pub fn log_api_error(
+        &self,
+        session_id: &str,
+        agent_type: &str,
+        loop_count: usize,
+        error_message: &str,
+        messages_snapshot: &str,
+    ) {
+        // 截断消息快照到 8KB，避免日志膨胀
+        let truncated = if messages_snapshot.len() > 8192 {
+            let safe: String = messages_snapshot.chars().take(8192).collect();
+            format!("{}...[截断，原始长度 {} 字符]", safe, messages_snapshot.len())
+        } else {
+            messages_snapshot.to_string()
+        };
+        self.write_record(
+            session_id,
+            &ApiErrorEvent {
+                event_type: AgentEventType::ApiError,
+                ts: chrono::Utc::now().to_rfc3339(),
+                session_id: session_id.to_string(),
+                agent_type: agent_type.to_string(),
+                loop_count,
+                error_message: error_message.to_string(),
+                messages_snapshot: truncated,
             },
         );
     }

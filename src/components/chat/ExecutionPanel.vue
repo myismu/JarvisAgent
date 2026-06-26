@@ -133,7 +133,7 @@ const summaryText = computed(() => {
 }
 
 .agent-tool-row.error {
-  color: var(--accent-red);
+  color: var(--accent-orange);
 }
 
 .agent-tool-row.running {
@@ -166,7 +166,7 @@ const summaryText = computed(() => {
 }
 
 .agent-tool-field.error > span {
-  color: var(--accent-red);
+  color: var(--accent-orange);
 }
 
 .agent-tool-log,

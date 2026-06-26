@@ -9,6 +9,7 @@
 //! ## Dependencies
 //! - Internal: `crate::core::tools::framework::permission`, `super::workspace`, `super::common`
 
+use crate::core::tools::framework;
 use crate::core::tools::framework::permission::ensure_path_permission;
 use tauri::Manager;
 
@@ -215,29 +216,29 @@ pub async fn read_file(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let path = resolve_path(input);
     let start_line = input["start_line"].as_u64().unwrap_or(1) as usize;
     let end_line = input["end_line"].as_u64().unwrap_or(usize::MAX as u64) as usize;
 
     let ws = get_workspace(app, session_id).await;
     if let Err(e) = ensure_path_permission(app, &path, "读取", ws.as_deref()).await {
-        return e;
+        return framework::ToolCallResult::error(e);
     }
 
     // 二进制扩展名检查（在读取前拒绝）
     let file_path = std::path::Path::new(&path);
     if let Some(err_msg) = binary_file_read_error(file_path) {
-        return err_msg;
+        return framework::ToolCallResult::error(err_msg);
     }
 
     // 文件大小限制检查
     if let Ok(meta) = std::fs::metadata(&path) {
         if meta.len() > MAX_FILE_SIZE_BYTES {
-            return format!(
+            return framework::ToolCallResult::error(format!(
                 "读取错误: 文件 {} 过大 ({} bytes)，超过限制 {} bytes。\n请使用 start_line/end_line 参数分段读取。",
                 path, meta.len(), MAX_FILE_SIZE_BYTES
-            );
+            ));
         }
     }
 
@@ -255,7 +256,7 @@ pub async fn read_file(
             let start_idx = actual_start.saturating_sub(1);
 
             if start_idx >= total_lines {
-                return format!("起始行 {} 超过文件总行数 {}", start_line, total_lines);
+                return framework::ToolCallResult::error(format!("起始行 {} 超过文件总行数 {}", start_line, total_lines));
             }
 
             // 输出行数截断
@@ -303,17 +304,17 @@ pub async fn read_file(
                 }
             }
 
-            result
+            framework::ToolCallResult::ok(result)
         }
         Err(e) => {
             let err_msg = e.to_string();
             if is_locked_file_error(&err_msg) {
-                format!(
+                framework::ToolCallResult::error(format!(
                     "读取错误: 文件可能被其他智能体或程序锁定，请稍后重试。详细错误: {}",
                     e
-                )
+                ))
             } else {
-                format!("读取错误: {}", e)
+                framework::ToolCallResult::error(format!("读取错误: {}", e))
             }
         }
     }
@@ -324,15 +325,15 @@ pub async fn read_file_skeleton(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let path = resolve_path(input);
     let ws = get_workspace(app, session_id).await;
     if let Err(e) = ensure_path_permission(app, &path, "读取", ws.as_deref()).await {
-        return e;
+        return framework::ToolCallResult::error(e);
     }
     let file_path = std::path::Path::new(&path);
     if let Some(err_msg) = binary_file_read_error(file_path) {
-        return err_msg;
+        return framework::ToolCallResult::error(err_msg);
     }
     match read_text_preserve_encoding(&path) {
         Ok(decoded) => {
@@ -341,22 +342,22 @@ pub async fn read_file_skeleton(
             let mut skeleton = format!("[File: {}] (Total: {} lines)\n", path, total_lines);
             let skeleton_lines = extract_skeleton_lines(&path, &content);
             if skeleton_lines.is_empty() {
-                format!("[File: {}] (Total: {} lines)\n未提取到明显的结构骨架（可能是纯文本或不支持的语言格式）", path, total_lines)
+                framework::ToolCallResult::ok(format!("[File: {}] (Total: {} lines)\n未提取到明显的结构骨架（可能是纯文本或不支持的语言格式）", path, total_lines))
             } else {
                 skeleton.push_str(&skeleton_lines.join("\n"));
                 skeleton.push('\n');
-                skeleton
+                framework::ToolCallResult::ok(skeleton)
             }
         }
         Err(e) => {
             let err_msg = e.to_string();
             if is_locked_file_error(&err_msg) {
-                format!(
+                framework::ToolCallResult::error(format!(
                     "读取错误: 文件可能被其他智能体或程序锁定，请稍后重试。详细错误: {}",
                     e
-                )
+                ))
             } else {
-                format!("读取错误: {}", e)
+                framework::ToolCallResult::error(format!("读取错误: {}", e))
             }
         }
     }

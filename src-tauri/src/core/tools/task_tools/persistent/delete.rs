@@ -1,4 +1,5 @@
 use super::common::{task_delete_inner, task_id};
+use crate::core::tools::framework;
 use crate::core::tools::framework::registry::ToolDef;
 use serde_json::json;
 
@@ -30,6 +31,6 @@ pub async fn task_delete(
     _app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     task_delete_inner(session_id, task_id(input))
 }

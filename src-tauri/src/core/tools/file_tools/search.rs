@@ -12,6 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::core::tools::framework;
 use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{
@@ -238,14 +239,14 @@ pub async fn search_repo(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let pattern = input["pattern"].as_str().unwrap_or("");
     let dir_str = input["dir"].as_str().unwrap_or(".");
     let use_regex = input["regex"].as_bool().unwrap_or(false);
     let case_insensitive = input["case_insensitive"].as_bool().unwrap_or(false);
     let ws = get_workspace(app, session_id).await;
     if let Err(e) = ensure_path_permission(app, dir_str, "搜索", ws.as_deref()).await {
-        return e;
+        return framework::ToolCallResult::error(e);
     }
 
     // 如果启用了正则，先验证正则表达式是否有效
@@ -255,7 +256,7 @@ pub async fn search_repo(
             .build();
         match re {
             Ok(re) => Some(re),
-            Err(e) => return format!("正则表达式无效: {}", e),
+            Err(e) => return framework::ToolCallResult::error(format!("正则表达式无效: {}", e)),
         }
     } else {
         None
@@ -298,9 +299,9 @@ pub async fn search_repo(
         &options,
     );
     if result.is_empty() {
-        format!("未找到包含 '{}' 的内容。", pattern)
+        framework::ToolCallResult::ok(format!("未找到包含 '{}' 的内容。", pattern))
     } else {
-        result
+        framework::ToolCallResult::ok(result)
     }
 }
 

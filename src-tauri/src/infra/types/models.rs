@@ -33,6 +33,9 @@ pub struct JarvisResult {
     /// 后端为用户消息分配的 UUID，前端用于关联撤回按钮
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_message_id: Option<String>,
+    /// break_loop 时的工具执行结果摘要（前端用于 toolBuffer，避免丢失工具执行日志）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_execution_summary: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]

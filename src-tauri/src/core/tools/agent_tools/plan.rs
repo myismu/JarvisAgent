@@ -253,8 +253,8 @@ pub async fn propose_plan(
     {
         let mut perms = ctx.pending_permissions.lock().await;
         let now = std::time::Instant::now();
-        perms.retain(|_, (ts, _)| now.duration_since(*ts).as_secs() < 300);
-        perms.insert(id.clone(), (std::time::Instant::now(), tx));
+        perms.retain(|_, (ts, _, _)| now.duration_since(*ts).as_secs() < 300);
+        perms.insert(id.clone(), (std::time::Instant::now(), format!("方案审批: {}", title), tx));
     }
 
     // Plan documents are persisted through session memory in SQLite.

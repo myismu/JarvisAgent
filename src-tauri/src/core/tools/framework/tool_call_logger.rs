@@ -6,7 +6,7 @@
 //!
 //! ## Key Exports
 //! - `ToolCallLogger`: 全局日志写入器（单例，线程安全）
-//! - `log_deferred_call()`: 记录 RunDeferredTool 调用（含校验失败和执行结果）
+//! - `log_deferred_call()`: 记录 ExecuteTool 调用（含校验失败和执行结果）
 //! - `log_core_call()`: 记录核心工具直接调用
 //! - `flush_session_summary()`: 生成 session 级汇总统计
 //!
@@ -89,6 +89,8 @@ pub struct DiagnosisInfo {
 pub struct ToolCallRecord {
     pub ts: String,
     pub session_id: String,
+    /// 调用来源："main"（主 Agent 循环）或 "subagent"
+    pub agent_type: String,
     pub seq: u64,
     pub tool: String,
     pub args_summary: serde_json::Value,
@@ -114,7 +116,7 @@ struct LastError {
 
 pub struct SessionToolAudit {
     seq: u64,
-    /// 本 session 内是否调用过 SearchTools（用于 diagnosis.followed_protocol）
+    /// 本 session 内是否调用过 DiscoverTools（用于 diagnosis.followed_protocol）
     searched_tools_names: Vec<String>,
     /// 最近一次未纠正的错误
     last_error: Option<LastError>,
@@ -170,7 +172,7 @@ impl SessionToolAudit {
         if let Some(ref mut last_err) = self.last_error {
             // 本次调用是对上次错误的纠正尝试
             let is_related = current_tool == last_err.tool_name
-                || (last_err.error_type == ErrorType::NotDeferred && current_tool == "RunDeferredTool");
+                || (last_err.error_type == ErrorType::NotDeferred && current_tool == "ExecuteTool");
             if is_related {
                 last_err.correction_attempts += 1;
                 self.total_corrections += 1;
@@ -196,7 +198,7 @@ impl SessionToolAudit {
     fn abandon_unrelated_error(&mut self, current_tool: &str) {
         if let Some(ref last_err) = self.last_error {
             let is_related = current_tool == last_err.tool_name
-                || (last_err.error_type == ErrorType::NotDeferred && current_tool == "RunDeferredTool");
+                || (last_err.error_type == ErrorType::NotDeferred && current_tool == "ExecuteTool");
             if !is_related {
                 self.unresolved_errors += 1;
                 self.last_error = None;
@@ -209,7 +211,7 @@ fn infer_strategy(error_type: &ErrorType, current_tool: &str) -> CorrectionStrat
     match error_type {
         ErrorType::ToolNotFound => CorrectionStrategy::SwitchTool,
         ErrorType::NotDeferred => {
-            if current_tool == "RunDeferredTool" {
+            if current_tool == "ExecuteTool" {
                 CorrectionStrategy::RetryWithFix
             } else {
                 CorrectionStrategy::SwitchTool
@@ -238,10 +240,11 @@ impl ToolCallLogger {
         }
     }
 
-    /// 记录 RunDeferredTool 调用
+    /// 记录 ExecuteTool 调用
     pub fn log_deferred_call(
         &self,
         session_id: &str,
+        agent_type: &str,
         tool_name: &str,
         args: &serde_json::Value,
         intent: &str,
@@ -274,8 +277,9 @@ impl ToolCallLogger {
         let record = ToolCallRecord {
             ts: chrono::Utc::now().to_rfc3339(),
             session_id: session_id.to_string(),
+            agent_type: agent_type.to_string(),
             seq,
-            tool: "RunDeferredTool".to_string(),
+            tool: "ExecuteTool".to_string(),
             args_summary: extract_deferred_args_summary(tool_name, args),
             intent: intent.to_string(),
             work_mode: work_mode.to_string(),
@@ -298,6 +302,7 @@ impl ToolCallLogger {
     pub fn log_core_call(
         &self,
         session_id: &str,
+        agent_type: &str,
         tool_name: &str,
         args: &serde_json::Value,
         intent: &str,
@@ -319,6 +324,7 @@ impl ToolCallLogger {
         let record = ToolCallRecord {
             ts: chrono::Utc::now().to_rfc3339(),
             session_id: session_id.to_string(),
+            agent_type: agent_type.to_string(),
             seq,
             tool: tool_name.to_string(),
             args_summary: extract_core_args_summary(tool_name, args),
@@ -339,7 +345,7 @@ impl ToolCallLogger {
         self.write_record(session_id, &record);
     }
 
-    /// 检查某工具是否在本 session 内被 SearchTools 查询过
+    /// 检查某工具是否在本 session 内被 DiscoverTools 查询过
     pub fn has_searched(&self, session_id: &str, tool_name: &str) -> bool {
         let sessions = self.sessions.lock().unwrap();
         sessions
@@ -348,7 +354,7 @@ impl ToolCallLogger {
             .unwrap_or(false)
     }
 
-    /// 记录 SearchTools 调用（更新审计状态）
+    /// 记录 DiscoverTools 调用（更新审计状态）
     pub fn record_search_tools(&self, session_id: &str, matched_names: Vec<String>) {
         let mut sessions = self.sessions.lock().unwrap();
         let audit = sessions
@@ -427,7 +433,7 @@ impl Default for ToolCallLogger {
 
 // ───────────────────────── 辅助函数 ─────────────────────────
 
-/// 从 RunDeferredTool 的 args 中提取关键字段作为日志摘要（避免序列化完整参数）
+/// 从 ExecuteTool 的 args 中提取关键字段作为日志摘要（避免序列化完整参数）
 fn extract_deferred_args_summary(tool_name: &str, args: &serde_json::Value) -> serde_json::Value {
     let mut summary = serde_json::json!({ "name": tool_name });
 
@@ -437,16 +443,7 @@ fn extract_deferred_args_summary(tool_name: &str, args: &serde_json::Value) -> s
     if let Some(inner_args) = source {
         for key in &["path", "command", "query", "pattern", "content"] {
             if let Some(val) = inner_args.get(*key) {
-                let display = if let Some(s) = val.as_str() {
-                    if s.len() > 200 {
-                        serde_json::Value::String(format!("{}...(truncated)", &s[..200]))
-                    } else {
-                        val.clone()
-                    }
-                } else {
-                    val.clone()
-                };
-                summary[*key] = display;
+                summary[*key] = val.clone();
             }
         }
     }
@@ -458,16 +455,7 @@ fn extract_core_args_summary(tool_name: &str, args: &serde_json::Value) -> serde
     let mut summary = serde_json::json!({ "name": tool_name });
     for key in &["path", "command", "query", "pattern", "prompt", "skill"] {
         if let Some(val) = args.get(*key) {
-            let display = if let Some(s) = val.as_str() {
-                if s.len() > 200 {
-                    serde_json::Value::String(format!("{}...(truncated)", &s[..200]))
-                } else {
-                    val.clone()
-                }
-            } else {
-                val.clone()
-            };
-            summary[*key] = display;
+            summary[*key] = val.clone();
         }
     }
     summary

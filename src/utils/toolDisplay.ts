@@ -1,4 +1,4 @@
-import { i18n } from "../i18n";
+﻿import { i18n } from "../i18n";
 import type { AgentDisplayMode, AgentToolCallView, AgentToolStatus } from "../types";
 
 const t = i18n.global.t;
@@ -79,7 +79,7 @@ const TOOL_DESCRIPTORS: Record<string, ToolDescriptor> = {
   searchrepo: { category: "search", key: "searchRepo" },
   searchtext: { category: "search", key: "searchText" },
   findfiles: { category: "search", key: "findFiles" },
-  searchtools: { category: "search", key: "searchTools" },
+  discovertools: { category: "search", key: "discoverTools" },
   runcommand: { category: "command", key: "runCommand" },
   startbackgroundcommand: { category: "command", key: "startBackgroundCommand" },
   checkbackgroundcommand: { category: "command", key: "checkBackgroundCommand" },
@@ -116,13 +116,13 @@ function toolKey(name: string) {
 }
 
 /**
- * RunDeferredTool 包装了真实工具调用，从 input JSON 中提取内部工具名。
+ * ExecuteTool 包装了真实工具调用，从 input JSON 中提取内部工具名。
  * 返回 displayName 为核心工具名，同时附加内部工具名：如 "执行工具 → ReadFile"
  * 同时返回解析后的内部 input（args 字段），用于生成 targeted 描述。
  */
 export function unwrapDeferredTool(tool: AgentToolCallView): { displayName: string; innerName: string | null; input: Record<string, unknown> | null } {
   const name = normalizeToolName(tool.name);
-  if (toolKey(name) !== "rundeferredtool") {
+  if (toolKey(name) !== "executetool") {
     return { displayName: name, innerName: null, input: parseInputSummary(tool.input) };
   }
   const parsed = parseInputSummary(tool.input);
@@ -147,7 +147,7 @@ function hasDependencyUpdate(tools: AgentToolCallView[]) {
       text.includes("blocked_by") ||
       text.includes("dependency") ||
       text.includes("dependencies") ||
-      text.includes("依赖")
+      text.includes("渚濊禆")
     );
   });
 }
@@ -386,7 +386,7 @@ export function groupAdjacentToolCalls(tools: AgentToolCallView[]): ToolCallGrou
 }
 
 export function toolActionLabel(name: string, status: AgentToolStatus, tool?: AgentToolCallView) {
-  // RunDeferredTool: 用内部工具名查找 descriptor 和 targeted 描述
+  // ExecuteTool: 用内部工具名查找 descriptor 和 targeted 描述
   const unwrapped = tool ? unwrapDeferredTool(tool) : null;
   const lookupName = unwrapped?.innerName ?? name;
   const lookupTool = unwrapped?.innerName && tool
@@ -440,7 +440,7 @@ export function summarizeToolGroupsForPanel(groups: ToolCallGroup[], totalCount:
   return translate("tools.summary.panel", { categories: visible, count: totalCount });
 }
 
-/** 将全量参数/输出截断为摘要文本（前端自行控制显示长度） */
+/** 将全局参数/输出截断为摘要文本（前端自行控制显示长度）*/
 export function truncateToolContent(content: string | undefined, maxLen = 120): string {
   if (!content) return "";
   const s = content.trim();

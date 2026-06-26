@@ -48,6 +48,10 @@ struct PipelineState {
     api_key: String,
     base_url: String,
     model_id: String,
+    /// 用户消息的简短展示版本（用于 UI 存储，刷新后仍显示简短版）
+    display_msg: Option<String>,
+    /// break_loop 时的工具执行结果摘要（传递给前端 toolBuffer）
+    tool_execution_summary: Option<String>,
     api_format: crate::infra::llm::api_format::ApiFormat,
     client: reqwest::Client,
     system_prompt: String,
@@ -94,6 +98,81 @@ fn normalize_agent_audience(audience: &str) -> &'static str {
     }
 }
 
+/// 防御性修复：确保每个 Assistant(tool_calls) 后跟 ToolResult 消息。
+///
+/// 流式中断、并发修改、break_loop 等边缘 case 可能导致
+/// Assistant 消息包含 ToolUse 块但后续没有对应的 ToolResult。
+/// API 要求 tool_calls 后必须跟 tool_result，否则返回 400。
+fn fix_broken_tool_call_pairs(messages: &mut Vec<Message>) {
+    let mut i = 0;
+    while i < messages.len() {
+        // 检查当前消息是否为包含 ToolUse 的 Assistant 消息
+        let has_tool_use = match &messages[i] {
+            Message::Assistant { content: Content::Multiple(blocks) } => {
+                blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }))
+            }
+            _ => false,
+        };
+
+        if !has_tool_use {
+            i += 1;
+            continue;
+        }
+
+        // 收集所有 ToolUse 的 tool_use_id
+        let tool_use_ids: Vec<String> = match &messages[i] {
+            Message::Assistant { content: Content::Multiple(blocks) } => {
+                blocks.iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            }
+            _ => vec![],
+        };
+
+        // 检查下一条消息是否包含对应的 ToolResult
+        let next_has_results = if i + 1 < messages.len() {
+            match &messages[i + 1] {
+                Message::User { content: Content::Multiple(blocks) } => {
+                    let result_ids: Vec<&str> = blocks.iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    tool_use_ids.iter().all(|id| result_ids.contains(&id.as_str()))
+                }
+                _ => false,
+            }
+        } else {
+            false
+        };
+
+        if !next_has_results {
+            println!(
+                "[JARVIS] 防御性修复: Assistant(tool_calls) 后缺少 ToolResult，注入占位结果 (index={})",
+                i
+            );
+            // 为缺失的 tool_use_id 注入占位 ToolResult
+            let placeholder_blocks: Vec<ContentBlock> = tool_use_ids.iter()
+                .map(|id| ContentBlock::ToolResult {
+                    tool_use_id: id.clone(),
+                    content: "[系统注入：工具结果因中断丢失，已自动修复消息序列]".to_string(),
+                })
+                .collect();
+            messages.insert(i + 1, Message::User {
+                content: Content::Multiple(placeholder_blocks),
+            });
+            // 跳过刚插入的消息
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+}
+
 fn normalize_agent_work_mode(mode: &str) -> &'static str {
     match mode {
         "chat" => "chat",
@@ -111,6 +190,7 @@ impl PipelineState {
         image_base64_list: Option<Vec<String>>,
         _agent_display_mode: Option<String>,
         reflection_mode_override: Option<String>,
+        display_msg: Option<String>,
         _inject_user_message: bool,
         app: tauri::AppHandle,
         session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
@@ -180,8 +260,17 @@ impl PipelineState {
             (audience, work_mode)
         };
         *ctx.agent_audience.lock().await = audience.clone();
-        *ctx.agent_work_mode.lock().await = work_mode.clone();
-        let system_prompt = crate::core::agent::prompts::get_system_prompt(&audience, &work_mode);
+        // 工作模式：新会话从用户偏好初始化，已有历史的会话跨 pipeline 保持
+        // 这样 plan → break_loop → 审批 → 新 pipeline 时不会被重置为 edit
+        {
+            let has_history = !ctx.memory.lock().await.messages.is_empty();
+            let mut mode = ctx.agent_work_mode.lock().await;
+            if !has_history {
+                *mode = work_mode.clone();
+            }
+        }
+        let current_work_mode = ctx.agent_work_mode.lock().await.clone();
+        let system_prompt = crate::core::agent::prompts::get_system_prompt(&audience, &current_work_mode);
 
         let has_images = image_base64_list
             .as_ref()
@@ -318,9 +407,11 @@ impl PipelineState {
             reflection_mode: resolved_reflection_mode,
             total_reflections: 0,
             consecutive_reflection_nos: 0,
+            display_msg,
+            tool_execution_summary: None,
         };
 
-        if detected_intent == "TASK_PLAN" && work_mode != "plan" {
+        if detected_intent == "TASK_PLAN" && current_work_mode != "plan" {
             println!("[JARVIS] 意图前置拦截：TASK_PLAN 意图，首轮强制切换到 Plan 模式");
             *state.ctx.agent_work_mode.lock().await = "plan".to_string();
             state.system_prompt = crate::core::agent::prompts::get_system_prompt(&audience, "plan");
@@ -364,6 +455,7 @@ impl PipelineState {
                     session_input_tokens: 0,
                     session_output_tokens: 0,
                     user_message_id: None,
+                    tool_execution_summary: None,
                 }));
             }
             println!("[JARVIS] 用户确认了危险操作，继续执行");
@@ -381,6 +473,7 @@ impl PipelineState {
                 session_input_tokens: 0,
                 session_output_tokens: 0,
                 user_message_id: None,
+                tool_execution_summary: None,
             }));
         }
 
@@ -447,7 +540,7 @@ impl PipelineState {
             let mut active_sid = Some(self.sid.clone());
             self.initial_msg_index = inject_user_message(
                 &mut session,
-                &self.msg,
+                self.display_msg.as_deref().unwrap_or(&self.msg),
                 &self.image_base64_list,
                 &mut active_sid,
             );
@@ -488,8 +581,11 @@ impl PipelineState {
         }
     }
 
-    /// 处理调度器事件，返回 true 表示有实质性事件被注入对话
-    async fn handle_sched_event(&mut self, event: crate::core::orchestration::scheduler::SchedulerEvent) -> bool {
+    /// 处理调度器事件。
+    /// 返回 (needs_llm, scheduler_done)：
+    /// - needs_llm: 有事件注入了对话，需要 LLM 处理
+    /// - scheduler_done: 调度器已结束（AllDone），调用方应退出等待
+    async fn handle_sched_event(&mut self, event: crate::core::orchestration::scheduler::SchedulerEvent) -> (bool, bool) {
         use crate::core::orchestration::scheduler::SchedulerEvent;
         match event {
             SchedulerEvent::TaskCompleted { task_id, subject, tokens: _ } => {
@@ -498,7 +594,7 @@ impl PipelineState {
                     "content": format!("\n> [OK] Task #{} 完成: {}\n", task_id, subject),
                     "sessionId": self.sid,
                 }));
-                false // 完成不需要中断 LLM
+                (false, false)
             }
             SchedulerEvent::TaskFailed { task_id, subject, reason, error_detail } => {
                 println!("[JARVIS] 调度器: Task #{} ({}) 失败: {}", task_id, subject, reason);
@@ -513,7 +609,7 @@ impl PipelineState {
                         task_id, subject, reason, error_detail
                     )),
                 }, "internal");
-                true // 需要 LLM 立即处理
+                (true, false)
             }
             SchedulerEvent::AllDone { completed, failed, report } => {
                 println!("[JARVIS] 调度器: 全部完成 {}成功 {}失败", completed, failed);
@@ -529,7 +625,7 @@ impl PipelineState {
                         report
                     )),
                 }, "internal");
-                true // 需要 LLM 处理最终报告
+                (true, true)
             }
         }
     }
@@ -626,27 +722,33 @@ impl PipelineState {
                             Ok(Ok(Some(resp))) => (Some(resp), Some(rx)),
                             Ok(Ok(None)) => { *self.ctx.scheduler_rx.lock().await = Some(rx); continue; },
                             Ok(Err(e)) => {
-                                // API 调用失败，设置错误信息并退出循环
+                                // API 调用失败 → 记录诊断日志后返回 Err
                                 println!("[JARVIS] API 调用失败，终止主循环: {}", e);
-                                self.final_answer = format!("API 调用失败: {}", e);
-                                let _ = self.app.emit(
-                                    "chat-stream",
-                                    json!({
-                                        "content": format!("\n> ✕ **API 调用失败:** {}\n", e),
-                                        "sessionId": self.sid,
-                                    }),
+                                let messages_json = {
+                                    let session = self.ctx.memory.lock().await;
+                                    serde_json::to_string_pretty(&session.messages).unwrap_or_default()
+                                };
+                                crate::infra::debug_logger::debug_logger().log_api_error(
+                                    &self.sid, "MAIN", self.total_loop_count + 1,
+                                    &e.to_string(), &messages_json,
                                 );
                                 *self.ctx.scheduler_rx.lock().await = Some(rx);
-                                break;
+                                return Err(e.into());
                             }
                             Err(_) => { *self.ctx.scheduler_rx.lock().await = Some(rx); continue; },
                         }
                     }
                     event = rx.recv() => {
                         if let Some(ev) = event {
-                            self.handle_sched_event(ev).await;
+                            let (_needs_llm, scheduler_done) = self.handle_sched_event(ev).await;
+                            if !scheduler_done {
+                                // 调度器未结束，放回 receiver 继续等
+                                *self.ctx.scheduler_rx.lock().await = Some(rx);
+                            }
+                            // scheduler_done 时 handle_sched_event 已清除 rx，不放回
+                        } else {
+                            // channel 关闭（调度器异常退出），不放回
                         }
-                        *self.ctx.scheduler_rx.lock().await = Some(rx);
                         self.loop_count += 1;
                         self.total_loop_count += 1;
                         continue;
@@ -662,17 +764,17 @@ impl PipelineState {
                     Ok(Some(r)) => r,
                     Ok(None) => continue,
                     Err(e) => {
-                        // API 调用失败，设置错误信息并退出循环
+                        // API 调用失败 → 记录诊断日志后返回 Err
                         println!("[JARVIS] API 调用失败，终止主循环: {}", e);
-                        self.final_answer = format!("API 调用失败: {}", e);
-                        let _ = self.app.emit(
-                            "chat-stream",
-                            json!({
-                                "content": format!("\n> ✕ **API 调用失败:** {}\n", e),
-                                "sessionId": self.sid,
-                            }),
+                        let messages_json = {
+                            let session = self.ctx.memory.lock().await;
+                            serde_json::to_string_pretty(&session.messages).unwrap_or_default()
+                        };
+                        crate::infra::debug_logger::debug_logger().log_api_error(
+                            &self.sid, "MAIN", self.total_loop_count + 1,
+                            &e.to_string(), &messages_json,
                         );
-                        break;
+                        return Err(e.into());
                     }
                 };
                 (Some(resp), None)
@@ -683,7 +785,7 @@ impl PipelineState {
             // 流式处理（含一次断流重试）
             let stream_result = {
                 let mut stream = response.bytes_stream().eventsource();
-                let result = process_stream(
+                let mut result = process_stream(
                     &mut stream,
                     is_openai,
                     &self.app,
@@ -702,7 +804,7 @@ impl PipelineState {
                     match self.call_api_with_retry(&req_json).await {
                         Ok(Some(resp)) => {
                             let mut stream2 = resp.bytes_stream().eventsource();
-                            process_stream(
+                            result = process_stream(
                                 &mut stream2,
                                 is_openai,
                                 &self.app,
@@ -712,18 +814,16 @@ impl PipelineState {
                                 &self.cancel_token,
                                 StreamConfig::default(),
                             )
-                            .await
+                            .await;
                         }
-                        Ok(None) => result,
+                        Ok(None) => {}
                         Err(e) => {
-                            // 重试失败，使用原始结果
                             println!("[JARVIS] 流式重试失败: {}", e);
-                            result
                         }
                     }
-                } else {
-                    result
                 }
+
+                result
             };
 
             let (
@@ -744,6 +844,19 @@ impl PipelineState {
                 stream_result.output_tokens,
             );
 
+            // 检测输出截断状态
+            let is_truncated = matches!(
+                stream_result.stop_reason.as_deref(),
+                Some("max_tokens") | Some("length")
+            );
+            if is_truncated {
+                println!(
+                    "[JARVIS] 检测到输出截断 (stop_reason={:?})，将在工具结果中提示 LLM",
+                    stream_result.stop_reason
+                );
+            }
+
+            let tool_input_buffers_count = tool_input_buffers.len();
             self.req_input_tokens += turn_in_tokens;
             self.req_output_tokens += turn_out_tokens;
             if turn_in_tokens > 0 || turn_out_tokens > 0 {
@@ -792,7 +905,7 @@ impl PipelineState {
 
             // 工具执行
             let work_mode = self.ctx.agent_work_mode.lock().await.clone();
-            let (tool_results, manual_compact, sub_in, sub_out) = execute_tool_calls(
+            let (mut tool_results, manual_compact, sub_in, sub_out) = execute_tool_calls(
                 &mut current_blocks,
                 tool_input_buffers,
                 &self.app,
@@ -806,6 +919,34 @@ impl PipelineState {
             .await;
             self.req_input_tokens += sub_in;
             self.req_output_tokens += sub_out;
+
+            // 截断感知：如果输出被 max_tokens 截断导致工具参数不完整，
+            // 在错误的 ToolResult 中追加明确提示，让 LLM 知道原因并调整策略
+            if is_truncated && turn_has_tool {
+                let has_parse_error = tool_results.iter().any(|block| {
+                    if let ContentBlock::ToolResult { content, .. } = block {
+                        content.contains("参数解析失败")
+                    } else {
+                        false
+                    }
+                });
+                if has_parse_error {
+                    // 找到最后一个解析失败的 ToolResult，追加截断提示
+                    for block in tool_results.iter_mut().rev() {
+                        if let ContentBlock::ToolResult { content, .. } = block {
+                            if content.contains("参数解析失败") {
+                                content.push_str(
+                                    "\n\n⚠️ 上述参数解析失败的原因是：你的输出被 max_tokens 截断了，\
+                                    工具调用的 JSON 参数不完整。请减少单次输出量——\
+                                    每次只创建 1-2 个文件，而非一次性生成所有文件。"
+                                );
+                                break;
+                            }
+                        }
+                    }
+                    println!("[JARVIS] 已在 ToolResult 中注入截断提示");
+                }
+            }
 
             let _ = self.app.emit(
                 "chat-turn-end",
@@ -835,8 +976,24 @@ impl PipelineState {
             {
                 let mut flags = self.ctx.tool_result_flags.lock().await;
                 let should_break = flags.values().any(|(brk, _)| *brk);
+                if should_break || tool_results.is_empty() {
+                    println!(
+                        "[JARVIS] break诊断: should_break={}, flags={:?}, tool_results.len()={}",
+                        should_break,
+                        flags.iter().map(|(k, (brk, err))| format!("{}→break={},err={}", k, brk, err)).collect::<Vec<_>>(),
+                        tool_results.len()
+                    );
+                }
                 flags.clear();
                 if should_break {
+                    // break 前必须存储 tool_results，否则下次 pipeline 会因
+                    // Assistant(tool_calls) 后缺少 ToolResult 导致 API 400 错误
+                    if !tool_results.is_empty() {
+                        let mut session = self.ctx.memory.lock().await;
+                        append_message(&mut session, Message::User {
+                            content: Content::Multiple(tool_results.clone()),
+                        }, "chat");
+                    }
                     let tool_summary: String = tool_results.iter()
                         .filter_map(|block| {
                             if let ContentBlock::ToolResult { content, .. } = block {
@@ -847,6 +1004,8 @@ impl PipelineState {
                         })
                         .collect::<Vec<_>>()
                         .join("\n\n");
+                    // 保存工具结果摘要，传递给前端 toolBuffer
+                    self.tool_execution_summary = if tool_summary.is_empty() { None } else { Some(tool_summary.clone()) };
                     self.final_answer = if current_text_this_turn.trim().is_empty() {
                         tool_summary
                     } else if tool_summary.is_empty() {
@@ -860,7 +1019,11 @@ impl PipelineState {
             }
 
             // 判断是否继续循环
-            println!("[JARVIS] 主循环: tool_results.is_empty()={}, tool_results.len()={}", tool_results.is_empty(), tool_results.len());
+            println!(
+                "[JARVIS] 主循环判断: tool_results.is_empty()={}, tool_results.len()={}, has_tool={}, tool_input_buffers.len()={}, text_len={}",
+                tool_results.is_empty(), tool_results.len(), turn_has_tool,
+                tool_input_buffers_count, current_text_this_turn.len()
+            );
             if tool_results.is_empty() {
                 self.final_answer = current_text_this_turn;
                 // 模型可能只返回 thinking 而没有 text（DeepSeek 等模型常见）
@@ -940,6 +1103,39 @@ impl PipelineState {
                         "模型已给出最终回复",
                     );
                 }
+
+                // 调度器仍在运行时，不退出循环——等待调度器事件
+                if self.ctx.scheduler_rx.lock().await.is_some() {
+                    println!("[JARVIS] 主循环: LLM 无工具调用但调度器仍在运行，等待调度器事件");
+                    // 取出 receiver，释放锁后再 await
+                    let rx_opt = self.ctx.scheduler_rx.lock().await.take();
+                    if let Some(mut rx) = rx_opt {
+                        tokio::select! {
+                            event = rx.recv() => {
+                                if let Some(ev) = event {
+                                    let (_needs_llm, scheduler_done) = self.handle_sched_event(ev).await;
+                                    if !scheduler_done {
+                                        // 调度器未结束，放回 receiver 继续等
+                                        *self.ctx.scheduler_rx.lock().await = Some(rx);
+                                    }
+                                    // scheduler_done=true 时 handle_sched_event 已清除 rx，不放回
+                                } else {
+                                    // channel 关闭 = 调度器异常退出，不放回
+                                }
+                            }
+                            _ = self.cancel_token.cancelled() => {
+                                *self.ctx.scheduler_rx.lock().await = Some(rx);
+                            }
+                        }
+                    }
+                    // rx 已被取走（AllDone/异常/取消），回到循环顶部
+                    // 如果 rx 被放回 → 下一轮继续等待
+                    // 如果 rx 未放回 → 下一轮 scheduler_rx.is_some()=false → break
+                    self.loop_count += 1;
+                    self.total_loop_count += 1;
+                    continue;
+                }
+
                 break;
             } else {
                 println!("[JARVIS] 主循环: tool_results 不为空，添加到历史消息并继续循环");
@@ -1165,8 +1361,9 @@ impl PipelineState {
         let reply_for_memory = self.final_answer.clone();
         let cfg_clone = self.cfg.clone();
         let sid_for_memory = self.sid.clone();
+        let app_for_memory = self.app.clone();
         tokio::spawn(async move {
-            run_memory_agent(self.user_msg_for_memory, reply_for_memory, cfg_clone, sid_for_memory).await;
+            run_memory_agent(app_for_memory, self.user_msg_for_memory, reply_for_memory, cfg_clone, sid_for_memory).await;
         });
 
         let status = if was_cancelled {
@@ -1229,6 +1426,7 @@ impl PipelineState {
             session_input_tokens,
             session_output_tokens,
             user_message_id: None,
+            tool_execution_summary: self.tool_execution_summary,
         }
     }
 
@@ -1502,6 +1700,10 @@ impl PipelineState {
         } else {
             messages
         };
+
+        // 防御性检查：确保每个 Assistant(tool_calls) 后跟 ToolResult
+        // 修复流式中断、并发修改等边缘 case 导致的消息序列断裂
+        fix_broken_tool_call_pairs(&mut history_snapshot);
 
         restore_image_data(&mut history_snapshot);
         inject_context_into_history(
@@ -2071,6 +2273,7 @@ pub async fn run_pipeline(
     image_base64_list: Option<Vec<String>>,
     agent_display_mode: Option<String>,
     reflection_mode_override: Option<String>,
+    display_msg: Option<String>,
     app: tauri::AppHandle,
     session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
     config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
@@ -2082,6 +2285,7 @@ pub async fn run_pipeline(
         image_base64_list,
         agent_display_mode,
         reflection_mode_override,
+        display_msg,
         true,
         app,
         session_manager,
@@ -2104,6 +2308,7 @@ pub async fn resume_pipeline(
         None,
         None,
         None,
+        None,
         false,
         app,
         session_manager,
@@ -2119,6 +2324,7 @@ async fn run_pipeline_inner(
     image_base64_list: Option<Vec<String>>,
     agent_display_mode: Option<String>,
     reflection_mode_override: Option<String>,
+    display_msg: Option<String>,
     inject_user_message: bool,
     app: tauri::AppHandle,
     session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
@@ -2132,6 +2338,7 @@ async fn run_pipeline_inner(
         image_base64_list,
         agent_display_mode,
         reflection_mode_override,
+        display_msg,
         inject_user_message,
         app,
         session_manager,

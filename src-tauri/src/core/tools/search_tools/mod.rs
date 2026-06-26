@@ -11,6 +11,7 @@ use tauri::Manager;
 
 use super::framework::permission::{ensure_path_permission, is_path_safe};
 use super::framework::registry::ToolDef;
+use crate::core::tools::framework;
 
 const GLOB_DEFAULT_LIMIT: usize = 100;
 const GREP_DEFAULT_HEAD_LIMIT: usize = 250;
@@ -575,10 +576,10 @@ fn collect_content_matches(
 }
 
 /// Claude Code 风格 Glob：按文件名 glob 模式快速查找文件。
-pub async fn glob(app: &tauri::AppHandle, input: &serde_json::Value, session_id: &str) -> String {
+pub async fn glob(app: &tauri::AppHandle, input: &serde_json::Value, session_id: &str) -> framework::ToolCallResult {
     let pattern = input["pattern"].as_str().unwrap_or("").trim();
     if pattern.is_empty() {
-        return "Glob 错误: pattern 不能为空。".to_string();
+        return framework::ToolCallResult::error("Glob 错误: pattern 不能为空。".to_string());
     }
 
     let raw_path = input["path"].as_str().or_else(|| input["dir"].as_str());
@@ -590,21 +591,21 @@ pub async fn glob(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
     let workspace = get_workspace(app, session_id).await;
     let base = match resolve_path(raw_path, workspace.as_deref()) {
         Ok(path) => path,
-        Err(e) => return e,
+        Err(e) => return framework::ToolCallResult::error(e),
     };
 
     if let Err(e) =
         ensure_resolved_path_permission(app, raw_path, &base, "Glob 查找", workspace.as_deref())
             .await
     {
-        return e;
+        return framework::ToolCallResult::error(e);
     }
 
     if !base.exists() {
-        return format!("Directory does not exist: {}", base.display());
+        return framework::ToolCallResult::error(format!("Directory does not exist: {}", base.display()));
     }
     if !base.is_dir() {
-        return format!("Path is not a directory: {}", base.display());
+        return framework::ToolCallResult::error(format!("Path is not a directory: {}", base.display()));
     }
 
     let start = Instant::now();
@@ -627,7 +628,7 @@ pub async fn glob(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
     }
 
     if matches.is_empty() {
-        return "No files found".to_string();
+        return framework::ToolCallResult::ok("No files found".to_string());
     }
 
     let mut lines: Vec<String> = matches
@@ -644,37 +645,37 @@ pub async fn glob(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
         matches.len(),
         start.elapsed().as_millis()
     ));
-    lines.join("\n")
+    framework::ToolCallResult::ok(lines.join("\n"))
 }
 
 /// Claude Code 风格 Grep：使用正则表达式搜索文件内容。
-pub async fn grep(app: &tauri::AppHandle, input: &serde_json::Value, session_id: &str) -> String {
+pub async fn grep(app: &tauri::AppHandle, input: &serde_json::Value, session_id: &str) -> framework::ToolCallResult {
     let pattern = input["pattern"].as_str().unwrap_or("").trim();
     if pattern.is_empty() {
-        return "Grep 错误: pattern 不能为空。".to_string();
+        return framework::ToolCallResult::error("Grep 错误: pattern 不能为空。".to_string());
     }
 
     let output_mode = match parse_output_mode(input) {
         Ok(mode) => mode,
-        Err(e) => return e,
+        Err(e) => return framework::ToolCallResult::error(e),
     };
 
     let raw_path = input["path"].as_str();
     let workspace = get_workspace(app, session_id).await;
     let base = match resolve_path(raw_path, workspace.as_deref()) {
         Ok(path) => path,
-        Err(e) => return e,
+        Err(e) => return framework::ToolCallResult::error(e),
     };
 
     if let Err(e) =
         ensure_resolved_path_permission(app, raw_path, &base, "Grep 搜索", workspace.as_deref())
             .await
     {
-        return e;
+        return framework::ToolCallResult::error(e);
     }
 
     if !base.exists() {
-        return format!("Path does not exist: {}", base.display());
+        return framework::ToolCallResult::error(format!("Path does not exist: {}", base.display()));
     }
 
     let mut builder = regex::RegexBuilder::new(pattern);
@@ -685,7 +686,7 @@ pub async fn grep(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
     }
     let re = match builder.build() {
         Ok(re) => re,
-        Err(e) => return format!("正则表达式无效: {}", e),
+        Err(e) => return framework::ToolCallResult::error(format!("正则表达式无效: {}", e)),
     };
 
     let include_patterns = input_patterns(input, "glob");
@@ -756,7 +757,7 @@ pub async fn grep(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
                     limit_info
                 ));
             }
-            result
+            framework::ToolCallResult::ok(result)
         }
         GrepOutputMode::Count => {
             let mut count_lines = Vec::new();
@@ -801,7 +802,7 @@ pub async fn grep(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
                     format!(" with pagination = {}", limit_info)
                 }
             ));
-            result
+            framework::ToolCallResult::ok(result)
         }
         GrepOutputMode::FilesWithMatches => {
             let mut matches = Vec::new();
@@ -817,13 +818,13 @@ pub async fn grep(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
                 apply_head_limit(&matches, head_limit, offset, GREP_DEFAULT_HEAD_LIMIT);
             let limit_info = format_limit_info(applied_limit, offset);
             if limited.is_empty() {
-                return "No files found".to_string();
+                return framework::ToolCallResult::ok("No files found".to_string());
             }
             let filenames: Vec<String> = limited
                 .iter()
                 .map(|path| display_path(path, workspace.as_deref()))
                 .collect();
-            format!(
+            framework::ToolCallResult::ok(format!(
                 "Found {} {}{}\n{}",
                 filenames.len(),
                 if filenames.len() == 1 {
@@ -837,7 +838,7 @@ pub async fn grep(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
                     format!(" {}", limit_info)
                 },
                 filenames.join("\n")
-            )
+            ))
         }
     }
 }

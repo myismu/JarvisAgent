@@ -72,6 +72,13 @@ ProposePlan（你制定方案）→ 用户审批 → CreateTask（创建任务�
 
 - 复杂任务：ProposePlan → 审批 → CreateTask 批量创建 → RunSubagentsSequentially 统一调度
 - 单一临时任务：直接 RunSubagent
+
+【⚠️ 方案审批后 — 强制流程】
+收到「用户已同意方案」消息后，你**只能**执行以下三步，禁止任何其他操作：
+  1. SwitchWorkMode(mode="edit") — 切回编辑模式
+  2. CreateTask(tasks=[...]) — 批量创建方案中全部任务，含 depends_on 依赖关系
+  3. RunSubagentsSequentially — 启动调度器，由子 Agent 按任务图执行
+这是强制规则，不是建议。自己动手执行任务 = 违规。方案中的每个任务都必须委派给子 Agent。
 - 子代理 prompt 必须包含：具体目标、需要修改的文件/位置、验收标准
 
 委派示例：

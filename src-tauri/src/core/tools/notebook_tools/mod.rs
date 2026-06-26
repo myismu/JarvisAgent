@@ -13,6 +13,7 @@ use tauri::Manager;
 
 use super::framework::permission::ensure_path_permission;
 use super::framework::registry::ToolDef;
+use crate::core::tools::framework;
 use crate::infra::types::models::Message;
 use crate::core::rollback::Patch;
 use crate::infra::state::state::{PendingSnapshotPatch, SessionManager};
@@ -350,7 +351,7 @@ pub async fn notebook_edit(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     let notebook_path = input["notebook_path"].as_str().unwrap_or("");
     let new_source = input["new_source"].as_str().unwrap_or("");
     let cell_id = input["cell_id"].as_str();
@@ -358,13 +359,13 @@ pub async fn notebook_edit(
     let edit_mode = input["edit_mode"].as_str().unwrap_or("replace");
 
     if notebook_path.trim().is_empty() {
-        return "NotebookEdit 错误: notebook_path 不能为空。".to_string();
+        return framework::ToolCallResult::error("NotebookEdit 错误: notebook_path 不能为空。".to_string());
     }
 
     let workspace = get_workspace(app, session_id).await;
     let path = resolve_notebook_path(notebook_path, workspace.as_deref());
     if !has_ipynb_extension(&path) {
-        return "NotebookEdit 错误: 文件必须是 Jupyter Notebook (.ipynb)。普通文本或普通 JSON 请不要使用 notebook_edit。".to_string();
+        return framework::ToolCallResult::error("NotebookEdit 错误: 文件必须是 Jupyter Notebook (.ipynb)。普通文本或普通 JSON 请不要使用 notebook_edit。".to_string());
     }
     if let Err(e) = ensure_path_permission(
         app,
@@ -374,7 +375,7 @@ pub async fn notebook_edit(
     )
     .await
     {
-        return e;
+        return framework::ToolCallResult::error(e);
     }
 
     let read_mtime: Option<SystemTime> = std::fs::metadata(&path)
@@ -382,32 +383,32 @@ pub async fn notebook_edit(
         .and_then(|meta| meta.modified().ok());
     let original_content = match std::fs::read_to_string(&path) {
         Ok(content) => content,
-        Err(e) => return format!("NotebookEdit 读取失败: {}", e),
+        Err(e) => return framework::ToolCallResult::error(format!("NotebookEdit 读取失败: {}", e)),
     };
 
     let mut notebook: Value = match serde_json::from_str(&original_content) {
         Ok(value) => value,
-        Err(e) => return format!("NotebookEdit 失败: Notebook 不是合法 JSON: {}", e),
+        Err(e) => return framework::ToolCallResult::error(format!("NotebookEdit 失败: Notebook 不是合法 JSON: {}", e)),
     };
 
     let outcome =
         match apply_notebook_edit(&mut notebook, cell_id, new_source, cell_type, edit_mode) {
             Ok(outcome) => outcome,
-            Err(e) => return format!("NotebookEdit 失败: {}", e),
+            Err(e) => return framework::ToolCallResult::error(format!("NotebookEdit 失败: {}", e)),
         };
 
     let updated_content = match stringify_notebook(&notebook, &original_content) {
         Ok(content) => content,
-        Err(e) => return e,
+        Err(e) => return framework::ToolCallResult::error(e),
     };
 
     if let (Some(orig_mtime), Ok(current_meta)) = (read_mtime, std::fs::metadata(&path)) {
         if let Ok(current_mtime) = current_meta.modified() {
             if current_mtime != orig_mtime {
-                return format!(
+                return framework::ToolCallResult::error(format!(
                     "NotebookEdit 中止: 文件 {} 在读取后被外部修改。请重新读取后再编辑。",
                     path.display()
-                );
+                ));
             }
         }
     }
@@ -424,7 +425,7 @@ pub async fn notebook_edit(
             let msg = Some(format!("NotebookEdit {}", path.display()));
             record_patch_to_snapshot(app, session_id, patch, msg).await;
 
-            match outcome.edit_mode.as_str() {
+            framework::ToolCallResult::ok(match outcome.edit_mode.as_str() {
                 "replace" => format!(
                     "Updated cell {} ({}, language: {})",
                     outcome.cell_id.unwrap_or_else(|| "<unknown>".to_string()),
@@ -444,9 +445,9 @@ pub async fn notebook_edit(
                     outcome.language
                 ),
                 _ => "NotebookEdit completed".to_string(),
-            }
+            })
         }
-        Err(e) => format!("NotebookEdit 写入失败: {}", e),
+        Err(e) => framework::ToolCallResult::error(format!("NotebookEdit 写入失败: {}", e)),
     }
 }
 

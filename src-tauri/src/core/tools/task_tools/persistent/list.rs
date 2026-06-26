@@ -1,4 +1,5 @@
 use crate::core::orchestration::tasks::TaskManager;
+use crate::core::tools::framework;
 use crate::core::tools::framework::registry::ToolDef;
 use serde_json::json;
 
@@ -24,8 +25,9 @@ pub async fn task_list(
     _app: &tauri::AppHandle,
     _input: &serde_json::Value,
     session_id: &str,
-) -> String {
-    TaskManager::for_session(session_id)
-        .list_all()
-        .unwrap_or_else(|e| e)
+) -> framework::ToolCallResult {
+    match TaskManager::for_session(session_id).list_all() {
+        Ok(result) => framework::ToolCallResult::ok(result),
+        Err(e) => framework::ToolCallResult::error(e),
+    }
 }

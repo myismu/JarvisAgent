@@ -112,8 +112,8 @@ pub async fn request_permission(app: &tauri::AppHandle, session_id: &str, messag
     {
         let mut perms = ctx.pending_permissions.lock().await;
         let now = std::time::Instant::now();
-        perms.retain(|_, (ts, _)| now.duration_since(*ts).as_secs() < 300);
-        perms.insert(id.clone(), (std::time::Instant::now(), tx));
+        perms.retain(|_, (ts, _, _)| now.duration_since(*ts).as_secs() < 300);
+        perms.insert(id.clone(), (std::time::Instant::now(), message.to_string(), tx));
     }
 
     let _ = app.emit(

@@ -80,7 +80,7 @@ const hasDeveloperSegments = computed(() => developerTimeline.value.length > 0);
 function toolStatusLabel(status: string): string {
   if (status === "completed") return "完成";
   if (status === "running") return "执行中";
-  if (status === "error") return "失败";
+  if (status === "error") return "未成功";
   return "";
 }
 </script>
@@ -106,8 +106,8 @@ function toolStatusLabel(status: string): string {
               <summary class="dev-tool-summary"><span class="dev-status-dot" :class="item.tool.status"></span><code class="dev-tool-name">{{ toolDisplayName(item.tool) }}</code><span class="dev-tool-action">{{ toolActionLabel(item.tool.name, item.tool.status, item.tool) }}</span><span class="dev-tool-status">{{ toolStatusLabel(item.tool.status) }}</span></summary>
               <div v-if="item.tool.input || item.tool.output || item.tool.error" class="dev-tool-body">
                 <div v-if="item.tool.input" class="dev-tool-section"><div class="dev-tool-section-label">参数</div><StreamingMarkdown :content="item.tool.input" /></div>
-                <div v-if="item.tool.output" class="dev-tool-section"><div class="dev-tool-section-label">输出</div><StreamingMarkdown :content="item.tool.output" /></div>
-                <div v-if="item.tool.error" class="dev-tool-section error"><div class="dev-tool-section-label">错误</div><StreamingMarkdown :content="item.tool.error" /></div>
+                <div v-if="item.tool.output && !item.tool.error" class="dev-tool-section"><div class="dev-tool-section-label">输出</div><StreamingMarkdown :content="item.tool.output" /></div>
+                <div v-if="item.tool.error" class="dev-tool-section error"><div class="dev-tool-section-label">未成功</div><StreamingMarkdown :content="item.tool.error" /></div>
               </div>
             </details>
             <div v-else-if="item.type === 'log'" class="dev-log"><div class="dev-log-header"><span class="dev-status-dot"></span><span class="dev-log-title">输出 #{{ item.loop || 1 }}</span></div><div class="dev-log-body"><StreamingMarkdown :content="item.content" /></div></div>
@@ -125,8 +125,8 @@ function toolStatusLabel(status: string): string {
           <summary class="dev-tool-summary"><span class="dev-status-dot" :class="item.tool.status"></span><code class="dev-tool-name">{{ toolDisplayName(item.tool) }}</code><span class="dev-tool-action">{{ toolActionLabel(item.tool.name, item.tool.status, item.tool) }}</span><span class="dev-tool-status">{{ toolStatusLabel(item.tool.status) }}</span></summary>
           <div v-if="item.tool.input || item.tool.output || item.tool.error" class="dev-tool-body">
             <div v-if="item.tool.input" class="dev-tool-section"><div class="dev-tool-section-label">参数</div><StreamingMarkdown :content="item.tool.input" /></div>
-            <div v-if="item.tool.output" class="dev-tool-section"><div class="dev-tool-section-label">输出</div><StreamingMarkdown :content="item.tool.output" /></div>
-            <div v-if="item.tool.error" class="dev-tool-section error"><div class="dev-tool-section-label">错误</div><StreamingMarkdown :content="item.tool.error" /></div>
+            <div v-if="item.tool.output && !item.tool.error" class="dev-tool-section"><div class="dev-tool-section-label">输出</div><StreamingMarkdown :content="item.tool.output" /></div>
+            <div v-if="item.tool.error" class="dev-tool-section error"><div class="dev-tool-section-label">未成功</div><StreamingMarkdown :content="item.tool.error" /></div>
           </div>
         </details>
         <div v-else-if="item.type === 'log'" class="dev-log"><div class="dev-log-header"><span class="dev-status-dot"></span><span class="dev-log-title">输出 #{{ item.loop || 1 }}</span></div><div class="dev-log-body"><StreamingMarkdown :content="item.content" /></div></div>
@@ -221,6 +221,9 @@ function toolStatusLabel(status: string): string {
   background: var(--accent-yellow);
   animation: dev-pulse 1.5s ease-in-out infinite;
 }
+.dev-status-dot.error {
+  background: var(--accent-orange);
+}
 
 /* 思考块 */
 .dev-thinking {
@@ -241,12 +244,12 @@ function toolStatusLabel(status: string): string {
   display: none;
 }
 .dev-thinking-label {
-  color: var(--accent-yellow);
+  color: var(--accent-purple);
 }
 .dev-thinking-body {
   margin-top: 8px;
   padding: 10px 14px;
-  border-left: 2px solid var(--accent-yellow);
+  border-left: 2px solid var(--accent-purple);
   font-size: 0.82rem;
   color: var(--text-muted);
   line-height: 1.6;
@@ -306,10 +309,10 @@ function toolStatusLabel(status: string): string {
   color: var(--accent-yellow);
 }
 .dev-tool.error .dev-tool-status {
-  color: var(--accent-red);
+  color: var(--accent-orange);
 }
 .dev-tool.error .dev-tool-name {
-  color: var(--accent-red);
+  color: var(--accent-orange);
 }
 
 /* 工具详情 */
@@ -350,8 +353,8 @@ function toolStatusLabel(status: string): string {
   overflow-wrap: break-word;
 }
 .dev-tool-section.error :deep(.streaming-markdown) {
-  border-color: color-mix(in srgb, var(--accent-red) 30%, transparent);
-  background: color-mix(in srgb, var(--accent-red) calc(5 * var(--agent-message-opacity) / 100), transparent);
+  border-color: color-mix(in srgb, var(--accent-orange) 30%, transparent);
+  background: color-mix(in srgb, var(--accent-orange) calc(5 * var(--agent-message-opacity) / 100), transparent);
 }
 .dev-tool-section-label {
   font-size: 0.7rem;
@@ -362,7 +365,7 @@ function toolStatusLabel(status: string): string {
   margin-bottom: 4px;
 }
 .dev-tool-section.error .dev-tool-section-label {
-  color: var(--accent-red);
+  color: var(--accent-orange);
 }
 
 /* 执行日志终端 */

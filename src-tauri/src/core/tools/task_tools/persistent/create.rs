@@ -1,5 +1,6 @@
 use super::common::optional_string;
 use crate::core::orchestration::tasks::TaskManager;
+use crate::core::tools::framework;
 use crate::core::tools::framework::registry::ToolDef;
 use serde_json::json;
 
@@ -41,33 +42,35 @@ pub async fn task_create(
     _app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
-) -> String {
+) -> framework::ToolCallResult {
     // 批量模式
     if let Some(tasks) = input["tasks"].as_array() {
         if tasks.is_empty() {
-            return serde_json::json!({"success": false, "error": "tasks 数组不能为空"}).to_string();
+            return framework::ToolCallResult::error(serde_json::json!({"success": false, "error": "tasks 数组不能为空"}).to_string());
         }
         let tm = TaskManager::for_session(session_id);
-        let mut created_ids: Vec<i32> = Vec::new();
-        for item in tasks {
+        // 使用 HashMap 而非 Vec，避免空 subject 跳过导致索引错位
+        let mut created_ids: std::collections::HashMap<usize, i32> = std::collections::HashMap::new();
+        let mut failures: Vec<String> = Vec::new();
+        for (idx, item) in tasks.iter().enumerate() {
             let subject = item["subject"].as_str().unwrap_or("").to_string();
             if subject.trim().is_empty() { continue; }
             let description = item["description"].as_str().unwrap_or("").to_string();
             let active_form = optional_string(item, "activeForm");
             let metadata = item.get("metadata").cloned();
             let owner = optional_string(item, "owner");
-            match tm.create(subject, description, active_form, metadata, owner) {
-                Ok(t) => created_ids.push(t.id),
-                Err(_) => {}
+            match tm.create(subject.clone(), description, active_form, metadata, owner) {
+                Ok(t) => { created_ids.insert(idx, t.id); },
+                Err(e) => failures.push(format!("「{}」: {}", subject, e)),
             }
         }
-        // 处理 depends_on 依赖
+        // 处理 depends_on 依赖（1-based 索引 → 0-based 查 HashMap）
         for (idx, item) in tasks.iter().enumerate() {
-            if let Some(task_id) = created_ids.get(idx) {
+            if let Some(task_id) = created_ids.get(&idx) {
                 if let Some(deps) = item["depends_on"].as_array() {
                     let blocked_by: Vec<i32> = deps.iter()
                         .filter_map(|d| d.as_u64().map(|n| (n as usize).saturating_sub(1)))
-                        .filter_map(|di| created_ids.get(di).copied())
+                        .filter_map(|di| created_ids.get(&di).copied())
                         .map(|id| id as i32)
                         .collect();
                     if !blocked_by.is_empty() {
@@ -80,16 +83,21 @@ pub async fn task_create(
                 }
             }
         }
-        return serde_json::json!({"success": true, "created": created_ids.len()}).to_string();
+        let mut result = serde_json::json!({"success": true, "created": created_ids.len()});
+        if !failures.is_empty() {
+            result["failed"] = serde_json::json!(failures.len());
+            result["errors"] = serde_json::json!(failures);
+        }
+        return framework::ToolCallResult::ok(result.to_string());
     }
 
     // 单个模式
     let subject = input["subject"].as_str().unwrap_or("").to_string();
     if subject.trim().is_empty() {
-        return serde_json::json!({
+        return framework::ToolCallResult::error(serde_json::json!({
             "success": false,
             "error": "subject 不能为空 — 每个任务必须有明确标题，例如「实现 /api/users POST 路由」"
-        }).to_string();
+        }).to_string());
     }
     let description = input["description"].as_str().unwrap_or("").to_string();
     let active_form = optional_string(input, "activeForm");
@@ -103,18 +111,18 @@ pub async fn task_create(
         metadata,
         owner,
     ) {
-        Ok(task) => serde_json::json!({
+        Ok(task) => framework::ToolCallResult::ok(serde_json::json!({
             "success": true,
             "task": {
                 "id": task.id,
                 "subject": task.subject,
             }
         })
-        .to_string(),
-        Err(e) => serde_json::json!({
+        .to_string()),
+        Err(e) => framework::ToolCallResult::error(serde_json::json!({
             "success": false,
             "error": e
         })
-        .to_string(),
+        .to_string()),
     }
 }

@@ -725,6 +725,12 @@ onMounted(() => {
         </div>
       </div>
       <PermissionCard />
+      <Transition name="notice-fade">
+        <div v-if="chat.memoryNotice" class="memory-notice" @click="chat.memoryNotice = null">
+          <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          {{ chat.memoryNotice }}
+        </div>
+      </Transition>
       <ThinkingStatus :running="showInlineStatus" :elapsed="thinkingElapsed" :paused="isWaitingForUser" />
     </div>
 
@@ -1630,4 +1636,35 @@ onMounted(() => {
   opacity: 0;
   transform: translateX(-50%) translateY(8px);
 }
+
+/* 全局记忆更新提示（仅内存，不持久化） */
+.memory-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 16px 8px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: var(--glass-bg-light);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: 0.73rem;
+  cursor: pointer;
+  user-select: none;
+  max-width: fit-content;
+  transition: background 0.15s;
+}
+.memory-notice:hover {
+  background: var(--glass-bg);
+  color: var(--text-main);
+}
+.memory-notice svg {
+  flex-shrink: 0;
+  opacity: 0.5;
+}
+
+.notice-fade-enter-active { transition: all 0.3s ease; }
+.notice-fade-leave-active { transition: all 0.5s ease; }
+.notice-fade-enter-from { opacity: 0; transform: translateY(-6px); }
+.notice-fade-leave-to { opacity: 0; transform: translateY(-6px); }
 </style>
