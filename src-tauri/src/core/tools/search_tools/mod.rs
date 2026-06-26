@@ -28,6 +28,50 @@ const SKIP_DIRS: &[&str] = &[
     ".next",
     ".cache",
     "coverage",
+    // Windows 系统 / 用户数据目录（文件量巨大）
+    "AppData",
+    "Application Data",
+    "Local Settings",
+    "Temp",
+    "tmp",
+    "ProgramData",
+    "All Users",
+    "Default",
+    "Default User",
+    "Windows",
+    "System32",
+    "SysWOW64",
+    "WinSxS",
+    "Microsoft",
+    "MicrosoftEdgeBackups",
+    "Recovery",
+    "System Volume Information",
+    "$Recycle.Bin",
+    // 包管理器缓存
+    ".npm",
+    ".cargo",
+    ".rustup",
+    ".nuget",
+    ".gem",
+    ".pip",
+    ".ivy2",
+    ".m2",
+    ".gradle",
+    ".yarn",
+    ".pnpm-store",
+    ".pnp",
+    ".nvm",
+    // IDE / 工具缓存
+    ".vscode",
+    ".idea",
+    ".settings",
+    ".metadata",
+    ".dart_tool",
+    ".pub-cache",
+    ".stack-work",
+    // 跨平台
+    "Library",
+    "Caches",
 ];
 const BINARY_EXTENSIONS: &[&str] = &[
     "png", "ico", "icns", "jpg", "jpeg", "gif", "webp", "mp3", "mp4", "wav", "woff", "woff2",
@@ -131,6 +175,75 @@ fn collect_files_with_ignore(
             collect_files_with_ignore(&path, include_binary, ignore_dirs, files);
         } else if path.is_file() && (include_binary || !is_binary_like(&path)) {
             files.push(path);
+        }
+    }
+}
+
+/// 遍历目录树，在遍历过程中内联匹配文件和目录的 glob pattern。
+/// 使用 `&mut usize limit` 引用计数实现早停：每匹配一项减一，归零立即返回。
+///
+/// 与 `collect_files_with_ignore`（收集全部后再过滤）不同，此函数
+/// 在遍历阶段完成所有过滤，避免对巨型目录树的全量收集。
+///
+/// `limit` 为 0 时不会收集任何条目（调用方应避免此情况）。
+fn collect_files_glob(
+    root: &Path,
+    pattern: &str,
+    base: &Path,
+    include_patterns: &[String],
+    exclude_patterns: &[String],
+    file_type: Option<&str>,
+    ignore_dirs: &[String],
+    limit: &mut usize,
+    files: &mut Vec<PathBuf>,
+) {
+    if *limit == 0 {
+        return;
+    }
+
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        if *limit == 0 {
+            return;
+        }
+
+        let path = entry.path();
+
+        if path.is_dir() {
+            if should_skip_dir_with_overrides(&path, ignore_dirs) {
+                continue;
+            }
+            // Check if the directory itself matches the pattern
+            let relative = path.strip_prefix(base).unwrap_or(&path);
+            if glob_matches(pattern, relative)
+                && matches_search_filters(&path, base, include_patterns, exclude_patterns, file_type)
+            {
+                files.push(path.clone());
+                *limit -= 1;
+                if *limit == 0 {
+                    return;
+                }
+            }
+            // Recurse to find matching files/subdirs within
+            collect_files_glob(
+                &path, pattern, base, include_patterns, exclude_patterns,
+                file_type, ignore_dirs, limit, files,
+            );
+        } else if path.is_file() {
+            let relative = path.strip_prefix(base).unwrap_or(&path);
+            if glob_matches(pattern, relative)
+                && matches_search_filters(&path, base, include_patterns, exclude_patterns, file_type)
+            {
+                files.push(path.clone());
+                *limit -= 1;
+                if *limit == 0 {
+                    return;
+                }
+            }
         }
     }
 }
@@ -349,7 +462,7 @@ fn matches_search_filters(
 ) -> bool {
     matches_type(path, file_type)
         && matches_any_glob(path, base, include_patterns)
-        && !matches_any_glob(path, base, exclude_patterns)
+        && (exclude_patterns.is_empty() || !matches_any_glob(path, base, exclude_patterns))
 }
 
 fn is_code_extension(ext: &str) -> bool {
@@ -609,21 +722,26 @@ pub async fn glob(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
     }
 
     let start = Instant::now();
-    let mut all_files = Vec::new();
-    collect_files_with_ignore(&base, true, &ignore_dirs, &mut all_files);
+    let mut matches = Vec::new();
+    // limit == 0 表示无限制，用 usize::MAX 模拟；否则收集到 limit 个匹配即早停
+    let mut remaining = if limit == 0 { usize::MAX } else { limit };
 
-    let mut matches: Vec<PathBuf> = all_files
-        .into_iter()
-        .filter(|path| {
-            let relative = path.strip_prefix(&base).unwrap_or(path);
-            glob_matches(pattern, relative)
-                && matches_search_filters(path, &base, &include_patterns, &exclude_patterns, file_type)
-        })
-        .collect();
+    collect_files_glob(
+        &base,
+        pattern,
+        &base,
+        &include_patterns,
+        &exclude_patterns,
+        file_type,
+        &ignore_dirs,
+        &mut remaining,
+        &mut matches,
+    );
 
+    let limit_reached = remaining == 0;
     sort_for_code_search(&mut matches);
-    let truncated = limit > 0 && matches.len() > limit;
-    if limit > 0 {
+    let truncated = limit > 0 && limit_reached;
+    if limit > 0 && matches.len() > limit {
         matches.truncate(limit);
     }
 
@@ -1028,5 +1146,138 @@ mod tests {
     fn test_type_extensions_common_aliases() {
         assert!(type_extensions("rust").contains(&"rs".to_string()));
         assert!(type_extensions("typescript").contains(&"tsx".to_string()));
+    }
+
+    // --- glob_matches 对目录名的匹配 ---
+
+    #[test]
+    fn test_glob_matches_directory_name() {
+        // 目录名 "Desktop" 应直接匹配 pattern "Desktop"
+        assert!(glob_matches("Desktop", Path::new("Users/Alice/Desktop")));
+        assert!(glob_matches("Desktop", Path::new("Desktop")));
+        // "Documents" 不匹配
+        assert!(!glob_matches("Desktop", Path::new("Documents")));
+    }
+
+    #[test]
+    fn test_glob_matches_file_inside_directory() {
+        // 仅当 pattern 包含通配符时，目录内的文件才匹配
+        assert!(glob_matches("**/Desktop/**", Path::new("Users/Alice/Desktop/notes.txt")));
+        assert!(glob_matches("Desktop/*", Path::new("Desktop/notes.txt")));
+        // 精确 "Desktop" 不匹配目录内的文件
+        assert!(!glob_matches("Desktop", Path::new("Desktop/notes.txt")));
+    }
+
+    // --- collect_files_glob 早停行为 ---
+
+    #[test]
+    fn test_collect_files_glob_early_termination() {
+        use std::fs;
+        let tmp = std::env::temp_dir().join("__jarvis_glob_early_stop_test__");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        // 创建目录结构:
+        // tmp/
+        //   a.txt
+        //   b.txt
+        //   c.txt
+        //   d.txt
+        //   sub/
+        //     e.txt
+        fs::write(tmp.join("a.txt"), "").unwrap();
+        fs::write(tmp.join("b.txt"), "").unwrap();
+        fs::write(tmp.join("c.txt"), "").unwrap();
+        fs::write(tmp.join("d.txt"), "").unwrap();
+        let sub = tmp.join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("e.txt"), "").unwrap();
+
+        let mut files = Vec::new();
+        let mut limit = 3;
+
+        collect_files_glob(
+            &tmp,
+            "*.txt",
+            &tmp,
+            &[],
+            &[],
+            None,
+            &[],
+            &mut limit,
+            &mut files,
+        );
+
+        // 收集到 limit 个匹配后应立即停止
+        assert_eq!(files.len(), 3);
+        assert_eq!(limit, 0); // 计数器被完全消耗
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_collect_files_glob_unlimited() {
+        use std::fs;
+        let tmp = std::env::temp_dir().join("__jarvis_glob_unlimited_test__");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        fs::write(tmp.join("x.txt"), "").unwrap();
+        fs::write(tmp.join("y.txt"), "").unwrap();
+        fs::write(tmp.join("z.txt"), "").unwrap();
+
+        let mut files = Vec::new();
+        let mut limit = usize::MAX; // 无限制模式
+        collect_files_glob(
+            &tmp,
+            "*.txt",
+            &tmp,
+            &[],
+            &[],
+            None,
+            &[],
+            &mut limit,
+            &mut files,
+        );
+
+        assert_eq!(files.len(), 3);
+        // limit 从 usize::MAX 减去 3
+        assert_eq!(limit, usize::MAX - 3);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_collect_files_glob_matches_directory() {
+        use std::fs;
+        let tmp = std::env::temp_dir().join("__jarvis_glob_dir_match_test__");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        // 创建一个名为 "Desktop" 的子目录
+        let desktop = tmp.join("Desktop");
+        fs::create_dir(&desktop).unwrap();
+        fs::write(desktop.join("notes.txt"), "").unwrap();
+
+        let mut files = Vec::new();
+        let mut limit = 10;
+        collect_files_glob(
+            &tmp,
+            "Desktop",
+            &tmp,
+            &[],
+            &[],
+            None,
+            &[],
+            &mut limit,
+            &mut files,
+        );
+
+        // 应匹配到 Desktop 目录本身（pattern 精确匹配目录名）
+        assert!(files.iter().any(|p| p.file_name().unwrap() == "Desktop"));
+        // pattern "Desktop" 不应匹配子目录内的文件，需要用 "Desktop/*" 才匹配
+        assert!(!files.iter().any(|p| p.file_name().unwrap() == "notes.txt"));
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }
