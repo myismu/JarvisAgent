@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JARVIS 审计中心</title>
+<style>
+  :root {
+    --bg: #f8f9fb; --bg-panel: #ffffff; --bg-card: #ffffff;
+    --bg-hover: #f1f3f5; --bg-active: #e8f0fe;
+    --border: #e5e7eb; --border-light: #efefef;
+    --text: #1a1d23; --text-secondary: #4b5563; --text-muted: #9ca3af;
+    --blue: #3b82f6; --blue-dim: rgba(59,130,246,0.08);
+    --green: #059669; --green-dim: rgba(5,150,105,0.08);
+    --red: #dc2626; --red-dim: rgba(220,38,38,0.06);
+    --yellow: #d97706; --yellow-dim: rgba(217,119,6,0.08);
+    --orange: #ea580c; --orange-dim: rgba(234,88,12,0.08);
+    --purple: #7c3aed; --purple-dim: rgba(124,58,237,0.08);
+    --cyan: #0891b2; --cyan-dim: rgba(8,145,178,0.08);
+    --radius: 8px; --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:var(--font); background:var(--bg); color:var(--text); min-height:100vh; line-height:1.5; -webkit-font-smoothing:antialiased; }
+  .app { display:flex; flex-direction:column; height:100vh; }
+  .header { display:flex; align-items:center; padding:10px 24px; background:var(--bg-panel); border-bottom:1px solid var(--border); flex-shrink:0; gap:12px; }
+  .header-logo { width:26px; height:26px; border-radius:6px; background:linear-gradient(135deg, var(--blue), #6366f1); display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; color:white; flex-shrink:0; }
+  .header-title { font-size:14px; font-weight:600; flex-shrink:0; }
+  .header-subtitle { font-size:12px; color:var(--text-muted); flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .header-tabs { display:flex; gap:2px; flex-shrink:0; }
+  .header-tab { padding:6px 16px; font-size:12px; font-weight:500; color:var(--text-secondary); cursor:pointer; border-radius:6px; transition:all 0.12s; border:1px solid transparent; display:inline-flex; align-items:center; gap:5px; }
+  .header-tab svg { flex-shrink:0; }
+  .header-tab:hover { background:var(--bg-hover); }
+  .header-tab.active { background:var(--bg-active); color:var(--blue); border-color:var(--blue); font-weight:600; }
+  .layout { display:flex; flex:1; overflow:hidden; }
+  .sidebar { width:232px; flex-shrink:0; background:var(--bg-panel); border-right:1px solid var(--border); display:flex; flex-direction:column; overflow:hidden; }
+  .sidebar-section { padding:14px 12px; border-bottom:1px solid var(--border); }
+  .sidebar-section-title { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-muted); margin-bottom:10px; padding:0 4px; }
+  .drop-zone { border:1.5px dashed var(--border); border-radius:var(--radius); padding:18px 12px; text-align:center; cursor:pointer; transition:all 0.15s; background:var(--bg); }
+  .drop-zone:hover,.drop-zone.drag-over { border-color:var(--blue); background:var(--blue-dim); }
+  .drop-zone-icon { margin-bottom:4px; color:var(--text-muted); display:flex; justify-content:center; }
+  .drop-zone-text { font-size:11px; color:var(--text-muted); }
+  .drop-zone-text strong { color:var(--text-secondary); }
+  .file-list { flex:1; overflow-y:auto; padding:4px 0; }
+  .file-item { display:flex; align-items:center; gap:8px; padding:7px 16px; cursor:pointer; transition:background 0.1s; font-size:12px; border-radius:4px; margin:0 6px; }
+  .file-item:hover { background:var(--bg-hover); }
+  .file-item.active { background:var(--bg-active); }
+  .file-item-dot { width:6px; height:6px; border-radius:50%; background:var(--blue); flex-shrink:0; }
+  .file-item.all-item .file-item-dot { background:var(--green); }
+  .file-item-name { flex:1; font-family:var(--mono); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--text-secondary); }
+  .file-item.active .file-item-name { color:var(--blue); font-weight:500; }
+  .file-item-count { font-size:10px; color:var(--text-muted); font-family:var(--mono); flex-shrink:0; }
+  .file-item-remove { background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:12px; padding:0; opacity:0; transition:all 0.1s; flex-shrink:0; width:16px; height:16px; display:flex; align-items:center; justify-content:center; border-radius:3px; }
+  .file-item:hover .file-item-remove { opacity:0.5; }
+  .file-item-remove:hover { opacity:1 !important; background:var(--red-dim); color:var(--red); }
+  .sidebar-footer { padding:10px 12px; border-top:1px solid var(--border); }
+  .clear-btn { width:100%; padding:6px 0; background:none; border:1px solid var(--border); border-radius:var(--radius); color:var(--text-muted); font-size:11px; cursor:pointer; transition:all 0.15s; }
+  .clear-btn:hover { border-color:var(--red); color:var(--red); background:var(--red-dim); }
+  .main { flex:1; overflow-y:auto; padding:20px 24px; }
+  .stats-row { display:grid; grid-template-columns:repeat(6,1fr); gap:12px; margin-bottom:18px; }
+  .stat-card { background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:16px; box-shadow:var(--shadow-sm); }
+  .stat-label { font-size:11px; color:var(--text-muted); margin-bottom:6px; font-weight:500; text-transform:uppercase; letter-spacing:0.04em; }
+  .stat-value { font-size:26px; font-weight:700; font-family:var(--mono); letter-spacing:-0.02em; }
+  .stat-value.green { color:var(--green); } .stat-value.red { color:var(--red); }
+  .stat-value.yellow { color:var(--yellow); } .stat-value.orange { color:var(--orange); }
+  .stat-value.blue { color:var(--blue); } .stat-value.cyan { color:var(--cyan); } .stat-value.purple { color:var(--purple); }
+  .breakdown-bar { background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:10px 16px; margin-bottom:14px; display:flex; align-items:center; gap:12px; box-shadow:var(--shadow-sm); }
+  .breakdown-label { font-size:11px; color:var(--text-muted); white-space:nowrap; font-weight:500; }
+  .breakdown-tags { display:flex; flex-wrap:wrap; gap:6px; }
+  .breakdown-tag { display:inline-flex; align-items:center; gap:4px; padding:3px 8px; font-size:11px; font-family:var(--mono); background:var(--red-dim); color:var(--red); border-radius:4px; font-weight:500; }
+  .breakdown-tag-count { opacity:0.6; }
+  .toolbar { display:flex; align-items:center; gap:6px; margin-bottom:14px; flex-wrap:wrap; }
+  .filter-btn { padding:5px 12px; background:var(--bg-card); border:1px solid var(--border); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer; transition:all 0.12s; font-weight:500; }
+  .filter-btn:hover { border-color:var(--blue); color:var(--blue); }
+  .filter-btn.active { background:var(--blue); border-color:var(--blue); color:white; }
+  .filter-count { opacity:0.5; margin-left:4px; font-family:var(--mono); font-size:10px; }
+  .toolbar-sep { width:1px; height:20px; background:var(--border); margin:0 4px; }
+  .view-toggle { display:flex; gap:0; margin-left:auto; border:1px solid var(--border); border-radius:6px; overflow:hidden; }
+  .view-btn { padding:5px 14px; background:var(--bg-card); border:none; color:var(--text-secondary); font-size:12px; cursor:pointer; transition:all 0.12s; font-weight:500; }
+  .view-btn:not(:last-child) { border-right:1px solid var(--border); }
+  .view-btn:hover { background:var(--bg-hover); }
+  .view-btn.active { background:var(--blue); color:white; }
+  .log-table-wrap { background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; box-shadow:var(--shadow-sm); }
+  .log-table { width:100%; border-collapse:collapse; }
+  .log-table th { text-align:left; padding:8px 12px; font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-muted); border-bottom:1px solid var(--border); background:var(--bg); position:sticky; top:0; z-index:1; }
+  .log-table td { padding:9px 12px; font-size:12px; border-bottom:1px solid var(--border-light); vertical-align:middle; }
+  .log-row { cursor:pointer; transition:background 0.08s; }
+  .log-row:hover { background:var(--bg-hover); }
+  .log-row.error td:first-child { box-shadow:inset 3px 0 0 var(--red); }
+  .log-row.blocked td:first-child { box-shadow:inset 3px 0 0 var(--orange); }
+  .log-row.corrected td:first-child { box-shadow:inset 3px 0 0 var(--yellow); }
+  .log-row.abandoned td:first-child { box-shadow:inset 3px 0 0 var(--orange); }
+  .log-row.benign td:first-child { box-shadow:inset 3px 0 0 var(--cyan); }
+  .log-row.skip td:first-child { box-shadow:inset 3px 0 0 var(--yellow); }
+  .cell-seq { font-family:var(--mono); font-size:11px; color:var(--text-muted); width:36px; }
+  .cell-status { width:20px; height:20px; border-radius:4px; display:inline-flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; }
+  .cell-status.ok { background:var(--green-dim); color:var(--green); }
+  .cell-status.error { background:var(--red-dim); color:var(--red); }
+  .cell-status.blocked { background:var(--yellow-dim); color:var(--orange); }
+  .cell-status.skip { background:var(--yellow-dim); color:var(--yellow); }
+  .cell-tool,.cell-path { font-family:var(--mono); font-weight:600; font-size:12px; color:var(--text); }
+  .cell-args { font-family:var(--mono); font-size:11px; color:var(--text-muted); max-width:280px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .cell-time { font-family:var(--mono); font-size:11px; color:var(--text-muted); white-space:nowrap; }
+  .cell-badge { display:inline-block; padding:2px 6px; font-size:10px; font-family:var(--mono); border-radius:4px; font-weight:500; }
+  .badge-corr { background:var(--yellow-dim); color:var(--yellow); }
+  .badge-file { background:var(--blue-dim); color:var(--blue); }
+  .badge-abandoned { background:var(--orange-dim); color:var(--orange); }
+  .badge-benign { background:var(--cyan-dim); color:var(--cyan); }
+  .cell-action { display:inline-block; padding:2px 8px; font-size:10px; font-family:var(--mono); border-radius:4px; font-weight:600; }
+  .action-create { background:var(--green-dim); color:var(--green); }
+  .action-update { background:var(--blue-dim); color:var(--blue); }
+  .action-delete { background:var(--red-dim); color:var(--red); }
+  .cell-phase { display:inline-block; padding:2px 8px; font-size:10px; font-family:var(--mono); border-radius:4px; font-weight:600; }
+  .phase-staging { background:var(--purple-dim); color:var(--purple); }
+  .phase-apply { background:var(--blue-dim); color:var(--blue); }
+  .detail-panel { display:none; background:var(--bg); border-bottom:1px solid var(--border-light); }
+  .log-row.expanded + .detail-panel { display:table-row; }
+  .detail-content { padding:12px 16px 14px 60px; }
+  .detail-grid { display:grid; grid-template-columns:90px 1fr; gap:3px 14px; font-size:12px; }
+  .detail-key { color:var(--text-muted); font-weight:500; }
+  .detail-val { font-family:var(--mono); color:var(--text-secondary); word-break:break-all; }
+  .detail-val.error-msg { color:var(--red); }
+  .cell-size,.cell-duration { font-family:var(--mono); font-size:11px; color:var(--text-muted); white-space:nowrap; }
+  .cell-error { font-family:var(--mono); font-size:11px; color:var(--red); max-width:300px; word-break:break-all; }
+  /* Agent Loop specific */
+  .loop-card { background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); margin-bottom:12px; overflow:hidden; box-shadow:var(--shadow-sm); }
+  .loop-card.has-violation { border-color:var(--red); }
+  .loop-header { display:flex; align-items:center; gap:10px; padding:12px 16px; cursor:pointer; transition:background 0.1s; }
+  .loop-header:hover { background:var(--bg-hover); }
+  .loop-num { font-family:var(--mono); font-size:14px; font-weight:700; color:var(--cyan); width:40px; flex-shrink:0; }
+  .loop-agent { font-size:11px; font-family:var(--mono); padding:2px 8px; border-radius:4px; font-weight:600; flex-shrink:0; }
+  .agent-MAIN { background:var(--blue-dim); color:var(--blue); }
+  .agent-SUB { background:var(--purple-dim); color:var(--purple); }
+  .agent-MEMORY { background:var(--cyan-dim); color:var(--cyan); }
+  .agent-main { background:var(--blue-dim); color:var(--blue); }
+  .agent-subagent { background:var(--purple-dim); color:var(--purple); }
+  .loop-summary { flex:1; font-size:12px; color:var(--text-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .loop-tokens { font-family:var(--mono); font-size:11px; color:var(--text-muted); flex-shrink:0; }
+  .loop-arrow { font-size:10px; color:var(--text-muted); transition:transform 0.15s; flex-shrink:0; }
+  .loop-card.open .loop-arrow { transform:rotate(90deg); }
+  .loop-body { display:none; border-top:1px solid var(--border-light); }
+  .loop-card.open .loop-body { display:block; }
+  .loop-section { padding:12px 16px; border-bottom:1px solid var(--border-light); }
+  .loop-section:last-child { border-bottom:none; }
+  .loop-section-title { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-muted); margin-bottom:8px; display:flex; align-items:center; gap:6px; }
+  .section-badge { display:inline-block; padding:1px 6px; border-radius:3px; font-size:9px; font-weight:600; }
+  .badge-thinking { background:var(--purple-dim); color:var(--purple); }
+  .badge-tools { background:var(--orange-dim); color:var(--orange); }
+  .badge-response { background:var(--green-dim); color:var(--green); }
+  .badge-request { background:var(--blue-dim); color:var(--blue); }
+  .badge-violation { background:var(--red-dim); color:var(--red); }
+  .badge-api-error { background:var(--red-dim); color:var(--red); border:1px solid var(--red); }
+  .thinking-text,.response-text,.request-json,.violation-text { font-size:12px; white-space:pre-wrap; word-break:break-word; background:var(--bg); padding:10px 12px; border-radius:6px; border:1px solid var(--border-light); position:relative; }
+  .content-block { max-height:200px; overflow:hidden; transition:max-height 0.2s; }
+  .content-block.expanded { max-height:none; }
+  .content-toggle { display:block; width:100%; padding:4px 0; font-size:11px; color:var(--blue); background:none; border:none; cursor:pointer; text-align:center; font-weight:500; }
+  .content-toggle:hover { text-decoration:underline; }
+  .request-json { font-family:var(--mono); font-size:11px; color:var(--text-muted); max-height:200px; }
+  .violation-text { color:var(--red); background:var(--red-dim); border-color:rgba(220,38,38,0.15); max-height:150px; }
+  .tool-list { display:flex; flex-direction:column; gap:4px; }
+  .tool-item { display:flex; align-items:center; gap:8px; font-size:12px; padding:4px 0; }
+  .tool-name { font-family:var(--mono); font-weight:600; color:var(--orange); min-width:120px; }
+  .tool-args { font-family:var(--mono); font-size:11px; color:var(--text-muted); flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .intent-table { width:100%; border-collapse:collapse; }
+  .intent-table th { text-align:left; padding:6px 10px; font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-muted); border-bottom:1px solid var(--border); background:var(--bg); }
+  .intent-table td { padding:8px 10px; font-size:12px; border-bottom:1px solid var(--border-light); }
+  .intent-badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-family:var(--mono); font-weight:600; }
+  .intent-RULE { background:var(--green-dim); color:var(--green); }
+  .intent-CONTEXT { background:var(--yellow-dim); color:var(--yellow); }
+  .intent-LLM { background:var(--purple-dim); color:var(--purple); }
+  .token-bar { display:flex; align-items:center; gap:8px; padding:8px 0; }
+  .token-bar-label { font-size:11px; color:var(--text-muted); width:50px; }
+  .token-bar-track { flex:1; height:8px; background:var(--bg); border-radius:4px; overflow:hidden; display:flex; }
+  .token-bar-input { background:var(--blue); height:100%; }
+  .token-bar-output { background:var(--orange); height:100%; }
+  .token-bar-value { font-family:var(--mono); font-size:11px; color:var(--text-muted); width:80px; text-align:right; }
+  .empty-state { text-align:center; padding:80px 20px; color:var(--text-muted); font-size:13px; }
+  .empty-icon { margin-bottom:10px; display:flex; justify-content:center; }
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="header">
+    <div class="header-logo">J</div>
+    <span class="header-title">审计中心</span>
+    <div class="header-tabs">
+      <div class="header-tab active" data-module="tools" onclick="switchModule('tools')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg> 工具调用</div>
+      <div class="header-tab" data-module="rollback" onclick="switchModule('rollback')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg> 回滚</div>
+      <div class="header-tab" data-module="agent" onclick="switchModule('agent')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 1 4 4c0 1.95-1.4 3.58-3.25 3.93"/><path d="M8.56 9.8A4 4 0 1 1 15.4 13"/><path d="M12 18a4 4 0 0 1-3.44-6"/><circle cx="12" cy="18" r="1"/><path d="M12 18v4"/><path d="M8 22h8"/></svg> Agent 循环</div>
+    </div>
+    <span class="header-subtitle" id="headerInfo"></span>
+  </div>
+  <div class="layout">
+    <div class="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">导入</div>
+        <div class="drop-zone" id="dropZone">
+          <div class="drop-zone-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
+          <div class="drop-zone-text">拖入 <strong>.jsonl</strong> 或点击选择</div>
+          <input type="file" id="fileInput" accept=".jsonl" multiple style="display:none">
+        </div>
+      </div>
+      <div class="sidebar-section" style="flex:1;display:flex;flex-direction:column;overflow:hidden;padding-bottom:0;">
+        <div class="sidebar-section-title">文件列表</div>
+        <div class="file-list" id="fileList"></div>
+      </div>
+      <div class="sidebar-footer"><button class="clear-btn" onclick="clearAll()">清空全部</button></div>
+    </div>
+    <div class="main" id="mainArea"></div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════ Shared Infrastructure ═══════════════════
+
+const modules = { tools: { color:'--blue', label:'工具调用' }, rollback: { color:'--orange', label:'回滚' }, agent: { color:'--cyan', label:'Agent 循环' } };
+let activeModule = 'tools';
+const fileStores = { tools: new Map(), rollback: new Map(), agent: new Map() };
+let activeFileView = 'all';
+let currentFilter = 'all';
+let agentViewMode = 'loop';
+let rollbackViewMode = 'timeline';
+
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); handleFiles(e.dataTransfer.files); });
+fileInput.addEventListener('change', e => { handleFiles(e.target.files); fileInput.value = ''; });
+
+function handleFiles(files) {
+  const jsonlFiles = [...files].filter(f => f.name.endsWith('.jsonl'));
+  if (!jsonlFiles.length) return;
+  let loaded = 0;
+  for (const file of jsonlFiles) {
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const lines = ev.target.result.split('\n').filter(l => l.trim());
+      const records = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+      const mod = detectModule(records, file.name);
+      fileStores[mod].set(file.name, { records });
+      loaded++;
+      if (loaded === jsonlFiles.length) { activeModule = mod; render(); }
+    };
+    reader.readAsText(file);
+  }
+}
+
+function detectModule(records, filename) {
+  if (filename.includes('rollback')) return 'rollback';
+  if (records.length && records[0].type) return 'agent';
+  if (records.length && (records[0].tool || records[0].correction)) return 'tools';
+  return 'tools';
+}
+
+function switchModule(mod) {
+  activeModule = mod;
+  activeFileView = 'all';
+  currentFilter = 'all';
+  render();
+}
+
+function render() {
+  document.querySelectorAll('.header-tab').forEach(t => t.classList.toggle('active', t.dataset.module === activeModule));
+  renderSidebar();
+  renderMain();
+}
+
+function getStore() { return fileStores[activeModule]; }
+function getActiveRecords() {
+  const store = getStore();
+  if (activeFileView === 'all') return [...store.values()].flatMap(f => f.records);
+  return store.get(activeFileView)?.records || [];
+}
+function getTotalRecords() { let s=0; for (const d of getStore().values()) s+=d.records.length; return s; }
+
+function renderSidebar() {
+  const fileList = document.getElementById('fileList');
+  const headerInfo = document.getElementById('headerInfo');
+  const store = getStore();
+  const mainArea = document.getElementById('mainArea');
+
+  if (store.size === 0) {
+    fileList.innerHTML = ''; headerInfo.textContent = '';
+    mainArea.innerHTML = `<div class="empty-state"><div class="empty-icon"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg></div><div>导入 ${modules[activeModule].label} 的 .jsonl 文件开始分析</div></div>`;
+    return;
+  }
+  const total = getTotalRecords();
+  headerInfo.textContent = `${store.size} 个文件 · ${total} 条记录`;
+  let html = `<div class="file-item all-item ${activeFileView==='all'?'active':''}" onclick="activeFileView='all';render()"><span class="file-item-dot"></span><span class="file-item-name">全部文件</span><span class="file-item-count">${total}</span></div>`;
+  for (const [name, data] of store) {
+    html += `<div class="file-item ${activeFileView===name?'active':''}" onclick="activeFileView='${esc(name)}';render()"><span class="file-item-dot"></span><span class="file-item-name" title="${esc(name)}">${esc(name)}</span><span class="file-item-count">${data.records.length}</span><button class="file-item-remove" onclick="event.stopPropagation();getStore().delete('${esc(name)}');if(activeFileView==='${esc(name)}')activeFileView='all';render()">×</button></div>`;
+  }
+  fileList.innerHTML = html;
+}
+
+function clearAll() { getStore().clear(); activeFileView='all'; currentFilter='all'; render(); }
+
+function renderMain() {
+  const records = getActiveRecords();
+  if (!records.length) {
+    document.getElementById('mainArea').innerHTML = `<div class="empty-state"><div class="empty-icon"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg></div><div>无记录</div></div>`;
+    return;
+  }
+  if (activeModule === 'tools') renderToolsMain(records);
+  else if (activeModule === 'rollback') renderRollbackMain(records);
+  else renderAgentMain(records);
+}
+
+// ═══════════════════ Tools Module ═══════════════════
+
+function renderToolsMain(records) {
+  const main = document.getElementById('mainArea');
+  const total = records.length;
+  const errors = records.filter(r => r.status==='error').length;
+  const blocked = records.filter(r => r.status==='blocked').length;
+  const successRate = total > 0 ? Math.round((total-errors-blocked)/total*100) : 0;
+  const corrections = records.filter(r => r.correction?.is_correction).length;
+  const corrOk = records.filter(r => r.correction?.is_correction && r.status==='ok').length;
+  const corrRate = corrections > 0 ? Math.round(corrOk/corrections*100) : 0;
+  const unresolved = computeUnresolvedErrors(records);
+  const benignErrors = records.filter(r => isBenignError(r)).length;
+  const bd = {}; records.forEach(r => { if (r.error_type) bd[r.error_type]=(bd[r.error_type]||0)+1; });
+  const counts = { all:total, error:errors, blocked, correction:corrections, unresolved, benign:benignErrors };
+  const unresolvedSeqs = getUnresolvedSeqs(records);
+  const benignSeqs = getBenignSeqs(records);
+  records.forEach(r => { counts[r.tool]=(counts[r.tool]||0)+1; });
+  const agentCounts = { main:0, subagent:0 };
+  records.forEach(r => { if (r.agent_type) agentCounts[r.agent_type]=(agentCounts[r.agent_type]||0)+1; });
+  const filters = [{key:'all',label:'全部'},{key:'error',label:'错误'},{key:'blocked',label:'已拦截'},{key:'correction',label:'纠正'},{key:'unresolved',label:'未解决'},{key:'benign',label:'无需处理'},...Object.keys(counts).filter(k=>!['all','error','blocked','correction','unresolved','benign'].includes(k)).map(k=>({key:k,label:k}))];
+  const filtered = records.filter(r => {
+    if (currentFilter==='all') return true;
+    if (currentFilter==='error') return r.status==='error';
+    if (currentFilter==='blocked') return r.status==='blocked';
+    if (currentFilter==='correction') return r.correction?.is_correction;
+    if (currentFilter==='unresolved') return unresolvedSeqs.has(r.seq);
+    if (currentFilter==='benign') return benignSeqs.has(r.seq);
+    if (currentFilter==='agent_main') return r.agent_type==='main';
+    if (currentFilter==='agent_subagent') return r.agent_type==='subagent';
+    return r.tool===currentFilter;
+  });
+
+  let html = `<div class="stats-row">
+    <div class="stat-card"><div class="stat-label">总调用</div><div class="stat-value">${total}</div></div>
+    <div class="stat-card"><div class="stat-label">成功率</div><div class="stat-value green">${successRate}%</div></div>
+    <div class="stat-card"><div class="stat-label">执行失败</div><div class="stat-value red">${errors}</div></div>
+    <div class="stat-card"><div class="stat-label">已拦截</div><div class="stat-value orange">${blocked}</div></div>
+    <div class="stat-card"><div class="stat-label">纠正成功率</div><div class="stat-value yellow">${corrRate}%</div></div>
+    <div class="stat-card"><div class="stat-label">未解决</div><div class="stat-value orange">${unresolved}</div></div>
+    <div class="stat-card"><div class="stat-label">无需处理</div><div class="stat-value cyan">${benignErrors}</div></div>
+  </div>`;
+
+  if (Object.keys(bd).length) {
+    html += `<div class="breakdown-bar"><span class="breakdown-label">错误类型</span><div class="breakdown-tags">${Object.entries(bd).sort((a,b)=>b[1]-a[1]).map(([t,c])=>`<span class="breakdown-tag">${t} <span class="breakdown-tag-count">${c}</span></span>`).join('')}</div></div>`;
+  }
+  if (agentCounts.main > 0 || agentCounts.subagent > 0) {
+    html += `<div class="breakdown-bar"><span class="breakdown-label">调用来源</span><div class="breakdown-tags">`;
+    if (agentCounts.main > 0) html += `<span class="breakdown-tag" style="background:var(--blue-dim);color:var(--blue)">主Agent <span class="breakdown-tag-count">${agentCounts.main}</span></span>`;
+    if (agentCounts.subagent > 0) html += `<span class="breakdown-tag" style="background:var(--purple-dim);color:var(--purple)">子Agent <span class="breakdown-tag-count">${agentCounts.subagent}</span></span>`;
+    html += `</div></div>`;
+  }
+
+  html += `<div class="toolbar">${filters.map(f => `<button class="filter-btn ${currentFilter===f.key?'active':''}" onclick="currentFilter='${f.key}';renderMain()">${f.label}<span class="filter-count">${counts[f.key]||0}</span></button>`).join('')}`;
+  if (agentCounts.main > 0 || agentCounts.subagent > 0) {
+    html += '<div class="toolbar-sep"></div>';
+    if (agentCounts.main > 0) html += `<button class="filter-btn ${currentFilter==='agent_main'?'active':''}" onclick="currentFilter='agent_main';renderMain()">主Agent<span class="filter-count">${agentCounts.main}</span></button>`;
+    if (agentCounts.subagent > 0) html += `<button class="filter-btn ${currentFilter==='agent_subagent'?'active':''}" onclick="currentFilter='agent_subagent';renderMain()">子Agent<span class="filter-count">${agentCounts.subagent}</span></button>`;
+  }
+  html += '</div>';
+
+  const showBadge = activeFileView==='all' && getStore().size>1;
+  const fileLookup = new Map();
+  if (showBadge) { for (const [name, data] of getStore()) for (const r of data.records) fileLookup.set(r, name); }
+
+  html += '<div class="log-table-wrap"><table class="log-table"><thead><tr><th>#</th><th></th><th>来源</th><th>工具</th><th>参数</th><th></th><th>时间</th></tr></thead><tbody>';
+  if (!filtered.length) {
+    html += '<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text-muted)">无匹配记录</td></tr>';
+  } else {
+    for (let i = 0; i < filtered.length; i++) {
+      const r = filtered[i];
+      const isError = r.status==='error'; const isBlocked = r.status==='blocked'; const isCorr = r.correction?.is_correction; const isUnresolved = unresolvedSeqs.has(r.seq); const isBenign = benignSeqs.has(r.seq);
+      const rowCls = isUnresolved?'abandoned':(isBenign?'benign':(isError?'error':(isBlocked?'blocked':(isCorr?'corrected':''))));
+      const sCls = r.status==='ok'?'ok':(r.status==='error'?'error':(r.status==='blocked'?'blocked':'skip'));
+      const sIcon = r.status==='ok'?'✓':(r.status==='error'?'✕':(r.status==='blocked'?'⊘':'⊘'));
+      const time = r.ts?.split('T')[1]?.split('+')[0]?.substring(0,8)||'';
+      const args = fmtArgs(r.args_summary); const fn = fileLookup.get(r); const uid = `tc-${i}`;
+      const agentLabel = r.agent_type === 'main' ? '主' : r.agent_type === 'subagent' ? '子' : (r.agent_type || '-');
+      const agentCls = r.agent_type ? `agent-${r.agent_type}` : '';
+      html += `<tr class="log-row ${rowCls}" id="${uid}" onclick="tog('${uid}')">
+        <td class="cell-seq">${r.seq}</td><td><span class="cell-status ${sCls}">${sIcon}</span></td>
+        <td>${agentCls ? `<span class="cell-badge ${agentCls}">${agentLabel}</span>` : '-'}</td>
+        <td class="cell-tool">${r.tool}</td><td class="cell-args" title="${eh(args)}">${eh(args)}</td>
+        <td>${isUnresolved?'<span class="cell-badge badge-abandoned">⚠ 未解决</span>':''}${isBenign?'<span class="cell-badge badge-benign">ℹ 无需处理</span>':''}${isCorr?`<span class="cell-badge badge-corr">↩ #${r.correction.corrects_seq}</span>`:''}${fn?`<span class="cell-badge badge-file">${eh(fn.replace('.jsonl',''))}</span>`:''}</td>
+        <td class="cell-time">${time}</td></tr>`;
+      html += `<tr class="detail-panel" id="${uid}-d"><td colspan="7"><div class="detail-content"><div class="detail-grid">
+        <span class="detail-key">来源</span><span class="detail-val">${r.agent_type==='main'?'主 Agent':r.agent_type==='subagent'?'子 Agent':(r.agent_type||'-')}</span>
+        <span class="detail-key">工具</span><span class="detail-val">${r.tool}</span>
+        <span class="detail-key">参数</span><span class="detail-val">${eh(args)}</span>
+        <span class="detail-key">意图</span><span class="detail-val">${r.intent||'-'}</span>
+        <span class="detail-key">模式</span><span class="detail-val">${r.work_mode||'-'}</span>
+        ${r.error_type?`<span class="detail-key">错误类型</span><span class="detail-val error-msg">${r.error_type}</span>`:''}
+        ${r.error_message?`<span class="detail-key">错误信息</span><span class="detail-val error-msg">${eh(r.error_message)}</span>`:''}
+        ${isCorr?`<span class="detail-key">纠正策略</span><span class="detail-val">${r.correction.strategy||'-'}</span><span class="detail-key">第几次</span><span class="detail-val">${r.correction.attempt}</span>`:''}
+        <span class="detail-key">遵循协议</span><span class="detail-val">${r.diagnosis?.followed_protocol?'✓ 是':'✕ 否'}</span>
+        <span class="detail-key">先搜索过</span><span class="detail-val">${r.diagnosis?.searched_before?'✓ 是':'✕ 否'}</span>
+      </div></div></td></tr>`;
+    }
+  }
+  html += '</tbody></table></div>';
+  main.innerHTML = html;
+}
+
+// 良性错误：工具执行了但发现目标状态已达成，属于无操作（no-op），不需要纠正
+function isBenignError(r) {
+  if (r.status !== 'error' || !r.error_message) return false;
+  const msg = r.error_message;
+  return /无需切换|无需操作|无需创建|无需修改|无需更新|已经处于|已是|已经存在|已存在|已在|已经是|当前已是|already\sin|already\sexists|no\sneed\sto/i.test(msg);
+}
+function computeUnresolvedErrors(records) {
+  const correctedSeqs = new Set();
+  for (const r of records) if (r.correction?.is_correction && r.correction.corrects_seq != null && r.status==='ok') correctedSeqs.add(r.correction.corrects_seq);
+  // 只统计纠正流程中的未解决（有 error_type 才算进入过纠正机制，且排除良性 no-op 错误）
+  return records.filter(r => r.status==='error' && r.error_type && !correctedSeqs.has(r.seq) && !isBenignError(r)).length;
+}
+function getUnresolvedSeqs(records) {
+  const correctedSeqs = new Set();
+  for (const r of records) if (r.correction?.is_correction && r.correction.corrects_seq != null && r.status==='ok') correctedSeqs.add(r.correction.corrects_seq);
+  const s = new Set();
+  for (const r of records) if (r.status==='error' && r.error_type && !correctedSeqs.has(r.seq) && !isBenignError(r)) s.add(r.seq);
+  return s;
+}
+function getBenignSeqs(records) {
+  const s = new Set();
+  for (const r of records) if (isBenignError(r)) s.add(r.seq);
+  return s;
+}
+
+// ═══════════════════ Rollback Module ═══════════════════
+
+function renderRollbackMain(records) {
+  const main = document.getElementById('mainArea');
+  const total = records.length;
+  const ok = records.filter(r => r.status==='ok').length;
+  const errors = records.filter(r => r.status==='error').length;
+  const blocked = records.filter(r => r.status==='blocked').length;
+  const skipped = records.filter(r => r.status==='skip').length;
+  const successRate = total > 0 ? Math.round(ok/total*100) : 0;
+  const totalDuration = records.reduce((a,r) => a + (r.duration_ms||0), 0);
+
+  const counts = { all:total, error:errors, blocked:blocked, skip:skipped };
+  records.forEach(r => { if (r.phase) counts[r.phase]=(counts[r.phase]||0)+1; if (r.action) counts[r.action]=(counts[r.action]||0)+1; });
+  const rbFilters = [{key:'all',label:'全部'},{key:'error',label:'失败'},{key:'blocked',label:'已拦截'},{key:'skip',label:'跳过'},{key:'staging',label:'Staging'},{key:'apply',label:'Apply'},{key:'create',label:'Create'},{key:'update',label:'Update'},{key:'delete',label:'Delete'}];
+  const filtered = records.filter(r => {
+    if (currentFilter==='all') return true;
+    if (currentFilter==='error') return r.status==='error';
+    if (currentFilter==='blocked') return r.status==='blocked';
+    if (currentFilter==='skip') return r.status==='skip';
+    return r.phase===currentFilter || r.action===currentFilter;
+  });
+
+  let html = `<div class="stats-row">
+    <div class="stat-card"><div class="stat-label">总操作</div><div class="stat-value">${total}</div></div>
+    <div class="stat-card"><div class="stat-label">成功率</div><div class="stat-value green">${successRate}%</div></div>
+    <div class="stat-card"><div class="stat-label">失败</div><div class="stat-value red">${errors}</div></div>
+    <div class="stat-card"><div class="stat-label">跳过</div><div class="stat-value yellow">${skipped}</div></div>
+    <div class="stat-card"><div class="stat-label">总耗时</div><div class="stat-value blue">${fmtDuration(totalDuration)}</div></div>
+  </div>`;
+
+  html += `<div class="toolbar">${rbFilters.filter(f=>counts[f.key]).map(f => `<button class="filter-btn ${currentFilter===f.key?'active':''}" onclick="currentFilter='${f.key}';renderMain()">${f.label}<span class="filter-count">${counts[f.key]||0}</span></button>`).join('')}`;
+  html += `<div class="view-toggle">
+    <button class="view-btn ${rollbackViewMode==='timeline'?'active':''}" onclick="rollbackViewMode='timeline';renderMain()">时间线</button>
+    <button class="view-btn ${rollbackViewMode==='file'?'active':''}" onclick="rollbackViewMode='file';renderMain()">按文件</button>
+  </div></div>`;
+
+  if (rollbackViewMode === 'timeline') {
+    const staging = filtered.filter(r => r.phase==='staging');
+    const apply = filtered.filter(r => r.phase==='apply');
+    if (staging.length) html += `<div style="display:flex;align-items:center;gap:10px;margin:18px 0 12px"><span class="cell-phase phase-staging">Staging</span><span style="flex:1;height:1px;background:var(--border)"></span><span style="font-size:11px;color:var(--text-muted)">${staging.length} 个文件</span></div>` + renderRbTable(staging);
+    if (apply.length) html += `<div style="display:flex;align-items:center;gap:10px;margin:18px 0 12px"><span class="cell-phase phase-apply">Apply</span><span style="flex:1;height:1px;background:var(--border)"></span><span style="font-size:11px;color:var(--text-muted)">${apply.length} 个文件</span></div>` + renderRbTable(apply);
+  } else {
+    const groups = new Map();
+    for (const r of filtered) { const p = r.path||'unknown'; if (!groups.has(p)) groups.set(p, []); groups.get(p).push(r); }
+    const sorted = [...groups.entries()].sort((a,b) => { const ae=a[1].some(r=>r.status==='error'), be=b[1].some(r=>r.status==='error'); if (ae&&!be) return -1; if (!ae&&be) return 1; return a[0].localeCompare(b[0]); });
+    for (const [path, ops] of sorted) {
+      const hasError = ops.some(r => r.status==='error');
+      const hasBlocked = !hasError && ops.some(r => r.status==='blocked');
+      const statusCls = hasError?'error':(hasBlocked?'blocked':(ops[ops.length-1].status==='skip'?'skip':'ok'));
+      html += `<div class="loop-card ${hasError?'has-violation':''}" id="fg-${eh(path)}"><div class="loop-header" onclick="tog('fg-${eh(path)}')"><span class="file-group-status" style="width:8px;height:8px;border-radius:50%;background:var(--${statusCls==='error'?'red':statusCls==='blocked'?'orange':statusCls==='skip'?'yellow':'green'});flex-shrink:0"></span><span class="cell-path" style="flex:1">${eh(path)}</span><span style="font-family:var(--mono);font-size:11px;color:var(--text-muted)">${ops[0].action} · ${ops.length} 步</span><span class="loop-arrow">▶</span></div><div class="loop-body">`;
+      for (const op of ops) {
+        const sIcon = op.status==='ok'?'✓':(op.status==='error'?'✕':(op.status==='blocked'?'⊘':'⊘'));
+        const sColor = op.status==='ok'?'var(--green)':(op.status==='error'?'var(--red)':(op.status==='blocked'?'var(--orange)':'var(--yellow)'));
+        html += `<div class="loop-section" style="display:flex;align-items:center;gap:12px;padding:8px 16px 8px 36px"><span class="cell-phase phase-${op.phase}">${op.phase}</span><span style="color:${sColor}">${sIcon}</span><span style="font-family:var(--mono);font-size:11px;color:var(--text-muted)">${op.action}</span>${op.size_bytes!=null?`<span style="font-family:var(--mono);font-size:11px;color:var(--text-muted)">${fmtSize(op.size_bytes)}</span>`:''}<span style="font-family:var(--mono);font-size:11px;color:var(--text-muted);width:60px;text-align:right">${op.duration_ms!=null?op.duration_ms+'ms':''}</span>${op.error?`<span style="font-family:var(--mono);font-size:11px;color:var(--red);flex:1">${eh(op.error)}</span>`:''}</div>`;
+      }
+      html += '</div></div>';
+    }
+  }
+  main.innerHTML = html;
+}
+
+function renderRbTable(records) {
+  let html = '<div class="log-table-wrap"><table class="log-table"><thead><tr><th>#</th><th></th><th>文件路径</th><th>操作</th><th>大小</th><th>耗时</th><th>错误</th></tr></thead><tbody>';
+  for (let i=0;i<records.length;i++) {
+    const r=records[i]; const isError=r.status==='error'; const isBlocked=r.status==='blocked'; const isSkip=r.status==='skip';
+    const rowCls=isError?'error':(isBlocked?'blocked':(isSkip?'skip':''));
+    const sCls=r.status==='ok'?'ok':(r.status==='error'?'error':(r.status==='blocked'?'blocked':'skip'));
+    const sIcon=r.status==='ok'?'✓':(r.status==='error'?'✕':(r.status==='blocked'?'⊘':'⊘'));
+    const uid=`rb-${currentFilter}-${i}`;
+    html += `<tr class="log-row ${rowCls}" id="${uid}" onclick="tog('${uid}')"><td class="cell-seq">${r.rollback_seq||''}</td><td><span class="cell-status ${sCls}">${sIcon}</span></td><td class="cell-path">${eh(r.path||'')}</td><td><span class="cell-action action-${r.action}">${r.action||''}</span></td><td class="cell-size">${r.size_bytes!=null?fmtSize(r.size_bytes):'-'}</td><td class="cell-duration">${r.duration_ms!=null?r.duration_ms+'ms':'-'}</td><td class="cell-error">${r.error?eh(r.error):''}</td></tr>`;
+    html += `<tr class="detail-panel" id="${uid}-d"><td colspan="7"><div class="detail-content"><div class="detail-grid"><span class="detail-key">会话</span><span class="detail-val">${r.session_id||'-'}</span><span class="detail-key">序号</span><span class="detail-val">${r.rollback_seq||'-'}</span><span class="detail-key">阶段</span><span class="detail-val">${r.phase||'-'}</span><span class="detail-key">文件</span><span class="detail-val">${eh(r.path||'-')}</span><span class="detail-key">操作</span><span class="detail-val">${r.action||'-'}</span><span class="detail-key">状态</span><span class="detail-val">${r.status||'-'}</span>${r.size_bytes!=null?`<span class="detail-key">大小</span><span class="detail-val">${fmtSize(r.size_bytes)} (${r.size_bytes} bytes)</span>`:''}${r.duration_ms!=null?`<span class="detail-key">耗时</span><span class="detail-val">${r.duration_ms}ms</span>`:''}${r.error?`<span class="detail-key">错误</span><span class="detail-val error-msg">${eh(r.error)}</span>`:''}<span class="detail-key">时间</span><span class="detail-val">${r.ts||'-'}</span></div></div></td></tr>`;
+  }
+  html += '</tbody></table></div>';
+  return html;
+}
+
+// ═══════════════════ Agent Loop Module ═══════════════════
+
+function renderAgentMain(records) {
+  const main = document.getElementById('mainArea');
+  const loops = new Set(); let totalIn=0, totalOut=0, toolCalls=0, violations=0;
+  for (const r of records) {
+    if (r.loop_count!=null && r.agent_type) loops.add(`${r.agent_type}-${r.loop_count}`);
+    if (r.input_tokens) totalIn=Math.max(totalIn, r.input_tokens);
+    if (r.output_tokens) totalOut=Math.max(totalOut, r.output_tokens);
+    if (r.type==='thinking' && r.tool_calls) toolCalls+=r.tool_calls.length;
+    if (r.type==='protocol_violation') violations++;
+    if (r.type==='api_error') violations++;
+  }
+  const aCounts = { all:records.length };
+  for (const r of records) { if (r.type) aCounts[r.type]=(aCounts[r.type]||0)+1; if (r.agent_type) aCounts[r.agent_type]=(aCounts[r.agent_type]||0)+1; }
+  const typeFilters = ['request','response','thinking','intent','memory','sse_event','protocol_violation','api_error'];
+  const agentFilters = ['MAIN','SUB','MEMORY'];
+  const filtered = records.filter(r => {
+    if (currentFilter==='all') return true;
+    if (['MAIN','SUB','MEMORY'].includes(currentFilter)) return r.agent_type===currentFilter;
+    return r.type===currentFilter;
+  });
+
+  let html = `<div class="stats-row">
+    <div class="stat-card"><div class="stat-label">总循环</div><div class="stat-value cyan">${loops.size}</div></div>
+    <div class="stat-card"><div class="stat-label">输入 Token</div><div class="stat-value blue">${fmtK(totalIn)}</div></div>
+    <div class="stat-card"><div class="stat-label">输出 Token</div><div class="stat-value purple">${fmtK(totalOut)}</div></div>
+    <div class="stat-card"><div class="stat-label">工具调用</div><div class="stat-value green">${toolCalls}</div></div>
+    <div class="stat-card"><div class="stat-label">协议违规</div><div class="stat-value red">${violations}</div></div>
+  </div>`;
+
+  html += `<div class="toolbar"><button class="filter-btn ${currentFilter==='all'?'active':''}" onclick="currentFilter='all';renderMain()">全部<span class="filter-count">${aCounts.all}</span></button><div class="toolbar-sep"></div>`;
+  for (const t of typeFilters) { if (!aCounts[t]) continue; const label={request:'请求',response:'响应',thinking:'思考',intent:'意图',memory:'记忆',sse_event:'SSE',protocol_violation:'违规',api_error:'API错误'}[t]; html += `<button class="filter-btn ${currentFilter===t?'active':''}" onclick="currentFilter='${t}';renderMain()">${label}<span class="filter-count">${aCounts[t]||0}</span></button>`; }
+  html += '<div class="toolbar-sep"></div>';
+  for (const a of agentFilters) { if (!aCounts[a]) continue; html += `<button class="filter-btn ${currentFilter===a?'active':''}" onclick="currentFilter='${a}';renderMain()">${a}<span class="filter-count">${aCounts[a]||0}</span></button>`; }
+  html += `<div class="view-toggle"><button class="view-btn ${agentViewMode==='loop'?'active':''}" onclick="agentViewMode='loop';renderMain()">循环</button><button class="view-btn ${agentViewMode==='intent'?'active':''}" onclick="agentViewMode='intent';renderMain()">意图</button><button class="view-btn ${agentViewMode==='token'?'active':''}" onclick="agentViewMode='token';renderMain()">Token</button></div></div>`;
+
+  if (agentViewMode === 'loop') {
+    const loopMap = new Map();
+    for (const r of filtered) { if (r.loop_count==null||!r.agent_type) continue; const k=`${r.agent_type}-${r.loop_count}`; if(!loopMap.has(k))loopMap.set(k,[]); loopMap.get(k).push(r); }
+    const sorted = [...loopMap.entries()].sort((a,b) => { const at=a[1][0].agent_type||'',bt=b[1][0].agent_type||''; if(at!==bt) return at.localeCompare(bt); return (a[1][0].loop_count||0)-(b[1][0].loop_count||0); });
+    for (const [key, recs] of sorted) {
+      const agent=recs[0].agent_type||'?', loop=recs[0].loop_count||0;
+      const hasViolation=recs.some(r=>r.type==='protocol_violation'||r.type==='api_error');
+      const thinking=recs.find(r=>r.type==='thinking'), request=recs.find(r=>r.type==='request'), response=recs.find(r=>r.type==='response');
+      const vio=recs.filter(r=>r.type==='protocol_violation'), sseCnt=recs.filter(r=>r.type==='sse_event').length;
+      const apiErrors=recs.filter(r=>r.type==='api_error');
+      const parts=[]; if(thinking?.tool_calls?.length)parts.push(`${thinking.tool_calls.length} 个工具调用`); if(response)parts.push(`text=${response.text_len} thinking=${response.thinking_len}`); if(sseCnt)parts.push(`${sseCnt} SSE`); if(vio.length)parts.push(`⚠ ${vio.length} 违规`); if(apiErrors.length)parts.push(`🔴 ${apiErrors.length} API错误`);
+      const tokens=thinking?`${fmtK(thinking.input_tokens)}→${fmtK(thinking.output_tokens)}`:'';
+      html += `<div class="loop-card ${hasViolation?'has-violation':''}" id="al-${key}"><div class="loop-header" onclick="tog('al-${key}')"><span class="loop-num">#${loop}</span><span class="loop-agent agent-${agent}">${agent}</span><span class="loop-summary">${parts.join(' · ')||'无摘要'}</span><span class="loop-tokens">${tokens}</span><span class="loop-arrow">▶</span></div><div class="loop-body">`;
+      if (request) html += `<div class="loop-section"><div class="loop-section-title"><span class="section-badge badge-request">REQUEST</span></div>${collapsible(request.request_json,'request-json','req-'+key)}</div>`;
+      if (thinking) {
+        html += `<div class="loop-section"><div class="loop-section-title"><span class="section-badge badge-thinking">THINKING</span></div>${collapsible(thinking.thinking||'(无)','thinking-text','think-'+key)}</div>`;
+        if (thinking.tool_calls?.length) { html += `<div class="loop-section"><div class="loop-section-title"><span class="section-badge badge-tools">TOOLS</span> (${thinking.tool_calls.length})</div><div class="tool-list">`; for (const [n,a] of thinking.tool_calls) { const as=typeof a==='string'?a:JSON.stringify(a); html+=`<div class="tool-item"><span class="tool-name">${eh(n)}</span><span class="tool-args" title="${eh(as)}">${eh(as.length>120?as.substring(0,120)+'…':as)}</span></div>`; } html+='</div></div>'; }
+        if (thinking.response_text) html += `<div class="loop-section"><div class="loop-section-title"><span class="section-badge badge-response">RESPONSE</span></div>${collapsible(thinking.response_text,'thinking-text','resp-'+key)}</div>`;
+      }
+      for (const v of vio) html += `<div class="loop-section"><div class="loop-section-title"><span class="section-badge badge-violation">VIOLATION</span></div>${collapsible(v.snippet,'violation-text','vio-'+key)}</div>`;
+      for (const ae of apiErrors) html += `<div class="loop-section"><div class="loop-section-title"><span class="section-badge badge-api-error">API ERROR</span></div><div style="margin-bottom:6px"><strong>错误:</strong> ${eh(ae.error_message||'')}</div>${collapsible(ae.messages_snapshot||'(无快照)','api-error-snapshot','ae-'+key)}</div>`;
+      if (thinking) { const tot=(thinking.input_tokens||0)+(thinking.output_tokens||0), pct=tot>0?(thinking.input_tokens/tot*100):0; html+=`<div class="loop-section"><div class="token-bar"><span class="token-bar-label">Input</span><div class="token-bar-track"><div class="token-bar-input" style="width:${pct}%"></div><div class="token-bar-output" style="width:${100-pct}%"></div></div><span class="token-bar-value">${fmtK(thinking.input_tokens)} / ${fmtK(thinking.output_tokens)}</span></div></div>`; }
+      html += '</div></div>';
+    }
+  } else if (agentViewMode === 'intent') {
+    const intents = filtered.filter(r => r.type==='intent');
+    if (!intents.length) html += '<div style="text-align:center;padding:40px;color:var(--text-muted)">无意图记录</div>';
+    else {
+      html += '<div class="log-table-wrap"><table class="intent-table"><thead><tr><th>时间</th><th>分类器</th><th>用户输入</th><th>检测意图</th></tr></thead><tbody>';
+      for (const r of intents) { const time=r.ts?.split('T')[1]?.split('+')[0]?.substring(0,8)||''; html+=`<tr><td style="font-family:var(--mono);font-size:11px;color:var(--text-muted);white-space:nowrap">${time}</td><td><span class="intent-badge intent-${r.classifier}">${r.classifier}</span></td><td style="max-width:300px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${eh(r.user_input||'')}</td><td style="font-family:var(--mono);font-weight:600">${eh(r.detected_intent||'')}</td></tr>`; }
+      html += '</tbody></table></div>';
+    }
+  } else {
+    const responses = filtered.filter(r => r.type==='response');
+    if (!responses.length) html += '<div style="text-align:center;padding:40px;color:var(--text-muted)">无 Token 记录</div>';
+    else {
+      const maxIn=Math.max(...responses.map(r=>r.input_tokens||0),1), maxOut=Math.max(...responses.map(r=>r.output_tokens||0),1);
+      html += '<div style="display:flex;flex-direction:column;gap:6px">';
+      for (const r of responses) { const iw=((r.input_tokens||0)/maxIn*100).toFixed(1), ow=((r.output_tokens||0)/maxOut*100).toFixed(1); html+=`<div style="display:flex;align-items:center;gap:8px;font-size:11px"><span style="width:80px;font-family:var(--mono);color:var(--text-muted);text-align:right;flex-shrink:0">${r.agent_type} #${r.loop_count}</span><div style="flex:1;display:flex;flex-direction:column;gap:2px"><div style="display:flex;align-items:center;gap:4px"><span style="width:40px;font-size:10px;color:var(--blue)">In</span><div style="flex:1;height:10px;background:var(--bg);border-radius:3px;overflow:hidden"><div style="width:${iw}%;height:100%;background:var(--blue);border-radius:3px"></div></div><span style="width:60px;text-align:right;font-family:var(--mono);color:var(--text-muted)">${fmtK(r.input_tokens)}</span></div><div style="display:flex;align-items:center;gap:4px"><span style="width:40px;font-size:10px;color:var(--orange)">Out</span><div style="flex:1;height:10px;background:var(--bg);border-radius:3px;overflow:hidden"><div style="width:${ow}%;height:100%;background:var(--orange);border-radius:3px"></div></div><span style="width:60px;text-align:right;font-family:var(--mono);color:var(--text-muted)">${fmtK(r.output_tokens)}</span></div></div></div>`; }
+      html += '</div>';
+    }
+  }
+  main.innerHTML = html;
+}
+
+// ═══════════════════ Helpers ═══════════════════
+
+function tog(id) { document.getElementById(id)?.classList.toggle('open'); document.getElementById(id)?.classList.toggle('expanded'); }
+function fmtArgs(args) { if (!args||typeof args!=='object') return ''; return Object.entries(args).filter(([k])=>k!=='name').map(([k,v])=>{ const s=typeof v==='string'?v:JSON.stringify(v); return `${k}=${s.length>50?s.substring(0,50)+'…':s}`; }).join(' '); }
+function fmtSize(b) { if(b<1024)return b+'B'; if(b<1048576)return(b/1024).toFixed(1)+'KB'; return(b/1048576).toFixed(1)+'MB'; }
+function fmtDuration(ms) { if(ms<1000)return ms+'ms'; if(ms<60000)return(ms/1000).toFixed(1)+'s'; return(ms/60000).toFixed(1)+'min'; }
+function fmtK(n) { if(n==null)return '-'; if(n>=1000000)return(n/1000000).toFixed(1)+'M'; if(n>=1000)return(n/1000).toFixed(1)+'K'; return String(n); }
+function eh(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+function collapsible(text, cls, id) {
+  if (!text) return '';
+  const uid = id || ('c-'+Math.random().toString(36).slice(2,8));
+  const lines = (text.match(/\n/g)||[]).length;
+  const tooLong = text.length > 800 || lines > 20;
+  if (!tooLong) return `<div class="${cls}">${eh(text)}</div>`;
+  return `<div class="${cls}"><div class="content-block" id="${uid}">${eh(text)}</div><button class="content-toggle" onclick="togContent('${uid}',this)">展开全部 (${text.length} 字符)</button></div>`;
+}
+function togContent(uid, btn) {
+  const el = document.getElementById(uid);
+  if (!el) return;
+  el.classList.toggle('expanded');
+  btn.textContent = el.classList.contains('expanded') ? '收起' : `展开全部 (${el.textContent.length} 字符)`;
+}
+function esc(s) { return s.replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+</script>
+</body>
+</html>

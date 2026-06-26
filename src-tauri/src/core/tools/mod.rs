@@ -182,28 +182,9 @@ pub async fn handle_tool_call(
         let result = framework::tool_search::handle_execute_tool(
             app, input, session_id, "main", intent, work_mode,
         ).await;
-        // 记录审计日志
-        let logger = framework::tool_call_logger::tool_call_logger();
-        if result.is_blocked {
-            logger.log_core_call(
-                session_id, "main", name, input, intent, work_mode,
-                framework::tool_call_logger::ToolCallStatus::Blocked,
-                Some(result.output.chars().take(500).collect()),
-            );
-        } else if result.is_error {
-            logger.log_core_call(
-                session_id, "main", name, input, intent, work_mode,
-                framework::tool_call_logger::ToolCallStatus::Error,
-                Some(result.output.chars().take(500).collect()),
-            );
-        } else {
-            logger.log_core_call(
-                session_id, "main", name, input, intent, work_mode,
-                framework::tool_call_logger::ToolCallStatus::Ok,
-                None,
-            );
-        }
-        // 传播 is_error（如 ProposePlan 的 break_loop 已去掉）
+        // handle_execute_tool 内部已通过 log_deferred_call 记录了完整的审计日志
+        // （含工具名、错误类型、纠正追踪）。此处不再重复记录，避免同一次调用产生
+        // 两条日志条目（一条带实际工具名，一条仅显示 ExecuteTool）。
         {
             use tauri::Manager;
             let sm = app.state::<crate::infra::state::state::SessionManager>();
