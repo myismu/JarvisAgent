@@ -139,7 +139,10 @@ pub async fn switch_away_and_delete_empty_session(
     Ok(())
 }
 
-/// 使用 utility 模型自动生成会话名称（取前 4 条消息摘要）
+/// 使用 utility 模型自动生成会话名称。
+///
+/// 提取前几条用户消息 + 助手首条文本，过滤掉系统注入的上下文消息。
+/// 对 LLM 返回结果做长度校验，防止 LLM 复述原文。
 pub async fn auto_name_session(
     app: tauri::AppHandle,
     session_id: String,
@@ -149,50 +152,136 @@ pub async fn auto_name_session(
         return Ok(());
     }
 
-    let cfg = crate::infra::config::config::load_config();
-    let agent_cfg = cfg.active_config();
-    let model_id = &agent_cfg.utility_model;
-    let api_key = &agent_cfg.api_key;
-    let base_url = &agent_cfg.base_url;
-    let api_format = agent_cfg.api_format_enum();
-
-    // 取前 4 条消息用于摘要
-    let mut text_to_summarize = String::new();
-    for msg in memory.messages.iter().take(4) {
-        if let Ok(m) = serde_json::to_string(msg) {
-            text_to_summarize.push_str(&m);
-            text_to_summarize.push('\n');
+    // 提取用于命名的摘要文本：取用户消息 + 最后一条助手消息（反映实际产出），跳过系统注入
+    // 不再提前 break —— 遍历全部消息以获取最后一条助手回复，首条助手回复往往是「我来做X」
+    // 这种流程性表述，而最后一条更可能包含实际成果。
+    let mut user_texts: Vec<String> = Vec::new();
+    let mut assistant_text: Option<String> = None;
+    for msg in &memory.messages {
+        match msg {
+            Message::User { content } => {
+                let text = extract_plain_text(content);
+                // 跳过系统注入的上下文（包含特征标记或过长）
+                if text.contains("[User Input]:") {
+                    if let Some(pos) = text.find("[User Input]:") {
+                        let real = text[pos + 13..].trim().to_string();
+                        if !real.is_empty() { user_texts.push(real); }
+                    }
+                } else if !text.starts_with("你是一位") && text.len() < 2000 {
+                    // 非系统提示、非过长上下文
+                    if !text.is_empty() { user_texts.push(text); }
+                }
+            }
+            Message::Assistant { content } => {
+                // 始终覆盖，取最后一条助手消息（更可能描述实际产出而非流程承诺）
+                if let Content::Multiple(blocks) = content {
+                    for b in blocks {
+                        if let crate::infra::types::models::ContentBlock::Text { text } = b {
+                            let t = text.trim().to_string();
+                            if !t.is_empty() { assistant_text = Some(t); break; }
+                        }
+                    }
+                }
+            }
         }
     }
 
-    let summary_prompt = format!("请根据以下对话内容，给出一个极简的会话名称（不超过10个字，不要有任何解释，不要包含标点符号和引号）：\n\n{}", text_to_summarize);
+    if user_texts.is_empty() {
+        return Ok(());
+    }
+
+    // 拼成简洁摘要：用户说的话 + 助手简要
+    let mut context = String::new();
+    for (i, t) in user_texts.iter().enumerate() {
+        let short: String = t.chars().take(300).collect();
+        context.push_str(&format!("用户{}: {}\n", i + 1, short));
+    }
+    if let Some(ref at) = assistant_text {
+        let short: String = at.chars().take(120).collect();
+        context.push_str(&format!("助手: {}\n", short));
+    }
+
+    let summary_prompt = format!(
+        "为以上对话生成一个描述性标题，让用户以后能一眼回忆起对话的核心主题和关键成果。\n\
+         \n\
+         规则：\n\
+         - 标题应概括「核心主题 + 关键产出」，而非描述「当前处于哪个流程阶段」\n\
+         - 避免使用「审批」「讨论中」「进行中」「审查」「确认」「评估」等流程节点词\n\
+         - 长度 3~20 字，不含引号、标点和解释\n\
+         - 只输出标题本身，不要输出任何其他内容\n\
+         \n\
+         正确示例（描述内容与成果）：\n\
+         - 任务与知识库管理系统架构设计\n\
+         - 支付模块空指针异常修复\n\
+         - 用户认证 JWT 方案设计\n\
+         - 搜索结果分页改用游标方案\n\
+         \n\
+         错误示例（描述流程阶段）：\n\
+         - 实施方案审批 → 看不出具体项目\n\
+         - 代码审查 → 不知道审查什么\n\
+         - 需求讨论 → 不知道讨论什么\n\
+         \n\
+         对话内容：\n{}",
+        context
+    );
+
+    let cfg = crate::infra::config::config::load_config();
+    let agent_cfg = cfg.active_config();
 
     let client = reqwest::Client::new();
     let title = api_client::call_llm_simple(
         &client,
-        api_key,
-        base_url,
-        model_id,
-        api_format,
-        "你是一个专门用于提取会话名称的助手。只输出名称本身。",
+        &agent_cfg.api_key,
+        &agent_cfg.base_url,
+        &agent_cfg.utility_model,
+        agent_cfg.api_format_enum(),
+        "你是一个会话标题生成器。为对话生成描述性标题，概括核心主题与关键成果，避免流程节点词。只输出标题文本。",
         &summary_prompt,
-        50,
+        30,
     )
     .await
     .unwrap_or_default();
 
-    // 去除 LLM 可能添加的引号
     let title = title
         .trim()
         .trim_matches('"')
         .trim_matches('\'')
+        .trim_matches('「')
+        .trim_matches('」')
         .to_string();
-    if !title.is_empty() {
-        let _ = session::rename_session(&session_id, &title, true);
-        let _ = app.emit("session-renamed", ());
+
+    // 校验：标题必须在 2~30 字之间，不是原文复述
+    let char_count = title.chars().count();
+    if char_count >= 2 && char_count <= 30 {
+        // 额外检查：标题不能是某条原始消息的原文复述
+        let is_verbatim = user_texts.iter().any(|t| t.contains(&title) && t.len() < title.len() * 3)
+            || assistant_text.as_ref().map(|t| t.contains(&title) && t.len() < title.len() * 3).unwrap_or(false);
+        if !is_verbatim {
+            let _ = session::rename_session(&session_id, &title, true);
+            let _ = app.emit("session-renamed", ());
+            return Ok(());
+        }
     }
 
     Ok(())
+}
+
+/// 从 Content 中提取纯文本
+fn extract_plain_text(content: &Content) -> String {
+    match content {
+        Content::Single(s) => s.clone(),
+        Content::Multiple(blocks) => blocks
+            .iter()
+            .filter_map(|b| {
+                if let crate::infra::types::models::ContentBlock::Text { text } = b {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
 }
 
 /// 撤回最后一条用户消息，返回撤回的文本内容
