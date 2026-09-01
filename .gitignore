@@ -53,5 +53,6 @@ package-lock.json
 
 # Excluded project folders
 /agent/
+/archify/
 /demo/
 /doc/
