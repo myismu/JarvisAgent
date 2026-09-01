@@ -75,9 +75,9 @@ cargo test            # Rust 测试（在 src-tauri/ 下运行）
 
 | 模式 | 工具集 | 说明 |
 |------|--------|------|
-| **Chat** | 14 个只读工具 | 轻量问答、信息查询 |
-| **Edit** | 全部 30 个工具 | 代码开发、文件编辑、任务执行 |
-| **Plan** | 21 个规划工具 | 只读探索 + 方案制定 + 任务图拆解 |
+| **Chat** | 只读工具子集（约 14 个） | 轻量问答、信息查询 |
+| **Edit** | 全部工具（40+，含延迟工具） | 代码开发、文件编辑、任务执行 |
+| **Plan** | 规划工具集（约 21 个） | 只读探索 + 方案制定 + 任务图拆解 |
 
 用户类型（Audience）分为 **普通用户** 和 **开发者**，仅影响 UI 渲染细节和交流风格，不影响工具可用性。
 
@@ -85,15 +85,17 @@ cargo test            # Rust 测试（在 src-tauri/ 下运行）
 
 ```
 JarvisAgent/
-├── src/                              # Vue 3 前端
-│   ├── main.ts                       # 应用入口
-│   ├── App.vue                       # 根布局
+├── src/                              # Vue 3 前端（主应用 + 监控页双入口）
+│   ├── main.ts / App.vue             # 应用入口与根布局
+│   ├── monitor-main.ts / MonitorApp.vue   # 独立监控页应用（monitor.html 入口）
+│   ├── i18n.ts / locales/            # vue-i18n 国际化（zh-CN / en-US）
 │   ├── types/index.ts                # 全部 TypeScript 类型定义
 │   ├── stores/                       # Pinia 状态管理
 │   │   ├── session.ts                #   会话生命周期 + 消息缓冲区
 │   │   ├── chat.ts                   #   核心交互：发送/取消/撤回/渲染
 │   │   ├── agent.ts                  #   Agent/子代理运行状态追踪
-│   │   └── permission.ts             #   权限请求 + 方案审批状态
+│   │   ├── permission.ts             #   权限请求 + 方案审批状态
+│   │   └── appView.ts                #   视图/面板显隐偏好
 │   ├── composables/
 │   │   ├── useAgentEvents.ts         #   后端事件监听中枢 → 分发到各 Store
 │   │   ├── useTheme.ts               #   亮/暗主题切换
@@ -102,99 +104,79 @@ JarvisAgent/
 │   ├── utils/
 │   │   ├── toolDisplay.ts            #   工具调用分组与展示摘要
 │   │   ├── agentTurnRender.ts        #   Agent 轮次渲染
+│   │   ├── agentTurnState.ts         #   单轮 Agent 状态更新
+│   │   ├── historyRender.ts          #   历史消息渲染
+│   │   ├── timeline.ts               #   时间线数据处理
 │   │   ├── markdown.ts               #   Markdown 渲染
 │   │   └── html.ts                   #   HTML 工具函数
 │   ├── services/
 │   │   └── snapshotService.ts        #   快照 API 封装
 │   └── components/
 │       ├── layout/                   # TitleBar, Sidebar
-│       ├── chat/                     # ChatArea, TerminalInput, AgentPanel, TodoPanel, ExecutionPanel
-│       ├── common/                   # PermissionModal, PlanPreviewPanel, ConfirmModal
+│       ├── chat/                     # ChatArea, TerminalInput, AgentPanel, AgentTurn,
+│       │                             # ExecutionPanel, ThinkingStatus, TodoPanel, ToolCallGroup,
+│       │                             # PermissionCard, ContextInspector, SessionTaskBoard,
+│       │                             # AgentSnapshotSection, WelcomeScreen
+│       ├── common/                   # PermissionModal, PlanPreviewPanel, ConfirmModal,
+│       │                             # RollbackConfirmModal, StreamingMarkdown
 │       ├── checkpoint/               # CheckpointTimeline
 │       ├── snapshot/                 # SnapshotTimeline, DiffViewer, LivePreview
-│       └── settings/                 # SettingsPanel（多预设 + 双轴选择）
-├── src-tauri/                        # Rust 后端
+│       ├── settings/                 # SettingsPanel（多预设 + 双轴选择）
+│       └── skill/                    # SkillManager, SkillMarket, SkillCard, SkillDetailPanel
+├── src-tauri/                        # Rust 后端（三层：infra / core / command）
 │   ├── src/
-│   │   ├── lib.rs                    # Tauri 入口：状态注册 + 命令绑定
-│   │   ├── core/
-│   │   │   ├── mod.rs                # 模块导出
+│   │   ├── lib.rs                    # Tauri 入口：数据目录 + 状态注册 + 命令绑定
+│   │   ├── main.rs                   # 二进制入口
+│   │   ├── infra/                    # ── 基础设施层：配置 / 数据库 / LLM / 状态 ──
+│   │   │   ├── config/               #   config.rs（AgentConfig + 原子写入）+ data_paths.rs
+│   │   │   ├── db/                   #   mod.rs（SQLite 连接）+ schema.rs（20 张表 + 迁移）
+│   │   │   ├── llm/                  #   api_format + api_client（指数退避 + Retry-After）
+│   │   │   │                         #   + adapters + registry（模型能力）+ token_count
+│   │   │   ├── providers/            #   anthropic.rs / openai.rs（双协议实现）
+│   │   │   ├── state/                #   state.rs（SessionManager/WorkspaceState）+ events.rs
+│   │   │   ├── types/                #   models.rs + traits.rs（LlmProvider）+ error.rs + constants.rs
+│   │   │   ├── background.rs         #   后台任务管理 + Tauri 事件推送
+│   │   │   └── debug_logger.rs       #   调试日志
+│   │   ├── core/                     # ── 业务层：Agent / 工具 / 编排 / 回滚 / 会话 ──
 │   │   │   ├── agent/
-│   │   │   │   ├── pipeline.rs       # 五阶段 Agent 管线主循环
-│   │   │   │   ├── stream.rs         # SSE 流式解析（Anthropic + OpenAI）
-│   │   │   │   ├── context.rs        # 动态上下文构建
-│   │   │   │   └── tools_runner.rs   # 工具调用并行执行引擎
-│   │   │   │   ├── prompts/            # 系统提示模板（audience、os、mode 等）
-│   │   │   ├── commands/             # Tauri 命令处理（11 个文件）
-│   │   │   │   ├── session.rs        #   会话 CRUD + 撤回
-│   │   │   │   ├── checkpoint.rs     #   检查点 + 回滚
-│   │   │   │   ├── snapshot.rs       #   快照引擎命令
-│   │   │   │   ├── config.rs         #   配置读写
-│   │   │   │   ├── permission.rs     #   权限审批回调
-│   │   │   │   ├── window_state.rs   #   窗口状态 + UI 偏好
-│   │   │   │   ├── merge.rs          #   分支合并
-│   │   │   │   ├── sandbox.rs        #   多 Agent 沙箱
-│   │   │   │   └── history.rs        #   历史记录渲染
-│   │   │   ├── infra/
-│   │   │   │   ├── prompts.rs        #   系统提示词（三层组装）
-│   │   │   │   ├── background.rs     #   后台任务管理 + Tauri 事件推送
-│   │   │   │   └── debug_logger.rs   #   调试日志
-│   │   │   ├── intent/
-│   │   │   │   ├── mod.rs            #   三层意图分类（规则→上下文→LLM 兜底）
-│   │   │   │   └── rules.rs          #   正则规则引擎 + JSON 外部规则加载
-│   │   │   ├── llm/
-│   │   │   │   ├── api_format.rs     #   ApiFormat 枚举（认证头、版本头）
-│   │   │   │   ├── api_client.rs     #   HTTP 客户端 + 指数退避 + 429 Retry-After
-│   │   │   │   ├── adapters.rs       #   Anthropic ↔ OpenAI 消息格式转换
-│   │   │   │   ├── registry.rs       #   模型能力注册表（9 种思考参数变体）
-│   │   │   │   └── token_count.rs    #   tiktoken BPE 精确 Token 计数
-│   │   │   ├── providers/
-│   │   │   │   ├── anthropic.rs      #   Anthropic Messages API
-│   │   │   │   └── openai.rs         #   OpenAI Chat Completions API
-│   │   │   ├── tools/
-│   │   │   │   ├── mod.rs            #   工具系统中枢 + WorkMode 过滤
-│   │   │   │   ├── file_tools/       #   文件工具（13 个文件）
-│   │   │   │   ├── shell_tools/      #   Shell + 后台任务工具（9 个文件）
-│   │   │   │   ├── agent_tools/      #   子代理、技能、压缩、方案审批、模式切换
-│   │   │   │   ├── task_tools/       #   轻量待办 + 持久化任务 CRUD
-│   │   │   │   ├── search_tools/     #   Glob + Grep 搜索
-│   │   │   │   ├── notebook_tools/   #   Jupyter Notebook cell 编辑
-│   │   │   │   ├── system_tools/     #   系统信息 + 工作区设置
-│   │   │   │   └── framework/        #   工具注册表、权限、渐进式披露
-│   │   │   ├── orchestration/
-│   │   │   │   ├── scheduler.rs      #   基于依赖图的并行任务调度器
-│   │   │   │   ├── subagents.rs      #   子 Agent 生命周期 + 事件持久化
-│   │   │   │   ├── agent_runs.rs     #   主 Agent 运行记录 + 检查点
-│   │   │   │   ├── agent_run_repository.rs  # Agent 运行 SQLite 仓储
-│   │   │   │   └── tasks.rs          #   任务 CRUD + 依赖管理
-│   │   │   ├── rollback/
-│   │   │   │   ├── snapshot.rs       #   快照 + 快照树数据结构
-│   │   │   │   ├── patch.rs          #   补丁系统（Create/Update/Delete/Rename）
-│   │   │   │   ├── replay.rs         #   重放引擎 + 原子文件回滚
-│   │   │   │   ├── store.rs          #   快照 SQLite 持久化
-│   │   │   │   ├── gc.rs             #   三阶段垃圾回收
-│   │   │   │   ├── journal.rs        #   操作日志
-│   │   │   │   ├── session_manager.rs #  会话快照管理器
-│   │   │   │   └── multi_agent/      #   沙箱 + 分支合并引擎
-│   │   │   ├── session/
-│   │   │   │   ├── mod.rs            #   会话持久化入口
-│   │   │   │   ├── repository.rs     #   会话 SQLite 仓储 + 消息加载
-│   │   │   │   ├── resource_repository.rs  # 附件/资源 SQLite 仓储
-│   │   │   │   └── memory.rs         #   三级压缩 + 记忆 Agent
-│   │   │   ├── db/
-│   │   │   │   ├── mod.rs            #   SQLite 连接管理（全局 Mutex）
-│   │   │   │   └── schema.rs         #   17 张表 schema 定义 + 增量迁移
-│   │   │   ├── config.rs             #   AgentConfig + RuntimeSettings + 原子写入
-│   │   │   ├── constants.rs          #   全局常量
-│   │   │   ├── error.rs              #   分层错误类型（AgentError / ApiError / DbError）
-│   │   │   ├── state.rs              #   SessionManager + SessionContext
-│   │   │   ├── models.rs             #   核心数据模型
-│   │   │   ├── events.rs             #   Tauri 事件名常量（domain:action 规范）
-│   │   │   └── traits.rs             #   LlmProvider trait 抽象
-│   │   └── main.rs
-│   ├── model_registry.json           # 模型能力注册表
-│   ├── intent_rules.json             # 意图分类外部规则
+│   │   │   │   ├── pipeline.rs       #   五阶段 Agent 管线主循环（压缩 + 反思）
+│   │   │   │   ├── stream.rs         #   SSE 流式解析（Anthropic + OpenAI）
+│   │   │   │   ├── context.rs        #   动态上下文构建
+│   │   │   │   ├── tools_runner.rs   #   工具调用并行执行引擎
+│   │   │   │   ├── prompts.rs        #   系统提示词三层组装
+│   │   │   │   ├── prompts/          #   提示词模板（audience / mode / os / base）
+│   │   │   │   └── reflection/       #   反思审查（mod / prompt / strategy）
+│   │   │   ├── intent/               #   三层意图分类（规则→上下文→LLM 兜底）
+│   │   │   │                         #   + plan_detector（复杂任务检测）
+│   │   │   ├── orchestration/        #   scheduler + subagents + agent_runs + tasks
+│   │   │   │   └── multi_agent/      #   沙箱（sandbox）+ 分支合并（merge）
+│   │   │   ├── rollback/             #   snapshot + patch + replay + store + gc + journal
+│   │   │   ├── session/              #   会话持久化 + memory（三级压缩）+ repository
+│   │   │   └── tools/                #   工具系统中枢 + 8 个子系统：
+│   │   │       ├── file_tools/       #   文件读写/编辑/搜索/符号（14 个文件）
+│   │   │       ├── shell_tools/      #   Shell + 后台任务 + Git + 安全检查
+│   │   │       ├── agent_tools/      #   子代理、技能、压缩、方案审批、模式切换
+│   │   │       ├── task_tools/       #   持久化任务 CRUD + 轻量待办
+│   │   │       ├── search_tools/     #   Glob + Grep 搜索
+│   │   │       ├── notebook_tools/   #   Jupyter Notebook cell 编辑
+│   │   │       ├── system_tools/     #   系统信息 + 工作区设置
+│   │   │       └── framework/        #   工具注册表、权限、渐进式披露、调用日志
+│   │   └── command/                  # ── Tauri 命令层（12 个文件）──
+│   │       ├── session.rs            #   会话 CRUD + 撤回 + 后台任务 + 子代理查询
+│   │       ├── config.rs / app_config.rs  # 配置读写 / 窗口状态 + UI 偏好
+│   │       ├── checkpoint.rs / snapshot.rs # 检查点回滚 / 快照引擎命令
+│   │       ├── permission.rs / history.rs  # 权限回调 / 历史渲染
+│   │       └── merge.rs / sandbox.rs / skill.rs
+│   ├── capabilities/                 # Tauri 权限能力声明
+│   ├── model_registry.json           # 模型能力注册表（编译时内嵌，20+ 模型）
+│   ├── intent_rules.json             # 意图分类外部规则（10 类）
+│   ├── tauri.conf.json               # Tauri 应用配置
 │   └── Cargo.toml
+├── skills/                           # 内置技能目录（SKILL.md）
+├── demo/                             # Agent 机制演示脚本（s01~s12）
 ├── doc/                              # 架构文档
+├── data/                             # 运行期数据（SQLite / 配置 / 会话）
+├── index.html / monitor.html         # Vite 双入口
 └── package.json
 ```
 
@@ -281,7 +263,7 @@ Rust emit("chat-content") ──→ useAgentEvents.listen()
 | 类别 | 工具 | 说明 |
 |------|------|------|
 | 文件读取 | ReadFile, ReadFileSkeleton | 读文件全文/骨架，支持行号范围 |
-| 文件写入 | WriteFile, EditFile, ApplyPatch | 写文件、搜索替换编辑、应用 diff |
+| 文件写入 | WriteFile, EditFile, ApplyPatch, DeleteFile, RenameFile | 写文件、搜索替换编辑、应用 diff、删除/重命名 |
 | 目录 | ListDirectory, SearchRepo | 列目录、生成仓库地图 |
 | 搜索 | SearchText, FindFiles | 文本搜索(grep)、文件名搜索(glob) |
 | 符号 | FindSymbol, ReadSymbol, FindReferences, CodeSearch | 符号定位、读定义、查引用 |
@@ -291,9 +273,10 @@ Rust emit("chat-content") ──→ useAgentEvents.listen()
 | 待办 | UpdateTodos | 轻量待办清单 |
 | 子代理 | RunSubagent, RunSubagentsSequentially | 委派子代理、启动调度器 |
 | 规划 | ProposePlan, SwitchWorkMode | 方案审批、模式切换 |
+| 工具发现 | DiscoverTools, GetToolCatalog, ExecuteTool | 渐进式披露：搜索/列举/执行延迟工具 |
 | 会话 | CompactConversation, ConsolidateMemory | 手动压缩、记忆整理 |
 | 系统 | GetSystemInfo, SetWorkspace | 系统信息、工作区设置 |
-| 搜索 | SearchTools | 延迟工具搜索激活 |
+| 技能 | LoadSkill | 按名称加载技能知识 |
 | Notebook | EditNotebook | Jupyter Notebook cell 编辑 |
 
 ## 🛡️ 安全特性
@@ -307,8 +290,7 @@ Rust emit("chat-content") ──→ useAgentEvents.listen()
 
 ## 🙏 致谢
 
-- **小米大模型团队** — 感谢小米模型的「创造者百万亿 Token 激励计划」与「Agent 生态共建计划」
-- **[Claude Code](https://github.com/anthropics/claude-code)** — 架构设计的灵感来源
+- **[learn-Code-code](https://github.com/shareAI-lab/learn-claude-code)** — 架构设计的灵感来源
 
 ## 📄 许可证
 
