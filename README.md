@@ -4,7 +4,7 @@
 
 **一个 AI 驱动的桌面端编程助手**
 
-基于 Tauri 2.0 + Vue 3 + Rust 构建，完整 Agent 自主循环，支持 54 个主流 LLM 模型（12 家厂商），具备快照版本控制、多 Agent 沙箱、方案审批、双轴模式系统等企业级能力
+基于 Tauri 2.1 + Vue 3 + Rust 构建，完整 Agent 自主循环，支持 54 个主流 LLM 模型（12 家厂商），具备快照版本控制、多 Agent 沙箱、方案审批、双轴模式系统等企业级能力
 
 </div>
 
@@ -13,7 +13,7 @@
 ## ✨ 特性
 
 - **多模型支持** — DeepSeek、Claude、GPT、Gemini、Qwen、豆包、MIMO 等 54 个主流 LLM，覆盖 12 家厂商
-- **三轴权限模型** — Audience（User/Developer）× WorkMode（Edit/Plan）× 权限档位（请求审批/帮我批准）。工具定义列表保持恒定以命中 prompt cache；"能不能做"由能力清单 + 目录过滤 + 运行时校验保证，"要不要问"由执行前判定按结构化事实决定
+- **双轴模式系统** — Audience（User/Developer）× WorkMode（Edit/Plan）+ 独立权限档位（请求审批/帮我批准）。工具定义列表保持恒定以命中 prompt cache；"能不能做"由能力清单 + 目录过滤 + 运行时校验保证，"要不要问"由执行前判定按结构化事实决定
 - **完整 Agent 循环** — 五阶段管线：初始化 → 意图验证 → 上下文构建 → 主循环（调模型 / 流式解析 / 执行工具 / 反思审查）→ 收尾沉淀
 - **自动模式切换** — Edit 模式检测到复杂任务自动切换到 Plan 深度规划，审批后切回委派子 Agent 并行执行
 - **快照引擎** — 文件级树形版本控制，原子化回滚，分支管理，多 Agent 沙箱并行与合并
@@ -34,7 +34,7 @@
 |------|------|------|
 | 前端框架 | Vue 3 + TypeScript | Composition API + `<script setup>` |
 | 状态管理 | Pinia | 5 个 Store：session / chat / agent / permission / appView |
-| 桌面框架 | Tauri 2.0 | Rust 后端，轻量高性能 |
+| 桌面框架 | Tauri 2.1 | Rust 后端，轻量高性能 |
 | 后端运行时 | Rust + Tokio | 异步运行时，SSE 流式处理 |
 | HTTP 客户端 | Reqwest | 流式 API 调用，OpenAI / Anthropic 双格式 |
 | 数据库 | SQLite (rusqlite) | 会话、消息、快照、任务、运行记录 |
@@ -71,15 +71,16 @@ cargo test            # Rust 测试（在 src-tauri/ 下运行）
 
 支持多预设（Profile）管理，不同场景快速切换。配置保存采用原子写入（先写 tmp 再 rename），防止崩溃丢配置。
 
-### 工作模式与权限档位
+### 双轴模式与权限档位
 
-两条**互相独立**的轴（历史上的 Chat / 只读保护模式已取消）：
+两个**互相独立**的模式轴（Audience × WorkMode，历史上的 Chat / 只读保护模式已取消）：
 
-| 轴 | 取值 | 作用 |
+| 模式轴 | 取值 | 作用 |
 |---|---|---|
-| **工作模式** | Edit / Plan | 决定"直接干"还是"先出方案"：Plan 模式下写工具不可用，必须先 ProposePlan 并等审批 |
-| **权限档位** | 请求审批（默认）/ 帮我批准 | 决定"改动前问得多严"：前者改文件/删文件/跑命令一律先问；后者只有删除、覆盖、改名、跑命令、批量改动才问 |
+| **工作模式**（WorkMode） | Edit / Plan | 决定"直接干"还是"先出方案"：Plan 模式下写工具不可用，必须先 ProposePlan 并等审批 |
 | **用户类型**（Audience） | 普通用户 / 开发者 | 只影响 UI 渲染与交流风格，不影响工具可用性 |
+
+**权限档位**是与模式轴独立的安全维度（不是第三个模式轴）：**请求审批（默认）** 下改文件/删文件/跑命令一律先问；**帮我批准** 下只有删除、覆盖、改名、跑命令、批量改动才问。
 
 权限判定的落点是**结构化事实**（用哪个工具、目标路径、文件是否已存在、一次影响几个文件、
 项目内还是项目外），而不是读用户措辞猜意图；关键词只用于弹窗里的风险提示文案。
@@ -92,6 +93,9 @@ JarvisAgent/
 │   ├── main.ts / App.vue             # 应用入口与根布局
 │   ├── monitor-main.ts / MonitorApp.vue   # 独立监控页应用（monitor.html 入口）
 │   ├── i18n.ts / locales/            # vue-i18n 国际化（zh-CN / en-US）
+│   ├── vite-env.d.ts / PROJECT_STRUCTURE.md   # Vite 类型声明 / 前端结构说明
+│   ├── api/ / pages/                  # 预留目录（暂空）
+│   ├── assets/                        # 静态资源（global.css 等）
 │   ├── types/index.ts                # 全部 TypeScript 类型定义
 │   ├── stores/                       # Pinia 状态管理
 │   │   ├── session.ts                #   会话生命周期 + 消息缓冲区
@@ -125,7 +129,8 @@ JarvisAgent/
 │       ├── checkpoint/               # CheckpointTimeline
 │       ├── snapshot/                 # SnapshotTimeline, DiffViewer, LivePreview
 │       ├── settings/                 # SettingsPanel（多预设 + 双轴选择）
-│       └── skill/                    # SkillManager, SkillMarket, SkillCard, SkillDetailPanel
+│       ├── skill/                    # SkillManager, SkillMarket, SkillCard, SkillDetailPanel
+│       └── todo/                     # Todo 组件（暂空）
 ├── src-tauri/                        # Rust 后端（三层：infra / core / command）
 │   ├── src/
 │   │   ├── lib.rs                    # Tauri 入口：数据目录 + 状态注册 + 命令绑定
@@ -146,7 +151,7 @@ JarvisAgent/
 │   │   │   │   ├── stream.rs         #   SSE 流式解析（Anthropic + OpenAI）
 │   │   │   │   ├── context.rs        #   动态上下文构建
 │   │   │   │   ├── tools_runner.rs   #   工具调用并行执行引擎
-│   │   │   │   ├── prompts.rs        #   系统提示词多维组装（按优先级 P0/P1/P2 分层）
+│   │   │   │   ├── prompts.rs            #   系统提示词多维组装（按优先级 P0/P1/P2 分层）
 │   │   │   │   ├── prompts/          #   提示词模板（audience / mode / os / base）
 │   │   │   │   └── reflection/       #   反思审查（mod / prompt / strategy）
 │   │   │   ├── intent/               #   三层意图分类（规则→上下文→LLM 兜底）
@@ -158,7 +163,7 @@ JarvisAgent/
 │   │   │   └── tools/                #   工具系统中枢 + 8 个子系统：
 │   │   │       ├── file_tools/       #   文件读写/编辑/搜索/符号（14 个文件）
 │   │   │       ├── shell_tools/      #   Shell + 后台任务 + Git + 安全检查
-│   │   │       ├── agent_tools/      #   子代理、技能、压缩、方案审批、模式切换
+│   │   │       ├── agent_tools/      #   子代理、技能、压缩、方案审批、模式切换、记忆
 │   │   │       ├── task_tools/       #   持久化任务 CRUD + 轻量待办
 │   │   │       ├── search_tools/     #   Glob + Grep 搜索
 │   │   │       ├── notebook_tools/   #   Jupyter Notebook cell 编辑
@@ -169,18 +174,22 @@ JarvisAgent/
 │   │       ├── config.rs / app_config.rs  # 配置读写 / 窗口状态 + UI 偏好
 │   │       ├── checkpoint.rs / snapshot.rs # 检查点回滚 / 快照引擎命令
 │   │       ├── permission.rs / history.rs  # 权限回调 / 历史渲染
+│   │       ├── history_types.rs      #   历史渲染类型定义
+│   │       ├── mod.rs                #   命令模块注册
 │   │       └── merge.rs / sandbox.rs / skill.rs
 │   ├── capabilities/                 # Tauri 权限能力声明
+│   ├── gen/ / icons/                  # Tauri 生成目录 / 应用图标
 │   ├── model_registry.json           # 模型能力注册表（编译时内嵌，54 个模型）
 │   ├── intent_rules.json             # 意图分类外部规则（10 类）
 │   ├── tauri.conf.json               # Tauri 应用配置
-│   └── Cargo.toml
+│   ├── build.rs / Cargo.toml / Cargo.lock   # 构建脚本 / 依赖清单 / 锁文件
+│   └── .taurignore                   # Tauri 打包忽略规则
 ├── skills/                           # 内置技能目录（SKILL.md）
 ├── demo/                             # Agent 机制演示脚本（s01~s12）
 ├── doc/                              # 架构文档
 ├── data/                             # 运行期数据（SQLite / 配置 / 会话）
 ├── index.html / monitor.html         # Vite 双入口
-└── package.json
+└── package.json / pnpm-workspace.yaml
 ```
 
 ## 🔧 核心架构（已重构）
@@ -198,12 +207,16 @@ JarvisAgent/
 ### 双轴模式系统
 
 ```
-Audience 轴（谁在用）   WorkMode 轴（在干什么）   权限档位（改动前问多严）
-  User ── Developer       Edit ────── Plan          请求审批 ────── 帮我批准
-  ↑ 只用户手动切换           ↑ 用户手动 + Agent 自动切    ↑ 用户手动切换
+Audience 轴（谁在用）   WorkMode 轴（在干什么）
+  User ── Developer       Edit ────── Plan
+  ↑ 只用户手动切换           ↑ 用户手动 + Agent 自动切
 
   Audience → UI 渲染 + 交流风格
   WorkMode → 系统提示词 + 工具可用性（Plan 禁写）
+
+独立维度 权限档位（改动前问多严，不是第三个模式轴）：
+  请求审批 ────── 帮我批准
+  ↑ 用户手动切换
   权限档位 → 执行前判定：放行 / 弹窗问 / 直接拒绝
 ```
 
@@ -318,7 +331,8 @@ Rust emit("chat-content") ──→ useAgentEvents.listen()
 | 子代理 | RunSubagent, RunSubagentsSequentially | 委派子代理、启动调度器 |
 | 规划 | ProposePlan, SwitchWorkMode | 方案审批、模式切换 |
 | 工具发现 | DiscoverTools, GetToolCatalog, ExecuteTool | 渐进式披露：搜索/列举/执行延迟工具 |
-| 会话 | CompactConversation, ConsolidateMemory | 手动压缩、记忆整理 |
+| 会话 | CompactConversation | 手动压缩对话历史 |
+| 记忆 | ReadMemory, UpdateMemory, ConsolidateMemory | 读/写/整理全局记忆文件 |
 | 系统 | SetWorkspace | 工作区设置（OS/工作目录已由提示词自动注入，无需工具） |
 | 技能 | LoadSkill | 按名称加载技能知识 |
 | Notebook | EditNotebook | Jupyter Notebook cell 编辑 |
