@@ -14,7 +14,8 @@ use crate::infra::state::state::{
     SnapshotRegistry,
     WorkspaceState,
 };
-use crate::infra::config::config::{load_config, ConfigState, RuntimeConfigState, RuntimeSettings};
+// [暂存·已注释] 原导入含 RuntimeConfigState/RuntimeSettings，因相关代码已注释，改为仅导入在用项
+use crate::infra::config::config::{load_config, ConfigState};
 use tauri::Manager;
 use crate::infra::background::{BackgroundState, CompactingState};
 use crate::core::orchestration::subagents::SubAgentMonitorState;
@@ -82,7 +83,8 @@ pub fn run() {
         .manage(CompactingState::default())
         .manage(SubAgentMonitorState::default())
         .manage(ConfigState(std::sync::Arc::new(Mutex::new(load_config()))))
-        .manage(RuntimeConfigState(RuntimeSettings::default()))
+        // [暂存·已注释] RuntimeSettings 已注释，暂不注册
+        // .manage(RuntimeConfigState(RuntimeSettings::default()))
         .manage(WorkspaceState(Mutex::new(None)))
         .manage(SnapshotRegistry(tokio::sync::RwLock::new(
             SnapshotManagerRegistry::new(),

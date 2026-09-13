@@ -173,66 +173,71 @@ impl AppConfig {
     }
 }
 
-/// 运行时可调参数 — 集中管理所有内部阈值、间隔和限制
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase", default)]
-pub struct RuntimeSettings {
-    /// 最大上下文 token 数
-    pub max_tokens_context: i32,
-    /// 触发自动压缩的 token 阈值
-    pub max_tokens_compact_trigger: usize,
-    /// 强制用户确认前的最大循环次数
-    pub max_agent_loop_before_confirm: usize,
-    /// 绝对循环上限
-    pub max_agent_loop_absolute: usize,
-    /// 后台任务输出最大长度
-    pub max_background_output_len: usize,
-    /// 后台通知消息最大长度
-    pub max_background_notify_len: usize,
-    /// 快照最大保留天数
-    pub gc_max_age_days: u64,
-    /// 是否保护分支头节点
-    pub gc_keep_branch_heads: bool,
-    /// 合并冲突阈值
-    pub merge_conflict_threshold: usize,
-    /// Thinking 预算 token 数
-    pub thinking_budget_tokens: u32,
-    /// API 重试次数
-    pub api_retry_count: u32,
-    /// 子 Agent 心跳间隔（秒）
-    pub heartbeat_interval_secs: u64,
-    /// 子 Agent 事件历史保留上限
-    pub subagent_event_history_limit: usize,
-    /// 后台任务 TTL（秒）
-    pub background_task_ttl_secs: u64,
-}
-
-impl Default for RuntimeSettings {
-    fn default() -> Self {
-        Self {
-            max_tokens_context: 8192,
-            max_tokens_compact_trigger: 50000,
-            max_agent_loop_before_confirm: 30,
-            max_agent_loop_absolute: 500,
-            max_background_output_len: 50000,
-            max_background_notify_len: 500,
-            gc_max_age_days: 30,
-            gc_keep_branch_heads: true,
-            merge_conflict_threshold: 10,
-            thinking_budget_tokens: 1024,
-            api_retry_count: 3,
-            heartbeat_interval_secs: 5,
-            subagent_event_history_limit: 200,
-            background_task_ttl_secs: 3600,
-        }
-    }
-}
-
+// ═════════════════════════════════════════════════════════════════════════
+// [暂存·已注释] RuntimeSettings / RuntimeConfigState —— 当前全项目未消费，先注释待确认。
+//   说明：运行时阈值实际生效位置在 infra/types/constants.rs；此处为历史遗留的并行副本。
+//   如需恢复：取消下方注释，并同步恢复 lib.rs 中的导入与 .manage(...) 注册。
+// ═════════════════════════════════════════════════════════════════════════
+// /// 运行时可调参数 — 集中管理所有内部阈值、间隔和限制
+// #[derive(Serialize, Deserialize, Debug, Clone)]
+// #[serde(rename_all = "camelCase", default)]
+// pub struct RuntimeSettings {
+//     /// 最大上下文 token 数
+//     pub max_tokens_context: i32,
+//     /// 触发自动压缩的 token 阈值
+//     pub max_tokens_compact_trigger: usize,
+//     /// 强制用户确认前的最大循环次数
+//     pub max_agent_loop_before_confirm: usize,
+//     /// 绝对循环上限
+//     pub max_agent_loop_absolute: usize,
+//     /// 后台任务输出最大长度
+//     pub max_background_output_len: usize,
+//     /// 后台通知消息最大长度
+//     pub max_background_notify_len: usize,
+//     /// 快照最大保留天数
+//     pub gc_max_age_days: u64,
+//     /// 是否保护分支头节点
+//     pub gc_keep_branch_heads: bool,
+//     /// 合并冲突阈值
+//     pub merge_conflict_threshold: usize,
+//     /// Thinking 预算 token 数
+//     pub thinking_budget_tokens: u32,
+//     /// API 重试次数
+//     pub api_retry_count: u32,
+//     /// 子 Agent 心跳间隔（秒）
+//     pub heartbeat_interval_secs: u64,
+//     /// 子 Agent 事件历史保留上限
+//     pub subagent_event_history_limit: usize,
+//     /// 后台任务 TTL（秒）
+//     pub background_task_ttl_secs: u64,
+// }
+//
+// impl Default for RuntimeSettings {
+//     fn default() -> Self {
+//         Self {
+//             max_tokens_context: 8192,
+//             max_tokens_compact_trigger: 50000,
+//             max_agent_loop_before_confirm: 30,
+//             max_agent_loop_absolute: 500,
+//             max_background_output_len: 50000,
+//             max_background_notify_len: 500,
+//             gc_max_age_days: 30,
+//             gc_keep_branch_heads: true,
+//             merge_conflict_threshold: 10,
+//             thinking_budget_tokens: 1024,
+//             api_retry_count: 3,
+//             heartbeat_interval_secs: 5,
+//             subagent_event_history_limit: 200,
+//             background_task_ttl_secs: 3600,
+//         }
+//     }
+// }
+//
 /// 全局配置状态（Tauri State）
 pub struct ConfigState(pub Arc<Mutex<AppConfig>>);
 
-/// 运行时配置状态（Tauri State）
-pub struct RuntimeConfigState(pub RuntimeSettings);
+// /// 运行时配置状态（Tauri State）
+// pub struct RuntimeConfigState(pub RuntimeSettings);
 
 /// 获取配置文件路径
 fn config_path() -> std::path::PathBuf {
