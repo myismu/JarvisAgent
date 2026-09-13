@@ -20,6 +20,7 @@ dist-ssr
 .idea
 .claude/
 .trae/
+.qoder/
 .DS_Store
 *.suo
 *.ntvs*

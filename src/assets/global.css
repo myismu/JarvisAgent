@@ -1,59 +1,48 @@
 /* ============================
    JarvisAgent 全局样式
-   Glassmorphism (毛玻璃) 设计系统
+   简洁扁平设计系统（语义色克制使用）
    ============================ */
 
-/* --- 1. CSS 变量定义 (Glassmorphism) --- */
+/* --- 1. CSS 变量定义 --- */
 :root {
   /* 浅色模式调色板 */
-  --bg-dark: #e8edf5;
-  --bg-panel: rgba(255, 255, 255, 0.65);
-  --bg-sidebar: rgba(241, 245, 249, 0.6);
-  --border-color: rgba(226, 232, 240, 0.6);
+  --bg-dark: #f7f7f8;
+  --bg-panel: rgba(255, 255, 255, 0.85);
+  --bg-sidebar: rgba(247, 247, 248, 0.85);
+  --border-color: rgba(15, 23, 42, 0.1);
 
   /* 文本颜色 */
   --text-main: #0f172a;
   --text-muted: #64748b;
   --text-inverse: #ffffff;
 
-  /* 交互色 / 强调色 */
+  /* 交互色 / 强调色：蓝=品牌交互，绿=成功，红=错误，黄=警告 */
   --accent-blue: #3b82f6;
   --accent-blue-hover: #2563eb;
   --accent-green: #10b981;
   --accent-red: #ef4444;
-  --accent-orange: #f97316;
-  --accent-yellow: #f59e0b;
-  --accent-purple: #8b5cf6;
   --text-soft: #475569;
-  --text-warning: #7c2d12;
   --text-on-danger: #ffffff;
   --surface-strong: rgba(255, 255, 255, 0.94);
   --surface-danger: rgba(220, 38, 38, 0.96);
   --surface-danger-hover: rgba(185, 28, 28, 0.98);
   --border-danger: rgba(185, 28, 28, 0.46);
-  --surface-warning: rgba(255, 247, 237, 0.96);
-  --border-warning: rgba(245, 158, 11, 0.4);
 
   /* 字体系统 */
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
   --code-font-size: 13px;
 
-  /* 毛玻璃核心变量 */
-  --glass-bg: rgba(255, 255, 255, 0.45);
-  --glass-bg-heavy: rgba(255, 255, 255, 0.65);
-  --glass-bg-light: rgba(255, 255, 255, 0.25);
-  --glass-border: rgba(255, 255, 255, 0.35);
-  --glass-border-subtle: rgba(255, 255, 255, 0.15);
-  --glass-blur: 16px;
-  --glass-blur-heavy: 24px;
+  /* 面板表面变量（近实心，保留轻微通透感） */
+  --glass-bg: rgba(255, 255, 255, 0.8);
+  --glass-bg-heavy: rgba(255, 255, 255, 0.92);
+  --glass-bg-light: rgba(15, 23, 42, 0.04);
+  --glass-border: rgba(15, 23, 42, 0.1);
+  --glass-border-subtle: rgba(15, 23, 42, 0.06);
+  --glass-blur: 12px;
+  --glass-blur-heavy: 20px;
   --msg-bg-rgb: 255, 255, 255;
-  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.06);
-
-  /* 渐变光晕 */
-  --glow-blue: rgba(59, 130, 246, 0.15);
-  --glow-purple: rgba(139, 92, 246, 0.12);
-  --glow-cyan: rgba(6, 182, 212, 0.1);
+  --glass-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
 
   /* 阴影层级 */
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.04);
@@ -76,12 +65,12 @@
   --toggle-track-inactive: rgba(0, 0, 0, 0.18);
 }
 
-/* --- 2. 暗色模式变量 (Glassmorphism) --- */
+/* --- 2. 暗色模式变量 --- */
 body.dark-mode {
   --bg-dark: #18181b;
-  --bg-panel: rgba(39, 39, 42, 0.65);
-  --bg-sidebar: rgba(24, 24, 27, 0.8);
-  --border-color: rgba(63, 63, 70, 0.6);
+  --bg-panel: rgba(39, 39, 42, 0.85);
+  --bg-sidebar: rgba(24, 24, 27, 0.9);
+  --border-color: rgba(255, 255, 255, 0.1);
 
   --text-main: #f4f4f5;
   --text-muted: #a1a1aa;
@@ -91,32 +80,22 @@ body.dark-mode {
   --accent-blue-hover: #60a5fa;
   --accent-green: #22c55e;
   --accent-red: #ef4444;
-  --accent-orange: #fb923c;
-  --accent-yellow: #eab308;
-  --accent-purple: #a78bfa;
   --text-soft: #d4d4d8;
-  --text-warning: #fef08a;
   --text-on-danger: #ffffff;
   --surface-strong: rgba(39, 39, 42, 0.96);
   --surface-danger: rgba(153, 27, 27, 0.94);
   --surface-danger-hover: rgba(127, 29, 29, 0.98);
   --border-danger: rgba(248, 113, 113, 0.42);
-  --surface-warning: rgba(133, 77, 14, 0.94);
-  --border-warning: rgba(253, 224, 71, 0.36);
 
-  --glass-bg: rgba(39, 39, 42, 0.45);
-  --glass-bg-heavy: rgba(39, 39, 42, 0.65);
-  --glass-bg-light: rgba(39, 39, 42, 0.25);
+  --glass-bg: rgba(39, 39, 42, 0.8);
+  --glass-bg-heavy: rgba(39, 39, 42, 0.92);
+  --glass-bg-light: rgba(255, 255, 255, 0.06);
   --glass-border: rgba(255, 255, 255, 0.1);
   --glass-border-subtle: rgba(255, 255, 255, 0.05);
-  --glass-blur: 20px;
-  --glass-blur-heavy: 28px;
+  --glass-blur: 12px;
+  --glass-blur-heavy: 20px;
   --msg-bg-rgb: 50, 50, 50;
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-
-  --glow-blue: rgba(59, 130, 246, 0.08);
-  --glow-purple: rgba(139, 92, 246, 0.06);
-  --glow-cyan: rgba(6, 182, 212, 0.05);
 
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.5);
   --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
@@ -155,48 +134,7 @@ html, body {
   padding: 0;
 }
 
-/* --- 4. 渐变光晕装饰层 --- */
-body::before {
-  content: "";
-  position: fixed;
-  top: -20%;
-  left: -10%;
-  width: 50%;
-  height: 50%;
-  background: radial-gradient(circle, var(--glow-blue) 0%, transparent 70%);
-  pointer-events: none;
-  z-index: 0;
-  filter: blur(80px);
-  animation: glowDrift1 20s ease-in-out infinite alternate;
-}
-
-body::after {
-  content: "";
-  position: fixed;
-  bottom: -15%;
-  right: -10%;
-  width: 45%;
-  height: 45%;
-  background: radial-gradient(circle, var(--glow-purple) 0%, transparent 70%);
-  pointer-events: none;
-  z-index: 0;
-  filter: blur(80px);
-  animation: glowDrift2 25s ease-in-out infinite alternate;
-}
-
-@keyframes glowDrift1 {
-  0% { transform: translate(0, 0) scale(1); }
-  50% { transform: translate(5%, 8%) scale(1.1); }
-  100% { transform: translate(-3%, 4%) scale(0.95); }
-}
-
-@keyframes glowDrift2 {
-  0% { transform: translate(0, 0) scale(1); }
-  50% { transform: translate(-6%, -5%) scale(1.05); }
-  100% { transform: translate(4%, -8%) scale(1.1); }
-}
-
-/* --- 5. 毛玻璃工具类 --- */
+/* --- 4. 面板工具类 --- */
 .glass-panel {
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur));
@@ -232,7 +170,7 @@ body::after {
 body.dragging-active .editor-container {
   outline: 2px dashed var(--accent-blue);
   outline-offset: -4px;
-  background-color: rgba(59, 130, 246, 0.05);
+  background-color: color-mix(in srgb, var(--accent-blue) 5%, transparent);
   border-radius: var(--radius-lg);
   transition: all var(--transition-fast);
 }
@@ -255,10 +193,6 @@ body.dragging-active .editor-container {
 
 /* --- 9. prefers-reduced-motion --- */
 @media (prefers-reduced-motion: reduce) {
-  body::before,
-  body::after {
-    animation: none;
-  }
   *, *::before, *::after {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
@@ -301,7 +235,7 @@ body.dragging-active .editor-container {
 }
 
 .tool-status-line.error {
-  color: var(--accent-orange);
+  color: var(--text-muted);
 }
 
 .agent-turn-render {
@@ -398,10 +332,10 @@ body.dragging-active .editor-container {
   background: var(--accent-green);
 }
 .dev-status-dot.running {
-  background: var(--accent-yellow);
+  background: var(--text-muted);
 }
 .dev-status-dot.error {
-  background: var(--accent-orange);
+  background: var(--text-muted);
 }
 .dev-status-dot.completed {
   background: var(--accent-green);
@@ -429,7 +363,7 @@ body.dragging-active .editor-container {
   color: var(--text-muted);
 }
 .dev-thinking.streaming .dev-thinking-label {
-  color: var(--accent-purple);
+  color: var(--text-soft);
 }
 .dev-thinking-body {
   margin-top: 8px;
@@ -442,7 +376,7 @@ body.dragging-active .editor-container {
   overflow: hidden;
 }
 .dev-thinking.streaming .dev-thinking-body {
-  border-left-color: var(--accent-purple);
+  border-left-color: var(--glass-border);
 }
 
 /* 工具调用 */
@@ -491,9 +425,9 @@ body.dragging-active .editor-container {
   flex-shrink: 0;
 }
 .dev-tool.completed .dev-tool-status { color: var(--accent-green); }
-.dev-tool.running .dev-tool-status { color: var(--accent-yellow); }
-.dev-tool.error .dev-tool-status { color: var(--accent-orange); }
-.dev-tool.error .dev-tool-name { color: var(--accent-orange); }
+.dev-tool.running .dev-tool-status { color: var(--text-muted); }
+.dev-tool.error .dev-tool-status { color: var(--text-muted); }
+.dev-tool.error .dev-tool-name { color: var(--text-soft); }
 
 .dev-tool-body {
   padding: 0 8px 8px 24px;
@@ -514,7 +448,7 @@ body.dragging-active .editor-container {
   margin-bottom: 4px;
 }
 .dev-tool-section.error .dev-tool-section-label {
-  color: var(--accent-orange);
+  color: var(--text-muted);
 }
 .dev-tool-pre {
   font-family: var(--font-mono);
@@ -534,8 +468,8 @@ body.dragging-active .editor-container {
   margin: 0;
 }
 .dev-tool-section.error .dev-tool-pre {
-  border-color: color-mix(in srgb, var(--accent-orange) 30%, transparent);
-  background: color-mix(in srgb, var(--accent-orange) calc(5 * var(--agent-message-opacity) / 100), transparent);
+  border-color: var(--glass-border-subtle);
+  background: color-mix(in srgb, var(--text-muted) calc(5 * var(--agent-message-opacity) / 100), transparent);
 }
 
 /* 执行日志终端 */
@@ -643,8 +577,8 @@ body.dragging-active .editor-container {
 }
 
 .agent-tool-row.completed { color: var(--accent-green); }
-.agent-tool-row.error { color: var(--accent-orange); }
-.agent-tool-row.running { color: var(--accent-yellow); }
+.agent-tool-row.error { color: var(--text-muted); }
+.agent-tool-row.running { color: var(--text-muted); }
 
 .agent-tool-title {
   color: var(--text-main);
@@ -685,8 +619,8 @@ body.dragging-active .editor-container {
 }
 
 .agent-tool-action-row.completed { color: var(--accent-green); }
-.agent-tool-action-row.error { color: var(--accent-orange); }
-.agent-tool-action-row.running { color: var(--accent-yellow); }
+.agent-tool-action-row.error { color: var(--text-muted); }
+.agent-tool-action-row.running { color: var(--text-muted); }
 
 .agent-tool-action-summary {
   color: var(--text-muted);
@@ -731,8 +665,8 @@ body.dragging-active .editor-container {
 }
 
 .agent-tool-child-row.completed { color: var(--accent-green); }
-.agent-tool-child-row.error { color: var(--accent-orange); }
-.agent-tool-child-row.running { color: var(--accent-yellow); }
+.agent-tool-child-row.error { color: var(--text-muted); }
+.agent-tool-child-row.running { color: var(--text-muted); }
 
 .agent-tool-field,
 .agent-tool-log,
@@ -753,7 +687,7 @@ body.dragging-active .editor-container {
 }
 
 .agent-tool-field.error > span {
-  color: var(--accent-orange);
+  color: var(--text-muted);
 }
 
 .tool-status-icon {
@@ -761,7 +695,7 @@ body.dragging-active .editor-container {
 }
 
 .tool-status-icon.running {
-  color: var(--accent-yellow);
+  color: var(--text-muted);
   animation: toolStatusSpin 0.9s linear infinite;
 }
 

@@ -303,11 +303,8 @@ pub struct LastAssistantAction {
 /// 仅基于关键词匹配，不考虑上下文。
 /// 适用于明确的操作请求，如"创建文件"、"删除所有"。
 ///
-/// # 参数
-/// - `input`: 用户输入文本
-///
-/// # 返回
-/// - 意图分类结果
+/// 返回 6 个粗粒度意图之一；`Intent::Unclear` 表示规则层判不出来。
+/// （历史上还额外返回过"命中类别"，供已删除的"能力冲突快速判定"使用。）
 pub fn classify_by_rules(input: &str) -> Intent {
     let trimmed = input.trim();
     let has_dev_context = has_development_context(trimmed);

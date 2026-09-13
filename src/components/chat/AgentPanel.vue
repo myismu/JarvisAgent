@@ -28,18 +28,33 @@ const agent = useAgentStore();
 const permission = usePermissionStore();
 
 // ── 权限状态 ──
-const permissionSessionAllowed = ref(false)
+const permissionAllowanceCount = ref(0)
+const permissionAllowances = ref<Array<{ tool: string; scope: string; label: string }>>([])
 const permissionPendingCount = ref(0)
-const pendingPermissions = ref<Array<{ id: string; message: string }>>([])
+const pendingPermissions = ref<Array<{ id: string; message: string; allowSession?: boolean; kind?: string }>>([])
 let permissionPollTimer: ReturnType<typeof setInterval> | null = null
 
 const loadPermissionState = async () => {
-  if (!session.activeSessionId) return
+  // 切会话时先清空：权限允许是"每个会话各自的内存态"，
+  // 不能让上一个会话的清单残留在这里（哪怕这次请求失败也不显示旧数据）
+  if (!session.activeSessionId) {
+    permissionAllowanceCount.value = 0
+    permissionAllowances.value = []
+    permissionPendingCount.value = 0
+    pendingPermissions.value = []
+    return
+  }
   try {
     const state = await invoke<any>('get_permission_state', { sessionId: session.activeSessionId })
-    permissionSessionAllowed.value = state.sessionAllowed ?? false
+    permissionAllowanceCount.value = state.allowanceCount ?? 0
+    permissionAllowances.value = (state.allowances ?? []) as Array<{ tool: string; scope: string; label: string }>
     permissionPendingCount.value = state.pendingCount ?? 0
-    pendingPermissions.value = (state.pending ?? []) as Array<{ id: string; message: string }>
+    pendingPermissions.value = (state.pending ?? []) as Array<{
+      id: string;
+      message: string;
+      allowSession?: boolean;
+      kind?: string;
+    }>
   } catch { /* ignore */ }
 }
 
@@ -47,15 +62,32 @@ const resolvePermission = async (id: string, decision: string) => {
   if (!session.activeSessionId) return
   try {
     await invoke('resolve_permission', { id, sessionId: session.activeSessionId, decision, content: null })
+    // 后端已决议，本地队列同步出队，避免卡片残留
+    permission.removePermission(session.activeSessionId, id)
     await loadPermissionState()
   } catch { /* ignore */ }
 }
 
-const revokeSessionPermission = async () => {
+/** 清空本会话的全部"已允许"（旧的"本会话始终允许一切"总开关已移除，改为按工具+范围记忆） */
+const clearSessionAllowances = async () => {
   if (!session.activeSessionId) return
   try {
-    await invoke('revoke_session_permission', { sessionId: session.activeSessionId })
-    permissionSessionAllowed.value = false
+    await invoke('clear_session_allowances', { sessionId: session.activeSessionId })
+    permissionAllowanceCount.value = 0
+    permissionAllowances.value = []
+  } catch { /* ignore */ }
+}
+
+/** 撤销单条"已允许" */
+const revokeAllowance = async (allowance: { tool: string; scope: string }) => {
+  if (!session.activeSessionId) return
+  try {
+    await invoke('revoke_session_allowance', {
+      sessionId: session.activeSessionId,
+      tool: allowance.tool,
+      scope: allowance.scope,
+    })
+    await loadPermissionState()
   } catch { /* ignore */ }
 }
 
@@ -325,14 +357,24 @@ const backgroundStatusLabel = (status: string): string => {
         </button>
       </div>
 
-      <div class="perm-status-bar" :class="{ allowed: permissionSessionAllowed, pending: permissionPendingCount > 0 }">
+      <div class="perm-status-bar" :class="{ allowed: permissionPendingCount === 0, pending: permissionPendingCount > 0 }">
         <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round">
           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
         </svg>
-        <span v-if="permissionSessionAllowed">{{ t('permission.sessionAllowedHint') }}</span>
-        <span v-else-if="permissionPendingCount === 0">{{ t('permission.normalMode') }}</span>
-        <span v-else>{{ t('permission.pendingRequests', { count: permissionPendingCount }) }}</span>
-        <button v-if="permissionSessionAllowed" class="perm-revoke-btn" @click="revokeSessionPermission">{{ t('permission.revoke') }}</button>
+        <span v-if="permissionPendingCount > 0">{{ t('permission.pendingRequests', { count: permissionPendingCount }) }}</span>
+        <span v-else-if="permissionAllowanceCount > 0">{{ t('permission.allowancesHint', { count: permissionAllowanceCount }) }}</span>
+        <span v-else>{{ t('permission.normalMode') }}</span>
+        <button v-if="permissionAllowanceCount > 0" class="perm-revoke-btn" @click="clearSessionAllowances">{{ t('permission.revokeAll') }}</button>
+      </div>
+
+      <!-- 本会话已允许的范围（工具 + 范围），逐条可撤销 -->
+      <div v-if="permissionAllowances.length > 0" class="perm-cards">
+        <div v-for="allowance in permissionAllowances" :key="allowance.tool + '|' + allowance.scope" class="perm-card-inline">
+          <p class="perm-card-msg">{{ allowance.label }}</p>
+          <div class="perm-card-actions">
+            <button class="perm-card-btn reject" @click="revokeAllowance(allowance)">{{ t('permission.revoke') }}</button>
+          </div>
+        </div>
       </div>
 
       <!-- 权限请求卡片列表 -->
@@ -342,7 +384,7 @@ const backgroundStatusLabel = (status: string): string => {
           <div class="perm-card-actions">
             <button class="perm-card-btn reject" @click="resolvePermission(req.id, 'reject')">{{ t('permission.reject') }}</button>
             <button class="perm-card-btn allow" @click="resolvePermission(req.id, 'allow')">{{ t('permission.allowOnce') }}</button>
-            <button class="perm-card-btn session" @click="resolvePermission(req.id, 'allow_session')">{{ t('permission.allowSession') }}</button>
+            <button v-if="req.allowSession !== false" class="perm-card-btn session" @click="resolvePermission(req.id, 'allow_session')">{{ t('permission.allowSession') }}</button>
           </div>
         </div>
       </div>
@@ -554,7 +596,7 @@ const backgroundStatusLabel = (status: string): string => {
   flex-direction: column;
   overflow: hidden;
   z-index: 25;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.24);
+  box-shadow: var(--shadow-lg);
   will-change: transform, opacity;
 }
 
@@ -592,8 +634,13 @@ const backgroundStatusLabel = (status: string): string => {
   width: 7px;
   height: 7px;
   border-radius: 999px;
-  background: var(--accent-green);
-  box-shadow: 0 0 10px var(--accent-green);
+  background: var(--text-muted);
+  animation: runningDotPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes runningDotPulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
 }
 
 .elapsed-time {
@@ -637,13 +684,13 @@ const backgroundStatusLabel = (status: string): string => {
   transition: all 0.15s;
 }
 .perm-status-bar.allowed {
-  background: rgba(245, 158, 11, 0.08);
-  border-color: rgba(245, 158, 11, 0.2);
-  color: var(--accent-yellow);
+  background: var(--glass-bg-light);
+  border-color: var(--border-color);
+  color: var(--text-soft);
 }
 .perm-status-bar.pending {
-  background: rgba(59, 130, 246, 0.08);
-  border-color: rgba(59, 130, 246, 0.2);
+  background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
+  border-color: color-mix(in srgb, var(--accent-blue) 20%, transparent);
   color: var(--accent-blue);
 }
 .perm-status-bar svg { flex-shrink: 0; }
@@ -651,17 +698,17 @@ const backgroundStatusLabel = (status: string): string => {
   margin-left: auto;
   padding: 3px 10px;
   border-radius: 6px;
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  border: 1px solid var(--border-color);
   background: transparent;
-  color: var(--accent-yellow);
+  color: var(--text-soft);
   font-size: 0.72rem;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s;
 }
 .perm-revoke-btn:hover {
-  background: rgba(245, 158, 11, 0.15);
-  border-color: var(--accent-yellow);
+  background: var(--glass-bg-light);
+  border-color: var(--text-muted);
 }
 
 /* 权限请求卡片列表（监控窗口内联展示） */
@@ -674,9 +721,9 @@ const backgroundStatusLabel = (status: string): string => {
 
 .perm-card-inline {
   padding: 12px 14px;
-  border: 1px solid rgba(59, 130, 246, 0.2);
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 20%, transparent);
   border-radius: 10px;
-  background: rgba(59, 130, 246, 0.06);
+  background: color-mix(in srgb, var(--accent-blue) 6%, transparent);
 }
 
 .perm-card-msg {
@@ -706,12 +753,12 @@ const backgroundStatusLabel = (status: string): string => {
   transform: translateY(-1px);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
 }
-.perm-card-btn.reject { color: var(--accent-red); border-color: rgba(239, 68, 68, 0.25); background: rgba(239, 68, 68, 0.06); }
-.perm-card-btn.reject:hover { background: rgba(239, 68, 68, 0.14); }
-.perm-card-btn.allow { color: var(--accent-blue); border-color: rgba(59, 130, 246, 0.25); background: rgba(59, 130, 246, 0.06); }
-.perm-card-btn.allow:hover { background: rgba(59, 130, 246, 0.14); }
-.perm-card-btn.session { color: var(--accent-yellow); border-color: rgba(245, 158, 11, 0.25); background: rgba(245, 158, 11, 0.06); }
-.perm-card-btn.session:hover { background: rgba(245, 158, 11, 0.14); }
+.perm-card-btn.reject { color: var(--accent-red); border-color: color-mix(in srgb, var(--accent-red) 25%, transparent); background: color-mix(in srgb, var(--accent-red) 6%, transparent); }
+.perm-card-btn.reject:hover { background: color-mix(in srgb, var(--accent-red) 14%, transparent); }
+.perm-card-btn.allow { color: var(--accent-blue); border-color: color-mix(in srgb, var(--accent-blue) 25%, transparent); background: color-mix(in srgb, var(--accent-blue) 6%, transparent); }
+.perm-card-btn.allow:hover { background: color-mix(in srgb, var(--accent-blue) 14%, transparent); }
+.perm-card-btn.session { color: var(--text-soft); border-color: var(--border-color); background: transparent; }
+.perm-card-btn.session:hover { background: var(--glass-bg-light); }
 
 .panel-body {
   flex: 1;
@@ -990,8 +1037,8 @@ const backgroundStatusLabel = (status: string): string => {
   align-items: center;
   justify-content: center;
   border-radius: 3px;
-  background: color-mix(in srgb, var(--accent-yellow) 30%, transparent);
-  color: var(--accent-yellow);
+  background: color-mix(in srgb, var(--text-muted) 20%, transparent);
+  color: var(--text-muted);
   font-size: 0.5rem;
   font-weight: 900;
 }
@@ -1004,13 +1051,16 @@ const backgroundStatusLabel = (status: string): string => {
   font-weight: 750;
 }
 
-.phase-starting { background: color-mix(in srgb, var(--text-muted) 20%, transparent); color: var(--text-muted); }
-.phase-waiting_model { background: color-mix(in srgb, var(--accent-blue) 20%, transparent); color: var(--accent-blue); }
-.phase-streaming { background: color-mix(in srgb, var(--accent-green) 20%, transparent); color: var(--accent-green); }
-.phase-thinking { background: color-mix(in srgb, var(--accent-purple) 20%, transparent); color: var(--accent-purple); }
-.phase-calling_tool { background: color-mix(in srgb, var(--accent-yellow) 20%, transparent); color: var(--accent-yellow); }
-.phase-processing_tool_result { background: color-mix(in srgb, var(--accent-orange) 20%, transparent); color: var(--accent-orange); }
-.phase-finalizing { background: color-mix(in srgb, var(--accent-blue) 20%, transparent); color: var(--accent-blue); }
+.phase-starting,
+.phase-waiting_model,
+.phase-streaming,
+.phase-thinking,
+.phase-calling_tool,
+.phase-processing_tool_result,
+.phase-finalizing {
+  background: color-mix(in srgb, var(--text-muted) 15%, transparent);
+  color: var(--text-soft);
+}
 
 .status-label {
   flex-shrink: 0;
@@ -1066,7 +1116,7 @@ const backgroundStatusLabel = (status: string): string => {
 }
 
 .ct-name {
-  color: var(--accent-yellow);
+  color: var(--text-main);
   font-weight: 800;
   font-family: ui-monospace, 'Cascadia Code', monospace;
 }
@@ -1151,7 +1201,7 @@ const backgroundStatusLabel = (status: string): string => {
   font-size: 0.5rem;
 }
 
-.tl-tool_call .tl-icon { color: var(--accent-yellow); }
+.tl-tool_call .tl-icon { color: var(--text-muted); }
 .tl-tool_result .tl-icon { color: var(--accent-green); }
 
 .tl-tool {
@@ -1250,8 +1300,8 @@ const backgroundStatusLabel = (status: string): string => {
 
 .status-running .status-dot,
 .status-pending .status-dot {
-  background: var(--accent-yellow);
-  box-shadow: 0 0 10px var(--accent-yellow);
+  background: var(--text-muted);
+  animation: runningDotPulse 1.5s ease-in-out infinite;
 }
 
 .status-completed .status-dot,

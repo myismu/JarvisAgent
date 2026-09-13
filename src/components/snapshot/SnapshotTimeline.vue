@@ -1,3 +1,14 @@
+<!--
+# SnapshotTimeline.vue — 快照时间线
+
+列出文件快照，支持查看、对比与回滚。
+
+## Dependencies
+- External: `@tauri-apps/api/event`
+
+## Constraints
+- 回滚为危险操作：确认按钮用红，提示文字用中性灰
+-->
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, computed } from "vue";
 import { listen } from "@tauri-apps/api/event";
@@ -522,7 +533,7 @@ onUnmounted(() => {
   padding: 8px 12px;
   color: var(--accent-red);
   font-size: 0.8rem;
-  background: rgba(239, 68, 68, 0.1);
+  background: color-mix(in srgb, var(--accent-red) 10%, transparent);
   border-radius: var(--radius-md);
   margin: 0 12px;
 }
@@ -557,7 +568,7 @@ onUnmounted(() => {
 
 .snapshot-item.current {
   border-left-color: var(--accent-blue);
-  background: rgba(59, 130, 246, 0.05);
+  background: color-mix(in srgb, var(--accent-blue) 5%, transparent);
 }
 
 .snapshot-item.checkpoint {
@@ -631,7 +642,7 @@ onUnmounted(() => {
 }
 
 .checkpoint-badge {
-  background: rgba(34, 197, 94, 0.2);
+  background: color-mix(in srgb, var(--accent-green) 20%, transparent);
   color: var(--accent-green);
 }
 
@@ -712,23 +723,23 @@ onUnmounted(() => {
 }
 
 .rollback-btn {
-  background: rgba(239, 68, 68, 0.1);
+  background: color-mix(in srgb, var(--accent-red) 10%, transparent);
   color: var(--accent-red);
-  border-color: rgba(239, 68, 68, 0.2);
+  border-color: color-mix(in srgb, var(--accent-red) 20%, transparent);
 }
 
 .rollback-btn:hover {
-  background: rgba(239, 68, 68, 0.2);
+  background: color-mix(in srgb, var(--accent-red) 20%, transparent);
 }
 
 .branch-btn {
-  background: rgba(59, 130, 246, 0.1);
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
   color: var(--accent-blue);
-  border-color: rgba(59, 130, 246, 0.2);
+  border-color: color-mix(in srgb, var(--accent-blue) 20%, transparent);
 }
 
 .branch-btn:hover {
-  background: rgba(59, 130, 246, 0.2);
+  background: color-mix(in srgb, var(--accent-blue) 20%, transparent);
 }
 
 .rollback-modal-overlay {
@@ -770,7 +781,7 @@ onUnmounted(() => {
 }
 
 .rollback-warning {
-  color: var(--accent-yellow) !important;
+  color: var(--text-muted) !important;
   font-size: 0.85rem !important;
 }
 

@@ -1,10 +1,18 @@
 <!--
-# PermissionCard.vue — 内联权限请求卡片
+# PermissionCard.vue — 会话流里的权限确认卡片
 
-嵌在会话区内，不阻塞用户切换会话。像 Claude Code 一样在对话流中等待确认。
+风格：灰白朴素（无彩色强调、无毛玻璃、无阴影），信息分层为"动作 + 明细 + 三个选择"。
+
+## 交互
+- 三个选择：拒绝 / 本次会话都允许（按范围记忆）/ 允许一次
+- 拒绝可附一句说明，会原样回灌给模型（提示它别换等价写法重试）
+- 快捷键 A / S / R(Esc) 仅在焦点不在输入控件时生效
+
+## 依赖
+- Internal: `stores/permission`（待确认请求队列）、`stores/chat`（提交决策）
 -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { usePermissionStore } from '../../stores/permission';
 import { useChatStore } from '../../stores/chat';
@@ -13,48 +21,50 @@ const { t } = useI18n();
 const perm = usePermissionStore();
 const chat = useChatStore();
 
+/// 拒绝说明：可选，但会回灌给模型，避免它换个写法重试同一操作
+const rejectFeedback = ref('');
+
+/// 当前会话还有几个待决策请求（并行子代理可能同时发起）
+const queueLength = computed(() => perm.permissionQueue.length);
 const canAllowSession = computed(() => perm.permissionRequest?.allowSession !== false);
-const isLoopContinuation = computed(() => perm.permissionRequest?.kind === 'loop_continuation');
 
-const parsedData = computed(() => {
-  if (!perm.permissionRequest) return { reason: '', command: '' };
-  const msg = perm.permissionRequest.message;
-  let reason = msg;
-  let command = '';
-
-  const codeMatch = msg.match(/`([^`]+)`/);
-  if (codeMatch) {
-    reason = msg.replace(codeMatch[0], '').trim();
-    command = codeMatch[1].trim();
-  } else {
-    const colonMatch = msg.match(/[:：]/);
-    if (colonMatch && colonMatch.index !== undefined) {
-      const potentialCommand = msg.substring(colonMatch.index + 1).trim();
-      if (potentialCommand.length > 5) {
-        reason = msg.substring(0, colonMatch.index + 1).trim();
-        command = potentialCommand;
-      }
-    } else if (msg.length > 150) {
-      reason = t('permission.complexCommandReason');
-      command = msg;
-    }
-  }
-
-  if (command.length > 600) {
-    command = command.substring(0, 280) + `\n... [${t('permission.longCommandOmitted')}] ...\n` + command.substring(command.length - 200);
-  }
-  if (reason.length > 200) {
-    reason = reason.substring(0, 200) + '...';
-  }
-  return { reason, command };
+// 卡片切换（上一个请求被处理）时清空输入
+watch(() => perm.permissionRequest?.id, () => {
+  rejectFeedback.value = '';
 });
+
+/**
+ * 权限判定发来的文案是"第一行=动作、其余=明细"的结构：
+ *   删除文件
+ *   C:\...\trash.txt
+ *   工具：DeleteFile
+ *   风险提示：…
+ *   允许范围：…
+ * 旧格式（如循环续跑确认）只有一行，就整行当标题。
+ */
+const parsed = computed(() => {
+  const msg = perm.permissionRequest?.message ?? '';
+  const lines = msg.split('\n');
+  const title = (lines[0] ?? '').trim();
+  const details = lines.slice(1).join('\n').trim();
+  return { title, details };
+});
+
+/// 输入框/可编辑元素里的按键永远是打字，不是快捷键
+function isTypingTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el || !el.tagName) return false;
+  const tag = el.tagName.toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable === true;
+}
 
 const handleKeydown = (e: KeyboardEvent) => {
   if (!perm.permissionRequest) return;
+  if (isTypingTarget(e.target)) return;
   const key = e.key.toLowerCase();
   if (key === 'a') { e.preventDefault(); chat.resolvePermission('allow'); }
   else if (key === 's' && canAllowSession.value) { e.preventDefault(); chat.resolvePermission('allow_session'); }
-  else if (key === 'r' || key === 'escape') { e.preventDefault(); chat.resolvePermission('reject'); }
+  else if (key === 'r' || key === 'escape') { e.preventDefault(); chat.resolvePermission('reject', rejectFeedback.value); }
 };
 
 onMounted(() => window.addEventListener('keydown', handleKeydown, true));
@@ -62,33 +72,32 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
 </script>
 
 <template>
-  <Transition name="perm-slide">
+  <Transition name="perm-fade">
     <div v-if="perm.permissionRequest" class="perm-card">
-      <div class="perm-header">
-        <svg class="perm-icon" viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-          <line x1="12" y1="9" x2="12" y2="13"/>
-          <line x1="12" y1="17" x2="12.01" y2="17"/>
-        </svg>
-        <div>
-          <strong>{{ isLoopContinuation ? t('permission.loopTitle') : t('permission.securityTitle') }}</strong>
-          <span>{{ isLoopContinuation ? t('permission.loopSubtitle') : t('permission.securitySubtitle') }}</span>
-        </div>
+      <div class="perm-head">
+        <span class="perm-title">{{ parsed.title }}</span>
+        <span v-if="queueLength > 1" class="perm-queue">+{{ queueLength - 1 }}</span>
       </div>
 
-      <p class="perm-reason">{{ parsedData.reason }}</p>
+      <pre v-if="parsed.details" class="perm-detail">{{ parsed.details }}</pre>
 
-      <pre v-if="parsedData.command" class="perm-command"><code>{{ parsedData.command }}</code></pre>
+      <input
+        v-model="rejectFeedback"
+        class="perm-feedback"
+        type="text"
+        :placeholder="t('permission.rejectFeedbackPlaceholder')"
+        @keyup.enter="chat.resolvePermission('reject', rejectFeedback)"
+      />
 
       <div class="perm-actions">
-        <button class="perm-btn reject" @click="chat.resolvePermission('reject')">
-          <kbd>R</kbd> {{ t('permission.reject') }}
+        <button class="perm-btn" @click="chat.resolvePermission('reject', rejectFeedback)">
+          {{ t('permission.reject') }}<kbd>R</kbd>
         </button>
-        <button class="perm-btn allow" @click="chat.resolvePermission('allow')">
-          <kbd>A</kbd> {{ t('permission.allowOnce') }}
+        <button v-if="canAllowSession" class="perm-btn" @click="chat.resolvePermission('allow_session')">
+          {{ t('permission.allowSession') }}<kbd>S</kbd>
         </button>
-        <button v-if="canAllowSession" class="perm-btn session" @click="chat.resolvePermission('allow_session')">
-          <kbd>S</kbd> {{ t('permission.allowSession') }}
+        <button class="perm-btn primary" @click="chat.resolvePermission('allow')">
+          {{ t('permission.allowOnce') }}<kbd>A</kbd>
         </button>
       </div>
     </div>
@@ -96,116 +105,107 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
 </template>
 
 <style scoped>
+/* 灰白朴素：只用边框与文字层级区分，不用彩色、不用毛玻璃、不用阴影 */
 .perm-card {
   margin: 8px 16px 12px;
-  padding: 14px 16px;
-  border: 1px solid rgba(245, 158, 11, 0.3);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--surface-strong) 60%, transparent);
-  box-shadow: 0 0 24px rgba(245, 158, 11, 0.08);
-  max-width: 580px;
+  padding: 12px 14px;
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: var(--radius-md);
+  background: transparent;
+  max-width: 620px;
+  font-size: 0.78rem;
+  line-height: 1.5;
 }
 
-.perm-header {
+.perm-head {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
 }
 
-.perm-icon {
-  color: var(--accent-yellow);
-  flex-shrink: 0;
-}
-
-.perm-header strong {
-  display: block;
+.perm-title {
+  font-weight: 600;
   color: var(--text-main);
-  font-size: 0.85rem;
-  font-weight: 800;
 }
 
-.perm-header span {
-  display: block;
+.perm-queue {
+  font-size: 0.7rem;
   color: var(--text-muted);
-  font-size: 0.68rem;
-  margin-top: 1px;
 }
 
-.perm-reason {
+.perm-detail {
   margin: 0 0 10px;
-  color: var(--text-soft);
-  font-size: 0.8rem;
-  line-height: 1.55;
-  word-break: break-word;
-}
-
-.perm-command {
-  margin: 0 0 14px;
-  padding: 10px 12px;
-  max-height: 180px;
-  overflow: auto;
-  border: 1px solid var(--glass-border);
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.18);
+  padding: 0;
   font-family: var(--font-mono);
   font-size: 0.72rem;
-  line-height: 1.5;
+  line-height: 1.6;
+  color: var(--text-soft);
   white-space: pre-wrap;
   word-break: break-all;
-  color: var(--text-soft);
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.perm-feedback {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 10px;
+  padding: 6px 0;
+  border: none;
+  border-bottom: 1px solid var(--glass-border-subtle);
+  background: transparent;
+  color: var(--text-main);
+  font-size: 0.75rem;
+  outline: none;
+}
+
+.perm-feedback::placeholder {
+  color: var(--text-muted);
+}
+
+.perm-feedback:focus {
+  border-bottom-color: var(--text-muted);
 }
 
 .perm-actions {
   display: flex;
-  gap: 10px;
-  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .perm-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 14px;
-  border: 1px solid var(--glass-border);
-  border-radius: 8px;
-  background: var(--glass-bg-light);
-  color: var(--text-main);
-  font-size: 0.78rem;
-  font-weight: 650;
+  padding: 5px 10px;
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 0.75rem;
   cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.perm-btn kbd {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 4px;
-  border-radius: 4px;
-  background: rgba(255,255,255,0.08);
-  border: 1px solid rgba(255,255,255,0.12);
-  font-family: var(--font-mono);
-  font-size: 0.6rem;
-  font-weight: 700;
+  transition: border-color 0.12s ease, color 0.12s ease;
 }
 
 .perm-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  border-color: var(--glass-border);
+  color: var(--text-main);
 }
 
-.perm-btn.reject { color: var(--accent-red); border-color: rgba(239,68,68,0.25); }
-.perm-btn.reject:hover { background: rgba(239,68,68,0.08); }
-.perm-btn.allow { color: var(--accent-blue); border-color: rgba(59,130,246,0.25); }
-.perm-btn.allow:hover { background: rgba(59,130,246,0.08); }
-.perm-btn.session { color: var(--accent-yellow); border-color: rgba(245,158,11,0.25); }
-.perm-btn.session:hover { background: rgba(245,158,11,0.08); }
+.perm-btn.primary {
+  color: var(--text-main);
+  border-color: var(--glass-border);
+}
 
-.perm-slide-enter-active { transition: all 0.25s ease; }
-.perm-slide-leave-active { transition: all 0.15s ease; }
-.perm-slide-enter-from { opacity: 0; transform: translateY(-12px); }
-.perm-slide-leave-to { opacity: 0; transform: translateY(-8px); }
+.perm-btn kbd {
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.perm-fade-enter-active { transition: opacity 0.15s ease-out; }
+.perm-fade-leave-active { transition: opacity 0.1s ease-in; }
+.perm-fade-enter-from,
+.perm-fade-leave-to { opacity: 0; }
 </style>

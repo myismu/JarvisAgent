@@ -1004,6 +1004,7 @@ crate::define_tools! {
                         },
                         "ignore_dirs": {
                             "type": ["string", "array"],
+                            "items": {"type": "string"},
                             "description": "Additional directory names to ignore, as comma/space separated string or string array."
                         }
                     },
@@ -1082,6 +1083,7 @@ crate::define_tools! {
                         },
                         "ignore_dirs": {
                             "type": ["string", "array"],
+                            "items": {"type": "string"},
                             "description": "Additional directory names to ignore, as comma/space separated string or string array."
                         },
                         "head_limit": {

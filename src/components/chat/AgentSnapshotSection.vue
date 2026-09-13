@@ -207,8 +207,8 @@ watch(
 
 .snapshot-head button:hover:not(:disabled) {
   color: var(--accent-blue);
-  border-color: rgba(59, 130, 246, 0.45);
-  background: rgba(59, 130, 246, 0.08);
+  border-color: color-mix(in srgb, var(--accent-blue) 45%, transparent);
+  background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
 }
 
 .snapshot-node-list {
@@ -232,12 +232,12 @@ watch(
 
 .snapshot-node:hover,
 .snapshot-node.active {
-  border-color: rgba(139, 92, 246, 0.45);
+  border-color: color-mix(in srgb, var(--accent-blue) 45%, transparent);
   background: var(--glass-bg-light);
 }
 
 .snapshot-node.checkpoint .snapshot-node-dot {
-  background: var(--accent-yellow);
+  background: var(--accent-blue);
 }
 
 .snapshot-node-dot {
@@ -272,9 +272,9 @@ watch(
 
 .snapshot-badge {
   padding: 1px 4px;
-  border: 1px solid color-mix(in srgb, var(--accent-yellow) 45%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 40%, transparent);
   border-radius: 4px;
-  color: var(--accent-yellow);
+  color: var(--accent-blue);
 }
 
 .snapshot-summary {

@@ -1,3 +1,14 @@
+<!--
+# TerminalInput.vue — 主输入区
+
+消息输入、附件管理、工作模式与审批模式切换、发送/停止按钮。
+
+## Key Exports
+- 默认导出组件：会话输入栏
+
+## Constraints
+- 停止按钮为中性色（中断非破坏性操作）；模式圆点统一中性灰
+-->
 <script setup lang="ts">
 import { computed, ref, onMounted, nextTick, onUnmounted, onBeforeUnmount, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
@@ -9,7 +20,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { readFile } from '@tauri-apps/plugin-fs';
 import ConfirmModal from '../common/ConfirmModal.vue';
-import type { AgentWorkMode } from '../../types';
+import type { AgentApprovalMode, AgentUserMode, AgentWorkMode } from '../../types';
 
 const { t } = useI18n();
 
@@ -39,7 +50,10 @@ const formatToken = (n: number): string => {
 
 // WorkMode 状态，与 usePreferences 双向同步 + 监听后端切换
 const showWorkModeMenu = ref(false);
+const showApprovalMenu = ref(false);
 const currentWorkMode = ref<AgentWorkMode>(uiPrefs.agentWorkMode.value);
+// 模式切换失败的提示（后端拒绝时显示）
+const workModeWarning = ref("");
 
 watch(() => uiPrefs.agentWorkMode.value, (val) => {
   currentWorkMode.value = val;
@@ -203,10 +217,77 @@ const doSwitchProfile = async (id: string) => {
   }
 };
 
-const switchWorkMode = (mode: AgentWorkMode) => {
-  uiPrefs.setAgentWorkMode(mode);
-  currentWorkMode.value = mode;
+/** 当前权限档位（请求审批 / 帮我批准）：后端会话状态为准 */
+const currentApprovalMode = ref<AgentApprovalMode>(uiPrefs.agentApprovalMode.value);
+
+/**
+ * 权限档位只改档位，**不碰工作模式**（两条轴分开：一个是"问得多严"，一个是"先出方案还是直接干"）
+ */
+const applyApprovalMode = async (mode: AgentApprovalMode) => {
+  showApprovalMenu.value = false;
+  if (mode === currentApprovalMode.value) {
+    uiPrefs.setAgentApprovalMode(mode);
+    return;
+  }
+  const prevApproval = currentApprovalMode.value;
+  workModeWarning.value = "";
+  try {
+    if (session.activeSessionId) {
+      await invoke('set_session_approval_mode', { sessionId: session.activeSessionId, mode });
+    }
+    uiPrefs.setAgentApprovalMode(mode);
+    currentApprovalMode.value = mode;
+  } catch (e) {
+    currentApprovalMode.value = prevApproval;
+    workModeWarning.value = String(e);
+    console.error('Failed to switch approval mode:', e);
+  }
+};
+
+/**
+ * 工作模式只改模式（编辑 / 规划），**不碰权限档位**
+ */
+const applyWorkMode = async (mode: AgentUserMode) => {
   showWorkModeMenu.value = false;
+  if (mode === currentWorkMode.value) return;
+  const prev = currentWorkMode.value;
+  workModeWarning.value = "";
+  try {
+    if (session.activeSessionId) {
+      await invoke('set_session_work_mode', { sessionId: session.activeSessionId, mode });
+    }
+    currentWorkMode.value = mode;
+    uiPrefs.setAgentWorkMode(mode);
+  } catch (e) {
+    currentWorkMode.value = prev;
+    workModeWarning.value = String(e);
+    console.error('Failed to switch work mode:', e);
+  }
+};
+
+/** 会话状态才是事实来源：切换会话 / 刷新后校准档位与模式 */
+const syncPermissionFromSession = async () => {
+  const sid = session.activeSessionId;
+  if (!sid) return;
+  try {
+    const mode = await invoke<AgentWorkMode>('get_session_work_mode', { sessionId: sid });
+    currentWorkMode.value = mode;
+    uiPrefs.setAgentWorkMode(mode);
+    const settings = await invoke<{ approvalMode: AgentApprovalMode }>(
+      'get_session_permission_settings',
+      { sessionId: sid },
+    );
+    currentApprovalMode.value = settings.approvalMode;
+    uiPrefs.setAgentApprovalMode(settings.approvalMode);
+  } catch (e) {
+    console.error('Failed to read session permission settings:', e);
+  }
+};
+
+watch(() => session.activeSessionId, syncPermissionFromSession);
+
+const hideWorkModeWarning = () => {
+  workModeWarning.value = "";
 };
 
 const closeMenuOnOutsideClick = (e: MouseEvent) => {
@@ -216,6 +297,9 @@ const closeMenuOnOutsideClick = (e: MouseEvent) => {
   }
   if (!target.closest('.work-mode-selector')) {
     showWorkModeMenu.value = false;
+  }
+  if (!target.closest('.approval-selector')) {
+    showApprovalMenu.value = false;
   }
 };
 
@@ -280,6 +364,8 @@ const processDroppedFiles = async (paths: string[]) => {
 
 onMounted(async () => {
   await loadConfig();
+  // 档位/模式控件以会话状态为准（刷新后恢复显示）
+  await syncPermissionFromSession();
   // 如果没有活跃会话，将模型初始化为全局默认
   if (!session.activeSessionId && appConfig.value?.globalProfileId) {
     appConfig.value.activeProfileId = appConfig.value.globalProfileId;
@@ -311,6 +397,10 @@ onMounted(async () => {
     currentWorkMode.value = event.payload.to as AgentWorkMode;
   });
 
+  // 权限档位变化（用户在设置面板里改了，或后端初始化）
+  await listen<{ mode: AgentApprovalMode }>('approval-mode-changed', (event) => {
+    currentApprovalMode.value = event.payload.mode;
+  });
   // 监听监控窗口上下文压缩状态，压缩期间禁用输入
   unlistenCompacting = await listen<{ compacting: boolean }>('bg-compacting-changed', (event) => {
     isCompacting.value = event.payload.compacting;
@@ -491,6 +581,34 @@ const handleRecallEdit = async () => {
         
         <div class="toolbar-spacer"></div>
 
+        <!-- 权限档位：只决定"问得多严"，与工作模式互不影响 -->
+        <div class="work-mode-selector approval-selector">
+          <button class="work-mode-btn" @click="showApprovalMenu = !showApprovalMenu">
+            <span class="work-mode-dot" :class="currentApprovalMode"></span>
+            <span class="work-mode-label">{{ t('settings.general.' + currentApprovalMode) }}</span>
+            <svg viewBox="0 0 24 24" width="10" height="10" stroke="currentColor" stroke-width="2" fill="none"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+
+          <div v-if="showApprovalMenu" class="work-mode-menu">
+            <div class="work-mode-menu-inner">
+              <div
+                v-for="mode in (['request_approval', 'auto_approve'] as AgentApprovalMode[])"
+                :key="mode"
+                class="work-mode-menu-item"
+                :class="{ active: currentApprovalMode === mode }"
+                @click="applyApprovalMode(mode)"
+              >
+                <span class="work-mode-dot" :class="mode"></span>
+                <div class="work-mode-menu-text">
+                  <div class="work-mode-menu-name">{{ t('settings.general.' + mode) }}</div>
+                  <div class="work-mode-menu-desc">{{ t('settings.general.' + mode + 'DescShort') }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 工作模式：编辑（直接干）/ 规划（先出方案），与权限档位互不影响 -->
         <div class="work-mode-selector">
           <button class="work-mode-btn" @click="showWorkModeMenu = !showWorkModeMenu">
             <span class="work-mode-dot" :class="currentWorkMode"></span>
@@ -500,19 +618,19 @@ const handleRecallEdit = async () => {
 
           <div v-if="showWorkModeMenu" class="work-mode-menu">
             <div class="work-mode-menu-inner">
-            <div
-              v-for="mode in (['chat', 'edit', 'plan'] as AgentWorkMode[])"
-              :key="mode"
-              class="work-mode-menu-item"
-              :class="{ active: currentWorkMode === mode }"
-              @click="switchWorkMode(mode)"
-            >
-              <span class="work-mode-dot" :class="mode"></span>
-              <div class="work-mode-menu-text">
-                <div class="work-mode-menu-name">{{ t('settings.general.' + mode) }}</div>
-                <div class="work-mode-menu-desc">{{ t('settings.general.' + mode + 'DescShort') }}</div>
+              <div
+                v-for="mode in (['edit', 'plan'] as AgentUserMode[])"
+                :key="mode"
+                class="work-mode-menu-item"
+                :class="{ active: currentWorkMode === mode }"
+                @click="applyWorkMode(mode)"
+              >
+                <span class="work-mode-dot" :class="mode"></span>
+                <div class="work-mode-menu-text">
+                  <div class="work-mode-menu-name">{{ t('settings.general.' + mode) }}</div>
+                  <div class="work-mode-menu-desc">{{ t('settings.general.' + mode + 'DescShort') }}</div>
+                </div>
               </div>
-            </div>
             </div>
           </div>
         </div>
@@ -566,6 +684,16 @@ const handleRecallEdit = async () => {
         </svg>
         <span>{{ t('input.visionWarning') }}</span>
         <button class="warning-close-btn" @click="hideVisionWarning">✕</button>
+      </div>
+
+      <div v-if="workModeWarning" class="vision-warning">
+        <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+          <line x1="12" y1="9" x2="12" y2="13"></line>
+          <line x1="12" y1="17" x2="12.01" y2="17"></line>
+        </svg>
+        <span>{{ workModeWarning }}</span>
+        <button class="warning-close-btn" @click="hideWorkModeWarning">✕</button>
       </div>
 
       <div class="input-row" @click="inputRef?.focus()">
@@ -658,7 +786,7 @@ const handleRecallEdit = async () => {
   -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   border: 1px solid var(--glass-border);
   border-radius: 24px; /* 增加圆角度，使其更圆润 */
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.15), var(--glass-shadow);
+  box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
   transition: all var(--transition-normal);
@@ -668,12 +796,12 @@ const handleRecallEdit = async () => {
 
 .chat-input-wrapper:hover {
   border-color: var(--glass-border);
-  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.2), var(--glass-shadow);
+  box-shadow: var(--shadow-lg);
 }
 
 .chat-input-wrapper:focus-within {
   border-color: var(--glass-border);
-  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.2), var(--glass-shadow);
+  box-shadow: var(--shadow-lg);
 }
 
 .input-toolbar {
@@ -727,7 +855,7 @@ const handleRecallEdit = async () => {
   -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   border: 1px solid color-mix(in srgb, var(--text-muted) 22%, transparent);
   border-radius: var(--radius-lg);
-  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.18), var(--glass-shadow);
+  box-shadow: var(--shadow-lg);
   min-width: 240px;
   z-index: 100;
   overflow: hidden;
@@ -860,9 +988,22 @@ const handleRecallEdit = async () => {
   flex-shrink: 0;
 }
 
-.work-mode-dot.chat { background: var(--accent-green, #22c55e); }
-.work-mode-dot.edit { background: var(--accent-blue, #3b82f6); }
-.work-mode-dot.plan { background: var(--accent-yellow, #f59e0b); }
+.work-mode-dot.chat { background: var(--text-muted); }
+.work-mode-dot.edit { background: var(--text-muted); }
+.work-mode-dot.plan { background: var(--text-muted); }
+.work-mode-dot.readonly { background: var(--text-muted); }
+.work-mode-dot.request_approval { background: var(--text-muted); }
+.work-mode-dot.auto_approve { background: var(--text-muted); }
+
+.work-mode-btn.readonly {
+  border-color: var(--glass-border);
+}
+
+.work-mode-menu-hint {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  padding: 4px 14px 2px;
+}
 
 .work-mode-label {
   white-space: nowrap;
@@ -883,7 +1024,7 @@ const handleRecallEdit = async () => {
   -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   border: 1px solid color-mix(in srgb, var(--text-muted) 22%, transparent);
   border-radius: var(--radius-lg);
-  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.18), var(--glass-shadow);
+  box-shadow: var(--shadow-lg);
   overflow: hidden;
   animation: popIn var(--transition-fast);
   padding: 8px;
@@ -909,7 +1050,7 @@ const handleRecallEdit = async () => {
 }
 
 .work-mode-menu-item.active {
-  background: rgba(59, 130, 246, 0.12);
+  background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
 }
 
 .work-mode-menu-text {
@@ -927,6 +1068,44 @@ const handleRecallEdit = async () => {
   font-size: 0.7rem;
   color: var(--text-muted);
   margin-top: 2px;
+}
+
+.work-mode-menu-sep {
+  height: 1px;
+  margin: 6px 8px;
+  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+}
+
+.work-mode-menu-item.readonly-item .work-mode-menu-text {
+  flex: 1;
+}
+
+.work-mode-switch {
+  width: 30px;
+  height: 17px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 35%, transparent);
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  flex-shrink: 0;
+  transition: background var(--transition-fast);
+}
+
+.work-mode-switch.on {
+  background: var(--accent-blue);
+}
+
+.work-mode-switch-knob {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform var(--transition-fast);
+}
+
+.work-mode-switch.on .work-mode-switch-knob {
+  transform: translateX(13px);
 }
 
 .input-row {
@@ -989,33 +1168,29 @@ const handleRecallEdit = async () => {
 }
 
 .send-btn.active {
-  background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-blue-hover) 100%);
+  background: var(--accent-blue);
   color: white;
   border-color: transparent;
-  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.25);
 }
 
 .send-btn.active:hover {
-  transform: translateY(-2px) scale(1.05);
-  box-shadow: 0 6px 16px rgba(59, 130, 246, 0.35);
+  background: var(--accent-blue-hover);
 }
 
 .send-btn.active:active {
-  transform: translateY(0);
+  background: var(--accent-blue-hover);
 }
 
 .send-btn.stop-state {
-  background: rgba(239, 68, 68, 0.12);
-  color: var(--accent-red);
-  border-color: rgba(239, 68, 68, 0.25);
+  background: var(--glass-bg-light);
+  color: var(--text-soft);
+  border-color: var(--border-color);
   box-shadow: none;
 }
 
 .send-btn.stop-state:hover {
-  background: var(--accent-red);
-  color: white;
-  transform: translateY(-2px) scale(1.05);
-  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.2);
+  background: var(--border-color);
+  color: var(--text-main);
 }
 
 .media-preview-container {
@@ -1072,7 +1247,7 @@ const handleRecallEdit = async () => {
 }
 
 .remove-media-btn:hover {
-  background: rgba(239, 68, 68, 0.9);
+  background: color-mix(in srgb, var(--accent-red) 90%, transparent);
   color: white;
 }
 
@@ -1081,9 +1256,9 @@ const handleRecallEdit = async () => {
   align-items: center;
   gap: 8px;
   padding: 8px 16px;
-  background: rgba(245, 158, 11, 0.1);
-  border-top: 1px solid rgba(245, 158, 11, 0.2);
-  color: var(--accent-yellow);
+  background: var(--glass-bg-light);
+  border-top: 1px solid var(--border-color);
+  color: var(--text-muted);
   font-size: 0.8rem;
 }
 
@@ -1092,8 +1267,8 @@ const handleRecallEdit = async () => {
   align-items: center;
   gap: 8px;
   padding: 8px 16px;
-  background: rgba(59, 130, 246, 0.08);
-  border-bottom: 1px solid rgba(59, 130, 246, 0.15);
+  background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent-blue) 15%, transparent);
   color: var(--accent-blue);
   font-size: 0.8rem;
   animation: slideDown 0.2s ease-out;
@@ -1105,9 +1280,9 @@ const handleRecallEdit = async () => {
 }
 
 .recall-edit-btn {
-  background: rgba(59, 130, 246, 0.15);
+  background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
   color: var(--accent-blue);
-  border: 1px solid rgba(59, 130, 246, 0.3);
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 30%, transparent);
   border-radius: var(--radius-md);
   padding: 4px 12px;
   font-size: 0.75rem;
@@ -1142,7 +1317,7 @@ const handleRecallEdit = async () => {
 
 .recall-dismiss-btn:hover {
   opacity: 1;
-  background: rgba(59, 130, 246, 0.15);
+  background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
 }
 
 .resume-run-bar {
@@ -1150,9 +1325,9 @@ const handleRecallEdit = async () => {
   align-items: center;
   gap: 8px;
   padding: 8px 16px;
-  background: rgba(245, 158, 11, 0.1);
-  border-bottom: 1px solid rgba(245, 158, 11, 0.18);
-  color: var(--accent-yellow);
+  background: var(--glass-bg-light);
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-muted);
   font-size: 0.8rem;
   animation: slideDown 0.2s ease-out;
 }

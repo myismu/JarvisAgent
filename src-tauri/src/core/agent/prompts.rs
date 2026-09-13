@@ -59,12 +59,28 @@ macro_rules! prompt {
 
 // ── 基础规则 ──
 
-fn base_rules() -> Vec<PromptRule> {
-    vec![
+/// 基础规则（所有模式共用）。
+///
+/// 第二步起"只读保护（chat）"已取消，工作模式只有 edit / plan，
+/// 因此写操作/命令执行/任务编排类规则在所有模式下都注入。
+fn base_rules(work_mode: &str) -> Vec<PromptRule> {
+    let mut rules = vec![
         PromptRule::new(PromptLevel::P0Critical, "基础规则", prompt!("base_p0.md")),
         PromptRule::new(PromptLevel::P1Important, "基础规则", prompt!("base_p1.md")),
         PromptRule::new(PromptLevel::P2Reference, "基础规则", prompt!("base_p2.md")),
-    ]
+    ];
+    let _ = work_mode;
+    rules.push(PromptRule::new(
+        PromptLevel::P0Critical,
+        "编辑与审批纪律",
+        prompt!("base_p0_write.md"),
+    ));
+    rules.push(PromptRule::new(
+        PromptLevel::P1Important,
+        "写操作与命令执行",
+        prompt!("base_p1_write.md"),
+    ));
+    rules
 }
 
 // ── Audience 规则 ──
@@ -84,11 +100,6 @@ fn audience_rules(audience: &str) -> Vec<PromptRule> {
 
 fn mode_rules(work_mode: &str) -> Vec<PromptRule> {
     match work_mode {
-        "chat" => vec![
-            PromptRule::new(PromptLevel::P1Important, "当前模式：聊天",
-                prompt!("mode/chat.md"),
-            ),
-        ],
         "plan" => vec![
             PromptRule::new(PromptLevel::P0Critical, "当前模式：规划",
                 prompt!("mode/plan.md"),
@@ -127,11 +138,26 @@ fn sandbox_rules(workspace: &str) -> Vec<PromptRule> {
 
 // ── 组装入口 ──
 
-pub fn get_system_prompt(audience: &str, work_mode: &str) -> String {
+pub fn get_system_prompt(
+    audience: &str,
+    work_mode: &str,
+    workspace: Option<&std::path::Path>,
+) -> String {
     let mut rules: Vec<PromptRule> = Vec::new();
-    rules.extend(base_rules());
+    rules.extend(base_rules(work_mode));
     rules.extend(audience_rules(audience));
     rules.extend(mode_rules(work_mode));
+    // 工作目录语义（沙箱规则 / 无沙箱说明）注入到 system：
+    // system 每轮必发且是缓存前缀，放这里不会像以前那样在每条用户消息里重复一遍。
+    if let Some(ws) = workspace {
+        rules.extend(sandbox_rules(&ws.to_string_lossy()));
+    } else {
+        rules.push(PromptRule::new(
+            PromptLevel::P2Reference,
+            "工作目录",
+            "当前会话未绑定工作区（无沙箱限制）：文件操作以进程当前目录为基准，不受沙箱约束。若用户要求针对某个项目工作，先用 SetWorkspace 绑定工作目录。",
+        ));
+    }
     rules.extend(os_rules());
     render_prompt(&rules)
 }
@@ -167,47 +193,52 @@ pub fn get_subagent_system_prompt(cwd: &str, workspace: Option<&str>) -> String 
 
 // ── 独立提示词（不参与组装）──
 
-pub const MEMORY_AGENT_SYSTEM: &str = "你是记忆维护系统。分析对话，决定是否更新用户全局记忆。
+pub const MEMORY_CURATOR_SYSTEM: &str = "你是「全局记忆」的整理者。全局记忆是一份跨会话、跨项目复用的用户档案，会被附加到之后每一轮对话的上下文里，因此必须短小、稳定、零过期信息。
 
-你应该记录（跨项目通用）：
-- 用户身份（名字、角色、职业阶段）
-- 通用偏好（语言、编辑器、代码风格、交互方式）
-- 工作习惯（喜欢先看方案再执行、偏好简洁回复等）
-- 技术栈偏好（常用语言、框架倾向）
-- 长期有效的环境信息（操作系统、常用工具路径）
+你的职责只有整理：合并同类项、删除过期与不合格条目、压缩冗余表述。不要新增当前记忆里没有依据的事实。
 
-绝对不要记录（这些属于当前会话/项目，会话结束时自然丢弃）：
-- 当前项目的技术栈和端口号
-- 当前任务的进度和状态
-- 某个具体文件的路径或内容
-- 当前 bug 的修复过程
-- 任何只在本次会话中有意义的临时信息
+## 保留标准
+一条信息必须同时满足三条才可保留：
+1. 跨会话：下个月开新会话依然成立
+2. 跨项目：换个仓库、换个任务依然成立
+3. 影响协作：它会改变你之后怎么配合用户（怎么说话、怎么动手、怎么取舍）
+三条缺一，就删掉。
 
-规则:
-1. 只记录跨会话仍然有用的信息
-2. 项目相关的一律跳过（存 session_memory 即可）
-3. 不确定时宁可少记，不要多记
-4. 有新信息时更新记忆
-2. 生成更新后的完整 Markdown 内容
-3. 无新信息则不操作
-4. 通过 update_memory 工具提交更新
+例外：用户明确要求「记住」的档案信息（年龄、籍贯、学历、所在地、经历、求职或学习方向等）不受第 3 条约束，必须保留——用户主动交代的档案本身就是该记的东西。
+
+## 应保留的内容
+- 身份：称呼、角色、职业阶段、学历、籍贯、所在地
+- 交互偏好：语言、语气、详略程度、是否要先给方案再动手
+- 工程偏好：常用语言与框架倾向、代码风格、依赖与工具取舍
+- 审美与设计倾向
+- 稳定环境事实：操作系统、默认 shell、路径书写习惯（仅当它直接决定你怎么干活）
+
+## 必须删除
+- 任何「当前/最近/正在进行」的任务状态：当前项目、当前任务、当前 bug、当前分支、当前进度（用户明确要求长期记住的求职/学习方向不在此列，应放进「身份」或「环境」）
+- 会随时间失效的配置：正在使用的模型名、API 提供商、端口、版本号、订阅或额度状态
+- 具体文件路径、目录结构、代码片段、命令输出
+- 某次对话里临时提出的要求
+- 与本机或宿主应用有关的琐事，除非它直接改变你的行为
+- 重复或同义的条目（合并成一条，不要并列保留）
+
+## 固定结构
+按下面五节输出，不要自创小节；某节为空就整节省略：
+# Global Memory
+## 身份
+## 交互偏好
+## 工程偏好
+## 审美偏好
+## 环境
+
+## 长度预算
+- 每节最多 5 条，每条一行、不超过 40 字，写结论不写解释
+- 全文控制在 1000 字以内
+- 越影响协作的条目越靠前；超出预算时按 身份 > 交互偏好 > 工程偏好 > 审美偏好 > 环境 的优先级合并或删除
+
+## 输出
+只输出整理后的完整 Markdown 文件内容。不要解释、不要加代码块围栏、不要保留「(暂无记录)」这类占位文本。
 ";
 
-pub const INTENT_CLASSIFIER_PROMPT_LIGHT: &str = r#"
-Classify user intent into one category as JSON:
-{"category": "CODE_READ|CODE_WRITE|CODE_REVIEW|TASK_EXECUTE|TASK_PLAN|TASK_CONTINUE|QUESTION|MEMORY_QUERY|SETTINGS|CHAT|DANGEROUS", "reasoning": "short why"}
-
-Routing rules:
-- DANGEROUS takes priority for destructive local actions such as deleting many files, rm -rf, formatting disks, dropping databases.
-- CODE_READ/CODE_WRITE/CODE_REVIEW/TASK_EXECUTE/TASK_PLAN are for local files, code, software projects, commands, apps, websites, repos, databases, or other computer operations.
-- Everyday requests such as writing an email, polishing copy, translating, summarizing pasted text, brainstorming, roleplay, or casual conversation are CHAT unless they clearly require local file/project tools.
-- Knowledge questions, comparisons, explanations, and "how do I..." questions are QUESTION.
-- MEMORY_QUERY is only for asking about prior conversation, saved memory, or something said earlier.
-- SETTINGS is only for changing this app's configuration, model, theme, or preferences.
-- Short replies like "继续"/"好的"/"yes" are TASK_CONTINUE if a task is active in context, otherwise CHAT.
-- If the input is understandable but not tool-related, prefer CHAT or QUESTION over UNCLEAR.
-Return JSON only.
-"#;
 
 #[cfg(test)]
 mod debug_tests {
@@ -215,7 +246,7 @@ mod debug_tests {
 
     #[test]
     fn save_developer_edit_prompt() {
-        let prompt = get_system_prompt("developer", "edit");
+        let prompt = get_system_prompt("developer", "edit", None);
         let out_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("doc");
         std::fs::write(out_dir.join("assembled_prompt_developer_edit.txt"), prompt)
             .expect("failed to write");
@@ -229,7 +260,7 @@ mod tests {
     use super::*;
 
     fn developer_edit_prompt() -> String {
-        get_system_prompt("developer", "edit")
+        get_system_prompt("developer", "edit", None)
     }
 
     // ── 级别标签不重复 ──
@@ -255,29 +286,57 @@ mod tests {
     // ── 模式不交叉污染 ──
 
     #[test]
-    fn edit_rules_not_in_chat_prompt() {
-        let chat = get_system_prompt("developer", "chat");
-        assert!(!chat.contains("委派规范"));
-        assert!(!chat.contains("复杂任务流程"));
-        assert!(!chat.contains("先判断复杂度"));
-    }
-
-    #[test]
-    fn chat_is_read_only() {
-        let chat = get_system_prompt("user", "chat");
-        assert!(chat.contains("只读"));
-        assert!(chat.contains("不能修改"));
+    fn edit_prompt_keeps_write_and_orchestration_rules() {
+        let edit = developer_edit_prompt();
+        for needle in [
+            "编辑纪律",
+            "压缩文件处理",
+            "工具选择指南 — 写操作与命令执行",
+            "SwitchWorkMode",
+            "UpdateTodos",
+        ] {
+            assert!(
+                edit.contains(needle),
+                "编辑模式的系统提示词应包含「{}」",
+                needle
+            );
+        }
     }
 
     // ── 规则不为空 ──
 
     #[test]
     fn base_rules_not_empty() {
-        let rules = base_rules();
-        assert_eq!(rules.len(), 3, "base should have P0, P1, P2 rules");
-        for rule in &rules {
-            assert!(!rule.body.trim().is_empty(), "Rule '{}' has empty body", rule.title);
+        for (mode, expected) in [("edit", 5), ("plan", 5)] {
+            let rules = base_rules(mode);
+            assert_eq!(rules.len(), expected, "base({}) rule count", mode);
+            for rule in &rules {
+                assert!(!rule.body.trim().is_empty(), "Rule '{}' has empty body", rule.title);
+            }
         }
+    }
+
+    // ── 静态纪律与沙箱语义的落点 ──
+
+    #[test]
+    fn discipline_rules_live_in_system_prompt() {
+        // 这两条以前重复塞在每条用户消息的 ctx 里，现在只出现一次、且在最权威的位置
+        let prompt = developer_edit_prompt();
+        assert!(prompt.contains("探索与审批纪律"));
+        assert!(prompt.contains("ProposePlan 提交方案"));
+    }
+
+    #[test]
+    fn sandbox_rules_only_when_workspace_bound() {
+        let with_ws =
+            get_system_prompt("developer", "edit", Some(std::path::Path::new("E:\\proj")));
+        assert!(with_ws.contains("当前工作目录已锁定为沙箱"));
+        assert!(with_ws.contains("E:\\proj"));
+        assert!(with_ws.contains("禁止使用 cd"));
+
+        let without = get_system_prompt("developer", "edit", None);
+        assert!(!without.contains("当前工作目录已锁定为沙箱"));
+        assert!(without.contains("未绑定工作区"));
     }
 
     // ── 文件存在性 ──
@@ -286,13 +345,14 @@ mod tests {
     fn all_prompt_files_exist() {
         let files: &[&str] = &[
             "prompts/base_p0.md",
+            "prompts/base_p0_write.md",
             "prompts/base_p1.md",
+            "prompts/base_p1_write.md",
             "prompts/base_p2.md",
             "prompts/audience/user.md",
             "prompts/audience/developer.md",
             "prompts/mode/edit.md",
             "prompts/mode/plan.md",
-            "prompts/mode/chat.md",
             "prompts/os/windows.md",
             "prompts/os/macos.md",
             "prompts/os/linux.md",

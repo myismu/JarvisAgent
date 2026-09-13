@@ -18,10 +18,14 @@
 src/
 ├── main.ts                      # Vue 应用入口，创建 App 并挂载 Pinia
 ├── App.vue                      # 前端主布局与全局弹窗挂载点
+├── monitor-main.ts              # 独立监控页应用入口（monitor.html）
+├── MonitorApp.vue               # 监控页应用根组件
+├── i18n.ts                      # vue-i18n 国际化初始化
 ├── vite-env.d.ts                # Vite 类型声明
 ├── assets/                      # 静态资源与全局样式
 ├── components/                  # Vue 组件，按功能域拆分
 ├── composables/                 # 可复用组合式逻辑
+├── locales/                     # 语言包（zh-CN.json / en-US.json）
 ├── stores/                      # Pinia 状态管理
 ├── services/                    # 前端服务封装，主要包装 Tauri invoke
 ├── types/                       # 前端共享类型定义
@@ -33,8 +37,12 @@ src/
 ```text
 src/
 ├── main.ts
-└── App.vue
+├── App.vue
+├── monitor-main.ts
+└── MonitorApp.vue
 ```
+
+> Vite 配置了双入口（`vite.config.ts`）：`index.html` + `main.ts` 为主应用（AI 助手界面），`monitor.html` + `monitor-main.ts` + `MonitorApp.vue` 为独立监控页应用。
 
 ### `main.ts`
 
@@ -95,6 +103,7 @@ components/
 ├── chat/                        # 聊天、输入、Agent 执行展示组件
 ├── common/                      # 通用弹窗与确认类组件
 ├── settings/                    # 设置面板
+├── skill/                       # 技能管理与技能市场
 ├── snapshot/                    # 快照展示组件
 └── checkpoint/                  # 检查点展示组件
 ```
@@ -118,11 +127,16 @@ layout/
 chat/
 ├── ChatArea.vue                 # 聊天消息主区域
 ├── TerminalInput.vue            # 用户输入框与发送入口
-├── MessageBubble.vue            # 单条消息气泡
 ├── AgentPanel.vue               # 右侧 Agent 执行流程总面板
 ├── AgentTurn.vue                # 单轮 Agent 回合展示
 ├── ExecutionPanel.vue           # 工具调用、执行日志、结果展示
 ├── ThinkingStatus.vue           # thinking/思考状态展示
+├── TodoPanel.vue                # 待办清单面板
+├── ToolCallGroup.vue            # 工具调用分组展示
+├── PermissionCard.vue           # 权限请求卡片
+├── ContextInspector.vue         # 上下文内容检查器
+├── SessionTaskBoard.vue         # 会话任务看板
+├── AgentSnapshotSection.vue     # Agent 快照区块
 └── WelcomeScreen.vue            # 无会话或初始状态欢迎页
 ```
 
@@ -138,7 +152,7 @@ TerminalInput.vue
 
 常见修改入口：
 
-- 修改消息列表样式：看 `ChatArea.vue`、`MessageBubble.vue`。
+- 修改消息列表样式：看 `ChatArea.vue`。
 - 修改用户输入体验：看 `TerminalInput.vue`。
 - 修改 Agent 执行过程展示：看 `AgentPanel.vue`、`AgentTurn.vue`、`ExecutionPanel.vue`。
 - 修改 thinking 展示：看 `ThinkingStatus.vue`。
@@ -151,7 +165,8 @@ common/
 ├── PermissionModal.vue          # 权限确认弹窗
 ├── PlanPreviewPanel.vue         # 计划/方案审批面板
 ├── ConfirmModal.vue             # 通用确认弹窗
-└── RollbackConfirmModal.vue     # 回滚确认弹窗
+├── RollbackConfirmModal.vue     # 回滚确认弹窗
+└── StreamingMarkdown.vue        # 流式 Markdown 渲染
 ```
 
 职责说明：
@@ -160,6 +175,7 @@ common/
 - `PlanPreviewPanel.vue`：展示 Agent 生成的计划文档，供用户审阅和确认。
 - `ConfirmModal.vue`：通用确认交互组件。
 - `RollbackConfirmModal.vue`：面向检查点/快照回滚的确认组件。
+- `StreamingMarkdown.vue`：流式输出场景下的 Markdown 渲染组件，配合 `utils/markdown.ts` 使用。
 
 涉及危险操作、权限审批、计划审批、回滚确认时优先查看这里以及 `stores/permission.ts`。
 
@@ -203,6 +219,21 @@ checkpoint/
 - 展示会话检查点。
 - 支持用户理解变更历史和回滚点。
 - 回滚确认通常会和 `RollbackConfirmModal.vue` 配合。
+
+### 5.7 技能组件：`components/skill/`
+
+```text
+skill/
+├── SkillManager.vue             # 技能管理面板
+├── SkillMarket.vue              # 技能市场/技能浏览
+├── SkillCard.vue                # 单个技能卡片
+└── SkillDetailPanel.vue         # 技能详情面板
+```
+
+职责说明：
+
+- 展示与查询后端 `list_skills` / `get_skill_detail` 命令返回的技能数据。
+- 与运行期 `data/skills/` 目录中的 `SKILL.md` 元数据对应。
 
 ## 6. 组合式逻辑：`composables/`
 
@@ -264,7 +295,8 @@ stores/
 ├── session.ts                   # 会话视图状态与流式缓冲
 ├── chat.ts                      # 聊天渲染控制与滚动行为
 ├── agent.ts                     # Agent/子 Agent/任务状态
-└── permission.ts                # 权限请求与计划文档状态
+├── permission.ts                # 权限请求与计划文档状态
+└── appView.ts                   # 全局视图状态：面板显隐、侧栏折叠等
 ```
 
 ### `session.ts`
@@ -324,6 +356,13 @@ stores/
 - 保存和展示计划文档、方案审批状态。
 - 与 `PermissionModal.vue`、`PlanPreviewPanel.vue` 配合。
 
+### `appView.ts`
+
+职责：
+
+- 维护跨组件共享的视图/界面状态（如面板显隐、侧栏折叠、视图切换）。
+- 与 `usePreferences.ts` 配合，将视图偏好持久化到本地。
+
 ## 8. 服务封装：`services/`
 
 ```text
@@ -360,6 +399,7 @@ utils/
 ├── agentTurnState.ts            # 单轮 Agent 状态更新
 ├── agentTurnRender.ts           # Agent 回合渲染辅助
 ├── historyRender.ts             # 会话历史渲染辅助
+├── toolDisplay.ts               # 工具调用分组与展示摘要
 ├── markdown.ts                  # Markdown 转 HTML/渲染辅助
 ├── timeline.ts                  # 时间线数据处理
 └── html.ts                      # HTML 字符串处理辅助
@@ -387,6 +427,13 @@ utils/
 
 - 处理会话历史消息的 HTML/展示结构。
 - 用于恢复历史会话或追加历史消息。
+
+### `toolDisplay.ts`
+
+职责：
+
+- 将后端工具调用事件聚合为分组展示结构。
+- 生成工具调用的展示摘要，供 `AgentTurn.vue`、`ExecutionPanel.vue`、`ToolCallGroup.vue` 使用。
 
 ### `markdown.ts`
 
@@ -466,13 +513,15 @@ SnapshotTimeline.vue / CheckpointTimeline.vue
 | 修改整体布局 | `App.vue` |
 | 修改顶部标题栏 | `components/layout/TitleBar.vue` |
 | 修改左侧栏 | `components/layout/Sidebar.vue` |
-| 修改聊天列表 | `components/chat/ChatArea.vue`、`components/chat/MessageBubble.vue` |
+| 修改聊天列表 | `components/chat/ChatArea.vue` |
 | 修改输入框 | `components/chat/TerminalInput.vue` |
 | 修改 Agent 执行面板 | `components/chat/AgentPanel.vue`、`components/chat/AgentTurn.vue`、`components/chat/ExecutionPanel.vue` |
 | 修改 thinking 展示 | `components/chat/ThinkingStatus.vue` |
 | 修改权限弹窗 | `components/common/PermissionModal.vue`、`stores/permission.ts` |
 | 修改计划审批面板 | `components/common/PlanPreviewPanel.vue`、`stores/permission.ts` |
 | 修改设置面板 | `components/settings/SettingsPanel.vue` |
+| 修改技能管理 | `components/skill/` |
+| 修改视图/面板显隐 | `stores/appView.ts`、`composables/usePreferences.ts` |
 | 修改快照展示 | `components/snapshot/`、`services/snapshotService.ts` |
 | 修改检查点展示 | `components/checkpoint/CheckpointTimeline.vue` |
 | 修改后端事件处理 | `composables/useAgentEvents.ts` |
@@ -494,6 +543,7 @@ SnapshotTimeline.vue / CheckpointTimeline.vue
 6. 如果涉及 UI 主题，不要在组件中硬编码颜色，优先使用 `assets/global.css` 中的变量。
 7. 如果新增组件，应放到对应功能域目录，而不是直接堆在 `components/` 根目录。
 8. 如果新增可复用逻辑，应优先放到 `composables/` 或 `utils/`，避免复制到多个组件。
+9. 如果涉及面板显隐、侧栏折叠等视图状态，优先检查 `stores/appView.ts`，不要散落在多个组件。
 
 ## 14. 推荐阅读顺序
 

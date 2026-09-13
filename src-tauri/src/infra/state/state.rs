@@ -62,6 +62,32 @@ pub struct PendingSnapshotPatch {
     pub trigger_user_message_id: Option<String>,
 }
 
+/// 本会话已允许的范围（用户点过"本次会话都允许"）
+///
+/// 粒度 = 工具 + 范围：
+/// - 文件类工具：范围 = 目标所在目录（"允许在此目录里删除文件"）
+/// - 命令类工具：范围 = 命令指纹（同一条命令不再重复问，换命令会重新问）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionAllowance {
+    pub tool: String,
+    pub scope: String,
+    /// 展示给用户看的说明（弹窗与"已允许"面板共用）
+    pub label: String,
+}
+
+/// 一条等待用户决策的权限请求
+pub struct PendingPermission {
+    pub created_at: std::time::Instant,
+    /// 展示给用户的文案
+    pub message: String,
+    /// 请求来源（工具确认 / 循环续跑确认 / 方案审批），决定前端能提供哪些按钮
+    pub kind: crate::core::tools::framework::permission::PermissionKind,
+    /// 决策发送端（结构化决策，不是字符串）
+    pub responder: tokio::sync::oneshot::Sender<
+        crate::core::tools::framework::permission::PermissionDecision,
+    >,
+}
+
 pub struct SessionContext {
     pub id: String,
     pub memory: Mutex<SessionMemory>,
@@ -69,15 +95,18 @@ pub struct SessionContext {
     pub active_run_id: Mutex<Option<String>>,
     pub todos: Mutex<Vec<crate::infra::types::models::TodoItem>>,
     pub workspace: Mutex<Option<std::path::PathBuf>>,
-    pub session_allowed: Mutex<bool>,
-    pub pending_permissions: Mutex<HashMap<String, (std::time::Instant, String, tokio::sync::oneshot::Sender<String>)>>,
+    /// 待用户决策的权限请求。
+    /// 发送端传的是结构化的 `PermissionDecision`，不是字符串——
+    /// "用户拒绝"和"没等到结论"必须能区分（详见 framework::permission）
+    pub pending_permissions: Mutex<HashMap<String, PendingPermission>>,
     pub pending_patches: Mutex<Vec<PendingSnapshotPatch>>,
     pub pending_plan_state: Mutex<HashMap<String, PendingPlanCacheEntry>>,
-    /// 统一去重缓存：category → (key → entry)，替代分散的 compact/dream/skill/subagent 缓存
+    /// 统一去重缓存：category → (key → entry)，替代原先分散的 compact / consolidate / skill / subagent 缓存
     pub dedupe_cache: Mutex<HashMap<String, HashMap<String, ToolDedupeCacheEntry>>>,
     /// 用户类型（"user" / "developer"），只有用户手动切换
     pub agent_audience: Mutex<String>,
-    /// 工作模式（"chat" / "edit" / "plan"），用户可手动切换，Edit 下 Agent 可自动切 Plan
+    /// 工作模式（"edit" / "plan"）——用户可手动切换，Edit 下 Agent 可自动切 Plan。
+    /// 权限档位（问得多严）另存于 `approval_mode`。
     pub agent_work_mode: Mutex<String>,
     /// 调度器事件接收端（异步模式）：RunSubagentsSequentially 存，pipeline 取
     pub scheduler_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::core::orchestration::scheduler::SchedulerEvent>>>,
@@ -88,6 +117,13 @@ pub struct SessionContext {
     /// 工具调用的结构化标志 (break_loop, is_error)，按工具名索引
     /// 由 dispatch_tool_call 写入，tools_runner 读取后清除
     pub tool_result_flags: Mutex<HashMap<String, (bool, bool)>>,
+    /// 权限判定的"本轮"状态（本轮改过哪些文件）——给批量规则用
+    pub permission_turn:
+        Mutex<crate::core::tools::framework::policy_guard::PermissionTurnState>,
+    /// 权限档位："request_approval"（请求审批，默认）/ "auto_approve"（帮我批准）
+    pub approval_mode: Mutex<String>,
+    /// 本会话已允许的范围（内存态，会话结束即失效）
+    pub session_allowances: Mutex<Vec<SessionAllowance>>,
 }
 
 impl SessionContext {
@@ -99,7 +135,6 @@ impl SessionContext {
             active_run_id: Mutex::new(None),
             todos: Mutex::new(Vec::new()),
             workspace: Mutex::new(None),
-            session_allowed: Mutex::new(false),
             pending_permissions: Mutex::new(HashMap::new()),
             pending_patches: Mutex::new(Vec::new()),
             pending_plan_state: Mutex::new(HashMap::new()),
@@ -110,6 +145,9 @@ impl SessionContext {
             read_file_paths: Mutex::new(Vec::new()),
             loop_continuation_pending: Mutex::new(false),
             tool_result_flags: Mutex::new(HashMap::new()),
+            permission_turn: Mutex::new(Default::default()),
+            approval_mode: Mutex::new("request_approval".to_string()),
+            session_allowances: Mutex::new(Vec::new()),
         }
     }
 }

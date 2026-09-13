@@ -143,26 +143,21 @@ impl AgentTurnSnapshot {
     }
 }
 
-/// 去除注入的动态上下文前缀，只保留用户原始输入
-fn clean_user_text(value: &str) -> String {
-    if let Some(pos) = value.find("[User Input]:") {
-        value[pos + 13..].trim().to_string()
-    } else {
-        value.trim().to_string()
-    }
-}
-
+/// 提取用户消息的展示文本。
+///
+/// 只取真实 Text 块；动态上下文是独立的 Context 块（工作目录 / 项目结构 /
+/// 全局记忆），属于发给模型的运行时信息，不进 UI。
 fn user_display_content(content: &Content) -> String {
     match content {
-        Content::Single(s) => clean_user_text(s),
+        Content::Single(s) => s.trim().to_string(),
         Content::Multiple(blocks) => {
             let mut parts = String::new();
             for block in blocks {
                 match block {
                     ContentBlock::Text { text } => {
-                        let t = clean_user_text(text);
+                        let t = text.trim();
                         if !t.is_empty() {
-                            parts.push_str(&t);
+                            parts.push_str(t);
                             parts.push('\n');
                         }
                     }

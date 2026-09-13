@@ -129,6 +129,125 @@ fn reasoning_content_from_thinking(thinking: &str) -> serde_json::Value {
     serde_json::Value::String(thinking.to_string())
 }
 
+/// 摘掉所有内部 `Context` 块，返回一份新的消息列表。
+///
+/// 用于不需要运行时上下文的场景：历史摘要、标题生成、开发视图等——
+/// ctx 里塞着工作目录 / repo map / 全局记忆，混进去只会白烧 token。
+pub fn strip_context_blocks(messages: &[Message]) -> Vec<Message> {
+    messages
+        .iter()
+        .map(|msg| {
+            if let Message::User {
+                content: Content::Multiple(blocks),
+            } = msg
+            {
+                let kept: Vec<ContentBlock> = blocks
+                    .iter()
+                    .filter(|b| !matches!(b, ContentBlock::Context { .. }))
+                    .cloned()
+                    .collect();
+                if kept.len() == 1 {
+                    if let ContentBlock::Text { text } = &kept[0] {
+                        return Message::User {
+                            content: Content::Single(text.clone()),
+                        };
+                    }
+                }
+                return Message::User {
+                    content: Content::Multiple(kept),
+                };
+            }
+            msg.clone()
+        })
+        .collect()
+}
+
+/// Anthropic 出口专用：丢弃 `signature` 为空的 thinking 块，返回一份新的消息列表。
+///
+/// OpenAI 格式模型（DeepSeek 等）的 reasoning 会被流解析器合成为
+/// `Thinking { signature: "" }`。这种块回传给 Anthropic 会被直接判 400
+/// （thinking 块必须携带服务商签发的原始 signature），所以跨模型复用同一条会话时，
+/// 必须在出网前把它摘掉。
+///
+/// 代价只是这一轮的思考链不再回传（推理连续性弱一点），对话正确性不受影响。
+/// 若整条 assistant 消息摘完只剩空，就整条丢弃——Anthropic 不接受空 content。
+pub fn strip_unsigned_thinking_for_anthropic(messages: &[Message]) -> Vec<Message> {
+    messages
+        .iter()
+        .filter_map(|msg| {
+            let Message::Assistant {
+                content: Content::Multiple(blocks),
+            } = msg
+            else {
+                return Some(msg.clone());
+            };
+
+            let unsigned = |b: &ContentBlock| {
+                matches!(b, ContentBlock::Thinking { signature, .. } if signature.is_empty())
+            };
+            if !blocks.iter().any(unsigned) {
+                return Some(msg.clone());
+            }
+
+            let kept: Vec<ContentBlock> = blocks.iter().filter(|b| !unsigned(b)).cloned().collect();
+            if kept.is_empty() {
+                return None;
+            }
+            if kept.len() == 1 {
+                if let ContentBlock::Text { text } = &kept[0] {
+                    return Some(Message::Assistant {
+                        content: Content::Single(text.clone()),
+                    });
+                }
+            }
+            Some(Message::Assistant {
+                content: Content::Multiple(kept),
+            })
+        })
+        .collect()
+}
+
+/// 出网前的最后一道翻译 + 防御。
+///
+/// `Context` 块是 JarvisAgent 内部类型（意图标签 / 工作目录 / 项目结构 / 全局记忆），
+/// Anthropic 与 OpenAI 协议都没有这个类型，原样序列化出去会直接 400。
+/// 所以构造请求体的最后一步，必须把它降级成普通 `Text` 块。
+///
+/// 降级后若仍残留 `Context` 块，说明有新的调用路径绕过了这里，直接 panic：
+/// 宁可本地炸掉，也不要静默把非法字段发给模型服务商。
+pub fn materialize_context_blocks_for_wire(messages: &mut [Message]) {
+    for msg in messages.iter_mut() {
+        let Message::User {
+            content: Content::Multiple(blocks),
+        } = msg
+        else {
+            continue;
+        };
+        for block in blocks.iter_mut() {
+            if let ContentBlock::Context { text } = block {
+                *block = ContentBlock::Text {
+                    text: std::mem::take(text),
+                };
+            }
+        }
+    }
+
+    for msg in messages.iter() {
+        let Message::User {
+            content: Content::Multiple(blocks),
+        } = msg
+        else {
+            continue;
+        };
+        assert!(
+            !blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Context { .. })),
+            "Context 块未在出网前翻译成 Text，这会把非法协议字段发给模型服务商"
+        );
+    }
+}
+
 /// 将 Anthropic 消息格式转换为 OpenAI 格式
 pub fn translate_messages_to_openai(system: &str, messages: &[Message]) -> Vec<OpenAIMessage> {
     translate_messages_to_openai_with_reasoning_backfill(system, messages, false)
@@ -189,6 +308,12 @@ pub fn translate_messages_to_openai_with_reasoning_backfill(
                                     content: content.clone(),
                                     tool_call_id: tool_use_id.clone(),
                                 });
+                            }
+                            ContentBlock::Context { text } => {
+                                // 正常路径下 Context 已在出网前被 materialize 成 Text，
+                                // 这里兜底，防止其它调用方漏翻译时静默丢内容
+                                text_parts.push(text.clone());
+                                content_parts.push(OpenAIContentPart::Text { text: text.clone() });
                             }
                             _ => {}
                         }
@@ -313,4 +438,154 @@ pub fn translate_tools_to_openai(tools: &[serde_json::Value]) -> Vec<OpenAITool>
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infra::types::models::{Content, ContentBlock, Message};
+
+    fn user_with_ctx(ctx_text: &str, user_text: &str) -> Message {
+        Message::User {
+            content: Content::Multiple(vec![
+                ContentBlock::Context {
+                    text: ctx_text.to_string(),
+                },
+                ContentBlock::Text {
+                    text: user_text.to_string(),
+                },
+            ]),
+        }
+    }
+
+    #[test]
+    fn materialize_turns_context_into_plain_text_for_anthropic() {
+        let mut messages = vec![user_with_ctx("工作目录: E:\\x", "帮我看看这个 bug")];
+        materialize_context_blocks_for_wire(&mut messages);
+
+        let json = serde_json::to_value(&messages[0]).unwrap();
+        let blocks = json["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "工作目录: E:\\x");
+        assert_eq!(blocks[1]["type"], "text");
+        assert_eq!(blocks[1]["text"], "帮我看看这个 bug");
+    }
+
+    #[test]
+    fn materialize_keeps_the_two_turns_byte_identical() {
+        // prompt cache 的前提：上一轮的 Context 块必须原样出现在下一轮请求里
+        let mut first = vec![user_with_ctx("项目结构: src/", "第一问")];
+        materialize_context_blocks_for_wire(&mut first);
+        let wire_first = serde_json::to_string(&first).unwrap();
+
+        let mut second = vec![
+            user_with_ctx("项目结构: src/", "第一问"),
+            Message::User {
+                content: Content::Single("第二问".to_string()),
+            },
+        ];
+        materialize_context_blocks_for_wire(&mut second);
+        let wire_second = serde_json::to_string(&second).unwrap();
+
+        assert!(
+            wire_second.starts_with(&wire_first[..wire_first.len() - 2]),
+            "第二轮请求没有原样复现上一轮的 user 消息前缀：\n{}\n{}",
+            wire_first,
+            wire_second
+        );
+    }
+
+    #[test]
+    fn strip_context_blocks_keeps_only_real_conversation() {
+        let messages = vec![
+            user_with_ctx("工作目录: E:\\x", "第一句"),
+            Message::User {
+                content: Content::Single("第二句".to_string()),
+            },
+        ];
+        let stripped = strip_context_blocks(&messages);
+
+        assert_eq!(stripped.len(), 2);
+        assert!(matches!(
+            &stripped[0],
+            Message::User {
+                content: Content::Single(t)
+            } if t == "第一句"
+        ));
+        assert!(matches!(
+            &stripped[1],
+            Message::User {
+                content: Content::Single(t)
+            } if t == "第二句"
+        ));
+        assert!(!serde_json::to_string(&stripped).unwrap().contains("context"));
+    }
+
+    #[test]
+    fn openai_translation_keeps_context_as_text() {
+        let messages = vec![user_with_ctx("项目结构: src/", "改一下这里")];
+        let openai_msgs = translate_messages_to_openai("sys", &messages);
+        let json = serde_json::to_string(&openai_msgs).unwrap();
+
+        assert!(json.contains("项目结构: src/"));
+        assert!(json.contains("改一下这里"));
+        assert!(!json.contains("context"));
+    }
+
+    #[test]
+    fn strip_unsigned_thinking_drops_empty_signature_blocks() {
+        let signed = |signature: &str| Message::Assistant {
+            content: Content::Multiple(vec![
+                ContentBlock::Thinking {
+                    thinking: "想一下".to_string(),
+                    signature: signature.to_string(),
+                },
+                ContentBlock::Text {
+                    text: "回答".to_string(),
+                },
+            ]),
+        };
+        let stripped = strip_unsigned_thinking_for_anthropic(&[signed(""), signed("sig-123")]);
+
+        assert_eq!(stripped.len(), 2);
+        let first = serde_json::to_string(&stripped[0]).unwrap();
+        assert!(!first.contains("thinking"));
+        assert!(first.contains("回答"));
+        assert!(serde_json::to_string(&stripped[1]).unwrap().contains("sig-123"));
+    }
+
+    #[test]
+    fn strip_unsigned_thinking_keeps_tool_use_pairs_intact() {
+        // thinking 被摘掉后 tool_use 必须还在，否则下一条 tool_result 会失去配对
+        let messages = vec![Message::Assistant {
+            content: Content::Multiple(vec![
+                ContentBlock::Thinking {
+                    thinking: "调用工具".to_string(),
+                    signature: String::new(),
+                },
+                ContentBlock::ToolUse {
+                    id: "call_1".to_string(),
+                    name: "ReadFile".to_string(),
+                    input: serde_json::json!({}),
+                },
+            ]),
+        }];
+        let stripped = strip_unsigned_thinking_for_anthropic(&messages);
+        let json = serde_json::to_string(&stripped).unwrap();
+
+        assert!(json.contains("call_1"));
+        assert!(!json.contains("thinking"));
+    }
+
+    #[test]
+    fn strip_unsigned_thinking_drops_message_left_empty() {
+        let messages = vec![Message::Assistant {
+            content: Content::Multiple(vec![ContentBlock::Thinking {
+                thinking: "只有思考块".to_string(),
+                signature: String::new(),
+            }]),
+        }];
+        assert!(strip_unsigned_thinking_for_anthropic(&messages).is_empty());
+    }
 }

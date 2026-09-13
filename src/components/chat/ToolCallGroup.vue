@@ -1,3 +1,11 @@
+<!--
+# ToolCallGroup.vue — 连续工具调用分组
+
+将同一轮中连续的工具调用合并为可折叠分组，降低会话噪音。
+
+## Constraints
+- 状态色：completed=绿，running/error=中性灰
+-->
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
 import type { AgentToolCallView, AgentDisplayMode } from "../../types";
@@ -165,11 +173,11 @@ const technicalOpen = (group: ToolCallGroup) => group.status === "error";
 }
 
 .agent-tool-action-row.error {
-  color: var(--accent-orange);
+  color: var(--text-muted);
 }
 
 .agent-tool-action-row.running {
-  color: var(--accent-yellow);
+  color: var(--text-muted);
 }
 
 .agent-tool-action-summary {
@@ -206,11 +214,11 @@ const technicalOpen = (group: ToolCallGroup) => group.status === "error";
 }
 
 .agent-tool-child-row.error {
-  color: var(--accent-orange);
+  color: var(--text-muted);
 }
 
 .agent-tool-child-row.running {
-  color: var(--accent-yellow);
+  color: var(--text-muted);
 }
 
 .agent-tool-child-row code {

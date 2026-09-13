@@ -1,3 +1,14 @@
+<!--
+# CheckpointTimeline.vue — 检查点时间线
+
+列出会话检查点，支持查看详情与回滚到指定检查点。
+
+## Dependencies
+- External: `@tauri-apps/api/core`
+
+## Constraints
+- 回滚为危险操作：确认按钮用红，提示文字用中性灰
+-->
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
@@ -338,7 +349,7 @@ onUnmounted(() => {
   padding: 8px 12px;
   color: var(--accent-red);
   font-size: 0.8rem;
-  background: rgba(239, 68, 68, 0.1);
+  background: color-mix(in srgb, var(--accent-red) 10%, transparent);
   border-radius: var(--radius-md);
   margin: 0 12px;
 }
@@ -412,7 +423,7 @@ onUnmounted(() => {
 .checkpoint-ops-count {
   font-size: 0.7rem;
   color: var(--accent-blue);
-  background: rgba(59, 130, 246, 0.1);
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
   padding: 2px 6px;
   border-radius: 10px;
   flex-shrink: 0;
@@ -486,23 +497,23 @@ onUnmounted(() => {
 }
 
 .rollback-btn {
-  background: rgba(239, 68, 68, 0.1);
+  background: color-mix(in srgb, var(--accent-red) 10%, transparent);
   color: var(--accent-red);
-  border-color: rgba(239, 68, 68, 0.2);
+  border-color: color-mix(in srgb, var(--accent-red) 20%, transparent);
 }
 
 .rollback-btn:hover {
-  background: rgba(239, 68, 68, 0.2);
+  background: color-mix(in srgb, var(--accent-red) 20%, transparent);
 }
 
 .branch-btn {
-  background: rgba(59, 130, 246, 0.1);
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
   color: var(--accent-blue);
-  border-color: rgba(59, 130, 246, 0.2);
+  border-color: color-mix(in srgb, var(--accent-blue) 20%, transparent);
 }
 
 .branch-btn:hover {
-  background: rgba(59, 130, 246, 0.2);
+  background: color-mix(in srgb, var(--accent-blue) 20%, transparent);
 }
 
 .rollback-modal-overlay {
@@ -542,7 +553,7 @@ onUnmounted(() => {
 }
 
 .rollback-warning {
-  color: var(--accent-yellow) !important;
+  color: var(--text-muted) !important;
   font-size: 0.85rem !important;
 }
 

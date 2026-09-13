@@ -1,3 +1,11 @@
+<!--
+# StreamingMarkdown.vue — 流式 Markdown 渲染组件
+
+将 Agent 输出的 Markdown 增量渲染为 HTML，含代码块、引用块等样式。
+
+## Constraints
+- 内容样式保持中性灰阶；语义色仅用于真实错误内容
+-->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { marked } from 'marked';
@@ -332,11 +340,11 @@ function renderTableCell(cell: any): string {
   -webkit-backdrop-filter: blur(8px);
 }
 
-/* 错误信息样式：红色主题 */
+/* 引用块（含加粗标题的提示块）：中性灰 */
 .md-blockquote:has(strong) {
-  border-left-color: var(--accent-red);
-  background: color-mix(in srgb, var(--accent-red) 8%, transparent);
-  color: var(--accent-red);
+  border-left-color: var(--text-muted);
+  background: var(--glass-bg-light);
+  color: var(--text-soft);
 }
 
 .md-blockquote :deep(p) {

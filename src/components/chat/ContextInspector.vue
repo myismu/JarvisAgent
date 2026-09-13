@@ -39,10 +39,10 @@ interface SectionView extends ContextSectionSnapshot {
 
 const palette = [
   'var(--accent-blue)',
-  'var(--accent-green)',
-  '#8b5cf6',
-  'var(--accent-yellow)',
-  'var(--accent-red)',
+  'color-mix(in srgb, var(--accent-blue) 60%, var(--text-muted))',
+  'color-mix(in srgb, var(--accent-blue) 35%, var(--text-muted))',
+  'color-mix(in srgb, var(--text-muted) 75%, transparent)',
+  'color-mix(in srgb, var(--text-muted) 50%, transparent)',
   'var(--text-muted)',
 ];
 
@@ -77,7 +77,6 @@ const methodLabel = (method?: string | null): string => {
 };
 
 const totalTokens = computed(() => Math.max(0, props.snapshot?.estimatedTokens || 0));
-const providerInputTokens = computed(() => props.snapshot?.providerInputTokens ?? null);
 const providerTotalTokens = computed(() => props.snapshot?.providerTotalTokens ?? null);
 const maxContextTokens = computed(() => props.snapshot?.maxContextTokens ?? null);
 const contextUsagePercent = computed(() => {
@@ -427,21 +426,15 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   gap: 10px;
   padding: 14px;
   border-radius: 12px;
-  background:
-    radial-gradient(circle at top left, color-mix(in srgb, var(--accent-blue) 22%, transparent), transparent 45%),
-    var(--glass-bg);
+  background: var(--glass-bg);
 }
 
 .context-hero.tone-warning {
-  background:
-    radial-gradient(circle at top left, color-mix(in srgb, var(--accent-yellow) 24%, transparent), transparent 45%),
-    var(--glass-bg);
+  background: color-mix(in srgb, var(--accent-blue) 5%, var(--glass-bg));
 }
 
 .context-hero.tone-critical {
-  background:
-    radial-gradient(circle at top left, color-mix(in srgb, var(--accent-red) 24%, transparent), transparent 45%),
-    var(--glass-bg);
+  background: color-mix(in srgb, var(--accent-red) 6%, var(--glass-bg));
 }
 
 .context-kicker,
@@ -498,12 +491,12 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   white-space: nowrap;
 }
 .compact-btn:hover {
-  color: var(--accent-yellow);
-  border-color: var(--accent-yellow);
+  color: var(--accent-blue);
+  border-color: var(--accent-blue);
 }
 .compact-btn.compact-ready {
-  color: var(--accent-yellow);
-  border-color: color-mix(in srgb, var(--accent-yellow) 50%, transparent);
+  color: var(--accent-blue);
+  border-color: color-mix(in srgb, var(--accent-blue) 50%, transparent);
 }
 .compact-btn.is-compacting {
   color: var(--accent-blue);
@@ -547,14 +540,14 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
 }
 .compact-toast-success {
-  color: #22c55e;
-  background: color-mix(in srgb, #22c55e 14%, var(--surface-strong));
-  border: 1px solid color-mix(in srgb, #22c55e 30%, transparent);
+  color: var(--accent-green);
+  background: color-mix(in srgb, var(--accent-green) 14%, var(--surface-strong));
+  border: 1px solid color-mix(in srgb, var(--accent-green) 30%, transparent);
 }
 .compact-toast-error {
-  color: #ef4444;
-  background: color-mix(in srgb, #ef4444 14%, var(--surface-strong));
-  border: 1px solid color-mix(in srgb, #ef4444 30%, transparent);
+  color: var(--accent-red);
+  background: color-mix(in srgb, var(--accent-red) 14%, var(--surface-strong));
+  border: 1px solid color-mix(in srgb, var(--accent-red) 30%, transparent);
 }
 
 .toast-fade-enter-active,
@@ -578,7 +571,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 }
 
 .tone-warning .context-health {
-  background: color-mix(in srgb, var(--accent-yellow) 22%, transparent);
+  background: color-mix(in srgb, var(--accent-blue) 18%, transparent);
 }
 
 .tone-critical .context-health {

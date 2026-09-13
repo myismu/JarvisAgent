@@ -61,7 +61,6 @@ src/
 │   ├── chat/                    # 聊天与 Agent 执行展示组件
 │   │   ├── ChatArea.vue         # 聊天消息主区域
 │   │   ├── TerminalInput.vue    # 用户输入区
-│   │   ├── MessageBubble.vue    # 单条消息气泡
 │   │   ├── AgentPanel.vue       # Agent 执行流程侧栏
 │   │   ├── AgentTurn.vue        # 单轮 Agent 执行视图
 │   │   ├── ExecutionPanel.vue   # 工具调用/执行详情展示
@@ -155,7 +154,7 @@ infra/
 │   └── data_paths.rs            # data 目录、会话、图片、快照等运行期路径管理
 ├── db/
 │   ├── mod.rs                   # SQLite 连接管理
-│   └── schema.rs                # 20 张表 schema 定义 + 增量迁移
+│   └── schema.rs                # 19 张表 schema 定义 + 增量迁移
 ├── llm/
 │   ├── mod.rs
 │   ├── api_format.rs            # ApiFormat 枚举（认证头、版本头）
@@ -300,12 +299,12 @@ tools/
 │   ├── mod.rs
 │   ├── registry.rs / todo_write.rs
 │   └── persistent/              # 持久化任务（CreateTask / UpdateTask / DeleteTask / …）
-├── search_tools/                # Glob + Grep 搜索（FindFiles / SearchText / CodeSearch）
+├── search_tools/                # Glob + Grep 搜索（FindFiles / SearchText）
 │   └── mod.rs
 ├── notebook_tools/              # Jupyter Notebook 编辑
 │   ├── mod.rs
 │   └── notebook_guard.rs
-├── system_tools/                # 系统信息 + 工作区设置（GetSystemInfo / SetWorkspace）
+├── system_tools/                # 工作区设置（SetWorkspace；OS/CWD/Home 已由提示词自动注入）
 │   └── mod.rs
 └── framework/                   # 工具框架层
     ├── mod.rs                   # ToolCallResult、路由定义等
@@ -409,7 +408,7 @@ src-tauri/src/main.rs
 → jarvisagent_lib::run()
 → src-tauri/src/lib.rs::run()
 → 探测并锁定 data 目录（AGENT_HOME_DIR）
-→ infra::db::init() 初始化 SQLite（20 张表 + 增量迁移）
+→ infra::db::init() 初始化 SQLite（19 张表 + 增量迁移）
 → 恢复工作目录
 → 恢复或创建启动会话
 → tauri::Builder::default()

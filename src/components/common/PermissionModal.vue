@@ -50,8 +50,17 @@ const parsedData = computed(() => {
   return { reason, command };
 });
 
+/// 输入框/可编辑元素里的按键永远是打字，不是快捷键
+function isTypingTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el || !el.tagName) return false;
+  const tag = el.tagName.toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable === true;
+}
+
 const handleKeydown = (e: KeyboardEvent) => {
   if (!perm.permissionRequest) return;
+  if (isTypingTarget(e.target)) return;
   const key = e.key.toLowerCase();
   if (key === 'a') { e.preventDefault(); chat.resolvePermission('allow'); }
   else if (key === 's' && canAllowSession.value) { e.preventDefault(); chat.resolvePermission('allow_session'); }

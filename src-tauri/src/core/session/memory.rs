@@ -4,14 +4,13 @@
 //!
 //! 1. **Token 估算** — tiktoken 精确计算，不可用时退化为 chars/4 估算
 //! 2. **上下文压缩** — 单级 LLM 摘要：接近 token 上限时调模型压缩历史为一段摘要
-//! 3. **记忆系统** — 全局记忆的读写，由记忆 Agent 自动维护
+//! 3. **记忆系统** — 全局记忆的读写；主 Agent 通过记忆工具维护，超预算时后台整理压缩
 
 use crate::infra::types::error::MemoryError;
 use crate::core::agent::prompts::*;
 use crate::infra::llm::api_format::ApiFormat;
 use crate::infra::types::models::*;
 use reqwest::header::CONTENT_TYPE;
-use serde_json::json;
 use std::path::{Path, PathBuf};
 use tauri::Emitter;
 
@@ -44,6 +43,9 @@ pub fn estimate_tokens(messages: &[Message]) -> usize {
                             }
                             ContentBlock::Image { .. } => {
                                 total_image_estimate += 1000;
+                            }
+                            ContentBlock::Context { text } => {
+                                text_buf.push_str(text);
                             }
                         }
                     }
@@ -138,6 +140,9 @@ async fn call_summarize_llm(
     model_id: &str,
     api_format: ApiFormat,
 ) -> Result<String, MemoryError> {
+    // 摘要只需要真实对话：动态上下文（工作目录 / repo map / 全局记忆）整段丢掉，别白烧 token
+    let messages = crate::infra::llm::adapters::strip_context_blocks(messages);
+
     let mut json_content = String::new();
     for msg in messages.iter() {
         if let Ok(m) = serde_json::to_string(msg) {
@@ -435,6 +440,23 @@ pub async fn auto_compact_summary(
 // --- 记忆系统：全局记忆 + 项目记忆 ---
 
 /// 全局记忆文件路径（agent_home/global/global_memory.md）
+/// 全局记忆文件的进程内互斥锁。
+///
+/// 记忆工具是并行执行的（`tools_runner` 用 `tokio::spawn` + `join_all`）。
+/// 一次「读 → 改 → 写」如果不串起来，多个并发调用会各自读到同一份旧内容、
+/// 各自通过 `write_if_unchanged` 的校验，再各自整份覆盖写回——最后一个赢，
+/// 其余条目静默丢失，而每个调用都返回成功。
+///
+/// 约定：持锁期间不得 `await`（当前持锁的都是纯同步逻辑）。
+static MEMORY_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 取得全局记忆文件的锁；锁被 panic 污染时取回内部值，避免连带失败。
+pub fn lock_memory_file() -> std::sync::MutexGuard<'static, ()> {
+    MEMORY_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 pub fn get_global_memory_path() -> PathBuf {
     crate::infra::config::data_paths::global_memory_path()
 }
@@ -457,46 +479,26 @@ fn create_memory_file(path: &Path, header: &str) -> String {
 
 use crate::infra::config::config::AgentConfig;
 
-/// 记忆 Agent：根据最新对话自动更新全局/项目记忆文件
-pub async fn run_memory_agent(app: tauri::AppHandle, user_msg: String, assistant_reply: String, config: AgentConfig, session_id: String) {
-    println!("\n[MEMORY] --- Memory Agent Started ---");
-
-    if config.api_key.is_empty() {
-        return;
-    }
-    let api_key = config.api_key;
-    let base_url = config.base_url;
-    let model_id = config.utility_model; // 记忆 Agent 使用工具模型（更便宜）
-
-    let global_path = get_global_memory_path();
-    let global_content = read_memory_file(&global_path, "Global Memory");
-
-    let user_content = format!(
-        "【当前全局记忆】\n{}\n\n【最新对话】\nUser: {}\nAssistant: {}",
-        global_content, user_msg, assistant_reply
-    );
-
-    let tools = vec![json!({
-        "name": "update_memory",
-        "description": "更新全局记忆文件。",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "content": { "type": "string", "description": "更新后的完整 Markdown 内容" }
-            },
-            "required": ["content"]
-        }
-    })];
-
+/// 调 LLM 重写全局记忆，返回重写后的完整内容。
+///
+/// 不落盘、不发事件：由调用方决定何时写入（并做乐观并发校验）。
+pub async fn rewrite_global_memory(
+    session_id: &str,
+    config: &AgentConfig,
+    system_prompt: &str,
+    user_content: String,
+    log_label: &str,
+) -> Option<String> {
     let client = reqwest::Client::new();
     let request_body = AnthropicRequest {
-        model: model_id.clone(),
+        model: config.utility_model.clone(),
         max_tokens: crate::infra::types::constants::MAX_TOKENS_CONTEXT,
-        system: MEMORY_AGENT_SYSTEM.to_string(),
+        system: system_prompt.to_string(),
         messages: vec![Message::User {
             content: Content::Single(user_content),
         }],
-        tools,
+        // 整理只要求纯文本输出：不带工具，省 token 也省一次 tool_use 解析
+        tools: Vec::new(),
         stream: false,
         thinking: None,
         temperature: config.temperature,
@@ -506,7 +508,7 @@ pub async fn run_memory_agent(app: tauri::AppHandle, user_msg: String, assistant
 
     let api_format = ApiFormat::from_str(&config.api_format);
     let is_openai = api_format.is_openai();
-    let (req_json, _) = match api_format {
+    let req_json = match api_format {
         ApiFormat::OpenAI => {
             use crate::infra::llm::adapters::{
                 translate_messages_to_openai, translate_tools_to_openai,
@@ -516,7 +518,7 @@ pub async fn run_memory_agent(app: tauri::AppHandle, user_msg: String, assistant
                 translate_messages_to_openai(&request_body.system, &request_body.messages);
             let openai_tools = translate_tools_to_openai(&request_body.tools);
             let openai_req = OpenAIRequest {
-                model: model_id.clone(),
+                model: request_body.model.clone(),
                 max_tokens: Some(crate::infra::types::constants::MAX_TOKENS_CONTEXT),
                 messages: openai_msgs,
                 tools: if openai_tools.is_empty() {
@@ -535,18 +537,18 @@ pub async fn run_memory_agent(app: tauri::AppHandle, user_msg: String, assistant
                 temperature: request_body.temperature,
                 top_p: request_body.top_p,
             };
-            (serde_json::to_value(openai_req).unwrap(), true)
+            serde_json::to_value(openai_req).ok()?
         }
-        ApiFormat::Anthropic => (serde_json::to_value(request_body).unwrap(), false),
+        ApiFormat::Anthropic => serde_json::to_value(request_body).ok()?,
     };
 
     let request_json_str = serde_json::to_string_pretty(&req_json).unwrap_or_default();
-    println!("[MEMORY AGENT] request ({} bytes)", request_json_str.len());
-    crate::infra::debug_logger::debug_logger().log_request(&session_id, "MEMORY", 1, &request_json_str);
+    println!("[MEMORY] {} request ({} bytes)", log_label, request_json_str.len());
+    crate::infra::debug_logger::debug_logger().log_request(session_id, "MEMORY", 1, &request_json_str);
 
-    let (auth_header, auth_value) = api_format.auth_header(&api_key);
+    let (auth_header, auth_value) = api_format.auth_header(&config.api_key);
     let mut req = client
-        .post(&base_url)
+        .post(&config.base_url)
         .header(CONTENT_TYPE, "application/json")
         .header(auth_header, &auth_value);
 
@@ -554,67 +556,127 @@ pub async fn run_memory_agent(app: tauri::AppHandle, user_msg: String, assistant
         req = req.header("anthropic-version", "2023-06-01");
     }
 
-    crate::infra::llm::api_client::log_model_request(&model_id, &base_url, "记忆agent");
+    crate::infra::llm::api_client::log_model_request(&config.utility_model, &config.base_url, "记忆整理");
 
-    if let Ok(response) = req.json(&req_json).send().await {
-        if let Ok(body) = response.json::<serde_json::Value>().await {
-            if is_openai {
-                if let Some(choices) = body["choices"].as_array() {
-                    if let Some(first) = choices.first() {
-                        if let Some(tool_calls) = first["message"]["tool_calls"].as_array() {
-                            for tc in tool_calls {
-                                if tc["type"] == "function"
-                                    && tc["function"]["name"] == "update_memory"
-                                {
-                                    if let Some(args_str) = tc["function"]["arguments"].as_str() {
-                                        if let Ok(args_json) =
-                                            serde_json::from_str::<serde_json::Value>(args_str)
-                                        {
-                                            let content =
-                                                args_json["content"].as_str().unwrap_or("");
-                                            if !content.is_empty() {
-                                                println!("[MEMORY] Updating global memory (OpenAI)...");
-                                                let _ = std::fs::write(&global_path, content);
-                                                crate::infra::debug_logger::debug_logger().log_memory(
-                                                    &session_id,
-                                                    &request_json_str,
-                                                    "Updated global memory",
-                                                );
-                                                let _ = app.emit("memory-updated", serde_json::json!({
-                                                    "sessionId": session_id,
-                                                    "summary": "全局记忆已更新",
-                                                }));
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                if let Some(content_array) = body["content"].as_array() {
-                    for block in content_array {
-                        if block["type"] == "tool_use" && block["name"] == "update_memory" {
-                            let content = block["input"]["content"].as_str().unwrap_or("");
-                            if !content.is_empty() {
-                                println!("[MEMORY] Updating global memory (Anthropic)...");
-                                let _ = std::fs::write(&global_path, content);
-                                crate::infra::debug_logger::debug_logger().log_memory(
-                                    &session_id,
-                                    &request_json_str,
-                                    "Updated global memory",
-                                );
-                                let _ = app.emit("memory-updated", serde_json::json!({
-                                    "sessionId": session_id,
-                                    "summary": "全局记忆已更新",
-                                }));
-                            }
-                        }
-                    }
-                }
-            }
+    let body: serde_json::Value = req.json(&req_json).send().await.ok()?.json().await.ok()?;
+
+    let raw_text = if is_openai {
+        body["choices"]
+            .as_array()
+            .and_then(|choices| choices.first())
+            .and_then(|first| first["message"]["content"].as_str())
+            .map(|text| text.to_string())
+    } else {
+        body["content"].as_array().and_then(|blocks| {
+            blocks
+                .iter()
+                .find(|block| block["type"] == "text")
+                .and_then(|block| block["text"].as_str())
+                .map(|text| text.to_string())
+        })
+    }?;
+
+    let cleaned = strip_code_fence(&raw_text);
+    if cleaned.is_empty() {
+        return None;
+    }
+
+    crate::infra::debug_logger::debug_logger().log_memory(session_id, &request_json_str, log_label);
+    Some(cleaned)
+}
+
+/// 去掉模型可能额外加上的 ``` 围栏
+fn strip_code_fence(text: &str) -> String {
+    let trimmed = text.trim();
+    if !trimmed.starts_with("```") {
+        return trimmed.to_string();
+    }
+    let mut lines = trimmed.lines();
+    lines.next();
+    let mut body: Vec<&str> = lines.collect();
+    if let Some(last) = body.last() {
+        if last.trim() == "```" {
+            body.pop();
         }
     }
-    println!("[MEMORY] --- Memory Agent Finished ---");
+    body.join("\n").trim().to_string()
+}
+
+/// 乐观写入：只有当文件内容仍等于 `expected` 时才写入，避免覆盖期间发生的其它修改
+pub fn write_if_unchanged(path: &Path, expected: &str, new_content: &str) -> bool {
+    let current = std::fs::read_to_string(path).unwrap_or_default();
+    if current != expected {
+        return false;
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(path, new_content).is_ok()
+}
+
+/// 全局记忆的当前字符数（用于判断是否该触发整理）
+pub fn global_memory_char_count() -> usize {
+    let _guard = lock_memory_file();
+    std::fs::read_to_string(get_global_memory_path())
+        .map(|content| content.chars().count())
+        .unwrap_or(0)
+}
+
+/// 记忆整理：全局记忆超过阈值时后台全量重写一次。
+///
+/// 不再是「每轮结束都跑一次 LLM」——那样既贵，又会把记忆越滚越乱。
+/// 新增事实由主 Agent 的 UpdateMemory 负责，这里只做合并与压缩。
+///
+/// 与 `ConsolidateMemory` 工具共用 `rewrite_global_memory` + `MEMORY_CURATOR_SYSTEM`，
+/// 区别只在触发时机：这里是记忆超阈值时自动跑，那边是模型主动调。
+pub async fn run_memory_curator(app: tauri::AppHandle, config: AgentConfig, session_id: String) {
+    println!("\n[MEMORY] --- Memory Curator Started ---");
+
+    if config.api_key.is_empty() {
+        return;
+    }
+
+    let path = get_global_memory_path();
+    let original = read_memory_file(&path, "Global Memory");
+    let user_content = format!(
+        "【当前全局记忆】\n{}\n\n【整理要求】\n按系统提示的结构与预算重写这份记忆：合并同类项、删除过期与不合格条目、压缩冗余表述，不要新增没有依据的事实。",
+        original.trim()
+    );
+
+    match rewrite_global_memory(
+        &session_id,
+        &config,
+        MEMORY_CURATOR_SYSTEM,
+        user_content,
+        "curator",
+    )
+    .await
+    {
+        Some(new_content) => {
+            // 持锁重读校验：整理期间若有并发的 UpdateMemory 写入，本轮整理作废（下一轮再来）
+            let written = {
+                let _guard = lock_memory_file();
+                write_if_unchanged(&path, &original, &new_content)
+            };
+            if written {
+                println!(
+                    "[MEMORY] Consolidated: {} -> {} chars",
+                    original.chars().count(),
+                    new_content.chars().count()
+                );
+                let _ = app.emit(
+                    "memory-updated",
+                    serde_json::json!({
+                        "sessionId": session_id,
+                        "summary": "全局记忆已整理",
+                    }),
+                );
+            } else {
+                println!("[MEMORY] Skipped: memory was modified during consolidation");
+            }
+        }
+        None => println!("[MEMORY] Curator returned no content"),
+    }
+
+    println!("[MEMORY] --- Memory Curator Finished ---");
 }

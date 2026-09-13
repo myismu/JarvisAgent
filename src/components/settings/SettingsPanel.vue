@@ -210,13 +210,24 @@
                   <div class="setting-desc">{{ t('settings.general.audienceDesc') }}</div>
                 </div>
                 <div class="setting-item">
-                  <label>{{ t('settings.general.workMode') }}</label>
+                  <label>{{ t('settings.general.approvalMode') }}</label>
                   <div class="display-mode-toggle">
                     <button
                       class="display-mode-btn"
-                      :class="{ active: agentWorkMode === 'chat' }"
-                      @click="setAgentWorkMode('chat')"
-                    >{{ t('settings.general.chat') }}</button>
+                      :class="{ active: agentApprovalMode === 'request_approval' }"
+                      @click="setAgentApprovalMode('request_approval')"
+                    >{{ t('settings.general.request_approval') }}</button>
+                    <button
+                      class="display-mode-btn"
+                      :class="{ active: agentApprovalMode === 'auto_approve' }"
+                      @click="setAgentApprovalMode('auto_approve')"
+                    >{{ t('settings.general.auto_approve') }}</button>
+                  </div>
+                  <div class="setting-desc">{{ t('settings.general.approvalModeDesc') }}</div>
+                </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.general.workMode') }}</label>
+                  <div class="display-mode-toggle">
                     <button
                       class="display-mode-btn"
                       :class="{ active: agentWorkMode === 'edit' }"
@@ -495,6 +506,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { useTheme } from '../../composables/useTheme'
 import { usePreferences, type AgentPanelPosition } from '../../composables/usePreferences'
 import { useWindow } from '../../composables/useWindow'
+import { useSessionStore } from '../../stores/session'
+import type { AgentUserMode, AgentWorkMode } from '../../types'
 import ConfirmModal from '../common/ConfirmModal.vue'
 
 const { t, locale } = useI18n()
@@ -502,10 +515,40 @@ const { t, locale } = useI18n()
 const { isDark, toggleTheme } = useTheme()
 const uiPrefs = usePreferences()
 const { resetWindowStates, notifyMonitorLocaleChanged } = useWindow()
+const session = useSessionStore()
 const agentAudience = uiPrefs.agentAudience
 const setAgentAudience = (val: "user" | "developer") => uiPrefs.setAgentAudience(val)
 const agentWorkMode = uiPrefs.agentWorkMode
-const setAgentWorkMode = (val: "chat" | "edit" | "plan") => uiPrefs.setAgentWorkMode(val)
+const agentApprovalMode = uiPrefs.agentApprovalMode
+
+/**
+ * 工作模式 / 权限档位都要同步到当前会话状态（后端才是事实来源），
+ * 否则界面变了、LLM 仍按旧的模式与权限工作。
+ */
+async function syncSessionWorkMode(mode: AgentWorkMode) {
+  if (!session.activeSessionId) return
+  try {
+    await invoke('set_session_work_mode', { sessionId: session.activeSessionId, mode })
+  } catch (e) {
+    console.error('Failed to sync session work mode:', e)
+  }
+}
+
+const setAgentWorkMode = async (val: AgentUserMode) => {
+  uiPrefs.setAgentWorkMode(val)
+  await syncSessionWorkMode(val)
+}
+
+/** 权限档位：请求审批（改动一律问）/ 帮我批准（只问风险操作） */
+const setAgentApprovalMode = async (val: "request_approval" | "auto_approve") => {
+  uiPrefs.setAgentApprovalMode(val)
+  if (!session.activeSessionId) return
+  try {
+    await invoke('set_session_approval_mode', { sessionId: session.activeSessionId, mode: val })
+  } catch (e) {
+    console.error('Failed to sync session approval mode:', e)
+  }
+}
 const fontSize = computed(() => uiPrefs.fontSize)
 const setFontSize = (val: number) => uiPrefs.setFontSize(val)
 const codeFontSize = computed(() => uiPrefs.codeFontSize)
@@ -1050,7 +1093,7 @@ const save = async () => {
   max-height: 92vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22), var(--glass-shadow);
+  box-shadow: var(--shadow-lg);
   animation: slideIn var(--transition-normal);
   overflow: hidden;
 }
@@ -1130,7 +1173,7 @@ const save = async () => {
 }
 
 .nav-item.active {
-  background: rgba(59, 130, 246, 0.1);
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
   color: var(--accent-blue);
 }
 
@@ -1155,7 +1198,7 @@ const save = async () => {
 .add-btn {
   background: var(--glass-bg-light);
   color: var(--accent-blue);
-  border: 1px solid rgba(59, 130, 246, 0.3);
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 30%, transparent);
   width: 20px;
   height: 20px;
   border-radius: 4px;
@@ -1168,7 +1211,7 @@ const save = async () => {
 }
 
 .add-btn:hover {
-  background: rgba(59, 130, 246, 0.1);
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
   border-color: var(--accent-blue);
 }
 
@@ -1198,7 +1241,7 @@ const save = async () => {
 }
 
 .profile-item.active {
-  background: rgba(59, 130, 246, 0.08);
+  background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
   color: var(--accent-blue);
   font-weight: 500;
 }
@@ -1243,7 +1286,7 @@ const save = async () => {
   border-radius: 50%;
 }
 
-.sidebar-switch input:checked + .slider { background-color: var(--accent-green); }
+.sidebar-switch input:checked + .slider { background-color: var(--accent-blue); }
 .sidebar-switch input:checked + .slider:before { transform: translateX(10px); }
 
 .copy-btn, .delete-btn {
@@ -1390,7 +1433,7 @@ const save = async () => {
 
 .custom-select.open .custom-select-trigger {
   border-color: var(--accent-blue);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 10%, transparent);
 }
 
 .custom-select-trigger svg {
@@ -1452,7 +1495,7 @@ const save = async () => {
 .setting-item input:focus, .setting-item select:focus {
   outline: none;
   border-color: var(--accent-blue);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 10%, transparent);
 }
 
 .setting-desc {
@@ -1490,7 +1533,7 @@ const save = async () => {
   border-color: var(--accent-blue);
   color: var(--accent-blue);
   transform: scale(1.04);
-  box-shadow: 0 0 12px rgba(59, 130, 246, 0.15);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent-blue) 15%, transparent);
 }
 
 .font-size-step:active:not(:disabled) {
@@ -1542,14 +1585,14 @@ const save = async () => {
   border-radius: 50%;
   background: var(--surface-strong);
   border: 2px solid var(--accent-blue);
-  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.25), 0 0 0 4px rgba(59, 130, 246, 0.08);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent-blue) 25%, transparent), 0 0 0 4px color-mix(in srgb, var(--accent-blue) 8%, transparent);
   margin-top: -7px;
   cursor: pointer;
   transition: box-shadow 0.2s ease, transform 0.15s ease;
 }
 
 .font-size-slider::-webkit-slider-thumb:hover {
-  box-shadow: 0 2px 12px rgba(59, 130, 246, 0.4), 0 0 0 6px rgba(59, 130, 246, 0.12);
+  box-shadow: 0 2px 12px color-mix(in srgb, var(--accent-blue) 40%, transparent), 0 0 0 6px color-mix(in srgb, var(--accent-blue) 12%, transparent);
 }
 
 .font-size-slider::-webkit-slider-thumb:active {
@@ -1576,7 +1619,7 @@ const save = async () => {
   border-radius: 50%;
   background: var(--surface-strong);
   border: 2px solid var(--accent-blue);
-  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.25);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent-blue) 25%, transparent);
   cursor: pointer;
 }
 
@@ -1760,9 +1803,9 @@ const save = async () => {
   font-weight: 600;
 }
 
-.badge-ok { background: rgba(16, 185, 129, 0.1); color: var(--accent-green); }
-.badge-think { background: rgba(139, 92, 246, 0.1); color: #a080f0; }
-.badge-info { background: rgba(59, 130, 246, 0.1); color: var(--accent-blue); }
+.badge-ok { background: color-mix(in srgb, var(--accent-green) 10%, transparent); color: var(--accent-green); }
+.badge-think { background: color-mix(in srgb, var(--text-muted) 12%, transparent); color: var(--text-soft); }
+.badge-info { background: color-mix(in srgb, var(--accent-blue) 10%, transparent); color: var(--accent-blue); }
 .badge-none { background: rgba(100, 116, 139, 0.1); color: var(--text-muted); }
 
 .empty-state {

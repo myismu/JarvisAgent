@@ -54,6 +54,7 @@ pub struct AnthropicRequest {
     pub max_tokens: i32,
     pub system: String,
     pub messages: Vec<Message>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<serde_json::Value>,
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -208,6 +209,10 @@ pub enum ContentBlock {
     },
     #[serde(rename = "image")]
     Image { source: ImageSource },
+    /// 运行时上下文（意图标签 / 工作目录 / 项目结构 / 全局记忆）。
+    /// 只在存储和内部表示中存在，出网前由 provider 翻译成普通 text 块。
+    #[serde(rename = "context")]
+    Context { text: String },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

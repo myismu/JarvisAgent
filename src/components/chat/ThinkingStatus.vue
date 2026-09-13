@@ -1,3 +1,11 @@
+<!--
+# ThinkingStatus.vue — 思考中状态行
+
+会话内联的思考状态：旋转 spinner 与计时，支持暂停态展示。
+
+## Constraints
+- 全部使用中性灰阶，不用彩色
+-->
 <script setup lang="ts">
 import { computed } from 'vue';
 
@@ -32,12 +40,11 @@ const formattedTime = computed(() => {
   margin-top: 8px;
 }
 .thinking-inline-status.paused {
-  color: var(--accent-yellow);
+  color: var(--text-muted);
 }
 .thinking-inline-status.paused .thinking-spinner {
-  border-top-color: var(--accent-yellow);
-  border-color: rgba(245, 158, 11, 0.2);
-  border-top-color: var(--accent-yellow);
+  border-color: var(--glass-border);
+  border-top-color: var(--text-muted);
   animation-play-state: paused;
 }
 .thinking-paused-label {
@@ -47,7 +54,7 @@ const formattedTime = computed(() => {
 .thinking-spinner {
   width: 12px;
   height: 12px;
-  border: 2px solid rgba(59, 130, 246, 0.2);
+  border: 2px solid color-mix(in srgb, var(--accent-blue) 20%, transparent);
   border-top-color: var(--accent-blue);
   border-radius: 50%;
   animation: spin 1s linear infinite;

@@ -26,7 +26,9 @@
 //! - 延迟工具只能通过 ExecuteTool 间接调用
 //! - 搜索评分：精确名称匹配 12 分，名称包含 5 分，搜索提示包含 3 分，描述包含 2 分
 //! - `select:` 前缀支持精确选择多个工具（逗号分隔）
-//! - 兜底防护：CHAT/QUESTION 意图 或 chat 模式下禁止写操作
+//! - 兜底防护：CHAT/QUESTION 意图禁止写操作；规划模式下按注册表名单拦下写工具
+//!   延迟工具列表与 ExecuteTool 使用同一个 `ToolRegistry::is_available` 判定，
+//!   目录里看不见的工具不可能被调用成功
 
 use super::registry::{ToolDef, ToolRegistry};
 use serde_json::json;
@@ -48,20 +50,23 @@ pub fn get_core_tool_definitions() -> Vec<serde_json::Value> {
     ToolRegistry::global().get_core_definitions()
 }
 
-/// 获取延迟工具列表 (名称, 简述)，按意图筛选
-/// 从 ToolRegistry 查询所有 should_defer == true 且符合意图的工具
-pub fn get_deferred_tool_list(intent: &str) -> Vec<(String, String)> {
+/// 获取延迟工具列表 (名称, 简述)，按意图 + 工作模式筛选
+/// 从 ToolRegistry 查询所有 should_defer == true 且符合意图/模式的工具
+pub fn get_deferred_tool_list(intent: &str, work_mode: &str) -> Vec<(String, String)> {
     ToolRegistry::global()
-        .get_deferred_list(intent)
+        .get_deferred_list(intent, work_mode)
         .into_iter()
         .map(|(name, desc)| (name.to_string(), desc.to_string()))
         .collect()
 }
 
-/// 获取延迟工具搜索索引，按意图筛选
-pub fn get_deferred_tool_search_entries(intent: &str) -> Vec<DeferredToolSearchEntry> {
+/// 获取延迟工具搜索索引，按意图 + 工作模式筛选
+pub fn get_deferred_tool_search_entries(
+    intent: &str,
+    work_mode: &str,
+) -> Vec<DeferredToolSearchEntry> {
     ToolRegistry::global()
-        .get_deferred_search_entries(intent)
+        .get_deferred_search_entries(intent, work_mode)
         .into_iter()
         .map(|(name, description, search_hint)| DeferredToolSearchEntry {
             name: name.to_string(),
@@ -139,14 +144,23 @@ pub fn search_deferred_tools(
 }
 
 /// DiscoverTools 工具的处理函数（纯搜索指引，不触发激活）
-pub async fn handle_search_tools(input: &serde_json::Value, intent: &str, session_id: &str) -> String {
+pub async fn handle_search_tools(
+    input: &serde_json::Value,
+    intent: &str,
+    session_id: &str,
+    work_mode: &str,
+) -> String {
     let query = input["query"].as_str().unwrap_or("");
     let max_results = input["max_results"].as_u64().unwrap_or(5).clamp(1, 20) as usize;
 
-    let deferred = get_deferred_tool_search_entries(intent);
+    let deferred = get_deferred_tool_search_entries(intent, work_mode);
+
+    // 能力边界结论：让"搜不到某个工具"变成确定的答案，而不是让模型反复换关键词再试
+    let caps = super::capabilities::Capabilities::for_work_mode(work_mode);
+    let boundary = format!("【本会话能力边界 · 系统强制】{}", caps.summary_line());
 
     if deferred.is_empty() {
-        return "当前意图下没有可用的延迟加载工具。".to_string();
+        return format!("当前意图下没有可用的延迟加载工具。\n\n{}", boundary);
     }
 
     let matches = search_deferred_tools(query, &deferred, max_results);
@@ -154,9 +168,10 @@ pub async fn handle_search_tools(input: &serde_json::Value, intent: &str, sessio
     if matches.is_empty() {
         let all_names: Vec<String> = deferred.iter().map(|entry| entry.name.clone()).collect();
         return format!(
-            "未找到匹配 '{}' 的工具。\n\n当前可用的延迟加载工具: {}\n\n请使用 'select:工具名' 精确选择，或使用关键词重新搜索。",
+            "未找到匹配 '{}' 的工具。\n\n当前可用的延迟加载工具: {}\n\n{}\n\n请使用 'select:工具名' 精确选择，或使用关键词重新搜索。",
             query,
-            all_names.join(", ")
+            all_names.join(", "),
+            boundary
         );
     }
 
@@ -176,6 +191,7 @@ pub async fn handle_search_tools(input: &serde_json::Value, intent: &str, sessio
         "\n需要使用以上工具时，请调用 ExecuteTool 执行。示例: ExecuteTool(name=\"{}\", args={{...}})",
         matches.first().unwrap_or(&String::new())
     ));
+    result.push_str(&format!("\n\n{}", boundary));
 
     result
 }
@@ -240,34 +256,39 @@ pub async fn handle_execute_tool(
         ));
     }
 
-    // 校验：当前意图是否允许
-    if !super::registry::ToolRegistry::is_available_for_intent(tool_def, intent) {
-        let available: Vec<String> = get_deferred_tool_list(intent)
+    // 校验：当前意图 + 工作模式是否允许
+    if !super::registry::ToolRegistry::is_available(tool_def, intent, work_mode) {
+        let available: Vec<String> = get_deferred_tool_list(intent, work_mode)
             .into_iter()
             .map(|(n, _)| n)
             .collect();
+        let reason = if work_mode == "plan" {
+            format!(
+                "工具 '{}' 在规划模式下不可用：规划模式只做代码探索和方案提交，写操作需要切回编辑模式。\n当前可用的延迟工具: {}",
+                name,
+                available.join(", ")
+            )
+        } else {
+            format!(
+                "工具 '{}' 在当前 {} 意图下不可用。\n当前可用的延迟工具: {}",
+                name,
+                intent,
+                available.join(", ")
+            )
+        };
         logger.log_deferred_call(
             session_id, agent_type, name, &input, intent, work_mode,
             super::tool_call_logger::ToolCallStatus::Error,
             Some(super::tool_call_logger::ErrorType::IntentBlocked),
-            Some(format!("工具 '{}' 在 {} 意图下不可用", name, intent)),
+            Some(format!("工具 '{}' 在 {} 意图 / {} 模式下不可用", name, intent, work_mode)),
             searched_before,
         );
-        return super::ToolCallResult::error(format!(
-            "工具 '{}' 在当前 {} 意图下不可用。\n当前可用的延迟工具: {}",
-            name,
-            intent,
-            available.join(", ")
-        ));
+        return super::ToolCallResult::error(reason);
     }
 
-    // 兜底防护：写操作工具在 CHAT/QUESTION 意图或聊天模式下被拦截
+    // 兜底防护：写操作工具在 CHAT/QUESTION 意图下被拦截（模式限制已在上面的可用性判定里覆盖）
     if crate::core::tools::should_block_write_tool(name, intent, work_mode) {
-        let msg = if work_mode == "chat" {
-            "聊天模式下只能使用只读工具，请切换到编辑模式后再试。"
-        } else {
-            "当前意图下只能使用只读工具。"
-        };
+        let msg = "当前状态下只能使用只读工具。";
         logger.log_deferred_call(
             session_id, agent_type, name, &input, intent, work_mode,
             super::tool_call_logger::ToolCallStatus::Blocked,
@@ -279,7 +300,16 @@ pub async fn handle_execute_tool(
     }
 
     // 执行工具（调用 dispatch_tool_call 避免递归）
-    let result = crate::core::tools::dispatch_tool_call(app, name, &args, session_id, intent, work_mode).await;
+    let result = crate::core::tools::dispatch_tool_call(
+        app,
+        name,
+        &args,
+        session_id,
+        intent,
+        work_mode,
+        agent_type,
+    )
+    .await;
 
     // 记录执行结果（通过 ToolCallResult.is_error 结构化判断，不再扫描字符串关键词）
     if result.is_error {
@@ -370,23 +400,30 @@ crate::define_tools! {
 mod tests {
     use super::*;
 
+    /// handle_search_tools 会写工具调用审计日志，需要先初始化 Agent 数据目录
+    fn init_agent_home() {
+        let dir = std::env::temp_dir().join("jarvisagent-test-data");
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = crate::AGENT_HOME_DIR.set(dir);
+    }
+
     #[test]
     fn test_search_select_exact() {
-        let deferred = get_deferred_tool_search_entries("PROJECT_ACTION");
+        let deferred = get_deferred_tool_search_entries("PROJECT_ACTION", "edit");
         let result = search_deferred_tools("select:ReadFileSkeleton,WriteFile", &deferred, 5);
         assert_eq!(result, vec!["ReadFileSkeleton", "WriteFile"]);
     }
 
     #[test]
     fn test_search_select_case_insensitive() {
-        let deferred = get_deferred_tool_search_entries("PROJECT_ACTION");
+        let deferred = get_deferred_tool_search_entries("PROJECT_ACTION", "edit");
         let result = search_deferred_tools("select:readfileskeleton", &deferred, 5);
         assert_eq!(result, vec!["ReadFileSkeleton"]);
     }
 
     #[test]
     fn test_search_keyword() {
-        let deferred = get_deferred_tool_search_entries("PROJECT_ACTION");
+        let deferred = get_deferred_tool_search_entries("PROJECT_ACTION", "edit");
         let result = search_deferred_tools("git command", &deferred, 5);
         // RunGitCommand should score highest
         assert!(result.contains(&"RunGitCommand".to_string()));
@@ -394,28 +431,28 @@ mod tests {
 
     #[test]
     fn test_search_hint_matches_dev_server() {
-        let deferred = get_deferred_tool_search_entries("PROJECT_ACTION");
+        let deferred = get_deferred_tool_search_entries("PROJECT_ACTION", "edit");
         let result = search_deferred_tools("dev server", &deferred, 5);
         assert_eq!(result.first(), Some(&"StartBackgroundCommand".to_string()));
     }
 
     #[test]
     fn test_search_description_still_matches_chinese_query() {
-        let deferred = get_deferred_tool_search_entries("PROJECT_ACTION");
+        let deferred = get_deferred_tool_search_entries("PROJECT_ACTION", "edit");
         let result = search_deferred_tools("函数签名", &deferred, 5);
         assert!(result.contains(&"ReadFileSkeleton".to_string()));
     }
 
     #[test]
     fn test_search_no_match() {
-        let deferred = get_deferred_tool_search_entries("PROJECT_ACTION");
+        let deferred = get_deferred_tool_search_entries("PROJECT_ACTION", "edit");
         let result = search_deferred_tools("nonexistent_xyz_tool", &deferred, 5);
         assert!(result.is_empty());
     }
 
     #[test]
     fn test_deferred_list_subagent_excludes_task() {
-        let deferred = get_deferred_tool_list("SUBAGENT");
+        let deferred = get_deferred_tool_list("SUBAGENT", "edit");
         let names: Vec<&str> = deferred.iter().map(|(n, _)| n.as_str()).collect();
         assert!(!names.contains(&"RunSubagent"));
         assert!(!names.contains(&"ConsolidateMemory"));
@@ -424,8 +461,48 @@ mod tests {
 
     #[test]
     fn test_deferred_list_chat_empty() {
-        let deferred = get_deferred_tool_list("CHAT");
+        let deferred = get_deferred_tool_list("CHAT", "edit");
         assert!(deferred.is_empty());
+    }
+
+    #[test]
+    fn test_discover_tools_hides_write_tools_in_plan_mode() {
+        init_agent_home();
+        let output = tauri::async_runtime::block_on(handle_search_tools(
+            &json!({ "query": "select:WriteFile,ReadFileSkeleton" }),
+            "PROJECT_ACTION",
+            "test-session",
+            "plan",
+        ));
+        assert!(!output.contains("工具: WriteFile"));
+        assert!(output.contains("工具: ReadFileSkeleton"));
+    }
+
+    #[test]
+    fn test_capability_manifest_agrees_with_catalog() {
+        // 不变量：能力清单是工具目录的投影——清单说"不可用"，目录里就绝不能有
+        for work_mode in ["plan", "edit"] {
+            let registry = ToolRegistry::global();
+            let names: Vec<String> = get_deferred_tool_list("PROJECT_ACTION", work_mode)
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect();
+            let probe = |tool: &str| {
+                registry
+                    .get(tool)
+                    .map(|def| ToolRegistry::is_available(def, "PROJECT_ACTION", work_mode))
+                    .unwrap_or(false)
+            };
+            if !probe("WriteFile") {
+                assert!(!names.iter().any(|n| n == "WriteFile"), "mode={}", work_mode);
+            }
+            if !probe("RunCommand") {
+                assert!(!names.iter().any(|n| n == "RunCommand"), "mode={}", work_mode);
+            }
+            if probe("ProposePlan") {
+                assert!(names.iter().any(|n| n == "ProposePlan"), "mode={}", work_mode);
+            }
+        }
     }
 
     #[test]
@@ -439,10 +516,12 @@ mod tests {
 
     #[test]
     fn test_handle_discover_tools_does_not_return_xml_function_wrappers() {
+        init_agent_home();
         let output = tauri::async_runtime::block_on(handle_search_tools(
             &json!({ "query": "select:EditFile" }),
             "PROJECT_ACTION",
             "test-session",
+            "edit",
         ));
 
         assert!(output.contains("工具: EditFile"));
@@ -452,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn test_core_tools_include_DiscoverTools() {
+    fn test_core_tools_include_discover_tools() {
         let core = get_core_tool_definitions();
         let names: Vec<&str> = core.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"DiscoverTools"));
@@ -461,8 +540,31 @@ mod tests {
     }
 
     #[test]
+    fn test_core_tools_include_memory_tools() {
+        let core = get_core_tool_definitions();
+        let names: Vec<&str> = core.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"ReadMemory"));
+        assert!(names.contains(&"UpdateMemory"));
+        // ConsolidateMemory 是延迟工具，不应出现在核心集合里
+        assert!(!names.contains(&"ConsolidateMemory"));
+
+        let update = core
+            .iter()
+            .find(|t| t["name"] == "UpdateMemory")
+            .expect("UpdateMemory 应注册为核心工具");
+        assert_eq!(
+            update["input_schema"]["properties"]["action"]["enum"],
+            serde_json::json!(["add", "replace", "remove"])
+        );
+        assert_eq!(
+            update["input_schema"]["required"],
+            serde_json::json!(["action", "section"])
+        );
+    }
+
+    #[test]
     fn test_get_deferred_tools_list_returns_grouped_names() {
-        let groups = ToolRegistry::global().get_deferred_by_category("PROJECT_ACTION");
+        let groups = ToolRegistry::global().get_deferred_by_category("PROJECT_ACTION", "edit");
         assert!(!groups.is_empty());
         // 验证包含写操作工具
         let all_names: Vec<&str> = groups.iter().flat_map(|(_, names)| names.iter().copied()).collect();

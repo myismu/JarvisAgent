@@ -59,6 +59,9 @@ pub struct UiPreferences {
     pub agent_audience: String,
     #[serde(default = "default_agent_work_mode")]
     pub agent_work_mode: String,
+    /// 权限档位："request_approval"（请求审批，默认）/ "auto_approve"（帮我批准）
+    #[serde(default = "default_approval_mode")]
+    pub agent_approval_mode: String,
     #[serde(default = "default_locale")]
     pub locale: String,
     /// 图片压缩最大宽度（像素）
@@ -85,6 +88,7 @@ fn default_true() -> bool { true }
 fn default_agent_panel_position() -> String { "right".to_string() }
 fn default_agent_audience() -> String { "developer".to_string() }
 fn default_agent_work_mode() -> String { "edit".to_string() }
+fn default_approval_mode() -> String { "request_approval".to_string() }
 fn default_locale() -> String { "zh-CN".to_string() }
 fn default_image_max_width() -> u32 { 1920 }
 fn default_image_max_height() -> u32 { 1080 }
@@ -105,6 +109,7 @@ impl Default for UiPreferences {
             agent_panel_visible: false,
             agent_audience: "developer".to_string(),
             agent_work_mode: "edit".to_string(),
+            agent_approval_mode: "request_approval".to_string(),
             locale: "zh-CN".to_string(),
             image_max_width: 1920,
             image_max_height: 1080,
@@ -117,7 +122,9 @@ impl Default for UiPreferences {
 }
 
 impl UiPreferences {
-    /// 兼容旧版本 agent_display_mode，迁移到双轴
+    /// 兼容旧版本 agent_display_mode，迁移到双轴。
+    ///
+    /// 旧「普通用户」= 只读，因此迁移为 audience=user + 只读保护开启 + 编辑模式。
     pub fn migrate_legacy_display_mode(&mut self) {
         if let Some(legacy) = self.agent_display_mode.take() {
             if self.agent_audience == default_agent_audience()
@@ -126,7 +133,7 @@ impl UiPreferences {
                 match legacy.as_str() {
                     "user" => {
                         self.agent_audience = "user".to_string();
-                        self.agent_work_mode = "chat".to_string();
+                        self.agent_work_mode = "edit".to_string();
                     }
                     "developer" => {
                         self.agent_audience = "developer".to_string();
@@ -135,6 +142,26 @@ impl UiPreferences {
                     _ => {}
                 }
             }
+        }
+    }
+
+    /// 兼容旧版本：`chat` 曾是用户可选的工作模式（只读保护），第二步起该模式取消，
+    /// 迁移为"编辑模式 + 请求审批档"——安全等价：改动都会先问用户。
+    pub fn migrate_legacy_work_mode(&mut self) {
+        if self.agent_work_mode == "chat" {
+            self.agent_approval_mode = default_approval_mode();
+            self.agent_work_mode = "edit".to_string();
+        }
+        // 工作模式收敛为 edit / plan
+        if !matches!(self.agent_work_mode.as_str(), "edit" | "plan") {
+            self.agent_work_mode = "edit".to_string();
+        }
+        // 档位收敛
+        if !matches!(
+            self.agent_approval_mode.as_str(),
+            "request_approval" | "auto_approve"
+        ) {
+            self.agent_approval_mode = default_approval_mode();
         }
     }
 }
@@ -247,6 +274,7 @@ pub async fn save_custom_window_state(
 pub async fn get_ui_preferences() -> Result<UiPreferences, String> {
     let mut prefs = read_file().ui_preferences;
     prefs.migrate_legacy_display_mode();
+    prefs.migrate_legacy_work_mode();
     Ok(prefs)
 }
 
@@ -256,7 +284,10 @@ pub async fn save_ui_preferences(
     preferences: UiPreferences,
 ) -> Result<(), String> {
     let mut file = read_file();
-    file.ui_preferences = preferences;
+    let mut incoming = preferences;
+    // 前端只会送 edit / plan；出现 chat 说明是旧版界面，按只读保护落库
+    incoming.migrate_legacy_work_mode();
+    file.ui_preferences = incoming;
     write_file(&file)?;
     // 通知所有窗口（包括监控窗口）偏好已更新
     let _ = app.emit("ui-preferences-changed", ());

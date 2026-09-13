@@ -267,20 +267,26 @@ export const useChatStore = defineStore("chat", () => {
   // 渲染 tick，用于触发流式滚动
   const renderTick = ref(0);
 
-  async function resolvePermission(decision: string) {
+  /**
+   * 提交权限决策。
+   * @param decision allow | allow_session | reject
+   * @param feedback 仅 reject 时使用：用户的拒绝说明，会回灌给模型，让它别换个写法重试
+   */
+  async function resolvePermission(decision: string, feedback?: string) {
     const perm = usePermissionStore();
     const session = useSessionStore();
-    if (perm.permissionRequest) {
-      const reqId = perm.permissionRequests[session.activeSessionId!]?.id;
-      const sid = perm.permissionRequests[session.activeSessionId!]?.sessionId ?? session.activeSessionId;
+    const request = perm.permissionRequest;
+    if (request) {
+      const reqId = request.id;
+      const sid = request.sessionId ?? session.activeSessionId;
+      const trimmed = feedback?.trim() ?? "";
       const result = await invoke<{ needsResume?: boolean; resumeWith?: string }>("resolve_permission", {
         id: reqId,
         sessionId: sid,
         decision,
+        content: trimmed ? trimmed : null,
       });
-      if (sid) {
-        delete perm.permissionRequests[sid];
-      }
+      if (sid) perm.removePermission(sid, reqId);
       // 循环上限超时后续跑：用 resume_jarvis 续跑，不注入新的用户消息
       if (result?.needsResume && result?.resumeWith && sid) {
         const session = useSessionStore();
@@ -659,7 +665,7 @@ export const useChatStore = defineStore("chat", () => {
     if (!runningSid) return;
     const view = session.getSessionView(runningSid);
     view.cancelHandled = false;
-    delete perm.permissionRequests[runningSid];
+    perm.clearPermissions(runningSid);
     delete perm.planProposals[runningSid];
     try {
       await invoke("cancel_jarvis", { sessionId: runningSid });

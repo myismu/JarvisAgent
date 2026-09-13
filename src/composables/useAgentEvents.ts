@@ -402,17 +402,14 @@ export function useAgentEvents() {
 
     // permission
     await on<PermissionRequest>("permission-request", (event) => {
-      const sid = event.payload.sessionId ?? session.activeSessionId;
-      if (sid) {
-        perm.permissionRequests[sid] = event.payload;
-      }
+      // 入队而不是覆盖：并行子代理可能同时发起多个权限请求
+      perm.enqueuePermission(event.payload);
     });
 
-    await on<{ id: string; sessionId: string }>("permission-resolved", (event) => {
+    await on<{ id: string; sessionId: string; decision?: string; decisionText?: string }>("permission-resolved", (event) => {
       const sid = event.payload.sessionId ?? session.activeSessionId;
-      if (sid && perm.permissionRequests[sid]?.id === event.payload.id) {
-        delete perm.permissionRequests[sid];
-      }
+      // 按 id 精确移除：一张卡的决议不能把排在它后面的请求一起抹掉
+      perm.removePermission(sid, event.payload.id);
     });
 
     // memory update notice (transient, not persisted)
@@ -694,7 +691,7 @@ export function useAgentEvents() {
       if (deletedSessionId) {
         delete perm.planProposals[deletedSessionId];
         delete perm.planDocumentsBySession[deletedSessionId];
-        delete perm.permissionRequests[deletedSessionId];
+        perm.clearPermissions(deletedSessionId);
         agent.agentRuns = Object.fromEntries(
           Object.entries(agent.agentRuns).filter(([, run]) => run.sessionId !== deletedSessionId)
         );

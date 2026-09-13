@@ -1,13 +1,15 @@
 ﻿//! # switch_mode.rs — 工作模式切换工具
 //!
-//! Agent 可在运行中通过此工具切换 WorkMode（chat/edit/plan），
-//! Audience（user/developer）不变。
+//! Agent 可在运行中通过此工具切换 WorkMode（edit/plan），Audience（user/developer）不变。
+//!
+//! Agent 只能在 edit（编辑）与 plan（规划）之间切换；
+//! 「权限档位」（请求审批 / 帮我批准）由用户在界面上控制，不属于本工具的职责范围。
 
 use crate::core::tools::framework;
 use serde_json::json;
 use tauri::{Emitter, Manager};
 
-/// 切换 Agent 工作模式（只改 WorkMode，不改 Audience）
+/// 切换 Agent 工作模式（edit / plan，只改 WorkMode，不改 Audience）
 pub async fn switch_work_mode(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
@@ -19,20 +21,16 @@ pub async fn switch_work_mode(
     let target_mode = input["mode"].as_str().unwrap_or("edit").to_string();
     let reason = input["reason"].as_str().unwrap_or("").to_string();
 
-    if !["chat", "edit", "plan"].contains(&target_mode.as_str()) {
+    if !["edit", "plan"].contains(&target_mode.as_str()) {
         return framework::ToolCallResult::error(format!(
-            "错误：不支持的工作模式「{}」。支持的模式：chat、edit、plan。",
+            "错误：不支持的工作模式「{}」。本工具只能切换 edit（编辑）和 plan（规划）。\
+权限档位（请求审批 / 帮我批准）由用户在界面上控制，Agent 不能自行切换。",
             target_mode
         ));
     }
 
     if current_mode == target_mode {
         return framework::ToolCallResult::ok(format!("当前已经处于「{}」模式，无需切换。", current_mode));
-    }
-
-    // Chat 禁止切到 Plan
-    if current_mode == "chat" && target_mode == "plan" {
-        return framework::ToolCallResult::blocked("错误：聊天模式下不能切换到计划模式。请先切换到编辑模式。".to_string());
     }
 
     *ctx.agent_work_mode.lock().await = target_mode.clone();

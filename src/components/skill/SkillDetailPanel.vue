@@ -182,7 +182,7 @@ const renderMarkdown = (text: string): string => {
 }
 
 .header-icon {
-  color: var(--accent-yellow);
+  color: var(--text-muted);
 }
 
 .header-title h3 {

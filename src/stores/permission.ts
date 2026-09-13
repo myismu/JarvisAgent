@@ -4,15 +4,55 @@ import type { PermissionRequest, PlanProposal, PlanDocument } from "../types";
 import { useSessionStore } from "./session";
 
 export const usePermissionStore = defineStore("permission", () => {
-  const permissionRequests = ref<Record<string, PermissionRequest>>({});
+  /**
+   * 待决策权限请求：按会话分组、按到达顺序排队。
+   * 旧实现每会话只有一个槽位，多个子代理同时要权限时会互相覆盖，
+   * 被覆盖的请求会一直等不到回答（而界面上根本看不到它）。
+   */
+  const permissionRequests = ref<Record<string, PermissionRequest[]>>({});
   const planProposals = ref<Record<string, PlanProposal>>({});
   const planDocumentsBySession = ref<Record<string, PlanDocument[]>>({});
 
-  const permissionRequest = computed(() => {
+  const permissionQueue = computed<PermissionRequest[]>(() => {
     const session = useSessionStore();
-    if (!session.activeSessionId) return null;
-    return permissionRequests.value[session.activeSessionId] ?? null;
+    if (!session.activeSessionId) return [];
+    return permissionRequests.value[session.activeSessionId] ?? [];
   });
+
+  /// 当前会话最早的一个待决策请求（内联卡片展示这个）
+  const permissionRequest = computed<PermissionRequest | null>(
+    () => permissionQueue.value[0] ?? null
+  );
+
+  function enqueuePermission(request: PermissionRequest) {
+    const sid = request.sessionId || useSessionStore().activeSessionId;
+    if (!sid) return;
+    const existing = permissionRequests.value[sid] ?? [];
+    if (existing.some((item) => item.id === request.id)) return;
+    permissionRequests.value = {
+      ...permissionRequests.value,
+      [sid]: [...existing, request],
+    };
+  }
+
+  function removePermission(sessionId: string | null | undefined, requestId: string) {
+    if (!sessionId) return;
+    const existing = permissionRequests.value[sessionId] ?? [];
+    const next = existing.filter((item) => item.id !== requestId);
+    const map = { ...permissionRequests.value };
+    if (next.length === 0) {
+      delete map[sessionId];
+    } else {
+      map[sessionId] = next;
+    }
+    permissionRequests.value = map;
+  }
+
+  function clearPermissions(sessionId: string) {
+    const map = { ...permissionRequests.value };
+    delete map[sessionId];
+    permissionRequests.value = map;
+  }
 
   const planProposal = computed(() => {
     const session = useSessionStore();
@@ -82,9 +122,13 @@ export const usePermissionStore = defineStore("permission", () => {
     permissionRequests,
     planProposals,
     planDocumentsBySession,
+    permissionQueue,
     permissionRequest,
     planProposal,
     currentPlanDocuments,
+    enqueuePermission,
+    removePermission,
+    clearPermissions,
     upsertPlanDocument,
     updatePlanProposalContent,
     updatePlanProposalStreamingContent,

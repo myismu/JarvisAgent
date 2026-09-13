@@ -413,6 +413,13 @@ impl ToolCallLogger {
         let filename = format!("{}_{}.jsonl", date, session_id);
         let path = self.log_dir.join(filename);
 
+        // 多个子代理会并发写同一个文件；Windows 上并发 append 会交错，
+        // 把两条 JSON 粘成一行导致记录读不出来。这里用进程级锁串行化"打开 + 写一行"。
+        static APPEND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = APPEND_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         if let Ok(mut file) = OpenOptions::new()
             .create(true)
             .append(true)
@@ -474,6 +481,66 @@ pub fn tool_call_logger() -> &'static ToolCallLogger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 并发写入不能把两行粘成一行（与权限观察日志同一个问题，同样的修法）
+    #[test]
+    fn concurrent_writes_never_corrupt_jsonl_lines() {
+        let home = std::env::temp_dir().join("jarvisagent-audit-concurrency-test");
+        let _ = std::fs::create_dir_all(&home);
+        let _ = crate::AGENT_HOME_DIR.set(home);
+
+        let logger = ToolCallLogger::new();
+        let dir = logger.log_dir.clone();
+        let session = "sess-audit-concurrent";
+
+        // 清掉上次跑留下的文件，保证可重复执行
+        let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let path = dir.join(format!("{}_{}.jsonl", date, session));
+        let _ = std::fs::remove_file(&path);
+
+        let base = ToolCallRecord {
+            ts: "2026-09-13T00:00:00Z".to_string(),
+            session_id: session.to_string(),
+            agent_type: "subagent".to_string(),
+            seq: 1,
+            tool: "ReadFile".to_string(),
+            args_summary: serde_json::json!({"name": "ReadFile"}),
+            intent: "ACTION".to_string(),
+            work_mode: "edit".to_string(),
+            status: ToolCallStatus::Ok,
+            error_type: None,
+            error_message: None,
+            correction: CorrectionInfo::default(),
+            diagnosis: DiagnosisInfo {
+                followed_protocol: true,
+                searched_before: true,
+                schema_read: true,
+            },
+        };
+
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let logger = &logger;
+                let record = base.clone();
+                scope.spawn(move || {
+                    for _ in 0..25 {
+                        logger.write_record(session, &record);
+                    }
+                });
+            }
+        });
+
+        let content = std::fs::read_to_string(&path).expect("审计日志应落盘");
+        let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(lines.len(), 200, "8 线程 × 25 条应完整写入");
+        for (index, line) in lines.iter().enumerate() {
+            assert!(
+                serde_json::from_str::<serde_json::Value>(line).is_ok(),
+                "第 {} 行被写坏了",
+                index + 1
+            );
+        }
+    }
 
     #[test]
     fn test_correction_tracking() {

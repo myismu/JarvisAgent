@@ -249,12 +249,21 @@ pub async fn propose_plan(
     }
 
     // 创建 oneshot channel（保留通道用于 resolve_permission 检测 Agent 是否存活）
+    // 注意：方案审批走产品层状态机，这个通道只作为"是否还挂着"的标记，_rx 立即丢弃
     let (tx, _rx) = tokio::sync::oneshot::channel();
     {
         let mut perms = ctx.pending_permissions.lock().await;
         let now = std::time::Instant::now();
-        perms.retain(|_, (ts, _, _)| now.duration_since(*ts).as_secs() < 300);
-        perms.insert(id.clone(), (std::time::Instant::now(), format!("方案审批: {}", title), tx));
+        perms.retain(|_, entry| now.duration_since(entry.created_at).as_secs() < 300);
+        perms.insert(
+            id.clone(),
+            crate::infra::state::state::PendingPermission {
+                created_at: std::time::Instant::now(),
+                message: format!("方案审批: {}", title),
+                kind: crate::core::tools::framework::permission::PermissionKind::PlanApproval,
+                responder: tx,
+            },
+        );
     }
 
     // Plan documents are persisted through session memory in SQLite.

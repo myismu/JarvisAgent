@@ -1,4 +1,4 @@
-﻿//! # mod.rs — 工具系统入口模块
+//! # mod.rs — 工具系统入口模块
 //!
 //! 工具系统的中央枢纽：模块注册、技能加载、工具定义组装、路由分发。
 //! 工具参数（tools）始终不变以保证 prompt cache 命中，意图+工作模式仅影响上下文注入和 ExecuteTool 运行时校验。
@@ -18,7 +18,9 @@
 //! - tools 参数始终不变，意图过滤仅通过上下文注入 + ExecuteTool 运行时校验
 //! - 子代理（SUBAGENT）不能调用 RunSubagent / ConsolidateMemory / CompactConversation / RunSubagentsSequentially
 //! - 写操作工具（WriteFile, EditFile, RunCommand 等）是延迟工具，通过三步协议调用：GetToolCatalog → DiscoverTools → ExecuteTool
-//! - 兜底防护：CHAT/QUESTION 意图 或 chat 模式下禁止写操作
+//! - 兜底防护：CHAT/QUESTION 意图禁止写操作；规划模式按注册表名单拦下写工具
+//! - 工具目录过滤（GetToolCatalog/DiscoverTools）与运行时校验（should_block_write_tool）
+//!   共用 `ToolRegistry::is_available`，保证"目录里看不见 = 调用不成功"
 
 pub mod agent_tools;
 pub mod file_tools;
@@ -38,7 +40,9 @@ use crate::get_agent_home;
 pub use agent_tools::run_subagent;
 pub use file_tools::{generate_repo_map, search_in_dir};
 pub use framework::agent_registry::{AgentRegistry, DEFAULT_AGENT_ROLE, IMPLEMENTATION_AGENT_ROLE};
-pub use framework::permission::{ensure_path_permission, is_path_safe, request_permission};
+pub use framework::permission::{
+    ensure_path_permission, is_path_safe, request_permission, PermissionDecision, PermissionKind,
+};
 pub use framework::tool_search::{
     get_core_tool_definitions, get_deferred_tool_full_schema, get_deferred_tool_list,
     get_deferred_tool_search_entries, handle_search_tools,
@@ -129,6 +133,13 @@ pub async fn handle_tool_call(
     work_mode: &str,
 ) -> (String, u64, u64) {
     if name == "RunSubagent" {
+        // 执行前权限判定：这条分支不经过 dispatch_tool_call，
+        // 必须单独接一次（否则"派子代理"就是绕过检查的后门）
+        if let Some(result) =
+            framework::policy_guard::enforce(app, session_id, name, input, "main").await
+        {
+            return (result.output, 0, 0);
+        }
         let prompt = input["prompt"].as_str().unwrap_or("");
         let requested_agent_role = framework::agent_registry::normalize_agent_role(
             input["subagent_type"]
@@ -197,7 +208,7 @@ pub async fn handle_tool_call(
         // 拦截直接调用延迟工具：延迟工具必须通过 ExecuteTool 代理执行
         if let Some(tool_def) = framework::registry::ToolRegistry::global().get(name) {
             if tool_def.should_defer {
-                let available = get_deferred_tool_list(intent);
+                let available = get_deferred_tool_list(intent, work_mode);
                 let names: Vec<String> = available.iter().map(|(n, _)| n.clone()).collect();
                 return (
                     format!(
@@ -212,7 +223,7 @@ pub async fn handle_tool_call(
             }
         }
 
-        let result = dispatch_tool_call(app, name, input, session_id, intent, work_mode).await;
+        let result = dispatch_tool_call(app, name, input, session_id, intent, work_mode, "main").await;
         // 记录工具调用审计日志
         let logger = framework::tool_call_logger::tool_call_logger();
         if result.is_blocked {
@@ -283,18 +294,28 @@ pub async fn dispatch_tool_call(
     session_id: &str,
     intent: &str,
     work_mode: &str,
+    agent_type: &str,
 ) -> framework::ToolCallResult {
-    // 兜底防护：CHAT/QUESTION 意图 或 chat 模式下禁止写操作
+    // 兜底防护：CHAT/QUESTION 意图，或 chat/plan 模式下禁止写操作
     if should_block_write_tool(name, intent, work_mode) {
         return framework::ToolCallResult::error(format!(
             "工具 '{}' 在当前状态下不可用。{}",
             name,
-            if work_mode == "chat" {
-                "聊天模式下只能使用只读工具，请切换到编辑模式后再试。"
-            } else {
-                "当前意图下只能使用只读工具。"
+            match work_mode {
+                "plan" => "规划模式下只能探索代码和提交方案：请先用 ProposePlan 提交方案；确实需要直接改动，请先切换到编辑模式。",
+                _ => "当前意图下只能使用只读工具。",
             }
         ));
+    }
+
+    // ── 执行前权限判定（第二步）──
+    // 能力/模式允许之后，才轮到"要不要问用户"或"直接拒绝"。
+    // 判定依据是结构化事实（工具、路径、是否覆盖、影响几个文件），
+    // 与观察层共用同一份事实采集，保证"预判"和"真实判定"口径一致。
+    if let Some(result) =
+        framework::policy_guard::enforce(app, session_id, name, input, agent_type).await
+    {
+        return result;
     }
 
     let result = match name {
@@ -336,9 +357,13 @@ pub async fn dispatch_tool_call(
 
         // Agent 工具
         "LoadSkill" => agent_tools::load_skill(app, input, session_id).await,
-        "GetToolCatalog" => agent_tools::get_tool_catalog(app, input, session_id, intent).await,
+        "GetToolCatalog" => {
+            agent_tools::get_tool_catalog(app, input, session_id, intent, work_mode).await
+        }
         "CompactConversation" => agent_tools::compact(app, input, session_id).await,
-        "ConsolidateMemory" => agent_tools::dream(app, input, session_id).await,
+        "ConsolidateMemory" => agent_tools::consolidate_memory(app, input, session_id).await,
+        "ReadMemory" => agent_tools::read_memory(app, input, session_id).await,
+        "UpdateMemory" => agent_tools::update_memory(app, input, session_id).await,
 
         // 任务调度器 — 同步等待所有任务完成，实时推送进度到前端
         "RunSubagentsSequentially" => {
@@ -363,7 +388,8 @@ pub async fn dispatch_tool_call(
         // 工具搜索（纯搜索，始终成功）
         "DiscoverTools" => {
             return framework::ToolCallResult::ok(
-                framework::tool_search::handle_search_tools(input, intent, session_id).await,
+                framework::tool_search::handle_search_tools(input, intent, session_id, work_mode)
+                    .await,
             );
         }
 
@@ -400,7 +426,8 @@ pub async fn handle_tool_call_inner(
     }
 
     // 核心工具直接调用，通过 ToolCallResult 结构化判断成败
-    let result = dispatch_tool_call(app, name, input, session_id, intent, work_mode).await;
+    let result =
+        dispatch_tool_call(app, name, input, session_id, intent, work_mode, "subagent").await;
     let logger = framework::tool_call_logger::tool_call_logger();
     if result.is_error {
         logger.log_core_call(
@@ -426,15 +453,15 @@ pub async fn handle_tool_call_inner(
     result.output
 }
 
-/// 判断是否应该阻止写操作工具
+/// 判断是否应该阻止工具调用（意图 + 工作模式兜底防护）
 pub fn should_block_write_tool(name: &str, intent: &str, work_mode: &str) -> bool {
     // 条件1：意图是 CHAT 或 QUESTION
     if matches!(intent, "CHAT" | "QUESTION") {
         return is_write_tool(name);
     }
 
-    // 条件2：工作模式是 chat
-    if work_mode == "chat" {
+    // 条件2：工作模式是 plan（只探索 + 提方案）
+    if work_mode == "plan" {
         return is_write_tool(name);
     }
 
@@ -442,11 +469,55 @@ pub fn should_block_write_tool(name: &str, intent: &str, work_mode: &str) -> boo
 }
 
 /// 判断是否是写操作工具
+///
+/// 名单的唯一来源是 `ToolRegistry::WRITE_TOOLS`：目录过滤、搜索、执行、能力清单
+/// 都从这里推导，避免"目录里看得见、调用时才拦"的两套真相。
 pub fn is_write_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "WriteFile" | "EditFile" | "DeleteFile" | "RenameFile" | "ApplyPatch"
-            | "RunCommand" | "StartBackgroundCommand" | "EditNotebook"
-    )
+    framework::registry::ToolRegistry::is_write_tool_name(name)
 }
 
+#[cfg(test)]
+mod write_guard_tests {
+    use super::*;
+
+    #[test]
+    fn plan_mode_blocks_write_tools() {
+        // 规划模式只允许探索 + 提方案，写操作必须在编辑模式里做
+        assert!(should_block_write_tool("WriteFile", "ACTION", "plan"));
+        assert!(should_block_write_tool("RunCommand", "ACTION", "plan"));
+        assert!(!should_block_write_tool("ReadFile", "ACTION", "plan"));
+        assert!(!should_block_write_tool("ProposePlan", "ACTION", "plan"));
+        assert!(!should_block_write_tool("CreateTask", "ACTION", "plan"));
+        assert!(!should_block_write_tool(
+            "RunSubagentsSequentially",
+            "ACTION",
+            "plan"
+        ));
+    }
+
+    #[test]
+    fn edit_mode_allows_write_tools() {
+        assert!(!should_block_write_tool("WriteFile", "ACTION", "edit"));
+        assert!(!should_block_write_tool("RunCommand", "ACTION", "edit"));
+    }
+
+    #[test]
+    fn chat_intent_blocks_writes_in_edit_mode() {
+        // 意图层的兜底还在：闲聊/提问意图下不允许写操作
+        assert!(should_block_write_tool("WriteFile", "CHAT", "edit"));
+        assert!(should_block_write_tool("EditFile", "QUESTION", "edit"));
+    }
+
+    #[test]
+    fn unknown_tool_falls_through_to_unknown_tool_error() {
+        // 未注册的工具名交给下游的「未知工具」错误路径，不该被误判成策略拦截
+        assert!(!should_block_write_tool("NoSuchTool", "ACTION", "edit"));
+    }
+
+    #[test]
+    fn edit_mode_still_allows_orchestration_tools() {
+        assert!(!should_block_write_tool("SwitchWorkMode", "ACTION", "edit"));
+        assert!(!should_block_write_tool("CreateTask", "ACTION", "edit"));
+        assert!(!should_block_write_tool("RunSubagent", "ACTION", "edit"));
+    }
+}

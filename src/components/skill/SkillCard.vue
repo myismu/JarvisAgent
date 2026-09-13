@@ -109,7 +109,7 @@ const handleToggle = async (event: Event) => {
   justify-content: center;
   background: var(--glass-bg-light);
   border-radius: var(--radius-md);
-  color: var(--accent-yellow);
+  color: var(--text-muted);
 }
 
 .skill-info {

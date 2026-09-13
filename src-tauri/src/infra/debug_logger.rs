@@ -28,7 +28,6 @@ pub enum AgentEventType {
     Request,
     Response,
     Thinking,
-    Intent,
     Memory,
     SessionSummary,
     SseEvent,
@@ -79,24 +78,6 @@ pub struct ThinkingEvent {
     pub tool_calls: Vec<(String, String)>,
     pub input_tokens: u64,
     pub output_tokens: u64,
-}
-
-/// 意图分类事件
-#[derive(Debug, Clone, Serialize)]
-pub struct IntentEvent {
-    #[serde(rename = "type")]
-    pub event_type: AgentEventType,
-    pub ts: String,
-    pub session_id: String,
-    pub user_input: String,
-    pub classifier: String,
-    pub detected_intent: String,
-    /// LLM 请求 JSON（仅 LLM 分类器有值）
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub request_json: String,
-    /// LLM 原始响应（仅 LLM 分类器有值）
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub llm_response: String,
 }
 
 /// 记忆代理事件
@@ -266,30 +247,6 @@ impl DebugLogger {
         );
     }
 
-    /// 记录意图分类结果
-    pub fn log_intent(
-        &self,
-        session_id: &str,
-        user_input: &str,
-        classifier: &str,
-        detected_intent: &str,
-        request_json: &str,
-        llm_response: &str,
-    ) {
-        self.write_record(
-            session_id,
-            &IntentEvent {
-                event_type: AgentEventType::Intent,
-                ts: chrono::Utc::now().to_rfc3339(),
-                session_id: session_id.to_string(),
-                user_input: user_input.to_string(),
-                classifier: classifier.to_string(),
-                detected_intent: detected_intent.to_string(),
-                request_json: request_json.to_string(),
-                llm_response: llm_response.to_string(),
-            },
-        );
-    }
 
     /// 记录记忆代理操作
     pub fn log_memory(

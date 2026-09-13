@@ -1,10 +1,30 @@
-﻿//! # pipeline.rs — Agent 主循环流水线
+//! # pipeline.rs — Agent 主循环流水线
 //!
 //! 实现 Agent 的 5 阶段执行流水线：初始化 → 意图验证 → 上下文构建 → 主循环 → 收尾。
 //! 主循环阶段包含压缩检查、API 调用、流式处理、工具执行、反思审查等完整 Agent Loop 逻辑。
 //!
-//! ## 关键导出
-//! - `run_pipeline()`: 主流程入口，依次执行 5 个阶段并返回 `JarvisResult`
+//! ## 五阶段流水线地图（功能规划）
+//!
+//! 入口：`run_pipeline()`（新消息）/ `resume_pipeline()`（续跑）→ `run_pipeline_inner()` 按序调度：
+//!
+//! | 阶段 | 函数 | 职责 |
+//! |---|---|---|
+//! | 1 初始化 | `setup()` | 校验会话占用、加载配置、创建取消令牌、意图分类、组装 PipelineState |
+//! | 2 意图验证 | `validate()` | DANGEROUS 弹权限确认 / UNCLEAR 返回澄清，可提前结束 |
+//! | 3 上下文构建 | `pre_loop()` | 崩溃恢复、注入用户消息、创建 run 记录、决定是否深度思考 |
+//! | 4 主循环 | `run_main_loop()` | 调 LLM → 流式解析 → 执行工具 → 结果回写，直到 LLM 不再调工具 |
+//! | 5 收尾 | `finalize()` | 检查点快照、保存会话、自动起名、记忆超预算时后台整理、组装 JarvisResult |
+//!
+//! ### 阶段 4 主循环每轮内部子步骤
+//! 取消检查 → 循环次数确认 → 后台通知注入 → 上下文压缩 → 历史快照 → 构建请求
+//! → API 调用（含调度器事件 select）→ 流式处理 → 工具执行 → 反思审查 → 回写历史 → 下一轮
+//!
+//! ### 配套辅助函数（各阶段共用）
+//! - 历史准备：`prepare_history_snapshot()` / `prepare_history_snapshot_from_messages()` / `fix_broken_tool_call_pairs()`
+//! - 上下文监控：`build_context_estimate()` / `update_context_snapshot()` / `update_provider_usage_snapshot()` / `resolve_max_tokens()`
+//! - 请求构建：`build_llm_request()` / `call_api_with_retry()` / `current_tools()`
+//! - 流程控制：`handle_sched_event()` / `request_loop_continuation()` / `drain_background_notifications()` / `compact_if_needed()`
+//! - 异常收尾：`abort_after_error()` / `handle_cancellation()` / `store_assistant_response()`
 //!
 //! ## 依赖
 //! - Internal: `crate::core::orchestration::agent_runs`, `crate::infra::llm::api_client`, `crate::infra::config::config::AgentConfig`, `crate::core::intent`, `crate::core::session::memory`, `crate::core::tools`, `super::reflection`
@@ -26,7 +46,6 @@ use tauri::{Emitter, Manager};
 use crate::infra::config::config::AgentConfig;
 use crate::infra::types::error::{AgentError, ApiError};
 use crate::infra::debug_logger;
-use crate::core::intent;
 use crate::infra::llm::api_client;
 use crate::infra::types::models::*;
 use crate::core::orchestration::agent_runs;
@@ -37,7 +56,12 @@ use super::context::*;
 use super::stream::{process_stream, StreamConfig};
 use super::tools_runner::execute_tool_calls;
 
-/// Pipeline 各阶段共享的状态
+/// Pipeline 各阶段共享的状态（相当于一次用户请求的“上下文对象”）
+///
+/// 字段分三批填充：
+/// - setup()：app / sid / ctx / 取消令牌 / 配置 / API 客户端 / 系统提示词 / 意图等
+/// - pre_loop()：dynamic_context_str / 用户消息展示 / initial_msg_index / should_think / run_id
+/// - 主循环与收尾：loop_count / token 统计 / final_answer / 反思计数等
 struct PipelineState {
     app: tauri::AppHandle,
     sid: String,
@@ -61,8 +85,9 @@ struct PipelineState {
     /// 基于 audience 的 agent loop 默认思考状态（developer → true, user → false）
     loop_think_default: bool,
     detected_intent: String,
+    /// 本轮能力清单（由工作模式推导，注入动态上下文 / 目录输出 / 执行期校验共用）
+    capabilities: crate::core::tools::framework::capabilities::Capabilities,
     dynamic_context_str: String,
-    user_msg_for_memory: String,
     user_msg_preview: String,
     initial_msg_index: usize,
     should_think: bool,
@@ -91,6 +116,8 @@ struct ContextEstimate {
 
 const DIRECT_DEVELOPER_INTENT: &str = "PROJECT_ACTION";
 
+/// 标准化受众（audience）：非 user 一律视为 developer。
+/// 受众决定 agent loop 默认是否开启深度思考（developer → 开，user → 关）。
 fn normalize_agent_audience(audience: &str) -> &'static str {
     match audience {
         "user" => "user",
@@ -173,16 +200,27 @@ fn fix_broken_tool_call_pairs(messages: &mut Vec<Message>) {
     }
 }
 
+/// 标准化工作模式（work_mode）：plan（规划）/ edit（编辑，默认）。
+/// 工作模式决定系统提示词、写操作工具是否可用、以及是否走方案审批流程。
+/// 说明：第二步起"chat（只读保护）"已取消，安全由权限档位（请求审批/帮我批准）承担。
 fn normalize_agent_work_mode(mode: &str) -> &'static str {
     match mode {
-        "chat" => "chat",
         "plan" => "plan",
         _ => "edit",
     }
 }
 
 impl PipelineState {
-    /// 阶段 1: 会话初始化、配置加载、意图分类
+    /// 阶段 1：初始化 — 会话与配置准备 + 意图分类
+    ///
+    /// 相当于“启动前检查 + 路由决策”，产出可执行的 PipelineState。核心逻辑：
+    /// 1. 校验：会话是否正忙（已有任务在跑则拒绝）、是否配置了 API Key
+    /// 2. 创建本次执行的取消令牌（用户随时可停止），并记录请求工作区
+    /// 3. 读取双轴配置：受众（developer/user）× 工作模式（chat/plan/edit），据此生成系统提示词
+    /// 4. 意图分类：非 chat 模式走规则快速判定（复杂任务 → TASK_PLAN 强制切 Plan 模式）；
+    ///    chat 模式走三层分类（规则 → 上下文 → LLM 兜底）
+    /// 5. 输入框自然语言审批：短消息 + 上轮刚提交方案 → 直接更新方案状态（同意/驳回）
+    /// 6. TASK_PLAN 首轮强制切换到 plan 模式并向前端广播 agent-work-mode-changed
     async fn setup(
         session_id: String,
         msg: String,
@@ -206,6 +244,7 @@ impl PipelineState {
 
         let sid = session_id.clone();
         let ctx = session_manager.get_or_create(&session_id).await;
+        // 步骤 1：会话占用检查 —— 同一会话已有任务在执行时拒绝新请求
         let has_active_run = ctx
             .cancel_token
             .lock()
@@ -218,17 +257,18 @@ impl PipelineState {
                 "当前会话已有任务正在执行，请等待完成或先停止当前任务。".to_string(),
             ));
         }
-        *ctx.session_allowed.lock().await = false;
-
+        // 步骤 2：创建本次执行的取消令牌并挂载到会话（用户随时可停止）
         let cancel_token = tokio_util::sync::CancellationToken::new();
         *ctx.cancel_token.lock().await = Some(cancel_token.clone());
 
+        // 步骤 3：记录本次请求的工作区（文件操作 / 沙箱边界根目录）
         let request_workspace = ctx.workspace.lock().await.clone();
         println!(
             "[DEBUG] Current Workspace for session {}: {:?}",
             sid, request_workspace
         );
 
+        // 步骤 4：读取用户配置，校验 API Key 是否已配置
         let app_cfg = config_state.0.lock().await.clone();
         let cfg = app_cfg.active_config();
 
@@ -248,15 +288,23 @@ impl PipelineState {
             model_id, utility_model_id
         );
 
+        // 步骤 5：创建 HTTP 客户端（后续所有 LLM 调用共用）
         let client = reqwest::Client::new();
 
-        // 读取双轴偏好
+        // 步骤 6：读取偏好（受众 × 工作模式 × 权限档位），并写入会话上下文
+        // 权限档位：新会话从偏好继承；已有会话保持自己的设置
+        let approval_mode_from_prefs: String;
         let (audience, work_mode) = {
             let prefs = crate::command::app_config::get_ui_preferences()
                 .await
                 .unwrap_or_default();
             let audience = normalize_agent_audience(&prefs.agent_audience).to_string();
             let work_mode = normalize_agent_work_mode(&prefs.agent_work_mode).to_string();
+            approval_mode_from_prefs = if prefs.agent_approval_mode == "auto_approve" {
+                "auto_approve".to_string()
+            } else {
+                "request_approval".to_string()
+            };
             (audience, work_mode)
         };
         *ctx.agent_audience.lock().await = audience.clone();
@@ -270,8 +318,30 @@ impl PipelineState {
             }
         }
         let current_work_mode = ctx.agent_work_mode.lock().await.clone();
-        let system_prompt = crate::core::agent::prompts::get_system_prompt(&audience, &current_work_mode);
+        // 权限档位：会话里没有历史（新会话）时按偏好初始化，否则沿用会话自己的
+        {
+            let has_history = !ctx.memory.lock().await.messages.is_empty();
+            if !has_history {
+                *ctx.approval_mode.lock().await = approval_mode_from_prefs.clone();
+            }
+        }
+        let system_prompt = crate::core::agent::prompts::get_system_prompt(
+            &audience,
+            &current_work_mode,
+            request_workspace.as_deref(),
+        );
 
+        // 步骤 6.5：能力清单
+        //
+        // 只用于注入"能力边界声明"（动态上下文 + 工具目录结论），让模型第一轮就知道
+        // 哪些能力在本模式不存在，不必用发现类工具去试探。
+        // 受限模式（规划）下用户要求改文件时，不再提前截断——交给模型自己解释并走方案审批流程，
+        // 这样用户少一次往返（不必先回一句"先给方案"）。
+        let capabilities = crate::core::tools::framework::capabilities::Capabilities::for_work_mode(
+            &current_work_mode,
+        );
+
+        // 步骤 7：判断是否携带图片 —— 意图分类时提示 LLM 结合截图理解
         let has_images = image_base64_list
             .as_ref()
             .map(|l| !l.is_empty())
@@ -284,9 +354,11 @@ impl PipelineState {
         } else {
             msg.clone()
         };
+        // "用户已同意方案/要求修改方案"是审批续跑，不算复杂任务
         let is_approval_continuation = msg_for_intent.starts_with("用户已同意方案")
-                || msg_for_intent.starts_with("用户要求修改方案");
-        let detected_intent = if work_mode != "chat" {
+            || msg_for_intent.starts_with("用户要求修改方案");
+        // 意图判定：规则直判（Plan → 走方案审批）；"用户已同意方案/要求修改"属于审批续跑
+        let detected_intent = {
             let rule_intent = crate::core::intent::rules::classify_by_rules(&msg_for_intent);
             if matches!(rule_intent, crate::core::intent::rules::Intent::Plan) && !is_approval_continuation {
                 println!("[JARVIS] {} 模式：规则检测到复杂任务，首轮直接进入方案审批流程", work_mode);
@@ -295,19 +367,6 @@ impl PipelineState {
                 println!("[JARVIS] {} 模式：跳过 LLM 意图分类，直接进入项目操作流程", work_mode);
                 DIRECT_DEVELOPER_INTENT.to_string()
             }
-        } else {
-            let history_for_classification = ctx.memory.lock().await.messages.clone();
-            intent::classify_intent(
-                &client,
-                &api_key,
-                &base_url,
-                &utility_model_id,
-                api_format,
-                &msg_for_intent,
-                &history_for_classification,
-                &session_id,
-            )
-            .await
         };
         println!("[JARVIS] Detected intent: {}", detected_intent);
 
@@ -370,10 +429,12 @@ impl PipelineState {
             }
         }
 
+        // 步骤 8：确定反思审查模式（取配置默认值，可被本次请求覆盖）
         let resolved_reflection_mode = reflection_mode_override
             .filter(|m| !m.is_empty())
             .unwrap_or_else(|| cfg.reflection_mode.clone());
 
+        // 步骤 9：组装 PipelineState（意图、提示词、取消令牌等已就绪）
         let mut state = Self {
             app,
             sid,
@@ -392,10 +453,10 @@ impl PipelineState {
             thinking_override,
             loop_think_default: audience == "developer",
             detected_intent: detected_intent.clone(),
+            capabilities,
             // 以下字段在后续阶段填充
             dynamic_context_str: String::new(),
-            user_msg_for_memory: String::new(),
-            user_msg_preview: String::new(),
+                        user_msg_preview: String::new(),
             initial_msg_index: 0,
             should_think: false,
             run_id: String::new(),
@@ -411,16 +472,22 @@ impl PipelineState {
             tool_execution_summary: None,
         };
 
+        // 步骤 10：TASK_PLAN 前置拦截 —— 复杂任务首轮强制切到 plan 模式并广播
         if detected_intent == "TASK_PLAN" && current_work_mode != "plan" {
             println!("[JARVIS] 意图前置拦截：TASK_PLAN 意图，首轮强制切换到 Plan 模式");
             *state.ctx.agent_work_mode.lock().await = "plan".to_string();
-            state.system_prompt = crate::core::agent::prompts::get_system_prompt(&audience, "plan");
+            let plan_prompt = crate::core::agent::prompts::get_system_prompt(
+                &audience,
+                "plan",
+                state.request_workspace.as_deref(),
+            );
+            state.system_prompt = plan_prompt;
             state.detected_intent = "TASK_PLAN".to_string();
             let _ = state.app.emit(
                 "agent-work-mode-changed",
                 json!({
                     "sessionId": state.sid,
-                    "from": work_mode,
+                    "from": current_work_mode,
                     "to": "plan",
                     "reason": "意图分类检测到复杂任务，自动切换到计划模式",
                 }),
@@ -430,72 +497,33 @@ impl PipelineState {
         Ok(state)
     }
 
-    /// 阶段 2: 意图验证 — DANGEROUS 权限确认 / UNCLEAR 澄清
-    /// 返回 Some(JarvisResult) 表示需要提前返回
-    async fn validate(&mut self) -> Result<Option<JarvisResult>, AgentError> {
-        if self.detected_intent == "DANGEROUS" {
-            let decision = request_permission(
-                &self.app,
-                &self.sid,
-                &format!(
-                    "△ 检测到可能的危险操作意图：「{}」\n确认要继续执行吗？",
-                    self.msg
-                ),
-            )
-            .await;
-            if decision == "reject" {
-                println!("[JARVIS] 用户拒绝了危险操作");
-                *self.ctx.cancel_token.lock().await = None;
-                return Ok(Some(JarvisResult {
-                    status: "CANCELLED".to_string(),
-                    content: "操作已取消。如果这是一个误判，请重新更具体地描述您的需求。"
-                        .to_string(),
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    session_input_tokens: 0,
-                    session_output_tokens: 0,
-                    user_message_id: None,
-                    tool_execution_summary: None,
-                }));
-            }
-            println!("[JARVIS] 用户确认了危险操作，继续执行");
-        }
-
-        if self.detected_intent == "UNCLEAR" {
-            println!("[JARVIS] 意图不明确，询问用户澄清");
-            let clarification = "先生，我不太确定您的意思。请问您具体想要做什么呢？\n\n例如：\n- **闲聊** — 随便聊聊天\n- **读写代码** — 查看、修改、审查代码\n- **运行命令** — 执行脚本、编译、部署\n- **咨询问题** — 技术概念、用法疑问\n- **记忆查询** — 查看之前的对话记录\n- **设置** — 配置修改\n- **危险操作** — 删除文件等不可逆操作\n\n请描述您的需求，我来为您处理。";
-            *self.ctx.cancel_token.lock().await = None;
-            return Ok(Some(JarvisResult {
-                status: "CLARIFICATION_NEEDED".to_string(),
-                content: clarification.to_string(),
-                input_tokens: 0,
-                output_tokens: 0,
-                session_input_tokens: 0,
-                session_output_tokens: 0,
-                user_message_id: None,
-                tool_execution_summary: None,
-            }));
-        }
-
-        Ok(None)
-    }
-
-    /// 阶段 3: 上下文构建 + 消息注入 + Agent Run 启动
+    /// 阶段 3：上下文构建 + 消息注入 + Agent Run 启动
+    ///
+    /// 主循环开始前的一次性准备：
+    /// 1. 构建动态上下文（意图相关提示、工作区信息等）
+    /// 2. 崩溃恢复：若上次 run 异常中断（含 InProgress 残留任务），注入“恢复指令”给 LLM
+    /// 3. 把用户消息（含图片）注入会话历史，记录其在消息列表中的位置 initial_msg_index
+    /// 4. 决定首轮是否深度思考（用户临时开关优先，否则按受众默认值）
+    /// 5. 在 agent_runs 表登记本次 run，并保存第一个检查点
     async fn pre_loop(&mut self) {
+        // 步骤 1：构建动态上下文（意图相关提示 + 工作区信息）
         self.dynamic_context_str = build_dynamic_context(
             &self.detected_intent,
             &self.request_workspace,
+            &self.capabilities,
         );
 
-        self.user_msg_for_memory = self.msg.clone();
+        // 步骤 2：准备用户消息的短版预览（给 UI 展示）
         self.user_msg_preview = if self.msg.chars().count() > 50 {
             self.msg.chars().take(50).collect::<String>()
         } else {
             self.msg.clone()
         };
 
+        // 步骤 3：恢复 + 注入 —— 处理崩溃残留并把本次用户消息写入历史
         let memory_after_user_message = {
             let mut session = self.ctx.memory.lock().await;
+            // 3a. 崩溃恢复：上次 run 异常中断时，把残留消息恢复进内存
             if crate::command::session::recover_interrupted_into_memory(
                 &self.sid,
                 &mut session,
@@ -537,21 +565,25 @@ impl PipelineState {
 
                 let _ = self.app.emit("session-updated", ());
             }
+            // 3b. 把用户消息（含图片）注入历史，记录起始位置 initial_msg_index
             let mut active_sid = Some(self.sid.clone());
             self.initial_msg_index = inject_user_message(
                 &mut session,
                 self.display_msg.as_deref().unwrap_or(&self.msg),
                 &self.image_base64_list,
+                &self.dynamic_context_str,
                 &mut active_sid,
             );
             session.clone()
         };
+        // 步骤 4：注入后立即落库（防止崩溃丢消息）
         crate::core::session::save_session(&self.sid, &memory_after_user_message, None);
         let _ = self.app.emit("session-updated", ());
 
         // 深度思考决策：
         // - 首轮：用户 thinking_override 优先（一次性），否则使用 audience 默认值
         // - 后续轮：始终使用 audience 默认值（developer → true, user → false）
+        // 步骤 5：决定首轮是否深度思考（用户临时开关优先，否则按受众默认）
         if let Some(override_val) = self.thinking_override {
             self.should_think = override_val;
             self.thinking_override = None; // 消费后清除，不再影响后续轮次
@@ -564,7 +596,9 @@ impl PipelineState {
             session.message_ids.get(self.initial_msg_index).cloned()
         };
         println!("[JARVIS] start_run: message_id={:?} initial_msg_index={}", user_message_id, self.initial_msg_index);
+        // 步骤 6：在 agent_runs 表登记本次 run（实时进度 + 崩溃恢复用）
         self.run_id = agent_runs::start_run(&self.app, &self.sid, &self.msg, None, user_message_id);
+        // 步骤 7：标记当前 run 为活跃，并保存第一个检查点
         *self.ctx.active_run_id.lock().await = Some(self.run_id.clone());
         {
             let session = self.ctx.memory.lock().await;
@@ -581,7 +615,7 @@ impl PipelineState {
         }
     }
 
-    /// 处理调度器事件。
+    /// 处理调度器事件（异步调度模式下，主循环与 LLM 请求做 select 时消费）。
     /// 返回 (needs_llm, scheduler_done)：
     /// - needs_llm: 有事件注入了对话，需要 LLM 处理
     /// - scheduler_done: 调度器已结束（AllDone），调用方应退出等待
@@ -630,11 +664,25 @@ impl PipelineState {
         }
     }
 
-    /// 阶段 4: 主循环 — 压缩 → 请求构建 → API 调用 → 流处理 → 工具执行
+    /// 阶段 4：主循环 — Agent Loop 心脏（调 LLM → 流式解析 → 工具执行 → 循环）
+    ///
+    /// 每轮循环的执行顺序：
+    /// 1. 取消检查 / 循环次数确认（满 30 轮弹窗询问）/ 后台通知注入 / 上下文压缩检查
+    /// 2. 准备历史快照（过滤内部消息、修复残缺工具配对、恢复图片、注入动态上下文）
+    /// 3. build_llm_request 按模型格式构建请求（OpenAI 出口时翻译协议）
+    /// 4. 调 API：有活跃调度器时与调度器事件做 select（异步并行），否则直接等待（120s 超时 + 重试）
+    /// 5. process_stream 流式解析：边收边推前端，累积工具参数分片
+    /// 6. execute_tool_calls 并行执行工具，结果以 ToolResult 写回历史
+    /// 7. 判断是否继续：有工具结果 → 下一轮；无工具结果 = 最终答案，结束循环
+    ///
+    /// 循环终止条件：无工具结果 / 工具请求 break_loop（如 ProposePlan 等待审批）/
+    /// 用户取消 / 达到 200 轮绝对上限 / API 连续失败
     async fn run_main_loop(&mut self) -> Result<(), AgentError> {
         loop {
             println!("[JARVIS] 主循环开始: loop_count={}, total_loop_count={}", self.loop_count, self.total_loop_count);
 
+            // ════ 主循环每轮开始 ════
+            // 步骤 1：取消检查 —— 用户点停止则退出循环
             // 取消检查
             if self.cancel_token.is_cancelled() {
                 println!("[JARVIS] 主循环: cancel_token 已取消，退出循环");
@@ -646,13 +694,20 @@ impl PipelineState {
             if self.loop_count >= crate::infra::types::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM {
                 let decision = self.request_loop_continuation().await;
                 if !decision {
+                    // 用户拒绝续跑 / 确认未完成：给一个明确的收尾说明，避免留下空气泡
+                    if self.final_answer.trim().is_empty() {
+                        self.final_answer =
+                            "已停止执行。需要继续时告诉我，我会接着上次的进度往下做。".to_string();
+                    }
                     break;
                 }
             }
 
+            // 步骤 2：后台通知注入 —— 把后台任务完成结果推给 LLM 决策
             // 后台通知注入
             self.drain_background_notifications().await;
 
+            // 步骤 3：上下文压缩检查（超上限 70% 时自动摘要旧历史）
             // Token 压缩
             self.compact_if_needed().await;
 
@@ -661,9 +716,11 @@ impl PipelineState {
                 self.should_think = self.loop_think_default;
             }
 
+            // 步骤 4：准备发给 LLM 的历史快照（过滤内部消息、修复残缺配对等）
             // 历史快照准备
             let history_snapshot = self.prepare_history_snapshot().await;
 
+            // 步骤 5：构建 LLM 请求（OpenAI 出口时按模型翻译协议）+ 更新上下文快照
             // 构建请求并更新上下文快照
             let audience = self.ctx.agent_audience.lock().await.clone();
             let work_mode = self.ctx.agent_work_mode.lock().await.clone();
@@ -678,6 +735,7 @@ impl PipelineState {
                 continue;
             }
 
+            // 步骤 6：调用 LLM API —— 有活跃调度器时与其事件并行 select 等待
             // 调度器 channel 接收端（异步 select! 用）
             let sched_rx = self.ctx.scheduler_rx.lock().await.take();
 
@@ -782,6 +840,7 @@ impl PipelineState {
 
             let Some(response) = response else { continue; };
 
+            // 步骤 7：SSE 流式解析 —— 边收边推前端、累积工具参数分片
             // 流式处理（含一次断流重试）
             let stream_result = {
                 let mut stream = response.bytes_stream().eventsource();
@@ -903,6 +962,7 @@ impl PipelineState {
                 self.req_output_tokens,
             );
 
+            // 步骤 8：并行执行工具调用（tools_runner 三阶段流水线）
             // 工具执行
             let work_mode = self.ctx.agent_work_mode.lock().await.clone();
             let (mut tool_results, manual_compact, sub_in, sub_out) = execute_tool_calls(
@@ -969,6 +1029,7 @@ impl PipelineState {
                 continue;
             }
 
+            // 步骤 9：把本轮助手响应（文本/思考/工具调用）写入会话历史
             // 存储助手回复
             self.store_assistant_response(&current_blocks).await;
 
@@ -1018,6 +1079,7 @@ impl PipelineState {
                 }
             }
 
+            // 步骤 10：判断是否继续 —— 无工具结果即为最终答案，结束循环
             // 判断是否继续循环
             println!(
                 "[JARVIS] 主循环判断: tool_results.is_empty()={}, tool_results.len()={}, has_tool={}, tool_input_buffers.len()={}, text_len={}",
@@ -1224,6 +1286,7 @@ impl PipelineState {
 
                 // 执行后续操作
                 let mut session = self.ctx.memory.lock().await;
+                // LLM 请求了 CompactConversation：工具结果写回后立即执行压缩
                 if manual_compact {
                     let _ = auto_compact(
                         &self.sid,
@@ -1249,6 +1312,7 @@ impl PipelineState {
             }
             self.loop_count += 1;
             self.total_loop_count += 1;
+            // 步骤 11：进入下一轮循环（累计轮数，超 200 轮绝对上限强制停止）
             println!("[JARVIS] 主循环: 进入下一轮 loop_count={}, total_loop_count={}", self.loop_count, self.total_loop_count);
 
             if self.total_loop_count >= crate::infra::types::constants::MAX_AGENT_LOOP_ABSOLUTE {
@@ -1263,7 +1327,13 @@ impl PipelineState {
         Ok(())
     }
 
-    /// 阶段 5: 检查点创建 + 会话保存 + 记忆代理 + 结果组装
+    /// 阶段 5：收尾 — 持久化 + 快照 + 记忆 + 结果组装
+    ///
+    /// 1. 崩溃兜底：把内存中未落库的编辑补丁先写入 agent_run_patches 表
+    /// 2. 文件快照：本轮有文件改动才创建 Git 检查点（纯聊天轮次跳过），供 UI 回滚
+    /// 3. 保存会话到 SQLite（含累计 token），必要时异步调 LLM 自动起名
+    /// 4. 记忆超预算时后台整理一次（不阻塞返回；新增事实由主 Agent 的 UpdateMemory 负责）
+    /// 5. 按取消/循环超时/正常三种情况组装 JarvisResult（FINISH / CANCELLED / PAUSED_LOOP_LIMIT）
     async fn finalize(mut self) -> JarvisResult {
         let was_cancelled = self.cancel_token.is_cancelled();
         let was_loop_timeout = *self.ctx.loop_continuation_pending.lock().await;
@@ -1320,7 +1390,9 @@ impl PipelineState {
             );
         }
 
+        // 3. 保存会话到 SQLite（含累计 token）；纯聊天且被取消时不落空会话
         let memory = self.ctx.memory.lock().await.clone();
+
         let session_meta = if memory.messages.is_empty() && was_cancelled {
             None
         } else {
@@ -1339,7 +1411,8 @@ impl PipelineState {
         if let Some(ref meta) = session_meta {
             let _ = self.app.emit("session-updated", ());
 
-            if !was_cancelled && meta.message_count >= 2 && meta.title_source == "default" {
+        // 自动命名：消息数足够且未命名过时，后台调 LLM 生成标题
+        if !was_cancelled && meta.message_count >= 2 && meta.title_source == "default" {
                 let app_clone = self.app.clone();
                 let sid_clone = self.sid.clone();
                 let memory_clone = memory.clone();
@@ -1357,15 +1430,21 @@ impl PipelineState {
             }
         }
 
-        // 记忆代理
-        let reply_for_memory = self.final_answer.clone();
-        let cfg_clone = self.cfg.clone();
-        let sid_for_memory = self.sid.clone();
-        let app_for_memory = self.app.clone();
-        tokio::spawn(async move {
-            run_memory_agent(app_for_memory, self.user_msg_for_memory, reply_for_memory, cfg_clone, sid_for_memory).await;
-        });
+        // 4. 记忆维护：只有全局记忆超过阈值时才后台整理一次
+        // 原先是每轮结束都跑一次 LLM 重写，既贵，又会让记忆越滚越乱。
+        // 新增事实由主 Agent 的 UpdateMemory 负责，这里只做合并压缩。
+        if global_memory_char_count()
+            > crate::core::tools::agent_tools::MEMORY_CONSOLIDATE_THRESHOLD_CHARS
+        {
+            let cfg_clone = self.cfg.clone();
+            let sid_for_memory = self.sid.clone();
+            let app_for_memory = self.app.clone();
+            tokio::spawn(async move {
+                run_memory_curator(app_for_memory, cfg_clone, sid_for_memory).await;
+            });
+        }
 
+        // 汇总状态：正常结束 / 用户取消 / 循环超时暂停
         let status = if was_cancelled {
             "CANCELLED"
         } else if was_loop_timeout {
@@ -1433,7 +1512,10 @@ impl PipelineState {
     // ─── 主循环辅助方法 ───
 
     /// 处理错误中止：记录错误事件、标记 run 失败、清理状态
+    /// 异常收尾：主循环报错时调用，把错误记录到 agent_runs 表并清理运行状态
+    /// （标记 run 失败、清空 active_run_id、释放取消令牌，保证下次可重新执行）
     async fn abort_after_error(&self, error: &AgentError) {
+        // 仅当已有 run 记录时，才执行失败登记与状态清理
         if !self.run_id.is_empty() {
             // 记录错误事件到 agent_run_events 表
             agent_runs::record_tool_result(
@@ -1453,6 +1535,8 @@ impl PipelineState {
         *self.ctx.cancel_token.lock().await = None;
     }
 
+    /// 用户取消处理：保留用户消息、恢复已流式输出的部分内容作为答案，
+    /// 截断会话历史到本次用户消息之后，并标记 run 为 CANCELLED
     async fn handle_cancellation(&mut self) {
         println!(
             "[JARVIS] 用户已取消执行，保留用户消息并恢复部分输出，user index {}",
@@ -1460,6 +1544,7 @@ impl PipelineState {
         );
 
         // 直接查 agent_runs 表的 live_content（不受 running 状态保护逻辑影响）
+        // 1. 从 agent_runs 表取回已流式输出的部分结果（live_content / thinking）
         let run = crate::core::orchestration::agent_run_repository::list_runs(Some(&self.sid))
             .ok()
             .and_then(|runs| runs.into_iter().find(|r| r.run_id == self.run_id));
@@ -1489,6 +1574,7 @@ impl PipelineState {
 
         {
             let mut session = self.ctx.memory.lock().await;
+            // 2. 截断历史到本次用户消息之后，把部分结果作为最终答案写回
             let keep_len = (self.initial_msg_index + 1).min(session.messages.len());
             session.messages.truncate(keep_len);
             session.message_ids.truncate(keep_len);
@@ -1513,6 +1599,7 @@ impl PipelineState {
                 "loopCount": self.total_loop_count + 1
             }),
         );
+        // 3. 标记 run 为 CANCELLED，并向前端发送取消通知
         agent_runs::cancel_run(
             &self.app,
             &self.run_id,
@@ -1522,8 +1609,9 @@ impl PipelineState {
         );
     }
 
-    /// 循环上限确认：请求用户授权继续
-    /// 返回 true 表示继续，false 表示终止
+    /// 循环上限确认（满 30 轮触发）：弹窗请用户授权继续
+    /// 返回 true 表示继续（重置 loop_count），false 表示终止；
+    /// 超时或拒绝时置 loop_continuation_pending，用户稍后可通过 resume_pipeline 续跑
     async fn request_loop_continuation(&mut self) -> bool {
         let _ = self.app.emit(
             "chat-stream",
@@ -1533,6 +1621,7 @@ impl PipelineState {
                 "loopCount": self.total_loop_count + 1
             }),
         );
+        // 弹权限确认：允许 → 继续并重置本轮计数；超时/拒绝 → 置可续跑标记
         let decision = request_permission(
             &self.app,
             &self.sid,
@@ -1540,9 +1629,10 @@ impl PipelineState {
                 "代理执行已达到 {} 回合，可能任务较为复杂或陷入循环。是否继续执行？",
                 crate::infra::types::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM
             ),
+            PermissionKind::LoopContinuation,
         )
         .await;
-        if decision == "allow" || decision == "allow_session" {
+        if decision.is_allowed() {
             // 清除待续跑标记（用户及时响应了）
             *self.ctx.loop_continuation_pending.lock().await = false;
             self.loop_count = 0;
@@ -1556,15 +1646,25 @@ impl PipelineState {
             );
             true
         } else {
-            // 超时或用户拒绝 — 标记待续跑，不立即设 final_answer
-            // 如果是超时：用户稍后仍可通过 resolve_permission 发出 allow 来 resume
-            *self.ctx.loop_continuation_pending.lock().await = true;
+            // 只有"没拿到结论"（取消、通道关闭）才保留续跑入口；
+            // 用户明确点了拒绝，就不该再给一个"稍后点允许继续"的后门
+            if decision.is_rejected() {
+                *self.ctx.loop_continuation_pending.lock().await = false;
+                println!("[JARVIS] 用户拒绝继续执行，循环终止");
+            } else {
+                *self.ctx.loop_continuation_pending.lock().await = true;
+                println!(
+                    "[JARVIS] 循环续跑确认未完成（{}），保留续跑入口",
+                    decision.status_label()
+                );
+            }
             false
         }
     }
 
     /// 注入后台任务完成通知到会话中
     async fn drain_background_notifications(&self) {
+        // 取出后台任务完成的待消费通知（无通知则无事可做）
         let notifs =
             crate::infra::background::BackgroundManager::drain_notifications(&self.app).await;
         if !notifs.is_empty() {
@@ -1573,6 +1673,7 @@ impl PipelineState {
                 notif_text.push_str(&format!("[bg:{}] {}: {}\n", n.task_id, n.status, n.result));
             }
             let mut session = self.ctx.memory.lock().await;
+            // 以 User/Assistant 对写入会话（source=background，发给 LLM 前会被过滤）
             append_message(&mut session, Message::User {
                 content: Content::Single(format!(
                     "<background-results>\n{}\n</background-results>",
@@ -1585,8 +1686,11 @@ impl PipelineState {
         }
     }
 
-    /// 检查 token 用量并在需要时执行压缩
+    /// 上下文压缩检查（项目内唯一的 LLM 摘要压缩，属单级）：本地估算 token，
+    /// 超过上限（100k）的 70% 时调 LLM 把旧历史压缩成一段摘要；
+    /// 压缩前后保证用户最新消息仍在历史末尾，且后续轮次能正确计算 initial_msg_index
     async fn compact_if_needed(&mut self) {
+        // 1. 估算当前上下文 token（消息 + 工具 schema）
         let (messages_for_estimate, sources_for_estimate) = {
             let session = self.ctx.memory.lock().await;
             (session.messages.clone(), session.sources.clone())
@@ -1608,6 +1712,7 @@ impl PipelineState {
             );
 
             let mut session = self.ctx.memory.lock().await;
+            // 2. 压缩前先临时取出最后一条用户消息，压缩完成后再放回
             let mut last_user_msg = None;
             if let Some(Message::User { .. }) = session.messages.last() {
                 last_user_msg = pop_message(&mut session);
@@ -1630,6 +1735,7 @@ impl PipelineState {
                 self.initial_msg_index = session.messages.len();
             }
 
+            // 3. 把最新用户消息恢复到历史末尾，保证上下文连贯
             if let Some((msg, message_id)) = last_user_msg {
                 let needs_assistant_pad = match session.messages.last() {
                     Some(Message::User { .. }) => true,
@@ -1647,70 +1753,49 @@ impl PipelineState {
         }
     }
 
+    /// 获取当前会话可用的工具定义（固定核心工具集，参数不变以命中 prompt cache）
     fn current_tools(&self) -> Vec<serde_json::Value> {
         get_tools_definition()
     }
 
+    /// 从完整消息列表生成“发给 LLM 的历史快照”（只读处理，不改原历史）：
+    /// 1. 过滤 internal/background 内部消息
+    /// 2. 折叠往轮图片、恢复本轮图片的 base64（动态上下文已随消息落库，不再另行注入）
+    /// 3. 修复残缺的 Assistant(tool_calls) → ToolResult 配对（防 API 400）
+    ///
+    /// 这里不改写工具结果内容：任何对「已经发出去过的前缀」的改写都会让 provider 的
+    /// prompt cache 整体失效，比省下的 token 贵得多。
     fn prepare_history_snapshot_from_messages(
         &self,
         messages: Vec<Message>,
         sources: &[String],
     ) -> Vec<Message> {
-        // 过滤掉 internal/background 消息，LLM 不需要看到系统内部通知
-        // 同时计算 initial_msg_index 的偏移量
-        let mut filtered = Vec::new();
-        let mut index_shift = 0usize;
-        for (i, (msg, src)) in messages.into_iter().zip(sources.iter()).enumerate() {
-            if matches!(src.as_str(), "chat" | "compact" | "context") {
-                filtered.push(msg);
-            } else if i < self.initial_msg_index {
-                index_shift += 1;
+        // 步骤 1：过滤 internal/background 内部消息（LLM 不需要看到系统内部通知），
+        // 并把「本轮用户消息」的下标换算到过滤后的快照坐标系——initial_msg_index
+        // 是过滤前的下标，而图片折叠要的是过滤后的下标。
+        let session_turn_start = self.initial_msg_index;
+        let mut filtered: Vec<Message> = Vec::with_capacity(messages.len());
+        let mut snapshot_turn_start: Option<usize> = None;
+        for (idx, (msg, src)) in messages.into_iter().zip(sources.iter()).enumerate() {
+            if !matches!(src.as_str(), "chat" | "compact" | "context") {
+                continue;
             }
+            if idx == session_turn_start {
+                snapshot_turn_start = Some(filtered.len());
+            }
+            filtered.push(msg);
         }
-        let mut messages = filtered;
-        let adjusted_msg_index = self.initial_msg_index.saturating_sub(index_shift);
+        // 兜底：没命中就把所有图片当往轮处理（不会 panic，也不会把 base64 全量发出去）
+        let current_turn_start = snapshot_turn_start.unwrap_or(filtered.len());
 
-        let mut history_snapshot = if self.detected_intent == "CHAT" {
-            for msg in &mut messages {
-                if let Message::User { content } = msg {
-                    if let Content::Multiple(blocks) = content {
-                        for block in blocks {
-                            if let ContentBlock::ToolResult {
-                                ref mut content, ..
-                            } = block
-                            {
-                                // 错误信息对 LLM 决策至关重要，保留不截断
-                                let is_error = content.contains("错误")
-                                    || content.contains("失败")
-                                    || content.contains("error")
-                                    || content.contains("Error")
-                                    || content.contains("denied")
-                                    || content.contains("拒绝");
-                                if !is_error {
-                                    *content =
-                                        "[系统截断：为闲聊模式节省Token，工具返回的冗长详情已被折叠。]"
-                                            .to_string();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            messages
-        } else {
-            messages
-        };
+        let mut history_snapshot = filtered;
 
         // 防御性检查：确保每个 Assistant(tool_calls) 后跟 ToolResult
         // 修复流式中断、并发修改等边缘 case 导致的消息序列断裂
         fix_broken_tool_call_pairs(&mut history_snapshot);
 
-        restore_image_data(&mut history_snapshot);
-        inject_context_into_history(
-            &mut history_snapshot,
-            adjusted_msg_index,
-            &self.dynamic_context_str,
-        );
+        // 步骤 2：折叠往轮图片、恢复本轮图片。动态上下文已随消息落库，这里不再注入
+        restore_image_data(&mut history_snapshot, current_turn_start);
 
         history_snapshot
     }
@@ -1843,6 +1928,9 @@ impl PipelineState {
         out
     }
 
+    /// 估算一次请求的上下文用量（消息 + 工具 schema，按分区统计），
+    /// 结果用于前端上下文监控展示与压缩触发判断；
+    /// 每个 section 记录独立字符数/token 数，方便 UI 定位占比
     fn build_context_estimate(
         &self,
         history_snapshot: &[Message],
@@ -1893,35 +1981,6 @@ impl PipelineState {
             }
         }
 
-        fn strip_dynamic_context(
-            messages: &[Message],
-            initial_msg_index: usize,
-            dynamic_context: &str,
-        ) -> Vec<Message> {
-            let mut cleaned = messages.to_vec();
-            if dynamic_context.is_empty() {
-                return cleaned;
-            }
-            if let Some(Message::User { content }) = cleaned.get_mut(initial_msg_index) {
-                match content {
-                    Content::Single(text) => {
-                        let prefix = format!("{}\n\n[User Input]:\n", dynamic_context);
-                        if let Some(rest) = text.strip_prefix(&prefix) {
-                            *text = rest.to_string();
-                        }
-                    }
-                    Content::Multiple(blocks) => {
-                        if let Some(ContentBlock::Text { text }) = blocks.first() {
-                            if text.trim() == dynamic_context.trim() {
-                                blocks.remove(0);
-                            }
-                        }
-                    }
-                }
-            }
-            cleaned
-        }
-
         fn count_blocks(messages: &[Message]) -> (usize, usize, usize, usize) {
             let mut tool_calls = 0;
             let mut tool_results = 0;
@@ -1940,17 +1999,14 @@ impl PipelineState {
                         ContentBlock::Image { .. } => images += 1,
                         ContentBlock::Thinking { .. } => thinking += 1,
                         ContentBlock::Text { .. } => {}
+                        ContentBlock::Context { .. } => {}
                     }
                 }
             }
             (tool_calls, tool_results, images, thinking)
         }
 
-        let cleaned_messages = strip_dynamic_context(
-            history_snapshot,
-            self.initial_msg_index,
-            &self.dynamic_context_str,
-        );
+        let cleaned_messages = crate::infra::llm::adapters::strip_context_blocks(history_snapshot);
         let (tool_call_count, tool_result_count, image_count, thinking_count) =
             count_blocks(history_snapshot);
         let messages_text = Self::format_messages_readable(&cleaned_messages);
@@ -1993,7 +2049,7 @@ impl PipelineState {
                 &self.model_id,
                 "attachments",
                 "Attachments / Images",
-                format!("当前请求中包含 {} 个图片块。近期图片会恢复为 base64，远期图片会折叠为文本摘要。", image_count),
+                format!("当前请求中包含 {} 个图片块。本轮的图片会恢复为 base64，往轮图片折叠为文本摘要。", image_count),
                 image_count,
             ));
         }
@@ -2100,14 +2156,23 @@ impl PipelineState {
             .unwrap_or(crate::infra::types::constants::MAX_TOKENS_CONTEXT)
     }
 
-    /// 构建 LLM API 请求体
+    /// 构建 LLM API 请求体（内部统一按 Anthropic 结构建模）
+    ///
+    /// - 总是流式请求（stream: true），写入系统提示词、工具 schema、思考配置、温度等
+    /// - OpenAI 格式模型：经 adapters 翻译消息/工具，并按模型注册表注入各家“思考参数”
+    /// - 返回值第二项 is_openai 告诉 stream.rs 按哪种协议解析 SSE 事件
     fn build_llm_request(
         &self,
         history_snapshot: Vec<Message>,
         audience: &str,
         work_mode: &str,
     ) -> (serde_json::Value, bool) {
-        let system_prompt = crate::core::agent::prompts::get_system_prompt(audience, work_mode);
+        // 1. 取系统提示词与工具定义，并更新上下文监控快照
+        let system_prompt = crate::core::agent::prompts::get_system_prompt(
+            audience,
+            work_mode,
+            self.request_workspace.as_deref(),
+        );
         let tools = self.current_tools();
         self.update_context_snapshot(&history_snapshot, &tools);
 
@@ -2135,6 +2200,11 @@ impl PipelineState {
             request_body.max_tokens = 4096;
         }
 
+        // 出网前把内部 Context 块降级为普通 Text（协议不认 "context" 类型）
+        crate::infra::llm::adapters::materialize_context_blocks_for_wire(
+            &mut request_body.messages,
+        );
+
         if self.api_format.is_openai() {
             use crate::infra::llm::adapters::{
                 should_backfill_deepseek_reasoning_content,
@@ -2151,6 +2221,7 @@ impl PipelineState {
                 backfill_reasoning,
             );
             let openai_tools = translate_tools_to_openai(&request_body.tools);
+            // 2. OpenAI 出口：翻译消息/工具，并按模型注册表注入该模型的思考参数
             let mut openai_req = OpenAIRequest {
                 model: self.model_id.clone(),
                 max_tokens: Some(max_tokens),
@@ -2179,6 +2250,11 @@ impl PipelineState {
             );
             (serde_json::to_value(openai_req).unwrap(), true)
         } else {
+            // Anthropic 出口：丢掉无 signature 的 thinking 块，避免回传被判 400
+            let messages = crate::infra::llm::adapters::strip_unsigned_thinking_for_anthropic(
+                &request_body.messages,
+            );
+            request_body.messages = messages;
             (serde_json::to_value(request_body).unwrap(), false)
         }
     }
@@ -2243,9 +2319,10 @@ impl PipelineState {
         }
     }
 
-    /// 存储助手回复到会话历史中
+    /// 存储助手回复到会话历史（过滤空文本/空思考块，工具块原样保留）
     async fn store_assistant_response(&self, current_blocks: &[ContentBlock]) {
         let mut session = self.ctx.memory.lock().await;
+        // 过滤空文本/空思考块，仅保留有效内容
         let filtered_blocks: Vec<ContentBlock> = current_blocks
             .iter()
             .filter(|block| match block {
@@ -2253,10 +2330,12 @@ impl PipelineState {
                 ContentBlock::Thinking { thinking, .. } => !thinking.trim().is_empty(),
                 ContentBlock::ToolUse { .. }
                 | ContentBlock::ToolResult { .. }
-                | ContentBlock::Image { .. } => true,
+                | ContentBlock::Image { .. }
+                | ContentBlock::Context { .. } => true,
             })
             .cloned()
             .collect();
+        // 写入会话历史（chat 来源，下一轮请求会发给 LLM）
         if !filtered_blocks.is_empty() {
             append_message(&mut session, Message::Assistant {
                 content: Content::Multiple(filtered_blocks),
@@ -2294,6 +2373,9 @@ pub async fn run_pipeline(
     .await
 }
 
+/// 续跑入口：用户在上轮“循环超时暂停”后授权继续，或恢复被中断的 run 时调用。
+/// 与 run_pipeline 的差别：inject_user_message=false（不重复注入用户消息），
+/// 以“继续原因”作为本轮输入。
 pub async fn resume_pipeline(
     session_id: String,
     reason: String,
@@ -2317,6 +2399,10 @@ pub async fn resume_pipeline(
     .await
 }
 
+/// 流水线总调度（run_pipeline / resume_pipeline 共用）
+/// 
+/// 依次执行：阶段 1 setup → 阶段 2 validate（可提前返回）→ 阶段 3 pre_loop
+/// → 阶段 4 run_main_loop（出错走 abort_after_error）→ 阶段 5 finalize
 async fn run_pipeline_inner(
     session_id: String,
     msg: String,
@@ -2330,7 +2416,7 @@ async fn run_pipeline_inner(
     session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
     config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
 ) -> Result<JarvisResult, AgentError> {
-    // 阶段 1: 初始化
+    // ── 阶段 1：初始化（会话与配置准备 + 意图分类）──
     let mut state = PipelineState::setup(
         session_id,
         msg,
@@ -2346,20 +2432,15 @@ async fn run_pipeline_inner(
     )
     .await?;
 
-    // 阶段 2: 意图验证 (可能提前返回)
-    if let Some(early_result) = state.validate().await? {
-        return Ok(early_result);
-    }
-
-    // 阶段 3: 循环前准备
+    // ── 阶段 3：循环前准备（崩溃恢复 + 注入用户消息 + 启动 run）──
     state.pre_loop().await;
 
-    // 阶段 4: 主循环
+    // ── 阶段 4：主循环（调 LLM → 执行工具 → 直到得出最终答案）──
     if let Err(err) = state.run_main_loop().await {
         state.abort_after_error(&err).await;
         return Err(err);
     }
 
-    // 阶段 5: 收尾
+    // ── 阶段 5：收尾（持久化 / 快照 / 记忆 / 结果组装）──
     Ok(state.finalize().await)
 }

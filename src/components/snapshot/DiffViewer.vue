@@ -234,7 +234,7 @@ const patchTitle = computed(() => {
 }
 
 .diff-line.added {
-  background: rgba(34, 197, 94, 0.08);
+  background: color-mix(in srgb, var(--accent-green) 8%, transparent);
 }
 
 .diff-line.added .line-prefix {
@@ -246,7 +246,7 @@ const patchTitle = computed(() => {
 }
 
 .diff-line.removed {
-  background: rgba(239, 68, 68, 0.08);
+  background: color-mix(in srgb, var(--accent-red) 8%, transparent);
 }
 
 .diff-line.removed .line-prefix {

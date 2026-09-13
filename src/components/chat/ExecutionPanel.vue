@@ -1,3 +1,11 @@
+<!--
+# ExecutionPanel.vue — 工具执行日志面板
+
+展示单次工具调用的执行明细（命令、输出、错误），面向开发者视图。
+
+## Constraints
+- 状态色：completed=绿，running/error=中性灰
+-->
 <script setup lang="ts">
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
@@ -133,11 +141,11 @@ const summaryText = computed(() => {
 }
 
 .agent-tool-row.error {
-  color: var(--accent-orange);
+  color: var(--text-muted);
 }
 
 .agent-tool-row.running {
-  color: var(--accent-yellow);
+  color: var(--text-muted);
 }
 
 .agent-tool-icon {
@@ -166,7 +174,7 @@ const summaryText = computed(() => {
 }
 
 .agent-tool-field.error > span {
-  color: var(--accent-orange);
+  color: var(--text-muted);
 }
 
 .agent-tool-log,

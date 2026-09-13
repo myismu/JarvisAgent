@@ -1,3 +1,11 @@
+<!--
+# ConfirmModal.vue — 通用确认弹窗
+
+带标题、说明与可选警告区的模态确认框，供删除等操作二次确认。
+
+## Constraints
+- 危险确认按钮用红，警告说明区为中性灰
+-->
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n';
 
@@ -96,9 +104,9 @@ const emit = defineEmits<{
 .confirm-warning {
   margin: 0;
   padding: 12px 14px;
-  color: var(--text-warning);
-  background: var(--surface-warning);
-  border: 1px solid var(--border-warning);
+  color: var(--text-soft);
+  background: var(--glass-bg-light);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
   font-size: 0.9rem;
   font-weight: 600;

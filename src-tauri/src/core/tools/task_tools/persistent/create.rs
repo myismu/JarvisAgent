@@ -22,11 +22,11 @@ pub(super) fn tool_def() -> ToolDef {
                     "metadata": {"type": "object", "description": "可选元数据。"},
                     "owner": {"type": "string", "description": "负责人名称。"},
                     "tasks": {"type": "array", "items": {"type": "object", "properties": {
-                        "subject": {"type": "string"},
-                        "description": {"type": "string"},
-                        "activeForm": {"type": "string"},
+                        "subject": {"type": "string", "description": "任务标题（必填）。"},
+                        "description": {"type": "string", "description": "任务详情，说明要做什么。"},
+                        "activeForm": {"type": "string", "description": "进行时描述，如\"实现API中\"。"},
                         "depends_on": {"type": "array", "items": {"type": "integer"}, "description": "依赖的任务在数组中的 1-based 索引"},
-                        "owner": {"type": "string"}
+                        "owner": {"type": "string", "description": "负责人名称。"}
                     }, "required": ["subject"]}, "description": "批量创建的任务列表。每项的 depends_on 为数组内索引。"}
                 }
             }

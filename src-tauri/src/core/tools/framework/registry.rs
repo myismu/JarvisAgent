@@ -12,6 +12,7 @@
 //! - 注册表通过 `OnceLock` 懒初始化，全局唯一
 //! - 保持插入顺序用于稳定输出
 //! - 写操作工具（WriteFile, EditFile）设为延迟工具，防止聊天模式下误操作
+//! - 只读保护模式（work_mode = chat）下按元数据过滤工具目录：只放行只读工具 + 会话管理工具
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -81,6 +82,18 @@ impl ToolRegistry {
         self.tools.get(name)
     }
 
+    /// 所有已注册且启用的工具名（保持插入顺序）。
+    ///
+    /// 用途：权限策略表要做"防漏"检查——新工具没登记分类时让测试直接失败。
+    pub fn all_tool_names(&self) -> Vec<&'static str> {
+        self.insertion_order
+            .iter()
+            .filter_map(|name| self.tools.get(name))
+            .filter(|t| t.is_enabled)
+            .map(|t| t.name)
+            .collect()
+    }
+
     /// 获取核心工具定义（should_defer == false && is_enabled）
     pub fn get_core_definitions(&self) -> Vec<serde_json::Value> {
         self.insertion_order
@@ -91,27 +104,32 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// 获取延迟工具列表 (name, description)，按意图筛选
-    pub fn get_deferred_list(&self, intent: &str) -> Vec<(&'static str, &'static str)> {
+    /// 获取延迟工具列表 (name, description)，按意图 + 工作模式筛选
+    pub fn get_deferred_list(
+        &self,
+        intent: &str,
+        work_mode: &str,
+    ) -> Vec<(&'static str, &'static str)> {
         self.insertion_order
             .iter()
             .filter_map(|name| self.tools.get(name))
             .filter(|t| t.should_defer && t.is_enabled)
-            .filter(|t| Self::is_available_for_intent(t, intent))
+            .filter(|t| Self::is_available(t, intent, work_mode))
             .map(|t| (t.name, t.description))
             .collect()
     }
 
-    /// 获取延迟工具搜索索引 (name, description, search_hint)，按意图筛选
+    /// 获取延迟工具搜索索引 (name, description, search_hint)，按意图 + 工作模式筛选
     pub fn get_deferred_search_entries(
         &self,
         intent: &str,
+        work_mode: &str,
     ) -> Vec<(&'static str, &'static str, &'static str)> {
         self.insertion_order
             .iter()
             .filter_map(|name| self.tools.get(name))
             .filter(|t| t.should_defer && t.is_enabled)
-            .filter(|t| Self::is_available_for_intent(t, intent))
+            .filter(|t| Self::is_available(t, intent, work_mode))
             .map(|t| (t.name, t.description, t.search_hint))
             .collect()
     }
@@ -125,25 +143,26 @@ impl ToolRegistry {
     }
 
     /// 获取所有延迟工具的名称列表（用于 search 时的全量展示）
-    pub fn get_all_deferred_names(&self, intent: &str) -> Vec<&'static str> {
+    pub fn get_all_deferred_names(&self, intent: &str, work_mode: &str) -> Vec<&'static str> {
         self.insertion_order
             .iter()
             .filter_map(|name| self.tools.get(name))
             .filter(|t| t.should_defer && t.is_enabled)
-            .filter(|t| Self::is_available_for_intent(t, intent))
+            .filter(|t| Self::is_available(t, intent, work_mode))
             .map(|t| t.name)
             .collect()
     }
 
-    /// 获取延迟工具分组（按 category），保持插入顺序
+    /// 获取延迟工具分组（按 category），保持插入顺序，按意图 + 工作模式筛选
     pub fn get_deferred_by_category(
         &self,
         intent: &str,
+        work_mode: &str,
     ) -> Vec<(&'static str, Vec<&'static str>)> {
         let mut groups: Vec<(&'static str, Vec<&'static str>)> = Vec::new();
         for name in &self.insertion_order {
             if let Some(t) = self.tools.get(name) {
-                if t.should_defer && t.is_enabled && Self::is_available_for_intent(t, intent) {
+                if t.should_defer && t.is_enabled && Self::is_available(t, intent, work_mode) {
                     let cat = if t.category.is_empty() { "其他" } else { t.category };
                     if let Some((_, names)) = groups.iter_mut().find(|(c, _)| *c == cat) {
                         names.push(t.name);
@@ -206,6 +225,42 @@ impl ToolRegistry {
             _ => true, // PROJECT_ACTION
         }
     }
+
+    /// 会改变文件系统/进程状态的工具（唯一一份定义，`tools::is_write_tool` 也复用这里）。
+    ///
+    /// 这份名单以前只存在于 tools/mod.rs 的运行期兜底里，导致"工具目录"与"运行期拦截"
+    /// 是两套判据：规划模式下目录里看得见 WriteFile，调用时才被拦。现在统一到注册表，
+    /// 目录过滤 / 搜索 / 执行 / 能力清单都由它推导。
+    pub const WRITE_TOOLS: &'static [&'static str] = &[
+        "WriteFile",
+        "EditFile",
+        "DeleteFile",
+        "RenameFile",
+        "ApplyPatch",
+        "RunCommand",
+        "StartBackgroundCommand",
+        "EditNotebook",
+    ];
+
+    /// 是否为写操作工具（按唯一名单判定）
+    pub fn is_write_tool_name(name: &str) -> bool {
+        Self::WRITE_TOOLS.contains(&name)
+    }
+
+    /// 工具可用性判定（意图 + 工作模式）。
+    ///
+    /// 这是工具目录过滤与运行时校验的**唯一口径**：
+    /// 目录里看不见的工具，调用时也一定被拦下。
+    pub fn is_available(tool: &ToolDef, intent: &str, work_mode: &str) -> bool {
+        if !Self::is_available_for_intent(tool, intent) {
+            return false;
+        }
+        // 规划模式：只探索 + 提交方案，写操作必须切回编辑模式
+        if work_mode == "plan" {
+            return !Self::is_write_tool_name(tool.name);
+        }
+        true
+    }
 }
 
 /// 注册宏：自动将 ToolDef 列表注册到 registry
@@ -227,7 +282,7 @@ macro_rules! tool_def {
         hint: $hint:expr,
         schema_desc: $schema_desc:expr,
         $( props: {
-            $( $prop_name:ident : $prop_type:ident $(enum expr $enum_expr:expr)? => $prop_desc:expr ),* $(,)?
+            $( $prop_name:ident : $prop_type:ident $(items $items_tt:tt)? $(enum expr $enum_expr:expr)? => $prop_desc:expr ),* $(,)?
         }, )?
         $( required: $required:expr, )?
         $( category: $category:expr, )?
@@ -245,6 +300,9 @@ macro_rules! tool_def {
                 });
                 $(
                     prop_schema.as_object_mut().unwrap().insert("enum".to_string(), serde_json::json!($enum_expr));
+                )?
+                $(
+                    prop_schema.as_object_mut().unwrap().insert("items".to_string(), serde_json::json!($items_tt));
                 )?
                 props_map.insert(stringify!($prop_name).to_string(), prop_schema);
             )*

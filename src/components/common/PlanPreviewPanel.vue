@@ -1,3 +1,11 @@
+<!--
+# PlanPreviewPanel.vue — 计划预览面板
+
+展示 Agent 产出的计划文档，支持批准 / 拒绝 / 最小化悬浮。
+
+## Constraints
+- 批准=绿、拒绝=红（语义操作），状态徽章与待定态用中性灰
+-->
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
@@ -442,8 +450,7 @@ const toggleMinimize = () => {
   left: 0;
   width: 1px;
   pointer-events: none;
-  background: linear-gradient(180deg, transparent, var(--accent-blue), transparent);
-  opacity: 0.5;
+  background: var(--glass-border);
 }
 
 .plan-header {
@@ -577,13 +584,13 @@ const toggleMinimize = () => {
   gap: 7px;
   min-height: 28px;
   padding: 4px 10px;
-  color: var(--text-warning);
+  color: var(--text-soft);
   font-size: 0.76rem;
   font-weight: 700;
   white-space: nowrap;
-  border: 1px solid var(--border-warning);
+  border: 1px solid var(--border-color);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--surface-warning) 74%, transparent);
+  background: var(--glass-bg-light);
 }
 
 .plan-status-pill.streaming {
@@ -606,13 +613,11 @@ const toggleMinimize = () => {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--accent-yellow);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-yellow) 20%, transparent);
+  background: var(--accent-blue);
 }
 
 .plan-status-pill.streaming .plan-status-dot {
   background: var(--accent-blue);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 20%, transparent);
   animation: pulse-dot 1.5s ease-in-out infinite;
 }
 
@@ -674,7 +679,7 @@ const toggleMinimize = () => {
 }
 .plan-doc-chip-status.approved { background: var(--accent-green); }
 .plan-doc-chip-status.rejected { background: var(--accent-red); }
-.plan-doc-chip-status.pending  { background: var(--accent-yellow); }
+.plan-doc-chip-status.pending  { background: var(--text-muted); }
 
 .plan-toolbar {
   display: flex;
@@ -749,7 +754,6 @@ const toggleMinimize = () => {
   color: var(--text-inverse);
   border-color: var(--accent-blue);
   background: var(--accent-blue);
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent-blue) 30%, transparent);
 }
 
 .plan-mini-btn-primary:hover {
@@ -790,7 +794,7 @@ const toggleMinimize = () => {
 .plan-scroll-bottom:hover {
   background: var(--glass-bg);
   border-color: var(--accent-blue);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-blue) 20%, transparent);
   transform: scale(1.08);
 }
 .plan-scroll-bottom:active {
@@ -1081,12 +1085,10 @@ const toggleMinimize = () => {
   color: var(--text-inverse);
   border-color: var(--accent-green);
   background: var(--accent-green);
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent-green) 30%, transparent);
 }
 
 .plan-btn-approve:hover {
   background: color-mix(in srgb, var(--accent-green) 85%, #000);
-  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent-green) 40%, transparent);
 }
 
 /* 最小化悬浮按钮 */

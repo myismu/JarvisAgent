@@ -805,11 +805,11 @@ onUnmounted(() => {
 }
 .session-feedback.info {
   color: var(--accent-blue);
-  border-color: rgba(59, 130, 246, 0.2);
+  border-color: color-mix(in srgb, var(--accent-blue) 20%, transparent);
 }
 .session-feedback.error {
   color: var(--accent-red);
-  border-color: rgba(239, 68, 68, 0.2);
+  border-color: color-mix(in srgb, var(--accent-red) 20%, transparent);
 }
 
 .new-session-btn {
@@ -1151,16 +1151,15 @@ body.dark-mode .session-item.active {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--accent-yellow);
+  background: var(--text-muted);
   flex-shrink: 0;
   margin-right: 4px;
   animation: sessionDotBlink 1.5s ease-in-out infinite;
-  box-shadow: 0 0 4px rgba(245, 158, 11, 0.5);
 }
 
 @keyframes sessionDotBlink {
-  0%, 100% { opacity: 0.3; box-shadow: 0 0 2px rgba(245, 158, 11, 0.3); }
-  50% { opacity: 1; box-shadow: 0 0 8px rgba(245, 158, 11, 0.6); }
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
 }
 
 .session-title {
@@ -1225,13 +1224,13 @@ body.dark-mode .session-item.active {
 }
 .delete-btn:hover {
   color: var(--accent-red);
-  background: rgba(239, 68, 68, 0.15);
-  border-color: rgba(239, 68, 68, 0.3);
+  background: color-mix(in srgb, var(--accent-red) 15%, transparent);
+  border-color: color-mix(in srgb, var(--accent-red) 30%, transparent);
 }
 .rename-btn:hover {
   color: var(--accent-blue);
-  background: rgba(59, 130, 246, 0.15);
-  border-color: rgba(59, 130, 246, 0.3);
+  background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
+  border-color: color-mix(in srgb, var(--accent-blue) 30%, transparent);
 }
 
 @keyframes spin {

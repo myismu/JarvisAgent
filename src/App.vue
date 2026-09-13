@@ -1,3 +1,11 @@
+<!--
+# App.vue — 应用根组件
+
+组合 TitleBar / Sidebar / ChatArea 的整体布局，管理全局运行状态指示灯与明暗主题挂载。
+
+## Constraints
+- 状态灯语义：running/interrupted/cancelled/idle 用中性灰，finish=绿，error=红（仅致命错误）
+-->
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, computed, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -336,51 +344,32 @@ onBeforeUnmount(() => {
 .status-light {
   flex-shrink: 0;
   overflow: visible;
-  filter: drop-shadow(0 0 2px currentColor);
-  transition: filter var(--transition-fast);
 }
 
 .status-glow {
-  fill: currentColor;
-  opacity: 0.2;
-  animation: breathe 3s ease-in-out infinite;
+  display: none;
 }
 
 .status-core {
   fill: currentColor;
   opacity: 0.9;
-  animation: breatheCore 3s ease-in-out infinite;
 }
 
 .status-indicator.finish { color: var(--accent-green); }
-.status-indicator.finish .status-glow { animation: breatheGreen 3s ease-in-out infinite; }
-.status-indicator.finish .status-core { animation: breatheCoreGreen 3s ease-in-out infinite; }
-.status-indicator.finish .status-light { filter: drop-shadow(0 0 4px rgba(16, 185, 129, 0.5)); }
 
 .status-indicator.error { color: var(--accent-red); }
-.status-indicator.error .status-glow { animation: breatheRed 2s ease-in-out infinite; }
-.status-indicator.error .status-core { animation: breatheCoreRed 2s ease-in-out infinite; }
-.status-indicator.error .status-light { filter: drop-shadow(0 0 4px rgba(239, 68, 68, 0.5)); }
 
-.status-indicator.running { color: var(--accent-yellow); }
-.status-indicator.running .status-glow { animation: breatheYellow 1.5s ease-in-out infinite; }
-.status-indicator.running .status-core { animation: breatheCoreYellow 1.5s ease-in-out infinite; }
-.status-indicator.running .status-light { filter: drop-shadow(0 0 4px rgba(245, 158, 11, 0.5)); }
+.status-indicator.running { color: var(--text-muted); }
+.status-indicator.running .status-core { animation: statusPulse 1.5s ease-in-out infinite; }
 
-.status-indicator.interrupted { color: var(--accent-yellow); }
-.status-indicator.interrupted .status-glow { animation: none; opacity: 0.2; }
-.status-indicator.interrupted .status-core { animation: none; opacity: 0.65; }
-.status-indicator.interrupted .status-light { filter: drop-shadow(0 0 4px rgba(245, 158, 11, 0.35)); }
+.status-indicator.interrupted { color: var(--text-muted); }
+.status-indicator.interrupted .status-core { opacity: 0.65; }
 
 .status-indicator.cancelled { color: var(--text-muted); }
-.status-indicator.cancelled .status-glow { animation: none; opacity: 0.15; }
-.status-indicator.cancelled .status-core { animation: none; opacity: 0.5; }
-.status-indicator.cancelled .status-light { filter: none; }
+.status-indicator.cancelled .status-core { opacity: 0.5; }
 
 .status-indicator.idle { color: var(--text-muted); }
-.status-indicator.idle .status-glow { animation: none; opacity: 0.12; }
-.status-indicator.idle .status-core { animation: none; opacity: 0.4; }
-.status-indicator.idle .status-light { filter: none; }
+.status-indicator.idle .status-core { opacity: 0.4; }
 
 .agent-panel-toggle {
   background: transparent;
@@ -403,8 +392,8 @@ onBeforeUnmount(() => {
 }
 .agent-panel-toggle.active {
   color: var(--accent-blue);
-  background: rgba(59, 130, 246, 0.08);
-  border-color: rgba(59, 130, 246, 0.2);
+  background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
+  border-color: color-mix(in srgb, var(--accent-blue) 20%, transparent);
 }
 
 .floating-terminal-container {
@@ -424,39 +413,8 @@ onBeforeUnmount(() => {
   width: 100%;
 }
 
-@keyframes breatheGreen {
-  0%, 100% { opacity: 0.15; r: 10; }
-  50% { opacity: 0.4; r: 11; }
-}
-@keyframes breatheCoreGreen {
-  0%, 100% { opacity: 0.7; }
+@keyframes statusPulse {
+  0%, 100% { opacity: 0.45; }
   50% { opacity: 1; }
-}
-
-@keyframes breatheYellow {
-  0%, 100% { opacity: 0.2; r: 10; }
-  50% { opacity: 0.55; r: 11.5; }
-}
-@keyframes breatheCoreYellow {
-  0%, 100% { opacity: 0.75; }
-  50% { opacity: 1; }
-}
-
-@keyframes breatheRed {
-  0%, 100% { opacity: 0.2; r: 10; }
-  50% { opacity: 0.5; r: 11; }
-}
-@keyframes breatheCoreRed {
-  0%, 100% { opacity: 0.8; }
-  50% { opacity: 1; }
-}
-
-@keyframes breathe {
-  0%, 100% { opacity: 0.12; r: 10; }
-  50% { opacity: 0.3; r: 11; }
-}
-@keyframes breatheCore {
-  0%, 100% { opacity: 0.5; }
-  50% { opacity: 0.8; }
 }
 </style>

@@ -32,11 +32,17 @@ impl LlmProvider for AnthropicProvider {
         top_p: Option<f32>,
         top_k: Option<u32>,
     ) -> Value {
+        let mut messages = messages.to_vec();
+        // 出网前把内部 Context 块降级为普通 Text（协议不认 "context" 类型）
+        crate::infra::llm::adapters::materialize_context_blocks_for_wire(&mut messages);
+        // 丢弃无 signature 的 thinking 块（回传给 Anthropic 会被判 400）
+        messages = crate::infra::llm::adapters::strip_unsigned_thinking_for_anthropic(&messages);
+
         let mut body = AnthropicRequest {
             model: model_id.to_string(),
             max_tokens,
             system: system_prompt.to_string(),
-            messages: messages.to_vec(),
+            messages,
             tools,
             stream: true,
             thinking: None,

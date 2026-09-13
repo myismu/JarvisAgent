@@ -1,3 +1,14 @@
+<!--
+# TodoPanel.vue — 会话任务清单面板
+
+显示当前会话的待办事项：进度圆点、当前任务摘要与下拉明细。
+
+## Dependencies
+- Internal: `../../stores/agent`
+
+## Constraints
+- 状态色：completed=绿，in_progress=中性灰高亮文字
+-->
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useAgentStore } from '../../stores/agent';
@@ -91,7 +102,7 @@ const todoLabel = (todo: TodoItem): string =>
   flex-shrink: 0;
 }
 .dot-pending { background: var(--text-muted); opacity: 0.35; }
-.dot-in_progress { background: var(--accent-yellow); box-shadow: 0 0 4px var(--accent-yellow); }
+.dot-in_progress { background: var(--text-muted); }
 .dot-completed { background: var(--accent-green); }
 
 .todo-count {
@@ -105,7 +116,7 @@ const todoLabel = (todo: TodoItem): string =>
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--accent-yellow);
+  color: var(--text-main);
 }
 
 .todo-chevron {
@@ -144,7 +155,7 @@ const todoLabel = (todo: TodoItem): string =>
   padding: 2px 0;
 }
 .item-pending .todo-text { color: var(--text-muted); opacity: 0.6; }
-.item-in_progress .todo-text { color: var(--accent-yellow); font-weight: 600; }
+.item-in_progress .todo-text { color: var(--text-main); font-weight: 600; }
 .item-completed .todo-text { color: var(--text-muted); text-decoration: line-through; opacity: 0.5; }
 
 .todo-fade-enter-active,

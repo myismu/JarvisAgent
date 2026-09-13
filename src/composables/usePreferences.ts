@@ -1,7 +1,7 @@
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { AgentAudience, AgentWorkMode } from "../types";
+import type { AgentApprovalMode, AgentAudience, AgentUserMode, AgentWorkMode } from "../types";
 import { DEFAULT_LOCALE, normalizeLocale, type AppLocale } from "../i18n";
 
 export type AgentPanelPosition = "left" | "right";
@@ -17,6 +17,8 @@ interface UiPreferences {
   agentPanelVisible: boolean;
   agentAudience: AgentAudience;
   agentWorkMode: AgentWorkMode;
+  /** 权限档位：请求审批（默认）/ 帮我批准 */
+  agentApprovalMode: AgentApprovalMode;
   locale: AppLocale;
   agentMessageOpacity: number;
   userMessageOpacity: number;
@@ -34,21 +36,34 @@ const defaults: UiPreferences = {
   agentPanelVisible: false,
   agentAudience: "developer",
   agentWorkMode: "edit",
+  agentApprovalMode: "request_approval",
   locale: DEFAULT_LOCALE,
   agentMessageOpacity: 0,
   userMessageOpacity: 0,
   reflectionMode: "smart",
 };
 
-function normalizePrefs(value: Partial<UiPreferences> & { agentDisplayMode?: string }): UiPreferences {
+function normalizePrefs(
+  value: Partial<UiPreferences> & { agentDisplayMode?: string; agentReadOnly?: boolean },
+): UiPreferences {
   const result = { ...defaults, ...value };
   // 向后兼容：旧 agentDisplayMode 值自动迁移
   if (value.agentDisplayMode !== undefined && !value.agentAudience) {
     result.agentAudience = value.agentDisplayMode === "developer" ? "developer" : "user";
-    result.agentWorkMode = value.agentDisplayMode === "developer" ? "edit" : "chat";
+    result.agentWorkMode = "edit";
   }
   result.agentAudience = result.agentAudience === "user" ? "user" : "developer";
-  result.agentWorkMode = ["chat", "plan"].includes(result.agentWorkMode) ? result.agentWorkMode : "edit";
+  // 兼容旧版本：chat（只读保护）与 agentReadOnly 都已取消，
+  // 统一迁移成"编辑模式 + 请求审批档"——安全等价：改动都会先问用户
+  if ((result.agentWorkMode as string) === "chat") {
+    result.agentWorkMode = "edit";
+  }
+  result.agentWorkMode = result.agentWorkMode === "plan" ? "plan" : "edit";
+  if (value.agentReadOnly) {
+    result.agentApprovalMode = "request_approval";
+  }
+  result.agentApprovalMode =
+    result.agentApprovalMode === "auto_approve" ? "auto_approve" : "request_approval";
   result.agentPanelPosition = result.agentPanelPosition === "left" ? "left" : "right";
   result.locale = normalizeLocale(result.locale);
   return result;
@@ -122,6 +137,7 @@ function startWatchers() {
   watch(() => prefs.value.agentPanelVisible, () => scheduleSave());
   watch(() => prefs.value.agentAudience, () => scheduleSave());
   watch(() => prefs.value.agentWorkMode, () => scheduleSave());
+  watch(() => prefs.value.agentApprovalMode, () => scheduleSave());
   watch(() => prefs.value.locale, () => scheduleSave());
   watch(() => prefs.value.defaultExpandThinking, () => scheduleSave());
   watch(() => prefs.value.autoScroll, () => scheduleSave());
@@ -168,9 +184,13 @@ export function usePreferences() {
     get: () => prefs.value.agentAudience,
     set: (val) => { prefs.value.agentAudience = val; },
   });
-  const agentWorkMode = computed<AgentWorkMode>({
-    get: () => prefs.value.agentWorkMode,
+  const agentWorkMode = computed<AgentUserMode>({
+    get: () => (prefs.value.agentWorkMode === "plan" ? "plan" : "edit"),
     set: (val) => { prefs.value.agentWorkMode = val; },
+  });
+  const agentApprovalMode = computed<AgentApprovalMode>({
+    get: () => (prefs.value.agentApprovalMode === "auto_approve" ? "auto_approve" : "request_approval"),
+    set: (val) => { prefs.value.agentApprovalMode = val; },
   });
 
   const locale = computed<AppLocale>({
@@ -190,7 +210,9 @@ export function usePreferences() {
     agentAudience,
     setAgentAudience: (val: AgentAudience) => { prefs.value.agentAudience = val; },
     agentWorkMode,
-    setAgentWorkMode: (val: AgentWorkMode) => { prefs.value.agentWorkMode = val; },
+    setAgentWorkMode: (val: AgentUserMode) => { prefs.value.agentWorkMode = val; },
+    agentApprovalMode,
+    setAgentApprovalMode: (val: AgentApprovalMode) => { prefs.value.agentApprovalMode = val; },
     locale,
     setLocale: (val: AppLocale) => { prefs.value.locale = normalizeLocale(val); },
     get defaultExpandThinking() { return prefs.value.defaultExpandThinking; },

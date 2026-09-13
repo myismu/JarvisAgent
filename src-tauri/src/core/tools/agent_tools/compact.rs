@@ -2,11 +2,9 @@
 //!
 //! ## 关键导出
 //! - `compact()`: 手动触发上下文压缩
-//! - `dream()`: 触发记忆整理（Dream Agent）
 
 use tauri::Manager;
 
-use crate::core::orchestration::tasks::TaskManager;
 use crate::core::tools::framework;
 
 /// 手动压缩上下文
@@ -37,33 +35,4 @@ pub async fn compact(
         );
     }
     framework::ToolCallResult::ok("手动触发上下文压缩中...".to_string())
-}
-
-/// 触发记忆整理（Dream Agent）
-pub async fn dream(app: &tauri::AppHandle, _input: &serde_json::Value, session_id: &str) -> framework::ToolCallResult {
-    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
-        let ctx = manager.get_or_create(session_id).await;
-        let scope = crate::infra::state::state::active_run_scope_key(app, session_id).await;
-        let mut cache = ctx.dedupe_cache.lock().await;
-        let state = cache.entry("dream".to_string()).or_default();
-        if let Some(entry) = state.get_mut(&scope) {
-            entry.suppressed_count += 1;
-            return framework::ToolCallResult::ok(format!(
-                "Repeated ConsolidateMemory blocked: ConsolidateMemory was already requested in this agent run. Use the existing task summary or answer the user now. Suppressed duplicate #{}.",
-                entry.suppressed_count
-            ));
-        }
-        state.insert(
-            scope,
-            crate::infra::state::state::ToolDedupeCacheEntry {
-                display: "".to_string(),
-                suppressed_count: 0,
-                running: false,
-            },
-        );
-    }
-    let summary = TaskManager::for_session(session_id)
-        .summary()
-        .unwrap_or_else(|e| format!("生成摘要失败: {}", e));
-    framework::ToolCallResult::ok(format!("主动触发记忆整理（Dream Agent）已启动。\n\n[记忆归档与状态同步报告]\n当前项目的全局任务状态已更新：\n\n{}\n\n请根据上述进度报告，评估下一步需要启动的核心任务，或者判断是否可以进入休息/总结状态。", summary))
 }

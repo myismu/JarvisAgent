@@ -35,7 +35,7 @@ crate::define_tools! {
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string"},
+                        "path": {"type": "string", "description": "要读取的文件路径（必填）"},
                         "start_line": {"type": "integer", "description": "可选。起始行号（从 1 开始）"},
                         "end_line": {"type": "integer", "description": "可选。结束行号（包含）"}
                     },
@@ -57,7 +57,7 @@ crate::define_tools! {
                 "description": "提取文件结构骨架（Skeleton）。快速扫描并返回文件的类、函数签名及其行号，结合 read_file 进行精确片段阅读。",
                 "input_schema": {
                     "type": "object",
-                    "properties": { "path": {"type": "string"} },
+                    "properties": { "path": {"type": "string", "description": "要提取结构骨架的文件路径（必填）"} },
                     "required": ["path"]
                 }
             }),
@@ -77,8 +77,8 @@ crate::define_tools! {
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string"},
-                        "content": {"type": "string"}
+                        "path": {"type": "string", "description": "要写入的文件路径（必填）"},
+                        "content": {"type": "string", "description": "要写入的完整文件内容（必填）"}
                     },
                     "required": ["path", "content"]
                 }
@@ -167,7 +167,7 @@ crate::define_tools! {
                         "include": {"type": "string", "description": "可选。include glob 过滤，例如 src/**/*.rs 或 *.{ts,tsx}"},
                         "exclude": {"type": "string", "description": "可选。exclude glob 过滤，例如 **/*.test.ts 或 dist/**"},
                         "type": {"type": "string", "description": "可选。文件类型过滤，例如 rust、typescript、vue、json"},
-                        "ignore_dirs": {"type": ["string", "array"], "description": "可选。额外忽略目录，支持逗号/空格分隔字符串或字符串数组"}
+                        "ignore_dirs": {"type": ["string", "array"], "items": {"type": "string"}, "description": "可选。额外忽略目录，支持逗号/空格分隔字符串或字符串数组"}
                     },
                     "required": ["pattern"]
                 }
@@ -195,7 +195,7 @@ crate::define_tools! {
                         "include": {"type": "string", "description": "可选。include glob 过滤，例如 src/**/*.rs"},
                         "exclude": {"type": "string", "description": "可选。exclude glob 过滤"},
                         "type": {"type": "string", "description": "可选。文件类型过滤，例如 rust、typescript、vue"},
-                        "ignore_dirs": {"type": ["string", "array"], "description": "可选。额外忽略目录"}
+                        "ignore_dirs": {"type": ["string", "array"], "items": {"type": "string"}, "description": "可选。额外忽略目录"}
                     },
                     "required": ["symbol"]
                 }
@@ -244,7 +244,7 @@ crate::define_tools! {
                         "include": {"type": "string", "description": "可选。include glob 过滤"},
                         "exclude": {"type": "string", "description": "可选。exclude glob 过滤"},
                         "type": {"type": "string", "description": "可选。文件类型过滤"},
-                        "ignore_dirs": {"type": ["string", "array"], "description": "可选。额外忽略目录"}
+                        "ignore_dirs": {"type": ["string", "array"], "items": {"type": "string"}, "description": "可选。额外忽略目录"}
                     },
                     "required": ["symbol"]
                 }
@@ -270,7 +270,7 @@ crate::define_tools! {
                         "include": {"type": "string", "description": "可选。include glob 过滤，例如 src/**/*"},
                         "exclude": {"type": "string", "description": "可选。exclude glob 过滤"},
                         "type": {"type": "string", "description": "可选。文件类型过滤，例如 rust、typescript、vue"},
-                        "ignore_dirs": {"type": ["string", "array"], "description": "可选。额外忽略目录"},
+                        "ignore_dirs": {"type": ["string", "array"], "items": {"type": "string"}, "description": "可选。额外忽略目录"},
                         "limit": {"type": "integer", "description": "最大返回结果数，默认 30，最大 100"}
                     },
                     "required": ["query"]

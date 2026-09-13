@@ -1,3 +1,14 @@
+<!--
+# AgentTurn.vue — 单轮 Agent 对话渲染
+
+渲染一轮对话中的思考块、工具调用、执行日志，支持用户视图与开发者视图两种模式。
+
+## Dependencies
+- Internal: `../../types`（AgentCurrentTurn / AgentDisplayMode）
+
+## Constraints
+- 工具失败为常规事件，用中性灰展示；红仅留给致命错误
+-->
 <script setup lang="ts">
 import { computed } from "vue";
 import type { AgentCurrentTurn, AgentDisplayMode } from "../../types";
@@ -218,11 +229,11 @@ function toolStatusLabel(status: string): string {
   transition: background 0.2s;
 }
 .dev-status-dot.running {
-  background: var(--accent-yellow);
+  background: var(--text-muted);
   animation: dev-pulse 1.5s ease-in-out infinite;
 }
 .dev-status-dot.error {
-  background: var(--accent-orange);
+  background: var(--text-muted);
 }
 
 /* 思考块 */
@@ -244,12 +255,12 @@ function toolStatusLabel(status: string): string {
   display: none;
 }
 .dev-thinking-label {
-  color: var(--accent-purple);
+  color: var(--text-muted);
 }
 .dev-thinking-body {
   margin-top: 8px;
   padding: 10px 14px;
-  border-left: 2px solid var(--accent-purple);
+  border-left: 2px solid var(--glass-border-subtle);
   font-size: 0.82rem;
   color: var(--text-muted);
   line-height: 1.6;
@@ -306,13 +317,13 @@ function toolStatusLabel(status: string): string {
   color: var(--accent-green);
 }
 .dev-tool.running .dev-tool-status {
-  color: var(--accent-yellow);
+  color: var(--text-muted);
 }
 .dev-tool.error .dev-tool-status {
-  color: var(--accent-orange);
+  color: var(--text-muted);
 }
 .dev-tool.error .dev-tool-name {
-  color: var(--accent-orange);
+  color: var(--text-soft);
 }
 
 /* 工具详情 */
@@ -353,8 +364,8 @@ function toolStatusLabel(status: string): string {
   overflow-wrap: break-word;
 }
 .dev-tool-section.error :deep(.streaming-markdown) {
-  border-color: color-mix(in srgb, var(--accent-orange) 30%, transparent);
-  background: color-mix(in srgb, var(--accent-orange) calc(5 * var(--agent-message-opacity) / 100), transparent);
+  border-color: var(--glass-border-subtle);
+  background: color-mix(in srgb, var(--text-muted) calc(5 * var(--agent-message-opacity) / 100), transparent);
 }
 .dev-tool-section-label {
   font-size: 0.7rem;
@@ -365,7 +376,7 @@ function toolStatusLabel(status: string): string {
   margin-bottom: 4px;
 }
 .dev-tool-section.error .dev-tool-section-label {
-  color: var(--accent-orange);
+  color: var(--text-muted);
 }
 
 /* 执行日志终端 */

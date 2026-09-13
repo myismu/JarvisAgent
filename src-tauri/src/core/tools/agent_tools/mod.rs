@@ -5,23 +5,28 @@
 //! ## 子模块
 //! - `subagent`: 子代理执行引擎（独立 Agent Loop，支持只读/读写模式）
 //! - `skill`: 技能加载
-//! - `compact`: 上下文压缩 + 记忆整理
+//! - `compact`: 上下文压缩
 //! - `plan`: 方案审批工具
 //!
 //! ## 关键导出
 //! - `run_subagent()`: 子代理执行引擎
 //! - `load_skill()`: 按名称加载技能知识
 //! - `compact()`: 手动触发上下文压缩
-//! - `dream()`: 触发记忆整理（Dream Agent）
+//! - `memory`: 全局记忆读写（ReadMemory / UpdateMemory / ConsolidateMemory）
 //! - `propose_plan()`: 方案审批工具，推送方案到前端并阻塞等待用户决策
 
 mod compact;
+mod memory;
 mod plan;
 mod skill;
 mod subagent;
 mod switch_mode;
 
-pub use compact::{compact, dream};
+pub use compact::compact;
+pub use memory::{
+    consolidate_memory, extract_profile, read_memory, update_memory,
+    MEMORY_BUDGET_CHARS, MEMORY_CONSOLIDATE_THRESHOLD_CHARS, MEMORY_SECTIONS, PROFILE_SECTIONS,
+};
 pub use plan::propose_plan;
 pub use skill::load_skill;
 pub use subagent::run_subagent;
@@ -32,11 +37,26 @@ use super::framework::registry::ToolRegistry;
 use crate::core::tools::framework;
 
 /// GetToolCatalog 处理函数：从 ToolRegistry 获取延迟工具列表 + 从 skills 目录获取技能列表
-pub async fn get_tool_catalog(_app: &tauri::AppHandle, _input: &serde_json::Value, _session_id: &str, intent: &str) -> framework::ToolCallResult {
+pub async fn get_tool_catalog(
+    _app: &tauri::AppHandle,
+    _input: &serde_json::Value,
+    _session_id: &str,
+    intent: &str,
+    work_mode: &str,
+) -> framework::ToolCallResult {
     let mut out = String::new();
 
+    // 能力边界先行：一次调用就给出确定结论，避免模型反复搜索被禁用的能力
+    let caps = framework::capabilities::Capabilities::for_work_mode(work_mode);
+    out.push_str("【本会话能力边界 · 系统强制】\n");
+    out.push_str(&format!("- {}\n", caps.summary_line()));
+    if !caps.write {
+        out.push_str("- 修改文件 / 执行命令类工具在本模式下不存在，不要搜索或尝试调用它们\n");
+    }
+    out.push('\n');
+
     // 延迟工具列表
-    let groups = ToolRegistry::global().get_deferred_by_category(intent);
+    let groups = ToolRegistry::global().get_deferred_by_category(intent, work_mode);
     if !groups.is_empty() {
         out.push_str("【延迟工具】（需通过 ExecuteTool 执行）:\n");
         for (category, names) in &groups {
@@ -101,10 +121,37 @@ crate::define_tools! {
             defer: true,
         ),
         crate::tool_def!(
+            "ReadMemory",
+            desc: "读取全局记忆（跨会话用户档案）",
+            hint: "read memory profile user preference global recall",
+            schema_desc: "读取全局记忆的完整内容。每轮上下文里已带精简画像（身份 + 交互偏好），当你需要更细的信息（工程偏好、审美偏好、环境），或要在修改前确认原文时再调用。",
+            props: {
+                section: string => "可选：只读取某一个小节（身份/交互偏好/工程偏好/审美偏好/环境），省略则返回全文",
+            },
+            category: "系统",
+            read_only: true,
+            concurrency_safe: true,
+        ),
+        crate::tool_def!(
+            "UpdateMemory",
+            desc: "增改删全局记忆中的单条条目",
+            hint: "update memory remember user preference forget",
+            schema_desc: "维护跨会话的全局记忆（用户档案）。只在信息同时满足三条时才写：跨会话依然成立、跨项目依然成立、会影响之后怎么配合用户；用户明确说「记住…」时直接写（年龄、籍贯、学历、所在地、经历、求职或学习方向等档案信息），不受第三条限制。不要记录当前任务/项目状态、临时决定、会过期的配置（模型名、端口、版本号、API 提供商）、具体文件路径。一次记多条用 items 数组；单条增改删用 action/content；整体重写用 ConsolidateMemory。",
+            props: {
+                action: string enum expr ["add", "replace", "remove"] => "操作类型",
+                section: string => "目标小节：身份 / 交互偏好 / 工程偏好 / 审美偏好 / 环境",
+                content: string => "条目的新内容（一行，add/replace 必填）",
+                match: string => "定位已有条目的关键词（replace/remove 必填）",
+                items: array items {"type": "string"} => "一次新增多条条目（与 content 二选一，仅 add 用；比多次并发调用更安全）",
+            },
+            required: ["action", "section"],
+            category: "系统",
+        ),
+        crate::tool_def!(
             "ConsolidateMemory",
-            desc: "主动触发记忆整理（Dream Agent）",
-            hint: "dream memory organize consolidate",
-            schema_desc: "主动触发记忆整理（Dream Agent）。将当前的零散碎片记忆提炼并合并进结构化用户画像中。",
+            desc: "主动触发全局记忆整理",
+            hint: "memory organize consolidate compact remember",
+            schema_desc: "主动触发全局记忆整理：把当前记忆全文交给记忆整理者重写——合并同类项、删除过期与不合格条目、压缩冗余表述，不新增没有依据的事实。适合记忆出现重复/冗余，或结构损坏需要重建时使用。",
             category: "系统",
             defer: true,
         ),
@@ -116,7 +163,16 @@ crate::define_tools! {
             props: {
                 title: string => "方案标题",
                 content: string => "方案正文（Markdown 格式），必须包含：需求理解、变更范围、具体实现步骤、风险评估、任务拆分统计（任务数、阶段划分、预计耗时）、依赖关系图、并行执行策略",
-                task_breakdown: array => "【必填】结构化任务分解列表，每项包含 subject（任务名）、description（详情，含预计耗时）、depends_on（前置任务序号数组）、can_parallel_with（可并行任务序号数组）",
+                task_breakdown: array items {
+                    "type": "object",
+                    "properties": {
+                        "subject": {"type": "string", "description": "任务名。"},
+                        "description": {"type": "string", "description": "任务详情，含预计耗时。"},
+                        "depends_on": {"type": "array", "items": {"type": "integer"}, "description": "前置任务序号数组（1-based）。"},
+                        "can_parallel_with": {"type": "array", "items": {"type": "integer"}, "description": "可并行任务序号数组（1-based）。"}
+                    },
+                    "required": ["subject"]
+                } => "【必填】结构化任务分解列表，每项包含 subject（任务名）、description（详情，含预计耗时）、depends_on（前置任务序号数组）、can_parallel_with（可并行任务序号数组）",
             },
             required: ["title", "content", "task_breakdown"],
             category: "Agent 调度",
@@ -125,10 +181,10 @@ crate::define_tools! {
         crate::tool_def!(
             "SwitchWorkMode",
             desc: "切换 Agent 工作模式",
-            hint: "switch work mode chat edit plan",
-            schema_desc: "切换 Agent 的工作模式（chat/edit/plan）。编辑模式下遇到复杂任务时，可切换到计划模式进行深度规划；规划完成后切回编辑模式执行。聊天模式下禁止切换到计划模式。此工具只切换工作模式，不影响用户类型（user/developer）。",
+            hint: "switch work mode edit plan",
+            schema_desc: "切换 Agent 的工作模式，只支持 edit（编辑）和 plan（规划）。编辑模式下遇到复杂任务时，可切换到计划模式进行深度规划；规划完成后切回编辑模式执行。注意：权限档位（请求审批 / 帮我批准）由用户在界面上控制，不由本工具切换。此工具不影响用户类型（user/developer）。",
             props: {
-                mode: string => "目标工作模式：chat（聊天）、edit（编辑）、plan（规划）",
+                mode: string => "目标工作模式：edit（编辑）、plan（规划）",
                 reason: string => "切换原因，会展示给用户",
             },
             required: ["mode", "reason"],
@@ -150,7 +206,7 @@ crate::define_tools! {
                 task_id: integer => "Optional persistent task id for scheduler/board integration.",
                 label: string => "Deprecated alias for description; prefer description.",
                 read_only: boolean => "Optional permission override. If omitted, the selected subagent_type default is used. true filters out every tool whose registry metadata is not read-only; false still respects the selected agent allowlist/denylist.",
-                skills: array => "Optional list of skill names to make available to this subagent. Only specified skills will be injected into the subagent's context. If omitted, no skills are injected. Use GetToolCatalog to discover available skill names.",
+                skills: array items {"type": "string"} => "Optional list of skill names to make available to this subagent. Only specified skills will be injected into the subagent's context. If omitted, no skills are injected. Use GetToolCatalog to discover available skill names.",
             },
             required: ["prompt"],
             category: "Agent 调度",

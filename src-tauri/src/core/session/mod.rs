@@ -146,12 +146,9 @@ fn extract_title(messages: &[Message]) -> String {
                         .unwrap_or_default()
                 }
             };
-            // 清理动态上下文注入的前缀，提取真正的用户输入
-            let user_input = if let Some(pos) = text.find("[User Input]:") {
-                text[pos + 13..].trim().to_string()
-            } else {
-                text.trim().to_string()
-            };
+            // Context 块不是 Text，上面的 find_map 已经跳过，
+            // 这里拿到的 text 就是用户原文
+            let user_input = text.trim().to_string();
             if !user_input.is_empty() {
                 let title: String = user_input
                     .chars()
@@ -345,6 +342,7 @@ pub fn save_session(
                                 ContentBlock::Text { .. }
                                     | ContentBlock::Image { .. }
                                     | ContentBlock::ToolResult { .. }
+                                    | ContentBlock::Context { .. }
                             )
                         })
                         .map(|b| {

@@ -176,8 +176,28 @@ export type AgentDisplayMode = "user" | "developer";
 /** 用户类型（谁在用）→ 影响 UI 渲染细节和交流风格 */
 export type AgentAudience = "user" | "developer";
 
-/** 工作模式（在干什么）→ 影响工具集和系统提示词 */
-export type AgentWorkMode = "chat" | "edit" | "plan";
+/**
+ * 工作模式（在干什么）→ 影响工具集和系统提示词。
+ * 只有 edit / plan；历史上的 "chat（只读保护）" 已在第二步取消。
+ */
+export type AgentWorkMode = "edit" | "plan";
+
+/** 用户在界面上可选择的工作模式 */
+export type AgentUserMode = "edit" | "plan";
+
+/**
+ * 权限档位（第二步新增）：决定"改动前问得多严"。
+ * - request_approval：请求审批 —— 改文件/删文件/跑命令一律先问（默认）
+ * - auto_approve：帮我批准 —— 只有风险操作（删除/覆盖/改名/跑命令/批量）才问
+ */
+export type AgentApprovalMode = "request_approval" | "auto_approve";
+
+/** 本会话已允许的范围（工具 + 范围） */
+export interface SessionAllowance {
+  tool: string;
+  scope: string;
+  label: string;
+}
 
 export type AgentTextBlockKind = "assistant" | "tool_stream" | "system";
 export type AgentBlockStatus = "streaming" | "done";

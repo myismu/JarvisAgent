@@ -1,5 +1,8 @@
+pub mod capabilities;
 pub mod agent_registry;
 pub mod permission;
+pub mod policy;
+pub mod policy_guard;
 pub mod registry;
 pub mod tool_call_logger;
 pub mod tool_search;

@@ -6,6 +6,7 @@
 //!
 //! ## 关键导出
 //! - `create_session()`: 创建新会话，可指定工作目录沙箱
+//! - `set_session_work_mode()`: 用户手动切换会话工作模式（chat/edit/plan）
 //! - `switch_session()`: 切换活跃会话
 //! - `delete_session()` / `rename_session()`: 会话管理
 //! - `recall_last_message()`: 撤回最后一条用户消息
@@ -29,6 +30,62 @@ pub async fn clear_active_session_id() -> Result<(), String> {
     crate::core::session::repository::clear_last_active_session_id()
 }
 
+/// 用户手动切换当前会话的工作模式（edit / plan）。
+///
+/// 以前模式只写进 UI 偏好（app-config.json），已有会话的 `ctx.agent_work_mode`
+/// 永远不会被更新，导致界面显示"规划"而后端仍在"编辑"。这个命令补上那条链路：
+/// 写会话状态 → 广播 `agent-work-mode-changed`（前端已在监听该事件）→ 偏好由前端落盘，
+/// 供新会话继承。
+///
+/// 第二步起"只读保护（chat）"已取消：安全由权限档位承担（见 set_session_approval_mode）。
+/// 这里只接受 edit / plan。
+#[tauri::command]
+pub async fn set_session_work_mode(
+    session_id: String,
+    mode: String,
+    session_manager: tauri::State<'_, SessionManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    if !["edit", "plan"].contains(&mode.as_str()) {
+        return Err(format!(
+            "不支持的工作模式「{}」。支持的模式：edit（编辑）、plan（规划）。",
+            mode
+        ));
+    }
+
+    let ctx = session_manager.get_or_create(&session_id).await;
+    let current = ctx.agent_work_mode.lock().await.clone();
+    if current == mode {
+        return Ok(());
+    }
+    *ctx.agent_work_mode.lock().await = mode.clone();
+
+    let _ = app.emit(
+        "agent-work-mode-changed",
+        serde_json::json!({
+            "sessionId": session_id,
+            "from": current,
+            "to": mode,
+            "reason": "用户手动切换",
+        }),
+    );
+
+    Ok(())
+}
+
+/// 读取当前会话的工作模式（chat = 只读保护 / edit / plan）。
+///
+/// 前端用它校准模式控件：会话状态才是唯一事实来源，UI 偏好只决定新会话的初始模式。
+#[tauri::command]
+pub async fn get_session_work_mode(
+    session_id: String,
+    session_manager: tauri::State<'_, SessionManager>,
+) -> Result<String, String> {
+    let ctx = session_manager.get_or_create(&session_id).await;
+    let mode = ctx.agent_work_mode.lock().await.clone();
+    Ok(mode)
+}
+
 #[tauri::command]
 pub async fn list_sessions() -> Result<Vec<session::SessionMeta>, String> {
     Ok(session::list_sessions())
@@ -49,6 +106,23 @@ pub async fn create_session(
     // 初始化上下文
     let ctx = session_manager.get_or_create(&meta.id).await;
     *ctx.workspace.lock().await = meta.working_directory.clone().map(std::path::PathBuf::from);
+
+    // 新会话的工作模式与权限档位跟随用户偏好
+    let prefs = crate::command::app_config::get_ui_preferences()
+        .await
+        .unwrap_or_default();
+    let initial_mode = if prefs.agent_work_mode == "plan" {
+        "plan"
+    } else {
+        "edit"
+    };
+    *ctx.agent_work_mode.lock().await = initial_mode.to_string();
+    // 新会话的权限档位跟随偏好（请求审批 / 帮我批准）
+    *ctx.approval_mode.lock().await = if prefs.agent_approval_mode == "auto_approve" {
+        "auto_approve".to_string()
+    } else {
+        "request_approval".to_string()
+    };
 
     Ok(meta)
 }
@@ -160,16 +234,11 @@ pub async fn auto_name_session(
     for msg in &memory.messages {
         match msg {
             Message::User { content } => {
+                // 动态上下文是独立的 Context 块，extract_plain_text 只取 Text 块，
+                // 所以这里拿到的就是用户原文，无需再做字符串手术
                 let text = extract_plain_text(content);
-                // 跳过系统注入的上下文（包含特征标记或过长）
-                if text.contains("[User Input]:") {
-                    if let Some(pos) = text.find("[User Input]:") {
-                        let real = text[pos + 13..].trim().to_string();
-                        if !real.is_empty() { user_texts.push(real); }
-                    }
-                } else if !text.starts_with("你是一位") && text.len() < 2000 {
-                    // 非系统提示、非过长上下文
-                    if !text.is_empty() { user_texts.push(text); }
+                if !text.trim().is_empty() {
+                    user_texts.push(text);
                 }
             }
             Message::Assistant { content } => {

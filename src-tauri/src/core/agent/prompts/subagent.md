@@ -28,6 +28,20 @@
 - 禁止用 RunCommand 执行 cd/Set-Location 切换目录
 - 失败后不要重试相同的命令，分析错误换一种方式
 
+#### 权限确认纪律
+
+- 高风险命令（删除、强杀进程、清空内容等）会弹给用户确认，系统会一直等用户回答，没有超时
+- 用户拒绝后，同一操作禁止换参数/换别名/换等价工具重试；应当换方案，或在结果里说明「该操作被用户拒绝」让主 Agent 决策
+- 「权限确认未完成（…）」表示本轮被取消或中断，不是用户拒绝，但同样不要重复发起
+
+#### 文件读写必须走专用工具（硬规则）
+
+- 读文件用 ReadFile / SearchText / FindFiles；写/改/删/改名用 WriteFile / EditFile / ApplyPatch / DeleteFile / RenameFile
+- **禁止用 RunCommand 调 .NET 方法读写文件**（`[System.IO.File]::WriteAllText`、`::ReadAllBytes`、`[IO.File]::AppendAllText` 等）。
+  这类命令会被系统直接拦下：只有专用工具有沙箱检查、快照与回滚，用命令直接落盘会让改动不可追溯、不可回滚
+- 也不要用 `Set-Content` / `Out-File` / `Add-Content` / `New-Item -ItemType File` / shell 重定向 `>` 写文件
+- 想确认文件内容是否正确，直接用 ReadFile 读，不要用命令做字节级检查
+
 #### 策略
 
 - 小文件直接全文读取，大文件才分段

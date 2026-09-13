@@ -10,7 +10,7 @@
 //! - 沙箱会话中禁止修改全局工作区
 //! - `set_workspace` 必须使用绝对路径，且需用户确认
 
-use super::framework::permission::request_permission;
+use super::framework::permission::{request_permission, PermissionKind};
 use crate::core::tools::framework;
 use crate::core::tools::framework::registry::ToolDef;
 use serde_json::json;
@@ -56,9 +56,18 @@ pub async fn set_workspace(
     if let Ok(cwd) = std::env::current_dir() {
         if path != cwd {
             let msg = format!("警告：尝试将全局工作区更改为：{}", path_str);
-            let decision = request_permission(app, session_id, &msg).await;
-            if decision == "reject" {
-                return framework::ToolCallResult::error("权限拒绝".to_string());
+            let decision = request_permission(app, session_id, &msg, PermissionKind::Tool).await;
+            if !decision.is_allowed() {
+                let label = if decision.is_rejected() {
+                    "权限拒绝"
+                } else {
+                    "权限确认未完成"
+                };
+                return framework::ToolCallResult::error(format!(
+                    "{}：{}",
+                    label,
+                    decision.model_note()
+                ));
             }
         }
     }

@@ -21,70 +21,92 @@ src-tauri/
 ├── tauri.conf.json              # Tauri 应用配置：窗口、打包、bundle、权限等
 ├── .taurignore                  # Tauri 打包忽略规则
 ├── .gitignore                   # src-tauri 内部 Git 忽略规则
-├── model_registry.json          # 模型能力注册表：上下文、最大 token、thinking、vision 等
+├── model_registry.json          # 模型能力注册表（include_str! 编译时内嵌，context/thinking/vision 等）
+├── intent_rules.json            # 意图分类外部规则（10 类意图 + priority_order）
 ├── PROJECT_STRUCTURE.md         # src-tauri 后端结构导航文档
 ├── capabilities/
 │   └── default.json             # Tauri 2 capability 权限声明
-├── gen/                         # Tauri 生成的 schema/权限辅助文件
+├── gen/                         # Tauri 生成的 schema/权限辅助文件（勿手动修改）
 ├── icons/                       # 桌面端、Windows、macOS、iOS、Android 图标资源
 ├── target/                      # Cargo 构建产物，开发时可忽略
 └── src/                         # Rust 后端源码
 ```
 
-## 源码入口：`src/`
+## 源码入口：`src/` 与三层架构
 
 ```text
 src/
 ├── main.rs                      # 二进制入口，启动 jarvisagent_lib::run()
-├── lib.rs                       # Tauri 后端入口：数据目录、状态、插件、invoke handler
-└── core/                        # 后端核心业务模块
+├── lib.rs                       # Tauri 后端入口：数据目录、状态、插件、invoke_handler
+├── infra/                       # 基础设施层：配置 / 数据库 / LLM / Provider / 状态 / 类型
+├── core/                        # 业务层：Agent / 工具 / 编排 / 回滚 / 会话 / 意图
+└── command/                     # Tauri 命令层：所有前端可调用命令
 ```
 
 ### `src/lib.rs`
 
 `lib.rs` 是 Tauri 后端的真实启动入口，主要职责：
 
-1. 检测并锁定运行时 `data/` 目录。
-2. 迁移旧工作区布局并恢复上次工作目录。
-3. 恢复或创建启动会话。
-4. 注册全局状态：`SessionManager`、`BackgroundState`、`SubAgentMonitorState`、`ConfigState`、`WorkspaceState`、`SnapshotRegistry`。
+1. 检测并锁定运行时 `data/` 目录（`AGENT_HOME_DIR`）。
+2. `infra::db::init()` 初始化 SQLite（19 张表 + 增量迁移）。
+3. 恢复上次工作目录与启动会话。
+4. 注册全局状态：`SessionManager`、`BackgroundState`、`CompactingState`、`SubAgentMonitorState`、`ConfigState`、`RuntimeConfigState`、`WorkspaceState`、`SnapshotRegistry`。
 5. 注册 Tauri 插件：opener、dialog、fs、window-state。
-6. 在 `invoke_handler` 中注册前端可调用命令。
+6. 在 `invoke_handler` 中注册全部前端可调用命令（约 90 个）。
+7. 退出时清理所有后台任务进程（`kill_all_process_tree`）。
 
-## 核心模块总览：`src/core/`
+## 基础设施层：`src/infra/`
 
 ```text
-core/
-├── mod.rs                       # core 统一出口：声明子模块并重导出常用命令/状态
-├── config.rs                    # 配置加载、保存、Profile 与图片压缩配置
-├── constants.rs                 # 文件名、事件名、默认值等常量
-├── data_paths.rs                # data/ 运行时路径、会话路径、旧布局迁移
-├── error.rs                     # AgentError、ApiError、ToolError、MemoryError 等错误类型
-├── models.rs                    # 后端共享数据结构与 Tauri 返回类型
-├── state.rs                     # SessionManager、SessionContext、WorkspaceState、SnapshotRegistry
-├── traits.rs                    # LlmProvider 等跨模块 trait 抽象
-├── agent/                       # Agent 主管线
-├── commands/                    # Tauri invoke 命令实现
-├── infra/                       # 基础设施：后台任务、日志、提示词
-├── intent/                      # 用户意图分类
-├── llm/                         # LLM 通用层：HTTP、格式、适配、模型注册表
-├── providers/                   # Anthropic/OpenAI Provider 实现
-├── tools/                       # Agent 工具系统
-├── orchestration/               # Agent run、子代理、任务、调度编排
-├── session/                     # 会话元数据、历史、记忆、检查点关联
-├── snapshot_engine/             # 文件级快照引擎
-└── snapshot_manager/            # 会话级快照管理器
+infra/
+├── mod.rs                       # 基础设施模块入口
+├── config/
+│   ├── config.rs                # 配置加载与保存（原子写入：先写 tmp 再 rename）；AgentConfig、RuntimeSettings
+│   └── data_paths.rs            # data 目录、会话、图片、快照等运行期路径管理
+├── db/
+│   ├── mod.rs                   # SQLite 连接管理与初始化
+│   └── schema.rs                # 19 张表 schema 定义 + 增量迁移
+├── llm/
+│   ├── api_format.rs            # ApiFormat 枚举（认证头、版本头）
+│   ├── api_client.rs            # HTTP 客户端、指数退避、429 Retry-After
+│   ├── adapters.rs              # Anthropic ↔ OpenAI 消息格式转换
+│   ├── registry.rs              # 读取 model_registry.json 的模型能力与命令入口
+│   └── token_count.rs           # tiktoken BPE Token 计数
+├── providers/
+│   ├── anthropic.rs             # Anthropic Messages API 实现
+│   └── openai.rs                # OpenAI Chat Completions 兼容实现
+├── state/
+│   ├── state.rs                 # SessionManager、SessionContext、WorkspaceState、SnapshotRegistry
+│   └── events.rs                # Tauri 事件名常量（domain:action 规范）
+├── types/
+│   ├── models.rs                # 消息、工具、会话、计划文档等共享数据模型
+│   ├── traits.rs                # LlmProvider 等核心 trait 抽象
+│   ├── error.rs                 # AgentError、ApiError、DbError 等分层错误类型
+│   └── constants.rs             # 全局常量
+├── background.rs                # 后台任务状态与输出管理（bg-task-done 事件推送）
+└── debug_logger.rs              # 调试日志
 ```
 
 ## Agent 管线：`core/agent/`
 
 ```text
 agent/
-├── mod.rs                       # ask_jarvis Tauri 命令入口
-├── pipeline.rs                  # run_pipeline 主流程
+├── mod.rs                       # ask_jarvis / resume_jarvis Tauri 命令入口
+├── pipeline.rs                  # run_pipeline / resume_pipeline 主流程（五阶段流水线）
 ├── context.rs                   # 动态上下文注入：记忆、技能、目录结构等
 ├── stream.rs                    # SSE 流解析：文本、thinking、tool_use
-└── tools_runner.rs              # 执行模型返回的工具调用并回填观察结果
+├── tools_runner.rs              # 执行模型返回的工具调用并回填观察结果
+├── prompts.rs                   # 系统提示词三层组装（Base + Audience + WorkMode）
+├── prompts/                     # 提示词模板目录
+│   ├── base_p0.md ~ base_p2.md  # 基础提示词
+│   ├── subagent.md              # 子代理提示词
+│   ├── audience/                # user.md / developer.md 交流风格
+│   ├── mode/                    # chat.md / edit.md / plan.md 工作模式规则
+│   └── os/                      # linux.md / macos.md / windows.md OS 规则
+└── reflection/                  # 反思审查机制
+    ├── mod.rs
+    ├── prompt.rs                # 反思提示词
+    └── strategy.rs              # 反思策略与防循环控制
 ```
 
 主流程：
@@ -92,98 +114,100 @@ agent/
 ```text
 前端 invoke("ask_jarvis")
   → core::agent::ask_jarvis
-  → pipeline::run_pipeline
-  → intent 分类
-  → tools 按需加载
-  → context 组装动态上下文
-  → provider 发起 LLM 流式请求
-  → stream 解析输出块与工具调用
-  → tools_runner 执行工具
-  → emit 事件回前端
+  → pipeline::run_pipeline（初始化 → 意图验证 → 上下文构建 → 主循环 → 收尾）
+  → intent 分类 → tools 按 WorkMode 加载 → context 组装动态上下文
+  → provider 发起 LLM 流式请求 → stream 解析输出块与工具调用
+  → tools_runner 执行工具 → reflection 反思审查
+  → 压缩检查 → 写回消息与执行记录 → emit 事件回前端
 ```
 
-## Tauri 命令层：`core/commands/`
+关键约束：
+
+- 取消令牌（`CancellationToken`）贯穿全流程，用户可随时中断；中断可恢复（`resume_jarvis`）。
+- 循环次数受常量限制（超 30 轮暂停确认，绝对上限 200 轮）。
+- 流式中断会触发 `fix_broken_tool_call_pairs` 防御性修复，保证 tool_calls 与 tool_result 配对。
+
+## Tauri 命令层：`src/command/`
 
 ```text
-commands/
-├── mod.rs                       # commands 模块声明
+command/
+├── mod.rs                       # command 模块声明
 ├── config.rs                    # get_config、save_config_cmd、get_image_compress_config
-├── permission.rs                # cancel_jarvis、resolve_permission
+├── app_config.rs                # 窗口状态、UI 偏好、技能激活状态
+├── permission.rs                # cancel_jarvis、resolve_permission、权限状态查询
 ├── session.rs                   # 会话 CRUD、Agent run、子代理、后台任务、计划文档查询
-├── history.rs                   # get_session_history
+├── history.rs / history_types.rs # 历史消息渲染与类型
 ├── checkpoint.rs                # 检查点、分支、回滚、提交、清理 pending operations
 ├── snapshot.rs                  # 快照创建、查询、详情、分支、回滚
 ├── sandbox.rs                   # 多 Agent 沙盒创建、查询、完成、放弃、发布、对比
-└── merge.rs                     # 合并预览、执行、冲突查询
+├── merge.rs                     # 合并预览、执行、冲突查询
+└── skill.rs                     # 技能列表与详情查询
 ```
 
 新增前端 `invoke` 命令时通常需要两步：
 
-1. 在 `core/commands/` 的对应文件中实现 `#[tauri::command]` 函数。
+1. 在 `src/command/` 的对应文件中实现 `#[tauri::command]` 函数。
 2. 在 `src/lib.rs` 的 `tauri::generate_handler![...]` 中注册。
 
-## LLM 抽象：`core/llm/` 与 `core/providers/`
+## LLM 抽象：`infra/llm/` 与 `infra/providers/`
 
 ```text
-llm/
-├── mod.rs                       # LLM 服务抽象层导出
+infra/llm/
 ├── api_format.rs                # ApiFormat：OpenAI / Anthropic 协议差异
 ├── api_client.rs                # HTTP 客户端、重试、流式请求
 ├── adapters.rs                  # 消息格式转换适配器
-└── registry.rs                  # 读取 model_registry.json，提供模型能力查询命令
+├── registry.rs                  # 读取 model_registry.json，提供模型能力查询命令
+└── token_count.rs               # tiktoken BPE 精确 Token 计数
 
-providers/
-├── mod.rs                       # Provider 创建与导出
+infra/providers/
 ├── anthropic.rs                 # Anthropic Messages API 实现
 └── openai.rs                    # OpenAI Chat Completions 兼容实现
 ```
 
 设计约束：
 
-- API 协议差异应沉到 `LlmProvider`、`ApiFormat` 和具体 `providers/`，避免在业务流程里散落字符串判断。
-- 新模型能力优先更新 `model_registry.json`，再检查 `core/llm/registry.rs` 的读取逻辑。
-- `traits.rs` 是 Provider 抽象边界，修改流式能力、thinking 参数、工具调用格式时先看这里。
+- API 协议差异应沉到 `LlmProvider`（`infra/types/traits.rs`）、`ApiFormat` 和具体 `infra/providers/`，避免在业务流程里散落字符串判断。
+- 新模型能力优先更新 `model_registry.json`，再检查 `infra/llm/registry.rs` 的读取逻辑。
+- 修改流式能力、thinking 参数、工具调用格式时先看 `infra/types/traits.rs`。
 
 ## 工具系统：`core/tools/`
 
 ```text
 tools/
-├── mod.rs                       # 工具加载、按意图选择、路由与执行入口
-├── registry.rs                  # ToolDef、ToolRegistry 与工具 schema 注册宏
-├── permission.rs                # 工具权限审批、沙箱路径策略
-├── shell_security.rs            # Shell 命令安全检查与风险识别
-├── shell_tools.rs               # Bash/PowerShell/后台任务工具
-├── file_tools/                  # 文件读取、写入、编辑、搜索、目录与快照记录
-│   ├── mod.rs                   # file_tools 聚合导出与注册入口
-│   ├── registry.rs              # read/write/edit/search/list 工具 schema
-│   ├── common.rs                # 文件大小、行数、忽略规则、行尾/引号归一化
-│   ├── read.rs                  # read_file、read_file_skeleton
-│   ├── write.rs                 # write_file：普通文本写入 + 检查点/快照
-│   ├── edit.rs                  # edit_file：唯一匹配替换 + TOCTOU 防护
-│   ├── search.rs                # search_repo、search_in_dir
-│   ├── directory.rs             # list_directory、generate_repo_map
-│   ├── diff.rs                  # snapshot_engine TextDiff 生成
-│   ├── notebook_guard.rs        # 阻止文本工具直接改写 Notebook
-│   └── workspace.rs             # 会话工作区、检查点与快照桥接
-├── notebook_tools.rs            # Notebook cell 级编辑工具
-├── task_tools/                  # 任务工具，分为 todo_write 与持久化任务
-│   ├── mod.rs                   # task_tools 聚合导出
-│   ├── registry.rs              # task 工具 schema 注册
-│   ├── todo_write.rs            # 兼容 TodoWrite 风格的会话内任务列表
+├── mod.rs                       # 工具系统中枢：意图过滤、路由分发、技能加载、写工具拦截
+├── file_tools/                  # 文件读取、写入、编辑、搜索、符号、目录（14 个文件）
+│   ├── mod.rs                   # 聚合导出与注册入口
+│   ├── registry.rs              # read/write/edit/search/list 等工具 schema
+│   ├── read.rs / write.rs / edit.rs / patch.rs
+│   ├── delete.rs / rename.rs
+│   ├── directory.rs / search.rs / symbol.rs
+│   ├── diff.rs / common.rs / workspace.rs
+├── shell_tools/                 # Shell 执行（10 个文件）
+│   ├── mod.rs                   # 聚合导出与注册入口
+│   ├── execution.rs / background.rs / readonly.rs / git.rs
+│   └── security.rs / guards.rs / regexes.rs / types.rs / utils.rs
+├── agent_tools/                 # Agent 专用工具
+│   ├── mod.rs                   # 注册入口（LoadSkill / GetToolCatalog）
+│   ├── subagent.rs              # 子代理执行引擎（RunSubagent / RunSubagentsSequentially）
+│   ├── skill.rs                 # 技能加载
+│   ├── compact.rs               # 上下文压缩 + 记忆整理（CompactConversation / ConsolidateMemory）
+│   ├── plan.rs                  # 方案审批（ProposePlan）
+│   └── switch_mode.rs           # 模式切换（SwitchWorkMode）
+├── task_tools/                  # 任务与待办
+│   ├── mod.rs
+│   ├── registry.rs / todo_write.rs
 │   └── persistent/              # 持久化任务 CRUD 与摘要
-│       ├── mod.rs
-│       ├── common.rs
-│       ├── create.rs
-│       ├── update.rs
-│       ├── delete.rs
-│       ├── list.rs
-│       ├── get.rs
-│       └── summary.rs
-├── system_tools.rs              # 系统信息类工具
-├── agent_tools.rs               # 子代理、Skill、计划模式等 Agent 工具
-├── agent_registry.rs            # 内置子代理定义与注册
-├── claude_code_tools.rs         # Claude Code 兼容工具描述
-└── tool_search.rs               # 延迟工具搜索与激活
+├── search_tools/                # Glob + Grep 搜索（FindFiles / SearchText / CodeSearch）
+├── notebook_tools/              # Notebook cell 级编辑
+│   ├── mod.rs
+│   └── notebook_guard.rs        # 阻止文本工具直接改写 Notebook
+├── system_tools/                # 工作区设置（SetWorkspace；OS/CWD/Home 已由提示词自动注入）
+└── framework/                   # 工具框架层
+    ├── registry.rs              # 全局工具注册表（define_tools! / tool_def! 宏）
+    ├── tool_search.rs           # 渐进式工具披露（DiscoverTools / ExecuteTool）
+    ├── permission.rs            # 工具权限审批、沙箱路径策略
+    ├── agent_registry.rs        # 内置子代理定义与注册
+    └── tool_call_logger.rs      # 工具调用审计日志
 ```
 
 工具调用链：
@@ -191,110 +215,129 @@ tools/
 ```text
 模型返回 tool_use
   → agent/tools_runner.rs
-  → tools/mod.rs 路由
-  → tools/permission.rs 判断是否需要审批
+  → tools/mod.rs 路由（含意图与 WorkMode 过滤）
+  → framework/permission.rs 判断是否需要审批
   → 具体工具模块执行
   → 执行结果写回 Agent 循环
 ```
 
 修改建议：
 
-- 新增工具：先扩展对应子模块的 `registry.rs` 定义，再在 `tools/mod.rs` 路由到具体实现。
-- 文件工具已拆分到 `core/tools/file_tools/`，普通文本写入/编辑应复用其中的检查点、快照、Notebook 防护和 TOCTOU 逻辑。
-- Shell 类工具必须同步考虑 `shell_security.rs` 和权限审批。
-- 文件修改类工具要考虑快照/检查点记录，避免绕过现有变更追踪。
+- 新增工具：在对应子模块实现执行函数，再通过 `define_tools!` 宏注册到 `framework/registry.rs`，并在 `tools/mod.rs` 的路由中分发。
+- 工具集保持稳定（tool 参数顺序不变）以利于 prompt cache 命中，不要随意增删工具定义。
+- 文件修改类工具要复用时 `file_tools` 中的检查点、快照与 Notebook 防护逻辑，避免绕过变更追踪。
+- Shell 类工具必须同步考虑 `framework/permission.rs` 审批与 `shell_tools/security.rs` 安全检查。
+- 写工具（WriteFile、EditFile、RunCommand 等）默认注册为延迟工具，聊天意图下禁止调用。
 
-## 编排与会话：`core/orchestration/` 与 `core/session/`
+## 编排系统：`core/orchestration/`
 
 ```text
 orchestration/
 ├── mod.rs                       # 编排模块导出
-├── agent_runs.rs                # Agent run 事件与执行历史
+├── agent_runs.rs                # 主 Agent run 事件与执行历史
+├── agent_run_repository.rs      # Agent 运行记录 SQLite 仓储
 ├── subagents.rs                 # 子代理启动、监控、取消与事件记录
-├── tasks.rs                     # 任务系统持久化
-└── scheduler.rs                 # 调度相关能力
+├── tasks.rs                     # 任务系统持久化与依赖管理
+├── scheduler.rs                 # 基于依赖图的并行调度（JoinSet 流式调度）
+└── multi_agent/                 # 多 Agent 协作
+    ├── sandbox.rs               # 沙盒分支生命周期
+    └── merge.rs                 # LCA 三方合并、冲突检测与处理
+```
 
+调度约束：
+
+- 无依赖任务自动并行，谁先完成就解锁谁的下游。
+- 5 分钟超时保护。
+- 子代理事件通过 `subagent-updated` 事件批量节流推送前端。
+
+## 会话与记忆：`core/session/`
+
+```text
 session/
 ├── mod.rs                       # 会话创建、切换、删除、重命名、元数据管理
-├── checkpoint.rs                # 会话与检查点系统的关联逻辑
-└── memory.rs                    # 会话记忆与上下文压缩相关逻辑
+├── repository.rs                # 会话 SQLite 仓储 + 消息加载
+├── resource_repository.rs       # 附件/资源 SQLite 仓储
+└── memory.rs                    # 会话记忆与上下文压缩（视图引用方案）
 ```
+
+视图引用方案：`session_messages`（唯一数据源，只增不改） + `session_memory`（只存 message_id 列表），压缩产生 `source='compact'` 摘要消息，原始消息永久可恢复。
 
 关注点：
 
-- 会话生命周期问题优先看 `session/mod.rs` 和 `commands/session.rs`。
+- 会话生命周期问题优先看 `session/mod.rs` 和 `command/session.rs`。
 - Agent 执行记录或前端执行面板异常优先看 `orchestration/agent_runs.rs`。
 - 子代理运行、取消、事件查询异常优先看 `orchestration/subagents.rs`。
-- 任务列表与任务状态异常优先看 `orchestration/tasks.rs` 和 `tools/task_tools.rs`。
+- 任务列表与任务状态异常优先看 `orchestration/tasks.rs` 和 `tools/task_tools/`。
 
-## 快照、检查点、沙盒：`core/snapshot_engine/` 与 `core/snapshot_manager/`
+## 回滚引擎与多 Agent 沙盒：`core/rollback/` + `core/orchestration/multi_agent/`
 
 ```text
-snapshot_engine/
-├── mod.rs                       # 快照引擎模块导出
-├── snapshot.rs                  # 快照结构、快照读写
-├── patch.rs                     # 文件变更 Patch 表示
-├── replay.rs                    # 快照重放、回滚
-├── journal.rs                   # 操作日志，保障原子性与恢复
-├── gc.rs                        # 快照垃圾回收
-└── multi_agent/
-    ├── mod.rs                   # 多 Agent 快照能力导出
-    ├── sandbox.rs               # 沙盒分支生命周期
-    └── merge.rs                 # 沙盒合并、冲突检测与处理
+rollback/
+├── mod.rs                       # 回滚引擎模块导出
+├── snapshot.rs                  # 文件级快照结构与快照树
+├── patch.rs                     # 文件变更 Patch（Create/Update/Delete/Rename）
+├── replay.rs                    # 快照重放 + 原子文件回滚（staging + rename）
+├── store.rs                     # 快照 SQLite 持久化
+├── gc.rs                        # 三阶段垃圾回收（脱离分支 → 孤儿快照 → 孤儿内容）
+├── journal.rs                   # 操作日志
+├── session_manager.rs           # 会话级快照注册与分支管理
+└── rollback_logger.rs           # 回滚日志
 
-snapshot_manager/
-├── mod.rs                       # 快照管理器导出
-├── session_manager.rs           # SessionManagerRegistry，会话级快照上下文
-└── store.rs                     # 快照持久化存储
+orchestration/multi_agent/
+├── sandbox.rs                   # 沙盒隔离
+└── merge.rs                     # LCA 三方合并 + 冲突解决
 ```
 
 相关命令入口：
 
-- 检查点：`core/commands/checkpoint.rs`
-- 快照：`core/commands/snapshot.rs`
-- 沙盒：`core/commands/sandbox.rs`
-- 合并：`core/commands/merge.rs`
+- 检查点：`command/checkpoint.rs`
+- 快照：`command/snapshot.rs`
+- 沙盒：`command/sandbox.rs`
+- 合并：`command/merge.rs`
 
-## 基础设施与意图分类
+## 意图分类：`core/intent/`
 
 ```text
-infra/
-├── mod.rs                       # infra 模块导出
-├── background.rs                # 后台任务状态与输出管理
-├── debug_logger.rs              # 调试日志
-└── prompts.rs                   # 系统提示词与模板
-
 intent/
-├── mod.rs                       # 意图分类入口
-└── rules.rs                     # 规则分类辅助
+├── mod.rs                       # 意图分类入口（三层分级策略）
+├── rules.rs                     # 正则规则引擎 + intent_rules.json 外部规则加载
+└── plan_detector.rs             # 复杂任务检测（方案类输出 → 自动切 Plan 模式）
 ```
 
-- 意图分类会影响后续工具加载范围；普通用户模式会先走规则/上下文/LLM 分类，开发者视图发送消息时会在 Agent 管线中直接进入项目操作流程。
-- 普通用户携带图片/截图时仍会走意图分类，并追加截图可能代表报错、UI 异常、终端输出或代码问题反馈的提示，避免仅因有图降级成闲聊。
-- 当前常见意图标签包括：
+三层分级策略：
 
-- `CHAT`：普通聊天，通常折叠历史工具结果以节省 token。
-- `CODE_READ` / `CODE_WRITE` / `CODE_REVIEW`：代码读取、修改与审查。
-- `TASK_EXECUTE` / `TASK_PLAN` / `TASK_CONTINUE`：命令执行、复杂任务规划与任务延续。
-- `QUESTION`：技术问题、概念解释、方案咨询。
-- `MEMORY_QUERY`：记忆查询。
-- `SETTINGS`：应用配置、模型、主题、偏好设置。
+1. 规则层：关键词正则匹配（覆盖约 90% 明确请求，零延迟）。
+2. 上下文层：结合上一轮对话特征解析短回复歧义。
+3. LLM 兜底：轻量模型处理真正模糊的输入。
+
+`intent_rules.json` 中内置的 10 类意图（含 priority_order）：
+
 - `DANGEROUS`：危险操作，需要更严格的确认。
+- `TASK_PLAN`：复杂任务规划 / 方案审批。
+- `MEMORY_QUERY`：记忆查询。
+- `CODE_REVIEW`：代码审查。
+- `CODE_READ` / `CODE_WRITE`：代码读取与修改。
+- `QUESTION`：技术问题、概念解释、方案咨询。
+- `TASK_EXECUTE`：命令执行类任务。
+- `SETTINGS`：应用配置、模型、主题、偏好设置。
+- `GENERAL_CHAT`：普通聊天，通常折叠历史工具结果以节省 token。
+
+意图分类结果决定后续工具加载范围；`plan_detector` 检测到分步骤/方案类输出时自动切换到 Plan 工作模式。
 
 ## 运行时数据路径
 
-`src/lib.rs` 会检测运行环境并把数据目录锁定到 `data/`：
+`src/lib.rs` 会检测运行环境并把数据目录锁定到 `data/`（`AGENT_HOME_DIR`）：
 
 ```text
-开发模式 pnpm tauri dev：项目根目录/data/
-开发模式 cargo run：项目根目录/data/
-打包后：可执行文件所在目录/data/
+pnpm tauri dev：       项目根目录/data/
+cargo run（src-tauri）：项目根目录/data/
+打包后：               可执行文件所在目录/data/
 ```
 
 后端路径相关逻辑集中在：
 
-- `src/lib.rs`：启动时检测、创建、迁移数据目录。
-- `core/data_paths.rs`：统一生成会话、任务、快照、工作区等路径。
+- `src/lib.rs`：启动时检测、创建数据目录。
+- `infra/config/data_paths.rs`：统一生成 SQLite、全局数据、图片、会话、快照等路径。
 
 ## 常用开发命令
 
@@ -311,26 +354,33 @@ pnpm tauri build                 # 打包桌面应用
 cargo test                       # 运行 Rust 测试
 cargo check                      # Rust 类型检查
 cargo fmt                        # Rust 格式化
+cargo clippy                     # Rust lint 检查
 ```
 
 ## Agent 快速定位表
 
 | 需求 | 优先查看 |
 | --- | --- |
-| 前端调用后端命令失败 | `src/lib.rs`、`core/commands/*` |
+| 前端调用后端命令失败 | `src/lib.rs`、`src/command/*` |
 | 用户发送消息后的 Agent 主流程 | `core/agent/mod.rs`、`core/agent/pipeline.rs` |
-| 普通/开发者回复视图影响意图路由 | 前端 `src/composables/usePreferences.ts`、后端 `core/agent/pipeline.rs` |
+| 中断恢复 Agent run | `core/agent/pipeline.rs`（resume_pipeline）、`command/session.rs`（prepare_resume_agent_run） |
 | SSE 流式输出、thinking、工具调用解析异常 | `core/agent/stream.rs` |
+| 反思审查行为异常 | `core/agent/reflection/` |
 | 工具执行结果异常 | `core/agent/tools_runner.rs`、`core/tools/mod.rs`、具体工具文件 |
 | 文件读写/搜索/目录工具异常 | `core/tools/file_tools/` |
-| 权限弹窗或危险命令判断异常 | `core/tools/permission.rs`、`core/tools/shell_security.rs`、`commands/permission.rs` |
-| 模型参数、thinking、vision 能力异常 | `model_registry.json`、`core/llm/registry.rs`、`core/llm/api_format.rs` |
-| OpenAI/Anthropic 协议兼容问题 | `core/traits.rs`、`core/providers/openai.rs`、`core/providers/anthropic.rs` |
-| 会话、历史、工作区恢复异常 | `core/session/`、`core/commands/session.rs`、`core/data_paths.rs` |
-| Agent 执行记录或执行面板异常 | `core/orchestration/agent_runs.rs`、`core/commands/session.rs` |
-| 子代理异常 | `core/orchestration/subagents.rs`、`core/tools/agent_tools.rs` |
-| 任务系统异常 | `core/orchestration/tasks.rs`、`core/tools/task_tools.rs` |
-| 快照、回滚、沙盒、合并异常 | `core/snapshot_engine/`、`core/snapshot_manager/`、`core/commands/{snapshot,checkpoint,sandbox,merge}.rs` |
+| 权限弹窗或危险命令判断异常 | `core/tools/framework/permission.rs`、`core/tools/shell_tools/security.rs`、`command/permission.rs` |
+| 模型参数、thinking、vision 能力异常 | `model_registry.json`、`infra/llm/registry.rs`、`infra/llm/api_format.rs` |
+| OpenAI/Anthropic 协议兼容问题 | `infra/types/traits.rs`、`infra/providers/openai.rs`、`infra/providers/anthropic.rs` |
+| Token 计数不准确 | `infra/llm/token_count.rs` |
+| 会话、历史、工作区恢复异常 | `core/session/`、`command/session.rs`、`infra/config/data_paths.rs` |
+| 数据库 schema / 迁移异常 | `infra/db/schema.rs`、`infra/db/mod.rs` |
+| Agent 执行记录或执行面板异常 | `core/orchestration/agent_runs.rs`、`command/session.rs` |
+| 子代理异常 | `core/orchestration/subagents.rs`、`core/tools/agent_tools/subagent.rs` |
+| 任务系统异常 | `core/orchestration/tasks.rs`、`core/tools/task_tools/` |
+| 快照、回滚异常 | `core/rollback/`、`command/{snapshot,checkpoint}.rs` |
+| 沙盒、合并异常 | `core/orchestration/multi_agent/`、`command/{sandbox,merge}.rs` |
+| 意图分类不准 | `core/intent/`、`intent_rules.json` |
+| 配置读写异常 | `infra/config/config.rs`、`command/config.rs` |
 
 ## 修改约束
 
@@ -338,4 +388,5 @@ cargo fmt                        # Rust 格式化
 - 新增后端错误类型优先使用 `thiserror`，不要随意返回裸字符串错误。
 - 新 API 格式应扩展 `LlmProvider`/`ApiFormat`，不要在业务代码中新增零散格式判断。
 - 新 Tauri 命令需要同时实现命令函数并在 `src/lib.rs` 注册。
+- 工具定义统一通过 `define_tools!` / `tool_def!` 宏注册，保证工具 schema 稳定以利于 prompt cache。
 - 修改工具、Shell、文件写入、回滚、合并等能力时，必须考虑权限审批、快照记录和用户数据安全。

@@ -283,8 +283,8 @@ onUnmounted(() => {
 
 .preview-toggle.active {
   color: var(--accent-blue);
-  border-color: rgba(59, 130, 246, 0.3);
-  background: rgba(59, 130, 246, 0.08);
+  border-color: color-mix(in srgb, var(--accent-blue) 30%, transparent);
+  background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
 }
 
 .mode-switch {
@@ -340,9 +340,9 @@ onUnmounted(() => {
 }
 
 .status-badge.running {
-  background: rgba(34, 197, 94, 0.15);
+  background: color-mix(in srgb, var(--accent-green) 15%, transparent);
   color: var(--accent-green);
-  border: 1px solid rgba(34, 197, 94, 0.3);
+  border: 1px solid color-mix(in srgb, var(--accent-green) 30%, transparent);
 }
 
 .status-badge.idle {
@@ -413,8 +413,8 @@ onUnmounted(() => {
   left: 50%;
   transform: translate(-50%, -50%);
   padding: 12px 20px;
-  background: rgba(239, 68, 68, 0.1);
-  border: 1px solid rgba(239, 68, 68, 0.2);
+  background: color-mix(in srgb, var(--accent-red) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-red) 20%, transparent);
   color: var(--accent-red);
   border-radius: var(--radius-md);
   font-size: 0.85rem;
