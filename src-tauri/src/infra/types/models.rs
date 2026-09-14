@@ -307,6 +307,9 @@ pub struct SessionMemory {
     /// 每条消息的来源分类（与 messages 平行），从 session_messages 表重建，不序列化存储
     #[serde(default, skip_serializing)]
     pub sources: Vec<String>,
+    /// 上下文快照单调序号：每次注入快照前自增，压缩/重启后仍保持单调递增
+    #[serde(default)]
+    pub snapshot_seq: u64,
     #[serde(default)]
     pub plan_documents: Vec<PlanDocument>,
 }

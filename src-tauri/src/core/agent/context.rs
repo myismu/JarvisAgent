@@ -24,6 +24,7 @@
 use crate::infra::types::models::*;
 use crate::core::session::{append_message, memory::*};
 use crate::core::tools::*;
+use crate::core::agent::prompts::get_mode_prompt;
 
 /// 构建随用户消息一起落库的动态上下文。
 ///
@@ -39,13 +40,23 @@ pub fn build_dynamic_context(
     intent: &str,
     workspace: &Option<std::path::PathBuf>,
     capabilities: &crate::core::tools::framework::capabilities::Capabilities,
+    work_mode: &str,
+    snapshot_seq: u64,
 ) -> String {
     // 闲聊：不需要任何运行时上下文
     if intent == "CHAT" {
         return String::new();
     }
 
-    let mut ctx = format!("<intent>{}</intent>\n", intent);
+    let mode = if work_mode == "plan" { "plan" } else { "edit" };
+    let mut ctx = format!(
+        "<context_snapshot seq=\"{}\" mode=\"{}\" />\n本回合工作模式：{}\n",
+        snapshot_seq, mode, mode
+    );
+    ctx.push_str("<mode_rules>\n");
+    ctx.push_str(get_mode_prompt(mode));
+    ctx.push_str("\n</mode_rules>\n");
+    ctx.push_str(&format!("<intent>{}</intent>\n", intent));
     // 能力边界：放在最前面，让模型第一轮就知道"哪些事在本会话根本做不到"，
     // 不必（也不该）靠 GetToolCatalog / DiscoverTools 去试探
     ctx.push_str(&capabilities.context_block());

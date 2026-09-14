@@ -102,6 +102,10 @@ struct PipelineState {
     reflection_mode: String,
     total_reflections: usize,
     consecutive_reflection_nos: usize,
+    /// Plan 看门狗：plan 模式下连续无喂狗动作的工具调用次数
+    plan_consecutive_stalls: usize,
+    /// Plan 看门狗：plan 模式下累计无 ProposePlan / 降级 edit 的 loop 次数
+    plan_total_loops_without_plan: usize,
 }
 
 struct ContextEstimate {
@@ -397,33 +401,55 @@ impl PipelineState {
             };
 
             if was_proposing_plan {
-                let mut memory = ctx.memory.lock().await;
-                let pending_plans: Vec<_> = memory
-                    .plan_documents
-                    .iter()
-                    .filter(|doc| doc.status == "pending")
-                    .map(|doc| (doc.id.clone(), doc.title.clone()))
-                    .collect();
+                let mut approved_any = false;
+                {
+                    let mut memory = ctx.memory.lock().await;
+                    let pending_plans: Vec<_> = memory
+                        .plan_documents
+                        .iter()
+                        .filter(|doc| doc.status == "pending")
+                        .map(|doc| (doc.id.clone(), doc.title.clone()))
+                        .collect();
 
-                if !pending_plans.is_empty() {
-                    // 区分同意/拒绝：意图分类器对两类都返回 ACTION，需靠消息文本判断
-                    let msg_trim = msg.trim();
-                    let is_reject = msg_trim.starts_with("不")
-                        || msg_trim == "拒绝"
-                        || msg_trim == "reject"
-                        || msg_trim == "no";
-                    let new_status = if is_reject { "revision_requested" } else { "approved" };
+                    if !pending_plans.is_empty() {
+                        // 区分同意/拒绝：意图分类器对两类都返回 ACTION，需靠消息文本判断
+                        let msg_trim = msg.trim();
+                        let is_reject = msg_trim.starts_with("不")
+                            || msg_trim == "拒绝"
+                            || msg_trim == "reject"
+                            || msg_trim == "no";
+                        let new_status = if is_reject { "revision_requested" } else { "approved" };
+                        approved_any = new_status == "approved";
 
-                    for (plan_id, plan_title) in &pending_plans {
-                        if let Ok(Some(doc)) = crate::core::session::update_plan_document_status(
-                            &session_id, plan_id, new_status, None,
-                        ) {
-                            if let Some(existing) = memory.plan_documents.iter_mut().find(|d| d.id == doc.id) {
-                                *existing = doc.clone();
+                        for (plan_id, plan_title) in &pending_plans {
+                            if let Ok(Some(doc)) = crate::core::session::update_plan_document_status(
+                                &session_id, plan_id, new_status, None,
+                            ) {
+                                if let Some(existing) = memory.plan_documents.iter_mut().find(|d| d.id == doc.id) {
+                                    *existing = doc.clone();
+                                }
+                                let _ = app.emit("plan-document-updated", &doc);
                             }
-                            let _ = app.emit("plan-document-updated", &doc);
+                            println!("[JARVIS] 输入框审批：方案「{}」→ {}", plan_title, new_status);
                         }
-                        println!("[JARVIS] 输入框审批：方案「{}」→ {}", plan_title, new_status);
+                    }
+                } // 释放 memory 锁，避免锁顺序死锁
+
+                // B2：方案批准后由服务端强制切回 edit；模型侧的 SwitchWorkMode(edit) 仅作双保险
+                if approved_any {
+                    let mut mode = ctx.agent_work_mode.lock().await;
+                    if mode.as_str() != "edit" {
+                        let old_mode = mode.clone();
+                        *mode = "edit".to_string();
+                        let _ = app.emit(
+                            "agent-work-mode-changed",
+                            json!({
+                                "sessionId": session_id,
+                                "from": old_mode,
+                                "to": "edit",
+                                "reason": "方案已批准，自动切回编辑模式",
+                            }),
+                        );
                     }
                 }
             }
@@ -468,6 +494,8 @@ impl PipelineState {
             reflection_mode: resolved_reflection_mode,
             total_reflections: 0,
             consecutive_reflection_nos: 0,
+            plan_consecutive_stalls: 0,
+            plan_total_loops_without_plan: 0,
             display_msg,
             tool_execution_summary: None,
         };
@@ -476,12 +504,7 @@ impl PipelineState {
         if detected_intent == "TASK_PLAN" && current_work_mode != "plan" {
             println!("[JARVIS] 意图前置拦截：TASK_PLAN 意图，首轮强制切换到 Plan 模式");
             *state.ctx.agent_work_mode.lock().await = "plan".to_string();
-            let plan_prompt = crate::core::agent::prompts::get_system_prompt(
-                &audience,
-                "plan",
-                state.request_workspace.as_deref(),
-            );
-            state.system_prompt = plan_prompt;
+            // system 必须全程字节恒定：这里只切换 work_mode，不重建 system。
             state.detected_intent = "TASK_PLAN".to_string();
             let _ = state.app.emit(
                 "agent-work-mode-changed",
@@ -507,10 +530,24 @@ impl PipelineState {
     /// 5. 在 agent_runs 表登记本次 run，并保存第一个检查点
     async fn pre_loop(&mut self) {
         // 步骤 1：构建动态上下文（意图相关提示 + 工作区信息）
+        // 快照 seq 使用 SessionMemory 的持久化单调计数器，压缩/重启后仍严格递增，
+        // 保证“以 seq 最大（最新）的快照为准”不会因 messages.len() 回退而失效。
+        let current_mode = { self.ctx.agent_work_mode.lock().await.clone() };
+        let snapshot_seq = {
+            let mut session = self.ctx.memory.lock().await;
+            session.snapshot_seq = session.snapshot_seq.saturating_add(1);
+            session.snapshot_seq
+        };
+        // 能力清单位于快照内，必须与当前 work_mode 保持一致（审批通过/首轮强制切 plan 后亦然）
+        self.capabilities = crate::core::tools::framework::capabilities::Capabilities::for_work_mode(
+            &current_mode,
+        );
         self.dynamic_context_str = build_dynamic_context(
             &self.detected_intent,
             &self.request_workspace,
             &self.capabilities,
+            &current_mode,
+            snapshot_seq,
         );
 
         // 步骤 2：准备用户消息的短版预览（给 UI 展示）
@@ -722,9 +759,7 @@ impl PipelineState {
 
             // 步骤 5：构建 LLM 请求（OpenAI 出口时按模型翻译协议）+ 更新上下文快照
             // 构建请求并更新上下文快照
-            let audience = self.ctx.agent_audience.lock().await.clone();
-            let work_mode = self.ctx.agent_work_mode.lock().await.clone();
-            let (req_json, is_openai) = self.build_llm_request(history_snapshot, &audience, &work_mode);
+            let (req_json, is_openai) = self.build_llm_request(history_snapshot);
 
             // 调试日志
             let request_json = serde_json::to_string_pretty(&req_json).unwrap_or_default();
@@ -1309,6 +1344,19 @@ impl PipelineState {
                     self.req_output_tokens,
                     "工具结果已写回上下文",
                 );
+                drop(session);
+
+                // B3 Plan 看门狗：仅 plan 模式；连续无喂狗的工具调用 / 累计无 ProposePlan 的空转达到阈值时，
+                // 先做一次缓存友好的 LLM 进度小结，再强制停下交还决策权。
+                let current_mode_after = self.ctx.agent_work_mode.lock().await.clone();
+                if self.update_plan_watchdog(&current_mode_after, &tool_names_for_reflection) {
+                    println!(
+                        "[JARVIS] Plan 看门狗触发：consecutive={}, loops_without_plan={}",
+                        self.plan_consecutive_stalls, self.plan_total_loops_without_plan
+                    );
+                    self.handle_plan_watchdog_summary().await;
+                    break;
+                }
             }
             self.loop_count += 1;
             self.total_loop_count += 1;
@@ -2164,15 +2212,10 @@ impl PipelineState {
     fn build_llm_request(
         &self,
         history_snapshot: Vec<Message>,
-        audience: &str,
-        work_mode: &str,
     ) -> (serde_json::Value, bool) {
         // 1. 取系统提示词与工具定义，并更新上下文监控快照
-        let system_prompt = crate::core::agent::prompts::get_system_prompt(
-            audience,
-            work_mode,
-            self.request_workspace.as_deref(),
-        );
+        // system 在 setup 阶段只组装一次并保持字节恒定，整个会话内不再随 work_mode 变化。
+        let system_prompt = self.system_prompt.clone();
         let tools = self.current_tools();
         self.update_context_snapshot(&history_snapshot, &tools);
 
@@ -2341,6 +2384,82 @@ impl PipelineState {
                 content: Content::Multiple(filtered_blocks),
             }, "chat");
         }
+    }
+
+    /// B3 Plan 看门狗：更新计数并判断是否触发（仅 plan 模式）。
+    ///
+    /// 喂狗动作（重置两个计数器）：
+    /// - 本 loop 调用了 ProposePlan；
+    /// - 本 loop 已把 work_mode 切出 plan（SwitchWorkMode 到 edit）。
+    fn update_plan_watchdog(&mut self, work_mode: &str, tool_names: &[String]) -> bool {
+        use crate::infra::types::constants::{PLAN_WATCHDOG_MAX_CONSECUTIVE_STALLS, PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN};
+
+        if work_mode != "plan" {
+            self.plan_consecutive_stalls = 0;
+            self.plan_total_loops_without_plan = 0;
+            return false;
+        }
+
+        if tool_names.iter().any(|n| n == "ProposePlan") {
+            self.plan_consecutive_stalls = 0;
+            self.plan_total_loops_without_plan = 0;
+            return false;
+        }
+
+        self.plan_consecutive_stalls = self.plan_consecutive_stalls.saturating_add(tool_names.len());
+        self.plan_total_loops_without_plan = self.plan_total_loops_without_plan.saturating_add(1);
+
+        self.plan_consecutive_stalls >= PLAN_WATCHDOG_MAX_CONSECUTIVE_STALLS
+            || self.plan_total_loops_without_plan >= PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN
+    }
+
+    /// B3 触发后：先复用当前 system + 历史做一次缓存友好的 LLM 进度小结，
+    /// 再把决策权交还用户并强制结束当前 loop。
+    async fn handle_plan_watchdog_summary(&mut self) {
+        let instruction = "【系统通知】规划探索已达到看门狗阈值。请立即停止探索，不要调用任何工具，只用一段话输出当前进度小结与下一步建议（继续探索 / 缩小范围 / 直接执行）。";
+        let mut snapshot = self.prepare_history_snapshot().await;
+        snapshot.push(Message::User {
+            content: Content::Single(instruction.to_string()),
+        });
+
+        let (req_json, is_openai) = self.build_llm_request(snapshot);
+        let mut summary = String::new();
+        match self.call_api_with_retry(&req_json).await {
+            Ok(Some(resp)) => {
+                let mut stream = resp.bytes_stream().eventsource();
+                let parsed = process_stream(
+                    &mut stream,
+                    is_openai,
+                    &self.app,
+                    &self.sid,
+                    &self.run_id,
+                    self.total_loop_count + 1,
+                    &self.cancel_token,
+                    StreamConfig::default(),
+                )
+                .await;
+                summary = parsed.text.trim().to_string();
+            }
+            Ok(None) => {}
+            Err(e) => {
+                println!("[JARVIS] Plan 看门狗小结调用失败: {}", e);
+            }
+        }
+
+        if summary.is_empty() {
+            summary = "本次规划探索尚未收敛，已自动停止。请选择：继续探索 / 缩小范围 / 直接执行。".to_string();
+        }
+
+        self.final_answer = summary.clone();
+        self.tool_execution_summary = Some(summary);
+        let _ = self.app.emit(
+            "chat-stream",
+            json!({
+                "content": "\n> [!] **规划探索未收敛，已自动停下并把决策权交还给你。** 可选择：继续探索 / 缩小范围 / 直接执行。\n",
+                "sessionId": self.sid,
+                "loopCount": self.total_loop_count + 1
+            }),
+        );
     }
 }
 

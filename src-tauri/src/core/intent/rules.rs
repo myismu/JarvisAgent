@@ -3,35 +3,14 @@
 //! 基于正则关键词的快速意图匹配引擎。
 //! 定义了 12 种意图类型及其匹配规则，按优先级依次匹配：
 //!
-//! `Dangerous > Plan > Question > Action > Chat > Unclear`
+//! `Plan > Question > Action > Chat > Unclear`
 //!
-//! 三种核心函数：
+//! 核心函数：
 //! - `classify_by_rules` — 纯规则匹配（第一层）
-//! - `classify_with_context` — 带上下文的匹配（第二层）
-//! - `analyze_last_assistant_message` — 上一轮助手消息特征提取
 
 use regex::Regex;
 use std::sync::LazyLock;
 
-// ----------------------------------------------------------------------------
-// 危险操作模式：匹配可能造成不可逆损害的操作
-// 如：删除所有文件、清空数据库、格式化磁盘等
-// ----------------------------------------------------------------------------
-static DANGEROUS_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    let patterns = [
-        r"(?i)(删除|删掉|删除掉|删去|清空|清除|移除|卸载)\s*(所有|全部|整个|一切)",
-        r"(?i)(delete|remove|clear|drop|truncate)\s*(all|everything|entire|whole)",
-        r"(?i)格式化\s*(磁盘|硬盘|驱动器)",
-        r"(?i)format\s*(disk|drive)",
-        r"(?i)(清空|删除|删掉)\s*(数据库|项目|文件|目录|文件夹)",
-        r"(?i)(drop|delete)\s*(database|table|schema)",
-        r"(?i)rm\s+-rf",
-        r"(?i)del\s+/\s*s",
-        r"(?i)把.*删(了|掉|除)",
-        r"(?i)删(了|掉)\s*它",
-    ];
-    patterns.iter().filter_map(|p| Regex::new(p).ok()).collect()
-});
 
 // ----------------------------------------------------------------------------
 // 复杂项目/方案审批关键词：匹配需要先规划再执行的项目级任务
@@ -247,7 +226,6 @@ pub enum Intent {
     Question,   // 技术问题 + 记忆查询 + 设置
     Action,     // 代码读写/审查/命令执行/任务延续
     Plan,       // 复杂任务规划
-    Dangerous,  // 危险操作
     Unclear,    // 不明确 + 需要上下文
 }
 
@@ -258,7 +236,6 @@ impl Intent {
             "QUESTION" | "MEMORY_QUERY" | "SETTINGS" => Some(Intent::Question),
             "CODE_READ" | "CODE_WRITE" | "CODE_REVIEW" | "TASK_EXECUTE" | "TASK_CONTINUE" | "PROJECT_ACTION" => Some(Intent::Action),
             "TASK_PLAN" => Some(Intent::Plan),
-            "DANGEROUS" | "DANGEROUS_ACTION" => Some(Intent::Dangerous),
             "UNCLEAR" | "NEEDS_CONTEXT" => Some(Intent::Unclear),
             _ => None,
         }
@@ -270,28 +247,9 @@ impl Intent {
             Intent::Question => "QUESTION",
             Intent::Action => "ACTION",
             Intent::Plan => "TASK_PLAN",
-            Intent::Dangerous => "DANGEROUS",
             Intent::Unclear => "UNCLEAR",
         }
     }
-}
-
-// ============================================================================
-// 上下文信息结构体
-// ============================================================================
-
-/// 上一轮助手消息的分析结果
-/// 用于判断用户的短回复（如"好的"、"继续"）的真实意图
-#[derive(Debug, Clone)]
-pub struct LastAssistantAction {
-    /// 是否为项目操作（创建文件、运行命令等）
-    pub was_project_action: bool,
-    /// 是否在询问问题（需要用户回答）
-    pub was_asking_question: bool,
-    /// 是否在提出计划（需要用户确认）
-    pub was_proposing_plan: bool,
-    /// 操作摘要（用于调试日志）
-    pub action_summary: String,
 }
 
 // ============================================================================
@@ -329,12 +287,6 @@ pub fn classify_by_rules(input: &str) -> Intent {
         }
     }
 
-    // 优先级1：危险操作（最高优先级）
-    for pattern in DANGEROUS_PATTERNS.iter() {
-        if pattern.is_match(trimmed) {
-            return Intent::Dangerous;
-        }
-    }
 
     // 优先级2：复杂项目/方案审批
     for pattern in COMPLEX_TASK_KEYWORDS.iter() {
@@ -427,111 +379,6 @@ pub fn classify_by_rules(input: &str) -> Intent {
     Intent::Unclear
 }
 
-/// 带上下文的分类（第二层）
-///
-/// 在纯规则分类基础上，结合上一轮对话内容判断。
-/// 主要解决"好的"、"继续"等短回复的歧义问题。
-///
-/// # 参数
-/// - `input`: 用户输入文本
-/// - `last_assistant_action`: 上一轮助手消息的分析结果
-///
-/// # 返回
-/// - 意图分类结果
-pub fn classify_with_context(
-    input: &str,
-    recent_assistant_actions: &[LastAssistantAction],
-) -> Intent {
-    for action in recent_assistant_actions {
-        // 最近 N 轮中有提问且用户有回复 → 视为任务延续
-        if action.was_asking_question && !input.trim().is_empty() {
-            return Intent::Action;
-        }
-
-        // 最近 N 轮中有项目操作或计划提议，且用户回复确认词 → 任务延续
-        if action.was_project_action || action.was_proposing_plan {
-            for pattern in AFFIRMATIVE_CONTINUATION.iter() {
-                if pattern.is_match(input.trim()) {
-                    return Intent::Action;
-                }
-            }
-        }
-    }
-
-    // 上下文未命中，回退到纯规则分类
-    let base_intent = classify_by_rules(input);
-
-    if base_intent != Intent::Unclear {
-        return base_intent;
-    }
-
-    Intent::Unclear
-}
-
-/// 分析上一轮助手消息
-///
-/// 提取消息中的特征，用于判断用户的短回复意图。
-///
-/// # 参数
-/// - `message`: 助手消息文本
-///
-/// # 返回
-/// - 分析结果结构体
-pub fn analyze_last_assistant_message(message: &str) -> LastAssistantAction {
-    let lower = message.to_lowercase();
-
-    // 关键词列表用于提取上一轮助手消息的行为特征
-    // 项目操作指示词：创建、写入、修改、删除、运行等
-    let project_action_indicators = [
-        "创建", "写入", "修改", "删除", "运行", "执行", "构建", "安装", "create", "write",
-        "modify", "delete", "run", "execute", "build", "install", "文件", "代码", "项目", "file",
-        "code", "project", "命令", "终端", "command", "terminal",
-    ];
-
-    // 提问指示词：需要、是否、确认、请问等
-    let question_indicators = [
-        "需要",
-        "是否",
-        "确认",
-        "请问",
-        "想要",
-        "need",
-        "whether",
-        "confirm",
-        "would you like",
-        "？",
-        "?",
-    ];
-
-    // 计划指示词：计划、步骤、方案、建议等
-    let plan_indicators = [
-        "计划", "步骤", "方案", "建议", "plan", "step", "proposal", "suggest", "首先", "然后",
-        "最后", "first", "then", "finally",
-    ];
-
-    // 检测各类特征
-    let was_project_action = project_action_indicators
-        .iter()
-        .any(|ind| lower.contains(ind));
-
-    let was_asking_question = question_indicators.iter().any(|ind| lower.contains(ind));
-
-    let was_proposing_plan = plan_indicators.iter().any(|ind| lower.contains(ind));
-
-    // 提取操作摘要（用于调试）
-    let action_summary = if was_project_action {
-        message.chars().take(100).collect()
-    } else {
-        String::new()
-    };
-
-    LastAssistantAction {
-        was_project_action,
-        was_asking_question,
-        was_proposing_plan,
-        action_summary,
-    }
-}
 
 // ============================================================================
 // 外部意图规则加载（JSON 配置文件扩展编译规则，无需重编译即可新增/调整意图）
@@ -612,13 +459,6 @@ fn check_external_rules(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_dangerous_action() {
-        assert_eq!(classify_by_rules("删除所有文件"), Intent::Dangerous);
-        assert_eq!(classify_by_rules("清空数据库"), Intent::Dangerous);
-        assert_eq!(classify_by_rules("rm -rf /"), Intent::Dangerous);
-    }
 
     #[test]
     fn test_code_read() {
@@ -710,56 +550,4 @@ mod tests {
         assert_eq!(classify_by_rules("好的"), Intent::Unclear);
     }
 
-    #[test]
-    fn test_context_continuation() {
-        let action = LastAssistantAction {
-            was_project_action: true,
-            was_asking_question: false,
-            was_proposing_plan: false,
-            action_summary: "创建文件".to_string(),
-        };
-        let actions = vec![action];
-        assert_eq!(
-            classify_with_context("继续", &actions),
-            Intent::Action
-        );
-        assert_eq!(
-            classify_with_context("好的", &actions),
-            Intent::Action
-        );
-    }
-
-    #[test]
-    fn test_context_casual_chat() {
-        let action = LastAssistantAction {
-            was_project_action: false,
-            was_asking_question: false,
-            was_proposing_plan: false,
-            action_summary: String::new(),
-        };
-        let actions = vec![action];
-        assert_eq!(
-            classify_with_context("好的", &actions),
-            Intent::Unclear
-        );
-    }
-
-    #[test]
-    fn test_context_question_answer() {
-        let action = LastAssistantAction {
-            was_project_action: true,
-            was_asking_question: true,
-            was_proposing_plan: false,
-            action_summary: "询问文件内容".to_string(),
-        };
-        let actions = vec![action];
-        assert_eq!(
-            classify_with_context("备忘txt", &actions),
-            Intent::Action
-        );
-        assert_eq!(
-            classify_with_context("test.md", &actions),
-            Intent::Action
-        );
-    }
 }

@@ -46,13 +46,14 @@ pub async fn switch_work_mode(
     );
 
     framework::ToolCallResult::ok(format!(
-        "已从「{}」模式切换到「{}」模式。{}",
+        "已从「{}」模式切换到「{}」模式。{}\n\n【系统通知】工作模式已变化：本回合后续按「{}」模式规则执行，可用延迟工具与能力边界已相应变化；请立即调用 GetToolCatalog 重新获取当前模式下的延迟工具目录，并以最新目录为准，不要继续沿用切换前的旧目录。",
         current_mode,
         target_mode,
         if reason.is_empty() {
             String::new()
         } else {
             format!("原因：{}", reason)
-        }
+        },
+        target_mode
     ))
 }

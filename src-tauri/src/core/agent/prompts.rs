@@ -96,20 +96,12 @@ fn audience_rules(audience: &str) -> Vec<PromptRule> {
     }
 }
 
-// ── Mode 规则 ──
+// ── Mode 规则（供“上下文快照”使用，不再进 system）──
 
-fn mode_rules(work_mode: &str) -> Vec<PromptRule> {
+pub fn get_mode_prompt(work_mode: &str) -> &'static str {
     match work_mode {
-        "plan" => vec![
-            PromptRule::new(PromptLevel::P0Critical, "当前模式：规划",
-                prompt!("mode/plan.md"),
-            ),
-        ],
-        _ => vec![
-            PromptRule::new(PromptLevel::P0Critical, "当前模式：编辑",
-                prompt!("mode/edit.md"),
-            ),
-        ],
+        "plan" => prompt!("mode/plan.md"),
+        _ => prompt!("mode/edit.md"),
     }
 }
 
@@ -146,7 +138,13 @@ pub fn get_system_prompt(
     let mut rules: Vec<PromptRule> = Vec::new();
     rules.extend(base_rules(work_mode));
     rules.extend(audience_rules(audience));
-    rules.extend(mode_rules(work_mode));
+    // 模式规则不进入 system：system 必须字节恒定才能最大化前缀缓存命中。
+    // 模式 / 记忆 / 项目结构等易变状态统一放进每回合的“上下文快照”。
+    rules.push(PromptRule::new(
+        PromptLevel::P0Critical,
+        "上下文快照读取规则",
+        "历史中的上下文快照（<context_snapshot>）是当时的现场状态。处理当前请求时，始终以 seq 最大（最新）的快照为准；旧快照仅作历史参考。当前回合的工作模式、能力、项目结构与用户画像都看最新快照。",
+    ));
     // 工作目录语义（沙箱规则 / 无沙箱说明）注入到 system：
     // system 每轮必发且是缓存前缀，放这里不会像以前那样在每条用户消息里重复一遍。
     if let Some(ws) = workspace {

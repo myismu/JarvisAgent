@@ -456,6 +456,7 @@ pub fn save_session(
         messages: filtered_messages,
         message_ids: filtered_message_ids,
         sources: filtered_sources.clone(),
+        snapshot_seq: normalized_memory.snapshot_seq,
         plan_documents: normalized_memory.plan_documents.clone(),
     };
 
