@@ -15,6 +15,7 @@ import { useI18n } from 'vue-i18n';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useSessionStore } from '../../stores/session';
 import { useChatStore } from '../../stores/chat';
+import { useAgentStore } from '../../stores/agent';
 import { usePreferences } from '../../composables/usePreferences';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
@@ -34,6 +35,7 @@ const pendingProfileId = ref<string | null>(null);
 
 const session = useSessionStore();
 const chat = useChatStore();
+const agent = useAgentStore();
 const uiPrefs = usePreferences();
 
 const isRunning = computed(() =>
@@ -41,6 +43,56 @@ const isRunning = computed(() =>
 );
 
 const sessionTokenTotal = computed(() => (session.totalInputTokens || 0) + (session.totalOutputTokens || 0));
+
+/**
+ * 缓存命中读数（来自最近一次请求的上下文快照，由 `context-snapshot-updated` 事件刷新）。
+ *
+ * 语义（与后端 `infra/llm/usage.rs` 一致）：
+ * - 未报告 → `?`（**不是 0%**，因为"没数据"和"没命中"是两回事）
+ * - 报告了但为 0 → 「预热中」（GLM 等档位前 1~2 次请求不命中属正常）
+ * - 有命中 → 百分比
+ */
+const cacheUsage = computed(() => {
+  const snap = agent.currentContextSnapshot;
+  if (!snap) return null;
+  // 逐 loop 趋势（单看一个数字会被预热期误导，所以顺带把走势写进 tooltip）
+  const trend = ((): string => {
+    const list = snap.cacheHistory ?? [];
+    if (list.length < 2) return '';
+    const rates = list.slice(-10).map((point) => {
+      const sum = (point.hitTokens || 0) + (point.missTokens || 0);
+      return sum ? Math.round(((point.hitTokens || 0) / sum) * 100) : 0;
+    });
+    return ` · ${t('input.cacheTrend')} ${rates.join('% → ')}%`;
+  })();
+  const hit = snap.cacheHitTokens ?? null;
+  if (hit === null) {
+    return { label: '?', state: 'unknown' as const, title: t('input.cacheUnknownHint') };
+  }
+  const total = hit + (snap.cacheMissTokens ?? 0);
+  if (!total) return null;
+  const sourceLabel = snap.cacheSource
+    ? ` · ${t('input.cacheSource', { source: snap.cacheSource })}`
+    : '';
+  const detail = `${formatToken(hit)} / ${formatToken(total)}${sourceLabel}`;
+  if (hit === 0) {
+    return {
+      label: t('input.cacheWarmup'),
+      state: 'warmup' as const,
+      title: `${detail} · ${t('input.cacheWarmupHint')}${trend}`,
+    };
+  }
+  return {
+    label: `${Math.round((hit / total) * 100)}%`,
+    state: 'hit' as const,
+    title: `${t('input.cacheHitTitle')} ${detail}${trend}`,
+  };
+});
+
+const openContextPanel = () => {
+  // 打开右侧上下文监控窗口（App.vue 监听该状态并负责开窗）
+  agent.showAgentPanel = true;
+};
 
 const formatToken = (n: number): string => {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -433,6 +485,39 @@ onMounted(async () => {
   });
 });
 
+/**
+ * 把「输入区实际高度」写成根级 CSS 变量 `--input-area-height`。
+ *
+ * 为什么需要：消息列表的底部留白（`.response-area` 的 padding-bottom）和「滚动到底部」
+ * 按钮的悬浮位置都必须贴着浮动输入框，而输入框高度是**内容/窗口驱动**的 —— 多行输入、
+ * 附件条、权限卡片、计划面板、窄窗口下文字换行变多，都会改变它的高度。
+ * 以前这两处各自硬编码了魔数（padding 200px、按钮 bottom 180px，分散在两个文件里），
+ * 窗口或内容一变就失配：按钮压住输入框、或最后几条消息被输入框遮住。
+ * 现在改为「一处测量、多处消费」。
+ *
+ * 观察的是外层 `.floating-terminal-container`（含它 32px 的 padding），
+ * 这样量到的是「输入区整体占位高度」，直接用即可。
+ */
+const inputAreaRef = ref<HTMLElement | null>(null);
+let inputAreaObserver: ResizeObserver | null = null;
+
+const syncInputAreaHeight = () => {
+  const host = inputAreaRef.value?.closest('.floating-terminal-container') as HTMLElement | null;
+  if (!host) return;
+  const height = Math.round(host.getBoundingClientRect().height);
+  if (height > 0) {
+    document.documentElement.style.setProperty('--input-area-height', `${height}px`);
+  }
+};
+
+onMounted(() => {
+  const host = inputAreaRef.value?.closest('.floating-terminal-container') as HTMLElement | null;
+  syncInputAreaHeight(); // 首帧先量一次，避免先用兜底值闪一下
+  if (!host || typeof ResizeObserver === 'undefined') return;
+  inputAreaObserver = new ResizeObserver(syncInputAreaHeight);
+  inputAreaObserver.observe(host);
+});
+
 onUnmounted(() => {
   if (unlistenDragDrop) unlistenDragDrop();
   if (unlistenConfig) unlistenConfig();
@@ -442,6 +527,9 @@ onUnmounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', closeMenuOnOutsideClick);
+  inputAreaObserver?.disconnect();
+  inputAreaObserver = null;
+  document.documentElement.style.removeProperty('--input-area-height');
 });
 
 const adjustHeight = () => {
@@ -532,7 +620,7 @@ const handleRecallEdit = async () => {
 </script>
 
 <template>
-  <div class="chat-input-container">
+  <div class="chat-input-container" ref="inputAreaRef">
     <div class="chat-input-wrapper">
       
       <div v-if="chat.showRecallEdit" class="recall-edit-bar">
@@ -746,6 +834,18 @@ const handleRecallEdit = async () => {
         <span class="token-bar-item token-bar-total" title="累计总消耗">
           {{ formatToken(sessionTokenTotal) }}
         </span>
+        <!-- 缓存命中：点一下打开右侧上下文监控窗口看详细（逐 loop 曲线、字段来源） -->
+        <template v-if="cacheUsage">
+          <span class="token-bar-sep">·</span>
+          <span
+            class="token-bar-item token-bar-cache"
+            :class="`cache-${cacheUsage.state}`"
+            :title="cacheUsage.title"
+            @click="openContextPanel"
+          >
+            {{ t('input.cacheLabel') }} {{ cacheUsage.label }}
+          </span>
+        </template>
         <span class="token-bar-spacer"></span>
         <span class="token-bar-item token-bar-model">{{ agentModel }}</span>
       </div>
@@ -1375,6 +1475,27 @@ const handleRecallEdit = async () => {
 
 .token-bar-spacer {
   flex: 1;
+}
+
+/* 缓存命中读数：可点击 → 打开上下文监控窗口 */
+.token-bar-cache {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0 4px;
+  transition: color 0.15s, background-color 0.15s;
+}
+
+.token-bar-cache:hover {
+  color: var(--accent-blue);
+  background: var(--glass-bg);
+}
+
+.token-bar-cache.cache-warmup {
+  opacity: 0.65;
+}
+
+.token-bar-cache.cache-unknown {
+  opacity: 0.5;
 }
 
 .token-bar-model {

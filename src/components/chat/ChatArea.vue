@@ -804,7 +804,9 @@ onMounted(() => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  padding: 16px 0 200px; /* Increased bottom padding for floating input */
+  /* 底部留白 = 浮动输入区的实际高度 + 24px 呼吸位（由 TerminalInput 测量的
+     --input-area-height 提供；兜底 200px 只在首帧变量就绪前生效） */
+  padding: 16px 0 calc(var(--input-area-height, 200px) + 24px);
   overflow-y: auto;
   overflow-x: hidden;
   font-size: 0.95rem;
@@ -1401,10 +1403,10 @@ onMounted(() => {
   letter-spacing: 0.02em;
 }
 
-/* 滚动到底部按钮 */
+/* 滚动到底部按钮：贴在浮动输入区上沿 12px，随输入框高度自适应 */
 .scroll-to-bottom-btn {
   position: absolute;
-  bottom: calc(180px); /* 响应式定位：140px 是 response-area 的底部 padding，20px 是额外间距 */
+  bottom: calc(var(--input-area-height, 180px) + 12px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 10;

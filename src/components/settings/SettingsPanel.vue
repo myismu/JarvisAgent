@@ -391,7 +391,35 @@
                 </div>
                 <div class="setting-item">
                   <label>API Key</label>
-                  <input type="password" v-model="editingProfile.config.apiKey" placeholder="sk-..." />
+                  <!-- 明文切换按钮常驻：保存后也能随时核对（以前只有输入时能看到自己刚敲的内容） -->
+                  <div class="input-with-toggle">
+                    <input
+                      :type="showApiKey ? 'text' : 'password'"
+                      v-model="editingProfile.config.apiKey"
+                      placeholder="sk-..."
+                      autocomplete="off"
+                      spellcheck="false"
+                    />
+                    <button
+                      type="button"
+                      class="toggle-visibility"
+                      :class="{ active: showApiKey }"
+                      :title="showApiKey ? t('settings.profileEditor.hideApiKey') : t('settings.profileEditor.showApiKey')"
+                      :aria-label="showApiKey ? t('settings.profileEditor.hideApiKey') : t('settings.profileEditor.showApiKey')"
+                      :aria-pressed="showApiKey"
+                      @click="showApiKey = !showApiKey"
+                    >
+                      <svg v-if="showApiKey" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                        <line x1="1" y1="1" x2="23" y2="23"></line>
+                      </svg>
+                      <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                        <circle cx="12" cy="12" r="3"></circle>
+                      </svg>
+                    </button>
+                  </div>
+                  <div class="setting-desc">{{ t('settings.profileEditor.apiKeyDesc') }}</div>
                 </div>
               </div>
 
@@ -708,6 +736,9 @@ const editingProfile = computed(() => {
 const mainModelCaps = ref<ModelCapabilities | null | undefined>(undefined)
 let capQueryTimer: ReturnType<typeof setTimeout> | null = null
 
+/** API Key 明文开关：常驻可切，切换 profile 时自动回到隐藏 */
+const showApiKey = ref(false)
+
 const resetStatus = () => {
   statusMsg.value = ''
   isError.value = false
@@ -761,6 +792,7 @@ const onMainModelInput = () => {
 }
 
 watch(selectedProfileId, () => {
+  showApiKey.value = false // 切档案时回到隐藏，避免上一个档案的明文状态带过去
   const modelId = editingProfile.value?.config.mainModel?.trim()
   if (modelId) onMainModelInput()
   else mainModelCaps.value = undefined
@@ -1399,6 +1431,42 @@ const save = async () => {
 .format-select {
   width: auto !important;
   min-width: 160px;
+}
+
+/* API Key：常驻明文切换按钮（右侧内嵌，不挤压输入区） */
+.input-with-toggle {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.input-with-toggle input {
+  padding-right: 40px;
+}
+
+.toggle-visibility {
+  position: absolute;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s, background-color 0.15s;
+}
+
+.toggle-visibility:hover {
+  color: var(--text-main);
+  background-color: var(--glass-bg);
+}
+
+.toggle-visibility.active {
+  color: var(--accent-blue);
 }
 
 /* ── 自定义下拉（替代原生 select）── */
