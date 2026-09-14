@@ -57,6 +57,10 @@ pub fn run() {
     println!("[System] Agent data directory locked to: {}", data_dir.display());
 
     infra::config::data_paths::ensure_base_layout();
+    // 日志维护：分片由各 logger 写入时处理，这里在后台线程做归档（gzip）+ 保留期清理，不阻塞启动
+    if let Err(err) = infra::log_maintenance::spawn_maintenance_loop() {
+        eprintln!("[日志维护] 后台线程启动失败: {}", err);
+    }
     if let Err(err) = infra::db::init() {
         panic!("初始化 SQLite 数据库失败: {}", err);
     }

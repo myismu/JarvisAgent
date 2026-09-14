@@ -40,5 +40,6 @@ similar = "2"                                          # 用于生成文本 diff
 encoding_rs = "0.8"                                     # 用于文件工具保留 GBK/UTF-16/UTF-8 BOM 等文本编码
 rusqlite = { version = "0.32", features = ["bundled"] } # SQLite 本地持久化
 tiktoken-rs = "0.6"
+flate2 = "1"                                          # 日志归档：过期 jsonl 压缩成 .gz（已在 lock 中，可离线构建）
 
 

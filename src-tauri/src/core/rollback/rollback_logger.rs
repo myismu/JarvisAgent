@@ -83,19 +83,29 @@ pub struct RollbackSummary {
 
 pub struct RollbackLogger {
     log_dir: PathBuf,
+    policy: crate::infra::log_maintenance::LogPolicy,
 }
 
 impl RollbackLogger {
     pub fn new() -> Self {
         let log_dir = crate::infra::config::data_paths::logs_dir().join("rollbacks");
         let _ = std::fs::create_dir_all(&log_dir);
-        Self { log_dir }
+        Self {
+            log_dir,
+            policy: crate::infra::log_maintenance::LogPolicy::from_env(),
+        }
     }
 
     /// 记录单个文件操作
     pub fn log_file_op(&self, record: &FileOpRecord) {
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let filename = format!("{}_{}.jsonl", date, record.session_id);
+        // 按大小分片：超过阈值自动写 <date>_<session>.2.jsonl、.3.jsonl …
+        let filename = crate::infra::log_maintenance::resolve_part_file(
+            &self.log_dir,
+            &date,
+            &record.session_id,
+            &self.policy,
+        );
         let path = self.log_dir.join(filename);
 
         if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {

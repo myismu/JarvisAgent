@@ -1,4 +1,4 @@
-﻿//! # subagent.rs — 子代理执行引擎
+//! # subagent.rs — 子代理执行引擎
 //!
 //! 包含完整的 SSE 流式处理和并行工具执行循环。
 //! 这是工具系统中最复杂的模块，实现了独立 Agent Loop。
@@ -609,9 +609,12 @@ pub async fn run_subagent(
             (serde_json::to_value(request_body).unwrap(), false)
         };
 
-        let request_json_str = serde_json::to_string_pretty(&req_json).unwrap_or_default();
-        println!("[SUB AGENT] loop {} request ({} bytes)", loop_count + 1, request_json_str.len());
-        crate::infra::debug_logger::debug_logger().log_request(&session_id, "SUB", loop_count + 1, &request_json_str);
+        println!(
+            "[SUB AGENT] loop {} request ({} bytes)",
+            loop_count + 1,
+            serde_json::to_string(&req_json).map(|s| s.len()).unwrap_or(0)
+        );
+        crate::infra::debug_logger::debug_logger().log_request(&session_id, "SUB", loop_count + 1, &req_json);
 
         let (auth_header, auth_value) = api_format_enum.auth_header(&api_key);
         let mut req = client
@@ -678,7 +681,10 @@ pub async fn run_subagent(
             &run_id,
             loop_count + 1,
             cancel_ref,
-            StreamConfig { is_subagent: true },
+            StreamConfig {
+                is_subagent: true,
+                cache_usage_style: crate::infra::llm::registry::cache_usage_style_for(&model_id),
+            },
         )
         .await;
 

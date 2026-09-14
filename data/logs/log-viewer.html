@@ -42,6 +42,8 @@
   .drop-zone-icon { margin-bottom:4px; color:var(--text-muted); display:flex; justify-content:center; }
   .drop-zone-text { font-size:11px; color:var(--text-muted); }
   .drop-zone-text strong { color:var(--text-secondary); }
+  .import-error { margin-top:8px; font-size:11px; line-height:1.45; color:var(--red); word-break:break-all; }
+  .import-error:empty { display:none; }
   .file-list { flex:1; overflow-y:auto; padding:4px 0; }
   .file-item { display:flex; align-items:center; gap:8px; padding:7px 16px; cursor:pointer; transition:background 0.1s; font-size:12px; border-radius:4px; margin:0 6px; }
   .file-item:hover { background:var(--bg-hover); }
@@ -152,12 +154,25 @@
   .badge-violation { background:var(--red-dim); color:var(--red); }
   .badge-api-error { background:var(--red-dim); color:var(--red); border:1px solid var(--red); }
   .thinking-text,.response-text,.request-json,.violation-text { font-size:12px; white-space:pre-wrap; word-break:break-word; background:var(--bg); padding:10px 12px; border-radius:6px; border:1px solid var(--border-light); position:relative; }
+  /* 唯一的裁剪层：折叠态只放预览，展开后限高 + 内部滚动。
+     以前外层容器也写 max-height 又没有 overflow，展开内层会溢出压住后面的段落，
+     而且每次展开都要重排几千行 —— 这是"点展开就卡/糊成一团"的根因。 */
   .content-block { max-height:200px; overflow:hidden; transition:max-height 0.2s; }
-  .content-block.expanded { max-height:none; }
-  .content-toggle { display:block; width:100%; padding:4px 0; font-size:11px; color:var(--blue); background:none; border:none; cursor:pointer; text-align:center; font-weight:500; }
-  .content-toggle:hover { text-decoration:underline; }
-  .request-json { font-family:var(--mono); font-size:11px; color:var(--text-muted); max-height:200px; }
-  .violation-text { color:var(--red); background:var(--red-dim); border-color:rgba(220,38,38,0.15); max-height:150px; }
+  .content-block.expanded { max-height:65vh; overflow:auto; overscroll-behavior:contain; }
+  .content-more { margin-top:8px; padding-top:6px; border-top:1px dashed var(--border); font-size:11px; color:var(--text-muted); font-family:var(--mono); }
+  .content-actions { display:flex; gap:6px; justify-content:center; padding:4px 0 0; }
+  .content-toggle { padding:3px 10px; font-size:11px; color:var(--blue); background:var(--bg-card); border:1px solid var(--border); border-radius:5px; cursor:pointer; font-weight:500; }
+  .content-toggle:hover { border-color:var(--blue); }
+  .content-toggle.ghost { color:var(--text-muted); }
+  .content-toggle.ghost:hover { color:var(--blue); border-color:var(--blue); }
+  .request-json { font-family:var(--mono); font-size:11px; color:var(--text-muted); }
+  .violation-text { color:var(--red); background:var(--red-dim); border-color:rgba(220,38,38,0.15); }
+  .req-meta { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+  .req-chip { display:inline-flex; align-items:center; padding:2px 8px; font-size:11px; font-family:var(--mono); background:var(--bg); border:1px solid var(--border); border-radius:4px; color:var(--text-secondary); max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .req-chip.warn { background:var(--red-dim); border-color:rgba(220,38,38,0.25); color:var(--red); font-weight:600; }
+  .req-chip.good { background:var(--green-dim); border-color:rgba(5,150,105,0.25); color:var(--green); }
+  .req-sub { margin-top:8px; }
+  .req-sub-title { font-size:10px; font-weight:600; letter-spacing:0.05em; color:var(--text-muted); text-transform:uppercase; margin-bottom:4px; }
   .tool-list { display:flex; flex-direction:column; gap:4px; }
   .tool-item { display:flex; align-items:center; gap:8px; font-size:12px; padding:4px 0; }
   .tool-name { font-family:var(--mono); font-weight:600; color:var(--orange); min-width:120px; }
@@ -198,9 +213,10 @@
         <div class="sidebar-section-title">导入</div>
         <div class="drop-zone" id="dropZone">
           <div class="drop-zone-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
-          <div class="drop-zone-text">拖入 <strong>.jsonl</strong> 或点击选择</div>
-          <input type="file" id="fileInput" accept=".jsonl" multiple style="display:none">
+          <div class="drop-zone-text">拖入 <strong>.jsonl</strong> / <strong>.jsonl.gz</strong>（归档）或点击选择</div>
+          <input type="file" id="fileInput" accept=".jsonl,.gz,application/gzip" multiple style="display:none">
         </div>
+        <div class="import-error" id="importError"></div>
       </div>
       <div class="sidebar-section" style="flex:1;display:flex;flex-direction:column;overflow:hidden;padding-bottom:0;">
         <div class="sidebar-section-title">文件列表</div>
@@ -214,6 +230,21 @@
 
 <script>
 // ═══════════════════ Shared Infrastructure ═══════════════════
+//
+// 渲染性能约定（改这个文件时请保持）：
+// 1. 任何"可能很大"的文本（request_json / thinking / 原文）都必须走 collapsible()：
+//    它只在折叠态放"预览"（PREVIEW_LINES 行 / PREVIEW_CHARS 字符），全文存在 textStore，
+//    首次点"展开全部"时才注入 DOM。切忌在折叠态直接内联全文 —— 一份 request 就有 20KB+，
+//    一次导入几十轮会让主线程长时间排版，表现为"页面卡死"。
+// 2. 循环卡（agent 视图）的卡片体由 loopBuilders 懒构建：首屏只渲染卡片头，
+//    点开某张卡时才 buildLoopBody() 生成那一段。
+// 3. 裁剪只能有一层：.content-block 负责 max-height/overflow；
+//    外层容器（.request-json / .violation-text）不要再写 max-height，
+//    否则展开内层会溢出压住后面的段落，且外层尺寸不变看起来像"展开没生效"。
+// 4. REQUEST 不再是"每轮一份完整请求"：日志按 request_base（固定块，写一次）
+//    + request_delta（每轮 messages 增量）/ request_full（历史被重写时）落盘，
+//    buildRequestViews() 负责按文件重建；改造前的 request 事件仍兼容。
+//
 
 const modules = { tools: { color:'--blue', label:'工具调用' }, rollback: { color:'--orange', label:'回滚' }, agent: { color:'--cyan', label:'Agent 循环' } };
 let activeModule = 'tools';
@@ -231,22 +262,56 @@ dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-ove
 dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); handleFiles(e.dataTransfer.files); });
 fileInput.addEventListener('change', e => { handleFiles(e.target.files); fileInput.value = ''; });
 
-function handleFiles(files) {
-  const jsonlFiles = [...files].filter(f => f.name.endsWith('.jsonl'));
-  if (!jsonlFiles.length) return;
-  let loaded = 0;
-  for (const file of jsonlFiles) {
-    const reader = new FileReader();
-    reader.onload = ev => {
-      const lines = ev.target.result.split('\n').filter(l => l.trim());
-      const records = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-      const mod = detectModule(records, file.name);
-      fileStores[mod].set(file.name, { records });
-      loaded++;
-      if (loaded === jsonlFiles.length) { activeModule = mod; render(); }
-    };
-    reader.readAsText(file);
+// 支持 .jsonl 与 gzip 归档 .jsonl.gz（日志维护会把 3 天前的原始日志压成 .gz，
+// 归档后仍要能在查看器里打开）。解压用浏览器原生 DecompressionStream，无需第三方库。
+function isLogFile(name) {
+  const n = String(name || '').toLowerCase();
+  return n.endsWith('.jsonl') || n.endsWith('.gz');
+}
+
+async function readLogText(file) {
+  if (!String(file.name || '').toLowerCase().endsWith('.gz')) return await file.text();
+  if (typeof DecompressionStream === 'undefined') {
+    throw new Error('当前浏览器不支持 gzip 解压（DecompressionStream 不可用），请先手动解压后再导入');
   }
+  const stream = file.stream().pipeThrough(new DecompressionStream('gzip'));
+  return await new Response(stream).text();
+}
+
+function setImportError(message) {
+  const el = document.getElementById('importError');
+  if (el) el.textContent = message || '';
+}
+
+async function handleFiles(files) {
+  const logs = [...files].filter(f => isLogFile(f.name));
+  if (!logs.length) {
+    setImportError('只支持 .jsonl 或 .jsonl.gz（gzip 归档）文件');
+    return;
+  }
+  setImportError('');
+  const failures = [];
+  let lastModule = null;
+  for (const file of logs) {
+    try {
+      const text = await readLogText(file);
+      const lines = text.split('\n').filter(l => l.trim());
+      const records = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+      if (!records.length) {
+        failures.push(`${file.name}: 没有可解析的 JSONL 记录`);
+        continue;
+      }
+      const mod = detectModule(records, file.name);
+      // 归档名形如 2026-09-01_s1.jsonl.gz：展示时去掉 .gz，避免与未归档的同名文件混淆
+      const displayName = file.name.replace(/\.gz$/i, '');
+      fileStores[mod].set(displayName, { records });
+      lastModule = mod;
+    } catch (err) {
+      failures.push(`${file.name}: ${err && err.message ? err.message : '读取失败'}`);
+    }
+  }
+  if (failures.length) setImportError(failures.join('\n'));
+  if (lastModule) { activeModule = lastModule; render(); }
 }
 
 function detectModule(records, filename) {
@@ -276,6 +341,13 @@ function getActiveRecords() {
   return store.get(activeFileView)?.records || [];
 }
 function getTotalRecords() { let s=0; for (const d of getStore().values()) s+=d.records.length; return s; }
+// 按文件返回记录（请求重建必须逐文件做：base + delta 只在同一文件内配对）
+function getActiveFileGroups() {
+  const store = getStore();
+  if (activeFileView === 'all') return [...store.entries()].map(([name, d]) => [name, d.records]);
+  const d = store.get(activeFileView);
+  return d ? [[activeFileView, d.records]] : [];
+}
 
 function renderSidebar() {
   const fileList = document.getElementById('fileList');
@@ -383,8 +455,9 @@ function renderToolsMain(records) {
       const r = filtered[i];
       const isError = r.status==='error'; const isBlocked = r.status==='blocked'; const isCorr = r.correction?.is_correction; const isUnresolved = unresolvedSeqs.has(r.seq); const isBenign = benignSeqs.has(r.seq);
       const rowCls = isUnresolved?'abandoned':(isBenign?'benign':(isError?'error':(isBlocked?'blocked':(isCorr?'corrected':''))));
-      const sCls = r.status==='ok'?'ok':(r.status==='error'?'error':(r.status==='blocked'?'blocked':'skip'));
-      const sIcon = r.status==='ok'?'✓':(r.status==='error'?'✕':(r.status==='blocked'?'⊘':'⊘'));
+      // 工具审计只有三种状态（ok/error/blocked）；未知值按 error 处理，避免落到不存在的 skip 样式
+      const sCls = r.status==='ok'?'ok':(r.status==='blocked'?'blocked':'error');
+      const sIcon = r.status==='ok'?'✓':(r.status==='blocked'?'⊘':'✕');
       const time = r.ts?.split('T')[1]?.split('+')[0]?.substring(0,8)||'';
       const args = fmtArgs(r.args_summary); const fn = fileLookup.get(r); const uid = `tc-${i}`;
       const agentLabel = r.agent_type === 'main' ? '主' : r.agent_type === 'subagent' ? '子' : (r.agent_type || '-');
@@ -406,6 +479,7 @@ function renderToolsMain(records) {
         ${isCorr?`<span class="detail-key">纠正策略</span><span class="detail-val">${r.correction.strategy||'-'}</span><span class="detail-key">第几次</span><span class="detail-val">${r.correction.attempt}</span>`:''}
         <span class="detail-key">遵循协议</span><span class="detail-val">${r.diagnosis?.followed_protocol?'✓ 是':'✕ 否'}</span>
         <span class="detail-key">先搜索过</span><span class="detail-val">${r.diagnosis?.searched_before?'✓ 是':'✕ 否'}</span>
+        <span class="detail-key">读过 schema</span><span class="detail-val">${r.diagnosis?.schema_read?'✓ 是':'✕ 否'}</span>
       </div></div></td></tr>`;
     }
   }
@@ -517,6 +591,134 @@ function renderRbTable(records) {
 
 // ═══════════════════ Agent Loop Module ═══════════════════
 
+// ═══ 请求重建：request_base + request_delta → 完整请求 ═══
+// 日志从"每轮一份完整请求"改成"固定块写一次 + 每轮 messages 增量"，
+// 这里按文件为单位（base/delta 只在同一文件内配对）顺序扫描重建。
+// 兼容改造前的旧格式 request 事件（request_json 里是完整请求）。
+function buildRequestViews(groups) {
+  const views = new Map();
+  for (const [, recs] of groups) {
+    const bases = new Map();   // base_id -> 除 messages 外的请求字段
+    const state = new Map();   // agent_type -> { baseId, messages }
+    for (const r of recs) {
+      const agent = r.agent_type || 'MAIN';
+      const key = `${agent}-${r.loop_count}`;
+      if (r.type === 'request_base') {
+        bases.set(r.base_id, r.base || {});
+      } else if (r.type === 'request_full') {
+        const messages = r.messages || [];
+        state.set(agent, { baseId: r.base_id, messages });
+        views.set(key, {
+          kind: 'full', baseId: r.base_id, reason: r.reason || '',
+          body: Object.assign({}, bases.get(r.base_id) || {}, { messages }),
+          addedCount: messages.length, savedChars: 0,
+        });
+      } else if (r.type === 'request_delta') {
+        const st = state.get(agent);
+        const added = r.added || [];
+        if (st && st.baseId === r.base_id && st.messages.length === r.from_index) {
+          const messages = st.messages.concat(added);
+          state.set(agent, { baseId: r.base_id, messages });
+          views.set(key, {
+            kind: 'delta', baseId: r.base_id, addedCount: added.length,
+            savedChars: JSON.stringify(messages.slice(0, r.from_index)).length,
+            prefixHash: r.prefix_hash || '',
+            body: Object.assign({}, bases.get(r.base_id) || {}, { messages }),
+          });
+        } else {
+          views.set(key, {
+            kind: 'broken', baseId: r.base_id, added, addedCount: added.length,
+            reason: st ? '前缀对不上（前序增量缺失或被清理）' : '本文件缺少 base 或前序增量',
+          });
+        }
+      } else if (r.type === 'request' && r.request_json) {
+        try {
+          const body = JSON.parse(r.request_json);
+          views.set(key, {
+            kind: 'legacy', body, addedCount: (body.messages || []).length, savedChars: 0,
+          });
+        } catch {
+          views.set(key, { kind: 'raw', raw: r.request_json, addedCount: 0, savedChars: 0 });
+        }
+      }
+    }
+  }
+  return views;
+}
+
+function shortHash(id) {
+  const t = String(id || '').split(':').pop();
+  return t ? t.slice(-8) : '-';
+}
+
+// REQUEST 分节渲染：先给"元信息 + 角色序列"（一眼看出有没有连续同角色），
+// 再按 system / messages / tools / 完整请求 分节折叠，避免一坨 20KB 纯文本。
+function renderRequestSection(view, key) {
+  if (!view) {
+    return `<div class="req-meta"><span class="req-chip warn">本文件缺少可重建的请求（base 或增量缺失）</span></div>`;
+  }
+  if (view.kind === 'raw') return collapsible(view.raw, 'request-json', 'req-'+key);
+  if (view.kind === 'broken') {
+    return `<div class="req-meta">
+      <span class="req-chip warn">⚠ 增量无法重建：${eh(view.reason)}</span>
+      <span class="req-chip">base ${eh(shortHash(view.baseId))}</span>
+    </div>
+    <div class="req-sub"><div class="req-sub-title">本 loop 新增 messages（${view.addedCount} 条）</div>${collapsible(JSON.stringify(view.added, null, 2), 'request-json', 'req-added-'+key, true)}</div>`;
+  }
+  return renderRequestBody(view.body || {}, key, view);
+}
+
+function renderRequestBody(body, key, meta) {
+  const msgs = Array.isArray(body.messages) ? body.messages : [];
+  const roles = msgs.map(m => (m && m.role) || '?');
+  let dup = 0;
+  for (let i = 1; i < roles.length; i++) if (roles[i] === roles[i-1]) dup++;
+  const chain = roles.length > 40 ? roles.slice(0, 40).join(' → ') + ` → …（共 ${roles.length} 条）` : roles.join(' → ');
+  const sys = typeof body.system === 'string' ? body.system : '';
+  const tools = Array.isArray(body.tools) ? body.tools : [];
+  const toolNames = tools.map(t => t && t.name).filter(Boolean);
+  const kind = (meta && meta.kind) || 'full';
+  const srcLabel = { legacy: '源 旧格式全量', full: '源 全量锚点', delta: '源 base + 增量' }[kind] || '源 未知';
+  const fullJson = JSON.stringify(body, null, 2);
+
+  let html = `<div class="req-meta">
+    <span class="req-chip">model ${eh(body.model || '-')}</span>
+    <span class="req-chip">messages ${msgs.length}</span>
+    <span class="req-chip">tools ${tools.length}</span>
+    <span class="req-chip">system ${sys.length.toLocaleString()} 字符</span>
+    <span class="req-chip ${dup ? 'warn' : ''}" title="${eh(roles.join(' → '))}">${dup ? `⚠ 连续同角色 ×${dup}：` : '角色 '}${eh(chain)}</span>
+    <span class="req-chip ${kind === 'delta' ? 'good' : ''}">${srcLabel}${kind === 'delta' ? ` +${meta.addedCount} 条 · 省 ${fmtK(meta.savedChars)} 字符` : ''}</span>
+    ${meta && meta.reason ? `<span class="req-chip">原因 ${eh(meta.reason)}</span>` : ''}
+  </div>`;
+
+  if (sys) html += `<div class="req-sub"><div class="req-sub-title">System（${sys.length.toLocaleString()} 字符）</div>${collapsible(sys, 'thinking-text', 'req-sys-'+key)}</div>`;
+  if (msgs.length) html += `<div class="req-sub"><div class="req-sub-title">Messages（${msgs.length} 条 · 角色 ${eh([...new Set(roles)].join('/'))}）</div>${collapsible(JSON.stringify(msgs, null, 2), 'request-json', 'req-msg-'+key)}</div>`;
+  if (tools.length) html += `<div class="req-sub"><div class="req-sub-title">Tools（${tools.length} 个：${eh(toolNames.slice(0, 8).join(', '))}${toolNames.length > 8 ? ' …' : ''}）</div>${collapsible(JSON.stringify(tools, null, 2), 'request-json', 'req-tools-'+key)}</div>`;
+  html += `<div class="req-sub"><div class="req-sub-title">完整请求${kind === 'delta' ? '（base + 增量重建）' : ''}（${fullJson.length.toLocaleString()} 字符）</div>${collapsible(fullJson, 'request-json', 'req-raw-'+key, true)}</div>`;
+  return html;
+}
+
+// 循环卡"卡片体"的懒构建器：key -> () => html，首次展开该卡时才生成（见 tog）
+const loopBuilders = new Map();
+
+// 单张循环卡的卡片体内容
+function buildLoopBody(recs, key, view) {
+  const thinking=recs.find(r=>r.type==='thinking');
+  const hasRequest=!!view || recs.some(r=>r.type==='request');
+  const vio=recs.filter(r=>r.type==='protocol_violation'), apiErrors=recs.filter(r=>r.type==='api_error');
+  let html = '';
+  if (hasRequest) html += `<div class="loop-section"><div class="loop-section-title"><span class="section-badge badge-request">REQUEST</span></div>${renderRequestSection(view,key)}</div>`;
+  if (thinking) {
+    html += `<div class="loop-section"><div class="loop-section-title"><span class="section-badge badge-thinking">THINKING</span></div>${collapsible(thinking.thinking||'(无)','thinking-text','think-'+key)}</div>`;
+    if (thinking.tool_calls?.length) { html += `<div class="loop-section"><div class="loop-section-title"><span class="section-badge badge-tools">TOOLS</span> (${thinking.tool_calls.length})</div><div class="tool-list">`; for (const [n,a] of thinking.tool_calls) { const as=typeof a==='string'?a:JSON.stringify(a); html+=`<div class="tool-item"><span class="tool-name">${eh(n)}</span><span class="tool-args" title="${eh(as)}">${eh(as.length>120?as.substring(0,120)+'…':as)}</span></div>`; } html+='</div></div>'; }
+    if (thinking.response_text) html += `<div class="loop-section"><div class="loop-section-title"><span class="section-badge badge-response">RESPONSE</span></div>${collapsible(thinking.response_text,'thinking-text','resp-'+key)}</div>`;
+  }
+  for (const v of vio) html += `<div class="loop-section"><div class="loop-section-title"><span class="section-badge badge-violation">VIOLATION</span></div>${collapsible(v.snippet,'violation-text','vio-'+key)}</div>`;
+  for (const ae of apiErrors) html += `<div class="loop-section"><div class="loop-section-title"><span class="section-badge badge-api-error">API ERROR</span></div><div style="margin-bottom:6px"><strong>错误:</strong> ${eh(ae.error_message||'')}</div>${collapsible(ae.messages_snapshot||'(无快照)','api-error-snapshot','ae-'+key)}</div>`;
+  if (thinking) { const tot=(thinking.input_tokens||0)+(thinking.output_tokens||0), pct=tot>0?(thinking.input_tokens/tot*100):0; html+=`<div class="loop-section"><div class="token-bar"><span class="token-bar-label">Input</span><div class="token-bar-track"><div class="token-bar-input" style="width:${pct}%"></div><div class="token-bar-output" style="width:${100-pct}%"></div></div><span class="token-bar-value">${fmtK(thinking.input_tokens)} / ${fmtK(thinking.output_tokens)}</span></div></div>`; }
+  return html;
+}
+
 function renderAgentMain(records) {
   const main = document.getElementById('mainArea');
   const loops = new Set(); let totalIn=0, totalOut=0, toolCalls=0, violations=0;
@@ -530,13 +732,15 @@ function renderAgentMain(records) {
   }
   const aCounts = { all:records.length };
   for (const r of records) { if (r.type) aCounts[r.type]=(aCounts[r.type]||0)+1; if (r.agent_type) aCounts[r.agent_type]=(aCounts[r.agent_type]||0)+1; }
-  const typeFilters = ['request','response','thinking','intent','memory','sse_event','protocol_violation','api_error'];
+  const typeFilters = ['request_base','request_delta','request_full','request','response','thinking','intent','memory','sse_summary','sse_event','protocol_violation','api_error'];
   const agentFilters = ['MAIN','SUB','MEMORY'];
   const filtered = records.filter(r => {
     if (currentFilter==='all') return true;
     if (['MAIN','SUB','MEMORY'].includes(currentFilter)) return r.agent_type===currentFilter;
     return r.type===currentFilter;
   });
+  // 请求重建用"未过滤"的完整记录（筛选后 delta 会缺前序，重建必然失败）
+  const requestViews = buildRequestViews(getActiveFileGroups());
 
   let html = `<div class="stats-row">
     <div class="stat-card"><div class="stat-label">总循环</div><div class="stat-value cyan">${loops.size}</div></div>
@@ -547,7 +751,7 @@ function renderAgentMain(records) {
   </div>`;
 
   html += `<div class="toolbar"><button class="filter-btn ${currentFilter==='all'?'active':''}" onclick="currentFilter='all';renderMain()">全部<span class="filter-count">${aCounts.all}</span></button><div class="toolbar-sep"></div>`;
-  for (const t of typeFilters) { if (!aCounts[t]) continue; const label={request:'请求',response:'响应',thinking:'思考',intent:'意图',memory:'记忆',sse_event:'SSE',protocol_violation:'违规',api_error:'API错误'}[t]; html += `<button class="filter-btn ${currentFilter===t?'active':''}" onclick="currentFilter='${t}';renderMain()">${label}<span class="filter-count">${aCounts[t]||0}</span></button>`; }
+  for (const t of typeFilters) { if (!aCounts[t]) continue; const label={request:'请求',request_base:'请求base',request_delta:'请求增量',request_full:'请求全量',response:'响应',thinking:'思考',intent:'意图',memory:'记忆',sse_summary:'SSE汇总',sse_event:'SSE原文',protocol_violation:'违规',api_error:'API错误'}[t]; html += `<button class="filter-btn ${currentFilter===t?'active':''}" onclick="currentFilter='${t}';renderMain()">${label}<span class="filter-count">${aCounts[t]||0}</span></button>`; }
   html += '<div class="toolbar-sep"></div>';
   for (const a of agentFilters) { if (!aCounts[a]) continue; html += `<button class="filter-btn ${currentFilter===a?'active':''}" onclick="currentFilter='${a}';renderMain()">${a}<span class="filter-count">${aCounts[a]||0}</span></button>`; }
   html += `<div class="view-toggle"><button class="view-btn ${agentViewMode==='loop'?'active':''}" onclick="agentViewMode='loop';renderMain()">循环</button><button class="view-btn ${agentViewMode==='intent'?'active':''}" onclick="agentViewMode='intent';renderMain()">意图</button><button class="view-btn ${agentViewMode==='token'?'active':''}" onclick="agentViewMode='token';renderMain()">Token</button></div></div>`;
@@ -559,22 +763,22 @@ function renderAgentMain(records) {
     for (const [key, recs] of sorted) {
       const agent=recs[0].agent_type||'?', loop=recs[0].loop_count||0;
       const hasViolation=recs.some(r=>r.type==='protocol_violation'||r.type==='api_error');
-      const thinking=recs.find(r=>r.type==='thinking'), request=recs.find(r=>r.type==='request'), response=recs.find(r=>r.type==='response');
-      const vio=recs.filter(r=>r.type==='protocol_violation'), sseCnt=recs.filter(r=>r.type==='sse_event').length;
-      const apiErrors=recs.filter(r=>r.type==='api_error');
-      const parts=[]; if(thinking?.tool_calls?.length)parts.push(`${thinking.tool_calls.length} 个工具调用`); if(response)parts.push(`text=${response.text_len} thinking=${response.thinking_len}`); if(sseCnt)parts.push(`${sseCnt} SSE`); if(vio.length)parts.push(`⚠ ${vio.length} 违规`); if(apiErrors.length)parts.push(`🔴 ${apiErrors.length} API错误`);
-      const tokens=thinking?`${fmtK(thinking.input_tokens)}→${fmtK(thinking.output_tokens)}`:'';
-      html += `<div class="loop-card ${hasViolation?'has-violation':''}" id="al-${key}"><div class="loop-header" onclick="tog('al-${key}')"><span class="loop-num">#${loop}</span><span class="loop-agent agent-${agent}">${agent}</span><span class="loop-summary">${parts.join(' · ')||'无摘要'}</span><span class="loop-tokens">${tokens}</span><span class="loop-arrow">▶</span></div><div class="loop-body">`;
-      if (request) html += `<div class="loop-section"><div class="loop-section-title"><span class="section-badge badge-request">REQUEST</span></div>${collapsible(request.request_json,'request-json','req-'+key)}</div>`;
-      if (thinking) {
-        html += `<div class="loop-section"><div class="loop-section-title"><span class="section-badge badge-thinking">THINKING</span></div>${collapsible(thinking.thinking||'(无)','thinking-text','think-'+key)}</div>`;
-        if (thinking.tool_calls?.length) { html += `<div class="loop-section"><div class="loop-section-title"><span class="section-badge badge-tools">TOOLS</span> (${thinking.tool_calls.length})</div><div class="tool-list">`; for (const [n,a] of thinking.tool_calls) { const as=typeof a==='string'?a:JSON.stringify(a); html+=`<div class="tool-item"><span class="tool-name">${eh(n)}</span><span class="tool-args" title="${eh(as)}">${eh(as.length>120?as.substring(0,120)+'…':as)}</span></div>`; } html+='</div></div>'; }
-        if (thinking.response_text) html += `<div class="loop-section"><div class="loop-section-title"><span class="section-badge badge-response">RESPONSE</span></div>${collapsible(thinking.response_text,'thinking-text','resp-'+key)}</div>`;
+      const thinking=recs.find(r=>r.type==='thinking'), response=recs.find(r=>r.type==='response');
+      const sseCnt=recs.filter(r=>r.type==='sse_event').length + recs.reduce((a,r)=>a+(r.type==='sse_summary'?(r.count||0):0),0);
+      const vioCnt=recs.filter(r=>r.type==='protocol_violation').length, errCnt=recs.filter(r=>r.type==='api_error').length;
+      const parts=[]; if(thinking?.tool_calls?.length)parts.push(`${thinking.tool_calls.length} 个工具调用`); if(response)parts.push(`text=${response.text_len} thinking=${response.thinking_len}`); if(sseCnt)parts.push(`${sseCnt} SSE`); if(vioCnt)parts.push(`⚠ ${vioCnt} 违规`); if(errCnt)parts.push(`🔴 ${errCnt} API错误`);
+      // 缓存命中：字段存在才算（缺失 = 这家/这条链路不报告，不显示 0%）；
+      // cache_inferred=true 表示这个 0 是按"端点记忆"推断的预热期，不是厂商亲口报的
+      if (response && response.cache_hit_tokens != null) {
+        const hit = response.cache_hit_tokens, total = hit + (response.cache_miss_tokens ?? 0);
+        const pct = total > 0 ? `${Math.round((hit / total) * 100)}%` : '?';
+        parts.push(response.cache_inferred ? `缓存 ${pct}(推断)` : `缓存 ${pct}`);
       }
-      for (const v of vio) html += `<div class="loop-section"><div class="loop-section-title"><span class="section-badge badge-violation">VIOLATION</span></div>${collapsible(v.snippet,'violation-text','vio-'+key)}</div>`;
-      for (const ae of apiErrors) html += `<div class="loop-section"><div class="loop-section-title"><span class="section-badge badge-api-error">API ERROR</span></div><div style="margin-bottom:6px"><strong>错误:</strong> ${eh(ae.error_message||'')}</div>${collapsible(ae.messages_snapshot||'(无快照)','api-error-snapshot','ae-'+key)}</div>`;
-      if (thinking) { const tot=(thinking.input_tokens||0)+(thinking.output_tokens||0), pct=tot>0?(thinking.input_tokens/tot*100):0; html+=`<div class="loop-section"><div class="token-bar"><span class="token-bar-label">Input</span><div class="token-bar-track"><div class="token-bar-input" style="width:${pct}%"></div><div class="token-bar-output" style="width:${100-pct}%"></div></div><span class="token-bar-value">${fmtK(thinking.input_tokens)} / ${fmtK(thinking.output_tokens)}</span></div></div>`; }
-      html += '</div></div>';
+      const tokens=thinking?`${fmtK(thinking.input_tokens)}→${fmtK(thinking.output_tokens)}`:'';
+      // 卡片体懒构建：这里只登记 builder，首次点开才生成那一段 DOM。
+      // 以前所有轮次的 REQUEST/THINKING 都在导入时一次性进 DOM，轮次一多必然卡。
+      html += `<div class="loop-card ${hasViolation?'has-violation':''}" id="al-${key}"><div class="loop-header" onclick="tog('al-${key}')"><span class="loop-num">#${loop}</span><span class="loop-agent agent-${agent}">${agent}</span><span class="loop-summary">${parts.join(' · ')||'无摘要'}</span><span class="loop-tokens">${tokens}</span><span class="loop-arrow">▶</span></div><div class="loop-body" id="alb-${key}"></div></div>`;
+      loopBuilders.set(key, () => buildLoopBody(recs, key, requestViews.get(key)));
     }
   } else if (agentViewMode === 'intent') {
     const intents = filtered.filter(r => r.type==='intent');
@@ -599,25 +803,84 @@ function renderAgentMain(records) {
 
 // ═══════════════════ Helpers ═══════════════════
 
-function tog(id) { document.getElementById(id)?.classList.toggle('open'); document.getElementById(id)?.classList.toggle('expanded'); }
+function tog(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const opening = !el.classList.contains('open');
+  el.classList.toggle('open');
+  el.classList.toggle('expanded');
+  // 循环卡：首次展开时才构建卡片体（只构建一次）
+  if (opening && id.startsWith('al-')) {
+    const key = id.slice(3);
+    const body = document.getElementById('alb-' + key);
+    const build = loopBuilders.get(key);
+    if (body && build && body.dataset.built !== '1') { body.innerHTML = build(); body.dataset.built = '1'; }
+  }
+}
 function fmtArgs(args) { if (!args||typeof args!=='object') return ''; return Object.entries(args).filter(([k])=>k!=='name').map(([k,v])=>{ const s=typeof v==='string'?v:JSON.stringify(v); return `${k}=${s.length>50?s.substring(0,50)+'…':s}`; }).join(' '); }
 function fmtSize(b) { if(b<1024)return b+'B'; if(b<1048576)return(b/1024).toFixed(1)+'KB'; return(b/1048576).toFixed(1)+'MB'; }
 function fmtDuration(ms) { if(ms<1000)return ms+'ms'; if(ms<60000)return(ms/1000).toFixed(1)+'s'; return(ms/60000).toFixed(1)+'min'; }
 function fmtK(n) { if(n==null)return '-'; if(n>=1000000)return(n/1000000).toFixed(1)+'M'; if(n>=1000)return(n/1000).toFixed(1)+'K'; return String(n); }
 function eh(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
-function collapsible(text, cls, id) {
+// 折叠块的全文缓存：折叠态只把"预览"写进 DOM，点展开时才注入全文。
+// 以前折叠态也内联全文（一份 request 20+KB），导入一次就要为所有卡片排版，是卡顿的主因。
+const textStore = new Map();
+const PREVIEW_LINES = 24, PREVIEW_CHARS = 2000;
+
+function previewOf(text, maxLines, maxChars) {
+  const head = text.split('\n', maxLines + 1).slice(0, maxLines).join('\n');
+  return head.length > maxChars ? head.slice(0, maxChars) : head;
+}
+
+function collapsible(text, cls, id, shortPreview) {
   if (!text) return '';
   const uid = id || ('c-'+Math.random().toString(36).slice(2,8));
-  const lines = (text.match(/\n/g)||[]).length;
-  const tooLong = text.length > 800 || lines > 20;
+  const lineCount = (text.match(/\n/g)||[]).length + 1;
+  const tooLong = text.length > 800 || lineCount > 20;
   if (!tooLong) return `<div class="${cls}">${eh(text)}</div>`;
-  return `<div class="${cls}"><div class="content-block" id="${uid}">${eh(text)}</div><button class="content-toggle" onclick="togContent('${uid}',this)">展开全部 (${text.length} 字符)</button></div>`;
+  textStore.set(uid, text);
+  const preview = previewOf(text, shortPreview ? 6 : PREVIEW_LINES, shortPreview ? 400 : PREVIEW_CHARS);
+  return `<div class="${cls}"><div class="content-block" id="${uid}" data-preview="1">${eh(preview)}<div class="content-more">… 已折叠 ${text.length.toLocaleString()} 字符 / ${lineCount.toLocaleString()} 行（点"展开全部"或"独立窗口"查看完整内容）</div></div><div class="content-actions"><button class="content-toggle" onclick="togContent('${uid}',this)">展开全部</button><button class="content-toggle ghost" onclick="copyText('${uid}',this)">复制</button><button class="content-toggle ghost" onclick="openText('${uid}')">独立窗口</button></div></div>`;
 }
+
 function togContent(uid, btn) {
   const el = document.getElementById(uid);
   if (!el) return;
-  el.classList.toggle('expanded');
-  btn.textContent = el.classList.contains('expanded') ? '收起' : `展开全部 (${el.textContent.length} 字符)`;
+  if (el.dataset.preview === '1') {          // 首次展开：此时才把全文写进 DOM
+    el.textContent = textStore.get(uid) || '';
+    el.dataset.preview = '0';
+    el.classList.add('expanded');
+    if (btn) btn.textContent = '收起';
+    return;
+  }
+  const expanded = el.classList.toggle('expanded');
+  if (btn) btn.textContent = expanded ? '收起' : '展开全部';
+}
+
+async function copyText(uid, btn) {
+  const text = textStore.get(uid) || '';
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; }
+  catch {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select(); ok = document.execCommand('copy'); ta.remove();
+    } catch { ok = false; }
+  }
+  if (btn) { const old = btn.textContent; btn.textContent = ok ? '已复制 ✓' : '复制失败'; setTimeout(() => { btn.textContent = old; }, 1200); }
+}
+
+function openText(uid) {
+  const text = textStore.get(uid) || '';
+  const w = window.open('', '_blank');
+  if (!w) { copyText(uid); return; }
+  w.document.title = 'JARVIS · ' + uid;
+  const pre = w.document.createElement('pre');
+  pre.style.cssText = 'margin:0;padding:16px;white-space:pre-wrap;word-break:break-word;font:12px/1.55 Consolas,"Cascadia Mono",monospace;color:#1a1d23;background:#fff';
+  pre.textContent = text;
+  w.document.body.style.margin = '0';
+  w.document.body.appendChild(pre);
 }
 function esc(s) { return s.replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 </script>

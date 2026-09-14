@@ -1,4 +1,4 @@
-﻿//! # 记忆压缩与上下文管理 (Memory & Context Compaction)
+//! # 记忆压缩与上下文管理 (Memory & Context Compaction)
 //!
 //! 管理对话上下文长度和持久化记忆：
 //!
@@ -542,9 +542,11 @@ pub async fn rewrite_global_memory(
         ApiFormat::Anthropic => serde_json::to_value(request_body).ok()?,
     };
 
+    // 记忆整理提示词每次都是新内容（不参与增量），pretty 串只用于 log_memory 阅读；
+    // 请求日志走增量通道，直接传结构化 Value
     let request_json_str = serde_json::to_string_pretty(&req_json).unwrap_or_default();
     println!("[MEMORY] {} request ({} bytes)", log_label, request_json_str.len());
-    crate::infra::debug_logger::debug_logger().log_request(session_id, "MEMORY", 1, &request_json_str);
+    crate::infra::debug_logger::debug_logger().log_request(session_id, "MEMORY", 1, &req_json);
 
     let (auth_header, auth_value) = api_format.auth_header(&config.api_key);
     let mut req = client

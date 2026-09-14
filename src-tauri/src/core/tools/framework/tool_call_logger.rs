@@ -227,6 +227,7 @@ fn infer_strategy(error_type: &ErrorType, current_tool: &str) -> CorrectionStrat
 
 pub struct ToolCallLogger {
     log_dir: PathBuf,
+    policy: crate::infra::log_maintenance::LogPolicy,
     sessions: Mutex<HashMap<String, SessionToolAudit>>,
 }
 
@@ -236,6 +237,7 @@ impl ToolCallLogger {
         let _ = std::fs::create_dir_all(&log_dir);
         Self {
             log_dir,
+            policy: crate::infra::log_maintenance::LogPolicy::from_env(),
             sessions: Mutex::new(HashMap::new()),
         }
     }
@@ -410,7 +412,13 @@ impl ToolCallLogger {
 
     fn write_record(&self, session_id: &str, record: &ToolCallRecord) {
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let filename = format!("{}_{}.jsonl", date, session_id);
+        // 按大小分片：超过阈值自动写 <date>_<session>.2.jsonl、.3.jsonl …
+        let filename = crate::infra::log_maintenance::resolve_part_file(
+            &self.log_dir,
+            &date,
+            session_id,
+            &self.policy,
+        );
         let path = self.log_dir.join(filename);
 
         // 多个子代理会并发写同一个文件；Windows 上并发 append 会交错，

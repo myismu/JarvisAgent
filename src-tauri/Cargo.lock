@@ -1930,6 +1930,7 @@ dependencies = [
  "chrono",
  "encoding_rs",
  "eventsource-stream",
+ "flate2",
  "futures-util",
  "regex",
  "reqwest 0.12.28",
