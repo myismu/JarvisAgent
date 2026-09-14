@@ -39,5 +39,7 @@ pub const PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN: usize = 10;
 pub const MAX_SESSION_TITLE_LEN: usize = 30;
 pub const MAX_BACKGROUND_OUTPUT_LEN: usize = 50000;
 pub const MAX_BACKGROUND_NOTIFY_LEN: usize = 500;
+/// 上下文快照里保留的"逐 loop 缓存命中"记录条数（用于渲染趋势曲线）
+pub const CACHE_HISTORY_MAX_POINTS: usize = 12;
 pub const COMPACT_KEEP_RECENT_MESSAGES: usize = 6;
 pub const SUBAGENT_TIMEOUT_SECS: u64 = 480;

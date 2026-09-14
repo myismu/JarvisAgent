@@ -64,6 +64,15 @@ export interface ContextSectionSnapshot {
   rawContent?: string | null;
 }
 
+/** 单个 loop 的缓存命中记录 */
+export interface CacheHitPoint {
+  loopCount: number;
+  hitTokens: number;
+  missTokens: number;
+  /** 命中的字段名；服务商未报告时为 null */
+  source?: string | null;
+}
+
 export interface SessionContextSnapshot {
   sessionId: string;
   runId?: string | null;
@@ -77,6 +86,13 @@ export interface SessionContextSnapshot {
   providerInputTokens?: number | null;
   providerOutputTokens?: number | null;
   providerTotalTokens?: number | null;
+  /** 缓存命中 / 未命中的输入 token；null/缺省 = 该模型或链路未报告（≠ 0 命中） */
+  cacheHitTokens?: number | null;
+  cacheMissTokens?: number | null;
+  /** 命中的字段名，如 prompt_cache_hit_tokens / cached_tokens / cache_read_input_tokens */
+  cacheSource?: string | null;
+  /** 逐 loop 的缓存命中趋势（最近 N 条），用于画预热 → 命中的演进 */
+  cacheHistory?: CacheHitPoint[];
   driftPercent?: number | null;
   maxContextTokens?: number | null;
   maxOutputTokens: number;

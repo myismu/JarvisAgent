@@ -1,4 +1,4 @@
-﻿//! # 会话持久化模块 (Session Persistence)
+//! # 会话持久化模块 (Session Persistence)
 //!
 //! 将对话历史持久化到 SQLite，支持多会话管理。
 //! 会话元数据、消息、步骤和计划文档由 `crate::core::session::repository` 统一读写。
@@ -537,6 +537,10 @@ pub fn update_context_snapshot_usage(
     provider_output_tokens: u64,
     provider_total_tokens: u64,
     drift_percent: Option<f32>,
+    cache_hit_tokens: Option<u64>,
+    cache_miss_tokens: Option<u64>,
+    cache_source: Option<&str>,
+    cache_point: Option<&crate::infra::types::models::CacheHitPoint>,
 ) -> Result<Option<crate::infra::types::models::SessionContextSnapshot>, String> {
     repository::update_context_snapshot_usage(
         session_id,
@@ -544,6 +548,10 @@ pub fn update_context_snapshot_usage(
         provider_output_tokens,
         provider_total_tokens,
         drift_percent,
+        cache_hit_tokens,
+        cache_miss_tokens,
+        cache_source,
+        cache_point,
     )
 }
 

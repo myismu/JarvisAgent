@@ -271,6 +271,33 @@ pub struct ContextSectionSnapshot {
     pub raw_content: Option<String>,
 }
 
+/// 单个 loop 的缓存命中记录（用于渲染回合内趋势）
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheHitPoint {
+    pub loop_count: usize,
+    pub hit_tokens: u64,
+    pub miss_tokens: u64,
+    /// 命中的字段名（服务商未报告时为 None）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+impl CacheHitPoint {
+    pub fn total(&self) -> u64 {
+        self.hit_tokens.saturating_add(self.miss_tokens)
+    }
+
+    pub fn hit_rate(&self) -> Option<f32> {
+        let total = self.total();
+        if total == 0 {
+            None
+        } else {
+            Some(self.hit_tokens as f32 / total as f32)
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionContextSnapshot {
@@ -286,6 +313,18 @@ pub struct SessionContextSnapshot {
     pub provider_input_tokens: Option<u64>,
     pub provider_output_tokens: Option<u64>,
     pub provider_total_tokens: Option<u64>,
+    /// 缓存命中 / 未命中的输入 token。
+    /// `None` = 该 provider（或中转链路）未报告该字段，**与 0 命中是两回事**。
+    #[serde(default)]
+    pub cache_hit_tokens: Option<u64>,
+    #[serde(default)]
+    pub cache_miss_tokens: Option<u64>,
+    /// 命中的字段名（如 `prompt_cache_hit_tokens` / `cached_tokens` / `cache_read_input_tokens`）
+    #[serde(default)]
+    pub cache_source: Option<String>,
+    /// 本会话逐 loop 的缓存命中记录（保留最近 N 条，用于渲染趋势）
+    #[serde(default)]
+    pub cache_history: Vec<CacheHitPoint>,
     pub drift_percent: Option<f32>,
     pub max_context_tokens: Option<u32>,
     pub max_output_tokens: i32,

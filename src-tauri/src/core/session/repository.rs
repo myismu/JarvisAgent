@@ -1,4 +1,4 @@
-﻿//! # repository.rs — 会话 SQLite 仓储
+//! # repository.rs — 会话 SQLite 仓储
 //!
 //! 封装会话元数据、完整记忆、消息展开索引和列表筛选的 SQLite 读写。
 //!
@@ -484,6 +484,10 @@ pub fn update_context_snapshot_usage(
     provider_output_tokens: u64,
     provider_total_tokens: u64,
     drift_percent: Option<f32>,
+    cache_hit_tokens: Option<u64>,
+    cache_miss_tokens: Option<u64>,
+    cache_source: Option<&str>,
+    cache_point: Option<&crate::infra::types::models::CacheHitPoint>,
 ) -> Result<Option<SessionContextSnapshot>, String> {
     crate::infra::db::with_connection(|conn| {
         let snapshot_json = conn
@@ -507,6 +511,25 @@ pub fn update_context_snapshot_usage(
         snapshot.provider_output_tokens = Some(provider_output_tokens);
         snapshot.provider_total_tokens = Some(provider_total_tokens);
         snapshot.drift_percent = drift_percent;
+        // 缓存命中：只在本次拿到值时覆盖（None 表示这家没报告，不要抹掉上一次已知的结果）
+        if cache_hit_tokens.is_some() || cache_miss_tokens.is_some() {
+            snapshot.cache_hit_tokens = cache_hit_tokens;
+            snapshot.cache_miss_tokens = cache_miss_tokens;
+            snapshot.cache_source = cache_source.map(|s| s.to_string());
+        }
+        // 逐 loop 趋势：追加本次记录，只保留最近 N 条。
+        // 同一 loop 重复上报（重试/补充统计）时覆盖而不是堆叠，避免趋势出现重复柱子。
+        if let Some(point) = cache_point {
+            match snapshot.cache_history.last_mut() {
+                Some(last) if last.loop_count == point.loop_count => *last = point.clone(),
+                _ => snapshot.cache_history.push(point.clone()),
+            }
+            let keep = crate::infra::types::constants::CACHE_HISTORY_MAX_POINTS;
+            if snapshot.cache_history.len() > keep {
+                let overflow = snapshot.cache_history.len() - keep;
+                snapshot.cache_history.drain(0..overflow);
+            }
+        }
 
         let snapshot_json = serde_json::to_string(&snapshot).map_err(|e| e.to_string())?;
         conn.execute(

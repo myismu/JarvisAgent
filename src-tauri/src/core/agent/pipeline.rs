@@ -912,6 +912,9 @@ impl PipelineState {
             // 步骤 7：SSE 流式解析 —— 边收边推前端、累积工具参数分片
             // 流式处理（含一次断流重试）
             let stream_result = {
+                // 注册表可选的缓存字段写法覆盖（一般不用；非标准命名时才在 model_registry.json 里写）
+                let cache_usage_style =
+                    crate::infra::llm::registry::cache_usage_style_for(&self.model_id);
                 let mut stream = response.bytes_stream().eventsource();
                 let mut result = process_stream(
                     &mut stream,
@@ -921,7 +924,10 @@ impl PipelineState {
                     &self.run_id,
                     self.total_loop_count + 1,
                     &self.cancel_token,
-                    StreamConfig::default(),
+                    StreamConfig {
+                        is_subagent: false,
+                        cache_usage_style: cache_usage_style.clone(),
+                    },
                 )
                 .await;
 
@@ -940,7 +946,10 @@ impl PipelineState {
                                 &self.run_id,
                                 self.total_loop_count + 1,
                                 &self.cancel_token,
-                                StreamConfig::default(),
+                                StreamConfig {
+                                    is_subagent: false,
+                                    cache_usage_style,
+                                },
                             )
                             .await;
                         }
@@ -972,6 +981,44 @@ impl PipelineState {
                 stream_result.output_tokens,
             );
 
+            // ── 缓存命中：用"端点能力记忆"解释本次观测 ──
+            // 有的厂商（实测 Kimi、小米 anthropic）在 0 命中时【不返回缓存字段】，
+            // 因此单看一次响应无法区分"这家不报告"与"这次没命中（预热期）"。
+            // 规则：该端点此前确认会上报 ⇒ 字段缺失按 0 命中解释；从未见过 ⇒ 保持未知。
+            let cache_endpoint = crate::infra::llm::usage_memory::endpoint_key(
+                &self.base_url,
+                self.api_format.as_str(),
+            );
+            let cache_obs = crate::infra::llm::usage_memory::observe(
+                &cache_endpoint,
+                stream_result.cache_hit_tokens.is_some(),
+                stream_result.cache_source,
+            );
+            if cache_obs.first_seen {
+                println!(
+                    "[JARVIS] 已记住端点 {} 会上报缓存字段（source={:?}）：此后字段缺失按 0 命中解释",
+                    cache_endpoint, stream_result.cache_source
+                );
+            }
+            let cache_cap = crate::infra::llm::usage_memory::capability(&cache_endpoint);
+            let cache_outcome = crate::infra::llm::usage_memory::resolve_cache_outcome(
+                stream_result.cache_hit_tokens,
+                stream_result.cache_miss_tokens,
+                stream_result.cache_source,
+                cache_obs.reports_cache,
+                cache_cap.cache_source.as_deref(),
+                turn_in_tokens,
+            );
+            let cache_hit_tokens = cache_outcome.hit;
+            let cache_miss_tokens = cache_outcome.miss;
+            let cache_source = cache_outcome.source.as_deref();
+            let cache_point = cache_hit_tokens.map(|hit| CacheHitPoint {
+                loop_count: self.total_loop_count + 1,
+                hit_tokens: hit,
+                miss_tokens: cache_miss_tokens.unwrap_or(0),
+                source: cache_outcome.source.clone(),
+            });
+
             // 检测输出截断状态
             let is_truncated = matches!(
                 stream_result.stop_reason.as_deref(),
@@ -988,7 +1035,14 @@ impl PipelineState {
             self.req_input_tokens += turn_in_tokens;
             self.req_output_tokens += turn_out_tokens;
             if turn_in_tokens > 0 || turn_out_tokens > 0 {
-                self.update_provider_usage_snapshot(turn_in_tokens, turn_out_tokens);
+                self.update_provider_usage_snapshot(
+                    turn_in_tokens,
+                    turn_out_tokens,
+                    cache_hit_tokens,
+                    cache_miss_tokens,
+                    cache_source,
+                    cache_point.as_ref(),
+                );
             }
 
             // 提取工具调用信息
@@ -1007,7 +1061,7 @@ impl PipelineState {
             let tool_names_for_reflection: Vec<String> =
                 tool_calls.iter().map(|(name, _)| name.clone()).collect();
 
-            // 记录响应摘要
+            // 记录响应摘要（含缓存命中：provider 未报告时是 None，不是 0）
             debug_logger::debug_logger().log_response(
                 &self.sid,
                 "MAIN",
@@ -1017,6 +1071,12 @@ impl PipelineState {
                 tool_calls.len(),
                 turn_in_tokens,
                 turn_out_tokens,
+                cache_hit_tokens,
+                cache_miss_tokens,
+                cache_source,
+                // provider 本次没报字段、数值来自端点记忆推断 ⇒ 日志里标明
+                stream_result.cache_hit_tokens.is_none() && cache_hit_tokens.is_some(),
+                stream_result.usage_raw.as_deref(),
             );
 
             // 记录思考过程
@@ -2183,6 +2243,23 @@ impl PipelineState {
         }
 
         let estimate = self.build_context_estimate(history_snapshot, tools);
+        // 沿用上一次快照里的缓存口径与逐 loop 趋势：
+        // - 趋势不能每次重算快照就清零；
+        // - 缓存数值也一并沿用（它描述的是"这条前缀最近一次观测到的命中情况"），
+        //   否则每轮请求构建期间 UI 都会闪回「?」——厂商在请求进行中并不会重新表态。
+        let previous_cache = crate::core::session::get_context_snapshot(&self.sid)
+            .ok()
+            .flatten()
+            .map(|previous| {
+                (
+                    previous.cache_hit_tokens,
+                    previous.cache_miss_tokens,
+                    previous.cache_source,
+                    previous.cache_history,
+                )
+            })
+            .unwrap_or((None, None, None, Vec::new()));
+        let (prev_cache_hit, prev_cache_miss, prev_cache_source, cache_history) = previous_cache;
         let snapshot = SessionContextSnapshot {
             session_id: self.sid.clone(),
             run_id: Some(self.run_id.clone()),
@@ -2196,6 +2273,10 @@ impl PipelineState {
             provider_input_tokens: None,
             provider_output_tokens: None,
             provider_total_tokens: None,
+            cache_hit_tokens: prev_cache_hit,
+            cache_miss_tokens: prev_cache_miss,
+            cache_source: prev_cache_source,
+            cache_history,
             drift_percent: None,
             max_context_tokens: crate::infra::llm::registry::query_capabilities(&self.model_id)
                 .and_then(|capabilities| capabilities.max_context_tokens),
@@ -2213,7 +2294,15 @@ impl PipelineState {
         let _ = self.app.emit("context-snapshot-updated", &snapshot);
     }
 
-    fn update_provider_usage_snapshot(&self, input_tokens: u64, output_tokens: u64) {
+    fn update_provider_usage_snapshot(
+        &self,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_hit_tokens: Option<u64>,
+        cache_miss_tokens: Option<u64>,
+        cache_source: Option<&str>,
+        cache_point: Option<&CacheHitPoint>,
+    ) {
         let total_tokens = input_tokens.saturating_add(output_tokens);
         let drift = crate::core::session::get_context_snapshot(&self.sid)
             .ok()
@@ -2231,6 +2320,10 @@ impl PipelineState {
             output_tokens,
             total_tokens,
             drift,
+            cache_hit_tokens,
+            cache_miss_tokens,
+            cache_source,
+            cache_point,
         ) {
             Ok(Some(snapshot)) => {
                 let _ = self.app.emit("context-snapshot-updated", &snapshot);
@@ -2496,7 +2589,11 @@ impl PipelineState {
                     &self.run_id,
                     self.total_loop_count + 1,
                     &self.cancel_token,
-                    StreamConfig::default(),
+                    StreamConfig {
+                        is_subagent: false,
+                        cache_usage_style:
+                            crate::infra::llm::registry::cache_usage_style_for(&self.model_id),
+                    },
                 )
                 .await;
                 summary = parsed.text.trim().to_string();

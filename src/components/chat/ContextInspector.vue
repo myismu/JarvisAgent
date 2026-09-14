@@ -18,7 +18,7 @@ import { useI18n } from 'vue-i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { emit as tauriEmit } from '@tauri-apps/api/event';
 import ConfirmModal from '../common/ConfirmModal.vue';
-import type { ContextSectionSnapshot, SessionContextSnapshot } from '../../types';
+import type { CacheHitPoint, ContextSectionSnapshot, SessionContextSnapshot } from '../../types';
 
 const props = defineProps<{
   snapshot: SessionContextSnapshot | null;
@@ -84,6 +84,71 @@ const contextUsagePercent = computed(() => {
   if (!max) return null;
   return Math.min(999, Math.round((totalTokens.value / max) * 1000) / 10);
 });
+
+// ── 缓存命中 ──
+// 语义：null = 该模型/链路未报告（显示 --，绝不显示 0%）；0 = 报告了但本次未命中（预热期）
+const cacheHit = computed(() => props.snapshot?.cacheHitTokens ?? null);
+const cacheMiss = computed(() => props.snapshot?.cacheMissTokens ?? null);
+const cacheSource = computed(() => props.snapshot?.cacheSource ?? null);
+const cacheTotal = computed(() => {
+  if (cacheHit.value === null) return null;
+  return (cacheHit.value ?? 0) + (cacheMiss.value ?? 0);
+});
+const cacheState = computed<'unknown' | 'warmup' | 'hit'>(() => {
+  if (cacheHit.value === null) return 'unknown';
+  return (cacheHit.value ?? 0) === 0 ? 'warmup' : 'hit';
+});
+const cacheRateLabel = computed(() => {
+  if (cacheState.value === 'unknown') return t('monitor.context.cacheUnknown');
+  const total = cacheTotal.value ?? 0;
+  if (!total) return '0%';
+  return `${Math.round(((cacheHit.value ?? 0) / total) * 100)}%`;
+});
+const cacheTitle = computed(() => {
+  if (cacheState.value === 'unknown') return t('monitor.context.cacheUnknownHint');
+  const src = cacheSource.value
+    ? ` · ${t('monitor.context.cacheSource', { source: cacheSource.value })}`
+    : '';
+  const body = `${formatToken(cacheHit.value ?? 0)} / ${formatToken(cacheTotal.value ?? 0)}`;
+  return cacheState.value === 'warmup'
+    ? `${body}${src} · ${t('monitor.context.cacheWarmup')}`
+    : `${t('monitor.context.cacheHit')} ${body}${src}`;
+});
+
+// ── 缓存命中趋势 ──
+// 单看一个数字会被"预热期"误导（实测 GLM 第 1、2 轮均为 0%，第 3 轮才 97.8%），
+// 所以把最近若干 loop 的命中率画成小柱子，让"预热 → 命中"这件事一眼可见。
+const pointRate = (point: CacheHitPoint): number => {
+  const total = (point.hitTokens || 0) + (point.missTokens || 0);
+  if (!total) return 0;
+  return Math.round(((point.hitTokens || 0) / total) * 100);
+};
+
+const cacheTrend = computed<CacheHitPoint[]>(() => (props.snapshot?.cacheHistory ?? []).slice(-10));
+
+const cacheTrendSummary = computed(() => {
+  const list = cacheTrend.value;
+  if (!list.length) return '';
+  const first = pointRate(list[0]);
+  const last = pointRate(list[list.length - 1]);
+  if (list.length === 1) return `${last}%`;
+  return first === last ? `${last}%` : `${first}% → ${last}%`;
+});
+
+const pointTone = (point: CacheHitPoint): string => {
+  if (!(point.hitTokens || 0)) return 'warmup';
+  return pointRate(point) >= 50 ? 'hit' : 'partial';
+};
+
+const pointTitle = (point: CacheHitPoint): string => {
+  const total = (point.hitTokens || 0) + (point.missTokens || 0);
+  const src = point.source
+    ? ` · ${t('monitor.context.cacheSource', { source: point.source })}`
+    : '';
+  return `${t('monitor.context.cacheLoop', { loop: point.loopCount })} · ${pointRate(point)}% (${formatToken(
+    point.hitTokens,
+  )} / ${formatToken(total)})${src}`;
+};
 
 const sectionViews = computed<SectionView[]>(() => {
   const total = totalTokens.value;
@@ -269,6 +334,34 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
         <div class="context-stat-card">
           <span>{{ t('monitor.context.providerActual') }}</span>
           <strong>{{ providerTotalTokens !== null ? formatToken(providerTotalTokens) : t('monitor.context.waitingUsage') }}</strong>
+        </div>
+        <div class="context-stat-card" :class="`cache-${cacheState}`">
+          <span>{{ t('monitor.context.cacheHit') }}</span>
+          <strong :title="cacheTitle">{{ cacheRateLabel }}</strong>
+        </div>
+      </div>
+      <div v-if="cacheState !== 'hit'" class="context-cache-hint" :class="`cache-${cacheState}`">
+        {{ cacheState === 'unknown'
+          ? t('monitor.context.cacheUnknownHint')
+          : t('monitor.context.cacheWarmup') }}
+      </div>
+
+      <div v-if="cacheTrend.length >= 2" class="context-cache-trend">
+        <div class="trend-head">
+          <span>{{ t('monitor.context.cacheTrend') }}</span>
+          <strong>{{ cacheTrendSummary }}</strong>
+        </div>
+        <div class="trend-bars">
+          <div
+            v-for="point in cacheTrend"
+            :key="point.loopCount"
+            class="trend-slot"
+            :class="`cache-${pointTone(point)}`"
+            :title="pointTitle(point)"
+          >
+            <span class="trend-fill" :style="{ height: `${Math.max(pointRate(point), 3)}%` }" />
+            <span class="trend-rate">{{ pointRate(point) }}</span>
+          </div>
         </div>
       </div>
     </div>
@@ -605,6 +698,119 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+
+/* 缓存命中卡片：命中=绿、预热=蓝、未知=灰；颜色只做辅助，语义靠文案 */
+.context-stat-card.cache-hit {
+  border-color: color-mix(in srgb, var(--accent-green) 42%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-green) 8%, var(--glass-bg));
+}
+
+.context-stat-card.cache-hit strong {
+  color: var(--accent-green);
+}
+
+.context-stat-card.cache-warmup {
+  border-color: color-mix(in srgb, var(--accent-blue) 34%, var(--border-color));
+}
+
+.context-stat-card.cache-warmup strong {
+  color: var(--accent-blue);
+}
+
+.context-stat-card.cache-unknown strong {
+  color: var(--text-muted);
+}
+
+.context-cache-hint {
+  margin-top: 8px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  border: 1px dashed var(--border-color);
+  color: var(--text-muted);
+  font-size: 0.64rem;
+  line-height: 1.5;
+}
+
+.context-cache-hint.cache-warmup {
+  border-color: color-mix(in srgb, var(--accent-blue) 30%, var(--border-color));
+  color: color-mix(in srgb, var(--accent-blue) 75%, var(--text-main));
+}
+
+.context-cache-trend {
+  margin-top: 8px;
+  padding: 9px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--glass-bg);
+}
+
+.trend-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+  color: var(--text-muted);
+  font-size: 0.62rem;
+}
+
+.trend-head strong {
+  color: var(--text-main);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.trend-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 46px;
+}
+
+.trend-slot {
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  align-items: flex-end;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text-muted) 14%, transparent);
+  overflow: hidden;
+  cursor: default;
+}
+
+.trend-fill {
+  display: block;
+  width: 100%;
+  border-radius: 4px;
+  background: var(--accent-blue);
+  transition: height 0.25s ease;
+}
+
+.trend-slot.cache-hit .trend-fill {
+  background: var(--accent-green);
+}
+
+.trend-slot.cache-partial .trend-fill {
+  background: var(--accent-blue);
+}
+
+.trend-slot.cache-warmup .trend-fill {
+  background: color-mix(in srgb, var(--text-muted) 55%, transparent);
+}
+
+.trend-rate {
+  position: absolute;
+  inset: auto 0 2px 0;
+  text-align: center;
+  color: var(--text-main);
+  font-size: 0.54rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
 }
 
 .context-chart-card {

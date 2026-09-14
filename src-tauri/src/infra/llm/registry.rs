@@ -1,4 +1,4 @@
-﻿// --- 模型能力注册表 ---
+// --- 模型能力注册表 ---
 // 从 model_registry.json 编译时内嵌，提供模型能力查询接口。
 // 使用 include_str!() 宏确保数据随二进制一起打包，无需运行时外部文件。
 
@@ -32,6 +32,10 @@ pub struct ModelCapabilities {
     /// 是否强制开启思考（用户不可关闭，适用于 thinking + tool_calls 必须共存的模型如 DeepSeek）
     #[serde(default)]
     pub thinking_forced: bool,
+    /// 缓存命中字段的写法（**可选覆盖**，省略 = 运行时按候选表自动探测）：
+    /// `"deepseek" | "nested" | "flat" | "anthropic" | "none"`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_usage_style: Option<String>,
 }
 
 /// 注册表中的单条模型记录
@@ -99,6 +103,11 @@ pub fn query_capabilities(model_id: &str) -> Option<ModelCapabilities> {
 #[tauri::command]
 pub fn get_model_capabilities(model_id: String) -> Option<ModelCapabilities> {
     query_capabilities(&model_id)
+}
+
+/// 缓存命中字段写法的注册表覆盖（`cacheUsageStyle`）；None = 交给运行时自动探测
+pub fn cache_usage_style_for(model_id: &str) -> Option<String> {
+    query_capabilities(model_id).and_then(|caps| caps.cache_usage_style)
 }
 
 /// 统一入口：根据模型注册表的 thinkingParam，向 OpenAIRequest 写入思考参数
