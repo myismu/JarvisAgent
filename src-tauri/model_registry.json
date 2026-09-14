@@ -1,6 +1,6 @@
 {
   "_comment": "模型能力注册表 - 使用 include_str!() 编译时内嵌，无需运行时文件。参数依据 doc/ai-models-guide.md 同步；maxTokens 表示最大输出，maxContextTokens 表示最大上下文窗口。",
-  "_lastUpdated": "2026-05-06",
+  "_lastUpdated": "2026-09-15",
   "models": [
     {
       "id": "deepseek-v4-pro",
@@ -12,9 +12,14 @@
         "thinking": true,
         "thinkingParam": "thinking",
         "thinkingForced": true,
+        "thinkingEffortValues": [
+          "low",
+          "high",
+          "max"
+        ],
         "temperature": false,
         "maxTokens": 384000,
-        "notes": "最新旗舰，使用 thinking:{type:enabled/disabled} 控制深度思考，1M 上下文，384K 输出；输入 $1.74/1M tokens（缓存 $0.0145），输出 $3.48/1M tokens；当前 75% 折扣至 2026-05-31；暂不支持视觉",
+        "notes": "官方 2026-09-15 口径：模型版本 DeepSeek-V4-Pro-0813，1M 上下文 / 最大 384K 输出，思考模式默认开启（可用 thinking:{type:disabled} 关闭），effort 档位 low/high/max；不支持视觉；价格（元/百万 tokens）输入缓存命中 0.15（空闲）/0.30（高峰）、未命中 4.5/9.0、输出 13.5/27.0；并发 500。官方 2026-09-14 后继续提供，计费不变。",
         "vision": false,
         "maxContextTokens": 1000000
       }
@@ -22,31 +27,58 @@
     {
       "id": "deepseek-v4-flash",
       "provider": "DeepSeek",
-      "displayName": "DeepSeek V4 Flash",
+      "displayName": "DeepSeek V4 Flash（旧名，已路由到 V4.1-Flash）",
       "apiFormat": "openai",
       "capabilities": {
         "streaming": true,
         "thinking": true,
         "thinkingParam": "thinking",
         "thinkingForced": true,
+        "thinkingEffortValues": [
+          "low",
+          "high",
+          "max"
+        ],
         "temperature": false,
         "maxTokens": 384000,
-        "notes": "轻量快速版，使用 thinking:{type:enabled/disabled} 控制深度思考，1M 上下文，384K 输出；输入 $0.14/1M tokens（缓存 $0.0028），输出 $0.28/1M tokens；暂不支持视觉",
-        "vision": false,
+        "notes": "【旧模型名】官方 2026-09-15 口径：上一代 V4 Flash 模型已下线，deepseek-v4-flash 这个名字仅为兼容暂时路由到 V4.1-Flash，并按 Flash 价格计费。新接入请直接用 deepseek-flash。1M 上下文 / 最大 384K 输出，思考默认开启，视觉由 V4.1-Flash 提供（本条目按旧名保留，能力随路由目标）。",
+        "vision": true,
+        "maxContextTokens": 1000000
+      }
+    },
+    {
+      "id": "deepseek-flash",
+      "provider": "DeepSeek",
+      "displayName": "DeepSeek Flash (V4.1-Flash)",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "thinking",
+        "thinkingForced": true,
+        "thinkingEffortValues": [
+          "low",
+          "high",
+          "max"
+        ],
+        "temperature": false,
+        "maxTokens": 8192,
+        "notes": "官方 2026-09-15 口径：官方推荐模型名（对应 DeepSeek-V4.1-Flash），1M 上下文 / 最大 384K 输出，原生多模态视觉理解，思考模式默认开启（官方默认 effort=high，档位 low/high/max），FIM 仅非思考模式；价格（元/百万 tokens）输入缓存命中 0.02（空闲）/0.04（高峰）、未命中 1/2、输出 4/8；并发 2500。maxTokens 这里刻意取保守值 8192（原常量兜底值，避免输出上限突变），需要更长输出时在预设里覆盖或在下方改大（官方上限 384000）。思考链回传：Agent 场景始终带 tools，官方要求把之前所有轮次的思考完整回传（OpenAI 格式 reasoning_content；Anthropic 格式 thinking 块+签名），否则报 content[].thinking in the thinking mode must be passed back to the API，故标为 thinkingForced 由界面锁定为常开。Anthropic 端点 https://api.deepseek.com/anthropic 忽略 budget_tokens，思考强度用 output_config.effort；传入不支持的模型名会被后端映射到本模型。",
+        "vision": true,
         "maxContextTokens": 1000000
       }
     },
     {
       "id": "deepseek-chat",
       "provider": "DeepSeek",
-      "displayName": "DeepSeek V3 Chat (旧)",
+      "displayName": "DeepSeek V3 Chat (旧，官方已不列出)",
       "apiFormat": "openai",
       "capabilities": {
         "streaming": true,
         "thinking": false,
         "temperature": true,
         "maxTokens": 8192,
-        "notes": "旧版通用基础模型，128K 上下文，8K 输出；输入 $0.27/1M tokens（缓存 $0.07），输出 $1.10/1M tokens；deepseek-chat 即将弃用，对应 DeepSeek-V4-Flash non-thinking 模式",
+        "notes": "【旧模型名】2026-09-15 核对：当前官方文档与价格表已不再列出 deepseek-chat（旧记录：128K 上下文、8K 输出、输入 0.27 元/百万 tokens）。新接入请使用 deepseek-flash（默认思考，可用 thinking:{type:disabled} 走非思考）；Anthropic 端点上传入不支持的名字会被自动映射到 deepseek-flash。",
         "vision": false,
         "maxContextTokens": 128000
       }
@@ -54,7 +86,7 @@
     {
       "id": "deepseek-reasoner",
       "provider": "DeepSeek",
-      "displayName": "DeepSeek R1 Reasoner (旧)",
+      "displayName": "DeepSeek R1 Reasoner (旧，官方已不列出)",
       "apiFormat": "openai",
       "capabilities": {
         "streaming": true,
@@ -62,7 +94,7 @@
         "thinkingParam": "thinking",
         "temperature": false,
         "maxTokens": 8192,
-        "notes": "旧版专用推理模型，始终处于推理模式，128K 上下文，8K 输出；输入 $0.55/1M tokens（缓存 $0.14），输出 $2.19/1M tokens；deepseek-reasoner 即将弃用，对应 DeepSeek-V4-Flash thinking 模式",
+        "notes": "【旧模型名】2026-09-15 核对：当前官方文档与价格表已不再列出 deepseek-reasoner（旧记录：128K 上下文、8K 输出、输入 0.55 元/百万 tokens）。新接入请使用 deepseek-flash / deepseek-v4-pro。",
         "vision": false,
         "maxContextTokens": 128000
       }
