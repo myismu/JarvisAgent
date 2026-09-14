@@ -14,7 +14,7 @@
 
 - **多模型支持** — DeepSeek、Claude、GPT、Gemini、Qwen、豆包、MIMO 等 54 个主流 LLM，覆盖 12 家厂商
 - **双轴模式系统** — Audience（User/Developer）× WorkMode（Edit/Plan）+ 独立权限档位（请求审批/帮我批准）。工具定义列表保持恒定以命中 prompt cache；"能不能做"由能力清单 + 目录过滤 + 运行时校验保证，"要不要问"由执行前判定按结构化事实决定
-- **完整 Agent 循环** — 五阶段管线：初始化 → 意图验证 → 上下文构建 → 主循环（调模型 / 流式解析 / 执行工具 / 反思审查）→ 收尾沉淀
+- **完整 Agent 循环** — 四阶段管线：初始化（纯规则识别复杂任务）→ 上下文构建（上下文快照注入）→ 主循环（调模型 / 流式解析 / 执行工具 / 反思审查）→ 收尾沉淀
 - **自动模式切换** — Edit 模式检测到复杂任务自动切换到 Plan 深度规划，审批后切回委派子 Agent 并行执行
 - **快照引擎** — 文件级树形版本控制，原子化回滚，分支管理，多 Agent 沙箱并行与合并
 - **子代理委派** — 主代理编排任务图，子 Agent 在干净上下文中独立执行，调度器自动并行
@@ -47,7 +47,7 @@
 ### 环境要求
 
 - Node.js >= 18
-- Rust >= 1.70
+- Rust >= 1.77.2（Tauri 2.1 的最低要求）
 - pnpm >= 8
 
 ### 安装与运行
@@ -67,7 +67,7 @@ cargo test            # Rust 测试（在 src-tauri/ 下运行）
 2. **Base URL** — API 端点地址（自动补全路径）
 3. **API Format** — `openai` 或 `anthropic` 格式
 4. **主模型** — 主代理和子代理使用的模型
-5. **工具模型** — 意图分类和记忆管理的轻量模型
+5. **工具模型** — 压缩摘要和记忆整理的轻量模型
 
 支持多预设（Profile）管理，不同场景快速切换。配置保存采用原子写入（先写 tmp 再 rename），防止崩溃丢配置。
 
@@ -77,7 +77,7 @@ cargo test            # Rust 测试（在 src-tauri/ 下运行）
 
 | 模式轴 | 取值 | 作用 |
 |---|---|---|
-| **工作模式**（WorkMode） | Edit / Plan | 决定"直接干"还是"先出方案"：Plan 模式下写工具不可用，必须先 ProposePlan 并等审批 |
+| **工作模式**（WorkMode） | Edit / Plan | 决定"直接干"还是"先出方案"：Plan 模式下写工具不可用，必须先 ProposePlan 并等审批；探索后发现影响面很小（1~2 个文件）可自行降级回 Edit |
 | **用户类型**（Audience） | 普通用户 / 开发者 | 只影响 UI 渲染与交流风格，不影响工具可用性 |
 
 **权限档位**是与模式轴独立的安全维度（不是第三个模式轴）：**请求审批（默认）** 下改文件/删文件/跑命令一律先问；**帮我批准** 下只有删除、覆盖、改名、跑命令、批量改动才问。
@@ -147,24 +147,27 @@ JarvisAgent/
 │   │   │   └── debug_logger.rs       #   调试日志
 │   │   ├── core/                     # ── 业务层：Agent / 工具 / 编排 / 回滚 / 会话 ──
 │   │   │   ├── agent/
-│   │   │   │   ├── pipeline.rs       #   五阶段 Agent 管线主循环（压缩 + 反思）
+│   │   │   │   ├── pipeline.rs       #   四阶段 Agent 管线主循环（压缩 + 反思 + Plan 看门狗）
 │   │   │   │   ├── stream.rs         #   SSE 流式解析（Anthropic + OpenAI）
 │   │   │   │   ├── context.rs        #   动态上下文构建
 │   │   │   │   ├── tools_runner.rs   #   工具调用并行执行引擎
-│   │   │   │   ├── prompts.rs            #   系统提示词多维组装（按优先级 P0/P1/P2 分层）
-│   │   │   │   ├── prompts/          #   提示词模板（audience / mode / os / base）
+│   │   │   │   ├── prompts.rs        #   系统提示词多维组装（按优先级 P0/P1/P2 分层）
+│   │   │   │   ├── prompts/          #   提示词模板（audience / mode / os / base / subagent）
 │   │   │   │   └── reflection/       #   反思审查（mod / prompt / strategy）
-│   │   │   ├── intent/               #   三层意图分类（规则→上下文→LLM 兜底）
-│   │   │   │                         #   + plan_detector（复杂任务检测）
-│   │   │   ├── orchestration/        #   scheduler + subagents + agent_runs + tasks
+│   │   │   ├── complex_task.rs       #   复杂任务检测：is_complex_task 命中 → 强制 Plan 审批
+│   │   │   │                         #   + detect_plan_in_text 正文方案检测 → 重定向 ProposePlan
+│   │   │   ├── orchestration/        #   scheduler + subagents + agent_runs + tasks + agent_run_repository
 │   │   │   │   └── multi_agent/      #   沙箱（sandbox）+ 分支合并（merge）
 │   │   │   ├── rollback/             #   snapshot + patch + replay + store + gc + journal
-│   │   │   ├── session/              #   会话持久化 + memory（单级摘要压缩 + 裁剪）+ repository
+│   │   │   │                         #   + rollback_logger（回滚日志）+ session_manager（检查点）
+│   │   │   ├── session/              #   会话持久化 + memory（单级摘要压缩 + 裁剪）
+│   │   │   │                         #   + repository + resource_repository（transcript 等资源）
 │   │   │   └── tools/                #   工具系统中枢 + 8 个子系统：
 │   │   │       ├── file_tools/       #   文件读写/编辑/搜索/符号（14 个文件）
 │   │   │       ├── shell_tools/      #   Shell + 后台任务 + Git + 安全检查
 │   │   │       ├── agent_tools/      #   子代理、技能、压缩、方案审批、模式切换、记忆
 │   │   │       ├── task_tools/       #   持久化任务 CRUD + 轻量待办
+│   │   │       │   └── persistent/   #   任务 CRUD 实现（create/update/delete/list/get/summary）
 │   │   │       ├── search_tools/     #   Glob + Grep 搜索
 │   │   │       ├── notebook_tools/   #   Jupyter Notebook cell 编辑
 │   │   │       ├── system_tools/     #   系统信息 + 工作区设置
@@ -180,7 +183,6 @@ JarvisAgent/
 │   ├── capabilities/                 # Tauri 权限能力声明
 │   ├── gen/ / icons/                  # Tauri 生成目录 / 应用图标
 │   ├── model_registry.json           # 模型能力注册表（编译时内嵌，54 个模型）
-│   ├── intent_rules.json             # 意图分类外部规则（10 类）
 │   ├── tauri.conf.json               # Tauri 应用配置
 │   ├── build.rs / Cargo.toml / Cargo.lock   # 构建脚本 / 依赖清单 / 锁文件
 │   └── .taurignore                   # Tauri 打包忽略规则
@@ -197,9 +199,10 @@ JarvisAgent/
 ### 新的 Agent 管线
 
 ```
-用户输入 → 多层意图分类（规则 → 上下文 → LLM）
-           → 组装工具定义（恒定列表，保证 prompt cache 命中）
-           → 动态上下文注入（意图标签 + 项目索引 + 用户画像）
+用户输入 → 纯规则识别复杂任务（命中 → 首轮强制 Plan 方案审批；无 LLM 意图分类）
+           → 组装系统提示词与工具定义（两者恒定，保证 prompt cache 命中）
+           → 上下文快照注入（工作模式 + 能力清单 + 用户画像 + 项目结构）
+           → 主循环（调模型 → 流式解析 → 并行执行工具（执行前权限判定）→ 反思审查）
            → 模块化子 Agent 并行执行（自研调度器）
            → 结果聚合与持久化（快照、会话标题、记忆超预算时后台整理）
 ```
@@ -212,7 +215,7 @@ Audience 轴（谁在用）   WorkMode 轴（在干什么）
   ↑ 只用户手动切换           ↑ 用户手动 + Agent 自动切
 
   Audience → UI 渲染 + 交流风格
-  WorkMode → 系统提示词 + 工具可用性（Plan 禁写）
+  WorkMode → 上下文快照（能力边界）+ 工具可用性（Plan 禁写）
 
 独立维度 权限档位（改动前问多严，不是第三个模式轴）：
   请求审批 ────── 帮我批准
@@ -220,23 +223,21 @@ Audience 轴（谁在用）   WorkMode 轴（在干什么）
   权限档位 → 执行前判定：放行 / 弹窗问 / 直接拒绝
 ```
 
-提示词按优先级分层组装：基础规则（P0/P1/P2）+ 写操作与编排规则 + Audience 风格 + WorkMode 规则 + OS 规则 + 沙箱约束。模式切换不重启 Pipeline，下一轮 LLM 请求自动使用新提示词。
+系统提示词按优先级分层组装且**字节恒定**（基础规则 P0/P1/P2 + 写操作与编排规则 + Audience 风格 + OS 规则 + 沙箱约束 + 最新快照优先规则），以命中前缀缓存。WorkMode 规则不进 system，而是在每个用户回合入口注入一次 `<context_snapshot>`。模式切换不打断当前循环：中途 `SwitchWorkMode` 会追加一条 seq 更大的完整快照（新模式提示词 + 能力清单 + 项目结构与用户画像），不回改已发送的旧快照，因此前缀缓存继续命中；同时提示重新拉取工具目录。历史中的旧快照仅作参考。
 
 ### 能力清单（Capability Manifest）
 
 工具可用性只有一套口径：`ToolRegistry::is_available(意图 × 工作模式)`。工具目录过滤（GetToolCatalog / DiscoverTools）、搜索、运行时校验（ExecuteTool / 直接调用）、写操作兜底（`should_block_write_tool`）全部由它推导——写操作工具名单也只保留一份（`ToolRegistry::WRITE_TOOLS`）。「目录里看不见的工具」任何路径都调不到。
 
-`Capabilities::for_work_mode()` 把"当前模式能做什么"编译成能力清单，并且是**从注册表反推**的（能力清单 = 工具目录的投影），不存在第二套真相。同一个清单同时喂给四层：
+`Capabilities::for_work_mode()` 把"当前模式能做什么"编译成能力清单，并且是**从注册表反推**的（能力清单 = 工具目录的投影），不存在第二套真相。同一个清单同时喂给三层：
 
 ```
-① 能力冲突快速判定  受限模式（Plan）下用户要求了被禁能力 → 直接给确定性回复
-                    （0 次模型调用、0 次工具往返）
-② 第一轮上下文 <capabilities> 声明能力边界，并明令禁止用发现类工具去试探
-③ 目录/搜索  一次调用就给出能力结论，不让模型从"列表里没有"去推断
-④ 运行时校验 模型即便硬调也拿不到 schema、调不通（兜底）
+① 每轮上下文快照  <capabilities> 声明能力边界，并明令禁止用发现类工具去试探
+② 目录/搜索      一次调用就给出能力结论，不让模型从"列表里没有"去推断
+③ 运行时校验     模型即便硬调也拿不到 schema、调不通（兜底）
 ```
 
-判定"用户这条消息要什么能力"用**规则层**（`rules.rs` 的唯一一张表，`classify_by_rules_detailed()` 返回 `RuleCategory`）+ `intent::mode_conflict` 的误拦防护（提问式表达放行、纯内容请求放行、要求改文件必须有明确的项目工件引用或已绑定工作区）。判不出来就交给主模型回答——本轮已带能力边界声明，不会产生工具往返。
+规划模式下"用户要改文件"不再提前截断——交给模型自己解释并走方案审批流程（用户少一次往返）；能力边界由上述三层保证。意图分类已取消，只剩复杂任务检测（`core/complex_task.rs`），唯一用途是识别复杂任务并强制走 Plan 审批，误判可按降级条件自行切回 Edit。
 
 ### 权限档位与执行前判定
 
@@ -269,9 +270,9 @@ session_memory 表（LLM 活动视图索引）
 ```
 发送前裁剪（每轮恒定）：
 - 过滤 internal/background 内部消息，只保留 chat/compact/context 来源
-- CHAT 模式把工具返回详情折叠为一行（错误信息保留）
-- 图片仅保留最近 2 条消息中的，远期图片折叠为文本摘要
-- 单条工具结果超过 5 万字符截断
+- 已发出的历史一律只读：工具结果不做二次折叠（改写缓存前缀得不偿失）
+- 图片以「本轮用户消息」为界：本轮始终携带 base64，往轮折叠为 [图片: type] 文本摘要
+- 单条工具结果写入时超过 5 万字符即截断
 
 LLM 摘要压缩（auto_compact，唯一真正的压缩）：
 - 触发：本地估算 token 超过上限（100k）的 70%（自动），或 LLM 调用 CompactConversation（手动）
@@ -342,7 +343,7 @@ Rust emit("chat-content") ──→ useAgentEvents.listen()
 - **沙箱限制** — 会话绑定工作目录，路径遍历自动拦截
 - **Shell 安全** — 递归列目录（dir /s、tree）强制排除 node_modules 等依赖目录
 - **权限审批** — Shell 等敏感操作需用户确认，系统无限期等待你的决策（无自动超时）；拒绝时可附一句说明，直接回灌给模型
-- **循环检测** — Agent 循环超 30 轮暂停确认，绝对上限 200 轮
+- **循环检测** — Agent 循环超 30 轮暂停确认，绝对上限 200 轮；Plan 模式空转看门狗（连续 6 次工具调用无进展 / 累计 10 个 loop 未交方案或未降级即强制收敛）
 - **429 限流** — 解析 Retry-After 头按服务器建议等待
 - **快照回滚** — 所有文件操作可追溯可撤销，原子化写入防崩溃
 

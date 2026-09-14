@@ -27,7 +27,7 @@
 //! - 异常收尾：`abort_after_error()` / `handle_cancellation()` / `store_assistant_response()`
 //!
 //! ## 依赖
-//! - Internal: `crate::core::orchestration::agent_runs`, `crate::infra::llm::api_client`, `crate::infra::config::config::AgentConfig`, `crate::core::intent`, `crate::core::session::memory`, `crate::core::tools`, `super::reflection`
+//! - Internal: `crate::core::orchestration::agent_runs`, `crate::infra::llm::api_client`, `crate::infra::config::config::AgentConfig`, `crate::core::complex_task`, `crate::core::session::memory`, `crate::core::tools`, `super::reflection`
 //! - External: `eventsource_stream`, `serde_json`, `tauri`, `tokio_util`, `reqwest`
 //!
 //! ## 约束
@@ -361,14 +361,14 @@ impl PipelineState {
         // "用户已同意方案/要求修改方案"是审批续跑，不算复杂任务
         let is_approval_continuation = msg_for_intent.starts_with("用户已同意方案")
             || msg_for_intent.starts_with("用户要求修改方案");
-        // 意图判定：规则直判（Plan → 走方案审批）；"用户已同意方案/要求修改"属于审批续跑
+        // 复杂任务判定：正则直判（命中 → 走方案审批）；"用户已同意方案/要求修改"属于审批续跑
         let detected_intent = {
-            let rule_intent = crate::core::intent::rules::classify_by_rules(&msg_for_intent);
-            if matches!(rule_intent, crate::core::intent::rules::Intent::Plan) && !is_approval_continuation {
+            let is_complex = crate::core::complex_task::is_complex_task(&msg_for_intent);
+            if is_complex && !is_approval_continuation {
                 println!("[JARVIS] {} 模式：规则检测到复杂任务，首轮直接进入方案审批流程", work_mode);
                 "TASK_PLAN".to_string()
             } else {
-                println!("[JARVIS] {} 模式：跳过 LLM 意图分类，直接进入项目操作流程", work_mode);
+                println!("[JARVIS] {} 模式：直接进入项目操作流程", work_mode);
                 DIRECT_DEVELOPER_INTENT.to_string()
             }
         };
@@ -1135,7 +1135,7 @@ impl PipelineState {
                 // tool_results 为空说明 LLM 没用任何工具，纯文本输出了方案
                 let work_mode = self.ctx.agent_work_mode.lock().await.clone();
                 if (work_mode == "edit" || work_mode == "plan")
-                    && crate::core::intent::plan_detector::detect_plan_in_text(&self.final_answer)
+                    && crate::core::complex_task::detect_plan_in_text(&self.final_answer)
                 {
                     println!(
                         "[JARVIS] 响应后置拦截：检测到正文中的计划内容，重定向到 ProposePlan"

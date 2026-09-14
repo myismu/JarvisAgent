@@ -8,11 +8,11 @@
 //! - `orchestration`: 调度器、任务编排
 //! - `session`: 会话生命周期、记忆
 //! - `rollback`: 快照、回滚、GC、分支合并
-//! - `intent`: 意图识别
+//! - `complex_task`: 复杂任务/方案内容检测（方案审批流程的入口判定）
 //! - `tools`: 所有工具实现
 
 pub mod agent;
-pub mod intent;
+pub mod complex_task;
 pub mod orchestration;
 pub mod rollback;
 pub mod session;

@@ -22,7 +22,6 @@ src-tauri/
 ├── .taurignore                  # Tauri 打包忽略规则
 ├── .gitignore                   # src-tauri 内部 Git 忽略规则
 ├── model_registry.json          # 模型能力注册表（include_str! 编译时内嵌，context/thinking/vision 等）
-├── intent_rules.json            # 意图分类外部规则（10 类意图 + priority_order）
 ├── PROJECT_STRUCTURE.md         # src-tauri 后端结构导航文档
 ├── capabilities/
 │   └── default.json             # Tauri 2 capability 权限声明
@@ -114,8 +113,8 @@ agent/
 ```text
 前端 invoke("ask_jarvis")
   → core::agent::ask_jarvis
-  → pipeline::run_pipeline（初始化 → 意图验证 → 上下文构建 → 主循环 → 收尾）
-  → intent 分类 → tools 按 WorkMode 加载 → context 组装动态上下文
+  → pipeline::run_pipeline（初始化 → 复杂任务检测 → 上下文构建 → 主循环 → 收尾）
+  → complex_task 判定 → tools 按 WorkMode 加载 → context 组装动态上下文
   → provider 发起 LLM 流式请求 → stream 解析输出块与工具调用
   → tools_runner 执行工具 → reflection 反思审查
   → 压缩检查 → 写回消息与执行记录 → emit 事件回前端
@@ -295,34 +294,15 @@ orchestration/multi_agent/
 - 沙盒：`command/sandbox.rs`
 - 合并：`command/merge.rs`
 
-## 意图分类：`core/intent/`
+## 复杂任务检测：`core/complex_task.rs`
 
-```text
-intent/
-├── mod.rs                       # 意图分类入口（三层分级策略）
-├── rules.rs                     # 正则规则引擎 + intent_rules.json 外部规则加载
-└── plan_detector.rs             # 复杂任务检测（方案类输出 → 自动切 Plan 模式）
-```
+方案审批流程的两道确定性检测（正则，零 LLM 开销），与模型的语义判断互补：
 
-三层分级策略：
-
-1. 规则层：关键词正则匹配（覆盖约 90% 明确请求，零延迟）。
-2. 上下文层：结合上一轮对话特征解析短回复歧义。
-3. LLM 兜底：轻量模型处理真正模糊的输入。
-
-`intent_rules.json` 中内置的 10 类意图（含 priority_order）：
-
-- `DANGEROUS`：危险操作，需要更严格的确认。
-- `TASK_PLAN`：复杂任务规划 / 方案审批。
-- `MEMORY_QUERY`：记忆查询。
-- `CODE_REVIEW`：代码审查。
-- `CODE_READ` / `CODE_WRITE`：代码读取与修改。
-- `QUESTION`：技术问题、概念解释、方案咨询。
-- `TASK_EXECUTE`：命令执行类任务。
-- `SETTINGS`：应用配置、模型、主题、偏好设置。
-- `GENERAL_CHAT`：普通聊天，通常折叠历史工具结果以节省 token。
-
-意图分类结果决定后续工具加载范围；`plan_detector` 检测到分步骤/方案类输出时自动切换到 Plan 工作模式。
+- 前置 `is_complex_task`：识别用户输入中"需要方案审批的复杂任务"表达，命中则
+  pipeline 首轮强制切换 Plan 模式；其余输入不做意图区分，直接交给主 LLM 结合
+  上下文处理。误判可按 mode/plan.md 的降级条件自行切回 Edit。
+- 后置 `detect_plan_in_text`：Edit/Plan 模式下检测 LLM 是否绕过 `ProposePlan`
+  把方案写进回复正文，命中则重定向到方案审批流程。
 
 ## 运行时数据路径
 
@@ -379,7 +359,7 @@ cargo clippy                     # Rust lint 检查
 | 任务系统异常 | `core/orchestration/tasks.rs`、`core/tools/task_tools/` |
 | 快照、回滚异常 | `core/rollback/`、`command/{snapshot,checkpoint}.rs` |
 | 沙盒、合并异常 | `core/orchestration/multi_agent/`、`command/{sandbox,merge}.rs` |
-| 意图分类不准 | `core/intent/`、`intent_rules.json` |
+| 复杂任务误判 | `core/complex_task.rs` |
 | 配置读写异常 | `infra/config/config.rs`、`command/config.rs` |
 
 ## 修改约束
