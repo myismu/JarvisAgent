@@ -84,6 +84,13 @@ struct PipelineState {
     thinking_override: Option<bool>,
     /// 基于 audience 的 agent loop 默认思考状态（developer → true, user → false）
     loop_think_default: bool,
+    /// 本轮（一次用户指令 = 可能多个 loop）最终采用的思考状态。
+    ///
+    /// 必须整轮恒定：Anthropic 协议的 thinking 模式要求历史里 assistant 的 thinking
+    /// 块原样回传，若首轮 disabled、第二轮又变 enabled，历史里那条 assistant 根本没有
+    /// thinking 块，服务商会直接 400
+    /// （`content[].thinking in the thinking mode must be passed back to the API`）。
+    turn_think: bool,
     detected_intent: String,
     /// 本轮能力清单（由工作模式推导，注入动态上下文 / 目录输出 / 执行期校验共用）
     capabilities: crate::core::tools::framework::capabilities::Capabilities,
@@ -127,6 +134,22 @@ fn normalize_agent_audience(audience: &str) -> &'static str {
         "user" => "user",
         _ => "developer",
     }
+}
+
+/// 本轮（一次用户指令）最终采用的 thinking 状态：用户临时开关优先，否则用受众默认值。
+fn resolve_turn_think(override_val: Option<bool>, loop_default: bool) -> bool {
+    override_val.unwrap_or(loop_default)
+}
+
+/// 每个 loop 使用的 thinking 状态：整轮恒定。
+///
+/// 回归防护：旧实现在 `loop_count > 0` 时回落到 audience 默认值，导致
+/// 「首轮 disabled → 第二轮 enabled」的翻转；此时历史里那条 assistant 是在关闭
+/// thinking 时产生的、没有 thinking 块可回传，Anthropic 协议的服务商（含 DeepSeek
+/// 的 anthropic 兼容端点）会直接 400：
+/// `content[].thinking in the thinking mode must be passed back to the API`。
+fn should_think_for_loop(turn_think: bool, _loop_count: usize) -> bool {
+    turn_think
 }
 
 /// 防御性修复：确保每个 Assistant(tool_calls) 后跟 ToolResult 消息。
@@ -485,6 +508,7 @@ impl PipelineState {
                         user_msg_preview: String::new(),
             initial_msg_index: 0,
             should_think: false,
+            turn_think: false,
             run_id: String::new(),
             loop_count: 0,
             total_loop_count: 0,
@@ -617,16 +641,20 @@ impl PipelineState {
         crate::core::session::save_session(&self.sid, &memory_after_user_message, None);
         let _ = self.app.emit("session-updated", ());
 
-        // 深度思考决策：
-        // - 首轮：用户 thinking_override 优先（一次性），否则使用 audience 默认值
-        // - 后续轮：始终使用 audience 默认值（developer → true, user → false）
-        // 步骤 5：决定首轮是否深度思考（用户临时开关优先，否则按受众默认）
-        if let Some(override_val) = self.thinking_override {
-            self.should_think = override_val;
-            self.thinking_override = None; // 消费后清除，不再影响后续轮次
-        } else {
-            self.should_think = self.loop_think_default;
-        }
+        // 深度思考决策（整轮一次性决定，之后不再改变）：
+        // - 用户 thinking_override 优先（一次性输入），否则使用 audience 默认值
+        // - 本轮所有 loop 都用同一个值：中途翻转会让 Anthropic 协议的 thinking 链要求不成立
+        //   （首轮 disabled 就没有 thinking 块可回传，第二轮突然 enabled 会 400）
+        let override_val = self.thinking_override.take();
+        let turn_think = resolve_turn_think(override_val, self.loop_think_default);
+        self.turn_think = turn_think;
+        self.should_think = turn_think;
+        println!(
+            "[JARVIS] 本轮 thinking 状态固定为 {}（override={:?}, audience 默认={}）",
+            if turn_think { "enabled" } else { "disabled" },
+            override_val,
+            self.loop_think_default
+        );
 
         let user_message_id = {
             let session = self.ctx.memory.lock().await;
@@ -748,9 +776,11 @@ impl PipelineState {
             // Token 压缩
             self.compact_if_needed().await;
 
-            // 后续轮次：重置 should_think 为 audience 默认值，确保 agent loop 思考状态一致
+            // 后续轮次：沿用本轮固定的 thinking 状态（不再回落 audience 默认值）。
+            // 中途从 disabled 翻成 enabled 会让历史里那条没有 thinking 的 assistant
+            // 无法满足 Anthropic 的"thinking 必须回传"要求 → 400。
             if self.loop_count > 0 {
-                self.should_think = self.loop_think_default;
+                self.should_think = should_think_for_loop(self.turn_think, self.loop_count);
             }
 
             // 步骤 4：准备发给 LLM 的历史快照（过滤内部消息、修复残缺配对等）
@@ -761,10 +791,14 @@ impl PipelineState {
             // 构建请求并更新上下文快照
             let (req_json, is_openai) = self.build_llm_request(history_snapshot);
 
-            // 调试日志
-            let request_json = serde_json::to_string_pretty(&req_json).unwrap_or_default();
-            println!("[MAIN AGENT] loop {} request ({} bytes)", self.total_loop_count + 1, request_json.len());
-            debug_logger::debug_logger().log_request(&self.sid, "MAIN", self.total_loop_count + 1, &request_json);
+            // 调试日志：logger 内部按 request_base + messages 增量落盘，
+            // 这里只打印一个体量（compact 序列化，不再为打印付出 pretty 的开销）
+            println!(
+                "[MAIN AGENT] loop {} request ({} bytes)",
+                self.total_loop_count + 1,
+                serde_json::to_string(&req_json).map(|s| s.len()).unwrap_or(0)
+            );
+            debug_logger::debug_logger().log_request(&self.sid, "MAIN", self.total_loop_count + 1, &req_json);
 
             if self.cancel_token.is_cancelled() {
                 continue;
@@ -1253,6 +1287,18 @@ impl PipelineState {
                         content: Content::Multiple(tool_results),
                     }, "chat");
                 } // session 锁在这里释放
+
+                // —— 模式切换快照：本 loop 的 SwitchWorkMode 真实变更了 work_mode ——
+                // 不修改已发出的 <context_snapshot>，而是在消息尾部追加一条 seq 更大的完整新快照，
+                // 历史前缀仍逐字节命中缓存；system 的“最新快照优先”规则随即切到新模式现场。
+                let mode_after_execution = { self.ctx.agent_work_mode.lock().await.clone() };
+                if mode_after_execution != work_mode {
+                    println!(
+                        "[JARVIS] 工作模式在本 loop 内切换：{} -> {}，追加完整上下文快照",
+                        work_mode, mode_after_execution
+                    );
+                    self.append_mode_snapshot(&mode_after_execution).await;
+                }
 
                 // —— 反思审查：工具结果已写入 session，审查 Agent 携带完整上下文判断 ——
                 if should_reflect {
@@ -2293,11 +2339,26 @@ impl PipelineState {
             );
             (serde_json::to_value(openai_req).unwrap(), true)
         } else {
-            // Anthropic 出口：丢掉无 signature 的 thinking 块，避免回传被判 400
-            let messages = crate::infra::llm::adapters::strip_unsigned_thinking_for_anthropic(
-                &request_body.messages,
-            );
-            request_body.messages = messages;
+            // Anthropic 出口的 thinking 块策略按服务商分两种：
+            // - 真 Anthropic：无 signature 的 thinking 回传会被判 400 → 必须剥掉；
+            // - DeepSeek 这类端点：思考模式下**要求**把 thinking 原样带回，剥掉会报
+            //   `content[].thinking in the thinking mode must be passed back to the API`
+            //   （与 OpenAI 出口的 reasoning_content 回填是同一件事的两面）。
+            if crate::infra::llm::adapters::should_strip_unsigned_thinking(
+                &self.model_id,
+                &self.cfg.base_url,
+                self.should_think,
+            ) {
+                let messages = crate::infra::llm::adapters::strip_unsigned_thinking_for_anthropic(
+                    &request_body.messages,
+                );
+                request_body.messages = messages;
+            } else {
+                println!(
+                    "[JARVIS] Anthropic 出口：保留无签名 thinking 块（{} 要求回传思考链）",
+                    self.model_id
+                );
+            }
             (serde_json::to_value(request_body).unwrap(), false)
         }
     }
@@ -2461,6 +2522,40 @@ impl PipelineState {
             }),
         );
     }
+
+    /// 中途模式切换：在消息尾部追加一条 seq 更大的完整上下文快照（追加，不回改旧前缀）。
+    async fn append_mode_snapshot(&mut self, mode: &str) {
+        let seq = {
+            let mut session = self.ctx.memory.lock().await;
+            session.snapshot_seq = session.snapshot_seq.saturating_add(1);
+            session.snapshot_seq
+        };
+
+        let capabilities = crate::core::tools::framework::capabilities::Capabilities::for_work_mode(mode);
+        let snapshot = build_dynamic_context(
+            &self.detected_intent,
+            &self.request_workspace,
+            &capabilities,
+            mode,
+            seq,
+        );
+        self.capabilities = capabilities;
+
+        if snapshot.is_empty() {
+            return;
+        }
+
+        self.dynamic_context_str = snapshot.clone();
+        let snapshot_memory = {
+            let mut session = self.ctx.memory.lock().await;
+            append_message(&mut session, Message::User {
+                content: Content::Multiple(vec![ContentBlock::Context { text: snapshot }]),
+            }, "context");
+            session.clone()
+        };
+        // 立即落库，保证崩溃恢复时 snapshot_seq 与这条新快照同时存在，避免 seq 回退/重复
+        crate::core::session::save_session(&self.sid, &snapshot_memory, None);
+    }
 }
 
 /// 主流程入口：依次执行 5 个阶段
@@ -2562,4 +2657,41 @@ async fn run_pipeline_inner(
 
     // ── 阶段 5：收尾（持久化 / 快照 / 记忆 / 结果组装）──
     Ok(state.finalize().await)
+}
+
+#[cfg(test)]
+mod thinking_freeze_tests {
+    use super::{resolve_turn_think, should_think_for_loop};
+
+    /// 回归：override=false + audience 默认 true（当前 DeepSeek 用户的实际组合）时，
+    /// 整轮每个 loop 都必须是 disabled。旧实现在 loop>0 回落到 audience 默认，
+    /// 于是第二轮变 enabled，历史里没有 thinking 块的 assistant 无法满足
+    /// Anthropic 的「thinking 必须回传」要求 → 400。
+    #[test]
+    fn thinking_state_is_frozen_within_a_turn() {
+        let turn_think = resolve_turn_think(Some(false), true);
+        assert!(!turn_think, "用户临时关闭应覆盖受众默认值");
+        for loop_count in 0..=5 {
+            assert!(
+                !should_think_for_loop(turn_think, loop_count),
+                "loop {} 不得把 thinking 翻转成 enabled",
+                loop_count
+            );
+        }
+    }
+
+    #[test]
+    fn thinking_stays_enabled_for_the_whole_turn() {
+        let turn_think = resolve_turn_think(Some(true), false);
+        assert!(turn_think);
+        for loop_count in 0..=5 {
+            assert!(should_think_for_loop(turn_think, loop_count));
+        }
+    }
+
+    #[test]
+    fn thinking_falls_back_to_audience_default_without_override() {
+        assert!(resolve_turn_think(None, true));
+        assert!(!resolve_turn_think(None, false));
+    }
 }

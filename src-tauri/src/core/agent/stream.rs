@@ -24,16 +24,21 @@ use crate::infra::types::models::*;
 use crate::core::orchestration::agent_runs;
 
 /// 流式处理配置：控制事件发送行为
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct StreamConfig {
     /// 是否为子代理模式（子代理不发送 chat-content/chat-tool-start，
     /// chat-thinking 携带 isSubAgent 标记，不写 agent_runs 日志）
     pub is_subagent: bool,
+    /// 注册表可选的缓存字段写法覆盖（`cacheUsageStyle`）；None = 按候选表自动探测
+    pub cache_usage_style: Option<String>,
 }
 
 impl Default for StreamConfig {
     fn default() -> Self {
-        Self { is_subagent: false }
+        Self {
+            is_subagent: false,
+            cache_usage_style: None,
+        }
     }
 }
 
@@ -145,9 +150,39 @@ pub struct StreamResult {
     pub has_tool: bool,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// 缓存命中 / 未命中的输入 token；None = 该 provider 未报告（≠ 0）
+    pub cache_hit_tokens: Option<u64>,
+    pub cache_miss_tokens: Option<u64>,
+    /// 命中的字段名（排查"这家为什么显示未知"用）
+    pub cache_source: Option<&'static str>,
+    /// 原始 usage 原文（截断）：遇到未知写法时可直接从日志取出自诊断
+    pub usage_raw: Option<String>,
     /// API 返回的终止原因（Anthropic: stop_reason, OpenAI: finish_reason）
     /// 常见值: "end_turn", "tool_use", "max_tokens", "stop", "length"
     pub stop_reason: Option<String>,
+}
+
+/// 安全截断（按字符，避免切断多字节字符）
+fn truncate_sample(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(max_chars).collect();
+    format!("{}…(truncated)", head)
+}
+
+/// 从 `content_block_delta` 的 `delta` 里取出 thinking 签名分片。
+///
+/// Anthropic 协议：thinking 块的签名不在 `content_block_start` 里，而是随后以
+/// `{"type":"signature_delta","signature":"…"}` 逐片到达（真 Anthropic 是长 base64，
+/// DeepSeek 的 /anthropic 端点用 UUID 字符串）。空签名视为"没有"，避免拼进空串。
+fn thinking_signature_from_delta(delta: &serde_json::Value) -> Option<&str> {
+    let signature = delta.get("signature")?.as_str()?;
+    if signature.is_empty() {
+        None
+    } else {
+        Some(signature)
+    }
 }
 
 pub async fn process_stream(
@@ -175,10 +210,15 @@ pub async fn process_stream(
     let mut req_output_tokens: u64 = 0;
     let mut stop_reason: Option<String> = None;
     let mut logged_textual_tool_violation = false;
+    // 缓存命中：跨事件合并（Anthropic 的 message_start / message_delta 会先后带 usage）
+    let mut cache_usage = crate::infra::llm::usage::CacheUsage::default();
+    let mut usage_raw: Option<String> = None;
     // 追踪 ProposePlan 工具调用的流式内容，用于实时推送到前端
     let mut propose_plan_stream_sent: HashMap<usize, usize> = HashMap::new();
 
     let logger = debug_logger::debug_logger();
+    // SSE 聚合按 (session, agent_type, loop) 归档，才能落到对应循环卡上
+    let agent_type = if config.is_subagent { "SUB" } else { "MAIN" };
     if !config.is_subagent {
         let _ = app.emit(
             "chat-turn-start",
@@ -202,8 +242,8 @@ pub async fn process_stream(
             Err(_) => continue,
         };
         let data = event.data;
-        // 记录原始 SSE 事件到调试日志
-        logger.log_sse_event(sid, loop_count, &data);
+        // 记录 SSE（默认只累加计数，收尾时落一条 sse_summary）
+        logger.log_sse_event(sid, agent_type, loop_count, &data);
         if data == "[DONE]" {
             break;
         }
@@ -217,6 +257,12 @@ pub async fn process_stream(
                 if let Some(out_toks) = usage.get("completion_tokens").and_then(|v| v.as_u64()) {
                     req_output_tokens += out_toks;
                 }
+                // 缓存命中字段（各家写法不同，交给归一化模块按候选表探测）
+                cache_usage = crate::infra::llm::usage::merge_cache_usage(
+                    cache_usage,
+                    crate::infra::llm::usage::extract_cache_usage_with_style(usage, config.cache_usage_style.as_deref()),
+                );
+                usage_raw = Some(truncate_sample(&usage.to_string(), 600));
             }
 
             if let Some(choices) = json_val["choices"].as_array() {
@@ -378,6 +424,11 @@ pub async fn process_stream(
                             .get("input_tokens")
                             .and_then(|v| v.as_u64())
                             .unwrap_or(0);
+                        cache_usage = crate::infra::llm::usage::merge_cache_usage(
+                            cache_usage,
+                            crate::infra::llm::usage::extract_cache_usage_with_style(usage, config.cache_usage_style.as_deref()),
+                        );
+                        usage_raw = Some(truncate_sample(&usage.to_string(), 600));
                     }
                 }
                 "message_delta" => {
@@ -389,6 +440,11 @@ pub async fn process_stream(
                         {
                             req_output_tokens += out_toks;
                         }
+                        cache_usage = crate::infra::llm::usage::merge_cache_usage(
+                            cache_usage,
+                            crate::infra::llm::usage::extract_cache_usage_with_style(usage, config.cache_usage_style.as_deref()),
+                        );
+                        usage_raw = Some(truncate_sample(&usage.to_string(), 600));
                     }
                     // 提取终止原因（end_turn / max_tokens / tool_use 等）
                     if let Some(sr) = json_val["delta"]["stop_reason"].as_str() {
@@ -469,7 +525,7 @@ pub async fn process_stream(
                                     }
                                 }
                             }
-                            ContentBlock::Thinking { thinking, .. } => {
+                            ContentBlock::Thinking { thinking, signature } => {
                                 if let Some(t) = delta["thinking"].as_str() {
                                     thinking.push_str(t);
                                     current_thinking_this_turn.push_str(t);
@@ -484,6 +540,15 @@ pub async fn process_stream(
                                     if !config.is_subagent {
                                         agent_runs::append_thinking(app, run_id, t, loop_count);
                                     }
+                                }
+                                // Anthropic 协议把 thinking 的签名放在**独立的** signature_delta 分片里
+                                // （content_block_start 里的 thinking 块不含 signature）。
+                                // 不接住它，回放历史时该块就是"无签名"，而 Anthropic 协议要求
+                                // thinking 块原样回传：真 Anthropic 会直接 400，DeepSeek 的
+                                // /anthropic 端点（UUID 签名）会报
+                                // `content[].thinking in the thinking mode must be passed back to the API`。
+                                if let Some(sig) = thinking_signature_from_delta(delta) {
+                                    signature.push_str(sig);
                                 }
                             }
                             ContentBlock::ToolUse { name, .. } => {
@@ -541,6 +606,9 @@ pub async fn process_stream(
         }
     }
 
+    // 流结束时把本 loop 的 SSE 聚合落盘（MAIN 路径 log_response 也会刷一次，幂等）
+    logger.flush_sse_summary(sid, agent_type, loop_count);
+
     StreamResult {
         blocks: current_blocks,
         tool_input_buffers,
@@ -549,6 +617,10 @@ pub async fn process_stream(
         has_tool: turn_has_tool,
         input_tokens: req_input_tokens,
         output_tokens: req_output_tokens,
+        cache_hit_tokens: cache_usage.hit,
+        cache_miss_tokens: cache_usage.miss,
+        cache_source: cache_usage.is_known().then_some(cache_usage.source),
+        usage_raw,
         stop_reason,
     }
 }
@@ -624,4 +696,53 @@ fn parse_textual_tool_calls(text: &str) -> Vec<(String, serde_json::Value)> {
     }
 
     results
+}
+
+#[cfg(test)]
+mod signature_delta_tests {
+    use super::thinking_signature_from_delta;
+    use serde_json::json;
+
+    #[test]
+    fn captures_anthropic_signature_delta() {
+        // 真 Anthropic：长 base64 签名
+        let delta = json!({
+            "type": "signature_delta",
+            "signature": "EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pki"
+        });
+        assert_eq!(
+            thinking_signature_from_delta(&delta),
+            Some("EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pki")
+        );
+    }
+
+    #[test]
+    fn captures_deepseek_uuid_signature() {
+        // DeepSeek 的 /anthropic 端点用 UUID 形式的签名，必须原样回传
+        let delta = json!({
+            "type": "signature_delta",
+            "signature": "3f7c1f5e-2b6a-4f1e-9a5d-0b2c8e7d4a11"
+        });
+        assert_eq!(
+            thinking_signature_from_delta(&delta),
+            Some("3f7c1f5e-2b6a-4f1e-9a5d-0b2c8e7d4a11")
+        );
+    }
+
+    #[test]
+    fn thinking_delta_without_signature_is_ignored() {
+        // 普通的 thinking_delta 不带 signature，不能当成签名
+        assert!(thinking_signature_from_delta(&json!({
+            "type": "thinking_delta",
+            "thinking": "先看看目录"
+        }))
+        .is_none());
+        // 空签名不拼进块里（否则等于把"无签名"伪装成"有签名"）
+        assert!(thinking_signature_from_delta(&json!({
+            "type": "signature_delta",
+            "signature": ""
+        }))
+        .is_none());
+        assert!(thinking_signature_from_delta(&json!({})).is_none());
+    }
 }

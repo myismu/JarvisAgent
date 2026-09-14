@@ -1,4 +1,4 @@
-﻿//! 消息格式转换适配器
+//! 消息格式转换适配器
 //!
 //! 负责 Anthropic 内部格式与 OpenAI 格式之间的双向转换：
 //! - 消息结构转换（含多模态内容、工具调用、思考块）
@@ -160,6 +160,19 @@ pub fn strip_context_blocks(messages: &[Message]) -> Vec<Message> {
             msg.clone()
         })
         .collect()
+}
+
+/// 出网时是否要剥掉"无签名"的 thinking 块。
+///
+/// 两个方向的要求是相反的，必须按服务商区分：
+/// - 真 Anthropic：回传 `signature` 为空的 thinking 会被判 400 → **必须剥**；
+/// - DeepSeek 这类端点：思考模式下**要求**把 thinking 原样带回，剥掉会报
+///   `content[].thinking in the thinking mode must be passed back to the API` → **必须留**。
+///
+/// 判据与 OpenAI 出口的 `reasoning_content` 回填共用（model 或 baseUrl 含 deepseek），
+/// 保证同一家服务商在两条出口上的思考链策略一致。
+pub fn should_strip_unsigned_thinking(model_id: &str, base_url: &str, should_think: bool) -> bool {
+    !should_backfill_deepseek_reasoning_content(model_id, base_url, should_think)
 }
 
 /// Anthropic 出口专用：丢弃 `signature` 为空的 thinking 块，返回一份新的消息列表。
@@ -587,5 +600,56 @@ mod tests {
             }]),
         }];
         assert!(strip_unsigned_thinking_for_anthropic(&messages).is_empty());
+    }
+
+    #[test]
+    fn thinking_strip_policy_follows_provider() {
+        // 真 Anthropic：必须剥（回传无签名 thinking 会被判 400）
+        assert!(should_strip_unsigned_thinking("claude-sonnet-4-6", "https://api.anthropic.com", true));
+        // DeepSeek（按 model 或 baseUrl 判定）：必须留，否则报 thinking must be passed back
+        assert!(!should_strip_unsigned_thinking(
+            "deepseek-flash",
+            "https://api.deepseek.com/anthropic",
+            true
+        ));
+        assert!(!should_strip_unsigned_thinking(
+            "some-alias",
+            "https://api.deepseek.com/anthropic",
+            true
+        ));
+        // thinking 关闭时不存在链要求，剥不剥都无所谓（保持旧行为：剥）
+        assert!(should_strip_unsigned_thinking("deepseek-flash", "https://api.deepseek.com", false));
+    }
+
+    #[test]
+    fn deepseek_thinking_chain_survives_anthropic_exit() {
+        // 复现线上 400 的场景：assistant 带 signature="" 的 thinking，
+        // DeepSeek 端点要求原样回传，所以在该策略下不能被剥掉
+        let messages = vec![Message::Assistant {
+            content: Content::Multiple(vec![
+                ContentBlock::Thinking {
+                    thinking: "先调用目录工具".to_string(),
+                    signature: String::new(),
+                },
+                ContentBlock::ToolUse {
+                    id: "call_9".to_string(),
+                    name: "GetToolCatalog".to_string(),
+                    input: serde_json::json!({}),
+                },
+            ]),
+        }];
+        let keep = !should_strip_unsigned_thinking(
+            "deepseek-flash",
+            "https://api.deepseek.com/anthropic",
+            true,
+        );
+        let sent = if keep {
+            messages.clone()
+        } else {
+            strip_unsigned_thinking_for_anthropic(&messages)
+        };
+        let json = serde_json::to_string(&sent).unwrap();
+        assert!(json.contains("thinking"), "DeepSeek 出口必须保留思考链：{}", json);
+        assert!(json.contains("call_9"));
     }
 }
