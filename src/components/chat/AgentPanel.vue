@@ -29,7 +29,7 @@ const permission = usePermissionStore();
 
 // ── 权限状态 ──
 const permissionAllowanceCount = ref(0)
-const permissionAllowances = ref<Array<{ tool: string; scope: string; label: string }>>([])
+const permissionAllowances = ref<Array<{ kind: string; scope: string; label: string }>>([])
 const permissionPendingCount = ref(0)
 const pendingPermissions = ref<Array<{ id: string; message: string; allowSession?: boolean; kind?: string }>>([])
 let permissionPollTimer: ReturnType<typeof setInterval> | null = null
@@ -47,7 +47,7 @@ const loadPermissionState = async () => {
   try {
     const state = await invoke<any>('get_permission_state', { sessionId: session.activeSessionId })
     permissionAllowanceCount.value = state.allowanceCount ?? 0
-    permissionAllowances.value = (state.allowances ?? []) as Array<{ tool: string; scope: string; label: string }>
+    permissionAllowances.value = (state.allowances ?? []) as Array<{ kind: string; scope: string; label: string }>
     permissionPendingCount.value = state.pendingCount ?? 0
     pendingPermissions.value = (state.pending ?? []) as Array<{
       id: string;
@@ -79,12 +79,12 @@ const clearSessionAllowances = async () => {
 }
 
 /** 撤销单条"已允许" */
-const revokeAllowance = async (allowance: { tool: string; scope: string }) => {
+const revokeAllowance = async (allowance: { kind: string; scope: string }) => {
   if (!session.activeSessionId) return
   try {
     await invoke('revoke_session_allowance', {
       sessionId: session.activeSessionId,
-      tool: allowance.tool,
+      kind: allowance.kind,
       scope: allowance.scope,
     })
     await loadPermissionState()
@@ -367,9 +367,9 @@ const backgroundStatusLabel = (status: string): string => {
         <button v-if="permissionAllowanceCount > 0" class="perm-revoke-btn" @click="clearSessionAllowances">{{ t('permission.revokeAll') }}</button>
       </div>
 
-      <!-- 本会话已允许的范围（工具 + 范围），逐条可撤销 -->
+      <!-- 本会话已允许的范围（操作类别 + 范围），逐条可撤销 -->
       <div v-if="permissionAllowances.length > 0" class="perm-cards">
-        <div v-for="allowance in permissionAllowances" :key="allowance.tool + '|' + allowance.scope" class="perm-card-inline">
+        <div v-for="allowance in permissionAllowances" :key="allowance.kind + '|' + allowance.scope" class="perm-card-inline">
           <p class="perm-card-msg">{{ allowance.label }}</p>
           <div class="perm-card-actions">
             <button class="perm-card-btn reject" @click="revokeAllowance(allowance)">{{ t('permission.revoke') }}</button>

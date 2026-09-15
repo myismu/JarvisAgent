@@ -64,12 +64,18 @@ pub struct PendingSnapshotPatch {
 
 /// 本会话已允许的范围（用户点过"本次会话都允许"）
 ///
-/// 粒度 = 工具 + 范围：
-/// - 文件类工具：范围 = 目标所在目录（"允许在此目录里删除文件"）
-/// - 命令类工具：范围 = 命令指纹（同一条命令不再重复问，换命令会重新问）
+/// 粒度 = **操作类别 + 范围**（不是"工具 + 范围"）：
+/// - 文件类：类别 = `edit_project`（新建/编辑/改名）或 `delete`，范围 = 目标所在目录
+/// - 命令类：类别 = `run_command`，范围 = 命令前缀（例如 `npm run`）
+///
+/// 类别刻意收敛成 3 个：类别越细，"本次会话都允许"就越等于每次都得点一遍，
+/// 用户会用"其实还不如每次点允许"来回避它。类别与范围的口径见
+/// `core::tools::framework::policy_guard::allowance_key_for`。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionAllowance {
-    pub tool: String,
+    /// 操作类别（`edit_project` / `delete` / `run_command`）
+    pub kind: String,
+    /// 范围键（文件类 = 目标目录绝对路径；命令类 = 命令前缀）
     pub scope: String,
     /// 展示给用户看的说明（弹窗与"已允许"面板共用）
     pub label: String,
@@ -82,6 +88,13 @@ pub struct PendingPermission {
     pub message: String,
     /// 请求来源（工具确认 / 循环续跑确认 / 方案审批），决定前端能提供哪些按钮
     pub kind: crate::core::tools::framework::permission::PermissionKind,
+    /// 这条请求对应的"会话级允许"键 `(操作类别, 范围)`。
+    ///
+    /// 两个用途：
+    /// 1. 前端据此决定要不要显示"本次会话都允许"——没有键时点了也没用，不该显示
+    /// 2. 用户点了"本次会话都允许"之后，据此把**已经挂起**、会被同一条允许覆盖的
+    ///    请求一次性放行，不用用户挨个点（口径见 `policy_guard::allowance_key_for`）
+    pub allowance: Option<(String, String)>,
     /// 决策发送端（结构化决策，不是字符串）
     pub responder: tokio::sync::oneshot::Sender<
         crate::core::tools::framework::permission::PermissionDecision,
@@ -164,6 +177,20 @@ impl SessionContext {
             approval_mode: Mutex::new("request_approval".to_string()),
             session_allowances: Mutex::new(Vec::new()),
         }
+    }
+
+    /// 本会话是否已经允许"这个操作类别 + 这个范围"。
+    ///
+    /// **唯一口径**：执行前判定（`policy_guard::enforce`）的放行检查、
+    /// 权限请求（`permission::request_permission`）的"还要不要问用户"检查、
+    /// 以及 shell 工具内部的第二道门（`policy_guard::command_allowed`）都走这里，
+    /// 避免出现两套"已允许"标准。
+    pub async fn allowance_covers(&self, kind: &str, scope: &str) -> bool {
+        self.session_allowances
+            .lock()
+            .await
+            .iter()
+            .any(|a| a.kind == kind && a.scope == scope)
     }
 }
 

@@ -56,7 +56,9 @@ pub async fn set_workspace(
     if let Ok(cwd) = std::env::current_dir() {
         if path != cwd {
             let msg = format!("警告：尝试将全局工作区更改为：{}", path_str);
-            let decision = request_permission(app, session_id, &msg, PermissionKind::Tool).await;
+            // 改工作目录没有"会话级允许"语义（它本来就是一次性动作），传 None
+            let decision =
+                request_permission(app, session_id, &msg, PermissionKind::Tool, None).await;
             if !decision.is_allowed() {
                 let label = if decision.is_rejected() {
                     "权限拒绝"

@@ -169,9 +169,11 @@ pub async fn get_permission_state(
         .map(|(id, entry)| serde_json::json!({
             "id": id,
             "message": entry.message,
-            // 只有工具确认才提供"本次会话都允许"：循环续跑确认若照抄这套语义，
-            // 会顺带把其它工具调用一起放行
-            "allowSession": entry.kind.allows_session_wide_approval(),
+            // 只有"工具确认"且这条操作**真的有范围键**时才提供"本次会话都允许"：
+            // 循环续跑确认若照抄这套语义，会顺带把其它工具调用一起放行；
+            // 没有范围键的操作（例如改工作目录）点了按钮也没有任何效果。
+            // 口径与 permission::request_permission 广播的 permission-request 一致。
+            "allowSession": entry.kind.allows_session_wide_approval() && entry.allowance.is_some(),
             "kind": entry.kind.as_str(),
         }))
         .collect();
@@ -182,7 +184,7 @@ pub async fn get_permission_state(
         .iter()
         .map(|a| {
             serde_json::json!({
-                "tool": a.tool,
+                "kind": a.kind,
                 "scope": a.scope,
                 "label": a.label,
             })
@@ -211,7 +213,7 @@ pub async fn get_session_permission_settings(
         .iter()
         .map(|a| {
             serde_json::json!({
-                "tool": a.tool,
+                "kind": a.kind,
                 "scope": a.scope,
                 "label": a.label,
             })
@@ -247,11 +249,11 @@ pub async fn set_session_approval_mode(
     Ok(())
 }
 
-/// 撤销一条"本会话已允许"（工具 + 范围）
+/// 撤销一条"本会话已允许"（操作类别 + 范围）
 #[tauri::command]
 pub async fn revoke_session_allowance(
     session_id: String,
-    tool: String,
+    kind: String,
     scope: String,
     session_manager: tauri::State<'_, SessionManager>,
     app: tauri::AppHandle,
@@ -260,7 +262,7 @@ pub async fn revoke_session_allowance(
     ctx.session_allowances
         .lock()
         .await
-        .retain(|a| !(a.tool == tool && a.scope == scope));
+        .retain(|a| !(a.kind == kind && a.scope == scope));
     let _ = app.emit(
         "session-allowances-changed",
         serde_json::json!({ "sessionId": session_id }),

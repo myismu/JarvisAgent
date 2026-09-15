@@ -192,6 +192,9 @@ pub async fn ensure_path_permission(
 /// - `Reject` → 本次操作不执行，把 `model_note()` 回灌给模型（loop 继续，让模型换方案）
 /// - `Interrupted` → 没拿到用户结论（例如用户点了停止），也不执行，但不能当成"用户拒绝"
 ///
+/// `allowance` 是这次请求对应的"会话级允许"范围键 `(工具, 范围)`；`None` 表示这次操作
+/// 不支持会话级允许（例如"循环续跑确认"，照抄这套语义会顺带放行其它工具调用）。
+///
 /// 由于取消了超时，必须保证"等待这件事本身不会被无声丢弃"：
 /// 如果调用方的 future 被取消/被打断（例如子代理任务撞上调度器 5 分钟超时被 drop），
 /// 这里挂的 [`PendingPermissionGuard`] 会负责把等待条目清掉并通知前端撤卡，
@@ -201,9 +204,19 @@ pub async fn request_permission(
     session_id: &str,
     message: &str,
     kind: PermissionKind,
+    allowance: Option<(String, String)>,
 ) -> PermissionDecision {
     let session_manager = app.state::<SessionManager>();
     let ctx = session_manager.get_or_create(session_id).await;
+
+    // 已经被"本会话都允许"覆盖 → 不问用户，直接放行。
+    // 这道前置检查还堵住了另一个窗口：调用方刚判定"未命中允许列表"、用户随后就点了
+    // "本次会话都允许"，此时再插一张卡进去就是一张永远等不到点击的僵尸卡片。
+    if let Some((tool, scope)) = &allowance {
+        if ctx.allowance_covers(tool, scope).await {
+            return PermissionDecision::Allow;
+        }
+    }
 
     // 生成唯一请求 ID，创建 oneshot channel 等待前端回调
     static REQ_ID: AtomicUsize = AtomicUsize::new(1);
@@ -225,6 +238,7 @@ pub async fn request_permission(
                 created_at: std::time::Instant::now(),
                 message: message.to_string(),
                 kind,
+                allowance: allowance.clone(),
                 responder: tx,
             },
         );
@@ -245,7 +259,9 @@ pub async fn request_permission(
             "message": message,
             "sessionId": session_id,
             "kind": kind.as_str(),
-            "allowSession": kind.allows_session_wide_approval(),
+            // 只有"工具确认"且这条操作**真的有范围键**时，会话级允许才有个明确的含义；
+            // 否则按钮点了等于没点（旧实现里这是个会骗人的按钮）
+            "allowSession": kind.allows_session_wide_approval() && allowance.is_some(),
         }),
     );
 

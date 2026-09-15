@@ -261,6 +261,8 @@ pub async fn propose_plan(
                 created_at: std::time::Instant::now(),
                 message: format!("方案审批: {}", title),
                 kind: crate::core::tools::framework::permission::PermissionKind::PlanApproval,
+                // 方案审批走产品层状态机，没有"会话级允许"语义
+                allowance: None,
                 responder: tx,
             },
         );

@@ -13,7 +13,7 @@
 //! - 执行时间受限于 DEFAULT_TIMEOUT_SECS 除非转为后台模式
 
 use super::super::framework;
-use super::super::framework::permission::{request_permission, PermissionKind};
+use super::super::framework::permission::{request_permission, PermissionDecision, PermissionKind};
 use super::background::background_run_internal;
 use super::readonly::is_readonly_command;
 use super::security::*;
@@ -262,21 +262,60 @@ pub async fn run_shell(
                 perm_msg.push_str(&format!("\n\n{}", warning));
             }
 
-            let decision =
-                request_permission(app, session_id, &perm_msg, PermissionKind::Tool).await;
-            if !decision.is_allowed() {
-                // 明确拒绝 / 未取得结论（取消、通道关闭）都不执行这条命令，
-                // 并把用户的原话回灌给模型，避免它换个写法重试同一操作
-                let label = if decision.is_rejected() {
-                    "权限拒绝"
-                } else {
-                    "权限确认未完成"
-                };
-                return framework::ToolCallResult::blocked(format!(
-                    "{}：{}",
-                    label,
-                    decision.model_note()
-                ));
+            // 第二道门：外层判定（dispatch_tool_call → policy_guard::enforce）已经问过一次，
+            // 所以先查"本会话都允许"是否已覆盖这条命令——否则用户点过"本次会话都允许"之后，
+            // 同一条命令每跑一次还会再弹一次卡，等于那个按钮对命令类不起作用。
+            // 键口径与 `policy_guard::allowance_key_for` 共用同一实现，两道门不会打架。
+            let key = framework::policy_guard::command_prefix_scope(cmd);
+            let already_allowed =
+                framework::policy_guard::command_allowed(app, session_id, cmd).await;
+
+            if !already_allowed {
+                // 把放开范围写进卡片，跟外层弹卡的文案保持一致
+                if let Some((_, label)) = &key {
+                    perm_msg.push_str(&format!("\n允许范围：{}", label));
+                }
+                let pending_key = key.as_ref().map(|(scope, _)| {
+                    (
+                        framework::policy_guard::ALLOWANCE_KIND_COMMAND.to_string(),
+                        scope.clone(),
+                    )
+                });
+                let decision = request_permission(
+                    app,
+                    session_id,
+                    &perm_msg,
+                    PermissionKind::Tool,
+                    pending_key,
+                )
+                .await;
+                if !decision.is_allowed() {
+                    // 明确拒绝 / 未取得结论（取消、通道关闭）都不执行这条命令，
+                    // 并把用户的原话回灌给模型，避免它换个写法重试同一操作
+                    let label = if decision.is_rejected() {
+                        "权限拒绝"
+                    } else {
+                        "权限确认未完成"
+                    };
+                    return framework::ToolCallResult::blocked(format!(
+                        "{}：{}",
+                        label,
+                        decision.model_note()
+                    ));
+                }
+                // 用户授权本会话 → 登记键（顺带放行其它已挂起的同范围请求）
+                if decision == PermissionDecision::AllowSession {
+                    if let Some((scope, label)) = key {
+                        framework::policy_guard::grant_session_allowance(
+                            app,
+                            session_id,
+                            framework::policy_guard::ALLOWANCE_KIND_COMMAND,
+                            &scope,
+                            label,
+                        )
+                        .await;
+                    }
+                }
             }
         }
     }

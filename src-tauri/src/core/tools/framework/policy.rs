@@ -329,8 +329,8 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
         };
     }
 
-    // 5. 覆盖已有文件
-    if matches!(policy.class, ToolClass::CreateFile) && input.target_exists == Some(true) {
+    // 5. 覆盖已有文件（这次询问**每次都要问**，不能被"本次会话都允许"吞掉）
+    if ask_always_repeated(class, input.target_exists) {
         return ShadowDecision {
             class,
             outcome: Outcome::Ask,
@@ -339,6 +339,9 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
     }
 
     // 6. 批量
+    // 批量（本次调用 ≥3 个文件 / 本轮第 3 个文件）**可以**被"本次会话都允许"吞掉：
+    // 用户已经说过"这个目录里的改动我放心"，此时还要他第 3、4、5… 个文件各点一次，
+    // 只会把人逼回"每次都点允许"，反而失去护栏的意义。
     if policy.class.mutates_project() {
         if input.files_in_call >= BATCH_FILE_THRESHOLD {
             return ShadowDecision {
@@ -381,6 +384,18 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
             reason: policy.class.label().to_string(),
         },
     }
+}
+
+/// 这次询问是不是"每次都要问"——即不能被"本次会话都允许"记下来免掉。
+///
+/// 目前只有一种：**覆盖已有文件**（`judge` 规则 5）。它会把一个已存在文件的内容换成新的，
+/// 用户授权"在这个目录里改文件"时想表达的通常是"新建与正常编辑不用问"，
+/// 而不是"随便覆盖我已有的文件"。所以这条询问刻意不提供会话级允许。
+///
+/// **唯一口径**：`judge()` 规则 5 与 `policy_guard::enforce()` 的会话允许检查都调用这里，
+/// 避免"什么时候问"和"问了之后能不能记住"两套判据各说各话。
+pub fn ask_always_repeated(class: Option<ToolClass>, target_exists: Option<bool>) -> bool {
+    matches!(class, Some(ToolClass::CreateFile)) && target_exists == Some(true)
 }
 
 /// 从补丁文本里数出涉及的文件（`*** Update File:` / `*** Add File:` / `*** Delete File:` / `+++ b/x`）。

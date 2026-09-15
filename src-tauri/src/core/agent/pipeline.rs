@@ -2378,6 +2378,8 @@ impl PipelineState {
                 crate::infra::types::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM
             ),
             PermissionKind::LoopContinuation,
+            // 循环续跑确认没有会话级允许语义：照抄"本次会话都允许"会顺带放行其它工具调用
+            None,
         )
         .await;
         if decision.is_allowed() {

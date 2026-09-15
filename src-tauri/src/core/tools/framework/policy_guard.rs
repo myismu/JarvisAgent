@@ -81,28 +81,116 @@ mod tests {
     }
 
     #[test]
-    fn allowance_scope_uses_directory_for_files() {
-        let (scope, label) = allowance_scope_for(
-            Some(ToolClass::Delete),
+    fn allowance_key_groups_edits_under_one_kind() {
+        let key = allowance_key_for(
+            Some(ToolClass::ModifyContent),
             &json!({ "path": "src/a.ts" }),
             &["src/a.ts".to_string()],
             Some(std::path::Path::new("E:/proj")),
+        )
+        .expect("编辑类应有会话允许键");
+        assert_eq!(key.kind, ALLOWANCE_KIND_EDIT, "编辑类应归到同一档");
+        assert!(
+            key.scope.contains("proj"),
+            "范围应是绝对目录：{}",
+            key.scope
         );
-        let scope = scope.expect("文件类应有范围键");
-        assert!(scope.contains("proj"), "范围应是绝对目录：{}", scope);
-        assert!(label.unwrap().contains("删除文件"));
+        assert!(key.label.contains("改动项目文件"));
+
+        // 新建走同一档：agent 先写文件、再改文件，不该让用户点两次
+        let same_kind = allowance_key_for(
+            Some(ToolClass::CreateFile),
+            &json!({ "path": "src/b.ts" }),
+            &["src/b.ts".to_string()],
+            Some(std::path::Path::new("E:/proj")),
+        )
+        .expect("新建类应有会话允许键");
+        assert_eq!(same_kind.kind, ALLOWANCE_KIND_EDIT);
+        assert_eq!(same_kind.scope, key.scope, "同目录下范围键应相同");
     }
 
     #[test]
-    fn allowance_scope_uses_command_fingerprint_for_commands() {
-        let (scope, label) = allowance_scope_for(
-            Some(ToolClass::RunCommand),
-            &json!({ "command": "npm   run   build" }),
-            &[],
+    fn delete_is_its_own_kind() {
+        let key = allowance_key_for(
+            Some(ToolClass::Delete),
+            &json!({ "path": "src/a.ts" }),
+            &["src/a.ts".to_string()],
             None,
+        )
+        .expect("删除类应有会话允许键");
+        assert_eq!(key.kind, ALLOWANCE_KIND_DELETE, "删除必须与编辑分开");
+        assert!(key.label.contains("删除文件"));
+    }
+
+    #[test]
+    fn classes_without_session_allowance_have_no_key() {
+        // 改工作目录是一次性动作且影响面大；未登记分类的工具一律问
+        assert!(allowance_key_for(
+            Some(ToolClass::WorkspaceChange),
+            &json!({ "path": "E:/other" }),
+            &["E:/other".to_string()],
+            None,
+        )
+        .is_none());
+        assert!(allowance_key_for(None, &json!({}), &[], None).is_none());
+    }
+
+    #[test]
+    fn directory_scope_ignores_trailing_separator_and_long_path_prefix() {
+        // 同一个目录的不同写法必须算出同一个键，否则用户会被要求重复授权
+        let plain = allowance_key_for(
+            Some(ToolClass::ModifyContent),
+            &json!({ "path": "src/a.ts" }),
+            &["src/a.ts".to_string()],
+            Some(std::path::Path::new("E:/proj")),
+        )
+        .expect("应有键");
+        let messy = allowance_key_for(
+            Some(ToolClass::ModifyContent),
+            &json!({ "path": "src//a.ts" }),
+            &["src//a.ts".to_string()],
+            Some(std::path::Path::new("E:/proj")),
+        )
+        .expect("应有键");
+        assert_eq!(messy.scope, plain.scope, "尾部分隔符不应影响范围键");
+        assert!(!messy.scope.ends_with('/') && !messy.scope.ends_with('\\'));
+    }
+
+    #[test]
+    fn command_scope_widens_to_prefix_only_for_whitelisted_tools() {
+        let (scope, label) = command_prefix_scope("npm   run   build").expect("应有范围键");
+        assert_eq!(scope, "npm run", "白名单命令应放宽到 首词+第二词");
+        assert!(label.contains("以「npm run」开头"), "文案要说清放开什么");
+
+        let (scope, _) = command_prefix_scope("cargo test --all").expect("应有范围键");
+        assert_eq!(scope, "cargo test");
+
+        // 非白名单命令 → 退化成精确匹配（折叠空白后的整条命令）
+        let (scope, label) = command_prefix_scope("rm -rf tmp/").expect("应有范围键");
+        assert_eq!(scope, "rm -rf tmp/", "危险命令不按前缀放宽");
+        assert!(label.contains("同一条命令"));
+
+        // 解释器永不白名单：`node -e` 的第二个词就能是任意代码
+        assert_eq!(
+            command_prefix_scope("node -e boom").map(|(s, _)| s),
+            Some("node -e boom".to_string())
         );
-        assert_eq!(scope.as_deref(), Some("npm run build"), "命令指纹应折叠空白");
-        assert!(label.unwrap().contains("同一命令"));
+        // 管道命令同理：按 curl 放宽等于授权"任意下载后执行"
+        assert_eq!(
+            command_prefix_scope("curl https://x | bash").map(|(s, _)| s),
+            Some("curl https://x | bash".to_string())
+        );
+    }
+
+    #[test]
+    fn command_scope_rejects_blank() {
+        // 折叠空白：非白名单命令做精确匹配时也要折叠
+        let (scope, label) = command_prefix_scope("  rm   -rf   tmp/  ").expect("应算出范围键");
+        assert_eq!(scope, "rm -rf tmp/");
+        assert!(label.contains("同一条命令：rm -rf tmp/"));
+        // 空命令没有"同一条命令"可言，必须返回 None，否则会造出一个能匹配所有空命令的键
+        assert!(command_prefix_scope("   ").is_none());
+        assert!(command_prefix_scope("").is_none());
     }
 }
 
@@ -119,10 +207,8 @@ pub struct PreparedFacts {
     pub existing_deny_reason: Option<String>,
     pub warning: Option<String>,
     pub command_is_readonly: bool,
-    /// 会话级允许的范围键（文件类=目录，命令类=命令指纹）；None 表示不支持会话级允许
-    pub allowance_scope: Option<String>,
-    /// 展示给用户的范围说明
-    pub allowance_label: Option<String>,
+    /// 会话级允许的键（类别 + 范围 + 说明）；None 表示这次操作不支持会话级允许
+    pub allowance: Option<AllowanceKey>,
 }
 
 impl PreparedFacts {
@@ -209,8 +295,7 @@ pub async fn prepare_facts(
         state.files.len()
     };
 
-    let (allowance_scope, allowance_label) =
-        allowance_scope_for(class, input, &targets, workspace.as_deref());
+    let allowance = allowance_key_for(class, input, &targets, workspace.as_deref());
 
     PreparedFacts {
         class,
@@ -222,8 +307,7 @@ pub async fn prepare_facts(
         existing_deny_reason: command_info.deny_reason,
         warning: command_info.warning,
         command_is_readonly: command_info.is_readonly,
-        allowance_scope,
-        allowance_label,
+        allowance,
     }
 }
 
@@ -296,57 +380,240 @@ fn inspect_existing_guards(
     }
 }
 
-/// 会话级允许的范围键：
-/// - 文件类：目标所在目录（相对工作区，便于展示成"在此目录里…"）
-/// - 命令类：命令指纹（去掉多余空白；换命令会重新问）
-/// - 其它类别（读、编排等本来就不问）：None
-fn allowance_scope_for(
+/// 会话级允许的键：`(操作类别, 范围)` + 给用户看的一句话说明。
+///
+/// 只有拿得到这个键的操作，"本次会话都允许"按钮才有意义。
+#[derive(Debug, Clone)]
+pub struct AllowanceKey {
+    /// 操作类别（见 [`allowance_kind`]）
+    pub kind: &'static str,
+    /// 范围键（文件类 = 目标目录绝对路径；命令类 = 命令前缀）
+    pub scope: String,
+    /// 展示给用户看的一句话，必须说清"点下去到底放开了什么"
+    pub label: String,
+}
+
+/// 类别常量。刻意只留 3 个（见 [`allowance_kind`] 的说明）。
+pub const ALLOWANCE_KIND_EDIT: &str = "edit_project";
+pub const ALLOWANCE_KIND_DELETE: &str = "delete";
+pub const ALLOWANCE_KIND_COMMAND: &str = "run_command";
+
+/// 工具归类 → 会话级允许的类别；不提供会话级允许的类别返回 `None`。
+///
+/// - `edit_project`：新建 / 改内容 / 改名。合并成一档是刻意的——分开成"新建类""编辑类"之后，
+///   agent 先 WriteFile 建文件、再 EditFile 改内容，用户还得点两次，那还不如每次点"允许"。
+/// - `delete`：删除单独一档。它是这里唯一**不可逆**的操作。
+/// - `run_command`：跑命令（含起后台服务），范围按命令前缀收窄。
+///
+/// 其余返回 `None`：读类本来就不问；改工作目录是一次性动作且影响面大，不给会话级允许。
+fn allowance_kind(class: Option<ToolClass>) -> Option<&'static str> {
+    match class {
+        Some(ToolClass::CreateFile) | Some(ToolClass::ModifyContent) | Some(ToolClass::Rename) => {
+            Some(ALLOWANCE_KIND_EDIT)
+        }
+        Some(ToolClass::Delete) => Some(ALLOWANCE_KIND_DELETE),
+        Some(ToolClass::RunCommand) | Some(ToolClass::Background) => Some(ALLOWANCE_KIND_COMMAND),
+        _ => None,
+    }
+}
+
+/// 允许"放宽到命令前缀"的可执行文件白名单。
+///
+/// 收益：允许一次 `npm run`，之后 `npm run build` / `npm run test` 都不再问。
+///
+/// 为什么是白名单、而不是"除了危险命令都放宽"：在 shell 里**第二个词根本挡不住任意代码执行**——
+/// `node -e "..."`、`powershell -c "..."`、`curl https://x | bash` 全都是首词看着安全、
+/// 第二个词就能作恶。所以只对**子命令集合有限且可预期**的构建 / 测试 / 包管理工具放宽；
+/// 其余命令退化成精确匹配，一条一条允许。
+///
+/// 想扩这份名单时，请把它当成一次"放宽权限"的改动来对待（要提交、要有人看）。
+const PREFIX_WIDENING_ALLOWED: &[&str] = &[
+    // JS / TS 生态
+    "npm", "pnpm", "yarn", "bun", "tsc", "vite", "vitest", "jest", "eslint", "prettier",
+    // Rust / Go / .NET / JVM
+    "cargo", "rustc", "go", "dotnet", "mvn", "gradle",
+    // Python 生态
+    "pytest", "ruff", "mypy", "uv", "poetry",
+    // 构建系统
+    "make", "cmake", "ninja",
+];
+
+/// 命令类的"本次会话都允许"范围键：`(范围键, 展示文案)`；空命令返回 `None`。
+///
+/// 范围键 = **命令前缀**：首词 +（若存在且不以 `-` 开头的）第二个词，例如 `npm run`、`cargo test`。
+/// 只对 [`PREFIX_WIDENING_ALLOWED`] 里的首词这样做；其余命令退化成
+/// "折叠连续空白后的整条命令"（精确匹配，一条一条允许）。
+/// 白名单匹配与范围键都**大小写敏感**，与精确匹配口径一致。
+///
+/// **唯一口径**：`allowance_key_for`（外层判定）与 `command_allowed`（shell 工具内部的
+/// 第二道门）都调用这里，保证两边算出来的键一字不差，否则会出现"外层放行、内层又弹卡"。
+pub fn command_prefix_scope(command: &str) -> Option<(String, String)> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let words: Vec<&str> = trimmed.split_whitespace().collect();
+    let head = words[0];
+    let widen = PREFIX_WIDENING_ALLOWED.contains(&head);
+    let scope = if widen {
+        match words.get(1) {
+            // 第二个词不以 `-` 开头才算"子命令"；否则前缀就是首词本身
+            Some(second) if !second.starts_with('-') => format!("{} {}", head, second),
+            _ => head.to_string(),
+        }
+    } else {
+        // 不给前缀放宽 → 退化成精确匹配：整条命令（折叠连续空白）就是范围键
+        words.join(" ")
+    };
+    let short: String = scope.chars().take(60).collect();
+    let label = if widen {
+        format!("所有以「{}」开头的命令", short)
+    } else {
+        format!("同一条命令：{}", short)
+    };
+    Some((scope, label))
+}
+
+/// 会话级允许的类别与范围。
+///
+/// 文件类：类别 = `edit_project` / `delete`，范围 = 目标所在目录（绝对路径）
+/// 命令类：类别 = `run_command`，范围 = 命令前缀（见 [`command_prefix_scope`]）
+/// 其它类别（读、编排、改工作目录等）：`None`，即不提供"本次会话都允许"
+fn allowance_key_for(
     class: Option<ToolClass>,
     input: &Value,
     targets: &[String],
     workspace: Option<&std::path::Path>,
-) -> (Option<String>, Option<String>) {
-    match class {
-        Some(ToolClass::RunCommand) | Some(ToolClass::Background) => {
-            let command = input["command"].as_str().unwrap_or("").trim();
-            if command.is_empty() {
-                return (None, None);
-            }
-            let fingerprint = command.split_whitespace().collect::<Vec<_>>().join(" ");
-            let short: String = fingerprint.chars().take(60).collect();
-            (
-                Some(fingerprint),
-                Some(format!("同一命令：{}", short)),
-            )
-        }
-        Some(ToolClass::CreateFile)
-        | Some(ToolClass::ModifyContent)
-        | Some(ToolClass::Delete)
-        | Some(ToolClass::Rename) => {
-            let Some(first) = targets.first() else {
-                return (None, None);
-            };
-            let dir = std::path::Path::new(first)
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_default();
-            let resolved = if dir.is_absolute() {
-                dir
-            } else {
-                workspace.map(|ws| ws.join(&dir)).unwrap_or(dir)
-            };
-            let display = resolved
-                .to_string_lossy()
-                .trim_start_matches(r"\\?\")
-                .to_string();
-            let action = class.map(|c| c.label()).unwrap_or("操作");
-            (
-                Some(display.clone()),
-                Some(format!("在 {} 里{}", display, action)),
-            )
-        }
-        _ => (None, None),
+) -> Option<AllowanceKey> {
+    let kind = allowance_kind(class)?;
+
+    if kind == ALLOWANCE_KIND_COMMAND {
+        let (scope, label) = command_prefix_scope(input["command"].as_str().unwrap_or(""))?;
+        return Some(AllowanceKey { kind, scope, label });
     }
+
+    let first = targets.first()?;
+    let dir = std::path::Path::new(first)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+    let resolved = if dir.is_absolute() {
+        dir
+    } else {
+        workspace.map(|ws| ws.join(&dir)).unwrap_or(dir)
+    };
+    let display = normalize_dir_key(&resolved);
+    let label = if kind == ALLOWANCE_KIND_DELETE {
+        format!("在 {} 里删除文件", display)
+    } else {
+        format!("在 {} 里改动项目文件（新建 / 编辑 / 改名都算）", display)
+    };
+    Some(AllowanceKey {
+        kind,
+        scope: display,
+        label,
+    })
+}
+
+/// 目录范围键的规范化：剥掉 Windows 长路径前缀与**结尾的分隔符**。
+///
+/// 为什么需要：范围键是**字符串精确比较**。工具参数里写成 `src/a.ts` 与 `src//a.ts`
+/// 会算出带不带尾斜杠的两种目录串，于是"同一个目录"被当成两个范围，用户要重复授权。
+fn normalize_dir_key(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy().trim_start_matches(r"\\?\").to_string();
+    let trimmed = text.trim_end_matches(['\\', '/']);
+    // 别把 `E:\` 修成 `E:`（后者是"当前目录"的意思，完全不同的路径）
+    if trimmed.is_empty() || trimmed.ends_with(':') {
+        text
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// 用户点了"本次会话都允许"：登记这个"类别 + 范围"，并把**已经挂起**的同类请求一次性放行。
+///
+/// 为什么必须消化积压：工具是**并行**执行的（`tools_runner` 对一批工具调用逐个
+/// `tokio::spawn` 后 `join_all`），所以一批里若有 3 个改动，就会同时挂出 3 张权限卡。
+/// 用户在第一张上点"本次会话都允许"时，另外两张早就卡在 `request_permission` 里等自己的
+/// 那个 oneshot 了 —— 它们不会回头复查允许列表，所以不消化就得挨个点。
+///
+/// 放行积压时发的是 [`PermissionDecision::Allow`] 而不是 `AllowSession`：键刚刚已经
+/// 登记过了，再发一次会在"已允许"面板里留下重复条目。
+///
+/// shell 工具内部的第二道门（`shell_tools::execution`）也调用本函数，保证"点一次就够了"
+/// 这件事在两道门上都成立。
+pub async fn grant_session_allowance(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    kind: &str,
+    scope: &str,
+    label: String,
+) {
+    let manager = app.state::<crate::infra::state::state::SessionManager>();
+    let ctx = manager.get_or_create(session_id).await;
+
+    // 同一个"类别 + 范围"只登记一次：用户可能在两张并排的卡上先后点了"本次会话都允许"，
+    // 不去重的话"已允许"面板里会出现两条一模一样的条目
+    {
+        let mut list = ctx.session_allowances.lock().await;
+        if !list.iter().any(|a| a.kind == kind && a.scope == scope) {
+            list.push(SessionAllowance {
+                kind: kind.to_string(),
+                scope: scope.to_string(),
+                label,
+            });
+        }
+    }
+    // 让界面的"已允许"面板立刻刷新
+    let _ = app.emit(
+        "session-allowances-changed",
+        serde_json::json!({ "sessionId": session_id }),
+    );
+
+    // 挑出会被这条允许覆盖的积压请求：同一个类别 + 同一个范围 + 是工具确认
+    // （循环续跑确认和方案审批没有会话级允许语义，不能顺手放行）
+    let swept: Vec<(String, tokio::sync::oneshot::Sender<PermissionDecision>)> = {
+        let mut perms = ctx.pending_permissions.lock().await;
+        let hit: Vec<String> = perms
+            .iter()
+            .filter(|(_, entry)| {
+                entry.kind == PermissionKind::Tool
+                    && matches!(&entry.allowance, Some((k, s)) if k.as_str() == kind && s.as_str() == scope)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        hit.into_iter()
+            .filter_map(|id| perms.remove(&id).map(|entry| (id, entry.responder)))
+            .collect()
+    };
+
+    // 先收锁再唤醒：responder.send 会立刻唤醒等待方，而对方醒来马上要锁同一张表
+    for (id, responder) in swept {
+        println!("[JARVIS] 会话级允许覆盖了积压请求 {}，自动放行", id);
+        let _ = responder.send(PermissionDecision::Allow);
+        let _ = app.emit(
+            "permission-resolved",
+            serde_json::json!({
+                "id": id,
+                "sessionId": session_id,
+                "decision": "allow",
+                "decisionText": "",
+            }),
+        );
+    }
+}
+
+/// "这条命令是否已被本会话允许"——给 shell 工具内部的第二道门用。
+///
+/// 键口径与 [`allowance_key_for`] 共用 [`command_prefix_scope`]，所以外层判定放行了，
+/// 内层就不会再弹一次卡。
+pub async fn command_allowed(app: &tauri::AppHandle, session_id: &str, command: &str) -> bool {
+    let Some((scope, _)) = command_prefix_scope(command) else {
+        return false;
+    };
+    let manager = app.state::<crate::infra::state::state::SessionManager>();
+    let ctx = manager.get_or_create(session_id).await;
+    ctx.allowance_covers(ALLOWANCE_KIND_COMMAND, &scope).await
 }
 
 /// 执行前判定：返回 `Some(拒绝结果)` 表示**不要执行**，把这段文本作为工具结果回灌给模型。
@@ -383,46 +650,38 @@ pub async fn enforce(
             )))
         }
         Outcome::Ask => {
-            // ① 本会话已允许过"这个工具 + 这个范围" → 直接放行
-            if let (Some(scope), _) = (&facts.allowance_scope, &facts.allowance_label) {
-                let allowed = ctx
-                    .session_allowances
-                    .lock()
-                    .await
-                    .iter()
-                    .any(|a| a.tool == tool && &a.scope == scope);
-                if allowed {
+            // "覆盖已有文件"这类询问刻意**每次都要问**（见 `policy::ask_always_repeated`）。
+            // 这类卡片也**不给会话级允许**：键登记了也吞不掉下一次，显示按钮就是骗人。
+            let key = if policy::ask_always_repeated(facts.class, facts.target_exists) {
+                None
+            } else {
+                facts.allowance.clone()
+            };
+
+            // ① 本会话已允许过"这个操作类别 + 这个范围" → 直接放行
+            if let Some(key) = &key {
+                if ctx.allowance_covers(key.kind, &key.scope).await {
                     return None;
                 }
             }
 
-            // ② 弹窗问用户
+            // ② 弹窗问用户。把键一并交过去：一是让前端知道"本次会话都允许"是否真有
+            //    明确含义（没键就别显示这个按钮），二是用户点了之后能据此消化积压。
             let message = build_permission_message(tool, &facts, &decision.reason, agent_type);
+            let pending_key = key.as_ref().map(|k| (k.kind.to_string(), k.scope.clone()));
             let decision = super::permission::request_permission(
                 app,
                 session_id,
                 &message,
                 PermissionKind::Tool,
+                pending_key,
             )
             .await;
             match decision {
                 PermissionDecision::Allow => None,
                 PermissionDecision::AllowSession => {
-                    if let Some(scope) = facts.allowance_scope.clone() {
-                        let label = facts
-                            .allowance_label
-                            .clone()
-                            .unwrap_or_else(|| format!("{}（{}）", tool, scope));
-                        ctx.session_allowances.lock().await.push(SessionAllowance {
-                            tool: tool.to_string(),
-                            scope,
-                            label,
-                        });
-                        // 让界面的"已允许"面板立刻刷新
-                        let _ = app.emit(
-                            "session-allowances-changed",
-                            serde_json::json!({ "sessionId": session_id }),
-                        );
+                    if let Some(k) = key {
+                        grant_session_allowance(app, session_id, k.kind, &k.scope, k.label).await;
                     }
                     None
                 }
@@ -440,12 +699,15 @@ pub async fn enforce(
 /// 输出是"第一行=动作，其余=明细"的朴素结构，前端按行渲染，避免一坨长句：
 ///
 /// ```text
-/// 删除文件
+/// 需要确认：删除文件
 /// C:\...\permission-test\trash.txt
 /// 工具：DeleteFile
 /// 风险提示：⚠ 检测到递归删除操作
-/// 允许范围：在 C:\...\frontend 里删除文件
+/// 允许范围：在 C:\...\permission-test 里删除文件
 /// ```
+///
+/// "允许范围"这一行是给用户做决定用的，必须说清**类别 + 范围**，不能只写工具名：
+/// 授权粒度是按类别合并的（例如"改项目文件"同时覆盖新建/编辑/改名）。
 fn build_permission_message(
     tool: &str,
     facts: &PreparedFacts,
@@ -467,8 +729,8 @@ fn build_permission_message(
     if let Some(warning) = &facts.warning {
         msg.push_str(&format!("\n风险提示：{}", warning));
     }
-    if let Some(label) = &facts.allowance_label {
-        msg.push_str(&format!("\n允许范围：{}", label));
+    if let Some(key) = &facts.allowance {
+        msg.push_str(&format!("\n允许范围：{}", key.label));
     }
     if agent_type == "subagent" {
         msg.push_str("\n来源：子代理（并行任务）发起");
