@@ -1,0 +1,17 @@
+# 统一换行符口径：无论编辑器按 Windows(CRLF) 还是 Linux(LF) 保存，
+# 收进 git 时一律存 LF —— 这样磁盘上的 CRLF 不会再制造"整份文件都被改"的假改动。
+* text=auto eol=lf
+
+# 二进制文件：不做任何换行符转换，否则可能损坏内容。
+*.png   binary
+*.ico   binary
+*.icns  binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.pdf   binary
+*.zip   binary
