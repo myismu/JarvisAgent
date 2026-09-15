@@ -13,7 +13,7 @@ import SessionTaskBoard from './SessionTaskBoard.vue';
 import TodoPanel from './TodoPanel.vue';
 import PermissionCard from './PermissionCard.vue';
 import WelcomeScreen from './WelcomeScreen.vue';
-import type { PlanDocument, AgentTurnSnapshot } from '../../types';
+import type { PlanDocument, AgentTurnSnapshot, AgentCurrentTurn } from '../../types';
 
 interface RollbackPreviewFile {
   path: string;
@@ -99,8 +99,26 @@ let accumulatedWaitMs = 0;
 // 将 AgentTurnSnapshot 转换为 AgentCurrentTurn 格式（供 AgentTurn 组件渲染历史消息）
 // 注意：**新增快照字段时必须同步到这里**，否则该字段在界面永远不生效
 // （notice 就曾因为漏拷而完全不显示）。
-function convertSnapshotToTurn(snapshot: AgentTurnSnapshot): any {
-  return {
+//
+// 缓存：同一个 snapshot 对象 → 同一个 turn 对象。
+// 动机：历史消息在模板里写的是 :turn="convertSnapshotToTurn(...)"。若每次调用都新建对象，
+// 则 ChatArea 每次重渲染（运行期约 1 Hz，节拍来自 thinkingElapsed）都会让全部历史
+// AgentTurn 的 turn prop 引用变化，使 shouldUpdateComponent 判定「props 变了」并整块
+// 重渲染这些子树（代价 O(历史条数)）。缓存后同一 snapshot 恒返回同一引用，该开销归零。
+// 用 WeakMap 而非 Map：snapshot 被回收时条目自动消失，无需手动清理。
+// 声明在 <script setup> 顶层 = 每组件实例一份；ChatArea 仅挂载一次，够用。
+//
+// ⚠️ 不变量：本缓存依赖 snapshot 不可变。
+// 若将来有代码需要原地改写 snapshot（如 utils/agentTurnRender.ts 的 extractInterruptNotice
+// 会改 textBlocks / notice，其中 textBlocks 是整个数组被替换），必须先让它脱离本缓存，
+// 否则会拿到陈旧值。当前该路径为死代码，故安全。
+const turnCache = new WeakMap<AgentTurnSnapshot, AgentCurrentTurn>();
+
+function convertSnapshotToTurn(snapshot: AgentTurnSnapshot): AgentCurrentTurn {
+  const cached = turnCache.get(snapshot);
+  if (cached) return cached;
+
+  const turn: AgentCurrentTurn = {
     id: snapshot.createdAt.toString(),
     loop: 1,
     revision: 1,
@@ -117,6 +135,9 @@ function convertSnapshotToTurn(snapshot: AgentTurnSnapshot): any {
     notice: snapshot.notice,
     startedAt: snapshot.createdAt,
   };
+
+  turnCache.set(snapshot, turn);
+  return turn;
 }
 
 const updateThinkingElapsed = () => {
