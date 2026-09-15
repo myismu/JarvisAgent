@@ -127,6 +127,7 @@
     "generating": "Generating",
     "generatingHint": "Content is being streamed...",
     "streamingHint": "Plan content is being generated, please wait...",
+    "finalizingHint": "Agent is finishing this turn, approval will be available shortly...",
     "scrollToBottom": "Scroll to bottom",
     "approvedTitle": "Plan Approved",
     "rejectedTitle": "Plan Rejected",

@@ -137,6 +137,18 @@ const isStreaming = computed(() => {
   return proposal.title === '方案生成中...' || proposal.id?.startsWith('plan_stream_');
 });
 
+// 方案本身已生成完毕，但**本轮 agent 还没收尾**（pipeline 仍在产出 turn 总结）。
+//
+// 为什么必须继续挡住审批按钮：点下去会走 chat.continueFromApprovedPlan → sendToJarvis，
+// 它带 skipRunningCheck=true，会跳过"取消前一轮"并**立即**把「已同意方案」追加进 messages；
+// 而上一轮的 agent 消息要等 sendToJarvis 的 await 返回后才落库（stores/chat.ts:658）。
+// 两者一前一后，user 消息就插到了 agent 消息前面，会话顺序错乱。
+//
+// 依据 stores/session.ts 的 isCurrentSessionRunning（status === "RUNNING"）。
+// chat.ts:650-662 中"置 IDLE"与"落 agent 消息"是同一段同步代码，中间无 await，
+// 因此不存在"状态已 IDLE 但消息尚未落库"的窗口。
+const awaitingTurnEnd = computed(() => session.isCurrentSessionRunning);
+
 const toggleEdit = () => {
   if (!activeProposal.value) return;
 
@@ -160,6 +172,8 @@ const handleApprove = async () => {
   const proposal = activeProposal.value;
   const doc = viewedDocument.value;
   if (isResolving.value || (!proposal && !doc)) return;
+  // 兜底：按钮此时已不渲染，这里再挡一道，防止极端时序（如状态刚翻转的瞬间）漏过
+  if (awaitingTurnEnd.value) return;
   isMinimized.value = true;
   isResolving.value = true;
   const planId = proposal?.id || doc!.id;
@@ -191,6 +205,8 @@ const handleReject = async () => {
   const proposal = activeProposal.value;
   const doc = viewedDocument.value;
   if (isResolving.value || (!proposal && !doc)) return;
+  // 同 handleApprove：本轮未收尾时不放行，避免「要求修改」插到 agent 消息之前
+  if (awaitingTurnEnd.value) return;
   if (!isRequestingRevision.value) {
     isRequestingRevision.value = true;
     // 反馈输入框出现在底部，滚动到位让用户看到
@@ -367,7 +383,7 @@ const toggleMinimize = () => {
           </Transition>
         </main>
 
-        <footer v-if="shouldShowApprovalActions && !isStreaming" class="plan-actions">
+        <footer v-if="shouldShowApprovalActions && !isStreaming && !awaitingTurnEnd" class="plan-actions">
           <button class="plan-btn plan-btn-reject" @click="handleReject" :disabled="isResolving || (isRequestingRevision && !revisionFeedback.trim())">
             <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10"></circle>
@@ -383,10 +399,10 @@ const toggleMinimize = () => {
             {{ t('plan.approve') }}
           </button>
         </footer>
-        <footer v-else-if="shouldShowApprovalActions && isStreaming" class="plan-actions plan-actions-streaming">
+        <footer v-else-if="shouldShowApprovalActions && (isStreaming || awaitingTurnEnd)" class="plan-actions plan-actions-streaming">
           <span class="streaming-hint">
             <span class="streaming-dot"></span>
-            {{ t('plan.streamingHint') }}
+            {{ awaitingTurnEnd ? t('plan.finalizingHint') : t('plan.streamingHint') }}
           </span>
         </footer>
       </aside>

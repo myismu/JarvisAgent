@@ -128,6 +128,7 @@
     "generating": "生成中",
     "generatingHint": "内容正在流式生成...",
     "streamingHint": "方案内容正在生成中，请稍候...",
+    "finalizingHint": "Agent 正在收尾本轮输出，稍候即可审批...",
     "scrollToBottom": "滚动到底部",
     "approvedTitle": "方案已通过",
     "rejectedTitle": "方案已拒绝",
