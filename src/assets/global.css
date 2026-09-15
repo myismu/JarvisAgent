@@ -63,6 +63,12 @@
 
   /* Toggle 开关 */
   --toggle-track-inactive: rgba(0, 0, 0, 0.18);
+
+  /* 深度思考开关（中性色方案：不依赖色相，靠"文字对比度 + 描边/字重 + 面与边"三信号区分状态） */
+  --thinking-off-surface: rgba(15, 23, 42, 0.06);
+  --thinking-on-surface: var(--glass-bg-heavy);
+  --thinking-off-fg: #475569;
+  --thinking-on-fg: #0f172a;
 }
 
 /* --- 2. 暗色模式变量 --- */
@@ -103,6 +109,14 @@ body.dark-mode {
 
   /* Toggle 开关 */
   --toggle-track-inactive: rgba(255, 255, 255, 0.15);
+
+  /* 深度思考开关（中性色）：暗色下"开启"是抬升一档的实心面，文字提亮到近白。
+     关闭态文字取 #8a8a93 而非更亮的灰：既守住 AA（≈4.6:1），
+     又把"开/关"的文字对比度跨度拉到约 2 倍——纯中性色下这是唯一够强的主信号。 */
+  --thinking-off-surface: rgba(255, 255, 255, 0.05);
+  --thinking-on-surface: #3f3f46;
+  --thinking-off-fg: #8a8a93;
+  --thinking-on-fg: #f4f4f5;
 }
 
 /* --- 3. 基础重置 --- */

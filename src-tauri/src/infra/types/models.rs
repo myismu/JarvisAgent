@@ -43,6 +43,17 @@ pub struct JarvisResult {
     /// 中断类信息走 notice，避免混进正文看起来像模型自己说的话。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notice: Option<String>,
+    /// 本轮最终采用的深度思考状态（由 `core::session::thinking::decide` 裁决）。
+    ///
+    /// 前端用它渲染开关状态与"被模型强制夹紧"的提示，**不再自行判断**。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_enabled: Option<bool>,
+    /// 裁决原因（`ThinkingReason` 的 Debug 名，如 `ClampedByForced`）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_reason: Option<String>,
+    /// 需要提示用户时的 i18n key（前端 `t(key)` 后展示）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_notice_i18n_key: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]

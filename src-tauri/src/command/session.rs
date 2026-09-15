@@ -528,6 +528,125 @@ pub async fn get_session_meta(id: String) -> Result<session::SessionMeta, String
     session::get_session_meta(&id)
 }
 
+// ── 深度思考档位（会话级） ──
+
+/// 取当前激活预设的「默认思考档位」，并与全局 `agent_audience` 回退合并为确定布尔值。
+///
+/// 这里是设计文档决策 **D2** 的落点：预设为 `auto` 时回退到
+/// `agent_audience == "developer"`，与 `pipeline` 里 `loop_think_default` 的既有语义一致，
+/// 保证升级后 developer 用户行为零变化。
+async fn resolve_profile_thinking_default(
+    config_state: &tauri::State<'_, crate::infra::config::config::ConfigState>,
+) -> (bool, String) {
+    let audience_default = crate::command::app_config::get_ui_preferences()
+        .await
+        .map(|prefs| prefs.agent_audience == "developer")
+        .unwrap_or(false);
+
+    let cfg = config_state.0.lock().await.clone();
+    let active = cfg.active_config();
+    let profile_default = session::thinking::ThinkingDefault::parse(&active.thinking_default);
+
+    (profile_default.resolve(audience_default), active.main_model)
+}
+
+/// 组装前端的思考档位快照（`resolvedEnabled` 由后端裁决层算出，前端不做二次判断）。
+fn build_thinking_snapshot(
+    session_id: &str,
+    session_mode: session::thinking::ThinkingMode,
+    caps: Option<&crate::infra::llm::registry::ModelCapabilities>,
+    profile_resolved_default: bool,
+) -> serde_json::Value {
+    let decision = session::thinking::decide(
+        None,
+        session_mode,
+        profile_resolved_default,
+        caps,
+    );
+    serde_json::json!({
+        "sessionId": session_id,
+        "thinkingMode": session_mode.as_api(),
+        "profileResolvedDefault": profile_resolved_default,
+        "resolvedEnabled": decision.enabled,
+        "reason": format!("{:?}", decision.reason),
+        "noticeI18nKey": decision.notice_i18n_key,
+    })
+}
+
+/// 读取某会话的思考档位快照。
+///
+/// 优先从内存 `SessionContext` 取（`switch_session` 已同步），
+/// 内存无记录时回落 DB —— 保证冷启动/监控窗口也能拿到权威值。
+#[tauri::command]
+pub async fn get_session_thinking(
+    id: String,
+    session_manager: tauri::State<'_, SessionManager>,
+    config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
+) -> Result<serde_json::Value, String> {
+    let ctx = session_manager.get_or_create(&id).await;
+    let raw = ctx.thinking_mode.lock().await.clone();
+    let session_mode = session::thinking::ThinkingMode::parse(raw.as_deref().unwrap_or("auto"));
+
+    let (profile_resolved_default, model_id) =
+        resolve_profile_thinking_default(&config_state).await;
+    let caps = crate::infra::llm::registry::query_capabilities(&model_id);
+
+    Ok(build_thinking_snapshot(
+        &id,
+        session_mode,
+        caps.as_ref(),
+        profile_resolved_default,
+    ))
+}
+
+/// 设置某会话的深度思考档位（`auto` / `always` / `never`）。
+///
+/// 单一写入口：校验 → 写 DB → 写 `SessionContext` → 广播事件 → **返回权威快照**。
+/// 前端以返回值为准（服务端 last-write-wins），不做乐观本地状态。
+#[tauri::command]
+pub async fn set_session_thinking_mode(
+    id: String,
+    mode: String,
+    session_manager: tauri::State<'_, SessionManager>,
+    config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    let normalized = match mode.trim().to_ascii_lowercase().as_str() {
+        "auto" => session::thinking::ThinkingMode::Auto,
+        "always" | "on" => session::thinking::ThinkingMode::Always,
+        "never" | "off" => session::thinking::ThinkingMode::Never,
+        other => {
+            return Err(format!(
+                "非法的思考档位：{}（只允许 auto / always / never）",
+                other
+            ))
+        }
+    };
+
+    // 1) 落库（None = auto = NULL）
+    session::update_session_thinking_mode(&id, normalized.as_storage())?;
+
+    // 2) 同步内存态，避免本轮决策读到旧值
+    let ctx = session_manager.get_or_create(&id).await;
+    *ctx.thinking_mode.lock().await = normalized.as_storage().map(|s| s.to_string());
+
+    // 3) 组装权威快照
+    let (profile_resolved_default, model_id) =
+        resolve_profile_thinking_default(&config_state).await;
+    let caps = crate::infra::llm::registry::query_capabilities(&model_id);
+    let snapshot = build_thinking_snapshot(
+        &id,
+        normalized,
+        caps.as_ref(),
+        profile_resolved_default,
+    );
+
+    // 4) 广播（带 payload，跨窗口各自过滤 sessionId）
+    let _ = app.emit("session-thinking-mode-changed", snapshot.clone());
+
+    Ok(snapshot)
+}
+
 #[tauri::command]
 pub async fn get_session_context_snapshot(
     session_id: String,

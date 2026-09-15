@@ -1,4 +1,4 @@
-﻿//! # state.rs — 状态管理模块
+//! # state.rs — 状态管理模块
 //!
 //! 定义 Tauri 应用的全局状态管理器，包括会话管理、工作空间状态和快照注册表。
 //! 使用 `Arc<Mutex<T>>` 和 `RwLock` 实现线程安全的状态共享。
@@ -108,6 +108,19 @@ pub struct SessionContext {
     /// 工作模式（"edit" / "plan"）——用户可手动切换，Edit 下 Agent 可自动切 Plan。
     /// 权限档位（问得多严）另存于 `approval_mode`。
     pub agent_work_mode: Mutex<String>,
+    /// 深度思考档位（会话级表态）：`None`/`"auto"` = 跟随预设默认，
+    /// `"always"` = 本会话强制开启，`"never"` = 本会话强制关闭。
+    ///
+    /// 与 `sessions.thinking_mode` 同步；决策逻辑见 `core::session::thinking`。
+    pub thinking_mode: Mutex<Option<String>>,
+    /// **本轮**最终生效的思考状态（由主 Agent 的裁决层写入）。
+    ///
+    /// 子 Agent 用它**继承主 Agent 的档位**，而不是各自按全局 `agent_audience` 重新推导——
+    /// 否则会出现"主 Agent 不开思考、子 Agent 却在思考"的不一致（设计文档 K3）。
+    ///
+    /// `None` = 本会话尚未跑过主 Agent（尚无裁决），子 Agent 此时回落 audience 默认值。
+    /// 每轮开始时被主 Agent 覆盖为 `Some(..)`。
+    pub turn_think: Mutex<Option<bool>>,
     /// 调度器事件接收端（异步模式）：RunSubagentsSequentially 存，pipeline 取
     pub scheduler_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::core::orchestration::scheduler::SchedulerEvent>>>,
     /// ReadFile 探索拦截：记录本会话已读取的文件路径，用于检测逐文件遍历模式
@@ -141,6 +154,8 @@ impl SessionContext {
             dedupe_cache: Mutex::new(HashMap::new()),
             agent_audience: Mutex::new("developer".to_string()),
             agent_work_mode: Mutex::new("edit".to_string()),
+            thinking_mode: Mutex::new(None),
+            turn_think: Mutex::new(None),
             scheduler_rx: Mutex::new(None),
             read_file_paths: Mutex::new(Vec::new()),
             loop_continuation_pending: Mutex::new(false),
@@ -184,6 +199,12 @@ impl SessionManager {
         }
         if let Ok(meta) = crate::core::session::get_session_meta(session_id) {
             *ctx.workspace.lock().await = meta.working_directory.map(std::path::PathBuf::from);
+            // 深度思考档位随会话恢复（None = auto），与 profileId 的恢复路径对称
+            *ctx.thinking_mode.lock().await =
+                crate::core::session::thinking::normalize_session_mode(
+                    meta.thinking_mode.as_deref(),
+                )
+                .map(|s| s.to_string());
         }
 
         let arc_ctx = Arc::new(ctx);

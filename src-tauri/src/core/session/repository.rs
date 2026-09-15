@@ -63,8 +63,9 @@ pub fn upsert_session(meta: &SessionMeta, memory: &SessionMemory) -> Result<(), 
         tx.execute(
             "INSERT INTO sessions(
                 id, title, created_at, updated_at, message_count, is_smart_named,
-                profile_id, total_input_tokens, total_output_tokens, title_source, project_id, deleted_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL)
+                profile_id, total_input_tokens, total_output_tokens, title_source, project_id,
+                thinking_mode, deleted_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 created_at = excluded.created_at,
@@ -76,6 +77,7 @@ pub fn upsert_session(meta: &SessionMeta, memory: &SessionMemory) -> Result<(), 
                 total_output_tokens = excluded.total_output_tokens,
                 title_source = excluded.title_source,
                 project_id = excluded.project_id,
+                thinking_mode = excluded.thinking_mode,
                 deleted_at = NULL",
             params![
                 meta.id,
@@ -89,6 +91,7 @@ pub fn upsert_session(meta: &SessionMeta, memory: &SessionMemory) -> Result<(), 
                 meta.total_output_tokens as i64,
                 meta.title_source,
                 meta.project_id,
+                meta.thinking_mode,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -560,38 +563,42 @@ pub fn get_context_snapshot(session_id: &str) -> Result<Option<SessionContextSna
     })
 }
 
+/// `SessionMeta` 的 SELECT 列清单（**必须与 `session_meta_from_row` 的列序号一一对应**）。
+///
+/// 抽成常量是为了从结构上杜绝一类反复出现的 bug：新增字段时只改了部分 SELECT，
+/// 未改的那条查询就会在执行期抛 `Invalid column index`（例如 v11 引入
+/// `thinking_mode` 时漏改 `get_session_meta`，直接导致切换会话失败）。
+/// 以后只需要在这里加一列，并把 `session_meta_from_row` 的索引往后挪。
+const SESSION_META_COLUMNS: &str = "s.id, s.title, s.created_at, s.updated_at, s.message_count, \
+     s.is_smart_named, s.profile_id, s.total_input_tokens, s.total_output_tokens, s.title_source, \
+     s.project_id, p.path, s.thinking_mode";
+
 pub fn get_session_meta(id: &str) -> Result<SessionMeta, String> {
     crate::infra::db::with_connection(|conn| {
-        conn.query_row(
-            "SELECT s.id, s.title, s.created_at, s.updated_at, s.message_count, s.is_smart_named,
-                    s.profile_id, s.total_input_tokens, s.total_output_tokens, s.title_source,
-                    s.project_id, p.path
-             FROM sessions s
-             LEFT JOIN projects p ON s.project_id = p.id
+        let sql = format!(
+            "SELECT {} FROM sessions s \
+             LEFT JOIN projects p ON s.project_id = p.id \
              WHERE s.id = ?1 AND s.deleted_at IS NULL",
-            [id],
-            session_meta_from_row,
-        )
-        .optional()
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("会话 {} 不存在", id))
+            SESSION_META_COLUMNS
+        );
+        conn.query_row(&sql, [id], session_meta_from_row)
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("会话 {} 不存在", id))
     })
 }
 
 pub fn list_sessions(filter: Option<&SessionListFilter>) -> Result<Vec<SessionMeta>, String> {
     crate::infra::db::with_connection(|conn| {
         let mut sessions = Vec::new();
-        let mut stmt = conn
-            .prepare(
-                "SELECT s.id, s.title, s.created_at, s.updated_at, s.message_count, s.is_smart_named,
-                        s.profile_id, s.total_input_tokens, s.total_output_tokens, s.title_source,
-                        s.project_id, p.path
-                 FROM sessions s
-                 LEFT JOIN projects p ON s.project_id = p.id
-                 WHERE s.deleted_at IS NULL
-                 ORDER BY s.updated_at DESC",
-            )
-            .map_err(|e| e.to_string())?;
+        let sql = format!(
+            "SELECT {} FROM sessions s \
+             LEFT JOIN projects p ON s.project_id = p.id \
+             WHERE s.deleted_at IS NULL \
+             ORDER BY s.updated_at DESC",
+            SESSION_META_COLUMNS
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], session_meta_from_row)
             .map_err(|e| e.to_string())?;
@@ -676,26 +683,42 @@ pub fn rename_session(
         if changed == 0 {
             return Err(format!("会话 {} 不存在", id));
         }
-        conn.query_row(
-            "SELECT s.id, s.title, s.created_at, s.updated_at, s.message_count, s.is_smart_named,
-                    s.profile_id, s.total_input_tokens, s.total_output_tokens, s.title_source,
-                    s.project_id, p.path
-             FROM sessions s
-             LEFT JOIN projects p ON s.project_id = p.id
+        let sql = format!(
+            "SELECT {} FROM sessions s \
+             LEFT JOIN projects p ON s.project_id = p.id \
              WHERE s.id = ?1 AND s.deleted_at IS NULL",
-            [id],
-            session_meta_from_row,
-        )
-        .map_err(|e| e.to_string())
+            SESSION_META_COLUMNS
+        );
+        conn.query_row(&sql, [id], session_meta_from_row)
+            .map_err(|e| e.to_string())
     })
 }
 
-pub fn update_session_profile(id: &str, profile_id: &str) -> Result<(), String> {
-    crate::infra::db::with_connection(|conn| {
+pub fn update_session_profile(id: &str, profile_id: &str) -> Result<(), String> {    crate::infra::db::with_connection(|conn| {
         let changed = conn
             .execute(
                 "UPDATE sessions SET profile_id = ?2 WHERE id = ?1 AND deleted_at IS NULL",
                 params![id, profile_id],
+            )
+            .map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Err(format!("会话 {} 不存在", id));
+        }
+        Ok(())
+    })
+}
+
+/// 写入会话的深度思考档位。
+///
+/// `mode` 为 `None` / `Some("auto")` 时归一化为 `NULL`（"用户未表态"），
+/// 与 `SessionMeta.thinking_mode` 的读出口径保持一致。
+pub fn update_session_thinking_mode(id: &str, mode: Option<&str>) -> Result<(), String> {
+    let normalized = crate::core::session::thinking::normalize_session_mode(mode);
+    crate::infra::db::with_connection(|conn| {
+        let changed = conn
+            .execute(
+                "UPDATE sessions SET thinking_mode = ?2 WHERE id = ?1 AND deleted_at IS NULL",
+                params![id, normalized],
             )
             .map_err(|e| e.to_string())?;
         if changed == 0 {
@@ -753,6 +776,7 @@ fn session_meta_from_row(row: &Row<'_>) -> rusqlite::Result<SessionMeta> {
         title_source: row.get(9)?,
         project_id: row.get(10)?,
         working_directory: row.get(11)?,
+        thinking_mode: row.get(12)?,
     })
 }
 
@@ -924,4 +948,36 @@ fn matches_filter(
     }
 
     Ok(true)
+}
+
+#[cfg(test)]
+mod meta_columns_tests {
+    use super::*;
+
+    /// 列数一致性护栏：`SESSION_META_COLUMNS` 的列数必须与 `session_meta_from_row`
+    /// 的读取索引一致（当前读 `row.get(0..=12)`，即 13 列）。
+    ///
+    /// 背景：v11 引入 `thinking_mode` 时漏改了一条 SELECT，运行期直接抛
+    /// `Invalid column index: 12`，导致"切换会话"整体失败。这个测试让同类漏改
+    /// 在 `cargo test` 阶段就暴露，而不是等到用户点会话。
+    #[test]
+    fn session_meta_columns_match_row_reader_arity() {
+        let columns: Vec<&str> = SESSION_META_COLUMNS
+            .split(',')
+            .map(|c| c.trim())
+            .filter(|c| !c.is_empty())
+            .collect();
+        assert_eq!(
+            columns.len(),
+            13,
+            "SESSION_META_COLUMNS 应为 13 列（与 session_meta_from_row 的 0..=12 对应），实际 {}: {:?}",
+            columns.len(),
+            columns
+        );
+        // 最后一列必须是 thinking_mode：session_meta_from_row 用索引 12 读它
+        assert_eq!(columns[12], "s.thinking_mode");
+        assert_eq!(columns[0], "s.id");
+        assert_eq!(columns[10], "s.project_id");
+        assert_eq!(columns[11], "p.path");
+    }
 }

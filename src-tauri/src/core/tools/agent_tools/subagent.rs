@@ -505,12 +505,31 @@ pub async fn run_subagent(
         }),
     );
 
-    // 子代理深度思考：沿用主代理的 audience 逻辑
+    // 子代理深度思考：**继承主 Agent 本轮档位**（设计文档 K3）。
+    //
+    // 改造前这里按全局 `agent_audience` 重新推导，结果可能与主 Agent 相反
+    // （例如主 Agent 被用户/模型夹紧为关闭，子代理却因 audience=developer 而开启）。
+    // 现在统一取 `SessionContext.turn_think`——主 Agent 每轮开始时写入的裁决结果。
+    // 若该会话尚未跑过主 Agent（直连工具调用等边缘路径），回落到 audience 默认值，
+    // 与改造前行为一致，不引入新的不确定性。
     let should_think = {
-        let prefs = crate::command::app_config::get_ui_preferences()
-            .await
-            .unwrap_or_default();
-        prefs.agent_audience == "developer"
+        let ctx = app
+            .state::<crate::infra::state::state::SessionManager>()
+            .get_or_create(&session_id)
+            .await;
+        let inherited = *ctx.turn_think.lock().await;
+        match inherited {
+            Some(value) => value,
+            None => {
+                let prefs = crate::command::app_config::get_ui_preferences()
+                    .await
+                    .unwrap_or_default();
+                let profile_default = crate::core::session::thinking::ThinkingDefault::parse(
+                    &cfg.thinking_default,
+                );
+                profile_default.resolve(prefs.agent_audience == "developer")
+            }
+        }
     };
 
     while loop_count < max_loops {

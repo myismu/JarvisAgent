@@ -15,6 +15,7 @@
 pub mod memory;
 pub mod repository;
 pub mod resource_repository;
+pub mod thinking;
 
 use crate::infra::types::models::{
     Content, ContentBlock, ImageSource, Message, PlanDocument, SessionMemory,
@@ -98,6 +99,12 @@ pub struct SessionMeta {
     /// 工作目录（从 projects 表派生，仅读）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_directory: Option<String>,
+    /// 深度思考档位（会话级表态）：None/`"auto"` = 跟随预设默认，
+    /// `"always"` = 本会话强制开启，`"never"` = 本会话强制关闭。
+    ///
+    /// 这是"随会话走的推理档"，与 `profile_id`（随会话走的模型预设）对称。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_mode: Option<String>,
 }
 
 /// 获取当前时间戳（秒）
@@ -190,6 +197,7 @@ pub fn create_session(project_id: Option<String>) -> SessionMeta {
         title_source: default_title_source(),
         project_id,
         working_directory,
+        thinking_mode: None,
     };
     let memory = SessionMemory::default();
     let _ = repository::upsert_session(&meta, &memory);
@@ -322,6 +330,7 @@ pub fn save_session(
                 title_source: default_title_source(),
                 project_id: None,
                 working_directory: None,
+                thinking_mode: None,
             };
         }
     };
@@ -671,6 +680,16 @@ pub fn rename_session(
 /// 更新会话的模型预设
 pub fn update_session_profile(id: &str, profile_id: &str) -> Result<(), String> {
     repository::update_session_profile(id, profile_id)
+}
+
+/// 更新会话的深度思考档位（`None` / `"auto"` → 落库为 `NULL`）
+pub fn update_session_thinking_mode(id: &str, mode: Option<&str>) -> Result<(), String> {
+    repository::update_session_thinking_mode(id, mode)
+}
+
+/// 读取会话的深度思考档位（存储态：`None` = auto）
+pub fn get_session_thinking_mode(id: &str) -> Result<Option<String>, String> {
+    Ok(get_session_meta(id)?.thinking_mode)
 }
 
 /// 获取最后活跃的会话 ID

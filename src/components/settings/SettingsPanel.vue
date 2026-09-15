@@ -468,6 +468,16 @@
                 </div>
 
                 <div class="setting-item">
+                  <label>{{ t('settings.profileEditor.thinkingDefault') }}</label>
+                  <select v-model="editingProfile.config.thinkingDefault">
+                    <option value="auto">{{ t('settings.profileEditor.thinkingDefaultAuto') }}</option>
+                    <option value="on">{{ t('settings.profileEditor.thinkingDefaultOn') }}</option>
+                    <option value="off">{{ t('settings.profileEditor.thinkingDefaultOff') }}</option>
+                  </select>
+                  <div class="setting-desc">{{ t('settings.profileEditor.thinkingDefaultDesc') }}</div>
+                </div>
+
+                <div class="setting-item">
                   <div class="setting-desc image-info">{{ t('settings.profileEditor.imageCompressInfo') }}</div>
                 </div>
 
@@ -536,6 +546,7 @@ import { usePreferences, type AgentPanelPosition } from '../../composables/usePr
 import { useWindow } from '../../composables/useWindow'
 import { useSessionStore } from '../../stores/session'
 import type { AgentUserMode, AgentWorkMode } from '../../types'
+import { parseThinkingDefault, type ThinkingDefault } from '../../utils/thinking'
 import ConfirmModal from '../common/ConfirmModal.vue'
 
 const { t, locale } = useI18n()
@@ -630,6 +641,13 @@ interface AgentConfig {
   topP?: number | null
   topK?: number | null
   maxTokens?: number | null
+  /**
+   * 深度思考的**预设默认档位**（L1）：`auto` | `on` | `off`
+   *
+   * 会话未表态（`thinking_mode = auto`）时按此值决定；`auto` 再回落到
+   * 全局「开发者/普通用户」受众设置。与输入框的会话级开关是两个层次。
+   */
+  thinkingDefault?: ThinkingDefault
 }
 
 interface ModelCapabilities {
@@ -674,6 +692,7 @@ const createBlankProfile = (id: string): ModelProfile => ({
     topP: null,
     topK: null,
     maxTokens: null,
+    thinkingDefault: 'auto',
   }
 })
 
@@ -685,6 +704,8 @@ const normalizeProfileConfig = (config: AppConfig) => {
     p.config.topP = p.config.topP == null ? null : Number(p.config.topP)
     p.config.topK = p.config.topK == null ? null : Number(p.config.topK)
     p.config.maxTokens = p.config.maxTokens == null ? null : Number(p.config.maxTokens)
+    // 老 config.json 没有该字段：补 auto，保证与后端 #[serde(default)] 口径一致
+    p.config.thinkingDefault = parseThinkingDefault(p.config.thinkingDefault)
   })
   return config
 }

@@ -20,6 +20,7 @@ import { useSessionStore } from '../../stores/session';
 import { useChatStore } from '../../stores/chat';
 import { useAppViewStore } from '../../stores/appView';
 import { useAgentEvents } from '../../composables/useAgentEvents';
+import { loadSessionThinking } from '../../composables/useThinkingMode';
 import { useWindow } from '../../composables/useWindow';
 
 defineProps<{
@@ -314,6 +315,29 @@ const performDeleteProject = async (projectId: string) => {
   }
 };
 
+/**
+ * 把某会话记录的模型预设同步为**激活预设**（并落库）。
+ *
+ * 模型预设是会话级状态（`sessions.profile_id`），但后端 pipeline 每次读的是
+ * `AppConfig.activeProfileId`。因此**任何"让某会话成为当前会话"的路径都必须调用这里**，
+ * 否则后端会继续用上一个会话/全局默认的预设。
+ *
+ * 这条纪律是踩坑总结：启动恢复会话曾经漏掉这一步（只有点击切会话时同步），
+ * 结果重启后模型预设回落到设置里的默认值，而会话里并没有消息能暴露这个不一致。
+ */
+const syncProfileFromSession = async (meta: {
+  profileId?: string | null;
+  mainModel?: string | null;
+}) => {
+  const config = await invoke<any>('get_config');
+  if (meta.profileId) {
+    config.activeProfileId = meta.profileId;
+  } else {
+    config.activeProfileId = config.globalProfileId;
+  }
+  await invoke('save_config_cmd', { newConfig: config });
+};
+
 // 切换会话
 const switchToSession = async (id: string) => {
   if (id === sessionStore.activeSessionId) return;
@@ -324,13 +348,12 @@ const switchToSession = async (id: string) => {
     sessionStore.workingDirectory = meta.workingDirectory || null;
     sessionStore.pendingProjectId = null;
 
-    const config = await invoke<any>('get_config');
-    if (meta.profileId) {
-      config.activeProfileId = meta.profileId;
-    } else {
-      config.activeProfileId = config.globalProfileId;
-    }
-    await invoke('save_config_cmd', { newConfig: config });
+    await syncProfileFromSession(meta);
+
+    // 档位快照里的 profileResolvedDefault 依赖"激活预设"已切换完成，
+    // 因此在 profile 落库之后重取一次权威档位，消除与上方 save 的竞态
+    //（`activeSessionId` 的 watcher 会先跑一次，这里再对齐一次最终值）。
+    void loadSessionThinking(id);
 
     sessionStore.setSessionUsageTotals(id, meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
 
@@ -393,11 +416,17 @@ onMounted(async () => {
     const activeId = await invoke<string | null>('get_active_session_id');
     if (activeId) {
       try {
-        await invoke('switch_session', { id: activeId });
+        const switchedMeta = await invoke<any>('switch_session', { id: activeId });
         sessionStore.activeSessionId = activeId;
         const meta = await invoke<any>('get_session_meta', { id: activeId });
         sessionStore.workingDirectory = meta.workingDirectory || null;
         sessionStore.setSessionUsageTotals(activeId, meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
+
+        // 关键：恢复会话时也要把该会话的模型预设同步为激活预设。
+        // 漏掉这一步时，后端 pipeline 会继续用 app-config.json 里遗留的
+        // activeProfileId（往往是设置里的默认预设），表现为"重启后模型预设不对"。
+        await syncProfileFromSession(switchedMeta);
+        void loadSessionThinking(activeId);
 
         // 加载会话历史
         try {
@@ -415,17 +444,31 @@ onMounted(async () => {
         console.error('同步会话状态失败:', switchErr);
         sessionStore.setSessionUsageTotals(null, 0, 0);
         if (sessions.value.length > 0) {
-          sessionStore.activeSessionId = sessions.value[0].id;
+          const fallbackId = sessions.value[0].id;
+          sessionStore.activeSessionId = fallbackId;
+          // 回落也要对齐预设，否则后端停在遗留的 activeProfileId（同上）
+          await syncProfileFromSession(sessions.value[0]);
+          void loadSessionThinking(fallbackId);
         }
       }
     } else if (sessions.value.length > 0) {
       sessionStore.activeSessionId = sessions.value[0].id;
       sessionStore.setSessionUsageTotals(sessions.value[0].id, sessions.value[0].totalInputTokens || 0, sessions.value[0].totalOutputTokens || 0);
+      // 回落到首个会话时同样要对齐预设，否则后端还停在全局默认
+      await syncProfileFromSession(sessions.value[0]);
+      void loadSessionThinking(sessions.value[0].id);
     }
   } catch (err) {
     sessionStore.setSessionUsageTotals(null, 0, 0);
     if (sessions.value.length > 0) {
-      sessionStore.activeSessionId = sessions.value[0].id;
+      const fallbackId = sessions.value[0].id;
+      sessionStore.activeSessionId = fallbackId;
+      // 最外层兜底路径同样不能漏掉预设对齐（用 meta 兜底取 profileId）
+      try {
+        const meta = await invoke<any>('get_session_meta', { id: fallbackId });
+        await syncProfileFromSession(meta);
+      } catch { /* 取不到就保持现有激活预设 */ }
+      void loadSessionThinking(fallbackId);
     }
   }
 

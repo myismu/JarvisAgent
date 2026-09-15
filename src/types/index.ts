@@ -49,6 +49,12 @@ export interface JarvisResult {
   session_input_tokens: number;
   session_output_tokens: number;
   user_message_id?: string | null;
+  /** 本轮最终采用的深度思考状态（后端裁决层给出，前端不自行判断） */
+  thinking_enabled?: boolean | null;
+  /** 裁决原因（如 `ClampedByForced` / `SessionNever` / `ProfileDefault`） */
+  thinking_reason?: string | null;
+  /** 需提示用户时的 i18n key（如模型强制思考夹紧了用户的"关闭"意愿） */
+  thinking_notice_i18n_key?: string | null;
 }
 
 export interface ContextSectionSnapshot {

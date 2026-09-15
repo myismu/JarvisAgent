@@ -411,7 +411,13 @@ export const useChatStore = defineStore("chat", () => {
     return meta.id as string;
   }
 
-  async function sendToJarvis(msg: string, thinkingOverride?: boolean, imageBase64List?: string[], resumeOnly = false, skipRunningCheck = false, uiDisplayMsg?: string) {
+  /**
+   * @param thinkingOverride 单轮思考档位覆盖：
+   *   - `null` / `undefined`（**正常路径**）：后端按会话档位（`sessions.thinking_mode`）
+   *     + 预设默认 + 模型能力自行裁决，前端不参与决策；
+   *   - `true` / `false`：仅供程序化调用或测试强制指定单轮值。
+   */
+  async function sendToJarvis(msg: string, thinkingOverride?: boolean | null, imageBase64List?: string[], resumeOnly = false, skipRunningCheck = false, uiDisplayMsg?: string) {
     const session = useSessionStore();
 
     if (!msg && (!imageBase64List || imageBase64List.length === 0)) return;

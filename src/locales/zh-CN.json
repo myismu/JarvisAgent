@@ -154,7 +154,8 @@
     "processing": "处理中...",
     "unknownError": "未知错误",
     "copy": "复制",
-    "copied": "已复制"
+    "copied": "已复制",
+    "close": "关闭"
   },
   "rollback": {
     "trigger": "撤回此消息",
@@ -481,6 +482,11 @@
       "vision": "多模态",
       "outputTokens": "输出 {count}",
       "advancedParams": "高级模型参数",
+      "thinkingDefault": "深度思考默认档位",
+      "thinkingDefaultAuto": "跟随全局（推荐）",
+      "thinkingDefaultOn": "默认开启",
+      "thinkingDefaultOff": "默认关闭",
+      "thinkingDefaultDesc": "本预设的默认推理档位。会话未单独设置时按此值执行；选「跟随全局」则按上方「用户类型」决定（开发者默认开启、普通用户默认关闭）。会话内仍可用输入框的深度思考按钮单独覆盖。",
       "imageCompression": "图片压缩设置",
       "imageCompressInfo": "上传图片将自动压缩至 1920×1080 像素，JPEG 质量 80%。如需调整请修改配置文件。",
       "maxWidth": "最大宽度",

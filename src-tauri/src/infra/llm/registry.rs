@@ -119,6 +119,12 @@ pub fn apply_thinking_for_model(
 ) {
     let Some(caps) = query_capabilities(model_id) else { return };
     if !caps.thinking { return; }
+    // P-DS 兜底：强制思考的模型（DeepSeek 系）无视调用方的 false。
+    //
+    // 这是"最后一道防线"：裁决层（core::session::thinking::decide）已经会夹紧，
+    // 但这里再兜一次，保证任何未来新增的调用路径即使传错，也不会向这类模型下发
+    // `thinking:{type:disabled}`（DeepSeek 要求 thinking 与 tool_calls 共存）。
+    let should_think = should_think || caps.thinking_forced;
     match caps.thinking_param.as_deref() {
         Some("reasoning_effort") => {
             if should_think {

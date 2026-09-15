@@ -141,6 +141,12 @@ const todoLabel = (todo: TodoItem): string =>
   display: flex;
   flex-direction: column;
   gap: 4px;
+  /* 待办条目数不受控（v-for 全量渲染）：封顶 + 内部滚动，
+     避免条目一多就把下拉撑得比窗口还高。与 .profile-menu 同一处理口径。 */
+  max-height: min(320px, 50vh);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
 }
 
 .todo-drop-enter-active,

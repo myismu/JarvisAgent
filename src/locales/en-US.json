@@ -153,7 +153,8 @@
     "processing": "Processing...",
     "unknownError": "Unknown error",
     "copy": "Copy",
-    "copied": "Copied"
+    "copied": "Copied",
+    "close": "Close"
   },
   "rollback": {
     "trigger": "Recall this message",
@@ -480,6 +481,11 @@
       "vision": "Multimodal",
       "outputTokens": "Output {count}",
       "advancedParams": "Advanced model parameters",
+      "thinkingDefault": "Default thinking level",
+      "thinkingDefaultAuto": "Follow global (recommended)",
+      "thinkingDefaultOn": "On by default",
+      "thinkingDefaultOff": "Off by default",
+      "thinkingDefaultDesc": "Default reasoning level for this preset. Used when a session hasn't set its own level. \"Follow global\" defers to the user type above (developers default to on, regular users to off). You can still override it per session with the thinking button in the input bar.",
       "imageCompression": "Image Compression",
       "imageCompressInfo": "Uploaded images are automatically compressed to 1920×1080 pixels, JPEG quality 80%. Edit the config file to adjust.",
       "maxWidth": "Max width",

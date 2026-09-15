@@ -1,4 +1,4 @@
-﻿//! # config.rs — 配置管理模块
+//! # config.rs — 配置管理模块
 //!
 //! 持久化存储 Agent 的 API 密钥、模型选择等配置项。配置文件位于 Agent 家目录下的 config.json。
 //! 支持多预设配置管理，允许用户快速切换不同的模型配置。
@@ -48,6 +48,12 @@ pub struct AgentConfig {
     /// Reflection 模式: "always" | "smart" | "off"
     #[serde(default = "default_reflection_mode")]
     pub reflection_mode: String,
+    /// 深度思考档位的**预设默认**（L1）: "auto"（交给 agent_audience 全局回退）| "on" | "off"
+    ///
+    /// 这是"随预设走的推理档倾向"，与 `main_model` 同级。会话未表态（`sessions.thinking_mode`
+    /// 为 `NULL`/`auto`）时按此值决定，详见 `core::session::thinking`。
+    #[serde(default = "default_thinking_default")]
+    pub thinking_default: String,
     /// 用户自定义 max_tokens（覆盖模型注册表默认值），None 表示使用注册表值
     pub max_tokens: Option<i32>,
     /// [兼容旧配置] 旧版图片/子模型字段，读取后忽略
@@ -80,6 +86,7 @@ impl Default for AgentConfig {
             top_p: None,
             top_k: None,
             reflection_mode: default_reflection_mode(),
+            thinking_default: default_thinking_default(),
             max_tokens: None,
             image_max_width: None,
             image_max_height: None,
@@ -100,6 +107,14 @@ pub struct ModelProfile {
 
 fn default_reflection_mode() -> String {
     "smart".to_string()
+}
+
+/// 预设默认思考档位：`auto` = 交给全局 `agent_audience` 回退。
+///
+/// 老 `config.json` 没有该字段，`#[serde(default)]` 补成 `auto`，
+/// 因此**升级后 developer 用户行为零变化**（见设计文档决策 D2）。
+fn default_thinking_default() -> String {
+    "auto".to_string()
 }
 
 fn default_global_profile_id() -> String {
@@ -306,6 +321,17 @@ pub fn validate_config(config: &AppConfig) -> Result<(), String> {
         }
         if profile.config.main_model.trim().is_empty() {
             return Err(format!("预设「{}」的主模型不能为空", profile.name));
+        }
+        // 写路径严格校验：非法档位必须报错，不能静默回落（读路径才宽容）
+        if crate::core::session::thinking::ThinkingDefault::parse_strict(
+            &profile.config.thinking_default,
+        )
+        .is_none()
+        {
+            return Err(format!(
+                "预设「{}」的深度思考默认档位非法：{}（只允许 auto / on / off）",
+                profile.name, profile.config.thinking_default
+            ));
         }
     }
     Ok(())

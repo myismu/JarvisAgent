@@ -82,7 +82,14 @@ struct PipelineState {
     msg: String,
     image_base64_list: Option<Vec<String>>,
     thinking_override: Option<bool>,
-    /// 基于 audience 的 agent loop 默认思考状态（developer → true, user → false）
+    /// 会话级思考档位（L2，随会话走）。`Auto` 时按 `loop_think_default` 裁决。
+    session_think_mode: crate::core::session::thinking::ThinkingMode,
+    /// **L1 预设默认**（已与全局 audience 回退合并为确定布尔值）。
+    ///
+    /// 语义已**收窄**（设计文档决策 D2）：它不再是"每轮的思考值"，而是
+    /// `profiles[].thinkingDefault` 解析结果——预设为 `auto` 时回落
+    /// `agent_audience == "developer"`（`pipeline.rs` 步骤 6 计算）。
+    /// 仅在会话也未表态（L2 = `auto`）时生效。
     loop_think_default: bool,
     /// 本轮（一次用户指令 = 可能多个 loop）最终采用的思考状态。
     ///
@@ -91,6 +98,8 @@ struct PipelineState {
     /// thinking 块，服务商会直接 400
     /// （`content[].thinking in the thinking mode must be passed back to the API`）。
     turn_think: bool,
+    /// 本轮思考裁决结果（含 reason 与 notice key），随 `JarvisResult` 下发前端。
+    turn_thinking_decision: crate::core::session::thinking::ThinkingDecision,
     detected_intent: String,
     /// 本轮能力清单（由工作模式推导，注入动态上下文 / 目录输出 / 执行期校验共用）
     capabilities: crate::core::tools::framework::capabilities::Capabilities,
@@ -239,6 +248,10 @@ fn normalize_agent_audience(audience: &str) -> &'static str {
 }
 
 /// 本轮（一次用户指令）最终采用的 thinking 状态：用户临时开关优先，否则用受众默认值。
+///
+/// 已被 `core::session::thinking::decide` 取代（后者还包含 L2 会话档位与能力夹紧）。
+/// 保留仅为回归测试使用——它固化了"L1=auto 时回落 audience"的语义（设计文档决策 D2）。
+#[cfg(test)]
 fn resolve_turn_think(override_val: Option<bool>, loop_default: bool) -> bool {
     override_val.unwrap_or(loop_default)
 }
@@ -617,6 +630,24 @@ impl PipelineState {
             .filter(|m| !m.is_empty())
             .unwrap_or_else(|| cfg.reflection_mode.clone());
 
+        // 步骤 8.5：解析深度思考的两层来源（设计文档 §4）
+        //
+        // - L2 会话档位：随会话走，切会话即切档位（与 profileId 对称）
+        // - L1 预设默认：`profiles[].thinkingDefault`，为 `auto` 时回落全局 audience
+        //
+        // 决策本身不在这里做，而是在 `start_run` 用 `thinking::decide` 统一裁决；
+        // 这里只负责把两个来源取出来，避免在决策点再做 IO。
+        let session_think_mode = crate::core::session::thinking::ThinkingMode::parse(
+            ctx.thinking_mode
+                .lock()
+                .await
+                .as_deref()
+                .unwrap_or("auto"),
+        );
+        let profile_thinking_default =
+            crate::core::session::thinking::ThinkingDefault::parse(&cfg.thinking_default);
+        let loop_think_default = profile_thinking_default.resolve(audience == "developer");
+
         // 步骤 9：组装 PipelineState（意图、提示词、取消令牌等已就绪）
         let mut state = Self {
             app,
@@ -634,7 +665,8 @@ impl PipelineState {
             msg,
             image_base64_list,
             thinking_override,
-            loop_think_default: audience == "developer",
+            session_think_mode,
+            loop_think_default,
             detected_intent: detected_intent.clone(),
             capabilities,
             // 以下字段在后续阶段填充
@@ -643,6 +675,7 @@ impl PipelineState {
             initial_msg_index: 0,
             should_think: false,
             turn_think: false,
+            turn_thinking_decision: crate::core::session::thinking::ThinkingDecision::default(),
             run_id: String::new(),
             loop_count: 0,
             total_loop_count: 0,
@@ -777,19 +810,35 @@ impl PipelineState {
         crate::core::session::save_session(&self.sid, &memory_after_user_message, None);
         let _ = self.app.emit("session-updated", ());
 
-        // 深度思考决策（整轮一次性决定，之后不再改变）：
-        // - 用户 thinking_override 优先（一次性输入），否则使用 audience 默认值
-        // - 本轮所有 loop 都用同一个值：中途翻转会让 Anthropic 协议的 thinking 链要求不成立
-        //   （首轮 disabled 就没有 thinking 块可回传，第二轮突然 enabled 会 400）
+        // 深度思考决策（整轮一次性决定，之后不再改变）
+        //
+        // 优先序（设计文档 §4）：L3 单轮覆盖 ▸ 能力夹紧 ▸ L2 会话档位 ▸ L1 预设默认。
+        // 注意"夹紧"：模型硬约束（不支持思考 / 强制思考）会无视会话与覆盖的相反意愿，
+        // 但**不回写** sessions.thinking_mode（不变量 I3），用户表态原样保留。
+        //
+        // 本轮所有 loop 都用同一个值：中途翻转会让 Anthropic 协议的 thinking 链要求不成立
+        //（首轮 disabled 就没有 thinking 块可回传，第二轮突然 enabled 会 400）。
         let override_val = self.thinking_override.take();
-        let turn_think = resolve_turn_think(override_val, self.loop_think_default);
+        let model_caps = crate::infra::llm::registry::query_capabilities(&self.model_id);
+        let decision = crate::core::session::thinking::decide(
+            override_val,
+            self.session_think_mode,
+            self.loop_think_default,
+            model_caps.as_ref(),
+        );
+        self.turn_thinking_decision = decision.clone();
+        let turn_think = decision.enabled;
         self.turn_think = turn_think;
         self.should_think = turn_think;
+        // 供子 Agent 继承（设计文档 K3）：主 Agent 本轮用什么档位，本轮派生的子 Agent 就用什么
+        *self.ctx.turn_think.lock().await = Some(turn_think);
         println!(
-            "[JARVIS] 本轮 thinking 状态固定为 {}（override={:?}, audience 默认={}）",
+            "[JARVIS] 本轮 thinking 状态固定为 {}（override={:?}, 会话档位={:?}, 预设默认={}, 裁决={:?}）",
             if turn_think { "enabled" } else { "disabled" },
             override_val,
-            self.loop_think_default
+            self.session_think_mode,
+            self.loop_think_default,
+            decision.reason
         );
 
         let user_message_id = {
@@ -1950,6 +1999,12 @@ impl PipelineState {
             user_message_id: None,
             tool_execution_summary: self.tool_execution_summary,
             notice: self.notice,
+            thinking_enabled: Some(self.turn_thinking_decision.enabled),
+            thinking_reason: Some(format!("{:?}", self.turn_thinking_decision.reason)),
+            thinking_notice_i18n_key: self
+                .turn_thinking_decision
+                .notice_i18n_key
+                .map(|s| s.to_string()),
         }
     }
 

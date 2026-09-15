@@ -17,6 +17,8 @@ import { useSessionStore } from '../../stores/session';
 import { useChatStore } from '../../stores/chat';
 import { useAgentStore } from '../../stores/agent';
 import { usePreferences } from '../../composables/usePreferences';
+import { useThinkingMode } from '../../composables/useThinkingMode';
+import { isThinkingToggleDisabled, type ThinkingCaps } from '../../utils/thinking';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { readFile } from '@tauri-apps/plugin-fs';
@@ -118,10 +120,39 @@ let unlistenWorkMode: UnlistenFn | null = null;
 const appConfig = ref<any>(null);
 const agentModel = computed(() => appConfig.value?.mainModel || '—');
 const showProfileMenu = ref(false);
-const isThinkingActive = ref(false);
-const isThinkingForced = ref(false);
-const canModelThink = ref(true);
+/** 预设菜单 DOM 引用：用于打开时把当前预设滚到可见处 */
+const profileMenuRef = ref<HTMLElement | null>(null);
+/**
+ * 模型思考能力（唯一来源）。
+ *
+ * 由 `checkModelCapabilities` 异步填充，交给 `useThinkingMode` 做同步投影。
+ * 注意：它**只影响 UI 显示**，不再决定"发什么参数"——本轮 thinking 由后端按
+ * `sessionId` 自行裁决，因此这里即使短暂过期也污染不到真实请求。
+ */
+const modelThinkingCaps = ref<ThinkingCaps | null>(null);
+const isThinkingForced = computed(() => modelThinkingCaps.value?.thinking_forced ?? false);
+const canModelThink = computed(() => modelThinkingCaps.value?.thinking ?? true);
 const canModelVision = ref(true);
+
+/** 深度思考档位：会话级状态（切会话即切档位），不再是组件本地 ref */
+const {
+  isThinkingActive,
+  saving: thinkingSaving,
+  toggleThinking,
+} = useThinkingMode(modelThinkingCaps);
+
+/** 开关是否可点：模型不支持思考 / 强制思考时都不可点（点了也没用，但有文案解释） */
+const thinkingToggleDisabled = computed(() => isThinkingToggleDisabled(modelThinkingCaps.value));
+
+/**
+ * 锁定态：模型强制开启思考，用户**改不了**（如 DeepSeek）。
+ *
+ * 注意 UI 上它读作"开启"而非"禁用"——思考确实是开着的，只是不可改。
+ * 早期用 `.disabled { filter: grayscale(1) }` 把它整块灰掉，看起来像坏了。
+ */
+const thinkingLocked = computed(
+  () => isThinkingForced.value && canModelThink.value && !thinkingSaving.value,
+);
 
 const imageCompressConfig = ref({ maxWidth: 1920, maxHeight: 1080, quality: 0.8 });
 const showInterruptedResumeHint = computed(() => {
@@ -178,25 +209,23 @@ const checkModelCapabilities = async (modelId: string) => {
   try {
     const caps = await invoke<any>('get_model_capabilities', { modelId });
     if (caps) {
-      canModelThink.value = caps.thinking;
       canModelVision.value = caps.vision ?? true;
-      isThinkingForced.value = caps.thinkingForced ?? false;
-      if (!caps.thinking) {
-        isThinkingActive.value = false;
-        isThinkingForced.value = false;
-      } else if (isThinkingForced.value) {
-        isThinkingActive.value = true;
-      }
+      // 只更新能力；开关档位由 useThinkingMode 依据"会话档位 + 能力"统一投影，
+      // 这里不再直接改写开关（改造前正是在这里漏掉了 isThinkingActive 的重置，
+      // 导致切预设后沿用上一个预设的档位）。
+      modelThinkingCaps.value = {
+        thinking: caps.thinking ?? true,
+        thinking_forced: caps.thinkingForced ?? false,
+      };
     } else {
-      canModelThink.value = true;
+      // 注册表里没有该模型（自定义模型）：保守口径——支持思考、不强制
       canModelVision.value = true;
-      isThinkingForced.value = false;
+      modelThinkingCaps.value = { thinking: true, thinking_forced: false };
     }
   } catch (e) {
     console.error('Failed to check model capabilities:', e);
-    canModelThink.value = true;
     canModelVision.value = true;
-    isThinkingForced.value = false;
+    modelThinkingCaps.value = { thinking: true, thinking_forced: false };
   }
 };
 
@@ -211,6 +240,24 @@ const loadConfig = async () => {
     console.error('Failed to load config for input box:', e);
   }
 };
+
+/**
+ * 激活预设变化时重新探测模型能力。
+ *
+ * 切会话（`Sidebar` 会把该会话的 `profileId` 写回激活预设）与切预设都会改变
+ * `activeProfileId`；不重探就会一直拿着上一个预设的能力结论，开关的禁用态与
+ * 提示文案都会滞后。
+ */
+watch(
+  () => appConfig.value?.activeProfileId,
+  (profileId, prevId) => {
+    if (!profileId || profileId === prevId || !appConfig.value) return;
+    const activeProfile = appConfig.value.profiles?.find((p: any) => p.id === profileId);
+    if (activeProfile) {
+      void checkModelCapabilities(activeProfile.config.mainModel);
+    }
+  },
+);
 
 const switchProfile = async (id: string) => {
   if (!appConfig.value) return;
@@ -353,6 +400,34 @@ const closeMenuOnOutsideClick = (e: MouseEvent) => {
   if (!target.closest('.approval-selector')) {
     showApprovalMenu.value = false;
   }
+};
+
+/**
+ * 打开预设菜单时：① 按**实测可用空间**限制菜单高度 ② 把当前预设滚到可见处。
+ *
+ * 为什么不用固定 `vh`：输入区本身可能很高（用户粘贴了长文本、带附件预览），
+ * 此时"按钮上方到窗口顶部"的可用空间远小于 55vh，固定值会让菜单顶出窗口被裁。
+ * 这里用 `getBoundingClientRect()` 实测，再留出菜单与按钮之间的 12px 间隙和 12px 呼吸位。
+ */
+const MENU_GAP = 12;
+const MENU_SAFE_MARGIN = 12;
+const MENU_MAX_HEIGHT = 340;
+
+const openProfileMenuLayout = async () => {
+  await nextTick();
+  const menu = profileMenuRef.value;
+  if (!menu) return;
+
+  const btn = menu.parentElement?.querySelector<HTMLElement>('.profile-btn');
+  if (btn) {
+    const spaceAbove = btn.getBoundingClientRect().top - MENU_GAP - MENU_SAFE_MARGIN;
+    const height = Math.max(120, Math.min(MENU_MAX_HEIGHT, Math.floor(spaceAbove)));
+    menu.style.maxHeight = `${height}px`;
+  }
+
+  // 当前项已在视野内时 `block: 'nearest'` 不会滚动，避免无谓跳动
+  const activeItem = menu.querySelector<HTMLElement>('.profile-menu-item.active');
+  activeItem?.scrollIntoView({ block: 'nearest' });
 };
 
 const hideVisionWarning = () => {
@@ -559,7 +634,9 @@ const handleSubmit = () => {
     const imageBase64List = mediaFiles.value
       .filter(m => m.type === 'image' && m.base64)
       .map(m => m.base64);
-    chat.sendToJarvis(msg, isThinkingActive.value, imageBase64List);
+    // 不再回传本地的思考开关值：本轮 thinking 由后端按 sessionId + 会话档位自行裁决，
+    // 这样即使 UI 投影短暂过期（如能力查询未返回）也污染不到真实请求。
+    chat.sendToJarvis(msg, null, imageBase64List);
     userInput.value = '';
     mediaFiles.value.forEach(m => {
       if (m.url) URL.revokeObjectURL(m.url);
@@ -630,7 +707,12 @@ const handleRecallEdit = async () => {
         </svg>
         <span>{{ t('input.recallHint') }}</span>
         <button class="recall-edit-btn" @click="handleRecallEdit">{{ t('input.recallEdit') }}</button>
-        <button class="recall-dismiss-btn" @click="chat.dismissRecallEdit">✕</button>
+        <button class="recall-dismiss-btn" @click="chat.dismissRecallEdit" :aria-label="t('common.close')">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
       </div>
 
       <div v-if="showInterruptedResumeHint" class="resume-run-bar">
@@ -645,7 +727,7 @@ const handleRecallEdit = async () => {
 
       <div class="input-toolbar">
         <div class="profile-selector">
-          <button class="profile-btn" @click="showProfileMenu = !showProfileMenu">
+          <button class="profile-btn" @click="showProfileMenu = !showProfileMenu; showProfileMenu && openProfileMenuLayout()">
             <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round" class="profile-icon">
               <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"></path>
             </svg>
@@ -653,7 +735,7 @@ const handleRecallEdit = async () => {
             <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none"><polyline points="6 9 12 15 18 9"></polyline></svg>
           </button>
           
-          <div v-if="showProfileMenu" class="profile-menu">
+          <div v-if="showProfileMenu" class="profile-menu" ref="profileMenuRef">
             <div 
               v-for="profile in appConfig?.profiles" 
               :key="profile.id"
@@ -728,15 +810,34 @@ const handleRecallEdit = async () => {
             class="action-toggle-btn"
             :class="{
               active: isThinkingActive,
-              disabled: !canModelThink || isThinkingForced
+              disabled: thinkingToggleDisabled,
+              locked: thinkingLocked
             }"
-            @click="canModelThink && !isThinkingForced && (isThinkingActive = !isThinkingActive)"
+            :disabled="thinkingToggleDisabled || thinkingSaving"
+            @click="toggleThinking"
             :title="!canModelThink ? t('input.thinkingUnsupportedTitle') : isThinkingForced ? t('input.thinkingForcedTitle') : (isThinkingActive ? t('input.thinkingOnTitle') : t('input.thinkingOffTitle'))"
           >
-            <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
               <path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27a5 5 0 1 1-7.14 7.14" />
             </svg>
             <span>{{ !canModelThink ? t('input.thinkingUnsupported') : isThinkingForced ? t('input.thinkingForced') : t('input.thinking') }}</span>
+            <!-- 锁定角标：模型强制开启、用户改不了（读作"开启"而非"禁用"） -->
+            <svg
+              v-if="thinkingLocked"
+              class="thinking-lock-badge"
+              viewBox="0 0 24 24"
+              width="9"
+              height="9"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="5" y="11" width="14" height="10" rx="2" />
+              <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+            </svg>
           </button>
         </div>
       </div>
@@ -760,7 +861,12 @@ const handleRecallEdit = async () => {
             </div>
           </template>
           <span class="media-name">{{ media.path.split(/[/\\]/).pop() }}</span>
-          <button class="remove-media-btn" @click.stop="removeMediaFile(index)" :title="t('input.remove')">✕</button>
+          <button class="remove-media-btn" @click.stop="removeMediaFile(index)" :title="t('input.remove')" :aria-label="t('input.remove')">
+            <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
         </div>
       </div>
 
@@ -771,7 +877,12 @@ const handleRecallEdit = async () => {
           <line x1="12" y1="17" x2="12.01" y2="17"></line>
         </svg>
         <span>{{ t('input.visionWarning') }}</span>
-        <button class="warning-close-btn" @click="hideVisionWarning">✕</button>
+        <button class="warning-close-btn" @click="hideVisionWarning" :aria-label="t('common.close')">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
       </div>
 
       <div v-if="workModeWarning" class="vision-warning">
@@ -781,7 +892,12 @@ const handleRecallEdit = async () => {
           <line x1="12" y1="17" x2="12.01" y2="17"></line>
         </svg>
         <span>{{ workModeWarning }}</span>
-        <button class="warning-close-btn" @click="hideWorkModeWarning">✕</button>
+        <button class="warning-close-btn" @click="hideWorkModeWarning" :aria-label="t('common.close')">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
       </div>
 
       <div class="input-row" @click="inputRef?.focus()">
@@ -957,8 +1073,15 @@ const handleRecallEdit = async () => {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   min-width: 240px;
+  /* 预设过多时不再无限向上撑高，改为在菜单内部滚动。
+     取 min() 双保险：绝对高度上限 340px（约 4.5 项，暗示"下面还有"），
+     同时不超过视口 55%，避免小窗口里菜单顶到窗口外被裁掉。 */
+  max-height: min(340px, 55vh);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain; /* 滚到底不把滚动传给聊天区 */
+  scrollbar-gutter: stable;     /* 有无滚动条时宽度不跳 */
   z-index: 100;
-  overflow: hidden;
   animation: popIn var(--transition-fast);
   padding: 8px;
 }
@@ -1014,40 +1137,100 @@ const handleRecallEdit = async () => {
   gap: 8px;
 }
 
+/* 深度思考开关：中性色方案（N1）
+   关闭 = 下沉面 + 细描边 + 中字重 + 弱文字
+   开启 = 抬升面 + 常规边 + 粗描边 + 重字重 + 主色文字 + 微阴影
+   主信号是"文字对比度跨度"（约 2.4 倍），面与边只作辅助——纯中性色下底色的
+   可用对比度只有约 1.23:1，不足以独立承担状态区分。 */
 .action-toggle-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: var(--glass-bg-light);
-  color: var(--text-muted);
+  background: var(--thinking-off-surface);
+  color: var(--thinking-off-fg);
   border: 1px solid var(--glass-border-subtle);
   border-radius: var(--radius-md);
   padding: 6px 12px;
   font-size: 0.75rem;
-  font-weight: 600;
+  font-weight: 500;
   cursor: pointer;
   transition: all var(--transition-fast);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
+  box-shadow: none;
+  position: relative;
 }
 
+.action-toggle-btn svg {
+  stroke-width: 1.7;
+  transition: stroke-width var(--transition-fast);
+}
+
+/* 关闭 · hover：预示"可开启"，但不加粗描边，避免误读为已开启 */
 .action-toggle-btn:hover {
   background: var(--glass-bg);
+  border-color: var(--glass-border);
   color: var(--text-main);
+}
+
+/* 开启（选中）：三个信号同时拉满 */
+.action-toggle-btn.active {
+  background: var(--thinking-on-surface);
+  border-color: var(--glass-border);
+  color: var(--thinking-on-fg);
+  font-weight: 700;
+  box-shadow: var(--shadow-sm);
+}
+
+.action-toggle-btn.active svg {
+  stroke-width: 2.4;
+}
+
+.action-toggle-btn.active:hover {
+  background: var(--thinking-on-surface);
   border-color: var(--glass-border);
 }
 
-.action-toggle-btn.active {
-  background: var(--glass-bg);
-  color: var(--text-main);
-  border-color: color-mix(in srgb, var(--accent-blue) 30%, transparent);
-  box-shadow: 0 0 8px color-mix(in srgb, var(--accent-blue) 10%, transparent), inset 0 1px 1px rgba(255, 255, 255, 0.15);
+/* 鼠标按下：项目通用按压反馈 */
+.action-toggle-btn:active {
+  transform: scale(0.97);
 }
 
+/* 不可点（不支持思考 / 模型强制开启、用户改不了）：
+   必须是"未选中"外观，否则用户会以为它选着。 */
 .action-toggle-btn.disabled {
-  opacity: 0.5;
   cursor: not-allowed;
-  filter: grayscale(1);
+  opacity: 0.65;
+  transform: none;
+}
+
+.action-toggle-btn.disabled:not(.active) {
+  background: var(--thinking-off-surface);
+  border-style: dashed;
+  border-color: var(--glass-border);
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.action-toggle-btn.disabled:not(.active) svg {
+  stroke-width: 1.7;
+}
+
+/* 锁定态（模型强制开启）：读作"开启"，只靠锁角标与虚线边说明"你改不了" */
+.action-toggle-btn.locked {
+  cursor: not-allowed;
+}
+
+.action-toggle-btn.locked:active {
+  transform: none;
+}
+
+.action-toggle-btn.locked .thinking-lock-badge {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  color: inherit;
+  opacity: 0.85;
 }
 
 .toolbar-spacer {
@@ -1337,7 +1520,7 @@ const handleRecallEdit = async () => {
   color: var(--text-muted);
   border: none;
   border-radius: 50%;
-  font-size: 10px;
+  padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1405,8 +1588,6 @@ const handleRecallEdit = async () => {
   color: var(--accent-blue);
   opacity: 0.6;
   cursor: pointer;
-  font-size: 0.9rem;
-  line-height: 1;
   padding: 2px 6px;
   border-radius: var(--radius-sm);
   transition: all var(--transition-fast);
@@ -1418,6 +1599,28 @@ const handleRecallEdit = async () => {
 .recall-dismiss-btn:hover {
   opacity: 1;
   background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
+}
+
+/* 提示条右侧关闭按钮：与 remove-media-btn 同构，跟随提示文字颜色 */
+.warning-close-btn {
+  background: none;
+  border: none;
+  padding: 2px;
+  margin-left: auto;
+  color: inherit;
+  opacity: 0.55;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: all var(--transition-fast);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.warning-close-btn:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
 }
 
 .resume-run-bar {

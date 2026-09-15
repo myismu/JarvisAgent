@@ -141,6 +141,8 @@ pub fn run() {
             command::session::get_session_todos,
             command::session::compact_conversation,
             command::session::is_session_compacting,
+            command::session::get_session_thinking,
+            command::session::set_session_thinking_mode,
             command::config::get_config,
             command::config::save_config_cmd,
             command::config::get_image_compress_config,

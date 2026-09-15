@@ -10,7 +10,7 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// 删除废弃的旧 checkpoint 表（v3 迁移）
 fn migrate_v3_drop_deprecated_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -288,6 +288,28 @@ fn migrate_v10_add_projects(conn: &Connection) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
+/// 引入 sessions.thinking_mode（v11 迁移）
+///
+/// 深度思考档位的会话级表态：`NULL` / `'auto'` = 跟随预设默认，
+/// `'always'` = 本会话强制开启，`'never'` = 本会话强制关闭。
+///
+/// 刻意**不回填**：老会话一律 `NULL`（等价 auto），语义与"用户从未表态"完全一致；
+/// 用户历史上的临时开关从未持久化，回填任何具体值都是编造。
+fn migrate_v11_add_session_thinking_mode(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let has_thinking_mode = {
+        let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .collect();
+        columns.iter().any(|c| c == "thinking_mode")
+    };
+    if !has_thinking_mode {
+        conn.execute("ALTER TABLE sessions ADD COLUMN thinking_mode TEXT", [])?;
+    }
+    Ok(())
+}
+
 pub fn init_schema(conn: &Connection) -> Result<(), String> {
     // 获取当前 schema 版本
     let current_version: i64 = conn
@@ -350,6 +372,10 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
     if current_version < 10 {
         migrate_v10_add_projects(conn).map_err(|e| format!("v10 迁移失败: {}", e))?;
     }
+    if current_version < 11 {
+        migrate_v11_add_session_thinking_mode(conn)
+            .map_err(|e| format!("v11 迁移失败: {}", e))?;
+    }
 
     conn.execute_batch(
         r#"
@@ -379,6 +405,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             title_source TEXT NOT NULL DEFAULT 'default',
             project_id TEXT,
             deleted_at INTEGER,
+            thinking_mode TEXT,
             FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE SET NULL
         );
 
@@ -605,4 +632,111 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({})", table))
+            .expect("prepare table_info");
+        let found: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query table_info")
+            .filter_map(Result::ok)
+            .collect();
+        found.iter().any(|c| c == column)
+    }
+
+    /// v10 老库升级到 v11：升级前没有 thinking_mode，升级后必须有且老行保持 NULL。
+    ///
+    /// 注意：这里刻意先建好 `sessions` 表再调 `init_schema`——`init_schema` 对**完全空库**
+    /// 并不幂等（v10 迁移会 `ALTER` 不存在的表），真实场景下 DB 文件由应用先创建，
+    /// 因此测试按真实形态构造：已有 v10 表结构 + `schema_version = 10`。
+    #[test]
+    fn v11_migration_adds_thinking_mode_to_legacy_db() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        // v10 形态的 sessions 表（无 thinking_mode）
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                message_count INTEGER NOT NULL,
+                profile_id TEXT,
+                deleted_at INTEGER
+            );
+            CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO app_state(key, value) VALUES('schema_version', '10');
+            INSERT INTO sessions(id, title, created_at, updated_at, message_count, profile_id, deleted_at)
+                VALUES('s1', '老会话', 1, 1, 0, 'default', NULL);",
+        )
+        .expect("create legacy schema");
+
+        assert!(!column_exists(&conn, "sessions", "thinking_mode"));
+
+        init_schema(&conn).expect("upgrade v10 -> v11");
+
+        assert!(
+            column_exists(&conn, "sessions", "thinking_mode"),
+            "v11 迁移必须补上 thinking_mode 列"
+        );
+        // 老行不得被回填任何具体档位：NULL 才等价于"用户从未表态"（auto）
+        let value: Option<String> = conn
+            .query_row("SELECT thinking_mode FROM sessions WHERE id = 's1'", [], |r| {
+                r.get(0)
+            })
+            .expect("read legacy row");
+        assert_eq!(value, None, "老会话必须保持 NULL(auto)，不得编造档位");
+
+        // 版本号推进到 11
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM app_state WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read version");
+        assert_eq!(version, "11");
+
+        // 幂等：再次初始化不报错，且不破坏已有值
+        conn.execute("UPDATE sessions SET thinking_mode = 'never' WHERE id = 's1'", [])
+            .expect("set mode");
+        init_schema(&conn).expect("re-init idempotent");
+        let after: Option<String> = conn
+            .query_row("SELECT thinking_mode FROM sessions WHERE id = 's1'", [], |r| {
+                r.get(0)
+            })
+            .expect("re-read");
+        assert_eq!(after.as_deref(), Some("never"), "重复初始化不得清掉用户表态");
+    }
+
+    /// 建表 DDL 必须自带 thinking_mode（保证新库与升级后的老库同构）
+    #[test]
+    fn fresh_ddl_declares_thinking_mode() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        conn.execute(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                message_count INTEGER NOT NULL,
+                is_smart_named INTEGER NOT NULL DEFAULT 0,
+                profile_id TEXT,
+                total_input_tokens INTEGER NOT NULL DEFAULT 0,
+                total_output_tokens INTEGER NOT NULL DEFAULT 0,
+                title_source TEXT NOT NULL DEFAULT 'default',
+                project_id TEXT,
+                deleted_at INTEGER,
+                thinking_mode TEXT
+            )",
+            [],
+        )
+        .expect("create sessions");
+        assert!(column_exists(&conn, "sessions", "thinking_mode"));
+    }
 }
