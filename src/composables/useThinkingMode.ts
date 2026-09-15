@@ -29,6 +29,7 @@ import { useSessionStore } from "../stores/session";
 import { usePreferences } from "../composables/usePreferences";
 import {
   decideThinking,
+  isThinkingToggleDisabled,
   type ThinkingCaps,
   type ThinkingDecision,
   type ThinkingMode,
@@ -154,26 +155,32 @@ export function useThinkingMode(modelCaps: Ref<ThinkingCaps | null>) {
   /**
    * 用户点击开关。
    *
-   * 两种情况：
-   * 1. **已有会话**：写 L2（`sessions.thinking_mode`）→ 以返回的权威快照刷新；
+   * 三种情况：
+   * 1. **锁定/不可点**（模型强制思考、或模型不支持思考）：直接返回，**不记录任何意愿**。
+   *    按钮在 UI 上已是 `disabled`，这里是第二道防线——避免任何路径（键盘、
+   *    程序化调用、未来新增入口）绕过禁用态，悄悄存下一个用户看不见的档位。
    * 2. **尚无会话**（新建但未发首条消息）：只记录意愿并立即反馈，等会话建立后落库。
    *    **绝不静默 return**——那正是"点了没反应"这种假故障的来源。
+   * 3. **有会话**：写 L2（`sessions.thinking_mode`）→ 以返回的权威快照刷新。
    */
   async function toggleThinking() {
     const sid = session.activeSessionId;
     if (saving.value) return;
 
+    // 1. 锁定态不可点：改不了就不给改，也不记账（决策 X）
+    if (isThinkingToggleDisabled(modelCaps.value)) return;
+
     const next: ThinkingMode = isThinkingActive.value ? "never" : "always";
     const previous = currentMode.value;
 
-    // 尚无会话：记意愿 + 即时反馈，会话一建立就落库
+    // 2. 尚无会话：记意愿 + 即时反馈，会话一建立就落库
     if (!sid) {
       pendingMode = next;
       modeBySession.value = { ...modeBySession.value, [NO_SESSION_KEY]: next };
       return;
     }
 
-    // 点击时立刻作废"在途的档位拉取"，否则它会把写入结果覆盖掉
+    // 3. 点击时立刻作废"在途的档位拉取"，否则它会把写入结果覆盖掉
     loadGeneration += 1;
 
     // 即时反馈（纯 UI，失败回滚）
@@ -205,6 +212,8 @@ export function useThinkingMode(modelCaps: Ref<ThinkingCaps | null>) {
     // 清掉无会话态的临时条目，会话档位以刚落库的结果为准
     const { [NO_SESSION_KEY]: _dropped, ...rest } = modeBySession.value;
     modeBySession.value = rest;
+    // 会话建立后模型可能已换成强制思考/不支持思考的：此时不该落库（与决策 X 一致）
+    if (isThinkingToggleDisabled(modelCaps.value)) return;
     try {
       const snapshot = await invoke<ThinkingSnapshot>("set_session_thinking_mode", {
         id: sid,

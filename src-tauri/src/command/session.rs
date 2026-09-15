@@ -185,6 +185,46 @@ pub async fn switch_session(
     Ok(meta)
 }
 
+/// 把"当前会话"的模型预设同步为 `AppConfig.active_profile_id` 并落库。
+///
+/// **为什么必须有这个函数**：模型预设是会话级状态（`sessions.profile_id`），
+/// 但 pipeline 每次读的是 `AppConfig.active_profile_id`。因此**任何"让某会话成为
+/// 当前会话"的后端路径都必须对齐一次**，否则后续请求会继续用上一个会话/全局默认的预设。
+///
+/// 已覆盖的路径：启动恢复会话、点击切会话（前端 `syncProfileFromSession`）、
+/// 删除会话后自动回落（本文件 `switch_away_and_delete_empty_session`）。
+fn align_active_profile_to_session(
+    app: &tauri::AppHandle,
+    config_state: &tauri::State<'_, crate::infra::config::config::ConfigState>,
+    profile_id: Option<&str>,
+) {
+    let Ok(mut current) = config_state.0.try_lock() else {
+        // 拿不到配置锁就跳过：宁可这次不对齐，也不能阻塞删除流程
+        return;
+    };
+    let target = profile_id
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| current.global_profile_id.clone());
+    if current.active_profile_id == target {
+        return;
+    }
+    current.active_profile_id = target;
+    let snapshot = current.clone();
+    drop(current);
+
+    if let Err(e) = crate::infra::config::config::save_config(&snapshot) {
+        println!("[配置] 对齐会话预设落库失败: {}", e);
+        return;
+    }
+    println!(
+        "[配置] 已对齐激活预设: {} (main_model={})",
+        snapshot.active_profile_id,
+        snapshot.active_config().main_model
+    );
+    // 通知前端刷新（输入栏据此重读模型名与能力）
+    let _ = app.emit("config-updated", ());
+}
+
 /// 删除会话后自动切换到下一个可用会话（若无则创建新会话）
 pub async fn switch_away_and_delete_empty_session(
     deleted_session_id: &str,
@@ -194,6 +234,9 @@ pub async fn switch_away_and_delete_empty_session(
     let fallback = session::list_sessions()
         .into_iter()
         .find(|session| session.id != deleted_session_id);
+    // 删除前先记下 fallback 的预设：删除后这个 meta 就取不到了
+    let fallback_profile_id = fallback.as_ref().and_then(|m| m.profile_id.clone());
+    let fallback_id = fallback.as_ref().map(|m| m.id.clone());
 
     // 删空会话
     session::delete_session(deleted_session_id)?;
@@ -201,11 +244,16 @@ pub async fn switch_away_and_delete_empty_session(
         manager.remove(deleted_session_id).await;
     }
 
+    // 对齐激活预设，否则后端会继续用**刚被删掉的会话**的预设
+    if let Some(state) = app.try_state::<crate::infra::config::config::ConfigState>() {
+        align_active_profile_to_session(app, &state, fallback_profile_id.as_deref());
+    }
+
     let _ = app.emit(
         "active-session-changed",
         SessionCleanupResult {
             deleted_session_id: Some(deleted_session_id.to_string()),
-            active_session_id: fallback.map(|m| m.id),
+            active_session_id: fallback_id,
         },
     );
     let _ = app.emit("session-updated", ());
@@ -507,10 +555,14 @@ fn message_text_content(content: &Content) -> String {
 pub async fn delete_session(
     id: String,
     session_manager: tauri::State<'_, SessionManager>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
-    session::delete_session(&id)?;
+    // 复用统一的删除+回落逻辑：删掉指定会话、选 fallback、对齐激活预设、
+    // 广播 active-session-changed（前端据此把 activeSessionId 切到 fallback）。
+    // 早期这里只做"删行 + 清内存"，既不回落也不切预设，删掉当前会话后
+    // 前端仍指向已删除的会话、后端仍用被删会话的预设。
     session_manager.remove(&id).await;
-    Ok(())
+    switch_away_and_delete_empty_session(&id, &app).await
 }
 
 #[tauri::command]
