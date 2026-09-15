@@ -22,6 +22,7 @@ import { useAppViewStore } from '../../stores/appView';
 import { useAgentEvents } from '../../composables/useAgentEvents';
 import { loadSessionThinking } from '../../composables/useThinkingMode';
 import { useWindow } from '../../composables/useWindow';
+import ConfirmModal from '../common/ConfirmModal.vue';
 
 defineProps<{
   collapsed: boolean;
@@ -390,19 +391,57 @@ const switchToSession = async (id: string) => {
   }
 };
 
-// 删除会话
-const deleteSession = async (id: string, event: Event) => {
+// 删除会话：先进入确认态，确认后才真正执行（硬删除、不可撤销）
+//
+// 为什么当前会话也可以删：要求"先切走再删"会让**只有一个会话时删除功能完全不可达**，
+// 且整理多个会话时被迫来回切换（切换还带改预设、改思考档位的副作用）。
+// 安全性改由**显式确认**承担：删除当前会话时文案会额外说明将切换到哪个会话。
+const pendingDeleteSession = ref<{ id: string; title: string; isActive: boolean } | null>(null);
+const deleteSessionLoading = ref(false);
+
+const pendingDeleteMessage = computed(() => {
+  const pending = pendingDeleteSession.value;
+  if (!pending) return '';
+  if (pending.isActive) {
+    const next = sessions.value.find((s) => s.id !== pending.id);
+    return t('sidebar.deleteSessionConfirmActive', { next: next?.title || t('sidebar.newSession') });
+  }
+  return t('sidebar.deleteSessionConfirm', { name: pending.title });
+});
+
+const deleteSession = (session: SessionMeta, event: Event) => {
   event.stopPropagation();
-  if (id === sessionStore.activeSessionId) return;
-  if (isSessionRunning(id)) {
+  if (isSessionRunning(session.id)) {
     showSessionActionMessage(t('sidebar.deleteRunning'), 'error');
     return;
   }
+  pendingDeleteSession.value = {
+    id: session.id,
+    title: session.title,
+    isActive: session.id === sessionStore.activeSessionId,
+  };
+};
+
+const cancelDeleteSession = () => {
+  if (deleteSessionLoading.value) return;
+  pendingDeleteSession.value = null;
+};
+
+const confirmDeleteSession = async () => {
+  const pending = pendingDeleteSession.value;
+  if (!pending || deleteSessionLoading.value) return;
+  deleteSessionLoading.value = true;
   try {
-    await invoke('delete_session', { id });
+    // 后端会把 activeSessionId 回落到另一个会话（并同步该会话的模型预设），
+    // 前端由 active-session-changed 事件切过去，这里不需要额外处理
+    await invoke('delete_session', { id: pending.id });
     await loadSessions();
   } catch (err) {
     console.error('删除会话失败:', err);
+    showSessionActionMessage(formatErrorMessage(err), 'error');
+  } finally {
+    deleteSessionLoading.value = false;
+    pendingDeleteSession.value = null;
   }
 };
 
@@ -629,9 +668,8 @@ onUnmounted(() => {
                   </svg>
                 </button>
                 <button
-                  v-if="session.id !== sessionStore.activeSessionId"
                   class="delete-btn"
-                  @click="deleteSession(session.id, $event)"
+                  @click="deleteSession(session, $event)"
                   :title="t('sidebar.delete')"
                 >
                   <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" stroke-width="2" fill="none">
@@ -684,9 +722,8 @@ onUnmounted(() => {
                 </svg>
               </button>
               <button
-                v-if="session.id !== sessionStore.activeSessionId"
                 class="delete-btn"
-                @click="deleteSession(session.id, $event)"
+                @click="deleteSession(session, $event)"
                 :title="t('sidebar.delete')"
               >
                 <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" stroke-width="2" fill="none">
@@ -714,6 +751,17 @@ onUnmounted(() => {
         </button>
       </div>
 
+      <!-- 删除会话确认：硬删除不可撤销，用显式确认替代"隐藏按钮"式的隐式防护 -->
+      <ConfirmModal
+        :open="pendingDeleteSession !== null"
+        :title="t('sidebar.delete')"
+        :message="pendingDeleteMessage"
+        :confirm-text="t('sidebar.delete')"
+        confirm-kind="danger"
+        :loading="deleteSessionLoading"
+        @confirm="confirmDeleteSession"
+        @cancel="cancelDeleteSession"
+      />
     </div>
   </div>
 

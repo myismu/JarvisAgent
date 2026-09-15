@@ -44,6 +44,8 @@
     "sandboxTitle": "{path}",
     "rename": "Rename session",
     "delete": "Delete session",
+    "deleteSessionConfirm": "Delete session \"{name}\"? Its messages and run records will be removed too. This action cannot be undone.",
+    "deleteSessionConfirmActive": "This is the current session. Deleting it will switch to \"{next}\"; its messages and run records will be removed too. This action cannot be undone.",
     "settings": "Settings",
     "settingsTitle": "System Settings",
     "skillManager": "Skill Manager"

@@ -249,6 +249,12 @@ pub async fn switch_away_and_delete_empty_session(
         align_active_profile_to_session(app, &state, fallback_profile_id.as_deref());
     }
 
+    // 没有 fallback（删掉了最后一个会话）时清掉 last_active_session_id，
+    // 否则下次启动会拿一个已删除的 id 去 switch_session，白报一次错再回落。
+    if fallback_id.is_none() {
+        let _ = crate::core::session::repository::clear_last_active_session_id();
+    }
+
     let _ = app.emit(
         "active-session-changed",
         SessionCleanupResult {

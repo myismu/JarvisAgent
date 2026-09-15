@@ -45,6 +45,8 @@
     "sandboxTitle": "{path}",
     "rename": "重命名会话",
     "delete": "删除会话",
+    "deleteSessionConfirm": "确定要删除会话「{name}」吗？该会话的消息与运行记录会一并删除，此操作不可撤销。",
+    "deleteSessionConfirmActive": "这是当前会话，删除后将自动切换到「{next}」；该会话的消息与运行记录会一并删除，此操作不可撤销。",
     "settings": "设置",
     "settingsTitle": "系统设置",
     "skillManager": "技能管理"
