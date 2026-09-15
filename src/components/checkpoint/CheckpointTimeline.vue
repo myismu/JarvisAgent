@@ -14,7 +14,8 @@ import { ref, onMounted, onUnmounted, watch, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { Checkpoint, Branch, CheckpointTree } from '../../types';
-import { formatRelativeTime, getFileOpIcon, getFileOpLabel } from '../../utils/timeline';
+import FileOpIcon from '../snapshot/FileOpIcon.vue';
+import { formatRelativeTime, getFileOpLabel } from '../../utils/timeline';
 
 const props = defineProps<{
   sessionId: string | null;
@@ -219,7 +220,7 @@ onUnmounted(() => {
         <div v-if="expandedCheckpoint === cp.id" class="checkpoint-details">
           <ul class="operation-list">
             <li v-for="(op, idx) in cp.operations" :key="idx" class="operation-item">
-              <span class="op-icon">{{ getFileOpIcon(op.opType) }}</span>
+              <FileOpIcon class="op-icon" :op="op.opType" />
               <span class="op-type">{{ getFileOpLabel(op.opType) }}</span>
               <span class="op-path" :title="op.path">{{ op.path.split(/[\\/]/).pop() }}</span>
               <span v-if="op.diffSummary" class="op-diff">{{ op.diffSummary }}</span>
@@ -243,7 +244,27 @@ onUnmounted(() => {
         <div class="rollback-modal" @click.stop>
           <h3>确认回滚</h3>
           <p>确定要回滚到检查点「{{ rollbackConfirm.message }}」吗？</p>
-          <p class="rollback-warning">⚠️ 这将恢复该检查点之前的文件状态，当前未保存的更改将丢失。</p>
+          <p class="rollback-warning">
+            <svg
+              class="rollback-warning-icon"
+              viewBox="0 0 24 24"
+              width="15"
+              height="15"
+              stroke="currentColor"
+              stroke-width="2"
+              fill="none"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path
+                d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+              />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            <span>这将恢复该检查点之前的文件状态，当前未保存的更改将丢失。</span>
+          </p>
           <div class="modal-actions">
             <button class="cancel-btn" @click="rollbackConfirm = null">取消</button>
             <button class="confirm-btn" @click="handleRollback(rollbackConfirm.checkpointId)">确认回滚</button>
@@ -456,7 +477,7 @@ onUnmounted(() => {
 }
 
 .op-icon {
-  font-size: 0.9rem;
+  color: var(--text-muted);
 }
 
 .op-type {
@@ -553,8 +574,16 @@ onUnmounted(() => {
 }
 
 .rollback-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
   color: var(--text-muted) !important;
   font-size: 0.85rem !important;
+}
+
+.rollback-warning-icon {
+  flex: 0 0 auto;
+  margin-top: 2px;
 }
 
 .rollback-modal.success h3 {

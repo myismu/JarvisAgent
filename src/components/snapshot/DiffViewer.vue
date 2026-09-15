@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { Patch } from "../../types";
+import { getFileOpPaths } from "../../utils/timeline";
 
 const props = defineProps<{
   patch: Patch;
@@ -97,23 +98,43 @@ const stats = computed(() => {
 const patchTitle = computed(() => {
   switch (props.patch.type) {
     case "create_file":
-      return `📄 创建: ${props.patch.path}`;
+      return `创建: ${props.patch.path}`;
     case "delete_file":
-      return `🗑️ 删除: ${props.patch.path}`;
+      return `删除: ${props.patch.path}`;
     case "update_file":
-      return `✏️ 修改: ${props.patch.path}`;
+      return `修改: ${props.patch.path}`;
     case "rename_file":
-      return `📛 重命名: ${props.patch.oldPath} → ${props.patch.newPath}`;
+      return `重命名: ${props.patch.oldPath} → ${props.patch.newPath}`;
     default:
       return props.patch.path;
   }
 });
+
+/** Diff 标题前的操作图标；路径与 FileOpIcon 共用 utils/timeline 的同一份数据 */
+const patchIconPaths = computed(() => getFileOpPaths(props.patch.type));
 </script>
 
 <template>
   <div class="diff-viewer">
     <div class="diff-header">
-      <span class="diff-title">{{ patchTitle }}</span>
+      <span class="diff-heading">
+        <svg
+          v-if="patchIconPaths.length"
+          class="diff-title-icon"
+          viewBox="0 0 24 24"
+          width="14"
+          height="14"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path v-for="d in patchIconPaths" :key="d" :d="d" />
+        </svg>
+        <span class="diff-title">{{ patchTitle }}</span>
+      </span>
       <span class="diff-stats">
         <span v-if="stats.added" class="stat-added">+{{ stats.added }}</span>
         <span v-if="stats.removed" class="stat-removed">-{{ stats.removed }}</span>
@@ -161,10 +182,25 @@ const patchTitle = computed(() => {
   border-bottom: 1px solid var(--glass-border-subtle);
 }
 
+.diff-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.diff-title-icon {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
 .diff-title {
   font-size: 0.8rem;
   color: var(--text-main);
   font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .diff-stats {

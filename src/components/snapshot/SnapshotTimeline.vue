@@ -23,7 +23,8 @@ import type {
   SnapshotNode,
 } from "../../types";
 import DiffViewer from "./DiffViewer.vue";
-import { formatRelativeTime, getFileOpIcon } from "../../utils/timeline";
+import FileOpIcon from "./FileOpIcon.vue";
+import { formatRelativeTime } from "../../utils/timeline";
 
 const props = defineProps<{
   sessionId: string | null;
@@ -324,9 +325,7 @@ onUnmounted(() => {
                     :key="idx"
                     class="patch-item"
                   >
-                    <span class="patch-icon">{{
-                      getFileOpIcon(patch.operation)
-                    }}</span>
+                    <FileOpIcon class="patch-icon" :op="patch.operation" />
                     <span class="patch-path">{{ patch.path }}</span>
                     <span class="patch-stats">
                       <span v-if="patch.linesAdded" class="added"
@@ -381,7 +380,25 @@ onUnmounted(() => {
           <h3>确认回滚</h3>
           <p>确定要回滚到快照「{{ rollbackConfirm.message }}」吗？</p>
           <p class="rollback-warning">
-            ⚠️ 这将恢复该快照之前的文件状态，当前未保存的更改将丢失。
+            <svg
+              class="rollback-warning-icon"
+              viewBox="0 0 24 24"
+              width="15"
+              height="15"
+              stroke="currentColor"
+              stroke-width="2"
+              fill="none"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path
+                d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+              />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            <span>这将恢复该快照之前的文件状态，当前未保存的更改将丢失。</span>
           </p>
           <div class="modal-actions">
             <button class="cancel-btn" @click="rollbackConfirm = null">
@@ -671,7 +688,7 @@ onUnmounted(() => {
 }
 
 .patch-icon {
-  font-size: 0.9rem;
+  color: var(--text-muted);
 }
 
 .patch-path {
@@ -781,8 +798,16 @@ onUnmounted(() => {
 }
 
 .rollback-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
   color: var(--text-muted) !important;
   font-size: 0.85rem !important;
+}
+
+.rollback-warning-icon {
+  flex: 0 0 auto;
+  margin-top: 2px;
 }
 
 .detail-content {

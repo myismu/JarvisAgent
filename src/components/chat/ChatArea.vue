@@ -699,8 +699,25 @@ onMounted(() => {
             class="rollback-trigger"
             :data-cp-id="message.rollbackCheckpointId || ''"
             :title="t('rollback.trigger')"
+            :aria-label="t('rollback.trigger')"
             @click.stop="handleRollbackClickVue(index, message, $event)"
-          ></button>
+          >
+            <svg
+              class="rollback-trigger-icon"
+              viewBox="0 0 24 24"
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M9 14 4 9l5-5" />
+              <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5V20" />
+            </svg>
+          </button>
         </div>
         <!-- Agent 消息 -->
         <div v-else-if="message.role === 'agent' && message.snapshot" class="chat-message agent-message" :data-msg-id="message.id">
@@ -1377,11 +1394,9 @@ onMounted(() => {
   opacity: 0.2;
   pointer-events: auto;
 }
-:deep(.rollback-trigger)::after {
-  content: "↩";
-  font-size: 13px;
-  line-height: 1;
+:deep(.rollback-trigger-icon) {
   color: color-mix(in srgb, var(--text-muted) 78%, transparent);
+  transition: color 0.15s ease;
 }
 :deep(.user-message:hover .rollback-trigger) {
   opacity: 0.75;
@@ -1395,7 +1410,7 @@ onMounted(() => {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-blue) 12%, transparent);
   transform: scale(1.1);
 }
-:deep(.rollback-trigger:hover)::after {
+:deep(.rollback-trigger:hover) .rollback-trigger-icon {
   color: var(--accent-blue);
 }
 
