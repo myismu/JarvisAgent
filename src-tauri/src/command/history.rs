@@ -82,6 +82,13 @@ pub struct AgentTurnSnapshot {
     tool_calls: Vec<AgentToolCallView>,
     logs: Vec<AgentExecutionLog>,
     tokens: Option<AgentTurnTokens>,
+    /// 气泡下方的小字说明（如"以上为部分结果""回复被中断"）。
+    ///
+    /// 与 `text_blocks` 的区别是展示位置：notice 渲染在回复气泡**之外**的下方，
+    /// 属于状态标注；而 text_blocks 是模型正文，渲染在气泡内。
+    /// 中断/取消这类"运行状态"信息一律走 notice，避免混进正文显得突兀。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notice: Option<String>,
     created_at: u64,
 }
 
@@ -139,7 +146,17 @@ pub struct AgentExecutionLog {
 
 impl AgentTurnSnapshot {
     fn is_empty(&self) -> bool {
-        self.text_blocks.is_empty() && self.thinking_blocks.is_empty() && self.tool_calls.is_empty()
+        self.text_blocks.is_empty()
+            && self.thinking_blocks.is_empty()
+            && self.tool_calls.is_empty()
+            // notice 也是要展示的内容：只统计正文会让"仅有一条中断说明"的
+            // 收尾轮次被判为空而整轮丢弃 —— 实测出现于"中断后没有后续消息"的场景
+            // （最后一条就是 interrupted 消息，结果界面什么都不显示）。
+            && self
+                .notice
+                .as_deref()
+                .map(|n| n.trim().is_empty())
+                .unwrap_or(true)
     }
 }
 
@@ -391,6 +408,38 @@ fn render_user_message(history: &mut String, message: &UserDisplayMessage) {
 
 /// 渲染助手消息 HTML，思考过程用 details 折叠，取最后一段非空文本作为可见回复
 
+/// 判断该 source 是否属于"中断标记消息"（只作状态说明，不是模型正文）。
+fn is_interrupted_source(source: &str) -> bool {
+    source == "interrupted"
+}
+
+/// 从 `interrupted` 消息里取出给用户看的小字说明。
+///
+/// 写入历史的标记文案形如 `> ⚠️ **[回复被中断]** …`，早期还带过 `> ✕ **用户已取消执行…**`。
+/// 这里剥掉 Markdown 引用符号与加粗，只留纯文本，交给前端渲染成气泡下方的小字。
+fn interrupted_notice_text(content: &Content) -> Option<String> {
+    let raw = match content {
+        Content::Single(s) => s.as_str(),
+        Content::Multiple(blocks) => blocks.iter().find_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })?,
+    };
+    let cleaned = raw
+        .trim()
+        .trim_start_matches('>')
+        .trim()
+        .replace("**", "")
+        .replace("⚠️", "⚠")
+        .trim()
+        .to_string();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
 fn render_assistant_message(history: &mut String, assistant: &mut AgentTurnSnapshot) {
     if assistant.is_empty() {
         return;
@@ -476,6 +525,19 @@ fn render_assistant_message(history: &mut String, assistant: &mut AgentTurnSnaps
     history.push_str("\n\n</div></div>\n\n");
 }
 
+/// 该 source 的消息是否参与会话历史的界面渲染。
+///
+/// 白名单语义：
+/// - `chat`：常规对话（用户输入 / 助手回复）；
+/// - `interrupted`：运行被打断（用户取消 / 上游失联 / 执行报错）时的收尾消息。
+///   必须渲染，否则中断轮次会从界面消失，用户会以为「根本没执行」。
+///
+/// 其余 source（`compact` 压缩摘要、`internal` 内部通知、`background` 后台结果、
+/// `context` 上下文注入）仍由 SQL 与内容规则过滤，不进界面。
+fn is_renderable_source(source: &str) -> bool {
+    matches!(source, "chat" | "interrupted")
+}
+
 #[tauri::command]
 pub async fn get_session_history(
     session_id: String,
@@ -483,48 +545,16 @@ pub async fn get_session_history(
     registry: tauri::State<'_, SnapshotRegistry>,
 ) -> Result<String, String> {
     let ctx = session_manager.get_or_create(&session_id).await;
-    // 先将内存中的 message_ids flush 到 DB，确保读到最新状态
-    {
-        let mem = ctx.memory.lock().await;
-        let _ = crate::core::session::save_session(&session_id, &mem, None);
-    }
+    // 注意：**不要**在这里把内存 flush 到 DB（与 extract_session_messages 同理）。
+    // 该 flush 会把内存中已删除的消息复活，"删掉后刷新又回来"即由此产生。
     let mut memory = session::load_session(&session_id)?;
     let _runs = agent_runs::list_runs(Some(&session_id));
 
     // ── 中断恢复：检测并补回崩溃/中断时丢失的消息 ──
-    if let Some((extra_messages, partial_content, partial_thinking)) =
-        agent_runs::recover_interrupted_messages(&session_id, &memory.messages)
-    {
-        // 补回 checkpoint 中多出的消息（用户消息、工具结果等）
-        memory.messages.extend(extra_messages);
-
-        // 如果有半截助手回复，追加为一条助手消息
-        // 在半截文本末尾追加中断标记，让 LLM 知道自己的回复被中断了
-        let has_partial_content = !partial_content.trim().is_empty();
-        let has_partial_thinking = !partial_thinking.trim().is_empty();
-        if has_partial_content || has_partial_thinking {
-            let mut blocks = Vec::new();
-            if has_partial_thinking {
-                blocks.push(ContentBlock::Thinking {
-                    thinking: partial_thinking,
-                    signature: String::new(),
-                });
-            }
-            if has_partial_content {
-                // 在半截文本后追加中断标记
-                let marked_content = format!(
-                    "{}\n\n> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。",
-                    partial_content.trim_end()
-                );
-                blocks.push(ContentBlock::Text {
-                    text: marked_content,
-                });
-            }
-            session::append_message(&mut memory, Message::Assistant {
-                content: Content::Multiple(blocks),
-            }, "chat");
-        }
-
+    //
+    // 复用 `recover_interrupted_into_memory`（含去重守卫），不要内联重写：
+    // 内联副本没有去重，会**每加载一次就多一条合并副本**。
+    if crate::command::session::recover_interrupted_into_memory(&session_id, &mut memory) {
         // 将恢复后的内存同步回去，并保存到数据库
         *ctx.memory.lock().await = memory.clone();
         session::save_session(&session_id, &memory, None);
@@ -603,7 +633,7 @@ pub async fn get_session_history(
         .filter_map(|(memory_index, message_id, seq, msg, source)| {
             if let Message::User { content } = msg {
                 let display = user_display_content(content);
-                if source == "chat" && !display.trim().is_empty() {
+                if is_renderable_source(source) && !display.trim().is_empty() {
                     return Some(UserDisplayMessage {
                         memory_index: *memory_index,
                         message_id: message_id.clone(),
@@ -653,7 +683,7 @@ pub async fn get_session_history(
                     }
                 }
 
-                if source.as_str() != "chat" || display.trim().is_empty() {
+                if !is_renderable_source(source.as_str()) || display.trim().is_empty() {
                     continue;
                 }
                 let Some(message) = display_messages.get(visible_user_index) else {
@@ -667,7 +697,17 @@ pub async fn get_session_history(
                 visible_user_index += 1;
             }
             Message::Assistant { content } => {
-                if source.as_str() != "chat" {
+                if !is_renderable_source(source.as_str()) {
+                    continue;
+                }
+                // `interrupted` 消息不是模型正文，而是"运行被打断"的状态说明。
+                // 把它挂到本轮快照的 notice 上，由前端渲染在气泡**下方**的小字里；
+                // 若混进 text_blocks 会挤进回复气泡内部，既突兀又会与
+                // "已保留的部分结果"重复，看起来像模型自己说的话。
+                if is_interrupted_source(source.as_str()) {
+                    if let Some(notice) = interrupted_notice_text(content) {
+                        pending_assistant.notice = Some(notice);
+                    }
                     continue;
                 }
                 append_assistant_content(&mut pending_assistant, content, loop_idx, current_ts);
@@ -691,39 +731,25 @@ async fn extract_session_messages(
     registry: &SnapshotRegistry,
 ) -> Result<Vec<SessionMessage>, String> {
     let ctx = session_manager.get_or_create(session_id).await;
-    {
-        let mem = ctx.memory.lock().await;
-        let _ = crate::core::session::save_session(session_id, &mem, None);
-    }
+    // 注意：**不要**在这里把内存 flush 到 DB。
+    //
+    // 曾经的实现是"先把 ctx.memory 存库，再读回来"，注释说是"确保读到最新状态"，
+    // 但实际效果相反：后端进程常驻，内存里可能残留**已被删除**的消息，
+    // 这次 flush 会把它们全部复活 —— 实测表现为"手动删掉某条消息后 F5，
+    // 它立刻回到数据库"，看起来阴魂不散。
+    //
+    // 本函数语义是**读取**，应以数据库为准；需要持久化的写入点各自负责落库。
     let mut memory = session::load_session(session_id)?;
     let _runs = agent_runs::list_runs(Some(session_id));
 
     // 中断恢复
-    if let Some((extra_messages, partial_content, partial_thinking)) =
-        agent_runs::recover_interrupted_messages(session_id, &memory.messages)
-    {
-        memory.messages.extend(extra_messages);
-        let has_partial_content = !partial_content.trim().is_empty();
-        let has_partial_thinking = !partial_thinking.trim().is_empty();
-        if has_partial_content || has_partial_thinking {
-            let mut blocks = Vec::new();
-            if has_partial_thinking {
-                blocks.push(ContentBlock::Thinking {
-                    thinking: partial_thinking,
-                    signature: String::new(),
-                });
-            }
-            if has_partial_content {
-                let marked_content = format!(
-                    "{}\n\n> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。",
-                    partial_content.trim_end()
-                );
-                blocks.push(ContentBlock::Text { text: marked_content });
-            }
-            session::append_message(&mut memory, Message::Assistant {
-                content: Content::Multiple(blocks),
-            }, "chat");
-        }
+    //
+    // 这里**必须**复用 `recover_interrupted_into_memory`，不要内联重写：
+    // 该函数含有"半截内容是否已存在"的去重守卫，而它的判定需要处理
+    // 「正文 / 中断标记分体存储」与「正文+标记合并」两种形态。
+    // 曾在此内联复制过一份无去重的实现，导致**每加载一次就多一条合并副本**
+    // （实测"删掉再刷新，副本又回来"，且因未走到守卫分支连日志都不打印）。
+    if crate::command::session::recover_interrupted_into_memory(session_id, &mut memory) {
         *ctx.memory.lock().await = memory.clone();
         session::save_session(session_id, &memory, None);
         if let Some(interrupted_run) = agent_runs::find_interrupted_run(session_id) {
@@ -797,7 +823,7 @@ async fn extract_session_messages(
         .filter_map(|(memory_index, message_id, seq, msg, source)| {
             if let Message::User { content } = msg {
                 let display = user_display_content(content);
-                if source == "chat" && !display.trim().is_empty() {
+                if is_renderable_source(source) && !display.trim().is_empty() {
                     return Some(UserDisplayMessage {
                         memory_index: *memory_index,
                         message_id: message_id.clone(),
@@ -837,7 +863,7 @@ async fn extract_session_messages(
                     }
                 }
 
-                if source.as_str() != "chat" || display.trim().is_empty() {
+                if !is_renderable_source(source.as_str()) || display.trim().is_empty() {
                     continue;
                 }
                 let Some(message) = display_messages.get(visible_user_index) else {
@@ -886,7 +912,17 @@ async fn extract_session_messages(
                 loop_idx = 1;
             }
             Message::Assistant { content } => {
-                if source.as_str() != "chat" {
+                if !is_renderable_source(source.as_str()) {
+                    continue;
+                }
+                // `interrupted` 消息不是模型正文，而是"运行被打断"的状态说明。
+                // 把它挂到本轮快照的 notice 上，由前端渲染在气泡**下方**的小字里；
+                // 若混进 text_blocks 会挤进回复气泡内部，既突兀又会与
+                // "已保留的部分结果"重复，看起来像模型自己说的话。
+                if is_interrupted_source(source.as_str()) {
+                    if let Some(notice) = interrupted_notice_text(content) {
+                        pending_assistant.notice = Some(notice);
+                    }
                     continue;
                 }
                 append_assistant_content(&mut pending_assistant, content, loop_idx, current_ts);
@@ -924,4 +960,67 @@ pub async fn get_session_messages(
     registry: tauri::State<'_, SnapshotRegistry>,
 ) -> Result<Vec<SessionMessage>, String> {
     extract_session_messages(&session_id, &session_manager, &registry).await
+}
+
+#[cfg(test)]
+mod renderable_source_tests {
+    use super::is_renderable_source;
+
+    /// 常规对话必须渲染
+    #[test]
+    fn chat_is_renderable() {
+        assert!(is_renderable_source("chat"));
+    }
+
+    /// 回归防护：中断收尾消息必须渲染。
+    /// 否则用户取消/上游失联后，中断轮次会从界面整体消失，
+    /// 用户会误以为「根本没执行」——这正是本次要修掉的问题。
+    #[test]
+    fn interrupted_is_renderable() {
+        assert!(is_renderable_source("interrupted"));
+    }
+
+    /// 内部消息仍不得泄漏到界面
+    #[test]
+    fn internal_sources_stay_hidden() {
+        for src in ["compact", "internal", "background", "context"] {
+            assert!(
+                !is_renderable_source(src),
+                "{src} 不应参与界面渲染"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod notice_not_empty_tests {
+    //! **实测 bug 的防护**：`is_empty()` 只统计正文块时，
+    //! 「仅有一条中断说明」的收尾轮次会被判为空而整轮丢弃。
+    //!
+    //! 触发场景很常见：中断发生后**没有后续消息**（会话最后一条即 interrupted），
+    //! 于是界面什么都不显示、连提示都没有。
+    //!
+    //! 同一处判定在前端也有一份（`ChatArea.vue hasCurrentTurnContent`），
+    //! 两边都必须把 notice 计入 —— 只改一边仍会漏。
+    use super::AgentTurnSnapshot;
+
+    fn snapshot_with_notice(notice: Option<&str>) -> AgentTurnSnapshot {
+        AgentTurnSnapshot {
+            notice: notice.map(|s| s.to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// 只有 notice 时不算空：否则整轮被丢弃，用户看不到任何中断/等待提示
+    #[test]
+    fn notice_only_is_not_empty() {
+        assert!(!snapshot_with_notice(Some("⚠ 上游服务已停止响应")).is_empty());
+    }
+
+    /// 空白 notice 仍算空，避免渲染出一个空壳气泡
+    #[test]
+    fn blank_notice_is_still_empty() {
+        assert!(snapshot_with_notice(Some("   ")).is_empty());
+        assert!(snapshot_with_notice(None).is_empty());
+    }
 }

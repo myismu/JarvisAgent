@@ -489,7 +489,8 @@ pub async fn rewrite_global_memory(
     user_content: String,
     log_label: &str,
 ) -> Option<String> {
-    let client = reqwest::Client::new();
+    // 辅助调用统一走带超时的客户端（整体时限由 send_non_stream_and_read 施加）
+    let client = crate::infra::llm::api_client::build_utility_client();
     let request_body = AnthropicRequest {
         model: config.utility_model.clone(),
         max_tokens: crate::infra::types::constants::MAX_TOKENS_CONTEXT,

@@ -100,6 +100,7 @@ export function createEmptyAgentCurrentTurn(): AgentCurrentTurn {
     thinkingBlocks: [],
     toolCalls: [],
     logs: [],
+    notice: undefined,
     startedAt: null,
   };
 }
@@ -334,6 +335,8 @@ export function buildAgentTurnSnapshot(
   fallbackExecution: string,
   tokens: AgentTurnTokens | undefined,
   status: string,
+  /** 状态标注（气泡下方小字）；省略时继承 turn 上的 notice */
+  notice?: string,
 ): AgentTurnSnapshot {
   completeAgentCurrentTurn({ currentTurn: turn });
 
@@ -380,6 +383,10 @@ export function buildAgentTurnSnapshot(
     toolCalls,
     logs,
     tokens,
+    // 状态标注**显式传入**，刻意不从 turn.notice 继承：
+    // turn.notice 会累积"等待提示"这类临时标注，若继承下来，请求最终成功时
+    // 那条"已 30 秒未收到数据"会残留在快照里（明明已经成功完成）。
+    notice,
     finalContent,
     createdAt: now(),
   };

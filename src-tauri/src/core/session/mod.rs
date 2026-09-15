@@ -292,8 +292,15 @@ pub fn reset_message_ids(memory: &mut SessionMemory) {
 }
 
 /// 保存会话数据到 SQLite。
-/// 保存时会过滤掉工具调用和工具结果，仅保留用户输入和助手文本回复，
-/// 大幅减少存储体积。
+///
+/// 持久化时的内容过滤规则（**注意与历史注释不同**，实际行为以此为准）：
+/// - User 消息：保留 Text / Image / **ToolResult** / Context 块；
+/// - Assistant 消息：保留 Text / Thinking / **ToolUse** 块；
+/// - 仅丢弃空文本、空思考块与未知块。
+///
+/// 工具调用与工具结果**一直是保留的**——早期注释称"会过滤掉工具调用和工具结果"
+/// 已与实现不符。保留它们是必须的：Assistant(ToolUse) 与其后的 ToolResult 成对出现，
+/// 否则中断恢复后会构造出残缺配对（依赖 `fix_broken_tool_call_pairs` 兜底）。
 pub fn save_session(
     id: &str,
     memory: &SessionMemory,

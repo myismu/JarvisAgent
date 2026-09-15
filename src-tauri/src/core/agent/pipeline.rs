@@ -113,10 +113,112 @@ struct PipelineState {
     plan_consecutive_stalls: usize,
     /// Plan 看门狗：plan 模式下累计无 ProposePlan / 降级 edit 的 loop 次数
     plan_total_loops_without_plan: usize,
+    /// 本轮因上游失联（流内空闲超时）而中断时的原因说明。
+    /// Some 表示属于"运行被打断"，收尾时必须保留现场、不得截断历史。
+    interrupted_reason: Option<String>,
+    /// 面向用户的状态标注（气泡下方小字），由中断收尾路径填充。
+    notice: Option<String>,
 }
 
-struct ContextEstimate {
-    total_chars: usize,
+/// 判断空闲超时后是否必须结束本轮并按中断收尾。
+///
+/// **实测 bug 的防护点**：首版这里用的是 `should_retry`（"零产出"），
+/// 于是 `interrupted` 形态（吐了半截后静默）虽然计时器触发了，却走到了正常
+/// 完成路径 —— 界面只剩半截正文，用户以为已经正常完成。
+///
+/// 正确语义：只要计时器触发（`idle_timed_out`）就必须收尾，**与产出多少无关**；
+/// `should_retry` 只决定要不要再试一次，不决定是否收尾。
+fn must_finish_as_interrupted(idle_timed_out: bool, _should_retry: bool) -> bool {
+    idle_timed_out
+}
+
+/// 当前时间（毫秒），用于"等待提示"看门狗判断静默时长。
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 判断此刻是否应当发出"仍在等待"提示。
+///
+/// 回归防护：首版每 30 秒无条件发一条，页面被「已 30 秒未收到数据」刷屏
+/// （用户实测反馈）。现在约定：**同一段静默期只提示一次**，
+/// 直到收到新数据（`touch()` 复位 `already_sent`）才允许再次提示。
+fn should_emit_waiting_hint(silent_secs: u64, already_sent: bool) -> bool {
+    silent_secs >= crate::infra::types::constants::API_WAITING_HINT_SECS && !already_sent
+}
+
+/// 等待上游响应期间的"进度提示"看门狗句柄。
+///
+/// 上游深度思考、网络迟滞、或**收到响应头后正文长时间静默**时，界面上
+/// 可能长时间没有任何事件，用户只看到转圈，无法区分"模型在思考"与
+/// "服务已经死了"。本看门狗让等待**可见**。
+///
+/// ## 为什么必须跨越两个阶段
+///
+/// 首个版本只覆盖"等待响应头"阶段，一旦 `call_api_with_retry` 返回就 `abort()`。
+/// 但真实故障几乎都发生在**响应头已到、正文静默**阶段（响应头通常很快返回），
+/// 于是看门狗永远没机会触发。因此改为：从请求发出前启动，一直存活到本轮流
+/// 读取结束，由 `touch()` 在每个 SSE 帧到达时续期。
+///
+/// ## 为什么按"静默期"而非"累计耗时"判定
+///
+/// 若按累计耗时，一个流畅生成几分钟的正常请求会不断被提示打扰。
+/// 按静默期则只在**真的没有数据**时提示，语义与流内空闲超时一致。
+struct WaitingHint {
+    /// 最近一次收到数据的时间戳（毫秒）
+    last_tick_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// 当前这段静默期是否已经提示过。
+    ///
+    /// 回归防护：首版每 30s 就发一条，页面被"已 30 秒未收到数据"刷屏。
+    /// 现在同一段静默期**只提示一次**，直到收到新数据（`touch()`）才允许再提示。
+    /// 这样既避免了刷屏，也保证长时间静默不会被彻底静默处理。
+    hint_sent: Arc<std::sync::atomic::AtomicBool>,
+    /// 是否已结束；置位后看门狗不再提示
+    done: Arc<std::sync::atomic::AtomicBool>,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl WaitingHint {
+    /// 收到一帧数据（或请求刚发出）时调用，重置静默计时并允许再次提示
+    fn touch(&self) {
+        self.last_tick_ms
+            .store(now_millis(), std::sync::atomic::Ordering::Relaxed);
+        self.hint_sent
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// 本轮结束，停止看门狗
+    fn finish(&self) {
+        self.done
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.handle.abort();
+    }
+}
+
+/// 写入对话历史的"中断标记"（**会发给 LLM**，故措辞需统一）。
+///
+/// 按「模型能否接着做」二分，而不是按中断原因四分：
+/// - **能接着做**（上游失联 / 执行报错 / 用户取消）→ `INTERRUPT_MARKER_RESUMABLE`
+/// - **不能接着做**（已达轮次上限）→ `INTERRUPT_MARKER_STOPPED`
+///
+/// 为什么必须统一：该标记进入对话历史后，**之后每一轮请求都会原样重发**。
+/// 多种措辞 = 多个 prompt 前缀变体，会让 provider 的 prompt cache 更易失效
+/// （项目内既有约定：不改写已发出去过的前缀）。而原因并不改变模型的动作 ——
+/// 它只能接着写；用户取消后的新意图由用户下一条消息表达。
+///
+/// 具体原因仍完整保留在**用户可见的 notice**（气泡下方小字）、
+/// `interrupted_reason`（状态）与 `agent_runs.error`（审计）里，信息不丢失。
+const INTERRUPT_MARKER_RESUMABLE: &str =
+    "> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。";
+
+/// 已达轮次上限：与上面刻意不同 —— 此时模型**不该**接着写，
+/// 否则会立刻再次触达上限。
+const INTERRUPT_MARKER_STOPPED: &str =
+    "> ⚠️ **[回复被中断]** 已达回合上限且未获续跑授权，本轮在此停下。";
+
+struct ContextEstimate {    total_chars: usize,
     estimated_tokens: usize,
     message_count: usize,
     tool_schema_count: usize,
@@ -150,6 +252,32 @@ fn resolve_turn_think(override_val: Option<bool>, loop_default: bool) -> bool {
 /// `content[].thinking in the thinking mode must be passed back to the API`。
 fn should_think_for_loop(turn_think: bool, _loop_count: usize) -> bool {
     turn_think
+}
+
+/// 判断给定的助手文本是否已存在于消息列表尾部。
+///
+/// 中断收尾时用于去重：流式内容可能已由 `store_assistant_response()` 或
+/// `agent_runs.live_content` 落库，避免把同一段半截话写两遍。
+/// 只检查尾部若干条，因为中断内容只可能出现在最近的位置。
+fn assistant_text_exists_at_tail(messages: &[Message], target: &str) -> bool {
+    let target = target.trim();
+    if target.is_empty() {
+        return false;
+    }
+    messages
+        .iter()
+        .rev()
+        .take(4)
+        .any(|msg| match msg {
+            Message::Assistant { content } => match content {
+                Content::Single(text) => text.trim() == target,
+                Content::Multiple(blocks) => blocks.iter().any(|b| match b {
+                    ContentBlock::Text { text } => text.trim() == target,
+                    _ => false,
+                }),
+            },
+            _ => false,
+        })
 }
 
 /// 防御性修复：确保每个 Assistant(tool_calls) 后跟 ToolResult 消息。
@@ -213,7 +341,10 @@ fn fix_broken_tool_call_pairs(messages: &mut Vec<Message>) {
             let placeholder_blocks: Vec<ContentBlock> = tool_use_ids.iter()
                 .map(|id| ContentBlock::ToolResult {
                     tool_use_id: id.clone(),
-                    content: "[系统注入：工具结果因中断丢失，已自动修复消息序列]".to_string(),
+                    content: "[系统注入：该工具已执行但结果因中断（取消/上游失联/报错）未能留档，\
+                              已自动补齐消息序列以保证请求合法。如需确认实际效果请让用户复查，\
+                              必要时可让用户回复「继续」重新推进。]"
+                        .to_string(),
                 })
                 .collect();
             messages.insert(i + 1, Message::User {
@@ -316,7 +447,10 @@ impl PipelineState {
         );
 
         // 步骤 5：创建 HTTP 客户端（后续所有 LLM 调用共用）
-        let client = reqwest::Client::new();
+        // 统一构造：带连接超时与 TCP keepalive，避免半开连接永久挂起。
+        // 不在此设置整体 timeout —— 会误杀长时间流式生成，分层时限见
+        // api_client::build_client 的说明。
+        let client = api_client::build_streaming_client();
 
         // 步骤 6：读取偏好（受众 × 工作模式 × 权限档位），并写入会话上下文
         // 权限档位：新会话从偏好继承；已有会话保持自己的设置
@@ -520,6 +654,8 @@ impl PipelineState {
             consecutive_reflection_nos: 0,
             plan_consecutive_stalls: 0,
             plan_total_loops_without_plan: 0,
+            interrupted_reason: None,
+            notice: None,
             display_msg,
             tool_execution_summary: None,
         };
@@ -759,11 +895,18 @@ impl PipelineState {
             if self.loop_count >= crate::infra::types::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM {
                 let decision = self.request_loop_continuation().await;
                 if !decision {
-                    // 用户拒绝续跑 / 确认未完成：给一个明确的收尾说明，避免留下空气泡
+                    // 用户拒绝续跑 / 确认未完成：给一个明确的收尾说明，避免留下空气泡。
+                    // 该说明必须落库——旧实现只写在内存 final_answer 里，
+                    // 刷新界面后用户看不到任何"为什么停了"的交代。
+                    let notice = "已停止执行。需要继续时告诉我，我会接着上次的进度往下做。";
                     if self.final_answer.trim().is_empty() {
-                        self.final_answer =
-                            "已停止执行。需要继续时告诉我，我会接着上次的进度往下做。".to_string();
+                        self.final_answer = notice.to_string();
                     }
+                    // 写入历史的标记面向 LLM（会进上下文），不含"告诉我"这类
+                    // 对用户说的措辞——模型会把它们当成自己的话。
+                    self.append_interrupted_marker(INTERRUPT_MARKER_STOPPED)
+                        .await;
+                    self.interrupted_reason = Some("达到回合上限且未获续跑授权".to_string());
                     break;
                 }
             }
@@ -808,6 +951,15 @@ impl PipelineState {
             // 调度器 channel 接收端（异步 select! 用）
             let sched_rx = self.ctx.scheduler_rx.lock().await.take();
 
+            // 等待提示看门狗：从请求发出前一直存活到本轮流读取结束。
+            // 由 SSE 帧到达续期，因此只在**真的没有数据**时才提示
+            // （上游深度思考、网络迟滞、收到响应头后正文静默）。
+            // 仅无调度器的主路径启用；有调度器时事件本身频繁，无需提示。
+            let progress_watchdog = if sched_rx.is_none() {
+                Some(self.spawn_waiting_hint())
+            } else {
+                None
+            };
             // API 调用 + 调度器事件 select!：spawn API 到后台 task，select! 等结果
             let (response, sched_rx) = if let Some(mut rx) = sched_rx {
                 let req_json_clone = req_json.clone();
@@ -820,18 +972,35 @@ impl PipelineState {
                 let run_id_clone = self.run_id.clone();
                 let cancel_token = self.cancel_token.clone();
                 let ctx = self.ctx.clone();
+                let in_tokens = self.req_input_tokens;
+                let out_tokens = self.req_output_tokens;
                 let api_handle = tokio::spawn(async move {
                     let api_request = api_client::api_call_with_retry(
-                        &client, &base_url, &req_json_clone, &api_key, api_format, 3, &app, &sid,
+                        &client, &base_url, &req_json_clone, &api_key, api_format,
+                        api_client::MAX_API_RETRIES, &app, &sid,
                     );
-                    let timeout_result = tokio::time::timeout(Duration::from_secs(120), api_request);
+                    let timeout_result = tokio::time::timeout(
+                        Duration::from_secs(
+                            crate::infra::types::constants::API_RESPONSE_HEADER_TIMEOUT_SECS,
+                        ),
+                        api_request,
+                    );
                     tokio::select! {
                         result = timeout_result => {
                             match result {
                                 Ok(inner) => inner.map(|r| Some(r)),
                                 Err(_) => {
-                                    let error = ApiError::Network("API 请求超过 120 秒未返回响应头，已自动终止。".to_string());
-                                    let _ = agent_runs::fail_run(&app, &run_id_clone, error.to_string());
+                                    let error = ApiError::Network(format!(
+                                        "API 请求超过 {} 秒未返回响应头，已自动终止。",
+                                        crate::infra::types::constants::API_RESPONSE_HEADER_TIMEOUT_SECS
+                                    ));
+                                    let _ = agent_runs::fail_run(
+                                        &app,
+                                        &run_id_clone,
+                                        error.to_string(),
+                                        in_tokens,
+                                        out_tokens,
+                                    );
                                     *ctx.cancel_token.lock().await = None;
                                     Err(error.into())
                                 }
@@ -886,11 +1055,30 @@ impl PipelineState {
                     }
                 }
             } else {
-                // 无活跃调度器，正常阻塞等待 LLM
-                let resp = match self.call_api_with_retry(&req_json).await {
-                    Ok(Some(r)) => r,
-                    Ok(None) => continue,
+                // 无活跃调度器，正常阻塞等待 LLM。
+                // 看门狗已在分支外启动，这里只负责发请求并把它传给流阶段。
+                let api_outcome = self.call_api_with_retry(&req_json).await;
+                // 不在此 abort：看门狗要跨到流读取阶段才有效。
+                // 响应头很快返回，真正的静默几乎都发生在正文阶段。
+                let resp = match api_outcome {
+                    Ok(Some(r)) => {
+                        if let Some(wd) = &progress_watchdog {
+                            wd.touch();
+                        }
+                        r
+                    }
+                    // 提前退出前必须停掉看门狗（统一在块外 finish），否则会残留并事后补发提示
+                    Ok(None) => {
+                        *self.ctx.scheduler_rx.lock().await = None;
+                        if let Some(wd) = &progress_watchdog {
+                            wd.finish();
+                        }
+                        continue;
+                    }
                     Err(e) => {
+                        if let Some(wd) = &progress_watchdog {
+                            wd.finish();
+                        }
                         // API 调用失败 → 记录诊断日志后返回 Err
                         println!("[JARVIS] API 调用失败，终止主循环: {}", e);
                         let messages_json = {
@@ -907,8 +1095,21 @@ impl PipelineState {
                 (Some(resp), None)
             };
 
-            let Some(response) = response else { continue; };
+            // 流读取期间到达的帧会通过 on_frame 续期，真正空闲才提示。
+            // 本轮结束（无论哪条路径）都必须 finish，否则会残留任务。
+            let frame_tick = progress_watchdog.as_ref().map(|wd| {
+                let tick = wd.last_tick_ms.clone();
+                std::sync::Arc::new(move || {
+                    tick.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
+                }) as std::sync::Arc<dyn Fn() + Send + Sync>
+            });
 
+            let Some(response) = response else {
+                if let Some(wd) = &progress_watchdog {
+                    wd.finish();
+                }
+                continue;
+            };
             // 步骤 7：SSE 流式解析 —— 边收边推前端、累积工具参数分片
             // 流式处理（含一次断流重试）
             let stream_result = {
@@ -927,41 +1128,92 @@ impl PipelineState {
                     StreamConfig {
                         is_subagent: false,
                         cache_usage_style: cache_usage_style.clone(),
+                        on_frame: frame_tick.clone(),
                     },
                 )
                 .await;
 
-                // 如果流提前结束且未收到工具调用也未收到正文，重试一次
-                if result.text.is_empty() && !result.has_tool && !self.cancel_token.is_cancelled()
-                {
-                    println!("[JARVIS] 流式响应提前终止，尝试重试一次...");
-                    match self.call_api_with_retry(&req_json).await {
-                        Ok(Some(resp)) => {
+                // 重试条件：只由 stream 层给出的 `should_retry` 决定（零产出才为 true）。
+                //
+                // 为什么不在这里用 `idle_timed_out` 判断：该标记表示"空闲计时器触发了"，
+                // 包含"吐了半截后静默"这种**不该重试**的情况。二者必须分开，
+                // 否则会出现"既没重试、又没结束本轮"的卡死（见 StreamResult 注释）。
+                if result.should_retry && !self.cancel_token.is_cancelled() {
+                    if result.idle_timed_out {
+                        println!("[JARVIS] 上游静默超时且零产出，尝试重试一次...");
+                    } else {
+                        println!("[JARVIS] 流式响应零产出即终止，尝试重试一次...");
+                    }
+                    // 重试给一个更短的、**覆盖全流程**的预算（请求头 + 读流）。
+                    // 首次已等满一个空闲周期，若重试再等满，用户感知的等待会翻倍。
+                    let retry_budget = Duration::from_secs(
+                        crate::infra::types::constants::API_STREAM_RETRY_BUDGET_SECS,
+                    );
+                    let retry_fut = async {
+                        if let Ok(Some(resp)) = self.call_api_with_retry(&req_json).await {
                             let mut stream2 = resp.bytes_stream().eventsource();
-                            result = process_stream(
-                                &mut stream2,
-                                is_openai,
-                                &self.app,
-                                &self.sid,
-                                &self.run_id,
-                                self.total_loop_count + 1,
-                                &self.cancel_token,
-                                StreamConfig {
-                                    is_subagent: false,
-                                    cache_usage_style,
-                                },
-                            )
-                            .await;
+                            return Some(
+                                process_stream(
+                                    &mut stream2,
+                                    is_openai,
+                                    &self.app,
+                                    &self.sid,
+                                    &self.run_id,
+                                    self.total_loop_count + 1,
+                                    &self.cancel_token,
+                                    StreamConfig {
+                                        is_subagent: false,
+                                        cache_usage_style,
+                                        on_frame: frame_tick.clone(),
+                                    },
+                                )
+                                .await,
+                            );
+                        }
+                        None
+                    };
+                    match tokio::time::timeout(retry_budget, retry_fut).await {
+                        Ok(Some(r)) => {
+                            result = r;
+                            if result.idle_timed_out {
+                                println!("[JARVIS] 重试后仍为上游失联（零产出），不再重试");
+                            }
                         }
                         Ok(None) => {}
-                        Err(e) => {
-                            println!("[JARVIS] 流式重试失败: {}", e);
+                        Err(_) => {
+                            println!(
+                                "[JARVIS] 流式重试超过 {}s 预算（含读流），放弃重试",
+                                crate::infra::types::constants::API_STREAM_RETRY_BUDGET_SECS
+                            );
+                            // 重试也没拿到结果 → 与空闲超时同样按中断收尾
+                            result.idle_timed_out = true;
                         }
                     }
                 }
 
                 result
             };
+
+            // 本轮流读取已结束：停掉等待提示看门狗（含重试流）。
+            // 后面还有工具执行/下一轮循环，此处收尾最贴合"不再等上游数据"的语义。
+            if let Some(wd) = &progress_watchdog {
+                wd.finish();
+            }
+
+            // 上游失联 → 保留现场并结束本轮，把决策权交还用户
+            // （服务恢复后一句"继续"即可接上）。
+            //
+            // 注意：这里的判据是 `idle_timed_out`（计时器确实触发了），
+            // **不是** `should_retry`。二者语义不同：
+            // - "吐了半截后静默"时 should_retry=false（不该重试），但仍必须收尾并给出中断提示，
+            //   否则界面只剩半截正文，用户会误以为已经正常完成（实测反馈的 bug）。
+            if must_finish_as_interrupted(
+                stream_result.idle_timed_out,
+                stream_result.should_retry,
+            ) {
+                self.handle_stream_idle_timeout(stream_result).await;
+                break;
+            }
 
             let (
                 mut current_blocks,
@@ -1154,13 +1406,29 @@ impl PipelineState {
                 }
             }
 
-            if self.cancel_token.is_cancelled() {
-                continue;
+            // 取消检查移到这里之前只做「下一轮是否继续」的判断。
+            let was_cancelled_this_loop = self.cancel_token.is_cancelled();
+            if was_cancelled_this_loop {
+                println!(
+                    "[JARVIS] 检测到取消：仍先落库本轮的助手回复与工具结果，避免「工具已执行但无记录」"
+                );
             }
 
-            // 步骤 9：把本轮助手响应（文本/思考/工具调用）写入会话历史
-            // 存储助手回复
+            // 步骤 9：把本轮助手响应（文本/思考/工具调用）写入会话历史。
+            // 必须在取消判定之后仍执行——工具已在步骤 8 实际运行（可能已改文件），
+            // 其结果必须留档；否则历史会出现 Assistant(ToolUse) 缺失 ToolResult 的残缺配对。
             self.store_assistant_response(&current_blocks).await;
+
+            // 工具结果为 User 消息，取消时同样必须落库以保持配对完整
+            if was_cancelled_this_loop {
+                if !tool_results.is_empty() {
+                    let mut session = self.ctx.memory.lock().await;
+                    append_message(&mut session, Message::User {
+                        content: Content::Multiple(tool_results.clone()),
+                    }, "chat");
+                }
+                continue;
+            }
 
             // 检查工具是否请求结束本轮循环（如 ProposePlan 提交方案后等待用户审批）
             {
@@ -1598,8 +1866,13 @@ impl PipelineState {
             });
         }
 
-        // 汇总状态：正常结束 / 用户取消 / 循环超时暂停
-        let status = if was_cancelled {
+        // 汇总状态：正常结束 / 用户取消 / 循环超时暂停 / 运行被打断
+        // interrupted_reason 由 handle_cancellation / handle_stream_idle_timeout 设置，
+        // 且必须先于 was_cancelled 判断：取消也会置起 cancel_token，但语义是"中断"。
+        let interrupted_reason = self.interrupted_reason.clone();
+        let status = if interrupted_reason.is_some() {
+            "INTERRUPTED"
+        } else if was_cancelled {
             "CANCELLED"
         } else if was_loop_timeout {
             "PAUSED_LOOP_LIMIT"
@@ -1623,8 +1896,15 @@ impl PipelineState {
             );
         }
 
-        // Agent Run 完成（超时续跑不标记完成）
-        if !was_cancelled && !was_loop_timeout {
+        if let Some(reason) = &interrupted_reason {
+            println!(
+                "[JARVIS] 本轮为中断收尾（{}）：历史已保留，等待用户决定是否继续",
+                reason
+            );
+        }
+
+        // Agent Run 完成（中断与超时续跑都不标记完成，保持可续跑语义）
+        if !was_cancelled && !was_loop_timeout && interrupted_reason.is_none() {
             agent_runs::complete_run(
                 &self.app,
                 &self.run_id,
@@ -1651,8 +1931,17 @@ impl PipelineState {
         }
         *self.ctx.cancel_token.lock().await = None;
 
+        println!(
+            "[JARVIS] finalize：status={}，notice={:?}，content 长度={}",
+            status,
+            self.notice.as_deref().unwrap_or("<无>"),
+            self.final_answer.chars().count()
+        );
+
         JarvisResult {
             status: status.to_string(),
+            // content 只放模型正文/部分结果；状态标注走 notice 单独下发，
+            // 避免标记混进正文被渲染到回复气泡内部（实测反馈的 UI 问题）。
             content: self.final_answer,
             input_tokens: self.req_input_tokens,
             output_tokens: self.req_output_tokens,
@@ -1660,27 +1949,106 @@ impl PipelineState {
             session_output_tokens,
             user_message_id: None,
             tool_execution_summary: self.tool_execution_summary,
+            notice: self.notice,
         }
     }
 
     // ─── 主循环辅助方法 ───
 
-    /// 处理错误中止：记录错误事件、标记 run 失败、清理状态
-    /// 异常收尾：主循环报错时调用，把错误记录到 agent_runs 表并清理运行状态
-    /// （标记 run 失败、清空 active_run_id、释放取消令牌，保证下次可重新执行）
-    async fn abort_after_error(&self, error: &AgentError) {
-        // 仅当已有 run 记录时，才执行失败登记与状态清理
-        if !self.run_id.is_empty() {
-            // 记录错误事件到 agent_run_events 表
-            agent_runs::record_tool_result(
-                &self.app,
-                &self.run_id,
-                "pipeline",
-                Some(error.to_string()),
-                None,
-                self.total_loop_count,
-            );
-            agent_runs::fail_run(&self.app, &self.run_id, error.to_string());
+    /// 异常收尾：把中断原因记录到审计层与诊断层，**保留已产生的内容与历史**，
+    /// 并清理运行状态（清空 active_run_id、释放取消令牌，保证下次可重新执行）。
+    ///
+    /// 历史演进说明：旧实现只做「记错误 → fail_run → 返回 Err」，现场全部丢弃。
+    /// 由于 `run_pipeline_inner` 在此之后直接 `return Err`，`finalize()` 不会执行，
+    /// 于是会话历史里连一句中断说明都没有，用户误以为"根本没执行"。
+    /// 现改为：先把 live_content / live_thinking 补进历史，再落一条 `interrupted` 标记。
+    ///
+    /// 遵守的约束：**错误文本不作为助手消息内容**（避免被当成模型发言污染上下文），
+    /// 只写入 agent_runs.error 与 agent_run_events。
+    async fn abort_after_error(&mut self, error: &AgentError) {
+        if self.run_id.is_empty() {
+            *self.ctx.cancel_token.lock().await = None;
+            return;
+        }
+
+        // 面向用户的小字标注：错误原文可能很长且含技术细节，
+        // 这里给一句可读的结论，完整错误走事件层与 agent_runs.error（界面"执行详情"可查）。
+        let notice_text = format!("⚠ 本轮执行中断：{}", error);
+        println!("[JARVIS] 异常收尾（保留现场）: {}", error);
+
+        // 1. 把已流式输出但尚未入库的内容补进历史（live_content 全程累积，是中断时的快照）
+        let run = crate::core::orchestration::agent_run_repository::list_runs(Some(&self.sid))
+            .ok()
+            .and_then(|runs| runs.into_iter().find(|r| r.run_id == self.run_id));
+        let live_content = run.as_ref().map(|r| r.live_content.clone()).unwrap_or_default();
+        let live_thinking = run.as_ref().map(|r| r.live_thinking.clone()).unwrap_or_default();
+        let partial = if !live_content.trim().is_empty() {
+            live_content.trim().to_string()
+        } else if !live_thinking.trim().is_empty() {
+            live_thinking.trim().to_string()
+        } else {
+            String::new()
+        };
+        if !partial.is_empty() {
+            let mut session = self.ctx.memory.lock().await;
+            if !assistant_text_exists_at_tail(&session.messages, &partial) {
+                append_message(
+                    &mut session,
+                    Message::Assistant {
+                        content: Content::Single(partial.clone()),
+                    },
+                    "chat",
+                );
+            }
+        }
+
+        // 2. 追加中断标记（source = interrupted：模型可见，用于"继续"时定位断点）。
+        //
+        //    标记使用**统一措辞**（中断原因已在用户可见的 notice 中给出，
+        //    历史标记只需让模型知道"该接着做"）。原因见常量注释。
+        self.append_interrupted_marker(INTERRUPT_MARKER_RESUMABLE)
+            .await;
+        self.final_answer = partial.clone();
+        self.notice = Some(notice_text.clone());
+        self.interrupted_reason = Some(error.to_string());
+
+        // 3. 落库：审计层事件 + 诊断层错误
+        agent_runs::record_tool_result(
+            &self.app,
+            &self.run_id,
+            "pipeline",
+            Some(error.to_string()),
+            None,
+            self.total_loop_count,
+        );
+        agent_runs::interrupt_run(
+            &self.app,
+            &self.run_id,
+            error.to_string(),
+            self.req_input_tokens,
+            self.req_output_tokens,
+        );
+
+        // 4. 中断后立即持久化，保证用户刷新后仍能看到保留的内容与中断标记
+        {
+            let memory = self.ctx.memory.lock().await.clone();
+            crate::core::session::save_session(&self.sid, &memory, None);
+            let _ = self.app.emit("session-updated", ());
+        }
+
+        // 5. 通知前端（与用户取消区分：type = interrupted）
+        //    状态标注走 notice 结构化下发，不再推进正文
+        let _ = self.app.emit(
+            "agent-step",
+            json!({
+                "type": "interrupted",
+                "reason": "pipeline_error",
+                "sessionId": self.sid,
+                "loopCount": self.total_loop_count + 1
+            }),
+        );
+
+        {
             let mut active_run_id = self.ctx.active_run_id.lock().await;
             if active_run_id.as_deref() == Some(&self.run_id) {
                 *active_run_id = None;
@@ -1689,62 +2057,154 @@ impl PipelineState {
         *self.ctx.cancel_token.lock().await = None;
     }
 
-    /// 用户取消处理：保留用户消息、恢复已流式输出的部分内容作为答案，
-    /// 截断会话历史到本次用户消息之后，并标记 run 为 CANCELLED
+    /// 中断收尾共用逻辑：**保留全部已持久化历史**，并把中断提示追加为一条
+    /// `source = "interrupted"` 的助手消息。
+    ///
+    /// 与「用户主动撤销」（撤回消息 / 回滚检查点）的关键区别：
+    /// 撤销是用户希望内容消失，截断正确；中断只是运行被打断，
+    /// **任何一方都不希望数据消失**，因此这里绝不 truncate。
+    ///
+    /// `source = "interrupted"` 的语义定位：
+    /// - LLM 上下文：**可见**（`prepare_history_snapshot_from_messages` 白名单），
+    ///   使"继续"时模型能看到自己中断于何处；
+    /// - UI 渲染：**可见**（`command/history.rs` 的渲染门），否则中断轮次会从界面消失。
+    ///
+    /// 返回该消息在会话历史中的下标。
+    async fn append_interrupted_marker(&mut self, reason: &str) -> usize {
+        let mut session = self.ctx.memory.lock().await;
+        append_message(
+            &mut session,
+            Message::Assistant {
+                content: Content::Single(reason.to_string()),
+            },
+            "interrupted",
+        );
+        session.messages.len() - 1
+    }
+
+    /// 等待上游响应期间的"进度提示"看门狗。
+    ///
+    /// 上游深度思考、网络迟滞、或者**收到响应头后正文长时间静默**时，界面上
+    /// 可能长时间没有任何事件，用户只看到转圈，无法区分"模型在思考"与
+    /// "服务已经死了"。本看门狗让等待**可见**。
+    ///
+    /// ## 为什么必须跨越两个阶段
+    ///
+    /// 首个版本的看门狗只覆盖"等待响应头"阶段，一旦 `call_api_with_retry`
+    /// 返回就 `abort()`。但真实故障几乎都发生在**响应头已到、正文静默**阶段
+    /// （响应头通常很快返回），于是看门狗永远没机会触发。
+    ///
+    /// 因此改为：从请求发出前启动，一直存活到本轮流结束，
+    /// 启动进度提示看门狗。返回后应立即 `touch()` 一次以开始计时。
+    fn spawn_waiting_hint(&self) -> WaitingHint {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+        let hint_secs = crate::infra::types::constants::API_WAITING_HINT_SECS;
+        let last_tick_ms = Arc::new(AtomicU64::new(now_millis()));
+        let hint_sent = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicBool::new(false));
+        let app = self.app.clone();
+        let sid = self.sid.clone();
+        let loop_count = self.total_loop_count + 1;
+        let tick = last_tick_ms.clone();
+        let sent = hint_sent.clone();
+        let stop = done.clone();
+
+        let handle = tokio::spawn(async move {
+            // 轮询粒度取提示阈值的一半，保证提示足够及时
+            let step = Duration::from_secs((hint_secs / 2).max(1));
+            loop {
+                tokio::time::sleep(step).await;
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                let silent_ms = now_millis().saturating_sub(tick.load(Ordering::Relaxed));
+                // 同一段静默期只提示一次：收到新数据后 touch() 会复位 sent
+                if should_emit_waiting_hint(silent_ms / 1000, sent.load(Ordering::Relaxed)) {
+                    sent.store(true, Ordering::Relaxed);
+                    // 走 agent-step 而非 chat-stream：等待提示属于**状态标注**，
+                    // 应渲染在气泡下方的小字里；经 chat-stream 会混进模型正文，
+                    // 在回复气泡内部显示（实测反馈的 UI 问题）。
+                    let _ = app.emit(
+                        "agent-step",
+                        json!({
+                            "type": "waiting_hint",
+                            "content": format!(
+                                "⏳ 已 {} 秒未收到数据，仍在等待模型响应…深度思考或上游繁忙时可能较慢，接口超时会自动终止，无需手动停止。",
+                                silent_ms / 1000
+                            ),
+                            "sessionId": sid,
+                            "loopCount": loop_count
+                        }),
+                    );
+                }
+            }
+        });
+
+        WaitingHint {
+            last_tick_ms,
+            hint_sent,
+            done,
+            handle,
+        }
+    }
+
+    /// 用户取消处理：保留全部历史与已流式输出的部分内容，把中断原因作为
+    /// `interrupted` 消息追加，并标记 run 为 CANCELLED。
+    ///
+    /// 历史演进说明：旧实现在此处把历史 `truncate` 到本轮用户消息之后，
+    /// 结果是「已跑完的 10 轮工具调用 + 思考」被整段删除，只剩一句残文；
+    /// 且因取消检查位于 `store_assistant_response()` 之前，中断轮的回复与
+    /// 工具结果也从未写入。现改为不截断、只追加标记。
     async fn handle_cancellation(&mut self) {
         println!(
-            "[JARVIS] 用户已取消执行，保留用户消息并恢复部分输出，user index {}",
+            "[JARVIS] 用户已取消执行：保留全部历史，user index {}",
             self.initial_msg_index
         );
 
-        // 直接查 agent_runs 表的 live_content（不受 running 状态保护逻辑影响）
-        // 1. 从 agent_runs 表取回已流式输出的部分结果（live_content / thinking）
+        // 取回已流式输出的部分结果（live_content / thinking 全程累积，是中断时的唯一快照）
         let run = crate::core::orchestration::agent_run_repository::list_runs(Some(&self.sid))
             .ok()
             .and_then(|runs| runs.into_iter().find(|r| r.run_id == self.run_id));
         let live_content = run.as_ref().map(|r| r.live_content.clone()).unwrap_or_default();
         let live_thinking = run.as_ref().map(|r| r.live_thinking.clone()).unwrap_or_default();
 
-        let mut answer = if !live_content.trim().is_empty() {
-            live_content
+        let partial = if !live_content.trim().is_empty() {
+            live_content.trim().to_string()
         } else if !live_thinking.trim().is_empty() {
-            live_thinking
-        } else if !self.final_answer.is_empty()
-            && self.final_answer != "用户已取消执行。"
-        {
+            live_thinking.trim().to_string()
+        } else if !self.final_answer.is_empty() && self.final_answer != "用户已取消执行。" {
             std::mem::take(&mut self.final_answer)
         } else {
             String::new()
         };
 
-        if answer.trim().is_empty() {
-            answer = "用户已取消执行，无部分结果。".to_string();
-        } else {
-            answer = format!(
-                "{}\n\n> ✕ **用户已取消执行（以上为部分结果）**",
-                answer
-            );
+        // 半截内容若已由 store_assistant_response 落库，则不重复写入；
+        // 否则补一条 chat 消息，保证用户仍能看到中断前已生成的内容。
+        if !partial.is_empty() {
+            let mut session = self.ctx.memory.lock().await;
+            if !assistant_text_exists_at_tail(&session.messages, &partial) {
+                append_message(
+                    &mut session,
+                    Message::Assistant {
+                        content: Content::Single(partial.clone()),
+                    },
+                    "chat",
+                );
+            }
         }
 
-        {
-            let mut session = self.ctx.memory.lock().await;
-            // 2. 截断历史到本次用户消息之后，把部分结果作为最终答案写回
-            let keep_len = (self.initial_msg_index + 1).min(session.messages.len());
-            session.messages.truncate(keep_len);
-            session.message_ids.truncate(keep_len);
-            self.final_answer = answer.clone();
-            append_message(&mut session, Message::Assistant {
-                content: Content::Single(self.final_answer.clone()),
-            }, "chat");
-        }
-        let _ = self.app.emit(
-            "chat-stream",
-            json!({
-                "content": "\n> ✕ **用户已取消执行**\n",
-                "sessionId": self.sid,
-                "loopCount": self.total_loop_count + 1
-            }),
-        );
+        // `reason` 面向用户；写入历史的标记面向 LLM（会进上下文），
+        // 故用最小信息量的统一措辞，避免模型把系统视角描述当成自己的话。
+        let reason = "> ✕ **用户已取消执行（以上为保留的部分结果，历史未截断）**";
+        let marker_index = self
+            .append_interrupted_marker(INTERRUPT_MARKER_RESUMABLE)
+            .await;
+        self.final_answer = partial.clone();
+        self.notice = Some(reason.to_string());
+        self.interrupted_reason = Some("用户取消".to_string());
+
+        // 状态标注走 notice 结构化下发，不再推进正文
         let _ = self.app.emit(
             "agent-step",
             json!({
@@ -1753,13 +2213,92 @@ impl PipelineState {
                 "loopCount": self.total_loop_count + 1
             }),
         );
-        // 3. 标记 run 为 CANCELLED，并向前端发送取消通知
+        // 标记 run 为 CANCELLED，并向前端发送取消通知
         agent_runs::cancel_run(
             &self.app,
             &self.run_id,
             self.req_input_tokens,
             self.req_output_tokens,
             Some(self.final_answer.clone()),
+        );
+        println!(
+            "[JARVIS] 已写入中断标记（interrupted），消息下标 {}",
+            marker_index
+        );
+    }
+
+    /// 上游失联（流内空闲超时）收尾：保留现场，结束本轮，把决策权交还用户。
+    ///
+    /// 流层已采用「优雅终止」——`process_stream` 返回已累积的部分结果而非抛错，
+    /// 因此这里不需要（也不应该）走 `fail_run` 的抹除路径。服务恢复后用户
+    /// 直接说"继续"即可接上，因为历史完整且标记对模型可见。
+    async fn handle_stream_idle_timeout(&mut self, stream_result: crate::core::agent::StreamResult) {
+        let partial = stream_result.text.trim().to_string();
+        println!(
+            "[JARVIS] 上游失联收尾：已累积文本 {} 字，工具={}，loop={}",
+            partial.chars().count(),
+            stream_result.has_tool,
+            self.total_loop_count + 1
+        );
+
+        // 面向用户的文案：会渲染成气泡下方的小字（notice），
+        // 因此不用 Markdown 引用符号 —— 小字是纯文本，`>` 会原样显示。
+        let reason = format!(
+            "⚠ 上游服务已停止响应（连续 {} 秒未收到数据），已自动终止本轮。\
+             以上为已保留的部分结果，历史未截断。回复「继续」即可接着做。",
+            crate::core::agent::stream::STREAM_IDLE_TIMEOUT_SECS
+        );
+
+        // 写入历史的标记文案与 `reason` 刻意不同：
+        // `reason` 面向用户（含"服务已停止响应"这类系统视角描述），
+        // 而 `interrupted` 消息**会发给 LLM**（见白名单），
+        // 故用统一的"接着做"措辞（见 INTERRUPT_MARKER_RESUMABLE 注释）。
+        let llm_marker = INTERRUPT_MARKER_RESUMABLE;
+
+        let mut session = self.ctx.memory.lock().await;
+        if !partial.is_empty() && !assistant_text_exists_at_tail(&session.messages, &partial) {
+            append_message(
+                &mut session,
+                Message::Assistant {
+                    content: Content::Single(partial.clone()),
+                },
+                "chat",
+            );
+        }
+        drop(session);
+
+        self.append_interrupted_marker(llm_marker).await;
+        // content 只保留部分结果；状态标注走 notice（气泡下方小字），
+        // 这样前端无需从正文里"猜"哪部分是标注。
+        self.final_answer = partial.clone();
+        self.notice = Some(reason.clone());
+        self.interrupted_reason = Some("上游服务失联（流内空闲超时）".to_string());
+
+        // 状态标注不再经 chat-stream 推进正文（会挤进回复气泡内部），
+        // 改由 JarvisResult.notice 结构化下发，前端渲染为气泡下方小字。
+        let _ = self.app.emit(
+            "agent-step",
+            json!({
+                "type": "interrupted",
+                "reason": "stream_idle_timeout",
+                "sessionId": self.sid,
+                "loopCount": self.total_loop_count + 1
+            }),
+        );
+        println!(
+            "[JARVIS] 中断收尾完成：notice={:?}，content 长度={}",
+            self.notice.as_deref().unwrap_or("<无>"),
+            self.final_answer.chars().count()
+        );
+
+        // 记录到审计层（agent_run_events），供界面「执行详情」展示中断原因
+        agent_runs::record_tool_result(
+            &self.app,
+            &self.run_id,
+            "stream_idle_timeout",
+            Some(reason.clone()),
+            None,
+            self.total_loop_count,
         );
     }
 
@@ -1927,11 +2466,15 @@ impl PipelineState {
         // 步骤 1：过滤 internal/background 内部消息（LLM 不需要看到系统内部通知），
         // 并把「本轮用户消息」的下标换算到过滤后的快照坐标系——initial_msg_index
         // 是过滤前的下标，而图片折叠要的是过滤后的下标。
+        //
+        // `interrupted` 刻意列入白名单：运行被打断（取消/失联/报错）后，模型需要
+        // 看到自己中断于何处，用户回一句"继续"才能顺着接上。半截正文出现在
+        // 上下文里是预期行为，因为它真实反映了中断时的状态。
         let session_turn_start = self.initial_msg_index;
         let mut filtered: Vec<Message> = Vec::with_capacity(messages.len());
         let mut snapshot_turn_start: Option<usize> = None;
         for (idx, (msg, src)) in messages.into_iter().zip(sources.iter()).enumerate() {
-            if !matches!(src.as_str(), "chat" | "compact" | "context") {
+            if !matches!(src.as_str(), "chat" | "compact" | "context" | "interrupted") {
                 continue;
             }
             if idx == session_turn_start {
@@ -2468,17 +3011,25 @@ impl PipelineState {
             req_json,
             &self.api_key,
             self.api_format,
-            3,
+            api_client::MAX_API_RETRIES,
             &self.app,
             &self.sid,
         );
 
         match tokio::select! {
-            result = tokio::time::timeout(Duration::from_secs(120), api_request) => {
+            result = tokio::time::timeout(
+                Duration::from_secs(
+                    crate::infra::types::constants::API_RESPONSE_HEADER_TIMEOUT_SECS,
+                ),
+                api_request,
+            ) => {
                 match result {
                     Ok(result) => result,
                     Err(_) => {
-                        let error = ApiError::Network("API 请求超过 120 秒未返回响应头，已自动终止。".to_string());
+                        let error = ApiError::Network(format!(
+                            "API 请求超过 {} 秒未返回响应头，已自动终止。",
+                            crate::infra::types::constants::API_RESPONSE_HEADER_TIMEOUT_SECS
+                        ));
                         // 记录错误事件到 agent_run_events 表
                         agent_runs::record_tool_result(
                             &self.app,
@@ -2488,7 +3039,13 @@ impl PipelineState {
                             None,
                             self.total_loop_count,
                         );
-                        agent_runs::fail_run(&self.app, &self.run_id, error.to_string());
+                        agent_runs::fail_run(
+                            &self.app,
+                            &self.run_id,
+                            error.to_string(),
+                            self.req_input_tokens,
+                            self.req_output_tokens,
+                        );
                         *self.ctx.cancel_token.lock().await = None;
                         return Err(error.into());
                     }
@@ -2509,7 +3066,13 @@ impl PipelineState {
                     None,
                     self.total_loop_count,
                 );
-                agent_runs::fail_run(&self.app, &self.run_id, e.to_string());
+                agent_runs::fail_run(
+                    &self.app,
+                    &self.run_id,
+                    e.to_string(),
+                    self.req_input_tokens,
+                    self.req_output_tokens,
+                );
                 *self.ctx.cancel_token.lock().await = None;
                 Err(e.into())
             }
@@ -2593,6 +3156,8 @@ impl PipelineState {
                         is_subagent: false,
                         cache_usage_style:
                             crate::infra::llm::registry::cache_usage_style_for(&self.model_id),
+                        // 看门狗小结是短请求，不需要等待提示
+                        on_frame: None,
                     },
                 )
                 .await;
@@ -2790,5 +3355,249 @@ mod thinking_freeze_tests {
     fn thinking_falls_back_to_audience_default_without_override() {
         assert!(resolve_turn_think(None, true));
         assert!(!resolve_turn_think(None, false));
+    }
+}
+
+#[cfg(test)]
+mod interrupted_tail_dedup_tests {
+    use super::assistant_text_exists_at_tail;
+    use crate::infra::types::models::*;
+
+    fn assistant_single(text: &str) -> Message {
+        Message::Assistant {
+            content: Content::Single(text.to_string()),
+        }
+    }
+
+    fn assistant_blocks(blocks: Vec<ContentBlock>) -> Message {
+        Message::Assistant {
+            content: Content::Multiple(blocks),
+        }
+    }
+
+    /// 中断收尾时若半截内容已由 store_assistant_response 落库，不得重复写入
+    #[test]
+    fn detects_existing_tail_text() {
+        let messages = vec![assistant_single("沐先生，很")];
+        assert!(assistant_text_exists_at_tail(&messages, "沐先生，很"));
+    }
+
+    /// 前后空白不应影响判定，否则同一段话会被写两遍
+    #[test]
+    fn ignores_surrounding_whitespace() {
+        let messages = vec![assistant_single("  沐先生，很  ")];
+        assert!(assistant_text_exists_at_tail(&messages, "沐先生，很"));
+    }
+
+    /// 多块消息里的 Text 块同样要能被识别（流式回复常为多块）
+    #[test]
+    fn detects_text_inside_multiple_blocks() {
+        let messages = vec![assistant_blocks(vec![
+            ContentBlock::Thinking {
+                thinking: "先看看目录".to_string(),
+                signature: String::new(),
+            },
+            ContentBlock::Text {
+                text: "正在读取文件".to_string(),
+            },
+        ])];
+        assert!(assistant_text_exists_at_tail(&messages, "正在读取文件"));
+    }
+
+    /// 不同内容不得误判为已存在，否则中断内容会被漏写
+    #[test]
+    fn does_not_match_different_text() {
+        let messages = vec![assistant_single("上一轮已经说完的完整回复")];
+        assert!(!assistant_text_exists_at_tail(&messages, "本轮被打断的半截话"));
+    }
+
+    /// 空目标视为不存在，避免把空串当命中而跳过写入
+    #[test]
+    fn empty_target_is_never_a_match() {
+        let messages = vec![assistant_single("")];
+        assert!(!assistant_text_exists_at_tail(&messages, "   "));
+    }
+
+    /// 只检查尾部若干条：很早以前的相同文本不应影响本次判定
+    #[test]
+    fn only_inspects_recent_tail() {
+        let mut messages = vec![assistant_single("重复的一句话")];
+        for _ in 0..6 {
+            messages.push(assistant_single("中间过程的其它回复"));
+        }
+        assert!(
+            !assistant_text_exists_at_tail(&messages, "重复的一句话"),
+            "超出尾部窗口的历史不应被当作本次已写入"
+        );
+    }
+
+    /// 用户消息里的相同文本不算命中（只认助手消息）
+    #[test]
+    fn user_message_does_not_count() {
+        let messages = vec![Message::User {
+            content: Content::Single("沐先生，很".to_string()),
+        }];
+        assert!(!assistant_text_exists_at_tail(&messages, "沐先生，很"));
+    }
+}
+
+#[cfg(test)]
+mod interrupt_marker_tests {
+    //! **措辞收敛的防回归**：中断标记按「模型能否接着做」二分。
+    //!
+    //! 背景：曾按中断原因写了 4 种措辞（超时/报错/取消/轮次上限）。
+    //! 该标记进入对话历史后**每轮都会重发**，多种措辞 = 多个 prompt 前缀变体，
+    //! 会让 provider 的 prompt cache 更易失效；而原因并不改变模型的动作。
+    //! 因此"能接着做"的三种统一成一句。
+    use super::{INTERRUPT_MARKER_RESUMABLE, INTERRUPT_MARKER_STOPPED};
+
+    /// 能接着做的三种中断（超时/报错/取消）必须完全一致 —— 措辞漂移会让
+    /// 缓存命中率下降，且难以察觉。
+    #[test]
+    fn resumable_markers_are_identical() {
+        assert_eq!(
+            INTERRUPT_MARKER_RESUMABLE,
+            "> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。"
+        );
+    }
+
+    /// 轮次上限刻意不同：此时模型**不该**接着写，否则立刻再次触达上限
+    #[test]
+    fn stopped_marker_is_distinct() {
+        assert_ne!(INTERRUPT_MARKER_RESUMABLE, INTERRUPT_MARKER_STOPPED);
+        assert!(
+            INTERRUPT_MARKER_STOPPED.contains("回合上限"),
+            "轮次上限标记应说明停下原因"
+        );
+    }
+
+    /// 两种标记共享统一前缀，前端 `splitInterruptMarker` 依赖它做识别
+    #[test]
+    fn both_share_detectable_prefix() {
+        for marker in [INTERRUPT_MARKER_RESUMABLE, INTERRUPT_MARKER_STOPPED] {
+            assert!(
+                marker.contains("[回复被中断]"),
+                "前端剥离逻辑依赖该前缀，不得修改：{marker}"
+            );
+            assert!(
+                marker.trim_start().starts_with('>'),
+                "应以 Markdown 引用开头，便于统一剥离：{marker}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod stream_retry_gate_tests {
+    //! 重试判据测试。
+    //!
+    //! 判据已收敛到 `stream::is_zero_output`（见该函数注释），本模块只断言
+    //! "零产出才重试"这一条策略本身。**关键回归**：曾把 `idle_timed_out` 与
+    //! "是否允许重试"合用一个字段，导致"吐了半截后静默"时超时判定被置 false，
+    //! run 永久卡死并锁住会话。因此这里必须覆盖"收到内容后不重试"的每一种形态。
+    use crate::core::agent::stream::is_zero_output;
+
+    /// 上游静默超时且零产出 → 允许重试（最需要重试的场景）
+    #[test]
+    fn zero_output_retries() {
+        assert!(is_zero_output(true, true, false));
+    }
+
+    /// 已收到正文 → 不重试（避免界面文本拼接重复）
+    #[test]
+    fn partial_text_does_not_retry() {
+        assert!(!is_zero_output(false, true, false));
+    }
+
+    /// 只收到思考 → 不重试（丢弃思考块会破坏思考链回传要求）
+    #[test]
+    fn thinking_only_does_not_retry() {
+        assert!(!is_zero_output(true, false, false));
+    }
+
+    /// 已产生工具调用 → 不重试（工具可能已执行，重试会重复副作用）
+    #[test]
+    fn tool_call_does_not_retry() {
+        assert!(!is_zero_output(true, true, true));
+    }
+
+    /// 回归防护（本次线上 bug）：正文与思考**都收到部分**后静默 → 不重试。
+    /// 这正是 interrupted 模式的行为。此前该场景会因字段含义混用而既不重试
+    /// 也不结束本轮，run 卡死。
+    #[test]
+    fn partial_text_and_thinking_does_not_retry() {
+        assert!(!is_zero_output(false, false, false));
+    }
+}
+
+#[cfg(test)]
+mod waiting_hint_tests {
+    use super::should_emit_waiting_hint;
+    use crate::infra::types::constants::API_WAITING_HINT_SECS;
+
+    /// 静默未达阈值：不提示（避免正常生成被打扰）
+    #[test]
+    fn no_hint_before_threshold() {
+        assert!(!should_emit_waiting_hint(API_WAITING_HINT_SECS - 1, false));
+        assert!(!should_emit_waiting_hint(0, false));
+    }
+
+    /// 刚好达到阈值且本段静默期未提示过 → 提示
+    #[test]
+    fn hints_once_at_threshold() {
+        assert!(should_emit_waiting_hint(API_WAITING_HINT_SECS, false));
+    }
+
+    /// **回归防护（用户实测 bug）**：同一段静默期继续延长时**不得重复提示**。
+    /// 首版每 30s 无条件发一条，页面被「已 30 秒未收到数据」刷屏。
+    #[test]
+    fn does_not_repeat_within_same_silence() {
+        for extra in [0, 30, 60, 300] {
+            assert!(
+                !should_emit_waiting_hint(API_WAITING_HINT_SECS + extra, true),
+                "静默 {} 秒时不应重复提示",
+                API_WAITING_HINT_SECS + extra
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod idle_terminal_tests {
+    //! 「空闲超时必须以中断收尾」的语义防护。
+    //!
+    //! **实测 bug**：首版只在"零产出"时才收尾，于是 `interrupted` 形态
+    //! （吐了半截后静默）虽然触发了计时器，却走到了正常完成路径 ——
+    //! 界面只剩半截正文，用户以为已经正常完成。
+    use super::must_finish_as_interrupted;
+
+    /// 计时器触发就必须收尾，与是否重试、产出多少无关
+    #[test]
+    fn idle_timeout_always_terminates() {
+        // (idle_timed_out, should_retry) → 必须以中断收尾
+        assert!(must_finish_as_interrupted(true, true)); // hang：零帧静默
+        assert!(
+            must_finish_as_interrupted(true, false),
+            "吐了半截后静默也必须收尾并给出中断提示——这正是实测漏掉的场景"
+        );
+    }
+
+    /// 未触发空闲超时时不得收尾（否则正常完成会被误判为中断）
+    #[test]
+    fn normal_completion_does_not_terminate() {
+        assert!(!must_finish_as_interrupted(false, false));
+        assert!(!must_finish_as_interrupted(false, true));
+    }
+
+    /// 防回归：收尾判据**不得**依赖 should_retry（用错字段即本次 bug）
+    #[test]
+    fn termination_does_not_depend_on_retry_flag() {
+        for idle in [true, false] {
+            assert_eq!(
+                must_finish_as_interrupted(idle, true),
+                must_finish_as_interrupted(idle, false),
+                "should_retry 不应影响收尾判定（idle_timed_out={idle}）"
+            );
+        }
     }
 }

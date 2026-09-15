@@ -171,7 +171,10 @@ export type AgentStepType =
   | "task_scheduled"
   | "task_completed"
   | "retry"
-  | "cancelled";
+  | "cancelled"
+  | "interrupted"
+  /** 长时间未收到数据时的等待提示（渲染为气泡下方小字，不写正文） */
+  | "waiting_hint";
 
 export interface AgentStep {
   type: AgentStepType;
@@ -269,6 +272,14 @@ export interface AgentCurrentTurn {
   toolCalls: AgentToolCallView[];
   logs: AgentExecutionLog[];
   tokens?: AgentTurnTokens;
+  /**
+   * 本轮的状态标注（气泡下方小字）：等待提示、中断/取消说明等。
+   *
+   * 与 textBlocks 的区别是**展示位置**——textBlocks 渲染在回复气泡内，
+   * notice 渲染在气泡下方。运行状态信息一律走这里，避免挤进正文
+   * 看起来像模型自己说的话。
+   */
+  notice?: string;
   startedAt: number | null;
 }
 

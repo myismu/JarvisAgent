@@ -855,7 +855,7 @@ const handleRecallEdit = async () => {
 
   <ConfirmModal
     :open="showProfileCacheWarning"
-    :title="t('settings.presets')"
+    :title="t('settings.tabs.presets')"
     :message="t('settings.profiles.cacheWarning', { name: appConfig?.profiles.find((p: any) => p.id === pendingProfileId)?.name || '' })"
     confirm-kind="primary"
     @cancel="showProfileCacheWarning = false; pendingProfileId = null"

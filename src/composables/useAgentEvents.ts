@@ -174,8 +174,10 @@ export function useAgentEvents() {
       view.runStartTime = running.startedAt || Date.now();
       view.streamActive = true;
       view.cancelHandled = false;
-      // 只在 runId 真的切了才重建（首次运行由 streaming 事件构建，不从 DB 覆盖）
-      if (prevRunId && prevRunId !== running.runId) {
+      // 只在 runId 真的切了才重建（首次运行由 streaming 事件构建，不从 DB 覆盖）。
+      // 另加"会话尚无持久化消息"条件，理由同下方 interrupted 分支：
+      // 历史里已有该 run 的部分正文时，再注入 live_content 会渲染成两份。
+      if (prevRunId && prevRunId !== running.runId && view.messages.length === 0) {
         hydrateCurrentTurnFromRun(view, running);
       }
       view.hydrated = true;
@@ -191,7 +193,18 @@ export function useAgentEvents() {
       if (view.status === "RUNNING" || view.status === "IDLE" || view.status === "INTERRUPTED") {
         view.status = "INTERRUPTED";
       }
-      if (!hasCurrentTurnContent(view)) {
+      // 仅当会话**尚无已持久化消息**时，才用 run 的 live_* 重建当前 turn。
+      //
+      // 为什么必须加这个条件：`applyAgentRunState` 在本函数里被调用**两次**
+      // （历史加载前一次、加载后一次）。第一次调用时 currentTurn 还是空的，
+      // 原来的守卫 `!hasCurrentTurnContent` 会通过，于是把 `live_content`
+      // 拼进当前 turn；随后历史消息又渲染了同一条正文 → **界面多出一份**。
+      // （实测表现：刷新后多一条 assistant，再刷新才正常。）
+      //
+      // 已存在持久化消息时，历史就是权威来源，`live_content` 只是它的流式备份，
+      // 不能再渲染一遍。
+      const hasPersistedHistory = view.messages.length > 0;
+      if (!hasPersistedHistory && !hasCurrentTurnContent(view)) {
         hydrateCurrentTurnFromRun(view, interrupted);
       }
       view.currentTurn.isRunning = false;
@@ -616,6 +629,18 @@ export function useAgentEvents() {
       if (!sessionId) return;
       const step = event.payload as Omit<AgentStep, "timestamp">;
       const view = session.getSessionView(sessionId);
+      // 等待提示与重试进度都是**过程性状态标注**：写进 turn.notice
+      // （渲染在气泡下方小字），不进正文、不落库。
+      // 经 chat-stream 会被当成模型输出写进回复气泡内部（历史遗留问题）。
+      if (step.type === "waiting_hint" || step.type === "retry") {
+        if (step.content) {
+          view.currentTurn.notice = step.content;
+        }
+        view.streamActive = true;
+        view.hydrated = true;
+        syncActiveSessionView(sessionId, true);
+        return;
+      }
       const fullStep = { ...step, timestamp: Date.now() } as AgentStep;
       view.agentSteps.push(fullStep);
       applyAgentStepToCurrentTurn(view, fullStep);

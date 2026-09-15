@@ -69,6 +69,26 @@ function tryParseApiErrorBody(body: string): string | null {
   }
 }
 
+/**
+ * 从正文中剥离"运行被打断"的标记，改为气泡下方的小字说明。
+ *
+ * 后端在中断收尾时会把标记追加进 `res.content`（如 `> ⚠️ **[回复被中断]** …`、
+ * `> ✕ **用户已取消执行…**`）。它属于**状态标注**而非模型正文，若留在正文里
+ * 会挤进回复气泡内部，既突兀又与"已保留的部分结果"重复。
+ * 这里把它取出来交给 `snapshot.notice`，由渲染层放在气泡下方。
+ */
+function splitInterruptedNotice(content: string): { content: string; notice?: string } {
+  const match = content.match(/\n*>?\s*[⚠✕][^\n]*/);
+  if (!match || match.index === undefined) return { content };
+  const notice = match[0]
+    .replace(/^[\s>]+/, "")
+    .replace(/\*\*/g, "")
+    .replace(/[⚠️✕]/g, (m) => (m === "✕" ? "✕" : "⚠"))
+    .trim();
+  const cleaned = content.slice(0, match.index).trimEnd();
+  return { content: cleaned, notice: notice || undefined };
+}
+
 function buildFinalResponseParts(
   view: { contentBuffer: string; tempBuffer: string; toolBuffer: string; thinkingBuffer: string },
   fallbackContent?: string,
@@ -298,7 +318,17 @@ export const useChatStore = defineStore("chat", () => {
           reason: result.resumeWith,
         });
         if (res.status !== "PAUSED_LOOP_LIMIT") {
-          const snapshot = buildAgentTurnSnapshot(requestView.currentTurn, stripPseudoToolCalls(res.content), "", undefined, res.status);
+          const { content: resumeContent, notice: resumeNotice } = splitInterruptedNotice(
+            stripPseudoToolCalls(res.content),
+          );
+          const snapshot = buildAgentTurnSnapshot(
+            requestView.currentTurn,
+            resumeContent,
+            "",
+            undefined,
+            res.status,
+            resumeNotice,
+          );
           session.appendSessionMessage(sid, { role: "agent", id: `agent_${Date.now()}`, snapshot });
           session.clearSessionBuffers(sid);
           resetRenderState(sid);
@@ -508,15 +538,22 @@ export const useChatStore = defineStore("chat", () => {
       if (res.status === "CANCELLED") {
         if (!requestView.cancelHandled) {
           const cancellationFallback = res.content && res.content !== "用户已取消执行。" ? res.content : "";
-          const { finalContent, finalToolBuffer } = buildFinalResponseParts(requestView, cancellationFallback);
+          // 同样先剥离中断/取消标记：后端把它追加在 content 末尾，
+          // 若留在正文里会和下面设置的 notice 重复成两行。
+          const { content: cleanedFallback } = splitInterruptedNotice(
+            stripPseudoToolCalls(cancellationFallback),
+          );
+          const { finalContent, finalToolBuffer } = buildFinalResponseParts(requestView, cleanedFallback);
           const hasPartialContent = finalContent || finalToolBuffer;
-          if (hasPartialContent) {
-            const canceledSnapshot = buildAgentTurnSnapshot(requestView.currentTurn, finalContent, finalToolBuffer, undefined, "CANCELLED");
-            canceledSnapshot.notice = "用户已取消执行，以上为部分结果";
-            session.appendSessionMessage(sessionIdAtStart, { role: "agent", id: `agent_${Date.now()}`, snapshot: canceledSnapshot });
-          } else if (res.content && res.content !== "用户已取消执行。") {
-            const canceledSnapshot = buildAgentTurnSnapshot(requestView.currentTurn, stripPseudoToolCalls(res.content), "", undefined, "CANCELLED");
-            canceledSnapshot.notice = "用户已取消执行，以上为部分结果";
+          if (hasPartialContent || cleanedFallback.trim()) {
+            const canceledSnapshot = buildAgentTurnSnapshot(
+              requestView.currentTurn,
+              finalContent || cleanedFallback,
+              finalToolBuffer,
+              undefined,
+              "CANCELLED",
+              "用户已取消执行，以上为部分结果",
+            );
             session.appendSessionMessage(sessionIdAtStart, { role: "agent", id: `agent_${Date.now()}`, snapshot: canceledSnapshot });
           }
           requestView.latestCheckpoint = null;
@@ -570,7 +607,14 @@ export const useChatStore = defineStore("chat", () => {
         return;
       }
 
-      const { finalContent, finalToolBuffer: streamedToolBuffer } = buildFinalResponseParts(requestView, res.content);
+      const { finalContent: rawFinalContent, finalToolBuffer: streamedToolBuffer } =
+        buildFinalResponseParts(requestView, res.content);
+      // 状态标注优先取后端结构化字段 `notice`；正则剥离作为兜底
+      // （兼容历史数据里仍把标记写在正文中的情况）。
+      const { content: strippedContent, notice: strippedNotice } =
+        splitInterruptedNotice(rawFinalContent);
+      const finalContent = strippedContent;
+      const interruptedNotice = (res as any).notice || strippedNotice;
       // break_loop 时后端通过 tool_execution_summary 传递工具结果，补充到 toolBuffer
       const finalToolBuffer = streamedToolBuffer || (res as any).toolExecutionSummary || "";
       const inputTokens = res.input_tokens ?? (res as any).inputTokens ?? 0;
@@ -587,7 +631,14 @@ export const useChatStore = defineStore("chat", () => {
       };
 
       // 先拍快照（保留执行过程），再清空 live 缓冲区
-      const snapshot = buildAgentTurnSnapshot(requestView.currentTurn, finalContent, finalToolBuffer, undefined, res.status);
+      const snapshot = buildAgentTurnSnapshot(
+        requestView.currentTurn,
+        finalContent,
+        finalToolBuffer,
+        undefined,
+        res.status,
+        interruptedNotice,
+      );
       session.clearSessionBuffers(sessionIdAtStart);
 
       if (myGeneration === sendGeneration[sessionIdAtStart]) {

@@ -1,4 +1,4 @@
-﻿//! # session.rs — 会话生命周期管理 Tauri 命令
+//! # session.rs — 会话生命周期管理 Tauri 命令
 //!
 //! 提供会话的创建、切换、删除、重命名、元数据查询等核心命令，
 //! 以及 Agent 步骤、方案文档、Agent Run、子 Agent 等扩展查询命令。
@@ -297,7 +297,8 @@ pub async fn auto_name_session(
     let cfg = crate::infra::config::config::load_config();
     let agent_cfg = cfg.active_config();
 
-    let client = reqwest::Client::new();
+    // 辅助调用统一走带超时的客户端
+    let client = api_client::build_utility_client();
     let title = api_client::call_llm_simple(
         &client,
         &agent_cfg.api_key,
@@ -744,14 +745,29 @@ pub(crate) fn recover_interrupted_into_memory(
             &current_messages,
         )
     else {
+        // 无可恢复的 run 属**正常路径**（绝大多数加载都会走到这里），
+        // 不打日志以免每次刷新都刷屏。
         return false;
     };
+    println!(
+        "[JARVIS] 中断恢复：发现可恢复 run（session {}，额外消息 {} 条，半截正文 {} 字）",
+        session_id,
+        extra_messages.len(),
+        live_content.trim().chars().count()
+    );
     for message in extra_messages {
         session::append_message(memory, message, "chat");
     }
     if let Some(message) = recovered_assistant_message(&live_content, &live_thinking) {
         if !assistant_message_exists_at_tail(&memory.messages, &message) {
             session::append_message(memory, message, "chat");
+        } else {
+            // 去重生效：不再重复写入合并副本。加日志便于日后排查
+            // "刷新后又多一条"的复现（此前这里的判定过窄，反复写入）。
+            println!(
+                "[JARVIS] 中断恢复：半截内容已存在于历史，跳过重复写入（session {}）",
+                session_id
+            );
         }
     }
     true
@@ -781,11 +797,54 @@ fn recovered_assistant_message(live_content: &str, live_thinking: &str) -> Optio
     }
 }
 
+/// 去掉中断标记后的纯正文，用于恢复去重比较。
+///
+/// 恢复产出的消息形如 `正文 + 内嵌中断标记`，而库里正常路径下存的是
+/// `正文` 与 `标记` **两条独立消息**。若按整段文本比较，二者永远不相等，
+/// 去重必然失效 → 每加载一次就多一条合并副本（实测反复出现的问题）。
+fn strip_interrupt_marker(text: &str) -> String {
+    let mut out = text.to_string();
+    while let Some(pos) = out.find("[回复被中断]") {
+        // 连同该行开头的引用符号一起裁掉
+        let line_start = out[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let line_end = out[pos..].find('\n').map(|i| pos + i).unwrap_or(out.len());
+        out.replace_range(line_start..line_end, "");
+    }
+    out.trim().to_string()
+}
+
+/// 判断"半截助手回复"是否已存在于历史尾部（用于恢复时去重）。
+///
+/// **实测 bug 的防护（三处窄化）**：
+/// 1. 旧实现只与 `messages.last()` 比较 —— 最后一条是中断标记时判定失败；
+/// 2. 旧实现比较 `(思考, 正文)` **整对** —— 恢复消息常带思考块，历史里可能只有正文；
+/// 3. 旧实现按**整段文本**比较 —— 恢复消息内嵌了中断标记，而库里是正文与标记
+///    分开两条，整段比较必然不相等。
+///
+/// 三者叠加的后果：`recover_interrupted_into_memory()` 每次调用都把同一段半截
+/// 内容再写一遍，表现为"刷新一次多一条"，删掉后再刷新又回来。
+///
+/// 现在改为：尾部窗口（4 条）内扫描，比较前**剥离中断标记**，
+/// 且思考与正文**各自判定**——任一已存助手消息含相同正文（或相同思考）即视为已存在。
 fn assistant_message_exists_at_tail(messages: &[Message], target: &Message) -> bool {
-    let Some(last) = messages.last() else {
+    let Some((target_thinking, target_text)) = assistant_message_texts(target) else {
         return false;
     };
-    assistant_message_texts(last) == assistant_message_texts(target)
+    let target_text = strip_interrupt_marker(&target_text);
+    let target_thinking = strip_interrupt_marker(&target_thinking);
+
+    let recent: Vec<(String, String)> = messages
+        .iter()
+        .rev()
+        .take(4)
+        .filter_map(assistant_message_texts)
+        .map(|(t, x)| (strip_interrupt_marker(&t), strip_interrupt_marker(&x)))
+        .collect();
+
+    if !target_text.is_empty() && recent.iter().any(|(_, x)| x == &target_text) {
+        return true;
+    }
+    !target_thinking.is_empty() && recent.iter().any(|(t, _)| t == &target_thinking)
 }
 
 fn assistant_message_texts(message: &Message) -> Option<(String, String)> {
@@ -946,7 +1005,8 @@ async fn compact_inner(
     if memory.messages.len() <= keep {
         return Ok(format!("消息不足（仅有 {} 条，保留阈值 {} 条），无需压缩。", memory.messages.len(), keep));
     }
-    let client = reqwest::Client::new();
+    // 辅助调用统一走带超时的客户端
+    let client = api_client::build_utility_client();
     let cfg = {
         let config = crate::infra::config::config::load_config();
         config.active_config().clone()
@@ -988,4 +1048,152 @@ pub fn is_session_compacting(
     compacting: tauri::State<'_, crate::infra::background::CompactingState>,
 ) -> bool {
     compacting.is_compacting(&session_id)
+}
+
+#[cfg(test)]
+mod recovered_dedup_tests {
+    //! **实测 bug 的防护**：中断恢复的去重曾经只比对 `messages.last()`，
+    //! 当最后一条是别的东西（如 `source=interrupted` 的中断标记）时判定失败，
+    //! 把同一段半截内容重复写入 —— 表现为"每刷新一次就多一条重复消息"。
+    use super::assistant_message_exists_at_tail;
+    use crate::infra::types::models::*;
+
+    fn assistant(text: &str) -> Message {
+        Message::Assistant {
+            content: Content::Single(text.to_string()),
+        }
+    }
+
+    fn assistant_blocks(blocks: Vec<ContentBlock>) -> Message {
+        Message::Assistant {
+            content: Content::Multiple(blocks),
+        }
+    }
+
+    fn text_block(text: &str) -> ContentBlock {
+        ContentBlock::Text {
+            text: text.to_string(),
+        }
+    }
+
+    /// 回归防护（核心）：目标内容在倒数第二条、最后一条是中断标记时，
+    /// 必须判定为"已存在"，否则会重复写入（这正是实测的复现路径）。
+    #[test]
+    fn detects_match_before_trailing_interrupted_marker() {
+        let messages = vec![
+            assistant("This reply was cut off mid-sen"),
+            assistant("> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。"),
+        ];
+        assert!(
+            assistant_message_exists_at_tail(
+                &messages,
+                &assistant("This reply was cut off mid-sen")
+            ),
+            "末尾是中断标记时，仍应认出前面的同一段半截内容，避免重复落库"
+        );
+    }
+
+    /// 最后一条即目标：行为与旧实现一致，不能回归
+    #[test]
+    fn still_detects_trailing_match() {
+        let messages = vec![assistant("同一段内容")];
+        assert!(assistant_message_exists_at_tail(
+            &messages,
+            &assistant("同一段内容")
+        ));
+    }
+
+    /// 多块消息的正文比较应忽略非 Text 块差异之外的内容
+    #[test]
+    fn matches_multiple_blocks_by_text() {
+        let messages = vec![assistant_blocks(vec![
+            ContentBlock::Thinking {
+                thinking: "先看看".to_string(),
+                signature: String::new(),
+            },
+            text_block("半截正文"),
+        ])];
+        assert!(assistant_message_exists_at_tail(
+            &messages,
+            &assistant("半截正文")
+        ));
+    }
+
+    /// 不同内容不得误判为已存在，否则真实的半截回复会被漏掉
+    #[test]
+    fn different_content_is_not_a_match() {
+        let messages = vec![assistant("上一轮的完整回复")];
+        assert!(!assistant_message_exists_at_tail(
+            &messages,
+            &assistant("本轮被打断的半截话")
+        ));
+    }
+
+    /// 超出尾部窗口的历史不应参与判定（避免误吞真正的新内容）
+    #[test]
+    fn only_scans_recent_tail() {
+        let mut messages = vec![assistant("很久以前的同款文本")];
+        for _ in 0..5 {
+            messages.push(assistant("中间过程的其它回复"));
+        }
+        assert!(!assistant_message_exists_at_tail(
+            &messages,
+            &assistant("很久以前的同款文本")
+        ));
+    }
+
+    /// 用户消息不参与助手消息的去重判定
+    #[test]
+    fn user_messages_are_ignored() {
+        let messages = vec![Message::User {
+            content: Content::Single("半截正文".to_string()),
+        }];
+        assert!(!assistant_message_exists_at_tail(
+            &messages,
+            &assistant("半截正文")
+        ));
+    }
+
+    /// **回归防护（核心，实测"删了又回来"）**：库里正常路径是把
+    /// 「正文」与「中断标记」存成两条独立消息，而恢复产出的是
+    /// 「正文 + 内嵌标记」的合并消息。按整段文本比较必然不相等，
+    /// 于是每加载一次就再写一条合并副本。
+    ///
+    /// 修复后按剥离标记的**纯正文**比较，必须判定为已存在。
+    #[test]
+    fn merged_recovery_does_not_duplicate_split_stored_pair() {
+        let stored = vec![
+            assistant("This reply was cut off mid-sen"),
+            assistant("> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。"),
+        ];
+        let recovered = assistant(
+            "This reply was cut off mid-sen\n\n> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。",
+        );
+        assert!(
+            assistant_message_exists_at_tail(&stored, &recovered),
+            "合并副本与已存的分体消息是同一段内容，不得重复写入（实测 bug）"
+        );
+    }
+
+    /// 合并副本自身已存在时也不得再写一次（连续多次加载/刷新的场景）
+    #[test]
+    fn merged_recovery_is_idempotent() {
+        let merged = assistant(
+            "半截正文\n\n> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。",
+        );
+        let stored = vec![merged.clone()];
+        assert!(assistant_message_exists_at_tail(&stored, &merged));
+    }
+
+    /// 剥离标记不得伤及正文本身（防止误判把新内容吞掉）
+    #[test]
+    fn stripping_marker_keeps_body_intact() {
+        assert_eq!(
+            super::strip_interrupt_marker(
+                "正文第一行\n\n> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。"
+            ),
+            "正文第一行"
+        );
+        assert_eq!(super::strip_interrupt_marker("纯正文没有标记"), "纯正文没有标记");
+    }
 }

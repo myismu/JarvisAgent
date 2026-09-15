@@ -32,13 +32,33 @@ const props = defineProps<{
   paused: boolean;
 }>();
 
-const assistantText = computed(() =>
+/** 从正文里剥离"运行被打断"标记（如 `> ⚠️ **[回复被中断]** …`）。 */
+function splitInterruptMarker(text: string): { text: string; notice?: string } {
+  const match = text.match(/\n*>?\s*[⚠✕][^\n]*/);
+  if (!match || match.index === undefined) return { text };
+  const notice = match[0]
+    .replace(/^[\s>]+/, "")
+    .replace(/\*\*/g, "")
+    .trim();
+  return { text: text.slice(0, match.index).trimEnd(), notice: notice || undefined };
+}
+
+const rawAssistantText = computed(() =>
   stripPseudoToolCalls(
     props.turn.textBlocks
       .filter((block) => block.kind === "assistant")
       .map((block) => block.content)
       .join(""),
   ),
+);
+
+// 实时渲染也必须剥离中断标记，否则它会作为正文渲染成一个大方块，
+// 与刷新后（历史渲染已剥离）的小字样式**不一致** —— 实测两张截图对比发现。
+const assistantText = computed(() => splitInterruptMarker(rawAssistantText.value).text);
+
+/** 气泡下方的状态标注：显式 notice 优先，否则用从正文剥离出的标记 */
+const turnNotice = computed(
+  () => props.turn.notice || splitInterruptMarker(rawAssistantText.value).notice,
 );
 
 const hasAssistantText = computed(() => assistantText.value.trim().length > 0);
@@ -57,10 +77,14 @@ const isDeveloperMode = computed(() => props.displayMode === "developer");
 const developerTimeline = computed(() =>
   buildDeveloperTimeline(
     {
-      textBlocks: props.turn.textBlocks.filter((b) => b.kind === "assistant").map((b) => ({
-        content: stripPseudoToolCalls(b.content),
-        timestamp: b.timestamp,
-      })),
+      textBlocks: props.turn.textBlocks
+        .filter((b) => b.kind === "assistant")
+        .map((b) => ({
+          // 开发者模式同样剥离中断标记，避免它被当成正文渲染
+          content: splitInterruptMarker(stripPseudoToolCalls(b.content)).text,
+          timestamp: b.timestamp,
+        }))
+        .filter((b) => b.content.trim()),
       thinkingBlocks: props.turn.thinkingBlocks,
       toolCalls: props.turn.toolCalls,
       logs: props.turn.logs,
@@ -156,6 +180,10 @@ function toolStatusLabel(status: string): string {
       <StreamingMarkdown v-if="hasAssistantText" class="agent-turn-answer" :content="assistantText" />
     </template>
 
+    <div v-if="turnNotice" class="agent-turn-notice">
+      {{ turnNotice }}
+    </div>
+
     <div v-if="hasTurnTokens && turn.tokens" class="agent-turn-tokens">
       输入 {{ turn.tokens.input }} / 输出 {{ turn.tokens.output }} Token
       <template v-if="turn.tokens.sessionInput">
@@ -176,6 +204,19 @@ function toolStatusLabel(status: string): string {
   width: 100%;
   font-size: 0.75rem;
   color: var(--text-muted);
+}
+
+/* 状态标注（等待提示 / 中断说明）：气泡下方的小字，与 token 统计同款视觉 */
+.agent-turn-notice {
+  margin-top: 10px;
+  width: 100%;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.agent-turn-notice + .agent-turn-tokens {
+  margin-top: 6px;
 }
 
 .agent-turn.waiting-only {

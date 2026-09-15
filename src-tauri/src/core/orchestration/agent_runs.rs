@@ -1,4 +1,4 @@
-﻿//! 主Agent执行记录模块 - 运行历史与检查点管理
+//! 主Agent执行记录模块 - 运行历史与检查点管理
 //!
 //! 记录主Agent每次执行的完整生命周期：启动、思考、工具调用、完成/失败。
 //! 支持检查点保存与恢复，用于断点续传和崩溃恢复。
@@ -436,8 +436,49 @@ pub fn cancel_run(
     );
 }
 
-pub fn fail_run(app: &tauri::AppHandle, run_id: &str, error: String) {
-    finish_run(app, run_id, AgentRunStatus::Failed, 0, 0, None, Some(error));
+/// 标记 run 失败。
+///
+/// `input_tokens` / `output_tokens` 为本次运行真实累计值——旧实现硬编码传 0，
+/// 导致失败轮次的消耗在成本统计中完全缺失。
+pub fn fail_run(
+    app: &tauri::AppHandle,
+    run_id: &str,
+    error: String,
+    input_tokens: u64,
+    output_tokens: u64,
+) {
+    finish_run(
+        app,
+        run_id,
+        AgentRunStatus::Failed,
+        input_tokens,
+        output_tokens,
+        None,
+        Some(error),
+    );
+}
+
+/// 标记 run 为已中断（运行被打断，非用户主动撤销）。
+///
+/// 与 [`fail_run`] 的区别：状态为 `Interrupted`（`resumable = true`，保留续跑语义），
+/// 且 `error` 字段承载中断原因，同时会通过 `finish_run` 落一条结构化事件，
+/// 供界面「执行详情」展示——错误信息不进对话消息内容，避免污染模型上下文。
+pub fn interrupt_run(
+    app: &tauri::AppHandle,
+    run_id: &str,
+    reason: String,
+    input_tokens: u64,
+    output_tokens: u64,
+) {
+    finish_run(
+        app,
+        run_id,
+        AgentRunStatus::Interrupted,
+        input_tokens,
+        output_tokens,
+        None,
+        Some(reason),
+    );
 }
 
 /// 准备恢复执行 - 加载检查点并生成恢复提示词

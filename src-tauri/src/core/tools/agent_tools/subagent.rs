@@ -419,7 +419,8 @@ pub async fn run_subagent(
         .or_else(|| agent.model.map(|model| model.to_string()))
         .unwrap_or(cfg.main_model);
 
-    let client = reqwest::Client::new();
+    // 与主 Agent 共用统一的客户端构造（连接超时 + TCP keepalive）
+    let client = crate::infra::llm::api_client::build_streaming_client();
     // Only a session workspace is treated as a project/work directory.
     // The app process CWD is JarvisAgent's own runtime location and must not
     // leak into non-sandbox subagent context as the user's project.
@@ -684,6 +685,8 @@ pub async fn run_subagent(
             StreamConfig {
                 is_subagent: true,
                 cache_usage_style: crate::infra::llm::registry::cache_usage_style_for(&model_id),
+                // 子 Agent 有自己的监控面板与阶段提示，不需要主聊天流的等待提示
+                on_frame: None,
             },
         )
         .await;

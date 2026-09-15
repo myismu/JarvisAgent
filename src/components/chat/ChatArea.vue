@@ -56,7 +56,10 @@ const hasCurrentTurnContent = computed(() => {
     turn.textBlocks.some((block) => block.content.trim()) ||
       turn.thinkingBlocks.some((block) => block.content.trim()) ||
       turn.toolCalls.length > 0 ||
-      turn.logs.some((log) => log.content.trim())
+      turn.logs.some((log) => log.content.trim()) ||
+      // 状态标注本身也是要展示的内容：若只统计正文，出现"只有提示没有正文"
+      // （如上游静默零产出）时整轮会被判定为空而不渲染，提示随之消失。
+      (turn.notice || "").trim()
   );
 });
 const isWaitingForUser = computed(() => {
@@ -94,6 +97,8 @@ let waitStartMs = 0;
 let accumulatedWaitMs = 0;
 
 // 将 AgentTurnSnapshot 转换为 AgentCurrentTurn 格式（供 AgentTurn 组件渲染历史消息）
+// 注意：**新增快照字段时必须同步到这里**，否则该字段在界面永远不生效
+// （notice 就曾因为漏拷而完全不显示）。
 function convertSnapshotToTurn(snapshot: AgentTurnSnapshot): any {
   return {
     id: snapshot.createdAt.toString(),
@@ -108,6 +113,8 @@ function convertSnapshotToTurn(snapshot: AgentTurnSnapshot): any {
     toolCalls: snapshot.toolCalls,
     logs: snapshot.logs,
     tokens: snapshot.tokens,
+    // 状态标注（气泡下方小字）：中断/取消/等待说明
+    notice: snapshot.notice,
     startedAt: snapshot.createdAt,
   };
 }

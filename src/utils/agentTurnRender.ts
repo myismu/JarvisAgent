@@ -211,11 +211,43 @@ export function describeThinkingStatic(content: string) {
 }
 
 
+/**
+ * 抓取"运行被打断"标记（`> ⚠️ **[回复被中断]** …` / `> ✕ **用户已取消执行…**`）。
+ *
+ * 渲染层兜底：正文里若混进这类状态标注，会被当成模型自己的话排在回复气泡内，
+ * 既突兀又与气泡下方的说明重复。这里统一剥离，并交给 notice 渲染在气泡**下方**。
+ * 放在渲染层是为了同时覆盖**实时流式**与**历史回放**两条路径。
+ */
+function extractInterruptNotice(snapshot: AgentTurnSnapshot): string | undefined {
+  for (const block of snapshot.textBlocks) {
+    const match = block.content.match(/\n*>?\s*[⚠✕][^\n]*/);
+    if (!match || match.index === undefined) continue;
+    const notice = match[0]
+      .replace(/^[\s>]+/, "")
+      .replace(/\*\*/g, "")
+      .trim();
+    const cleaned = block.content.slice(0, match.index).trimEnd();
+    if (cleaned) {
+      block.content = cleaned;
+    } else {
+      snapshot.textBlocks = snapshot.textBlocks.filter((b) => b !== block);
+    }
+    return notice || undefined;
+  }
+  return undefined;
+}
+
 export function renderAgentTurnSnapshot(
   snapshot: AgentTurnSnapshot,
   displayMode: AgentDisplayMode,
   live = false,
 ) {
+  // 先剥离中断标记，避免它出现在气泡内；已有 notice 时不覆盖
+  const extracted = extractInterruptNotice(snapshot);
+  if (extracted && !snapshot.notice) {
+    snapshot.notice = extracted;
+  }
+
   const tokenHtml = snapshot.tokens
     ? renderTokenUsage(
         snapshot.tokens.input,

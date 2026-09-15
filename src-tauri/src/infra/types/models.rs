@@ -36,6 +36,13 @@ pub struct JarvisResult {
     /// break_loop 时的工具执行结果摘要（前端用于 toolBuffer，避免丢失工具执行日志）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_execution_summary: Option<String>,
+    /// 本轮的状态标注（如"上游服务已停止响应""用户已取消执行"）。
+    ///
+    /// 与 `content` 的分工：content 是模型正文（渲染在回复气泡内），
+    /// notice 是运行状态说明（渲染在气泡**下方**的小字里）。
+    /// 中断类信息走 notice，避免混进正文看起来像模型自己说的话。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
