@@ -238,19 +238,6 @@ pub const MEMORY_CURATOR_SYSTEM: &str = "你是「全局记忆」的整理者。
 ";
 
 
-#[cfg(test)]
-mod debug_tests {
-    use super::*;
-
-    #[test]
-    fn save_developer_edit_prompt() {
-        let prompt = get_system_prompt("developer", "edit", None);
-        let out_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("doc");
-        std::fs::write(out_dir.join("assembled_prompt_developer_edit.txt"), prompt)
-            .expect("failed to write");
-    }
-}
-
 // ── 结构性断言测试 ──
 
 #[cfg(test)]
