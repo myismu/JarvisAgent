@@ -101,23 +101,24 @@ pub async fn create_session(
         project_id
     );
 
-    let meta = session::create_session(project_id);
-
-    // 绑定前校验项目目录仍然存在：目录被删后绑定的沙箱会话只会连环报错，
-    // 提前拦截并引导用户重新挂载项目。
-    let ws_path = meta.working_directory.clone().map(std::path::PathBuf::from);
-    if let Some(ws) = &ws_path {
-        if !ws.exists() {
+    // 先验后建：项目目录被删/改名时直接拒绝，不创建会话记录（避免孤儿空会话）。
+    let working_directory = project_id
+        .as_ref()
+        .and_then(|pid| session::repository::get_project_path(pid).ok().flatten());
+    if let Some(ws) = &working_directory {
+        if !std::path::Path::new(ws).exists() {
             return Err(format!(
                 "项目目录已不存在: {}（可能已被删除或移动），无法创建沙箱会话。请重新打开项目后再试。",
-                ws.display()
+                ws
             ));
         }
     }
 
+    let meta = session::create_session(project_id);
+
     // 初始化上下文
     let ctx = session_manager.get_or_create(&meta.id).await;
-    *ctx.workspace.lock().await = ws_path;
+    *ctx.workspace.lock().await = meta.working_directory.clone().map(std::path::PathBuf::from);
 
     // 新会话的工作模式与权限档位跟随用户偏好
     let prefs = crate::command::app_config::get_ui_preferences()

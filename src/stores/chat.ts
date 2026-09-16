@@ -434,7 +434,31 @@ export const useChatStore = defineStore("chat", () => {
       }
     }
 
-    const sessionIdAtStart = await ensureActiveSessionForSend();
+    let sessionIdAtStart: string;
+    try {
+      sessionIdAtStart = await ensureActiveSessionForSend();
+    } catch (err) {
+      // 会话创建失败（典型：挂载项目目录已被删除/改名）。此时没有真实会话可挂，
+      // 错误快照挂到 __default__ 视图：欢迎页让位，错误卡片直接显示在对话区。
+      console.error("[chat] 创建会话失败:", err);
+      const errMsg = extractErrorMessage(err) || "创建会话失败";
+      const view = session.getSessionView(null);
+      session.appendSessionMessage(null, {
+        role: "agent",
+        id: `agent_${Date.now()}`,
+        snapshot: buildAgentTurnSnapshot(
+          view.currentTurn,
+          `> ✕ **${errMsg}**`,
+          "",
+          undefined,
+          "ERROR",
+        ),
+      });
+      view.status = "ERROR";
+      triggerRender();
+      scrollToBottomCb?.();
+      return;
+    }
     sendGeneration[sessionIdAtStart] = (sendGeneration[sessionIdAtStart] || 0) + 1;
     const myGeneration = sendGeneration[sessionIdAtStart];
     const requestView = session.getSessionView(sessionIdAtStart);
