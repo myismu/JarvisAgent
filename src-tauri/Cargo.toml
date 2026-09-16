@@ -42,4 +42,18 @@ rusqlite = { version = "0.32", features = ["bundled"] } # SQLite 本地持久化
 tiktoken-rs = "0.6"
 flate2 = "1"                                          # 日志归档：过期 jsonl 压缩成 .gz（已在 lock 中，可离线构建）
 
+[dev-dependencies]
+# 集成测试用的临时目录。此前没有 [dev-dependencies]，这正是 infra/db 迁移测试
+# （19 张表、11 个 schema 版本）写不出来的直接原因——想做 DB 测试都没有临时目录工具。
+tempfile = "3"
+
+[profile.release]
+# 发布产物：体积与构建时长取平衡。
+# 刻意用 thin LTO 而不是 full：full LTO 会让这个体量（Tauri + 132 个源文件 + 全套依赖）
+# 的发布构建从几分钟涨到十几分钟，收益是边际的；thin 已经能跨 crate 内联热点。
+lto = "thin"
+codegen-units = 1
+# 去掉符号表。桌面应用不需要线上符号化，产物能小一截。
+strip = true
+
 
