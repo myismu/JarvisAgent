@@ -866,7 +866,9 @@ onMounted(() => {
 
 .response-text {
   flex: 1;
-  padding: 0 7.5%; /* 与输入框左右间距一致，使用百分比自适应 */
+  width: 100%;
+  max-width: min(85%, 960px); /* 与输入框同一套宽度口径，超宽屏 960px 封顶 */
+  margin: 0 auto; /* 居中 */
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -924,6 +926,7 @@ onMounted(() => {
 }
 
 :deep(.agent-message .message-content) {
+  max-width: 100%; /* agent 回复放开满宽，长内容（代码块/表格）不再被挤到一侧 */
   border-bottom-left-radius: 4px;
 }
 
@@ -1036,7 +1039,7 @@ onMounted(() => {
 .response-text :deep(.current-turn-content) {
   position: relative;
   width: 100%;
-  max-width: 85%;
+  max-width: 100%; /* agent 满宽（user 气泡走 .message-content 的 85%，不含此类） */
   overflow: hidden;
 }
 

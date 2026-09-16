@@ -128,49 +128,27 @@
                 </div>
                 <div class="setting-item">
                   <label>{{ t('settings.general.fontSize') }}</label>
-                  <div class="font-size-control">
-                    <button class="font-size-step" @click="setFontSize(Math.max(11, fontSize - 1))" :disabled="fontSize <= 11" :title="t('settings.general.zoomOut')">
-                      <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
-                    </button>
-                    <div class="slider-track-wrap">
-                      <input
-                        type="range"
-                        min="11"
-                        max="22"
-                        :value="fontSize"
-                        class="font-size-slider"
-                        :style="{ '--fill-pct': ((fontSize - 11) / (22 - 11) * 100).toFixed(0) + '%' }"
-                        @input="setFontSize(Number(($event.target as HTMLInputElement).value))"
-                      />
-                    </div>
-                    <button class="font-size-step" @click="setFontSize(Math.min(22, fontSize + 1))" :disabled="fontSize >= 22" :title="t('settings.general.zoomIn')">
-                      <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/><line x1="11" y1="8" x2="11" y2="14"/></svg>
-                    </button>
-                    <span class="font-size-value">{{ fontSize }}px</span>
+                  <div class="display-mode-toggle">
+                    <button
+                      v-for="p in fontSizePresets"
+                      :key="p.value"
+                      class="display-mode-btn"
+                      :class="{ active: fontSize === p.value }"
+                      @click="setFontSize(p.value)"
+                    >{{ t(p.label) }}</button>
                   </div>
                   <div class="setting-desc">{{ t('settings.general.fontSizeDesc') }}</div>
                 </div>
                 <div class="setting-item">
                   <label>{{ t('settings.general.codeFontSize') }}</label>
-                  <div class="font-size-control">
-                    <button class="font-size-step" @click="setCodeFontSize(Math.max(10, codeFontSize - 1))" :disabled="codeFontSize <= 10" :title="t('settings.general.zoomOut')">
-                      <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
-                    </button>
-                    <div class="slider-track-wrap">
-                      <input
-                        type="range"
-                        min="10"
-                        max="20"
-                        :value="codeFontSize"
-                        class="font-size-slider"
-                        :style="{ '--fill-pct': ((codeFontSize - 10) / (20 - 10) * 100).toFixed(0) + '%' }"
-                        @input="setCodeFontSize(Number(($event.target as HTMLInputElement).value))"
-                      />
-                    </div>
-                    <button class="font-size-step" @click="setCodeFontSize(Math.min(20, codeFontSize + 1))" :disabled="codeFontSize >= 20" :title="t('settings.general.zoomIn')">
-                      <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/><line x1="11" y1="8" x2="11" y2="14"/></svg>
-                    </button>
-                    <span class="font-size-value">{{ codeFontSize }}px</span>
+                  <div class="display-mode-toggle">
+                    <button
+                      v-for="p in codeFontSizePresets"
+                      :key="p.value"
+                      class="display-mode-btn"
+                      :class="{ active: codeFontSize === p.value }"
+                      @click="setCodeFontSize(p.value)"
+                    >{{ t(p.label) }}</button>
                   </div>
                   <div class="setting-desc">{{ t('settings.general.codeFontSizeDesc') }}</div>
                 </div>
@@ -592,6 +570,19 @@ const fontSize = computed(() => uiPrefs.fontSize)
 const setFontSize = (val: number) => uiPrefs.setFontSize(val)
 const codeFontSize = computed(() => uiPrefs.codeFontSize)
 const setCodeFontSize = (val: number) => uiPrefs.setCodeFontSize(val)
+// 字号是离散偏好而非连续量：四档预设替代滑杆；旧的自定义值不落在档位上时不高亮，点任一档即吸附
+const fontSizePresets = [
+  { value: 12, label: 'settings.general.sizeS' },
+  { value: 14, label: 'settings.general.sizeM' },
+  { value: 16, label: 'settings.general.sizeL' },
+  { value: 18, label: 'settings.general.sizeXL' },
+]
+const codeFontSizePresets = [
+  { value: 11, label: 'settings.general.sizeS' },
+  { value: 13, label: 'settings.general.sizeM' },
+  { value: 15, label: 'settings.general.sizeL' },
+  { value: 17, label: 'settings.general.sizeXL' },
+]
 const defaultExpandThinking = computed(() => uiPrefs.defaultExpandThinking)
 const setDefaultExpandThinking = (val: boolean) => uiPrefs.setDefaultExpandThinking(val)
 const autoScroll = computed(() => uiPrefs.autoScroll)
@@ -1135,6 +1126,9 @@ const save = async () => {
 }
 
 .settings-modal {
+  /* 选中态实心底：小面积开关用纯 --text-main 视觉刚好，大面积实心会被衬得更黑，
+     故混入更多底色（76/24）让两者看起来是同一种"黑" */
+  --sel-fill: color-mix(in srgb, var(--text-main) 76%, var(--surface-strong));
   background: var(--surface-strong);
   backdrop-filter: blur(var(--glass-blur-heavy));
   -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
@@ -1174,7 +1168,7 @@ const save = async () => {
 }
 
 .header-icon {
-  color: var(--accent-blue);
+  color: var(--text-main);
 }
 
 .settings-header h3 {
@@ -1226,8 +1220,8 @@ const save = async () => {
 }
 
 .nav-item.active {
-  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
-  color: var(--accent-blue);
+  background: color-mix(in srgb, var(--text-main) 10%, transparent);
+  color: var(--text-main);
 }
 
 .sidebar-divider {
@@ -1250,8 +1244,8 @@ const save = async () => {
 
 .add-btn {
   background: var(--glass-bg-light);
-  color: var(--accent-blue);
-  border: 1px solid color-mix(in srgb, var(--accent-blue) 30%, transparent);
+  color: var(--text-main);
+  border: 1px solid color-mix(in srgb, var(--text-main) 25%, transparent);
   width: 20px;
   height: 20px;
   border-radius: 4px;
@@ -1264,8 +1258,8 @@ const save = async () => {
 }
 
 .add-btn:hover {
-  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
-  border-color: var(--accent-blue);
+  background: color-mix(in srgb, var(--text-main) 10%, transparent);
+  border-color: var(--text-main);
 }
 
 .profile-list {
@@ -1294,8 +1288,8 @@ const save = async () => {
 }
 
 .profile-item.active {
-  background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
-  color: var(--accent-blue);
+  background: color-mix(in srgb, var(--text-main) 8%, transparent);
+  color: var(--text-main);
   font-weight: 500;
 }
 
@@ -1339,8 +1333,8 @@ const save = async () => {
   border-radius: 50%;
 }
 
-.sidebar-switch input:checked + .slider { background-color: var(--accent-blue); }
-.sidebar-switch input:checked + .slider:before { transform: translateX(10px); }
+.sidebar-switch input:checked + .slider { background-color: var(--sel-fill); }
+.sidebar-switch input:checked + .slider:before { transform: translateX(10px); background-color: var(--surface-strong); }
 
 .copy-btn, .delete-btn {
   background: transparent;
@@ -1352,13 +1346,13 @@ const save = async () => {
 }
 
 .profile-item:hover .copy-btn, .profile-item:hover .delete-btn { opacity: 1; }
-.copy-btn:hover { color: var(--accent-blue); }
+.copy-btn:hover { color: var(--text-main); }
 .delete-btn:hover { color: var(--accent-red); }
 
 .profile-item { cursor: grab; }
 .profile-item.dragging { opacity: 0.5; cursor: grabbing; }
 .profile-item.drag-over {
-  border-top: 2px solid var(--accent-blue);
+  border-top: 2px solid var(--text-main);
 }
 
 /* 内容区域样式 */
@@ -1445,7 +1439,7 @@ const save = async () => {
 }
 
 .setting-item select:hover {
-  border-color: var(--accent-blue);
+  border-color: var(--text-soft);
   background-color: var(--glass-bg);
 }
 
@@ -1487,7 +1481,7 @@ const save = async () => {
 }
 
 .toggle-visibility.active {
-  color: var(--accent-blue);
+  color: var(--text-main);
 }
 
 /* ── 自定义下拉（替代原生 select）── */
@@ -1516,13 +1510,13 @@ const save = async () => {
 }
 
 .custom-select-trigger:hover {
-  border-color: var(--accent-blue);
+  border-color: var(--text-soft);
   background-color: var(--glass-bg);
 }
 
 .custom-select.open .custom-select-trigger {
-  border-color: var(--accent-blue);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 10%, transparent);
+  border-color: var(--text-main);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--text-main) 10%, transparent);
 }
 
 .custom-select-trigger svg {
@@ -1563,12 +1557,12 @@ const save = async () => {
 }
 
 .custom-select-option:hover {
-  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+  background: color-mix(in srgb, var(--text-main) 8%, transparent);
 }
 
 .custom-select-option.active {
-  background: color-mix(in srgb, var(--accent-blue) 16%, transparent);
-  color: var(--accent-blue);
+  background: color-mix(in srgb, var(--text-main) 14%, transparent);
+  color: var(--text-main);
   font-weight: 600;
 }
 
@@ -1583,8 +1577,8 @@ const save = async () => {
 
 .setting-item input:focus, .setting-item select:focus {
   outline: none;
-  border-color: var(--accent-blue);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 10%, transparent);
+  border-color: var(--text-main);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--text-main) 10%, transparent);
 }
 
 .setting-desc {
@@ -1600,49 +1594,17 @@ const save = async () => {
   gap: 10px;
 }
 
-.font-size-step {
-  width: 34px;
-  height: 34px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--glass-border);
-  border-radius: 8px;
-  background: var(--glass-bg);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: all 0.2s ease;
-  flex-shrink: 0;
-}
-
-.font-size-step:hover:not(:disabled) {
-  background: var(--glass-bg-heavy);
-  border-color: var(--accent-blue);
-  color: var(--accent-blue);
-  transform: scale(1.04);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--accent-blue) 15%, transparent);
-}
-
-.font-size-step:active:not(:disabled) {
-  transform: scale(0.96);
-}
-
-.font-size-step:disabled {
-  opacity: 0.28;
-  cursor: not-allowed;
-}
-
 .slider-track-wrap {
   flex: 1;
+  max-width: 180px;
   display: flex;
   align-items: center;
 }
 
+/* 透明度滑杆（现仅消息透明度两行在用）：真连续量，保留滑杆形式，整体瘦身降存在感 */
 .font-size-slider {
   width: 100%;
-  height: 22px;
+  height: 16px;
   -webkit-appearance: none;
   appearance: none;
   background: transparent;
@@ -1653,12 +1615,12 @@ const save = async () => {
 
 /* 轨道 */
 .font-size-slider::-webkit-slider-runnable-track {
-  height: 5px;
-  border-radius: 3px;
+  height: 4px;
+  border-radius: 2px;
   background: linear-gradient(
     to right,
-    var(--accent-blue) 0%,
-    var(--accent-blue) var(--fill-pct, 50%),
+    var(--sel-fill) 0%,
+    var(--sel-fill) var(--fill-pct, 50%),
     var(--glass-bg-light) var(--fill-pct, 50%),
     var(--glass-bg-light) 100%
   );
@@ -1669,19 +1631,19 @@ const save = async () => {
 .font-size-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 18px;
-  height: 18px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   background: var(--surface-strong);
-  border: 2px solid var(--accent-blue);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent-blue) 25%, transparent), 0 0 0 4px color-mix(in srgb, var(--accent-blue) 8%, transparent);
-  margin-top: -7px;
+  border: 2px solid var(--sel-fill);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  margin-top: -5px;
   cursor: pointer;
   transition: box-shadow 0.2s ease, transform 0.15s ease;
 }
 
 .font-size-slider::-webkit-slider-thumb:hover {
-  box-shadow: 0 2px 12px color-mix(in srgb, var(--accent-blue) 40%, transparent), 0 0 0 6px color-mix(in srgb, var(--accent-blue) 12%, transparent);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.2);
 }
 
 .font-size-slider::-webkit-slider-thumb:active {
@@ -1690,25 +1652,25 @@ const save = async () => {
 
 /* Firefox */
 .font-size-slider::-moz-range-track {
-  height: 5px;
-  border-radius: 3px;
+  height: 4px;
+  border-radius: 2px;
   background: var(--glass-bg-light);
   border: 0.5px solid var(--glass-border-subtle);
 }
 
 .font-size-slider::-moz-range-progress {
-  height: 5px;
-  border-radius: 3px;
-  background: var(--accent-blue);
+  height: 4px;
+  border-radius: 2px;
+  background: var(--sel-fill);
 }
 
 .font-size-slider::-moz-range-thumb {
-  width: 18px;
-  height: 18px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   background: var(--surface-strong);
-  border: 2px solid var(--accent-blue);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent-blue) 25%, transparent);
+  border: 2px solid var(--sel-fill);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
   cursor: pointer;
 }
 
@@ -1768,13 +1730,13 @@ const save = async () => {
 }
 
 .toggle-switch input:checked + .toggle-slider {
-  background: var(--accent-blue);
-  border-color: var(--accent-blue);
+  background: var(--sel-fill);
+  border-color: var(--sel-fill);
 }
 
 .toggle-switch input:checked + .toggle-slider::before {
   transform: translateX(20px);
-  background: white;
+  background: var(--surface-strong);
 }
 
 /* 按钮组样式 */
@@ -1799,8 +1761,8 @@ const save = async () => {
 }
 
 .display-mode-btn.active {
-  background: var(--surface-strong);
-  color: var(--accent-blue);
+  background: var(--sel-fill);
+  color: var(--surface-strong);
   box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
 
@@ -1837,7 +1799,7 @@ const save = async () => {
   gap: 8px;
   margin-top: 12px;
   padding: 10px 0;
-  color: var(--accent-blue);
+  color: var(--text-main);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -1894,7 +1856,7 @@ const save = async () => {
 
 .badge-ok { background: color-mix(in srgb, var(--accent-green) 10%, transparent); color: var(--accent-green); }
 .badge-think { background: color-mix(in srgb, var(--text-muted) 12%, transparent); color: var(--text-soft); }
-.badge-info { background: color-mix(in srgb, var(--accent-blue) 10%, transparent); color: var(--accent-blue); }
+.badge-info { background: color-mix(in srgb, var(--text-main) 10%, transparent); color: var(--text-main); }
 .badge-none { background: rgba(100, 116, 139, 0.1); color: var(--text-muted); }
 
 .empty-state {
@@ -1918,8 +1880,8 @@ const save = async () => {
 }
 
 .save-btn {
-  background: var(--accent-blue);
-  color: white;
+  background: var(--sel-fill);
+  color: var(--surface-strong);
   border: none;
   padding: 10px 24px;
   border-radius: 8px;

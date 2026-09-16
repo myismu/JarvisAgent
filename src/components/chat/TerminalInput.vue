@@ -1144,7 +1144,7 @@ const handleRecallEdit = async () => {
 
 .chat-input-wrapper {
   width: 100%;
-  max-width: 85%;
+  max-width: min(85%, 960px); /* 与消息区同一套宽度口径，上下对齐 */
   background: var(--surface-strong);
   backdrop-filter: blur(var(--glass-blur-heavy));
   -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
