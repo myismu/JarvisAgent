@@ -13,6 +13,7 @@ import SessionTaskBoard from './SessionTaskBoard.vue';
 import TodoPanel from './TodoPanel.vue';
 import PermissionCard from './PermissionCard.vue';
 import WelcomeScreen from './WelcomeScreen.vue';
+import MessageRail from './MessageRail.vue';
 import type { PlanDocument, AgentTurnSnapshot, AgentCurrentTurn } from '../../types';
 
 interface RollbackPreviewFile {
@@ -675,6 +676,7 @@ onMounted(() => {
 
 <template>
   <div class="response-area" ref="responseAreaRef" @scroll="handleResponseScroll" @contextmenu="handleContextMenu" @click="handleResponseClick">
+    <MessageRail :container="responseAreaRef" />
     <TodoPanel />
     <SessionTaskBoard />
     <WelcomeScreen v-if="!chat.messages.length && !showAgentTurn" />
