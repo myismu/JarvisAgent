@@ -19,6 +19,10 @@ export interface SessionMeta {
   profileId?: string | null;
   totalInputTokens?: number;
   totalOutputTokens?: number;
+  /** 会话累计缓存命中 token。0（或缺失）表示该会话从未有请求上报缓存字段 */
+  totalCacheHitTokens?: number;
+  /** 会话累计缓存未命中 token。与命中数一样，0 表示未报告 */
+  totalCacheMissTokens?: number;
   titleSource?: string;
   projectId?: string | null;
   workingDirectory?: string | null;
@@ -48,6 +52,9 @@ export interface JarvisResult {
   output_tokens: number;
   session_input_tokens: number;
   session_output_tokens: number;
+  /** 会话累计缓存命中 / 未命中 token。两者都为 0 表示该会话从未上报过缓存字段 */
+  session_cache_hit_tokens: number;
+  session_cache_miss_tokens: number;
   user_message_id?: string | null;
   /** 本轮最终采用的深度思考状态（后端裁决层给出，前端不自行判断） */
   thinking_enabled?: boolean | null;
@@ -107,6 +114,23 @@ export interface SessionContextSnapshot {
   toolCallCount: number;
   toolResultCount: number;
   sections: ContextSectionSnapshot[];
+}
+
+/**
+ * `session-usage-updated` 事件的载荷：会话累计用量的**当前值**。
+ *
+ * 由后端在**每次请求**拿到 usage 后推送（`pipeline::update_provider_usage_snapshot`），
+ * 而不是等回合收尾——所以概览栏的「累计命中」在回合进行中也会刷新。
+ *
+ * 注意这里是**绝对值**，不是增量：接收方整值覆盖写入即可，
+ * 千万不要再累加一遍，否则数字会越滚越大。
+ */
+export interface SessionUsageUpdatedPayload {
+  sessionId: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheHitTokens: number;
+  cacheMissTokens: number;
 }
 
 export interface TodoItem {

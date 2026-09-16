@@ -764,6 +764,18 @@ pub async fn get_session_context_snapshot(
                                     let p = if thinking.len() > 80 { let mut e=80; while e>0 && !thinking.is_char_boundary(e) { e-=1; } &thinking[..e] } else { thinking };
                                     out.push_str(&format!("  … {}\n", p));
                                 }
+                                ContentBlock::Context { text } => {
+                                    // 动态上下文块（意图标签 / 能力边界 / 项目结构 / 用户画像）。
+                                    // 出网前会被 `materialize_context_blocks_for_wire` 翻译成普通
+                                    // Text 一并发出，所以它**真实占用** prompt token。
+                                    // 这里必须渲染，否则本命令重建出的 messages 段会系统性偏低，
+                                    // 与 `pipeline::build_context_estimate` 的口径对不上。
+                                    if !text.trim().is_empty() {
+                                        out.push_str("  ← [Context]\n");
+                                        out.push_str(text.trim());
+                                        out.push('\n');
+                                    }
+                                }
                                 _ => {}
                             }
                         }

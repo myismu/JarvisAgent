@@ -10,7 +10,7 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 /// 删除废弃的旧 checkpoint 表（v3 迁移）
 fn migrate_v3_drop_deprecated_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -310,6 +310,38 @@ fn migrate_v11_add_session_thinking_mode(conn: &Connection) -> Result<(), rusqli
     Ok(())
 }
 
+/// 引入 `sessions.total_cache_hit_tokens` / `total_cache_miss_tokens`（v12 迁移）
+///
+/// 为什么需要这两列：缓存命中数此前只存在于**当前快照**（每 loop 覆盖）与
+/// **12 条的滚动趋势**里，会话级累计从未落库，前端因此算不出"整个会话的命中率"。
+/// 而「累计输入 1.8M」这类数字离开命中率就没法解读——实测某会话 97.2% 走缓存，
+/// 真正全价计费的输入只有 49k。
+///
+/// 刻意**不回填**：老会话没有可依据的历史数据，一律留在 0。
+/// 0 在展示层等价于"未报告"（显示 `--` 而不是 `0%`），不得编造命中率。
+fn migrate_v12_add_session_cache_tokens(conn: &Connection) -> Result<(), rusqlite::Error> {
+    for column in ["total_cache_hit_tokens", "total_cache_miss_tokens"] {
+        let exists = {
+            let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;
+            let columns: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(Result::ok)
+                .collect();
+            columns.iter().any(|c| c == column)
+        };
+        if !exists {
+            conn.execute(
+                &format!(
+                    "ALTER TABLE sessions ADD COLUMN {} INTEGER NOT NULL DEFAULT 0",
+                    column
+                ),
+                [],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 pub fn init_schema(conn: &Connection) -> Result<(), String> {
     // 获取当前 schema 版本
     let current_version: i64 = conn
@@ -376,6 +408,10 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
         migrate_v11_add_session_thinking_mode(conn)
             .map_err(|e| format!("v11 迁移失败: {}", e))?;
     }
+    if current_version < 12 {
+        migrate_v12_add_session_cache_tokens(conn)
+            .map_err(|e| format!("v12 迁移失败: {}", e))?;
+    }
 
     conn.execute_batch(
         r#"
@@ -402,6 +438,8 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             profile_id TEXT,
             total_input_tokens INTEGER NOT NULL DEFAULT 0,
             total_output_tokens INTEGER NOT NULL DEFAULT 0,
+            total_cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
+            total_cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
             title_source TEXT NOT NULL DEFAULT 'default',
             project_id TEXT,
             deleted_at INTEGER,
@@ -692,7 +730,7 @@ mod tests {
             .expect("read legacy row");
         assert_eq!(value, None, "老会话必须保持 NULL(auto)，不得编造档位");
 
-        // 版本号推进到 11
+        // 版本号推进到 12
         let version: String = conn
             .query_row(
                 "SELECT value FROM app_state WHERE key = 'schema_version'",
@@ -700,7 +738,7 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("read version");
-        assert_eq!(version, "11");
+        assert_eq!(version, "12");
 
         // 幂等：再次初始化不报错，且不破坏已有值
         conn.execute("UPDATE sessions SET thinking_mode = 'never' WHERE id = 's1'", [])
@@ -738,5 +776,54 @@ mod tests {
         )
         .expect("create sessions");
         assert!(column_exists(&conn, "sessions", "thinking_mode"));
+    }
+
+    /// v11 老库升级到 v12：补上两列缓存累计，且老行一律留在 0。
+    ///
+    /// 老行必须留在 0 而不是被回填：0 在展示层等价于"未报告"（显示 `--`），
+    /// 回填任何具体值都等于给用户编一个假的命中率。
+    #[test]
+    fn v12_migration_adds_session_cache_tokens_to_legacy_db() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        // v11 形态的 sessions 表（无缓存两列）
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                message_count INTEGER NOT NULL,
+                profile_id TEXT,
+                deleted_at INTEGER,
+                thinking_mode TEXT
+            );
+            CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO app_state(key, value) VALUES('schema_version', '11');
+            INSERT INTO sessions(id, title, created_at, updated_at, message_count, profile_id, deleted_at, thinking_mode)
+                VALUES('s1', '老会话', 1, 1, 0, 'default', NULL, NULL);",
+        )
+        .expect("create legacy schema");
+
+        assert!(!column_exists(&conn, "sessions", "total_cache_hit_tokens"));
+        assert!(!column_exists(&conn, "sessions", "total_cache_miss_tokens"));
+
+        init_schema(&conn).expect("upgrade v11 -> v12");
+
+        assert!(
+            column_exists(&conn, "sessions", "total_cache_hit_tokens"),
+            "v12 迁移必须补上 total_cache_hit_tokens 列"
+        );
+        assert!(
+            column_exists(&conn, "sessions", "total_cache_miss_tokens"),
+            "v12 迁移必须补上 total_cache_miss_tokens 列"
+        );
+        let (hit, miss): (i64, i64) = conn
+            .query_row(
+                "SELECT total_cache_hit_tokens, total_cache_miss_tokens FROM sessions WHERE id = 's1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("read legacy row");
+        assert_eq!((hit, miss), (0, 0), "老会话两列必须留在 0，不得编造命中率");
     }
 }

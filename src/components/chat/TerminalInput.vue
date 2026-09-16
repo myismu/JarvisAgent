@@ -23,6 +23,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { readFile } from '@tauri-apps/plugin-fs';
 import ConfirmModal from '../common/ConfirmModal.vue';
+import CacheHitTooltip from './CacheHitTooltip.vue';
 import type { AgentApprovalMode, AgentUserMode, AgentWorkMode } from '../../types';
 
 const { t } = useI18n();
@@ -47,49 +48,149 @@ const isRunning = computed(() =>
 const sessionTokenTotal = computed(() => (session.totalInputTokens || 0) + (session.totalOutputTokens || 0));
 
 /**
- * 缓存命中读数（来自最近一次请求的上下文快照，由 `context-snapshot-updated` 事件刷新）。
+ * 当前上下文占用。
+ *
+ * 优先取 `providerInputTokens`——它是最近一次请求**实际发出去**的 prompt token 总量，
+ * 也是"上下文有多大"唯一权威的答案。后端已把各家族口径归一
+ * （`usage.rs` 的 `CacheUsage::total_input`：OpenAI 家族取 `prompt_tokens`，
+ * Anthropic 家族 = 命中 + 未命中），所以这里不需要再判断厂商。
+ * 它同时也是浮层里「命中 X / 共 Y 输入 token」的 Y，两处显示同一个数才不会互相打架。
+ *
+ * 厂商没上报时才退回本地估算 `estimatedTokens`。**这个估算系统性偏低**：
+ * 它的 messages 段是对 tool_result 截断到 3 行的"可读摘要"做的 token 计数
+ * （见 `pipeline.rs` 的 `format_messages_readable`），工具结果越多偏低越多——
+ * 实测长会话里 17.3k vs 实际 52.0k，差了 3 倍。所以它只配当兜底，不能当主口径。
+ */
+const contextTokens = computed(() => {
+  const snap = agent.currentContextSnapshot;
+  if (!snap) return 0;
+  const actual = snap.providerInputTokens;
+  if (typeof actual === 'number' && actual > 0) return actual;
+  return Math.max(0, snap.estimatedTokens || 0);
+});
+
+/**
+ * 单次口径的缓存命中读数（来自最近一次请求的上下文快照，由 `context-snapshot-updated` 事件刷新）。
  *
  * 语义（与后端 `infra/llm/usage.rs` 一致）：
- * - 未报告 → `?`（**不是 0%**，因为"没数据"和"没命中"是两回事）
- * - 报告了但为 0 → 「预热中」（GLM 等档位前 1~2 次请求不命中属正常）
- * - 有命中 → 百分比
+ * - 未报告 → 「缓存未报告」（**不是 0%**，因为"没数据"和"没命中"是两回事）
+ * - 报告了但为 0 → 「缓存预热中」（GLM 等档位前 1~2 次请求不命中属正常）
+ * - 有命中 → 「缓存命中 N%」（**仅浮层用**；概览栏走下面另一个 computed）
+ *
+ * 这里**只报当前值**：逐 loop 趋势属于详细视图的内容，统一由右侧上下文监控面板
+ * （`ContextInspector.vue` 的趋势柱）承担。原先把它拼进 tooltip，会让这个 hover
+ * 表面随会话轮数长期挂着最多 10 个百分比，把「当前命中」这个主信息淹没掉；
+ * 而趋势原本要解决的「单看一个数字会被预热期误导」（GLM 前 1~2 轮 0%、第 3 轮才命中）
+ * 在面板里有柱状图承担，不需要在概览栏重复一遍。
+ *
+ * 明细改走自定义浮层 `CacheHitTooltip`：原生 `title` 样式跟随系统、约 1 秒延迟、
+ * 单行不换行，塞不下进度条，也没法分组——而浮层里要同时装「本次请求」（当前命中）
+ * 与「会话累计」（输入 / 输出 / 合计 + 会话级命中率 / 未命中）两个口径，
+ * 分组标题必须能把它们隔开。后两行是解读「合计」的前提：`合计 ≈ 输入`，
+ * 而输入是每轮重发整份上下文的累加值，脱离命中率就会被读成"真跑了这么多 token"。
+ *
+ * 概览栏因此只留两段，且**两段口径不同、各自把口径词写在标签里**：
+ * - 「本次上下文」= 最近一次请求的 prompt。它**只能是瞬时值**——上下文不累加，
+ *   随对话增长、随压缩缩小，也是"窗口还剩多少"与压缩判断的唯一依据；
+ * - 「累计命中」= 整个会话的缓存命中率。比单次更稳、直接对应真实成本，
+ *   并且避开了单次口径的已知偏差（多 loop 回合里单次只反映**最后一个 loop**，
+ *   而那时前缀最暖 → 系统性偏乐观。实测同一次会话「本次 81%」vs「累计 88%」）。
+ *
+ * 会话累计的输入 / 输出 / 合计收进浮层；浮层「本次请求」组保留单次命中率，
+ * 于是"单次 vs 累计"在界面上构成完整对照：栏上「本次上下文 + 累计命中」，
+ * 浮层「本次请求 + 会话累计」。
+ *
+ * 为什么口径词必须写进标签本身，而不是靠浮层的分组标题承担：
+ * 概览栏**没有分组标题**，浮层的口径对照要 hover 之后才出现。实测反馈就是——
+ * 裸的「上下文 9.2k · 缓存命中 81%」被读成了会话累计值（尤其它和
+ * 「会话累计 输入 16.6k」量级接近）。所以标签自带口径词，让两种口径在
+ * **不 hover 时也同时可见**。
+ *
+ * 单次口径的字段来源：快照的 `cacheHitTokens` / `cacheMissTokens` 由
+ * `repository::update_context_snapshot_usage` **覆盖写入**（不是累加），
+ * 所以「本次」= 最近一次请求，而不是整轮。
+ *
+ * 概览栏原先放的是「合计」（会话累计输入 + 输出），换掉它的理由：
+ * `合计 ≈ 输入`，而输入是每轮重发整份上下文的累加值——单看会读成"干了 1.8M token 的活"，
+ * 实际是"同一个上下文重发了 58 次、其中 97.2% 走缓存"。这类数字必须配着命中率才能解读，
+ * 那它就该待在浮层里，而不是占据概览位。
+ *
+ * 这个 computed 是**单次口径**，只喂浮层 `CacheHitTooltip` 的「本次请求」组
+ * （浮层靠 `state === null` 判断要不要渲染那一整组）。
+ * 概览栏上的读数走下面另一个 computed `barCacheUsage`（**会话累计**口径）。
+ * 两者数据源不同，**不要合并**。
  */
 const cacheUsage = computed(() => {
   const snap = agent.currentContextSnapshot;
   if (!snap) return null;
-  // 逐 loop 趋势（单看一个数字会被预热期误导，所以顺带把走势写进 tooltip）
-  const trend = ((): string => {
-    const list = snap.cacheHistory ?? [];
-    if (list.length < 2) return '';
-    const rates = list.slice(-10).map((point) => {
-      const sum = (point.hitTokens || 0) + (point.missTokens || 0);
-      return sum ? Math.round(((point.hitTokens || 0) / sum) * 100) : 0;
-    });
-    return ` · ${t('input.cacheTrend')} ${rates.join('% → ')}%`;
-  })();
   const hit = snap.cacheHitTokens ?? null;
   if (hit === null) {
-    return { label: '?', state: 'unknown' as const, title: t('input.cacheUnknownHint') };
+    return {
+      label: t('input.cacheNotReported'),
+      state: 'unknown' as const,
+      percent: null,
+      hitTokens: null,
+      totalTokens: null,
+    };
   }
   const total = hit + (snap.cacheMissTokens ?? 0);
   if (!total) return null;
-  const sourceLabel = snap.cacheSource
-    ? ` · ${t('input.cacheSource', { source: snap.cacheSource })}`
-    : '';
-  const detail = `${formatToken(hit)} / ${formatToken(total)}${sourceLabel}`;
+  const percent = Math.round((hit / total) * 100);
   if (hit === 0) {
     return {
-      label: t('input.cacheWarmup'),
+      label: t('input.cacheLabelWarmup'),
       state: 'warmup' as const,
-      title: `${detail} · ${t('input.cacheWarmupHint')}${trend}`,
+      percent: 0,
+      hitTokens: 0,
+      totalTokens: total,
     };
   }
   return {
-    label: `${Math.round((hit / total) * 100)}%`,
+    label: `${t('input.cacheLabel')} ${percent}%`,
     state: 'hit' as const,
-    title: `${t('input.cacheHitTitle')} ${detail}${trend}`,
+    percent,
+    hitTokens: hit,
+    totalTokens: total,
   };
 });
+
+/**
+ * 概览栏上的缓存读数——**会话累计**口径（不是最近一次请求）。
+ *
+ * 为什么栏上用累计而不是单次：多 loop 的回合里，单次命中率只反映**最后一个 loop**，
+ * 而那时前缀最暖 → **系统性偏乐观**（实测同一次会话里「本次 81%」vs「累计 88%」）。
+ * 累计值更稳，且直接对应真实成本。
+ *
+ * 数据源是 `session.totalCacheHitTokens` / `totalCacheMissTokens`
+ * （后端 `sessions` 表累加，见 `core/session/mod.rs:487`），
+ * 与浮层「会话累计」组里的命中率是**同一个数**，两处不会打架。
+ *
+ * `hit + miss === 0` 判为「未报告」而不是 0%：后端对未上报端点会把两列都留在 0，
+ * 所以两列全 0 恰好等价于"没数据"（与 `CacheHitTooltip` 的 `hasSessionCache` 同判据）。
+ *
+ * 百分比规则（`<1%`）必须与 `CacheHitTooltip` 的 `sessionHitPercentText` 保持一致：
+ * 有命中却四舍五入成 `0%` 会和"一次都没命中"混淆。
+ */
+const barCacheUsage = computed(() => {
+  // 还没跑过任何请求时不显示，避免开局就挂一条「未报告」噪音
+  if (!agent.currentContextSnapshot) return null;
+
+  const hit = session.totalCacheHitTokens || 0;
+  const miss = session.totalCacheMissTokens || 0;
+  if (hit + miss <= 0) {
+    return { label: t('input.cacheNotReported'), state: 'unknown' as const };
+  }
+  if (hit === 0) {
+    // 整个会话至今一次都没命中：预热期（或该端点根本不缓存），沿用原有蓝色状态
+    return { label: t('input.cacheLabelWarmup'), state: 'warmup' as const };
+  }
+  const raw = (hit / (hit + miss)) * 100;
+  const text = raw < 1 ? '<1' : `${Math.round(raw)}`;
+  return { label: `${t('input.cacheLabelSession')} ${text}%`, state: 'hit' as const };
+});
+
+// 缓存读数浮层：hover 时展示明细（命中率进度条 + token 明细）
+const showCacheTip = ref(false);
 
 const openContextPanel = () => {
   // 打开右侧上下文监控窗口（App.vue 监听该状态并负责开窗）
@@ -935,33 +1036,41 @@ const handleRecallEdit = async () => {
         </button>
       </div>
 
-      <!-- Token 使用统计 -->
-      <div class="token-bar" v-if="sessionTokenTotal > 0">
-        <span class="token-bar-item" title="累计输入 Token">
-          <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none"><polyline points="15 14 20 9 15 4"></polyline><path d="M4 20v-7a4 4 0 0 1 4-4h12"></path></svg>
-          {{ formatToken(session.totalInputTokens) }}
-        </span>
-        <span class="token-bar-sep">·</span>
-        <span class="token-bar-item" title="累计输出 Token">
-          <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none"><polyline points="4 17 9 12 4 7"></polyline><path d="M12 20v-7a4 4 0 0 1 4-4h4"></path></svg>
-          {{ formatToken(session.totalOutputTokens) }}
-        </span>
-        <span class="token-bar-sep">·</span>
-        <span class="token-bar-item token-bar-total" title="累计总消耗">
-          {{ formatToken(sessionTokenTotal) }}
-        </span>
-        <!-- 缓存命中：点一下打开右侧上下文监控窗口看详细（逐 loop 曲线、字段来源） -->
-        <template v-if="cacheUsage">
-          <span class="token-bar-sep">·</span>
+      <!-- 上下文与缓存读数 -->
+      <div class="token-bar" v-if="contextTokens > 0 || sessionTokenTotal > 0">
+        <!-- 上下文 + 缓存命中合成一组：hover 出明细浮层，点一下打开右侧上下文监控窗口 -->
+        <span
+          class="token-bar-usage"
+          @mouseenter="showCacheTip = true"
+          @mouseleave="showCacheTip = false"
+          @click="openContextPanel"
+        >
           <span
-            class="token-bar-item token-bar-cache"
-            :class="`cache-${cacheUsage.state}`"
-            :title="cacheUsage.title"
-            @click="openContextPanel"
+            v-if="contextTokens > 0"
+            class="token-bar-item token-bar-total"
+            :title="t('input.tokenContextTitle')"
           >
-            {{ t('input.cacheLabel') }} {{ cacheUsage.label }}
+            {{ t('input.tokenContext') }} {{ formatToken(contextTokens) }}
           </span>
-        </template>
+          <template v-if="barCacheUsage">
+            <span v-if="contextTokens > 0" class="token-bar-sep">·</span>
+            <span class="token-bar-item token-bar-cache" :class="`cache-${barCacheUsage.state}`">
+              {{ barCacheUsage.label }}
+            </span>
+          </template>
+          <CacheHitTooltip
+            v-if="showCacheTip"
+            :state="cacheUsage?.state ?? null"
+            :percent="cacheUsage?.percent ?? null"
+            :hit-tokens="cacheUsage?.hitTokens ?? null"
+            :total-tokens="cacheUsage?.totalTokens ?? null"
+            :session-input-tokens="session.totalInputTokens || 0"
+            :session-output-tokens="session.totalOutputTokens || 0"
+            :session-total-tokens="sessionTokenTotal"
+            :session-cache-hit-tokens="session.totalCacheHitTokens"
+            :session-cache-miss-tokens="session.totalCacheMissTokens"
+          />
+        </span>
         <span class="token-bar-spacer"></span>
         <span class="token-bar-item token-bar-model">{{ agentModel }}</span>
       </div>
@@ -1680,21 +1789,33 @@ const handleRecallEdit = async () => {
   flex: 1;
 }
 
-/* 缓存命中读数：可点击 → 打开上下文监控窗口 */
-.token-bar-cache {
+/* 会话累计 + 缓存命中读数：整组可点击 → 打开上下文监控窗口；hover 出明细浮层 */
+.token-bar-usage {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  position: relative; /* 明细浮层（CacheHitTooltip）的定位上下文 */
   cursor: pointer;
   border-radius: 4px;
   padding: 0 4px;
   transition: color 0.15s, background-color 0.15s;
 }
 
-.token-bar-cache:hover {
-  color: var(--accent-blue);
+/* hover 只给背景，不改字色。
+   这里原本是 `color: var(--accent-blue)`——但蓝色在右侧上下文面板的语义里代表
+   「预热」，拿它当命中态的 hover 色会让同一颜色在两处含义相反。 */
+.token-bar-usage:hover {
   background: var(--glass-bg);
 }
 
+/* 状态色与右侧面板同口径：命中=绿、预热=蓝、未知=灰 */
+.token-bar-cache.cache-hit {
+  color: var(--accent-green);
+}
+
 .token-bar-cache.cache-warmup {
-  opacity: 0.65;
+  color: var(--accent-blue);
+  opacity: 0.8;
 }
 
 .token-bar-cache.cache-unknown {

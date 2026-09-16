@@ -52,13 +52,18 @@ const hydrateMonitorState = async (targetSessionId?: string | null) => {
 
   if (!activeSessionId) {
     session.workingDirectory = null;
-    session.setSessionUsageTotals(activeSessionId, 0, 0);
+    session.setSessionUsageTotals(activeSessionId, {});
     return;
   }
 
   const meta = await invoke<SessionMeta>("get_session_meta", { id: activeSessionId });
   session.workingDirectory = meta.workingDirectory || null;
-  session.setSessionUsageTotals(activeSessionId, meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
+  session.setSessionUsageTotals(activeSessionId, {
+    input: meta.totalInputTokens || 0,
+    output: meta.totalOutputTokens || 0,
+    cacheHit: meta.totalCacheHitTokens || 0,
+    cacheMiss: meta.totalCacheMissTokens || 0,
+  });
 
   await Promise.all([
     loadSubAgentRunsFromBackend(activeSessionId),

@@ -30,6 +30,11 @@ pub struct JarvisResult {
     pub output_tokens: u64,
     pub session_input_tokens: u64,
     pub session_output_tokens: u64,
+    /// 会话累计缓存命中 / 未命中 token。
+    ///
+    /// 两者都为 0 表示该会话从未有请求上报缓存字段（前端据此显示 `--`，而不是 `0%`）。
+    pub session_cache_hit_tokens: u64,
+    pub session_cache_miss_tokens: u64,
     /// 后端为用户消息分配的 UUID，前端用于关联撤回按钮
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_message_id: Option<String>,

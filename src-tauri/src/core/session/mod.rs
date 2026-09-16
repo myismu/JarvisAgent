@@ -91,6 +91,18 @@ pub struct SessionMeta {
     pub total_input_tokens: u64,
     #[serde(default)]
     pub total_output_tokens: u64,
+    /// 会话累计缓存命中 token（来自各次请求的 `prompt_cache_hit_tokens` 等字段）。
+    ///
+    /// 0 等价于"从未报告"——展示层据此显示 `--` 而不是 `0%`。
+    #[serde(default)]
+    pub total_cache_hit_tokens: u64,
+    /// 会话累计缓存未命中 token。与命中数一样，0 表示未报告。
+    ///
+    /// 刻意**不**用 `total_input_tokens - total_cache_hit_tokens` 推导：
+    /// 各家的 `input_tokens` 口径不同（Anthropic 的 `input_tokens` 本身就不含缓存读取），
+    /// 相减会得出错误的未命中数。这里只忠实累加厂商报告的值。
+    #[serde(default)]
+    pub total_cache_miss_tokens: u64,
     #[serde(default = "default_title_source")]
     pub title_source: String,
     /// 所属项目 ID，None 表示无项目独立会话
@@ -105,6 +117,31 @@ pub struct SessionMeta {
     /// 这是"随会话走的推理档"，与 `profile_id`（随会话走的模型预设）对称。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_mode: Option<String>,
+}
+
+/// 一次 pipeline 运行产生的用量增量，由 `save_session` 累加进会话累计值。
+///
+/// 抽成结构体而不是四元组：四个字段都是 u64，元组传错顺序编译器不会拦，
+/// 而"把未命中数写进命中列"这种错只能靠人眼发现。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TokenUsageDelta {
+    pub input: u64,
+    pub output: u64,
+    /// 缓存命中 / 未命中；厂商未报告时保持 0（0 在展示层等价于"未报告"）
+    pub cache_hit: u64,
+    pub cache_miss: u64,
+}
+
+/// 会话累计用量的**当前值**（不是增量），累加完成后回给调用方做事件推送。
+///
+/// 与 `TokenUsageDelta` 分开是因为两者语义相反、不可互换：把「增量」当「总量」
+/// 发出去，前端会把累计值覆盖成某一轮的零头，数字会莫名其妙地缩水。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SessionTokenTotals {
+    pub input: u64,
+    pub output: u64,
+    pub cache_hit: u64,
+    pub cache_miss: u64,
 }
 
 /// 获取当前时间戳（秒）
@@ -194,6 +231,8 @@ pub fn create_session(project_id: Option<String>) -> SessionMeta {
         profile_id: None,
         total_input_tokens: 0,
         total_output_tokens: 0,
+        total_cache_hit_tokens: 0,
+        total_cache_miss_tokens: 0,
         title_source: default_title_source(),
         project_id,
         working_directory,
@@ -312,7 +351,7 @@ pub fn reset_message_ids(memory: &mut SessionMemory) {
 pub fn save_session(
     id: &str,
     memory: &SessionMemory,
-    token_usage_delta: Option<(u64, u64)>,
+    token_usage_delta: Option<TokenUsageDelta>,
 ) -> SessionMeta {
     let meta = match repository::get_session_meta(id) {
         Ok(m) => m,
@@ -327,6 +366,8 @@ pub fn save_session(
                 profile_id: None,
                 total_input_tokens: 0,
                 total_output_tokens: 0,
+                total_cache_hit_tokens: 0,
+                total_cache_miss_tokens: 0,
                 title_source: default_title_source(),
                 project_id: None,
                 working_directory: None,
@@ -454,9 +495,12 @@ pub fn save_session(
             },
         );
 
-    if let Some((input_delta, output_delta)) = token_usage_delta {
-        meta.total_input_tokens = meta.total_input_tokens.saturating_add(input_delta);
-        meta.total_output_tokens = meta.total_output_tokens.saturating_add(output_delta);
+    if let Some(delta) = token_usage_delta {
+        meta.total_input_tokens = meta.total_input_tokens.saturating_add(delta.input);
+        meta.total_output_tokens = meta.total_output_tokens.saturating_add(delta.output);
+        meta.total_cache_hit_tokens = meta.total_cache_hit_tokens.saturating_add(delta.cache_hit);
+        meta.total_cache_miss_tokens =
+            meta.total_cache_miss_tokens.saturating_add(delta.cache_miss);
     }
 
     let new_count = filtered_messages.len();
@@ -495,6 +539,31 @@ pub fn save_session(
     .unwrap_or_else(|err| panic!("保存 SQLite 会话历史 {} 失败: {}", id, err));
     let _ = repository::set_last_active_session_id(id);
     meta
+}
+
+/// 逐请求累加会话用量，返回累加后的累计值（`None` = 会话不存在/已软删）。
+///
+/// 与 `save_session(…, Some(delta))` 的分工：
+/// - **主 Agent 的每个 loop** 走这里，拿到 usage 就立刻落库并推事件，
+///   这样概览栏的「累计命中」在回合进行中也会刷新，而不是等整轮结束。
+/// - **子代理**（`tools/agent_tools/subagent.rs` 有独立循环，不经过 pipeline 的
+///   逐请求路径）仍由回合收尾的 `save_session` 补一次增量。
+///
+/// 取消的回合不需要特殊处理：已完成的那几次请求在发生时就已累加，
+/// 不再依赖收尾那一步（旧实现把整轮 delta 押在收尾，取消时直接丢掉整轮）。
+pub fn accumulate_session_token_usage(
+    id: &str,
+    delta: TokenUsageDelta,
+) -> Result<Option<SessionTokenTotals>, String> {
+    repository::accumulate_session_token_usage(
+        id,
+        SessionTokenTotals {
+            input: delta.input,
+            output: delta.output,
+            cache_hit: delta.cache_hit,
+            cache_miss: delta.cache_miss,
+        },
+    )
 }
 
 /// 加载指定会话的完整数据

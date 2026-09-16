@@ -235,7 +235,7 @@ const prepareNewSession = async (projectId: string | null = null) => {
     sessionStore.pendingProjectId = projectId;
     sessionStore.workingDirectory = null;
     sessionStore.resetSessionView(null);
-    sessionStore.setSessionUsageTotals(null, 0, 0);
+    sessionStore.setSessionUsageTotals(null, {});
     chat.resetRenderState();
     chat.triggerRender();
     await notifyMonitorSessionChanged(null);
@@ -305,7 +305,7 @@ const performDeleteProject = async (projectId: string) => {
       sessionStore.activeSessionId = null;
       sessionStore.workingDirectory = null;
       sessionStore.resetSessionView(null);
-      sessionStore.setSessionUsageTotals(null, 0, 0);
+      sessionStore.setSessionUsageTotals(null, {});
       chat.resetRenderState();
       chat.triggerRender();
     }
@@ -356,7 +356,12 @@ const switchToSession = async (id: string) => {
     //（`activeSessionId` 的 watcher 会先跑一次，这里再对齐一次最终值）。
     void loadSessionThinking(id);
 
-    sessionStore.setSessionUsageTotals(id, meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
+    sessionStore.setSessionUsageTotals(id, {
+      input: meta.totalInputTokens || 0,
+      output: meta.totalOutputTokens || 0,
+      cacheHit: meta.totalCacheHitTokens || 0,
+      cacheMiss: meta.totalCacheMissTokens || 0,
+    });
 
     // 切会话只做视角切换，不碰消息和 currentTurn
     // 消息状态由 streaming 事件和 sendToJarvis 收尾自行维护
@@ -459,7 +464,12 @@ onMounted(async () => {
         sessionStore.activeSessionId = activeId;
         const meta = await invoke<any>('get_session_meta', { id: activeId });
         sessionStore.workingDirectory = meta.workingDirectory || null;
-        sessionStore.setSessionUsageTotals(activeId, meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
+        sessionStore.setSessionUsageTotals(activeId, {
+          input: meta.totalInputTokens || 0,
+          output: meta.totalOutputTokens || 0,
+          cacheHit: meta.totalCacheHitTokens || 0,
+          cacheMiss: meta.totalCacheMissTokens || 0,
+        });
 
         // 关键：恢复会话时也要把该会话的模型预设同步为激活预设。
         // 漏掉这一步时，后端 pipeline 会继续用 app-config.json 里遗留的
@@ -481,7 +491,7 @@ onMounted(async () => {
         }
       } catch (switchErr) {
         console.error('同步会话状态失败:', switchErr);
-        sessionStore.setSessionUsageTotals(null, 0, 0);
+        sessionStore.setSessionUsageTotals(null, {});
         if (sessions.value.length > 0) {
           const fallbackId = sessions.value[0].id;
           sessionStore.activeSessionId = fallbackId;
@@ -492,13 +502,18 @@ onMounted(async () => {
       }
     } else if (sessions.value.length > 0) {
       sessionStore.activeSessionId = sessions.value[0].id;
-      sessionStore.setSessionUsageTotals(sessions.value[0].id, sessions.value[0].totalInputTokens || 0, sessions.value[0].totalOutputTokens || 0);
+      sessionStore.setSessionUsageTotals(sessions.value[0].id, {
+        input: sessions.value[0].totalInputTokens || 0,
+        output: sessions.value[0].totalOutputTokens || 0,
+        cacheHit: sessions.value[0].totalCacheHitTokens || 0,
+        cacheMiss: sessions.value[0].totalCacheMissTokens || 0,
+      });
       // 回落到首个会话时同样要对齐预设，否则后端还停在全局默认
       await syncProfileFromSession(sessions.value[0]);
       void loadSessionThinking(sessions.value[0].id);
     }
   } catch (err) {
-    sessionStore.setSessionUsageTotals(null, 0, 0);
+    sessionStore.setSessionUsageTotals(null, {});
     if (sessions.value.length > 0) {
       const fallbackId = sessions.value[0].id;
       sessionStore.activeSessionId = fallbackId;

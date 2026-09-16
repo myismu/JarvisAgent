@@ -19,7 +19,7 @@ use rusqlite::{params, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 
 use crate::infra::types::models::{Message, SessionContextSnapshot, SessionMemory};
-use crate::core::session::SessionMeta;
+use crate::core::session::{SessionMeta, SessionTokenTotals};
 
 #[derive(Debug, Clone)]
 pub struct StoredSessionMessage {
@@ -63,9 +63,10 @@ pub fn upsert_session(meta: &SessionMeta, memory: &SessionMemory) -> Result<(), 
         tx.execute(
             "INSERT INTO sessions(
                 id, title, created_at, updated_at, message_count, is_smart_named,
-                profile_id, total_input_tokens, total_output_tokens, title_source, project_id,
-                thinking_mode, deleted_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL)
+                profile_id, total_input_tokens, total_output_tokens,
+                total_cache_hit_tokens, total_cache_miss_tokens,
+                title_source, project_id, thinking_mode, deleted_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, NULL)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 created_at = excluded.created_at,
@@ -75,6 +76,8 @@ pub fn upsert_session(meta: &SessionMeta, memory: &SessionMemory) -> Result<(), 
                 profile_id = excluded.profile_id,
                 total_input_tokens = excluded.total_input_tokens,
                 total_output_tokens = excluded.total_output_tokens,
+                total_cache_hit_tokens = excluded.total_cache_hit_tokens,
+                total_cache_miss_tokens = excluded.total_cache_miss_tokens,
                 title_source = excluded.title_source,
                 project_id = excluded.project_id,
                 thinking_mode = excluded.thinking_mode,
@@ -89,6 +92,8 @@ pub fn upsert_session(meta: &SessionMeta, memory: &SessionMemory) -> Result<(), 
                 meta.profile_id,
                 meta.total_input_tokens as i64,
                 meta.total_output_tokens as i64,
+                meta.total_cache_hit_tokens as i64,
+                meta.total_cache_miss_tokens as i64,
                 meta.title_source,
                 meta.project_id,
                 meta.thinking_mode,
@@ -105,6 +110,70 @@ pub fn upsert_session(meta: &SessionMeta, memory: &SessionMemory) -> Result<(), 
         .map_err(|e| e.to_string())?;
 
         Ok(())
+    })
+}
+
+/// 逐请求累加会话的 token 用量，返回累加**之后**的累计值。
+///
+/// 为什么单独开一个函数而不是复用 `upsert_session`：
+/// `upsert_session` 收的是完整 `SessionMeta`，它把四个 `total_*` 列**整值覆盖**写入。
+/// 而逐请求路径手里只有"本次请求的增量"，没有（也不该为了写它去读一遍）完整 meta——
+/// 读出来再写回去会和并发写入打架，也会把期间别人的累加抹掉。
+/// 这里直接用 SQL 的 `x = x + ?` 做原子累加。
+///
+/// 落点：`pipeline::update_provider_usage_snapshot`，即每个 loop 拿到 usage 之后。
+/// 回合收尾的 `save_session` 只再补**子代理**那部分增量——子代理走独立循环
+/// （`tools/agent_tools/subagent.rs`），不经过上面那个函数。
+///
+/// 返回 `None` 表示会话不存在或已软删（`deleted_at` 非空），调用方据此跳过事件推送。
+pub fn accumulate_session_token_usage(
+    session_id: &str,
+    delta: SessionTokenTotals,
+) -> Result<Option<SessionTokenTotals>, String> {
+    crate::infra::db::with_connection(|conn| {
+        let affected = conn
+            .execute(
+                "UPDATE sessions SET
+                    total_input_tokens = total_input_tokens + ?2,
+                    total_output_tokens = total_output_tokens + ?3,
+                    total_cache_hit_tokens = total_cache_hit_tokens + ?4,
+                    total_cache_miss_tokens = total_cache_miss_tokens + ?5
+                 WHERE id = ?1 AND deleted_at IS NULL",
+                params![
+                    session_id,
+                    delta.input as i64,
+                    delta.output as i64,
+                    delta.cache_hit as i64,
+                    delta.cache_miss as i64,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+
+        if affected == 0 {
+            return Ok(None);
+        }
+
+        // 同一把连接里紧接着读回，拿到的是本次累加之后的值，
+        // 供调用方原样推给前端（前端是整值覆盖，不是自己再累加一遍）。
+        let totals = conn
+            .query_row(
+                "SELECT total_input_tokens, total_output_tokens,
+                        total_cache_hit_tokens, total_cache_miss_tokens
+                 FROM sessions WHERE id = ?1",
+                [session_id],
+                |row| {
+                    Ok(SessionTokenTotals {
+                        input: row.get::<_, i64>(0)?.max(0) as u64,
+                        output: row.get::<_, i64>(1)?.max(0) as u64,
+                        cache_hit: row.get::<_, i64>(2)?.max(0) as u64,
+                        cache_miss: row.get::<_, i64>(3)?.max(0) as u64,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+
+        Ok(totals)
     })
 }
 
@@ -571,7 +640,7 @@ pub fn get_context_snapshot(session_id: &str) -> Result<Option<SessionContextSna
 /// 以后只需要在这里加一列，并把 `session_meta_from_row` 的索引往后挪。
 const SESSION_META_COLUMNS: &str = "s.id, s.title, s.created_at, s.updated_at, s.message_count, \
      s.is_smart_named, s.profile_id, s.total_input_tokens, s.total_output_tokens, s.title_source, \
-     s.project_id, p.path, s.thinking_mode";
+     s.project_id, p.path, s.thinking_mode, s.total_cache_hit_tokens, s.total_cache_miss_tokens";
 
 pub fn get_session_meta(id: &str) -> Result<SessionMeta, String> {
     crate::infra::db::with_connection(|conn| {
@@ -777,6 +846,8 @@ fn session_meta_from_row(row: &Row<'_>) -> rusqlite::Result<SessionMeta> {
         project_id: row.get(10)?,
         working_directory: row.get(11)?,
         thinking_mode: row.get(12)?,
+        total_cache_hit_tokens: row.get::<_, i64>(13)? as u64,
+        total_cache_miss_tokens: row.get::<_, i64>(14)? as u64,
     })
 }
 
@@ -955,7 +1026,7 @@ mod meta_columns_tests {
     use super::*;
 
     /// 列数一致性护栏：`SESSION_META_COLUMNS` 的列数必须与 `session_meta_from_row`
-    /// 的读取索引一致（当前读 `row.get(0..=12)`，即 13 列）。
+    /// 的读取索引一致（当前读 `row.get(0..=14)`，即 15 列）。
     ///
     /// 背景：v11 引入 `thinking_mode` 时漏改了一条 SELECT，运行期直接抛
     /// `Invalid column index: 12`，导致"切换会话"整体失败。这个测试让同类漏改
@@ -969,15 +1040,17 @@ mod meta_columns_tests {
             .collect();
         assert_eq!(
             columns.len(),
-            13,
-            "SESSION_META_COLUMNS 应为 13 列（与 session_meta_from_row 的 0..=12 对应），实际 {}: {:?}",
+            15,
+            "SESSION_META_COLUMNS 应为 15 列（与 session_meta_from_row 的 0..=14 对应），实际 {}: {:?}",
             columns.len(),
             columns
         );
-        // 最后一列必须是 thinking_mode：session_meta_from_row 用索引 12 读它
-        assert_eq!(columns[12], "s.thinking_mode");
         assert_eq!(columns[0], "s.id");
         assert_eq!(columns[10], "s.project_id");
         assert_eq!(columns[11], "p.path");
+        // 12 起是尾部追加的列：session_meta_from_row 按 12/13/14 读它们
+        assert_eq!(columns[12], "s.thinking_mode");
+        assert_eq!(columns[13], "s.total_cache_hit_tokens");
+        assert_eq!(columns[14], "s.total_cache_miss_tokens");
     }
 }

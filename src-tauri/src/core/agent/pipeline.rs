@@ -113,6 +113,19 @@ struct PipelineState {
     total_loop_count: usize,
     req_input_tokens: u64,
     req_output_tokens: u64,
+    /// 本次运行里**子代理**消耗的 token，单独留一份计数。
+    ///
+    /// 为什么必须单独记：主 Agent 每个 loop 的用量在拿到 usage 时就已通过
+    /// `update_provider_usage_snapshot` 逐请求累加进 `sessions.total_*` 了，
+    /// 而子代理（`tools/agent_tools/subagent.rs`）有自己独立的循环，不经过那条路径。
+    /// 如果收尾时把 `req_input_tokens`（含主循环 + 子代理）整份再交一次，
+    /// 主循环那部分就会被**重复计一遍**。所以收尾只补这两个数。
+    ///
+    /// 曾经还有一对 `req_cache_hit_tokens` / `req_cache_miss_tokens`（整轮缓存累计），
+    /// 现已删除：它们是唯一读者——收尾那次整轮累加——的输入，改成逐请求累加后没人读了。
+    /// 缓存口径的唯一真相现在是 `sessions.total_cache_*`。
+    req_sub_input_tokens: u64,
+    req_sub_output_tokens: u64,
     final_answer: String,
     /// 反思审查状态
     reflection_mode: String,
@@ -681,6 +694,8 @@ impl PipelineState {
             total_loop_count: 0,
             req_input_tokens: 0,
             req_output_tokens: 0,
+            req_sub_input_tokens: 0,
+            req_sub_output_tokens: 0,
             final_answer: String::new(),
             reflection_mode: resolved_reflection_mode,
             total_reflections: 0,
@@ -1409,6 +1424,9 @@ impl PipelineState {
             .await;
             self.req_input_tokens += sub_in;
             self.req_output_tokens += sub_out;
+            // 单独记一份，供回合收尾补一次累加（主循环的用量已在逐请求路径落库）
+            self.req_sub_input_tokens += sub_in;
+            self.req_sub_output_tokens += sub_out;
 
             // 截断感知：如果输出被 max_tokens 截断导致工具参数不完整，
             // 在错误的 ToolResult 中追加明确提示，让 LLM 知道原因并调整策略
@@ -1861,21 +1879,30 @@ impl PipelineState {
             );
         }
 
-        // 3. 保存会话到 SQLite（含累计 token）；纯聊天且被取消时不落空会话
+        // 3. 保存会话到 SQLite；纯聊天且被取消时不落空会话
+        //
+        // 收尾这里**不再交整轮 token**：主循环的每个 loop 已在
+        // `update_provider_usage_snapshot` 里逐请求累加过，再交一次就是重复计数。
+        // 只剩子代理那一份要补——它走的是 `subagent.rs` 自己的循环，不经过逐请求路径。
+        //
+        // 取消的回合也照交：那部分 token 确实花掉了，旧实现在这里传 `None`
+        // 等于把子代理用量一并丢掉。
         let memory = self.ctx.memory.lock().await.clone();
 
         let session_meta = if memory.messages.is_empty() && was_cancelled {
             None
         } else {
-            let meta = if was_cancelled {
-                crate::core::session::save_session(&self.sid, &memory, None)
-            } else {
-                crate::core::session::save_session(
-                    &self.sid,
-                    &memory,
-                    Some((self.req_input_tokens, self.req_output_tokens)),
-                )
-            };
+            let meta = crate::core::session::save_session(
+                &self.sid,
+                &memory,
+                Some(crate::core::session::TokenUsageDelta {
+                    input: self.req_sub_input_tokens,
+                    output: self.req_sub_output_tokens,
+                    // 子代理的缓存用量未被采集，保持 0（展示层把 0 读作"未报告"）
+                    cache_hit: 0,
+                    cache_miss: 0,
+                }),
+            );
             println!("[JARVIS] 会话 {} 已自动保存", self.sid);
             Some(meta)
         };
@@ -1971,6 +1998,15 @@ impl PipelineState {
             .as_ref()
             .map(|meta| meta.total_output_tokens)
             .unwrap_or(0);
+        // 会话级缓存累计：0 表示该会话从未有请求上报过缓存字段（展示层显示 --）
+        let session_cache_hit_tokens = session_meta
+            .as_ref()
+            .map(|meta| meta.total_cache_hit_tokens)
+            .unwrap_or(0);
+        let session_cache_miss_tokens = session_meta
+            .as_ref()
+            .map(|meta| meta.total_cache_miss_tokens)
+            .unwrap_or(0);
 
         {
             let mut active_run_id = self.ctx.active_run_id.lock().await;
@@ -1996,6 +2032,8 @@ impl PipelineState {
             output_tokens: self.req_output_tokens,
             session_input_tokens,
             session_output_tokens,
+            session_cache_hit_tokens,
+            session_cache_miss_tokens,
             user_message_id: None,
             tool_execution_summary: self.tool_execution_summary,
             notice: self.notice,
@@ -2608,6 +2646,18 @@ impl PipelineState {
                                     ContentBlock::Image { .. } => {
                                         out.push_str("  ← [Image]\n");
                                     }
+                                    ContentBlock::Context { text } => {
+                                        // 动态上下文块（意图标签 / 能力边界 / 项目结构 / 用户画像）。
+                                        // 出网前由 `materialize_context_blocks_for_wire` 翻译成普通 Text
+                                        // 一并发出，所以它**真实占用** prompt token，这里必须原样渲染。
+                                        // 早期版本落到 `_ => {}` 被静默丢弃，是估算偏低的原因之一。
+                                        let trimmed = text.trim();
+                                        if !trimmed.is_empty() {
+                                            out.push_str("  ← [Context]\n");
+                                            out.push_str(trimmed);
+                                            out.push('\n');
+                                        }
+                                    }
                                     _ => {}
                                 }
                             }
@@ -2684,7 +2734,15 @@ impl PipelineState {
 
     /// 估算一次请求的上下文用量（消息 + 工具 schema，按分区统计），
     /// 结果用于前端上下文监控展示与压缩触发判断；
-    /// 每个 section 记录独立字符数/token 数，方便 UI 定位占比
+    /// 每个 section 记录独立字符数/token 数，方便 UI 定位占比。
+    ///
+    /// **口径：按实际发出去的 payload 计数。** 这里刻意**不**调用
+    /// `adapters::strip_context_blocks`——出网路径
+    /// （`adapters::materialize_context_blocks_for_wire`）会把每条用户消息里的
+    /// `<context>` 动态上下文块翻译成普通 Text 一并发给模型，它真实占用 prompt token。
+    /// 早先版本先 strip 再计数，把这部分整块漏算，实测长会话里估算 17.3k vs 实际 52.0k，
+    /// 连带把压缩触发阈值拖到 3 倍之后。`Session Messages` 的 raw JSON 里因此会出现
+    /// `"type": "context"` 块——那是内部表示，出网时会被翻译，不是协议字段。
     fn build_context_estimate(
         &self,
         history_snapshot: &[Message],
@@ -2760,11 +2818,11 @@ impl PipelineState {
             (tool_calls, tool_results, images, thinking)
         }
 
-        let cleaned_messages = crate::infra::llm::adapters::strip_context_blocks(history_snapshot);
+        // 直接数**未 strip** 的 history：Context 块会被翻译成 Text 发出去，必须计入。
         let (tool_call_count, tool_result_count, image_count, thinking_count) =
             count_blocks(history_snapshot);
-        let messages_text = Self::format_messages_readable(&cleaned_messages);
-        let messages_json = serde_json::to_string_pretty(&cleaned_messages).unwrap_or_default();
+        let messages_text = Self::format_messages_readable(history_snapshot);
+        let messages_json = serde_json::to_string_pretty(history_snapshot).unwrap_or_default();
         let tools_json = serde_json::to_string_pretty(tools).unwrap_or_default();
         let mut sections = vec![
             section(
@@ -2774,19 +2832,18 @@ impl PipelineState {
                 self.system_prompt.clone(),
                 1,
             ),
-            section(
-                &self.model_id,
-                "dynamic",
-                "Dynamic Context",
-                self.dynamic_context_str.clone(),
-                1,
-            ),
+            // 这里曾有一个独立的 `dynamic` 分区（`self.dynamic_context_str`）。
+            // 它已经**不再需要**：动态上下文由 `pre_loop` 经 `inject_user_message`
+            // 写进本轮用户消息的 `<context>` 块，随 history 一起落库；
+            // 上面的 `messages` 分区现在按未 strip 的 history 计数，已经包含它。
+            // 保留独立分区等于把本轮动态上下文重复计一次，总量会虚高。
+            // 需要看它有多大时，展开 `messages` 分区找 `[Context]` 段即可。
             section_with_raw(
                 &self.model_id,
                 "messages",
                 "Session Messages",
                 messages_text,
-                cleaned_messages.len(),
+                history_snapshot.len(),
                 messages_json,
             ),
             section_with_raw(
@@ -2825,7 +2882,7 @@ impl PipelineState {
         ContextEstimate {
             total_chars,
             estimated_tokens,
-            message_count: cleaned_messages.len(),
+            message_count: history_snapshot.len(),
             tool_schema_count: tools.len(),
             tool_call_count,
             tool_result_count,
@@ -2930,6 +2987,39 @@ impl PipelineState {
             }
             Ok(None) => {}
             Err(err) => eprintln!("[JARVIS] 更新上下文 usage 失败: {}", err),
+        }
+
+        // 会话累计用量：**每次请求**就落库，而不是攒到回合收尾再交一次。
+        //
+        // 旧实现把整轮增量押在收尾的 `save_session` 里，带来两个毛病：
+        // 1. 概览栏的「累计命中」在整轮跑完前一直停在上一轮的值（长回合里看着像卡死）；
+        // 2. 回合被取消时收尾那步传 `None`，整轮 token 直接丢掉、永久不进累计。
+        // 改成逐请求累加后两者同时消失——请求既然已经发生，用量就已经产生了。
+        //
+        // 缓存字段的语义要守住：`None` 表示这家没报告，按 0 累加（不要回退成
+        // `input - hit` 之类的推导，各家 `input_tokens` 口径不同，见 `SessionMeta` 的注释）。
+        let delta = crate::core::session::TokenUsageDelta {
+            input: input_tokens,
+            output: output_tokens,
+            cache_hit: cache_hit_tokens.unwrap_or(0),
+            cache_miss: cache_miss_tokens.unwrap_or(0),
+        };
+        match crate::core::session::accumulate_session_token_usage(&self.sid, delta) {
+            // 推的是**累加后的累计值**，前端整值覆盖写入，不自己再累一遍
+            Ok(Some(totals)) => {
+                let _ = self.app.emit(
+                    "session-usage-updated",
+                    serde_json::json!({
+                        "sessionId": self.sid,
+                        "inputTokens": totals.input,
+                        "outputTokens": totals.output,
+                        "cacheHitTokens": totals.cache_hit,
+                        "cacheMissTokens": totals.cache_miss,
+                    }),
+                );
+            }
+            Ok(None) => {}
+            Err(err) => eprintln!("[JARVIS] 累加会话用量失败: {}", err),
         }
     }
 
@@ -3656,5 +3746,69 @@ mod idle_terminal_tests {
                 "should_retry 不应影响收尾判定（idle_timed_out={idle}）"
             );
         }
+    }
+}
+
+/// 上下文估算口径的回归测试。
+///
+/// `build_context_estimate` 的 `messages` 分区是按 `format_messages_readable` 的
+/// 输出做 token 计数的，所以那段摘要**必须覆盖真正发出去的内容**。
+///
+/// 动态上下文（`<context>` 块）出网前会被
+/// `adapters::materialize_context_blocks_for_wire` 翻译成普通 Text 一并发出，
+/// 但早先的渲染器把它落到 `_ => {}` 静默丢弃，于是估算系统性偏低
+/// （实测长会话里估算 17.3k、实际 52.0k），连带把压缩触发阈值拖到 3 倍之后。
+#[cfg(test)]
+mod context_estimate_tests {
+    use super::*;
+
+    /// 动态上下文块必须出现在摘要里，且排在用户原文之前（与落库顺序一致）
+    #[test]
+    fn context_blocks_are_rendered_in_readable_digest() {
+        let ctx = "<context_snapshot>\n项目结构索引占位\n</context_snapshot>";
+        let messages = vec![Message::User {
+            content: Content::Multiple(vec![
+                ContentBlock::Context {
+                    text: ctx.to_string(),
+                },
+                ContentBlock::Text {
+                    text: "帮我看看".to_string(),
+                },
+            ]),
+        }];
+
+        let out = PipelineState::format_messages_readable(&messages);
+
+        assert!(
+            out.contains("项目结构索引占位"),
+            "动态上下文块被丢弃了，估算会偏低：\n{out}"
+        );
+        assert!(
+            out.contains("[Context]"),
+            "应带 [Context] 标记，便于在浮层里定位：\n{out}"
+        );
+        assert!(out.contains("帮我看看"), "用户原文不能丢：\n{out}");
+        assert!(
+            out.find("[Context]") < out.find("帮我看看"),
+            "块顺序应与消息内顺序一致（上下文在前）：\n{out}"
+        );
+    }
+
+    /// 空白的上下文块不得产生噪音行
+    #[test]
+    fn empty_context_block_renders_nothing() {
+        let messages = vec![Message::User {
+            content: Content::Multiple(vec![
+                ContentBlock::Context {
+                    text: "   ".to_string(),
+                },
+                ContentBlock::Text {
+                    text: "hi".to_string(),
+                },
+            ]),
+        }];
+
+        let out = PipelineState::format_messages_readable(&messages);
+        assert!(!out.contains("[Context]"), "空白上下文块不应渲染：\n{out}");
     }
 }

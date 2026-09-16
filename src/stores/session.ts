@@ -34,6 +34,22 @@ export interface SessionViewState {
   lastRenderAt: number;
   sessionInputTokens: number;
   sessionOutputTokens: number;
+  sessionCacheHitTokens: number;
+  sessionCacheMissTokens: number;
+}
+
+/**
+ * 会话用量累计的入参。
+ *
+ * 用对象而不是位置参数：这四个字段语义不同却都是 number，
+ * `setSessionUsageTotals(id, out, in)` 这种顺序错位编译器拦不住。
+ */
+export interface SessionUsageTotals {
+  input?: number;
+  output?: number;
+  /** 缓存命中 / 未命中。缺失按 0 处理，0 在展示层等价于"未报告" */
+  cacheHit?: number;
+  cacheMiss?: number;
 }
 
 const READY_TEXT = "Ready for input...";
@@ -64,6 +80,8 @@ function createEmptySessionView(initialHistory = READY_TEXT, hydrated = false): 
     lastRenderAt: 0,
     sessionInputTokens: 0,
     sessionOutputTokens: 0,
+    sessionCacheHitTokens: 0,
+    sessionCacheMissTokens: 0,
   };
 }
 
@@ -197,10 +215,12 @@ export const useSessionStore = defineStore("session", () => {
     }
   }
 
-  function setSessionUsageTotals(sessionId: string | null | undefined, inputTokens: number, outputTokens: number) {
+  function setSessionUsageTotals(sessionId: string | null | undefined, usage: SessionUsageTotals) {
     const view = getSessionView(sessionId);
-    view.sessionInputTokens = inputTokens || 0;
-    view.sessionOutputTokens = outputTokens || 0;
+    view.sessionInputTokens = usage.input || 0;
+    view.sessionOutputTokens = usage.output || 0;
+    view.sessionCacheHitTokens = usage.cacheHit || 0;
+    view.sessionCacheMissTokens = usage.cacheMiss || 0;
   }
 
   function isSessionRunning(sessionId: string): boolean {
@@ -219,6 +239,9 @@ export const useSessionStore = defineStore("session", () => {
 
   const totalInputTokens = computed(() => currentSessionView.value?.sessionInputTokens || 0);
   const totalOutputTokens = computed(() => currentSessionView.value?.sessionOutputTokens || 0);
+  // 会话累计缓存命中 / 未命中：两者都为 0 表示该会话从未有请求上报过缓存字段
+  const totalCacheHitTokens = computed(() => currentSessionView.value?.sessionCacheHitTokens || 0);
+  const totalCacheMissTokens = computed(() => currentSessionView.value?.sessionCacheMissTokens || 0);
 
   return {
     sessionViews,
@@ -227,6 +250,8 @@ export const useSessionStore = defineStore("session", () => {
     workingDirectory,
     totalInputTokens,
     totalOutputTokens,
+    totalCacheHitTokens,
+    totalCacheMissTokens,
     sessionListFilter,
     setSessionListFilter,
     clearSessionListFilter,

@@ -39,6 +39,7 @@ import type {
   AgentRun,
   AgentRunEvent,
   SessionContextSnapshot,
+  SessionUsageUpdatedPayload,
   SubAgentRun,
   SubAgentEvent,
 } from "../types";
@@ -504,6 +505,20 @@ export function useAgentEvents() {
       agent.upsertContextSnapshot(snapshot);
     });
 
+    // 会话累计用量：后端**每次请求**拿到 usage 后就推一次（不是回合收尾才推）。
+    // 概览栏的「累计命中」靠它才能在长回合里逐 loop 跳动，而不是停在上一轮的值。
+    // 载荷是**绝对值**，这里整值覆盖；再累加一遍会滚成两倍。
+    await on<SessionUsageUpdatedPayload>("session-usage-updated", (event) => {
+      const usage = event.payload;
+      if (!usage?.sessionId) return;
+      session.setSessionUsageTotals(usage.sessionId, {
+        input: usage.inputTokens,
+        output: usage.outputTokens,
+        cacheHit: usage.cacheHitTokens,
+        cacheMiss: usage.cacheMissTokens,
+      });
+    });
+
     // chat turn start
     await on<any>("chat-turn-start", (event) => {
       const sessionId = event.payload?.sessionId ?? session.activeSessionId;
@@ -740,7 +755,12 @@ export function useAgentEvents() {
         if (nextActiveSessionId) {
           const meta = await invoke<any>("get_session_meta", { id: nextActiveSessionId });
           session.workingDirectory = meta.workingDirectory || null;
-          session.setSessionUsageTotals(nextActiveSessionId, meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
+          session.setSessionUsageTotals(nextActiveSessionId, {
+            input: meta.totalInputTokens || 0,
+            output: meta.totalOutputTokens || 0,
+            cacheHit: meta.totalCacheHitTokens || 0,
+            cacheMiss: meta.totalCacheMissTokens || 0,
+          });
 
           if (!session.hasHydratedSessionView(nextActiveSessionId)) {
             try {
@@ -761,13 +781,13 @@ export function useAgentEvents() {
           ]);
         } else {
           session.workingDirectory = null;
-          session.setSessionUsageTotals(null, 0, 0);
+          session.setSessionUsageTotals(null, {});
           session.resetSessionView(null, session.READY_TEXT);
         }
       } catch (err) {
         console.error("同步清理后的会话失败:", err);
         session.workingDirectory = null;
-        session.setSessionUsageTotals(null, 0, 0);
+        session.setSessionUsageTotals(null, {});
         if (nextActiveSessionId) {
           session.resetSessionView(nextActiveSessionId, session.READY_TEXT);
         } else {

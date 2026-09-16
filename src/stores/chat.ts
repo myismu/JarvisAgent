@@ -401,7 +401,12 @@ export const useChatStore = defineStore("chat", () => {
     session.workingDirectory = meta.workingDirectory || null;
     session.pendingProjectId = null;
     session.resetSessionView(meta.id);
-    session.setSessionUsageTotals(meta.id, meta.totalInputTokens || 0, meta.totalOutputTokens || 0);
+    session.setSessionUsageTotals(meta.id, {
+      input: meta.totalInputTokens || 0,
+      output: meta.totalOutputTokens || 0,
+      cacheHit: meta.totalCacheHitTokens || 0,
+      cacheMiss: meta.totalCacheMissTokens || 0,
+    });
 
     // 记录新建会话使用的模型，后续切回来时自动恢复
     const config = await invoke<any>("get_config");
@@ -537,7 +542,12 @@ export const useChatStore = defineStore("chat", () => {
 
       const sessionSwitched = sessionIdAtStart !== session.activeSessionId;
       if (!sessionSwitched) {
-        session.setSessionUsageTotals(sessionIdAtStart, res.session_input_tokens || 0, res.session_output_tokens || 0);
+        session.setSessionUsageTotals(sessionIdAtStart, {
+          input: res.session_input_tokens || 0,
+          output: res.session_output_tokens || 0,
+          cacheHit: res.session_cache_hit_tokens || 0,
+          cacheMiss: res.session_cache_miss_tokens || 0,
+        });
       }
       requestView.lastUserMessage = resumeOnly ? "" : msg;
 
@@ -627,6 +637,9 @@ export const useChatStore = defineStore("chat", () => {
       const outputTokens = res.output_tokens ?? (res as any).outputTokens ?? 0;
       const sessionInputTokens = res.session_input_tokens ?? (res as any).sessionInputTokens ?? 0;
       const sessionOutputTokens = res.session_output_tokens ?? (res as any).sessionOutputTokens ?? 0;
+      // 会话累计缓存命中 / 未命中：后端从 sessions 表读回，0 表示该会话从未上报过缓存字段
+      const sessionCacheHitTokens = res.session_cache_hit_tokens ?? (res as any).sessionCacheHitTokens ?? 0;
+      const sessionCacheMissTokens = res.session_cache_miss_tokens ?? (res as any).sessionCacheMissTokens ?? 0;
       
       // 更新当前 turn 的 tokens 状态，供 Live 组件渲染
       requestView.currentTurn.tokens = {
@@ -670,7 +683,12 @@ export const useChatStore = defineStore("chat", () => {
       // agent_steps persist removed
       const sessionAfterSave = useSessionStore();
       if (sessionIdAtStart === sessionAfterSave.activeSessionId) {
-        sessionAfterSave.setSessionUsageTotals(sessionIdAtStart, sessionInputTokens, sessionOutputTokens);
+        sessionAfterSave.setSessionUsageTotals(sessionIdAtStart, {
+          input: sessionInputTokens,
+          output: sessionOutputTokens,
+          cacheHit: sessionCacheHitTokens,
+          cacheMiss: sessionCacheMissTokens,
+        });
       }
       // agent 完成后主动拉取最新上下文快照，使监控面板的 Session Messages 包含完整最后一轮回复
       refreshContextSnapshot(sessionIdAtStart);
