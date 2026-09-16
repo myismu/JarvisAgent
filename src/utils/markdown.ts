@@ -1,7 +1,5 @@
 import { marked } from "marked";
-import type { AgentToolStatus } from "../types";
 import { i18n } from "../i18n";
-import { toolActionLabel, toolCategoryLabel } from "./toolDisplay";
 
 const t = i18n.global.t;
 
@@ -64,45 +62,15 @@ marked.setOptions({
   gfm: true,
 });
 
+/**
+ * Markdown 渲染的唯一入口。
+ *
+ * 这里曾经还导出 `renderToolDetails` / `renderToolStatusIcon` / `renderToolStatusLine` /
+ * `renderTokenUsage` 四个「HTML 字符串」工具（供 `utils/agentTurnRender.ts` 的旧渲染路径使用），
+ * 那套路径没有调用方，已随死代码清理删除；工具调用与 token 用量现在由 Vue 组件渲染。
+ */
 export function renderMarkdown(value: string) {
   return marked.parse(value || "") as string;
-}
-
-const toolDetailsIcon = `<svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: text-bottom; margin-right: 4px;"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3"></path><path d="M12 19v3"></path><path d="M4.93 4.93l2.12 2.12"></path><path d="M16.95 16.95l2.12 2.12"></path><path d="M2 12h3"></path><path d="M19 12h3"></path><path d="M4.93 19.07l2.12-2.12"></path><path d="M16.95 7.05l2.12-2.12"></path></svg>`;
-
-export function renderToolDetails(content: string, mode: "live" | "done", open = false) {
-  const summary =
-    mode === "live"
-      ? t('execution.toolDetailsSummary')
-      : t('execution.toolDetailsSummaryDone');
-  const body = content.trim() ? renderMarkdown(content) : "";
-  return `\n\n<details ${open ? "open" : ""}>\n<summary>${toolDetailsIcon}${summary}</summary>\n\n${body}\n\n</details>\n\n`;
-}
-
-export function renderToolStatusIcon(status: string) {
-  if (status === "completed") {
-    return `<svg class="tool-status-icon completed" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
-  }
-  if (status === "error") {
-    return `<svg class="tool-status-icon error" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>`;
-  }
-  return `<svg class="tool-status-icon running" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle class="tool-status-track" cx="12" cy="12" r="9"></circle><path class="tool-status-head" d="M21 12a9 9 0 0 0-9-9"></path></svg>`;
-}
-
-export function renderToolStatusLine(toolCallId: string, tool: string, status: string) {
-  const safeId = escapeHtmlForAttr(toolCallId);
-  const safeStatus = normalizeToolStatus(status);
-  const title = safeStatus === "completed" ? t('execution.completed') : safeStatus === "error" ? t('execution.error') : t('execution.running');
-  const safeCategory = escapeHtml(toolCategoryLabel(tool));
-  const safeAction = escapeHtml(toolActionLabel(tool, safeStatus));
-  return `<div class="tool-status-line ${escapeHtmlForAttr(safeStatus)}" data-tool-call-id="${safeId}" title="${title}">${renderToolStatusIcon(safeStatus)}<span class="tool-status-title">${safeCategory}</span><span>${safeAction}</span></div>`;
-}
-
-function normalizeToolStatus(status: string): AgentToolStatus {
-  if (status === "pending" || status === "running" || status === "completed" || status === "error") {
-    return status;
-  }
-  return "running";
 }
 
 function escapeHtmlForAttr(value: string) {
@@ -120,17 +88,4 @@ function escapeHtml(value: string) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
-}
-
-export function renderTokenUsage(
-  inputTokens: number,
-  outputTokens: number,
-  sessionInputTokens?: number,
-  sessionOutputTokens?: number,
-) {
-  const sessionPart =
-    sessionInputTokens !== undefined && sessionOutputTokens !== undefined
-      ? ` &nbsp;&nbsp;|&nbsp;&nbsp; <b>${escapeHtml(t('execution.sessionUsage'))}</b>: ${escapeHtml(t('execution.input'))} ${sessionInputTokens || 0} / ${escapeHtml(t('execution.outputToken'))} ${sessionOutputTokens || 0} Token`
-      : "";
-  return `<div class="token-usage"><b>${escapeHtml(t('execution.tokenUsage'))}</b>: ${escapeHtml(t('execution.input'))} ${inputTokens || 0} / ${escapeHtml(t('execution.outputToken'))} ${outputTokens || 0} Token${sessionPart}</div>`;
 }

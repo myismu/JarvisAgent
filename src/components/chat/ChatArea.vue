@@ -109,9 +109,10 @@ let accumulatedWaitMs = 0;
 // 声明在 <script setup> 顶层 = 每组件实例一份；ChatArea 仅挂载一次，够用。
 //
 // ⚠️ 不变量：本缓存依赖 snapshot 不可变。
-// 若将来有代码需要原地改写 snapshot（如 utils/agentTurnRender.ts 的 extractInterruptNotice
-// 会改 textBlocks / notice，其中 textBlocks 是整个数组被替换），必须先让它脱离本缓存，
-// 否则会拿到陈旧值。当前该路径为死代码，故安全。
+// 若将来有代码需要原地改写 snapshot（改 textBlocks / notice，其中 textBlocks 若是整个数组
+// 被替换，引用会变），必须先让它脱离本缓存，否则会拿到陈旧值。
+// 历史上唯一的原地改写者是 utils/agentTurnRender.ts 的 extractInterruptNotice（旧 HTML
+// 渲染路径），该路径已随死代码清理删除，当前无人在写 snapshot。
 const turnCache = new WeakMap<AgentTurnSnapshot, AgentCurrentTurn>();
 
 function convertSnapshotToTurn(snapshot: AgentTurnSnapshot): AgentCurrentTurn {

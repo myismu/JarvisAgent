@@ -397,13 +397,16 @@ types/
 ```text
 utils/
 ├── agentTurnState.ts            # 单轮 Agent 状态更新
-├── agentTurnRender.ts           # Agent 回合渲染辅助
-├── historyRender.ts             # 会话历史渲染辅助
+├── agentTurnRender.ts           # 开发者时间线构建 + 伪工具调用剥离
 ├── toolDisplay.ts               # 工具调用分组与展示摘要
-├── markdown.ts                  # Markdown 转 HTML/渲染辅助
+├── markdown.ts                  # Markdown 渲染（唯一入口 renderMarkdown）
 ├── timeline.ts                  # 时间线数据处理
-└── html.ts                      # HTML 字符串处理辅助
+└── thinking.ts                  # 深度思考档位（与后端同源的 TS 镜像）
 ```
+
+> 已删除：`historyRender.ts`、`html.ts`。前者是历史消息的旧 HTML 字符串渲染路径，
+> 已由 `ChatArea.vue::convertSnapshotToTurn` → `AgentTurn.vue` 的组件路径取代，无调用方；
+> 后者是 `escapeHtml` 的第三份重复实现（现全仓只剩 `markdown.ts` 里一份）。
 
 ### `agentTurnState.ts`
 
@@ -418,15 +421,10 @@ utils/
 
 职责：
 
-- 将 Agent 回合状态转换成适合组件展示的数据。
-- 辅助 `AgentTurn.vue`、`ExecutionPanel.vue` 等组件渲染。
-
-### `historyRender.ts`
-
-职责：
-
-- 处理会话历史消息的 HTML/展示结构。
-- 用于恢复历史会话或追加历史消息。
+- 构建开发者时间线（`buildDeveloperTimeline`），按时间戳交错排序，直播与历史共用，供 `AgentTurn.vue` 使用。
+- 剥离伪工具调用残留（`stripPseudoToolCalls`）、生成思考摘要（`describeThinkingStatic`）。
+- 历史上这里还有一整套「HTML 字符串渲染」实现（`renderAgentTurnSnapshot` / `renderExecutionPanel` 等），
+  由 `historyRender.ts::renderStoredHistory` 调用；该路径无调用方，已随死代码清理删除。
 
 ### `toolDisplay.ts`
 
@@ -439,7 +437,7 @@ utils/
 
 职责：
 
-- Markdown 渲染相关逻辑。
+- Markdown 渲染的**唯一入口**（`renderMarkdown`），基于 `marked` 定制代码块与表格渲染。
 - 聊天消息、计划文档、Agent 输出中需要 Markdown 展示时优先查看。
 
 ### `timeline.ts`
@@ -448,13 +446,6 @@ utils/
 
 - 时间线数据整理。
 - 供快照或检查点时间线组件使用。
-
-### `html.ts`
-
-职责：
-
-- HTML 字符串处理辅助。
-- 用于消息渲染、转义或安全展示相关逻辑。
 
 ## 11. 前端核心数据流
 

@@ -38,7 +38,7 @@ src/
 ├── main.rs                      # 二进制入口，启动 jarvisagent_lib::run()
 ├── lib.rs                       # Tauri 后端入口：数据目录、状态、插件、invoke_handler
 ├── infra/                       # 基础设施层：配置 / 数据库 / LLM / Provider / 状态 / 类型
-├── core/                        # 业务层：Agent / 工具 / 编排 / 回滚 / 会话 / 意图
+├── core/                        # 业务层：Agent / 工具 / 编排 / 回滚 / 会话
 └── command/                     # Tauri 命令层：所有前端可调用命令
 ```
 
@@ -91,7 +91,7 @@ infra/
 ```text
 agent/
 ├── mod.rs                       # ask_jarvis / resume_jarvis Tauri 命令入口
-├── pipeline.rs                  # run_pipeline / resume_pipeline 主流程（五阶段流水线）
+├── pipeline.rs                  # run_pipeline / resume_pipeline 主流程（四阶段流水线）
 ├── context.rs                   # 动态上下文注入：记忆、技能、目录结构等
 ├── stream.rs                    # SSE 流解析：文本、thinking、tool_use
 ├── tools_runner.rs              # 执行模型返回的工具调用并回填观察结果
@@ -100,7 +100,7 @@ agent/
 │   ├── base_p0.md ~ base_p2.md  # 基础提示词
 │   ├── subagent.md              # 子代理提示词
 │   ├── audience/                # user.md / developer.md 交流风格
-│   ├── mode/                    # chat.md / edit.md / plan.md 工作模式规则
+│   ├── mode/                    # edit.md / plan.md 工作模式规则（Chat 模式已取消，无 chat.md）
 │   └── os/                      # linux.md / macos.md / windows.md OS 规则
 └── reflection/                  # 反思审查机制
     ├── mod.rs
@@ -113,7 +113,7 @@ agent/
 ```text
 前端 invoke("ask_jarvis")
   → core::agent::ask_jarvis
-  → pipeline::run_pipeline（初始化 → 复杂任务检测 → 上下文构建 → 主循环 → 收尾）
+  → pipeline::run_pipeline（初始化[含复杂任务检测] → 循环前准备 → 主循环 → 收尾）
   → complex_task 判定 → tools 按 WorkMode 加载 → context 组装动态上下文
   → provider 发起 LLM 流式请求 → stream 解析输出块与工具调用
   → tools_runner 执行工具 → reflection 反思审查
@@ -173,7 +173,7 @@ infra/providers/
 
 ```text
 tools/
-├── mod.rs                       # 工具系统中枢：意图过滤、路由分发、技能加载、写工具拦截
+├── mod.rs                       # 工具系统中枢：能力过滤、路由分发、技能加载、写工具拦截
 ├── file_tools/                  # 文件读取、写入、编辑、搜索、符号、目录（14 个文件）
 │   ├── mod.rs                   # 聚合导出与注册入口
 │   ├── registry.rs              # read/write/edit/search/list 等工具 schema
@@ -214,7 +214,7 @@ tools/
 ```text
 模型返回 tool_use
   → agent/tools_runner.rs
-  → tools/mod.rs 路由（含意图与 WorkMode 过滤）
+  → tools/mod.rs 路由（含能力清单与 WorkMode 过滤）
   → framework/permission.rs 判断是否需要审批
   → 具体工具模块执行
   → 执行结果写回 Agent 循环
@@ -226,7 +226,7 @@ tools/
 - 工具集保持稳定（tool 参数顺序不变）以利于 prompt cache 命中，不要随意增删工具定义。
 - 文件修改类工具要复用时 `file_tools` 中的检查点、快照与 Notebook 防护逻辑，避免绕过变更追踪。
 - Shell 类工具必须同步考虑 `framework/permission.rs` 审批与 `shell_tools/security.rs` 安全检查。
-- 写工具（WriteFile、EditFile、RunCommand 等）默认注册为延迟工具，聊天意图下禁止调用。
+- 写工具（WriteFile、EditFile、RunCommand 等）默认注册为延迟工具，Plan 模式下禁止调用。
 
 ## 编排系统：`core/orchestration/`
 

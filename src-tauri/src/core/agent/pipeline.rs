@@ -1,21 +1,29 @@
 //! # pipeline.rs — Agent 主循环流水线
 //!
-//! 实现 Agent 的 5 阶段执行流水线：初始化 → 意图验证 → 上下文构建 → 主循环 → 收尾。
+//! 实现 Agent 的 4 阶段执行流水线：初始化 → 循环前准备 → 主循环 → 收尾。
 //! 主循环阶段包含压缩检查、API 调用、流式处理、工具执行、反思审查等完整 Agent Loop 逻辑。
 //!
-//! ## 五阶段流水线地图（功能规划）
+//! ## 四阶段流水线地图
 //!
 //! 入口：`run_pipeline()`（新消息）/ `resume_pipeline()`（续跑）→ `run_pipeline_inner()` 按序调度：
 //!
 //! | 阶段 | 函数 | 职责 |
 //! |---|---|---|
 //! | 1 初始化 | `setup()` | 校验会话占用、加载配置、创建取消令牌、意图分类、组装 PipelineState |
-//! | 2 意图验证 | `validate()` | DANGEROUS 弹权限确认 / UNCLEAR 返回澄清，可提前结束 |
-//! | 3 上下文构建 | `pre_loop()` | 崩溃恢复、注入用户消息、创建 run 记录、决定是否深度思考 |
-//! | 4 主循环 | `run_main_loop()` | 调 LLM → 流式解析 → 执行工具 → 结果回写，直到 LLM 不再调工具 |
-//! | 5 收尾 | `finalize()` | 检查点快照、保存会话、自动起名、记忆超预算时后台整理、组装 JarvisResult |
+//! | 2 循环前准备 | `pre_loop()` | 崩溃恢复、注入用户消息、创建 run 记录、决定是否深度思考 |
+//! | 3 主循环 | `run_main_loop()` | 调 LLM → 流式解析 → 执行工具 → 结果回写，直到 LLM 不再调工具 |
+//! | 4 收尾 | `finalize()` | 检查点快照、保存会话、自动起名、记忆超预算时后台整理、组装 JarvisResult |
 //!
-//! ### 阶段 4 主循环每轮内部子步骤
+//! ### 关于「意图验证」阶段（已作废，勿再按五阶段描述本文件）
+//!
+//! 这里曾规划过一个独立的第 2 阶段 `validate()`（DANGEROUS 弹权限确认 / UNCLEAR 返回澄清），
+//! 它**从未落地**——`run_pipeline_inner()` 是从阶段 1 直接进阶段 2 的。后续演化为：
+//! - 意图分类留在 `setup()` 内（见其文档注释第 4 步）；
+//! - 权限确认**下移到工具执行期逐次审批**：`request_permission()` 由主循环的工具调用处
+//!   与 `shell_tools::execution` 直接调用，受 `approval_mode`（`request_approval` /
+//!   `auto_approve`）控制，不再有"跑之前先整体预检一遍"的环节。
+//!
+//! ### 阶段 3 主循环每轮内部子步骤
 //! 取消检查 → 循环次数确认 → 后台通知注入 → 上下文压缩 → 历史快照 → 构建请求
 //! → API 调用（含调度器事件 select）→ 流式处理 → 工具执行 → 反思审查 → 回写历史 → 下一轮
 //!
@@ -728,7 +736,7 @@ impl PipelineState {
         Ok(state)
     }
 
-    /// 阶段 3：上下文构建 + 消息注入 + Agent Run 启动
+    /// 阶段 2：上下文构建 + 消息注入 + Agent Run 启动
     ///
     /// 主循环开始前的一次性准备：
     /// 1. 构建动态上下文（意图相关提示、工作区信息等）
@@ -929,7 +937,7 @@ impl PipelineState {
         }
     }
 
-    /// 阶段 4：主循环 — Agent Loop 心脏（调 LLM → 流式解析 → 工具执行 → 循环）
+    /// 阶段 3：主循环 — Agent Loop 心脏（调 LLM → 流式解析 → 工具执行 → 循环）
     ///
     /// 每轮循环的执行顺序：
     /// 1. 取消检查 / 循环次数确认（满 30 轮弹窗询问）/ 后台通知注入 / 上下文压缩检查
@@ -1816,7 +1824,7 @@ impl PipelineState {
         Ok(())
     }
 
-    /// 阶段 5：收尾 — 持久化 + 快照 + 记忆 + 结果组装
+    /// 阶段 4：收尾 — 持久化 + 快照 + 记忆 + 结果组装
     ///
     /// 1. 崩溃兜底：把内存中未落库的编辑补丁先写入 agent_run_patches 表
     /// 2. 文件快照：本轮有文件改动才创建 Git 检查点（纯聊天轮次跳过），供 UI 回滚
@@ -3367,7 +3375,7 @@ impl PipelineState {
     }
 }
 
-/// 主流程入口：依次执行 5 个阶段
+/// 主流程入口：依次执行 4 个阶段
 pub async fn run_pipeline(
     session_id: String,
     msg: String,
@@ -3424,8 +3432,8 @@ pub async fn resume_pipeline(
 
 /// 流水线总调度（run_pipeline / resume_pipeline 共用）
 /// 
-/// 依次执行：阶段 1 setup → 阶段 2 validate（可提前返回）→ 阶段 3 pre_loop
-/// → 阶段 4 run_main_loop（出错走 abort_after_error）→ 阶段 5 finalize
+/// 依次执行：阶段 1 setup → 阶段 2 pre_loop
+/// → 阶段 3 run_main_loop（出错走 abort_after_error）→ 阶段 4 finalize
 async fn run_pipeline_inner(
     session_id: String,
     msg: String,
@@ -3455,16 +3463,16 @@ async fn run_pipeline_inner(
     )
     .await?;
 
-    // ── 阶段 3：循环前准备（崩溃恢复 + 注入用户消息 + 启动 run）──
+    // ── 阶段 2：循环前准备（崩溃恢复 + 注入用户消息 + 启动 run）──
     state.pre_loop().await;
 
-    // ── 阶段 4：主循环（调 LLM → 执行工具 → 直到得出最终答案）──
+    // ── 阶段 3：主循环（调 LLM → 执行工具 → 直到得出最终答案）──
     if let Err(err) = state.run_main_loop().await {
         state.abort_after_error(&err).await;
         return Err(err);
     }
 
-    // ── 阶段 5：收尾（持久化 / 快照 / 记忆 / 结果组装）──
+    // ── 阶段 4：收尾（持久化 / 快照 / 记忆 / 结果组装）──
     Ok(state.finalize().await)
 }
 
