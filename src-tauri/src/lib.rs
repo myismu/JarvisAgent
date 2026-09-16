@@ -105,6 +105,7 @@ pub fn run() {
             command::permission::get_permission_state,
             command::permission::get_session_permission_settings,
             command::permission::set_session_approval_mode,
+            command::permission::set_agent_read_only,
             command::permission::revoke_session_allowance,
             command::permission::clear_session_allowances,
             command::session::recall_last_message,

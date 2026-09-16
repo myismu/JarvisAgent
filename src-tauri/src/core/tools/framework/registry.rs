@@ -247,6 +247,30 @@ impl ToolRegistry {
         Self::WRITE_TOOLS.contains(&name)
     }
 
+    /// 规划模式下**额外**不可用的工具（`WRITE_TOOLS` 之外那部分）。
+    ///
+    /// 为什么不能只拦 `WRITE_TOOLS`：规划模式的语义是"只探索、提方案"，但下面这三个
+    /// 工具都绕得过那份名单，等于给模型留了三条改文件的暗道——
+    /// - `RunSubagent`：子代理内层固定以 `edit` 模式运行，写工具对它全量可见；
+    /// - `RunSubagentsSequentially`：调度器派子代理时 `read_only` 参数恒为 `false`；
+    /// - `SetWorkspace`：改的是全局工作目录，会落盘到 `data/global/.jarvis_workspace`。
+    ///
+    /// 注意 `RunSubagent` 的 `read_only` 是**模型可控入参**：光靠"默认只读"拦不住，
+    /// 必须在这一层把工具整个收走。
+    pub const PLAN_BLOCKED_EXTRA: &'static [&'static str] = &[
+        "RunSubagent",
+        "RunSubagentsSequentially",
+        "SetWorkspace",
+    ];
+
+    /// 规划模式下这个工具名是否不可用（写工具 + [`Self::PLAN_BLOCKED_EXTRA`]）。
+    ///
+    /// **唯一口径**：工具目录过滤（[`Self::is_available`]）与运行期兜底
+    /// （`tools::should_block_write_tool`）都调用这里，避免"目录里看不见、调用时又放行"。
+    pub fn is_blocked_in_plan_mode(name: &str) -> bool {
+        Self::is_write_tool_name(name) || Self::PLAN_BLOCKED_EXTRA.contains(&name)
+    }
+
     /// 工具可用性判定（意图 + 工作模式）。
     ///
     /// 这是工具目录过滤与运行时校验的**唯一口径**：
@@ -257,7 +281,7 @@ impl ToolRegistry {
         }
         // 规划模式：只探索 + 提交方案，写操作必须切回编辑模式
         if work_mode == "plan" {
-            return !Self::is_write_tool_name(tool.name);
+            return !Self::is_blocked_in_plan_mode(tool.name);
         }
         true
     }

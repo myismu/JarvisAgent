@@ -4,6 +4,7 @@
 //!
 //! ## Key Exports
 //! - `is_readonly_command()`: 跨平台判断命令是否为只读
+//! - `is_readonly_git_args()`: git 子命令的只读判定（RunGitCommand 工具与 shell 共用）
 //! - `is_readonly_command_windows()`: Windows 只读判定
 //! - `is_readonly_command_unix()`: Unix 只读判定
 //!
@@ -14,6 +15,53 @@
 use super::guards::*;
 use super::regexes::*;
 use regex::Regex;
+
+/// 把一条命令行切成"会被真正执行的各段"。
+///
+/// 分隔符覆盖两种 shell 里"执行下一条命令"的全部写法：
+/// 管道 `|`、语句分隔 `;`、逻辑 `&&` / `||`、Windows cmd 的顺序执行 `&`、以及换行。
+///
+/// **为什么必须切**：只读判定如果只看第一个 `|` 之前的部分，
+/// `Get-ChildItem; Remove-Item x` 会被判成"只读命令"——既有的"只读免弹窗"、
+/// 以及只读保护的"只放行只读命令"，都会被一个分号直接绕过。
+///
+/// 切分是**保守**的：引号里的 `;` 也会被切开（可能把一条只读命令判成非只读），
+/// 但方向安全——宁可拦错，不可放过。
+fn split_command_segments(cmd: &str) -> Vec<&str> {
+    cmd.split(|c| matches!(c, '|' | ';' | '&' | '\n' | '\r'))
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
+/// git 子命令的只读判定（**唯一口径**）。
+///
+/// 两处消费方：shell 命令里的 `git ...` 段（本模块），以及 `RunGitCommand` 工具本身。
+/// 两边共用这一份，避免"工具放行、shell 拦截"这种口径分裂。
+///
+/// 两道关：
+/// 1. 第一个非选项词必须落在 [`READONLY_GIT_ARGS`] 白名单里；
+/// 2. 参数里不能出现能把内容写到任意路径的选项（`--output=<file>`）。
+///
+/// 注意这是**白名单**：不在名单里的（`add` / `commit` / `restore` / `stash` / `apply`
+/// / `branch` / `tag` / `remote` / `config` …）一律算非只读。
+pub fn is_readonly_git_args(args: &[&str]) -> bool {
+    let Some(sub) = args
+        .iter()
+        .find(|arg| !arg.starts_with('-'))
+        .map(|arg| arg.to_lowercase())
+    else {
+        return false;
+    };
+    if !READONLY_GIT_ARGS.iter().any(|allowed| *allowed == sub) {
+        return false;
+    }
+    // `git log --output=x` / `git diff --output=x` 会写文件；`--exec` 会执行命令
+    !args.iter().any(|arg| {
+        let lower = arg.to_lowercase();
+        lower.starts_with("--output") || lower.starts_with("--exec")
+    })
+}
 
 /// - 管道中如果包含写操作 cmdlet 则不算只读
 pub fn is_readonly_command_windows(cmd: &str) -> bool {
@@ -45,13 +93,8 @@ pub fn is_readonly_command_windows(cmd: &str) -> bool {
         return false;
     }
 
-    // 分割管道，检查每一段
-    for segment in cmd.split('|') {
-        let segment = segment.trim();
-        if segment.is_empty() {
-            continue;
-        }
-
+    // 按命令分隔符切开，检查每一段
+    for segment in split_command_segments(cmd) {
         let name = extract_command_name(segment);
         if name.is_empty() {
             continue;
@@ -64,13 +107,9 @@ pub fn is_readonly_command_windows(cmd: &str) -> bool {
 
         // 检查只读外部命令
         if name == "git" {
-            // git 命令检查子命令是否只读
-            let git_sub = segment
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or("")
-                .to_lowercase();
-            if !READONLY_GIT_ARGS.iter().any(|a| *a == git_sub) {
+            // git 子命令检查：与 RunGitCommand 工具共用同一份判定
+            let git_args: Vec<&str> = segment.split_whitespace().skip(1).collect();
+            if !is_readonly_git_args(&git_args) {
                 return false;
             }
             continue;
@@ -111,10 +150,10 @@ pub fn is_readonly_command_windows(cmd: &str) -> bool {
         }
 
         // 检查 Windows 只读命令
-        if READONLY_WIN_COMMANDS
-            .iter()
-            .any(|c| *c == name || name.starts_with(c))
-        {
+        //
+        // 必须是**整词**相等：原先这里是 `*c == name || name.starts_with(c)`，
+        // 名单里的 `set` 于是把 `setx`（写用户环境变量）也判成了只读、免弹窗放行。
+        if READONLY_WIN_COMMANDS.iter().any(|c| *c == name) {
             continue;
         }
 
@@ -149,12 +188,7 @@ pub fn is_readonly_command_unix(cmd: &str) -> bool {
         return false;
     }
 
-    for segment in cmd.split('|') {
-        let segment = segment.trim();
-        if segment.is_empty() {
-            continue;
-        }
-
+    for segment in split_command_segments(cmd) {
         let name = extract_command_name(segment);
         if name.is_empty() {
             continue;
@@ -162,12 +196,8 @@ pub fn is_readonly_command_unix(cmd: &str) -> bool {
 
         // git 子命令检查
         if name == "git" {
-            let git_sub = segment
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or("")
-                .to_lowercase();
-            if !READONLY_GIT_ARGS.iter().any(|a| *a == git_sub) {
+            let git_args: Vec<&str> = segment.split_whitespace().skip(1).collect();
+            if !is_readonly_git_args(&git_args) {
                 return false;
             }
             continue;
@@ -558,6 +588,54 @@ mod tests {
         ));
         assert!(is_readonly_command("dir | Sort-Object Name"));
         assert!(!is_readonly_command("Get-Process | Stop-Process"));
+    }
+
+    #[test]
+    pub fn test_command_chaining_is_not_readonly() {
+        // 分隔符以前只切了 `|`：`Get-ChildItem; Remove-Item x` 会被判成"只读命令"，
+        // 于是既有的"只读免弹窗"和只读保护都能被一个分号绕过。
+        assert!(!is_readonly_command("Get-ChildItem; Remove-Item x"));
+        assert!(!is_readonly_command("dir && del foo.txt"));
+        assert!(!is_readonly_command("dir || Remove-Item -Recurse ."));
+        assert!(!is_readonly_command("Get-Process\ndel foo.txt"));
+    }
+
+    #[test]
+    pub fn test_readonly_command_name_matches_whole_word_only() {
+        // 名单里的 `set` 曾经靠前缀匹配把 `setx` 也带成只读（setx 会写用户环境变量）
+        assert!(!is_readonly_command("setx PATH evil"));
+        assert!(!is_readonly_command("set FOO=bar"));
+        assert!(!is_readonly_command("label D: MyDisk"));
+        assert!(!is_readonly_command("schtasks /create /tn x /tr y"));
+    }
+
+    #[test]
+    pub fn test_readonly_git_args_is_a_whitelist() {
+        // 这些以前全是"黑名单漏网"：`git restore .` / `stash` / `apply` 能直接丢掉未提交的改动
+        let non_readonly: &[&[&str]] = &[
+            &["restore", "."],
+            &["stash"],
+            &["apply", "x.patch"],
+            &["add", "-A"],
+            &["rm", "-r", "src"],
+            &["branch", "-D", "main"],
+            &["tag", "-d", "v1"],
+            &["remote", "add", "origin", "url"],
+            &["config", "user.name", "x"],
+            &["clean", "-fd"],
+            &["checkout", "."],
+            &["push"],
+            &["commit", "-m", "x"],
+        ];
+        for args in non_readonly {
+            assert!(!is_readonly_git_args(args), "{:?} 不该被判只读", args);
+        }
+
+        assert!(is_readonly_git_args(&["status"]));
+        assert!(is_readonly_git_args(&["log", "--oneline", "-10"]));
+        assert!(is_readonly_git_args(&["diff", "--stat"]));
+        // 能把内容写到任意路径的选项
+        assert!(!is_readonly_git_args(&["log", "--output=foo.txt"]));
     }
 
     // --- 破坏性命令警告 ---

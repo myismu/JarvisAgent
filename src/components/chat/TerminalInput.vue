@@ -420,6 +420,26 @@ const doSwitchProfile = async (id: string) => {
 /** 当前权限档位（请求审批 / 帮我批准）：后端会话状态为准 */
 const currentApprovalMode = ref<AgentApprovalMode>(uiPrefs.agentApprovalMode.value);
 
+/** 只读保护（本会话禁止一切改动）：后端会话状态为准，不落盘 */
+const agentReadOnly = ref(false);
+
+/** 只读保护是独立闸门：不看权限档位、不看工作模式，切模式绕不过它 */
+const toggleReadOnly = async () => {
+  const next = !agentReadOnly.value;
+  const prev = agentReadOnly.value;
+  workModeWarning.value = "";
+  try {
+    if (session.activeSessionId) {
+      await invoke('set_agent_read_only', { sessionId: session.activeSessionId, enabled: next });
+    }
+    agentReadOnly.value = next;
+  } catch (e) {
+    agentReadOnly.value = prev;
+    workModeWarning.value = String(e);
+    console.error('Failed to toggle read-only protection:', e);
+  }
+};
+
 /**
  * 权限档位只改档位，**不碰工作模式**（两条轴分开：一个是"问得多严"，一个是"先出方案还是直接干"）
  */
@@ -473,12 +493,13 @@ const syncPermissionFromSession = async () => {
     const mode = await invoke<AgentWorkMode>('get_session_work_mode', { sessionId: sid });
     currentWorkMode.value = mode;
     uiPrefs.setAgentWorkMode(mode);
-    const settings = await invoke<{ approvalMode: AgentApprovalMode }>(
+    const settings = await invoke<{ approvalMode: AgentApprovalMode; readOnly?: boolean }>(
       'get_session_permission_settings',
       { sessionId: sid },
     );
     currentApprovalMode.value = settings.approvalMode;
     uiPrefs.setAgentApprovalMode(settings.approvalMode);
+    agentReadOnly.value = settings.readOnly === true;
   } catch (e) {
     console.error('Failed to read session permission settings:', e);
   }
@@ -906,6 +927,22 @@ const handleRecallEdit = async () => {
           </div>
         </div>
 
+        <!-- 只读保护：独立闸门，开启后本会话禁止一切改动（写文件 / 非只读命令 / 派子代理 / 改工作目录） -->
+        <button
+          class="action-toggle-btn readonly-toggle"
+          :class="{ active: agentReadOnly }"
+          @click="toggleReadOnly"
+          :title="agentReadOnly ? t('settings.general.readOnlyOnTitle') : t('settings.general.readOnlyOffTitle')"
+        >
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" />
+            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+          </svg>
+          <span>{{ t('settings.general.readOnly') }}</span>
+          <!-- 迷你滑块：状态信号全靠滑块位置，纯中性色 -->
+          <span class="mini-switch" :class="{ on: agentReadOnly }" aria-hidden="true"></span>
+        </button>
+
         <div class="toolbar-right">
           <button
             class="action-toggle-btn"
@@ -922,6 +959,8 @@ const handleRecallEdit = async () => {
               <path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27a5 5 0 1 1-7.14 7.14" />
             </svg>
             <span>{{ !canModelThink ? t('input.thinkingUnsupported') : isThinkingForced ? t('input.thinkingForced') : t('input.thinking') }}</span>
+            <!-- 迷你滑块：状态信号全靠滑块位置，纯中性色 -->
+            <span class="mini-switch" :class="{ on: isThinkingActive }" aria-hidden="true"></span>
             <!-- 锁定角标：模型强制开启、用户改不了（读作"开启"而非"禁用"） -->
             <svg
               v-if="thinkingLocked"
@@ -1340,6 +1379,43 @@ const handleRecallEdit = async () => {
   bottom: 2px;
   color: inherit;
   opacity: 0.85;
+}
+
+/* 迷你滑块开关：只承担"状态"信号，位置即状态（左=关 / 右=开）。
+   刻意全中性色（与整个工具条的极简口径一致）：
+   开 = 轨道填充 --text-main，滑块反白；
+   关 = 下沉轨道 + 弱色滑块。不引入任何彩色。 */
+.action-toggle-btn .mini-switch {
+  flex: none;
+  width: 22px;
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: var(--thinking-off-surface);
+  position: relative;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.action-toggle-btn .mini-switch::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform var(--transition-fast), background var(--transition-fast);
+}
+
+.action-toggle-btn .mini-switch.on {
+  background: var(--text-main);
+  border-color: var(--text-main);
+}
+
+.action-toggle-btn .mini-switch.on::after {
+  transform: translateX(10px);
+  background: var(--bg-panel);
 }
 
 .toolbar-spacer {

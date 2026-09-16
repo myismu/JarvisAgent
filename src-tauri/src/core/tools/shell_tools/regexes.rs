@@ -294,25 +294,48 @@ pub const READONLY_CMDLETS: &[&str] = &[
     "pop-location",
 ];
 
-/// 只读外部命令的子命令
+/// 只读 git 子命令（**正向白名单**，唯一口径）。
+///
+/// 由 `readonly::is_readonly_git_args` 消费，同时供 `RunGitCommand` 工具与
+/// `is_readonly_command` 的 git 分支使用，保证两处结论不会漂移。
+///
+/// 为什么是白名单：以前 `RunGitCommand` 用的是「黑名单」（push/commit/rebase/reset/
+/// revert/clean/checkout），漏掉了 `git restore .`、`git stash`、`git apply`、`git add`、
+/// `git rm` —— 这些在规划模式（以及只读保护下）能直接把未提交的改动丢掉。
+/// 黑名单永远补不全，所以翻成正向。
+///
+/// 为什么没有 `branch` / `tag` / `remote` / `config` / `worktree` / `submodule`：
+/// 这几个是**读写混合**命令，带写参数就是改状态（`git branch -D`、`git tag -d`、
+/// `git remote add`、`git config k v`）。它们自己就是"能改仓库"的入口，不进白名单。
 pub const READONLY_GIT_ARGS: &[&str] = &[
     "status",
     "diff",
     "log",
     "show",
-    "branch",
-    "tag",
-    "remote",
     "describe",
     "rev-parse",
+    "rev-list",
     "name-rev",
     "ls-files",
     "ls-tree",
+    "ls-remote",
     "cat-file",
     "count-objects",
     "shortlog",
     "blame",
+    "annotate",
     "whatchanged",
+    "grep",
+    "cherry",
+    "reflog",
+    "show-ref",
+    "symbolic-ref",
+    "for-each-ref",
+    "merge-base",
+    "verify-commit",
+    "verify-tag",
+    "fsck",
+    "version",
 ];
 
 pub const READONLY_GH_ARGS: &[&str] = &[
@@ -339,6 +362,17 @@ pub const READONLY_DOCKER_ARGS: &[&str] = &[
 ];
 
 /// Windows 只读命令
+/// Windows 只读命令（**整词匹配**，按命令名判定，不看参数）
+///
+/// 收录标准：不带参数也只会读、带参数也不会改文件系统的命令。
+///
+/// 刻意**不收录**的：
+/// - `set`：`set FOO=bar` 会写用户环境变量（`setx` 同理，靠整词匹配拦住）；
+/// - `label`：改卷标；`chkdsk`：带 `/f` 会修盘；`schtasks`：带 `/create` 会注册计划任务
+///   （`/create` 另有 `check_scheduled_task` 兜底，但这里不指望它）。
+///
+/// 历史坑：这份名单曾经用 `name.starts_with(c)` 前缀匹配，于是名单里的 `set`
+/// 把 `setx`（写用户环境变量）也判成了只读、免弹窗放行。判定必须整词相等。
 pub const READONLY_WIN_COMMANDS: &[&str] = &[
     "ipconfig",
     "netstat",
@@ -362,16 +396,10 @@ pub const READONLY_WIN_COMMANDS: &[&str] = &[
     "more",
     "cls",
     "echo",
-    "set",
     "dir",
     "cd",
     "vol",
-    "label",
-    "chkdsk",
     "driverquery",
-    "schtasks",
-    "tasklist",
-    "reg query",
 ];
 
 // --- 检查函数实现 ---

@@ -198,7 +198,7 @@ pub async fn get_permission_state(
     }))
 }
 
-/// 查询当前会话的权限设置：档位 + 已允许范围
+/// 查询当前会话的权限设置：档位 + 只读保护 + 已允许范围
 #[tauri::command]
 pub async fn get_session_permission_settings(
     session_id: String,
@@ -206,6 +206,7 @@ pub async fn get_session_permission_settings(
 ) -> Result<serde_json::Value, String> {
     let ctx = session_manager.get_or_create(&session_id).await;
     let mode = ctx.approval_mode.lock().await.clone();
+    let read_only = ctx.read_only_enabled().await;
     let allowances: Vec<serde_json::Value> = ctx
         .session_allowances
         .lock()
@@ -221,6 +222,7 @@ pub async fn get_session_permission_settings(
         .collect();
     Ok(serde_json::json!({
         "approvalMode": mode,
+        "readOnly": read_only,
         "allowances": allowances,
     }))
 }
@@ -247,6 +249,35 @@ pub async fn set_session_approval_mode(
     );
     println!("[JARVIS] 会话 {} 权限档位切换为：{}", session_id, mode);
     Ok(())
+}
+
+/// 切换当前会话的只读保护。
+///
+/// 开启后本会话禁止一切会改动工作区的操作：写 / 编辑 / 删除 / 改名 / 打补丁文件、
+/// 执行非只读命令、起后台服务、派子代理、改工作目录。读文件与搜索不受影响。
+///
+/// **刻意不落盘**（与"本次会话都允许"同构，纯内存态）：这是"这一次别碰我的代码"，
+/// 不是长期偏好。记住了反而会变成幽灵故障——新会话里 agent 莫名写不了文件，
+/// 用户还不知道是哪个开关干的。
+#[tauri::command]
+pub async fn set_agent_read_only(
+    session_id: String,
+    enabled: bool,
+    session_manager: tauri::State<'_, SessionManager>,
+    app: tauri::AppHandle,
+) -> Result<bool, String> {
+    let ctx = session_manager.get_or_create(&session_id).await;
+    *ctx.agent_read_only.lock().await = enabled;
+    let _ = app.emit(
+        "agent-read-only-changed",
+        serde_json::json!({ "sessionId": session_id, "enabled": enabled }),
+    );
+    println!(
+        "[JARVIS] 会话 {} 只读保护：{}",
+        session_id,
+        if enabled { "开启" } else { "关闭" }
+    );
+    Ok(enabled)
 }
 
 /// 撤销一条"本会话已允许"（操作类别 + 范围）

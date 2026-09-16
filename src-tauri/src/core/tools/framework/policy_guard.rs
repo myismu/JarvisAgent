@@ -192,6 +192,103 @@ mod tests {
         assert!(command_prefix_scope("   ").is_none());
         assert!(command_prefix_scope("").is_none());
     }
+
+    // ── 只读保护 ──
+
+    fn facts_with(class: Option<ToolClass>, readonly_cmd: bool) -> PreparedFacts {
+        PreparedFacts {
+            class,
+            targets: Vec::new(),
+            files_in_call: 0,
+            files_in_turn: 0,
+            out_of_workspace: Vec::new(),
+            target_exists: None,
+            existing_deny_reason: None,
+            warning: None,
+            command_is_readonly: readonly_cmd,
+            allowance: None,
+        }
+    }
+
+    #[test]
+    fn read_only_blocks_project_mutations() {
+        let facts = facts_with(Some(ToolClass::ModifyContent), false);
+        assert!(read_only_deny_reason("EditFile", &json!({ "path": "a.ts" }), &facts).is_some());
+        assert!(read_only_deny_reason("WriteFile", &json!({ "path": "a.ts" }), &facts).is_some());
+        assert!(read_only_deny_reason("DeleteFile", &json!({ "path": "a.ts" }), &facts).is_some());
+        assert!(read_only_deny_reason("ApplyPatch", &json!({ "patch": "x" }), &facts).is_some());
+        // 读类不受影响
+        assert!(read_only_deny_reason("ReadFile", &json!({ "path": "a.ts" }), &facts).is_none());
+        assert!(read_only_deny_reason("SearchText", &json!({ "path": "a" }), &facts).is_none());
+    }
+
+    #[test]
+    fn read_only_blocks_subagents_and_workspace_change() {
+        let facts = facts_with(Some(ToolClass::Orchestrate), false);
+        assert!(read_only_deny_reason("RunSubagent", &json!({ "prompt": "x" }), &facts).is_some());
+        // 模型显式传 read_only:false 也没用——工具整个被收走，不看入参
+        assert!(read_only_deny_reason(
+            "RunSubagent",
+            &json!({ "prompt": "x", "read_only": false }),
+            &facts
+        )
+        .is_some());
+        assert!(
+            read_only_deny_reason("RunSubagentsSequentially", &json!({}), &facts).is_some()
+        );
+
+        let workspace = facts_with(Some(ToolClass::WorkspaceChange), false);
+        assert!(read_only_deny_reason("SetWorkspace", &json!({ "path": "E:/x" }), &workspace).is_some());
+
+        // 任务清单不碰用户代码，只读保护下仍要能用（否则连规划都做不了）
+        assert!(read_only_deny_reason("CreateTask", &json!({}), &facts).is_none());
+        assert!(read_only_deny_reason("UpdateTodos", &json!({}), &facts).is_none());
+    }
+
+    #[test]
+    fn read_only_shell_only_allows_readonly_commands() {
+        let readonly_cmd = facts_with(Some(ToolClass::RunCommand), true);
+        let write_cmd = facts_with(Some(ToolClass::RunCommand), false);
+        assert!(
+            read_only_deny_reason("RunCommand", &json!({ "command": "git status" }), &readonly_cmd)
+                .is_none()
+        );
+        assert!(
+            read_only_deny_reason("RunCommand", &json!({ "command": "npm install" }), &write_cmd)
+                .is_some()
+        );
+        // 起后台服务即使用只读命令也拒（起服务本身就是状态改变）
+        let bg = facts_with(Some(ToolClass::Background), true);
+        assert!(read_only_deny_reason(
+            "StartBackgroundCommand",
+            &json!({ "command": "npm run dev" }),
+            &bg
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn read_only_git_only_allows_readonly_subcommands() {
+        let facts = facts_with(Some(ToolClass::ReadOnly), false);
+        assert!(
+            read_only_deny_reason("RunGitCommand", &json!({ "args": ["status"] }), &facts).is_none()
+        );
+        assert!(
+            read_only_deny_reason("RunGitCommand", &json!({ "args": ["log", "-5"] }), &facts)
+                .is_none()
+        );
+        // 这几个以前全在黑名单之外，能直接把未提交的改动丢掉
+        for args in [
+            json!(["restore", "."]),
+            json!(["stash"]),
+            json!(["apply", "p.patch"]),
+            json!(["commit", "-m", "x"]),
+        ] {
+            assert!(
+                read_only_deny_reason("RunGitCommand", &json!({ "args": args }), &facts).is_some()
+            );
+        }
+    }
 }
 
 /// 一次调用的事实（判定器与观察层共用）
@@ -619,6 +716,90 @@ pub async fn command_allowed(app: &tauri::AppHandle, session_id: &str, command: 
     ctx.allowance_covers(ALLOWANCE_KIND_COMMAND, &scope).await
 }
 
+/// 只读保护下的判定：返回 `Some(原因)` 表示这个工具在只读保护开启时**不许执行**。
+///
+/// ## 为什么与规划模式分开
+///
+/// 规划模式是**工作模式**：它是正常流程的一部分，模型自己也能切（`SwitchWorkMode`），
+/// 所以规划模式的拦截面只看 `work_mode`。只读保护是用户在界面上显式打开的闸门，
+/// 目的是"这次别碰我的代码"——**切模式绕不过它**，因此这里根本不看 `work_mode`。
+///
+/// ## 规则（先命中先返回）
+///
+/// 1. 写工具（`WRITE_TOOLS`：写入 / 编辑 / 删除 / 改名 / 打补丁 / 跑命令 / 起后台）→ 拒绝。
+///    其中 `RunGitCommand` 与 `RunCommand` 再按"只读命令"细分：
+///    git 只看只读子命令，shell 只放行只读命令（判定复用 `readonly` 模块，不另造一份）。
+/// 2. 派子代理（`RunSubagent` / `RunSubagentsSequentially`）→ 拒绝。
+///    **不能只靠"默认只读"**：`read_only` 是模型可控入参，子代理内层又固定 `edit` 模式，
+///    所以必须把这两个工具整个收走。
+/// 3. 改工作目录（`SetWorkspace`）→ 拒绝。
+/// 4. 其余（读文件、搜索、任务清单、记忆、切模式、提方案）→ 放行。
+///
+/// ## 一定是 Deny，不能是 Ask
+///
+/// 走 Ask 的后果是用户点一下"允许"就破了只读保护（而且 shell 工具内部还有第二道门
+/// 会再问一次）。只读保护的语义是"这次根本不做"，所以只能硬拒。
+pub fn read_only_deny_reason(tool: &str, input: &Value, facts: &PreparedFacts) -> Option<String> {
+    use crate::core::tools::shell_tools::readonly;
+    use crate::core::tools::framework::registry::ToolRegistry;
+
+    // 1. 写工具
+    if ToolRegistry::is_write_tool_name(tool) {
+        // 命令类要细分：只读命令仍然放行，否则只读保护会把"看一下 git log"也一起禁掉
+        if tool == "RunCommand" {
+            if facts.command_is_readonly {
+                return None;
+            }
+            let command = input["command"].as_str().unwrap_or("").trim();
+            return Some(format!(
+                "只读保护已开启：命令「{}」不是只读命令，本会话不允许执行。",
+                command
+            ));
+        }
+        if tool == "StartBackgroundCommand" {
+            return Some(
+                "只读保护已开启：本会话不允许启动后台服务（长周期、影响面大于一次命令）。"
+                    .to_string(),
+            );
+        }
+        return Some(format!(
+            "只读保护已开启：{}（{}）会改动工作区，本会话不允许。",
+            facts.class.map(|c| c.label()).unwrap_or("写操作"),
+            tool
+        ));
+    }
+
+    // 2. 派子代理
+    if matches!(tool, "RunSubagent" | "RunSubagentsSequentially") {
+        return Some(
+            "只读保护已开启：本会话不允许派子代理（子代理内层固定编辑模式，写工具对它全量可见）。"
+                .to_string(),
+        );
+    }
+
+    // 3. 改工作目录
+    if tool == "SetWorkspace" {
+        return Some("只读保护已开启：本会话不允许改工作目录。".to_string());
+    }
+
+    // 4. git：只放行只读子命令
+    if tool == "RunGitCommand" {
+        let args: Vec<&str> = input["args"]
+            .as_array()
+            .map(|list| list.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        if readonly::is_readonly_git_args(&args) {
+            return None;
+        }
+        return Some(format!(
+            "只读保护已开启：`git {}` 不是只读操作，本会话不允许执行。",
+            args.join(" ")
+        ));
+    }
+
+    None
+}
+
 /// 执行前判定：返回 `Some(拒绝结果)` 表示**不要执行**，把这段文本作为工具结果回灌给模型。
 ///
 /// 返回 `None` 表示放行。
@@ -632,6 +813,22 @@ pub async fn enforce(
     let manager = app.state::<crate::infra::state::state::SessionManager>();
     let ctx = manager.get_or_create(session_id).await;
     let facts = prepare_facts(&ctx, tool, input).await;
+
+    // ── 只读保护（用户显式开关，优先级最高）──
+    // 放在档位判定之前：档位回答的是"要不要问用户"，只读保护回答的是"根本不许做"。
+    // 这是它相对"规划模式"的关键差别——不看 work_mode，所以 SwitchWorkMode 也绕不过。
+    if ctx.read_only_enabled().await {
+        if let Some(reason) = read_only_deny_reason(tool, input, &facts) {
+            println!(
+                "[JARVIS] 只读保护拦截：工具={} 原因={}",
+                tool, reason
+            );
+            return Some(super::ToolCallResult::blocked(format!(
+                "{}\n不要换等价写法重试；确实需要改动，请让用户先关掉只读保护开关。",
+                reason
+            )));
+        }
+    }
 
     let mode = match ctx.approval_mode.lock().await.as_str() {
         "auto_approve" => ApprovalMode::AutoApprove,

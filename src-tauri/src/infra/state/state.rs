@@ -150,6 +150,17 @@ pub struct SessionContext {
     pub approval_mode: Mutex<String>,
     /// 本会话已允许的范围（内存态，会话结束即失效）
     pub session_allowances: Mutex<Vec<SessionAllowance>>,
+    /// 只读保护（用户显式开关，默认关）。
+    ///
+    /// 开启后本会话禁止一切会改变工作区的动作：写 / 删 / 改名 / 打补丁文件、
+    /// 执行非只读命令、起后台服务、派子代理、改工作目录。
+    ///
+    /// **与 `agent_work_mode` 的区别**：工作模式是模型也能自己切的正交通道
+    /// （`SwitchWorkMode` 工具），而只读保护只看这个字段，切模式绕不过它。
+    ///
+    /// 刻意是**纯内存态**（与 `session_allowances` 同构）：放松的授权可以记住，
+    /// 收紧的闸门记住容易变成"新会话里 agent 莫名其妙写不了文件"的幽灵故障。
+    pub agent_read_only: Mutex<bool>,
 }
 
 impl SessionContext {
@@ -176,7 +187,16 @@ impl SessionContext {
             permission_turn: Mutex::new(Default::default()),
             approval_mode: Mutex::new("request_approval".to_string()),
             session_allowances: Mutex::new(Vec::new()),
+            agent_read_only: Mutex::new(false),
         }
+    }
+
+    /// 只读保护是否开启。
+    ///
+    /// `enforce` 的最高优先级闸门与权限设置查询（`get_session_permission_settings`）都走这里，
+    /// 不允许任何调用点自己读 `agent_read_only` 另搞一套。
+    pub async fn read_only_enabled(&self) -> bool {
+        *self.agent_read_only.lock().await
     }
 
     /// 本会话是否已经允许"这个操作类别 + 这个范围"。

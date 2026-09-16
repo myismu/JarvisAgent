@@ -26,8 +26,14 @@ pub struct Capabilities {
     pub write: bool,
     /// 执行命令（RunCommand / StartBackgroundCommand）
     pub run_commands: bool,
-    /// 任务编排 / 委派子代理（CreateTask / RunSubagent / RunSubagentsSequentially / UpdateTodos）
+    /// 任务编排（CreateTask / UpdateTask / DeleteTask / UpdateTodos）
     pub orchestrate: bool,
+    /// 派子代理（RunSubagent / RunSubagentsSequentially）
+    ///
+    /// 刻意与 `orchestrate` 分成两个字段：规划模式要禁的是"把活派出去让别人写"
+    /// （子代理内层固定 `edit` 模式，写工具对它全量可见），而不是"列任务清单"。
+    /// 合成一个字段的后果是规划模式连 `CreateTask` 一起报不可用，把规划能力也砍掉了。
+    pub delegate: bool,
     /// 提交方案审批（ProposePlan）
     pub plan: bool,
     /// 切换工作模式（SwitchWorkMode）
@@ -51,6 +57,7 @@ impl Capabilities {
             write: allowed("WriteFile"),
             run_commands: allowed("RunCommand"),
             orchestrate: allowed("CreateTask"),
+            delegate: allowed("RunSubagent"),
             plan: allowed("ProposePlan"),
             switch_mode: allowed("SwitchWorkMode"),
         }
@@ -60,11 +67,12 @@ impl Capabilities {
     pub fn summary_line(&self) -> String {
         let mark = |ok: bool| if ok { "可用" } else { "不可用" };
         format!(
-            "读取文件 {} / 修改文件 {} / 执行命令 {} / 任务编排与子代理 {} / 方案规划 {} / 模式切换 {}",
+            "读取文件 {} / 修改文件 {} / 执行命令 {} / 任务编排 {} / 派子代理 {} / 方案规划 {} / 模式切换 {}",
             mark(self.read),
             mark(self.write),
             mark(self.run_commands),
             mark(self.orchestrate),
+            mark(self.delegate),
             mark(self.plan),
             mark(self.switch_mode),
         )
@@ -80,7 +88,8 @@ impl Capabilities {
         out.push_str(&format!("- 读取文件/代码：{}\n", mark(self.read)));
         out.push_str(&format!("- 修改文件（写入/编辑/删除/重命名）：{}\n", mark(self.write)));
         out.push_str(&format!("- 执行命令（含启动服务）：{}\n", mark(self.run_commands)));
-        out.push_str(&format!("- 任务编排与子代理：{}\n", mark(self.orchestrate)));
+        out.push_str(&format!("- 任务编排（建任务清单 / 待办）：{}\n", mark(self.orchestrate)));
+        out.push_str(&format!("- 派子代理（RunSubagent / RunSubagentsSequentially）：{}\n", mark(self.delegate)));
         out.push_str(&format!("- 提交方案审批（ProposePlan）：{}\n", mark(self.plan)));
         out.push_str(&format!("- 切换工作模式（SwitchWorkMode）：{}\n", mark(self.switch_mode)));
         out.push_str(
@@ -100,7 +109,7 @@ mod tests {
     fn edit_mode_has_full_capabilities() {
         let caps = Capabilities::for_work_mode("edit");
         assert!(caps.read && caps.write && caps.run_commands);
-        assert!(caps.orchestrate && caps.plan && caps.switch_mode);
+        assert!(caps.orchestrate && caps.delegate && caps.plan && caps.switch_mode);
     }
 
     #[test]
@@ -110,6 +119,12 @@ mod tests {
         assert!(!caps.write, "规划模式不能直接改文件");
         assert!(!caps.run_commands, "规划模式不能执行写命令");
         assert!(caps.plan, "规划模式必须能提交方案");
+        // 规划模式必须能列任务清单，但不能把活派出去让别人写
+        assert!(caps.orchestrate, "规划模式要能建任务清单");
+        assert!(
+            !caps.delegate,
+            "规划模式禁止派子代理：子代理内层固定 edit 模式，等于绕过写保护"
+        );
     }
 
     #[test]
@@ -118,5 +133,7 @@ mod tests {
         let block = Capabilities::for_work_mode("plan").context_block();
         assert!(block.contains("不可用（本会话不存在对应工具）"));
         assert!(block.contains("不要调用 GetToolCatalog"));
+        // 子代理能力必须在提示词里显式声明不可用，否则模型会去试探
+        assert!(block.contains("派子代理（RunSubagent / RunSubagentsSequentially）：不可用"));
     }
 }

@@ -6,11 +6,11 @@
 //! - git_command(): 工具入口：执行 git (如 status, diff, log)
 //!
 //! ## Dependencies
-//! - Internal: super::utils, crate::core::tools::framework::permission
-//! - External: serde_json, 	auri, 	okio
+//! - Internal: super::utils, super::readonly, super::regexes, crate::core::tools::framework::permission
+//! - External: serde_json, tauri, tokio
 //!
 //! ## Constraints
-//! - 仅允许部分安全的 read-only git 子命令
+//! - 仅允许部分安全的 read-only git 子命令（正向白名单，见 `regexes::READONLY_GIT_ARGS`）
 
 use super::super::framework;
 use super::super::framework::permission::is_within_workspace;
@@ -29,16 +29,19 @@ pub async fn git_command(
     let args_value = input["args"].as_array().unwrap();
     let args: Vec<&str> = args_value.iter().filter_map(|v| v.as_str()).collect();
 
-    let dangerous_git_args = [
-        "push", "commit", "rebase", "reset", "revert", "clean", "checkout",
-    ];
-    if args
-        .iter()
-        .any(|arg| dangerous_git_args.contains(&arg.to_lowercase().as_str()))
-    {
+    // 只读判定走**正向白名单**（实现见 `readonly::is_readonly_git_args`）。
+    //
+    // 这里以前是一份黑名单（push/commit/rebase/reset/revert/clean/checkout），
+    // 漏掉了 `git restore .`、`git stash`、`git apply`、`git add`、`git rm` ——
+    // 也就是说规划模式（和只读保护）下能把未提交的改动直接丢掉。
+    // 黑名单永远补不全，所以翻成正向：名单之外的子命令一律算"非只读"。
+    if !super::readonly::is_readonly_git_args(&args) {
         return framework::ToolCallResult::error(format!(
-            "安全拦截：RunGitCommand 工具仅用于只读操作，禁止执行 '{}'。",
-            args.join(" ")
+            "安全拦截：RunGitCommand 工具仅用于只读操作，禁止执行 'git {}'。\n\
+             允许的只读子命令：{}\n\
+             需要改动仓库的操作（add/commit/restore/stash/apply/push…）请改用 RunCommand 并说明用途。",
+            args.join(" "),
+            super::regexes::READONLY_GIT_ARGS.join(" / ")
         ));
     }
 

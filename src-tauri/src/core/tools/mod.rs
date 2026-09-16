@@ -133,8 +133,13 @@ pub async fn handle_tool_call(
     work_mode: &str,
 ) -> (String, u64, u64) {
     if name == "RunSubagent" {
-        // 执行前权限判定：这条分支不经过 dispatch_tool_call，
-        // 必须单独接一次（否则"派子代理"就是绕过检查的后门）
+        // 这条分支**不经过** dispatch_tool_call 的兜底防护（它自己直接跑子代理），
+        // 所以模式拦截与权限判定都必须在这里各接一次。
+        // 漏掉模式拦截的后果：规划模式下派个子代理就能写文件（子代理内层固定 edit 模式）；
+        // 漏掉权限判定的后果："派子代理"成为绕过检查的后门。
+        if let Some(message) = mode_block_message(name, intent, work_mode) {
+            return (message, 0, 0);
+        }
         if let Some(result) =
             framework::policy_guard::enforce(app, session_id, name, input, "main").await
         {
@@ -297,15 +302,8 @@ pub async fn dispatch_tool_call(
     agent_type: &str,
 ) -> framework::ToolCallResult {
     // 兜底防护：CHAT/QUESTION 意图，或 chat/plan 模式下禁止写操作
-    if should_block_write_tool(name, intent, work_mode) {
-        return framework::ToolCallResult::error(format!(
-            "工具 '{}' 在当前状态下不可用。{}",
-            name,
-            match work_mode {
-                "plan" => "规划模式下只能探索代码和提交方案：请先用 ProposePlan 提交方案；确实需要直接改动，请先切换到编辑模式。",
-                _ => "当前意图下只能使用只读工具。",
-            }
-        ));
+    if let Some(message) = mode_block_message(name, intent, work_mode) {
+        return framework::ToolCallResult::error(message);
     }
 
     // ── 执行前权限判定（第二步）──
@@ -454,6 +452,10 @@ pub async fn handle_tool_call_inner(
 }
 
 /// 判断是否应该阻止工具调用（意图 + 工作模式兜底防护）
+///
+/// 注意它拦的不只是"写文件"：规划模式下 `WRITE_TOOLS` 之外的派子代理、改工作目录
+/// 也一并拦下（名单见 `registry::ToolRegistry::PLAN_BLOCKED_EXTRA`）。
+/// 函数名沿用历史叫法，语义以 `is_blocked_in_plan_mode` 为准。
 pub fn should_block_write_tool(name: &str, intent: &str, work_mode: &str) -> bool {
     // 条件1：意图是 CHAT 或 QUESTION
     if matches!(intent, "CHAT" | "QUESTION") {
@@ -462,10 +464,31 @@ pub fn should_block_write_tool(name: &str, intent: &str, work_mode: &str) -> boo
 
     // 条件2：工作模式是 plan（只探索 + 提方案）
     if work_mode == "plan" {
-        return is_write_tool(name);
+        return framework::registry::ToolRegistry::is_blocked_in_plan_mode(name);
     }
 
     false
+}
+
+/// 兜底拦截的统一文案：返回 `Some(文本)` 表示这个调用不要执行，把文本回灌给模型。
+///
+/// 抽出来是因为 `RunSubagent` 走的是 `handle_tool_call` 里一条**独立分支**，
+/// 不经过 `dispatch_tool_call` 的检查（它其实是更容易被忽略的那条路）。
+pub fn mode_block_message(name: &str, intent: &str, work_mode: &str) -> Option<String> {
+    if !should_block_write_tool(name, intent, work_mode) {
+        return None;
+    }
+    Some(format!(
+        "工具 '{}' 在当前状态下不可用。{}",
+        name,
+        match work_mode {
+            "plan" => {
+                "规划模式下只能探索代码和提交方案：改文件、跑写命令、派子代理、改工作目录都被禁用。\
+                 请先用 ProposePlan 提交方案；确实需要直接改动，请先切换到编辑模式。"
+            }
+            _ => "当前意图下只能使用只读工具。",
+        }
+    ))
 }
 
 /// 判断是否是写操作工具
@@ -487,12 +510,33 @@ mod write_guard_tests {
         assert!(should_block_write_tool("RunCommand", "ACTION", "plan"));
         assert!(!should_block_write_tool("ReadFile", "ACTION", "plan"));
         assert!(!should_block_write_tool("ProposePlan", "ACTION", "plan"));
+        // 任务编排（写的是会话自己的任务列表，不碰用户代码）在规划模式里要留着：
+        // 规划模式的产物之一就是任务分解
         assert!(!should_block_write_tool("CreateTask", "ACTION", "plan"));
-        assert!(!should_block_write_tool(
+    }
+
+    #[test]
+    fn plan_mode_blocks_subagent_and_workspace_paths() {
+        // 这三个都不在 WRITE_TOOLS 里，但都绕得过它：
+        // 子代理内层固定 edit 模式（能写文件）、调度器派子代理时 read_only 恒为 false、
+        // SetWorkspace 改的是全局工作目录。规划模式下必须一起收走。
+        assert!(should_block_write_tool("RunSubagent", "ACTION", "plan"));
+        assert!(should_block_write_tool(
             "RunSubagentsSequentially",
             "ACTION",
             "plan"
         ));
+        assert!(should_block_write_tool("SetWorkspace", "ACTION", "plan"));
+    }
+
+    #[test]
+    fn mode_block_message_only_fires_when_blocked() {
+        assert!(mode_block_message("RunSubagent", "ACTION", "plan").is_some());
+        assert!(mode_block_message("RunSubagent", "ACTION", "edit").is_none());
+        // 文案要让模型知道"别换写法重试"，而不是只说不可用
+        let msg = mode_block_message("WriteFile", "ACTION", "plan").unwrap();
+        assert!(msg.contains("派子代理"));
+        assert!(msg.contains("ProposePlan"));
     }
 
     #[test]
