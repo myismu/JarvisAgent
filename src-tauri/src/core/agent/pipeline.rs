@@ -460,6 +460,19 @@ impl PipelineState {
             sid, request_workspace
         );
 
+        // 步骤 3.5：沙箱目录存在性校验。
+        // 会话绑定的项目目录可能事后被删除/移动：目录没了还继续跑，
+        // 校验层按沙箱 join 放行、执行层却找不到文件，模型会在错误目录里打转。
+        if let Some(ws) = &request_workspace {
+            if !ws.exists() {
+                *ctx.cancel_token.lock().await = None;
+                return Err(AgentError::Session(format!(
+                    "会话绑定的项目目录已不存在: {}（可能已被删除或移动）。请重建会话并重新挂载项目后再试。",
+                    ws.display()
+                )));
+            }
+        }
+
         // 步骤 4：读取用户配置，校验 API Key 是否已配置
         let app_cfg = config_state.0.lock().await.clone();
         let cfg = app_cfg.active_config();

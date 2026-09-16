@@ -26,7 +26,9 @@ use super::diff::compute_diff;
 use crate::core::tools::notebook_tools::notebook_guard::{
     is_notebook_path, looks_like_notebook_json, notebook_text_edit_rejection,
 };
-use super::workspace::{get_workspace, record_patch_to_snapshot};
+use super::workspace::{
+    get_workspace, record_patch_to_snapshot, resolve_exec_path, sandbox_missing_hint,
+};
 
 struct SingleEdit {
     old_text: String,
@@ -184,6 +186,8 @@ pub async fn edit_file(
     if let Err(e) = ensure_path_permission(app, &path, "编辑", ws.as_deref()).await {
         return framework::ToolCallResult::error(e);
     }
+    // 执行层与校验层对齐：相对路径按沙箱目录解析（而非进程 CWD），否则会越界编辑
+    let path = resolve_exec_path(&path, ws.as_deref());
     if is_notebook_path(&path) {
         return framework::ToolCallResult::error(notebook_text_edit_rejection(&path));
     }
@@ -275,7 +279,11 @@ pub async fn edit_file(
                             e
                         ))
                     } else {
-                        framework::ToolCallResult::error(format!("编辑并保存失败: {}", e))
+                        framework::ToolCallResult::error(format!(
+                            "编辑并保存失败: {}{}",
+                            e,
+                            sandbox_missing_hint(ws.as_deref())
+                        ))
                     }
                 }
             }
@@ -288,7 +296,11 @@ pub async fn edit_file(
                     e
                 ))
             } else {
-                framework::ToolCallResult::error(format!("编辑失败，无法读取文件: {}", e))
+                framework::ToolCallResult::error(format!(
+                    "编辑失败，无法读取文件: {}{}",
+                    e,
+                    sandbox_missing_hint(ws.as_deref())
+                ))
             }
         }
     }

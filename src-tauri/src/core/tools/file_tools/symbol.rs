@@ -11,7 +11,7 @@ use super::common::{
     is_ignored_entry_name, is_locked_file_error, is_search_skipped_extension,
     read_text_preserve_encoding,
 };
-use super::workspace::get_workspace;
+use super::workspace::{get_workspace, resolve_exec_path, sandbox_missing_hint};
 
 const FIND_SYMBOL_DEFAULT_LIMIT: usize = 50;
 const FIND_SYMBOL_MAX_LIMIT: usize = 200;
@@ -735,7 +735,9 @@ pub async fn read_symbol(
         return framework::ToolCallResult::error(e);
     }
 
-    let path = Path::new(path);
+    // 执行层与校验层对齐：相对路径按沙箱目录解析（而非进程 CWD），否则会越界读取
+    let exec_path = resolve_exec_path(path, ws.as_deref());
+    let path = Path::new(&exec_path);
     let decoded = match read_text_preserve_encoding(path) {
         Ok(decoded) => decoded,
         Err(e) => {
@@ -746,7 +748,11 @@ pub async fn read_symbol(
                     e
                 ));
             }
-            return framework::ToolCallResult::error(format!("读取错误: {}", e));
+            return framework::ToolCallResult::error(format!(
+                "读取错误: {}{}",
+                e,
+                sandbox_missing_hint(ws.as_deref())
+            ));
         }
     };
     let lines: Vec<&str> = decoded.content.lines().collect();

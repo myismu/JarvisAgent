@@ -17,7 +17,7 @@ use super::common::{
     binary_file_read_error, is_locked_file_error, read_text_preserve_encoding, resolve_path,
     MAX_FILE_SIZE_BYTES, MAX_LINES_DEFAULT,
 };
-use super::workspace::get_workspace;
+use super::workspace::{get_workspace, resolve_exec_path, sandbox_missing_hint};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SkeletonEntry {
@@ -225,6 +225,8 @@ pub async fn read_file(
     if let Err(e) = ensure_path_permission(app, &path, "读取", ws.as_deref()).await {
         return framework::ToolCallResult::error(e);
     }
+    // 执行层与校验层对齐：相对路径按沙箱目录解析（而非进程 CWD），否则会越界读取
+    let path = resolve_exec_path(&path, ws.as_deref());
 
     // 二进制扩展名检查（在读取前拒绝）
     let file_path = std::path::Path::new(&path);
@@ -314,7 +316,11 @@ pub async fn read_file(
                     e
                 ))
             } else {
-                framework::ToolCallResult::error(format!("读取错误: {}", e))
+                framework::ToolCallResult::error(format!(
+                    "读取错误: {}{}",
+                    e,
+                    sandbox_missing_hint(ws.as_deref())
+                ))
             }
         }
     }
@@ -331,6 +337,8 @@ pub async fn read_file_skeleton(
     if let Err(e) = ensure_path_permission(app, &path, "读取", ws.as_deref()).await {
         return framework::ToolCallResult::error(e);
     }
+    // 执行层与校验层对齐：相对路径按沙箱目录解析（而非进程 CWD），否则会越界读取
+    let path = resolve_exec_path(&path, ws.as_deref());
     let file_path = std::path::Path::new(&path);
     if let Some(err_msg) = binary_file_read_error(file_path) {
         return framework::ToolCallResult::error(err_msg);
@@ -357,7 +365,11 @@ pub async fn read_file_skeleton(
                     e
                 ))
             } else {
-                framework::ToolCallResult::error(format!("读取错误: {}", e))
+                framework::ToolCallResult::error(format!(
+                    "读取错误: {}{}",
+                    e,
+                    sandbox_missing_hint(ws.as_deref())
+                ))
             }
         }
     }

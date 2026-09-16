@@ -9,7 +9,9 @@ use crate::core::tools::framework;
 use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{read_text_preserve_encoding, resolve_path};
-use super::workspace::{get_workspace, record_patch_to_snapshot};
+use super::workspace::{
+    get_workspace, record_patch_to_snapshot, resolve_exec_path, sandbox_missing_hint,
+};
 
 pub async fn delete_file(
     app: &tauri::AppHandle,
@@ -21,9 +23,15 @@ pub async fn delete_file(
     if let Err(e) = ensure_path_permission(app, &path, "删除", ws.as_deref()).await {
         return framework::ToolCallResult::error(e);
     }
+    // 执行层与校验层对齐：相对路径按沙箱目录解析（而非进程 CWD），否则会越界删除
+    let path = resolve_exec_path(&path, ws.as_deref());
 
     if !std::path::Path::new(&path).exists() {
-        return framework::ToolCallResult::error(format!("文件不存在: {}", path));
+        return framework::ToolCallResult::error(format!(
+            "文件不存在: {}{}",
+            path,
+            sandbox_missing_hint(ws.as_deref())
+        ));
     }
 
     // 删除前备份原内容到 snapshot_content，快照只存 hash

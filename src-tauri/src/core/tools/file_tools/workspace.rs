@@ -32,6 +32,38 @@ pub(super) async fn get_workspace(
     None
 }
 
+/// 将工具入参中的相对路径解析为执行路径。
+///
+/// 校验层（`permission::is_within_workspace`）对相对路径按 `ws.join(path)` 解析，
+/// 执行层必须使用同一基准——否则进程 CWD 与沙箱目录不一致时，会出现
+/// "校验放行、执行越界"的沙箱逃逸。绝对路径原样返回；非沙箱会话
+/// （`ws = None`）保持按进程 CWD 解析的旧行为。
+///
+/// 注意：必须在 `ensure_path_permission` 通过之后调用（`..` 遍历已被拦截）。
+pub(super) fn resolve_exec_path(raw: &str, ws: Option<&std::path::Path>) -> String {
+    let path = std::path::Path::new(raw);
+    if path.is_absolute() {
+        return raw.to_string();
+    }
+    match ws {
+        Some(ws) => ws.join(path).to_string_lossy().into_owned(),
+        None => raw.to_string(),
+    }
+}
+
+/// 沙箱目录已不存在时的统一提示（附加到"文件/目录不存在"类报错尾部）。
+///
+/// 会话绑定的项目目录可能事后被删除或移动：此时校验层仍按沙箱 join 放行，
+/// 但所有文件操作都会连环失败，需要提示用户检查目录或重建会话。
+pub(super) fn sandbox_missing_hint(ws: Option<&std::path::Path>) -> &'static str {
+    match ws {
+        Some(ws) if !ws.exists() => {
+            "（注意：会话绑定的沙箱目录可能已被删除或移动，请检查该目录是否存在，必要时新建会话重新挂载项目）"
+        }
+        _ => "",
+    }
+}
+
 /// 查找最后一条"真正的用户输入"消息（跳过工具结果等内部消息）
 fn latest_user_message_index(messages: &[Message]) -> Option<usize> {
     use crate::infra::types::models::{Content, ContentBlock};
@@ -263,4 +295,49 @@ pub async fn commit_pending_snapshot(
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_exec_path_joins_relative_to_workspace() {
+        let ws = std::path::Path::new("/proj");
+        // 分隔符随平台（Windows join 会插入 \），按 Path 语义比较而非字符串
+        assert_eq!(
+            std::path::Path::new(&resolve_exec_path("src/main.rs", Some(ws))),
+            ws.join("src/main.rs")
+        );
+        // "." 同样走 join（fs 层对 "ws/." 与 "ws" 等价）
+        assert_eq!(
+            std::path::Path::new(&resolve_exec_path(".", Some(ws))),
+            ws.join(".")
+        );
+    }
+
+    #[test]
+    fn resolve_exec_path_keeps_absolute_paths() {
+        let ws = std::path::Path::new("E:\\proj");
+        // 绝对路径不受沙箱 join 影响（越界由校验层拦截）
+        #[cfg(windows)]
+        assert_eq!(
+            resolve_exec_path("C:\\other\\a.txt", Some(ws)),
+            "C:\\other\\a.txt"
+        );
+        #[cfg(unix)]
+        assert_eq!(resolve_exec_path("/other/a.txt", Some(ws)), "/other/a.txt");
+    }
+
+    #[test]
+    fn resolve_exec_path_no_workspace_keeps_raw() {
+        assert_eq!(resolve_exec_path("src/main.rs", None), "src/main.rs");
+    }
+
+    #[test]
+    fn sandbox_missing_hint_empty_for_existing_dir() {
+        let ws = std::env::temp_dir();
+        assert_eq!(sandbox_missing_hint(Some(&ws)), "");
+        assert_eq!(sandbox_missing_hint(None), "");
+    }
 }

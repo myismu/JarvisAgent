@@ -15,7 +15,7 @@ use crate::core::tools::framework;
 use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{is_ignored_entry_name, is_static_asset_extension};
-use super::workspace::get_workspace;
+use super::workspace::{get_workspace, resolve_exec_path, sandbox_missing_hint};
 
 /// 列出目录内容
 pub async fn list_directory(
@@ -28,7 +28,9 @@ pub async fn list_directory(
     if let Err(e) = ensure_path_permission(app, path_str, "列出", ws.as_deref()).await {
         return framework::ToolCallResult::error(e);
     }
-    match std::fs::read_dir(path_str) {
+    // 执行层与校验层对齐：相对路径按沙箱目录解析（而非进程 CWD），否则会越界列出目录
+    let exec_path = resolve_exec_path(path_str, ws.as_deref());
+    match std::fs::read_dir(&exec_path) {
         Ok(entries) => {
             let mut result = String::new();
             for entry in entries.flatten() {
@@ -46,7 +48,11 @@ pub async fn list_directory(
                 framework::ToolCallResult::ok(result)
             }
         }
-        Err(e) => framework::ToolCallResult::error(format!("读取目录失败: {}", e)),
+        Err(e) => framework::ToolCallResult::error(format!(
+            "读取目录失败: {}{}",
+            e,
+            sandbox_missing_hint(ws.as_deref())
+        )),
     }
 }
 
