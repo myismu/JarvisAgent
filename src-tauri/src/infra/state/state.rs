@@ -245,7 +245,12 @@ impl SessionManager {
             *ctx.memory.lock().await = memory;
         }
         if let Ok(meta) = crate::core::session::get_session_meta(session_id) {
-            *ctx.workspace.lock().await = meta.working_directory.map(std::path::PathBuf::from);
+            // 存量记录可能带 \\?\ 前缀，绑定前剥离（下游报错文案与显示才干净）
+            *ctx.workspace.lock().await = meta.working_directory.map(|ws| {
+                std::path::PathBuf::from(
+                    crate::core::session::strip_extended_path_prefix(&ws),
+                )
+            });
             // 深度思考档位随会话恢复（None = auto），与 profileId 的恢复路径对称
             *ctx.thinking_mode.lock().await =
                 crate::core::session::thinking::normalize_session_mode(

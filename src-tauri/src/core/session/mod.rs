@@ -28,6 +28,15 @@ const DEFAULT_TITLE_SOURCE: &str = "default";
 const AUTO_TITLE_SOURCE: &str = "auto";
 const MANUAL_TITLE_SOURCE: &str = "manual";
 
+/// 剥离 Windows 扩展长度路径前缀 `\\?\`。
+///
+/// `canonicalize()` 在 Windows 上会产生该前缀（如 `\\?\C:\Users\...`），
+/// 文件系统操作不受影响，但展示难看、且与用户输入的普通路径不一致。
+/// 项目路径入库与会话工作区绑定前统一调用。
+pub fn strip_extended_path_prefix(path: &str) -> &str {
+    path.strip_prefix(r"\\?\").unwrap_or(path)
+}
+
 /// 图片存储目录：`<agent_home>/sessions/<id>/attachments/images/`
 /// 将 base64 图片数据解码并保存到文件，返回文件名
 pub fn save_image_to_file(session_id: &str, media_type: &str, data: &str) -> String {
@@ -764,4 +773,34 @@ pub fn get_session_thinking_mode(id: &str) -> Result<Option<String>, String> {
 /// 获取最后活跃的会话 ID
 pub fn get_last_active_session_id() -> Option<String> {
     repository::get_last_active_session_id()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_extended_path_prefix() {
+        assert_eq!(
+            strip_extended_path_prefix(r"\\?\C:\Users\test\project"),
+            r"C:\Users\test\project"
+        );
+    }
+
+    #[test]
+    fn keeps_normal_paths_unchanged() {
+        assert_eq!(
+            strip_extended_path_prefix(r"C:\Users\test\project"),
+            r"C:\Users\test\project"
+        );
+        assert_eq!(strip_extended_path_prefix("/home/user/project"), "/home/user/project");
+        assert_eq!(strip_extended_path_prefix(""), "");
+    }
+
+    #[test]
+    fn only_strips_the_exact_prefix() {
+        // 前缀必须精确匹配，避免误伤普通以反斜杠开头的路径
+        assert_eq!(strip_extended_path_prefix(r"\\?\UNC\server\share"), r"UNC\server\share");
+        assert_eq!(strip_extended_path_prefix(r"\?\C:\not_extended"), r"\?\C:\not_extended");
+    }
 }

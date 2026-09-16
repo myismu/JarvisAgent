@@ -102,9 +102,11 @@ pub async fn create_session(
     );
 
     // 先验后建：项目目录被删/改名时直接拒绝，不创建会话记录（避免孤儿空会话）。
+    // 存量项目记录可能带 \\?\ 前缀，展示前剥离。
     let working_directory = project_id
         .as_ref()
-        .and_then(|pid| session::repository::get_project_path(pid).ok().flatten());
+        .and_then(|pid| session::repository::get_project_path(pid).ok().flatten())
+        .map(|ws| session::strip_extended_path_prefix(&ws).to_string());
     if let Some(ws) = &working_directory {
         if !std::path::Path::new(ws).exists() {
             return Err(format!(
@@ -116,9 +118,12 @@ pub async fn create_session(
 
     let meta = session::create_session(project_id);
 
-    // 初始化上下文
+    // 初始化上下文（存量记录带 \\?\ 前缀，绑定前剥离，下游报错文案与显示才干净）
     let ctx = session_manager.get_or_create(&meta.id).await;
-    *ctx.workspace.lock().await = meta.working_directory.clone().map(std::path::PathBuf::from);
+    *ctx.workspace.lock().await = meta
+        .working_directory
+        .clone()
+        .map(|ws| std::path::PathBuf::from(session::strip_extended_path_prefix(&ws)));
 
     // 新会话的工作模式与权限档位跟随用户偏好
     let prefs = crate::command::app_config::get_ui_preferences()
@@ -148,14 +153,21 @@ pub async fn open_project(
     if !normalized.exists() || !normalized.is_dir() {
         return Err(format!("目录不存在或不是文件夹: {}", path));
     }
-    let abs = normalized.canonicalize()
+    let abs_canonical = normalized.canonicalize()
         .map_err(|e| format!("解析路径失败: {}", e))?
         .to_string_lossy()
         .to_string();
+    // 剥离 \\?\ 前缀后再入库：展示美观，且与用户输入的普通路径一致
+    let abs = session::strip_extended_path_prefix(&abs_canonical).to_string();
 
-    // 已存在则直接返回
+    // 已存在则直接返回（兼容存量记录：老数据以 canonicalize 原样含 \\?\ 存储）
     if let Ok(Some(project)) = crate::core::session::repository::get_project_by_path(&abs) {
         return Ok(project);
+    }
+    if abs != abs_canonical {
+        if let Ok(Some(project)) = crate::core::session::repository::get_project_by_path(&abs_canonical) {
+            return Ok(project);
+        }
     }
 
     let name = std::path::Path::new(&abs)
