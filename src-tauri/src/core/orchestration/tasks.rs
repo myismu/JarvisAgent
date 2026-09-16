@@ -28,7 +28,7 @@ impl TaskManager {
     /// 创建任务管理器实例
     ///
     /// 使用 Agent 启动时的数据目录，而非 current_dir()，
-    /// 防止 set_workspace 后 tasks 跑到用户项目中
+    /// 防止进程 CWD 变化后 tasks 跑到用户项目中
     pub fn for_session(session_id: &str) -> Self {
         Self {
             session_id: session_id.to_string(),

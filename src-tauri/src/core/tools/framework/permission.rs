@@ -170,11 +170,12 @@ pub async fn ensure_path_permission(
         return Err("路径不安全：包含 '..' 遍历".to_string());
     }
 
-    // 如果指定了工作目录（即处于沙箱会话），则强制执行边界检查
+    // 如果指定了工作目录（即沙箱会话：会话挂了项目），则强制执行边界检查
     if let Some(ws) = workspace_dir {
         if !is_within_workspace(path_str, Some(ws)) {
             return Err(format!(
-                "沙箱限制：路径 '{}' 不在沙箱目录 '{}' 内，拒绝访问。如果您需要访问此路径，请切换到非沙箱会话。",
+                "沙箱边界：路径 '{}' 不在会话绑定的项目目录 '{}' 内，拒绝访问。\
+                 需要操作其他目录，请新建不挂项目的会话（非沙箱会话，无目录边界）。",
                 path_str,
                 ws.display()
             ));

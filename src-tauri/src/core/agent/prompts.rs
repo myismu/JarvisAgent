@@ -153,7 +153,8 @@ pub fn get_system_prompt(
         rules.push(PromptRule::new(
             PromptLevel::P2Reference,
             "工作目录",
-            "当前会话未绑定工作区（无沙箱限制）：文件操作以进程当前目录为基准，不受沙箱约束。若用户要求针对某个项目工作，先用 SetWorkspace 绑定工作目录。",
+            "当前会话为非沙箱会话（未绑定项目目录）：没有目录边界，操作其他项目请直接使用绝对路径。\
+             工作区没有\"切换\"工具；若用户要求针对某个项目持续工作，请让用户在界面打开该项目（会生成绑定该项目的沙箱会话）。",
         ));
     }
     rules.extend(os_rules());
@@ -321,7 +322,9 @@ mod tests {
 
         let without = get_system_prompt("developer", "edit", None);
         assert!(!without.contains("当前工作目录已锁定为沙箱"));
-        assert!(without.contains("未绑定工作区"));
+        assert!(without.contains("非沙箱会话"));
+        // SetWorkspace 已退役，提示词不得再教模型调用它
+        assert!(!without.contains("SetWorkspace"));
     }
 
     // ── 文件存在性 ──

@@ -317,9 +317,6 @@ pub async fn dispatch_tool_call(
     }
 
     let result = match name {
-        // 系统工具
-        "SetWorkspace" => system_tools::set_workspace(app, input, session_id).await,
-
         // 文件工具
         "ListDirectory" => file_tools::list_directory(app, input, session_id).await,
         "SearchRepo" => file_tools::search_repo(app, input, session_id).await,
@@ -516,17 +513,17 @@ mod write_guard_tests {
     }
 
     #[test]
-    fn plan_mode_blocks_subagent_and_workspace_paths() {
-        // 这三个都不在 WRITE_TOOLS 里，但都绕得过它：
-        // 子代理内层固定 edit 模式（能写文件）、调度器派子代理时 read_only 恒为 false、
-        // SetWorkspace 改的是全局工作目录。规划模式下必须一起收走。
+    fn plan_mode_blocks_subagent_paths() {
+        // 这两个都不在 WRITE_TOOLS 里，但都绕得过它：
+        // 子代理内层固定 edit 模式（能写文件）、调度器派子代理时 read_only 恒为 false。
+        // 规划模式下必须一起收走。
+        // （SetWorkspace 已随工具退役移出名单，见 system_tools/mod.rs 模块注释）
         assert!(should_block_write_tool("RunSubagent", "ACTION", "plan"));
         assert!(should_block_write_tool(
             "RunSubagentsSequentially",
             "ACTION",
             "plan"
         ));
-        assert!(should_block_write_tool("SetWorkspace", "ACTION", "plan"));
     }
 
     #[test]

@@ -124,11 +124,12 @@ mod tests {
 
     #[test]
     fn classes_without_session_allowance_have_no_key() {
-        // 改工作目录是一次性动作且影响面大；未登记分类的工具一律问
+        // 会话/应用控制是一次性动作且不在允许体系内；未登记分类的工具一律问
+        // （原用 WorkspaceChange 举例，该类随 SetWorkspace 退役已移除）
         assert!(allowance_key_for(
-            Some(ToolClass::WorkspaceChange),
-            &json!({ "path": "E:/other" }),
-            &["E:/other".to_string()],
+            Some(ToolClass::AppControl),
+            &json!({}),
+            &[],
             None,
         )
         .is_none());
@@ -223,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn read_only_blocks_subagents_and_workspace_change() {
+    fn read_only_blocks_subagents() {
         let facts = facts_with(Some(ToolClass::Orchestrate), false);
         assert!(read_only_deny_reason("RunSubagent", &json!({ "prompt": "x" }), &facts).is_some());
         // 模型显式传 read_only:false 也没用——工具整个被收走，不看入参
@@ -236,9 +237,6 @@ mod tests {
         assert!(
             read_only_deny_reason("RunSubagentsSequentially", &json!({}), &facts).is_some()
         );
-
-        let workspace = facts_with(Some(ToolClass::WorkspaceChange), false);
-        assert!(read_only_deny_reason("SetWorkspace", &json!({ "path": "E:/x" }), &workspace).is_some());
 
         // 任务清单不碰用户代码，只读保护下仍要能用（否则连规划都做不了）
         assert!(read_only_deny_reason("CreateTask", &json!({}), &facts).is_none());
@@ -732,8 +730,8 @@ pub async fn command_allowed(app: &tauri::AppHandle, session_id: &str, command: 
 /// 2. 派子代理（`RunSubagent` / `RunSubagentsSequentially`）→ 拒绝。
 ///    **不能只靠"默认只读"**：`read_only` 是模型可控入参，子代理内层又固定 `edit` 模式，
 ///    所以必须把这两个工具整个收走。
-/// 3. 改工作目录（`SetWorkspace`）→ 拒绝。
-/// 4. 其余（读文件、搜索、任务清单、记忆、切模式、提方案）→ 放行。
+/// 3. 其余（读文件、搜索、任务清单、记忆、切模式、提方案）→ 放行。
+///    （原第 3 条 `SetWorkspace` 已随工具退役移除，见 `system_tools/mod.rs` 模块注释。）
 ///
 /// ## 一定是 Deny，不能是 Ask
 ///
@@ -777,12 +775,7 @@ pub fn read_only_deny_reason(tool: &str, input: &Value, facts: &PreparedFacts) -
         );
     }
 
-    // 3. 改工作目录
-    if tool == "SetWorkspace" {
-        return Some("只读保护已开启：本会话不允许改工作目录。".to_string());
-    }
-
-    // 4. git：只放行只读子命令
+    // 3. git：只放行只读子命令
     if tool == "RunGitCommand" {
         let args: Vec<&str> = input["args"]
             .as_array()

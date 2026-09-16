@@ -218,8 +218,6 @@ impl ToolRegistry {
                         // 后台服务（主Agent 统一管理）
                         | "StartBackgroundCommand"
                         | "CheckBackgroundCommand"
-                        // 工作区设置
-                        | "SetWorkspace"
                 )
             }
             _ => true, // PROJECT_ACTION
@@ -249,18 +247,17 @@ impl ToolRegistry {
 
     /// 规划模式下**额外**不可用的工具（`WRITE_TOOLS` 之外那部分）。
     ///
-    /// 为什么不能只拦 `WRITE_TOOLS`：规划模式的语义是"只探索、提方案"，但下面这三个
-    /// 工具都绕得过那份名单，等于给模型留了三条改文件的暗道——
+    /// 为什么不能只拦 `WRITE_TOOLS`：规划模式的语义是"只探索、提方案"，但下面这两个
+    /// 工具都绕得过那份名单，等于给模型留了改文件的暗道——
     /// - `RunSubagent`：子代理内层固定以 `edit` 模式运行，写工具对它全量可见；
-    /// - `RunSubagentsSequentially`：调度器派子代理时 `read_only` 参数恒为 `false`；
-    /// - `SetWorkspace`：改的是全局工作目录，会落盘到 `data/global/.jarvis_workspace`。
+    /// - `RunSubagentsSequentially`：调度器派子代理时 `read_only` 参数恒为 `false`。
     ///
     /// 注意 `RunSubagent` 的 `read_only` 是**模型可控入参**：光靠"默认只读"拦不住，
     /// 必须在这一层把工具整个收走。
+    /// （原第三项 `SetWorkspace` 已随工具退役移出，见 `system_tools/mod.rs` 模块注释。）
     pub const PLAN_BLOCKED_EXTRA: &'static [&'static str] = &[
         "RunSubagent",
         "RunSubagentsSequentially",
-        "SetWorkspace",
     ];
 
     /// 规划模式下这个工具名是否不可用（写工具 + [`Self::PLAN_BLOCKED_EXTRA`]）。

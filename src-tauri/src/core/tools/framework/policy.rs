@@ -67,8 +67,6 @@ pub enum ToolClass {
     RunCommand,
     /// 起后台服务（长周期、影响面大）
     Background,
-    /// 改工作目录
-    WorkspaceChange,
     /// 任务编排 / 派子代理
     Orchestrate,
     /// 会话与记忆管理
@@ -87,7 +85,6 @@ impl ToolClass {
             ToolClass::Rename => "rename",
             ToolClass::RunCommand => "run_command",
             ToolClass::Background => "background",
-            ToolClass::WorkspaceChange => "workspace_change",
             ToolClass::Orchestrate => "orchestrate",
             ToolClass::SessionMgmt => "session_mgmt",
             ToolClass::AppControl => "app_control",
@@ -104,7 +101,6 @@ impl ToolClass {
             ToolClass::Rename => "改名/移动",
             ToolClass::RunCommand => "跑命令",
             ToolClass::Background => "起后台服务",
-            ToolClass::WorkspaceChange => "改工作目录",
             ToolClass::Orchestrate => "任务编排",
             ToolClass::SessionMgmt => "会话与记忆",
             ToolClass::AppControl => "应用控制",
@@ -127,7 +123,6 @@ impl ToolClass {
                 | ToolClass::Rename
                 | ToolClass::RunCommand
                 | ToolClass::Background
-                | ToolClass::WorkspaceChange
         )
     }
 }
@@ -176,10 +171,10 @@ pub const TOOL_POLICIES: &[(&str, ToolPolicy)] = &[
     ("DeleteFile", ToolPolicy { class: ToolClass::Delete, path_fields: &["path"], command_field: None, patch_field: None }),
     ("RenameFile", ToolPolicy { class: ToolClass::Rename, path_fields: &["path", "new_path"], command_field: None, patch_field: None }),
 
-    // ── 命令与工作区 ──
+    // ── 命令 ──
+    // （SetWorkspace 已退役：见 system_tools/mod.rs 模块注释）
     ("RunCommand", ToolPolicy { class: ToolClass::RunCommand, path_fields: &[], command_field: Some("command"), patch_field: None }),
     ("StartBackgroundCommand", ToolPolicy { class: ToolClass::Background, path_fields: &["dir"], command_field: Some("command"), patch_field: None }),
-    ("SetWorkspace", ToolPolicy { class: ToolClass::WorkspaceChange, path_fields: &["path"], command_field: None, patch_field: None }),
 
     // ── 编排 / 会话 / 应用 ──
     ("CreateTask", ToolPolicy { class: ToolClass::Orchestrate, path_fields: &[], command_field: None, patch_field: None }),
@@ -290,12 +285,15 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
         };
     }
 
-    // 2. 项目外路径
+    // 2. 项目外路径（会话挂了项目 = 沙箱会话，边界即项目目录；非沙箱会话 workspace 为 None，不会走到这里）
     if !input.out_of_workspace.is_empty() {
         return ShadowDecision {
             class,
             outcome: Outcome::Deny,
-            reason: format!("路径在项目外：{}", input.out_of_workspace.join(", ")),
+            reason: format!(
+                "路径在会话绑定的项目目录（沙箱边界）外：{}。需要操作其他目录，请让用户新建不挂项目的会话（非沙箱会话）。",
+                input.out_of_workspace.join(", ")
+            ),
         };
     }
 
@@ -586,16 +584,6 @@ mod tests {
                 Outcome::Allow,
                 "tool={}",
                 tool
-            );
-        }
-    }
-
-    #[test]
-    fn workspace_change_always_asks() {
-        for mode in [ApprovalMode::RequestApproval, ApprovalMode::AutoApprove] {
-            assert_eq!(
-                judge("SetWorkspace", mode, &allow_input()).outcome,
-                Outcome::Ask
             );
         }
     }

@@ -185,11 +185,19 @@ onBeforeUnmount(() => {
                 <polyline :points="sidebarCollapsed ? '9 18 15 12 9 6' : '15 18 9 12 15 6'"></polyline>
               </svg>
             </button>
-            <div v-if="projectName" class="tab-bar-project">
+            <div v-if="projectName" class="tab-bar-project" :title="t('app.sandboxBoundaryTitle', { dir: session.workingDirectory })">
               <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
               </svg>
               <span>{{ projectName }}</span>
+            </div>
+            <!-- 非沙箱会话（未挂项目）：显式标出无边界，避免用户误以为存在目录限制 -->
+            <div v-else class="tab-bar-project" :title="t('app.noSandboxTitle')">
+              <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="11" width="18" height="11" rx="2" />
+                <path d="M7 11V7a5 5 0 0 1 9.9-1" />
+              </svg>
+              <span>{{ t('app.noSandbox') }}</span>
             </div>
             <div class="tab-bar-center">
               <div class="status-indicator" :class="displayStatus">

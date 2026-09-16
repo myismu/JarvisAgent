@@ -3,7 +3,10 @@
     "expandSidebar": "Expand sidebar",
     "collapseSidebar": "Collapse sidebar",
     "showAgentPanel": "Open monitor window",
-    "hideAgentPanel": "Close monitor window"
+    "hideAgentPanel": "Close monitor window",
+    "sandboxBoundaryTitle": "Sandbox session: agent operations and commands are confined to the project directory ({dir}); paths outside are denied.",
+    "noSandbox": "No sandbox",
+    "noSandboxTitle": "Non-sandbox session (no project bound): no directory boundary; the agent may use absolute paths anywhere. File writes and commands still follow permission settings."
   },
   "welcome": {
     "ready": "Ready to serve you, sir."

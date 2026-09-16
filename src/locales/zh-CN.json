@@ -3,7 +3,10 @@
     "expandSidebar": "展开侧栏",
     "collapseSidebar": "收起侧栏",
     "showAgentPanel": "打开监控窗口",
-    "hideAgentPanel": "关闭监控窗口"
+    "hideAgentPanel": "关闭监控窗口",
+    "sandboxBoundaryTitle": "沙箱会话：agent 的操作与命令被限制在项目目录内（{dir}），项目外路径会被拒绝。",
+    "noSandbox": "非沙箱",
+    "noSandboxTitle": "非沙箱会话（未挂项目）：没有目录边界，agent 可用绝对路径操作任意位置；写文件与命令仍会按权限设置询问。"
   },
   "welcome": {
     "ready": "随时准备为您效劳，先生。"

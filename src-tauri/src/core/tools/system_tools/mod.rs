@@ -1,113 +1,18 @@
 ﻿//! # system_tools.rs — 系统信息工具模块
 //!
-//! 提供系统信息查询和全局工作区设置工具。
-//!
 //! ## 关键导出
-//! - `get_system_info()`: 获取 OS、工作目录、Home 目录等系统信息
-//! - `set_workspace()`: 设置全局工作区目录（沙箱会话中禁用）
+//! - （GetSystemInfo / SetWorkspace 均已移除）
 //!
 //! ## 约束
-//! - 沙箱会话中禁止修改全局工作区
-//! - `set_workspace` 必须使用绝对路径，且需用户确认
-
-use super::framework::permission::{request_permission, PermissionKind};
-use crate::core::tools::framework;
-use crate::core::tools::framework::registry::ToolDef;
-use serde_json::json;
-use std::path::Path;
-use tauri::Manager;
-
-/// 获取当前会话的工作目录沙箱
-async fn get_workspace(app: &tauri::AppHandle, session_id: &str) -> Option<std::path::PathBuf> {
-    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
-        let ctx = manager.get_or_create(session_id).await;
-        let ws = ctx.workspace.lock().await.clone();
-        return ws;
-    }
-    None
-}
-
-/// 获取系统基本信息
-/// 设置工作区目录
-pub async fn set_workspace(
-    app: &tauri::AppHandle,
-    input: &serde_json::Value,
-    session_id: &str,
-) -> framework::ToolCallResult {
-    // 沙箱会话中禁用此功能
-    let ws = get_workspace(app, session_id).await;
-    if ws.is_some() {
-        return framework::ToolCallResult::error("当前会话已配置沙箱，禁止修改全局工作区。如需更改工作目录，请创建新的沙箱会话。"
-            .to_string());
-    }
-
-    let path_str = input["path"].as_str().unwrap_or("");
-    if path_str.contains("..") {
-        return framework::ToolCallResult::error("路径不安全".to_string());
-    }
-    let path = Path::new(path_str);
-    if !path.is_absolute() {
-        return framework::ToolCallResult::error("必须使用绝对路径".to_string());
-    }
-    if !path.exists() || !path.is_dir() {
-        return framework::ToolCallResult::error(format!("目录不存在或不是文件夹: {}", path_str));
-    }
-
-    if let Ok(cwd) = std::env::current_dir() {
-        if path != cwd {
-            let msg = format!("警告：尝试将全局工作区更改为：{}", path_str);
-            // 改工作目录没有"会话级允许"语义（它本来就是一次性动作），传 None
-            let decision =
-                request_permission(app, session_id, &msg, PermissionKind::Tool, None).await;
-            if !decision.is_allowed() {
-                let label = if decision.is_rejected() {
-                    "权限拒绝"
-                } else {
-                    "权限确认未完成"
-                };
-                return framework::ToolCallResult::error(format!(
-                    "{}：{}",
-                    label,
-                    decision.model_note()
-                ));
-            }
-        }
-    }
-
-    match std::env::set_current_dir(path) {
-        Ok(_) => {
-            let workspace_file = crate::infra::config::data_paths::workspace_file_path();
-            let _ = std::fs::write(&workspace_file, path_str);
-            framework::ToolCallResult::ok(format!("全局工作区成功切换到: {}", path_str))
-        }
-        Err(e) => framework::ToolCallResult::error(format!("切换工作区失败: {}", e)),
-    }
-}
+//! - 工作区语义：会话挂了项目 = 沙箱会话（`ctx.workspace` 即边界）；不挂项目 = 非沙箱，无边界。
+//!   "换工作区"通过 UI 的"打开项目 / 切换会话"表达，不再是模型可调用的工具——
+//!   SetWorkspace 曾同时承担"改进程 CWD"与"被误当沙箱边界"两份语义，悬空且误导，已退役。
 
 // --- 工具注册 ---
 crate::define_tools! {
-    pub fn register_tools(registry) {
-        ToolDef {
-            name: "SetWorkspace",
-            description: "设置或更改全局工作区目录",
-            search_hint: "set workspace directory working directory",
-            category: "系统",
-            schema: json!({
-                "name": "SetWorkspace",
-                "description": "设置或更改大模型当前运作的全局工作区（Working Directory）目录。跨大项目切换或是初始化指定项目目录时使用。由于会改变全局环境且会被系统持久化记住，必须使用绝对路径。",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "工作区目录的绝对路径"}
-                    },
-                    "required": ["path"]
-                }
-            }),
-            should_defer: true,
-            is_read_only: false,
-            is_concurrency_safe: false,
-            is_enabled: true,
-        },
-        // GetSystemInfo 已移除——OS/CWD/Home 已在提示词中自动注入，无需 Agent 手动调用
+    pub fn register_tools(_registry) {
+        // 目前系统类没有模型可调用的工具：
+        // - GetSystemInfo：OS/CWD/Home 已自动注入提示词，无需手动调用
+        // - SetWorkspace：与项目绑定/沙箱边界语义冲突，已退役（见模块注释）
     }
 }
