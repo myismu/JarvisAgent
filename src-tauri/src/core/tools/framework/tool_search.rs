@@ -424,16 +424,16 @@ mod tests {
     #[test]
     fn test_search_keyword() {
         let deferred = get_deferred_tool_search_entries("PROJECT_ACTION", "edit");
-        let result = search_deferred_tools("git command", &deferred, 5);
-        // RunGitCommand should score highest
-        assert!(result.contains(&"RunGitCommand".to_string()));
+        let result = search_deferred_tools("notebook jupyter", &deferred, 5);
+        // EditNotebook should score highest
+        assert!(result.contains(&"EditNotebook".to_string()));
     }
 
     #[test]
-    fn test_search_hint_matches_dev_server() {
+    fn test_search_hint_matches_progress_checklist() {
         let deferred = get_deferred_tool_search_entries("PROJECT_ACTION", "edit");
-        let result = search_deferred_tools("dev server", &deferred, 5);
-        assert_eq!(result.first(), Some(&"StartBackgroundCommand".to_string()));
+        let result = search_deferred_tools("progress checklist", &deferred, 5);
+        assert_eq!(result.first(), Some(&"UpdateTodos".to_string()));
     }
 
     #[test]
@@ -569,6 +569,19 @@ mod tests {
         // 验证包含写操作工具
         let all_names: Vec<&str> = groups.iter().flat_map(|(_, names)| names.iter().copied()).collect();
         assert!(all_names.contains(&"WriteFile"));
-        assert!(all_names.contains(&"RunCommand"));
+        // shell 全家已提为核心工具，不再出现在延迟列表
+        assert!(!all_names.contains(&"RunCommand"));
+    }
+
+    #[test]
+    fn test_core_tools_include_shell_family() {
+        // shell 工具转正：直接进核心集合（无需 GetToolCatalog → DiscoverTools → ExecuteTool 三跳）
+        // RunGitCommand 已退役：git 读写统一走 RunCommand，由权限与拦截系统分层管控
+        let core = get_core_tool_definitions();
+        let names: Vec<&str> = core.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"RunCommand"));
+        assert!(names.contains(&"StartBackgroundCommand"));
+        assert!(names.contains(&"CheckBackgroundCommand"));
+        assert!(!names.contains(&"RunGitCommand"));
     }
 }

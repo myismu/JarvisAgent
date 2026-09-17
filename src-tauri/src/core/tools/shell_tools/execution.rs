@@ -13,7 +13,7 @@
 //! - 执行时间受限于 DEFAULT_TIMEOUT_SECS 除非转为后台模式
 
 use super::super::framework;
-use super::super::framework::permission::{request_permission, PermissionDecision, PermissionKind};
+use super::super::framework::permission::{request_permission_with_origin, PermissionDecision, PermissionKind};
 use super::background::background_run_internal;
 use super::readonly::is_readonly_command;
 use super::security::*;
@@ -197,6 +197,7 @@ pub async fn run_shell(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
     session_id: &str,
+    outer_approved: bool,
 ) -> framework::ToolCallResult {
     let cmd = input["command"].as_str().unwrap_or("");
     let description = input["description"].as_str().unwrap_or("");
@@ -233,8 +234,12 @@ pub async fn run_shell(
         }
     }
 
-    // --- 3. 权限检查（只读自动放行 + 危险命令确认 + 破坏性警告） ---
-    if !is_readonly_command(cmd) {
+    // --- 3. 二道门兜底确认（仅直调路径；正常 dispatch 路径外层已批，不再重复弹卡） ---
+    // 正常路径：dispatch_tool_call → enforce（外层弹卡人审）→ 批准后才到这里，
+    // outer_approved=true 直接跳过本段——否则同一次执行会连弹两张卡。
+    // 二道门本身保留：若未来出现绕过 enforce 的直调路径（outer_approved=false），
+    // 危险命令在这里仍会被拦下问一次（含「本次会话都允许」登记，口径与外层一致）。
+    if !outer_approved && !is_readonly_command(cmd) {
         let lower_cmd = cmd.to_lowercase();
         let dangerous_keywords = [
             "del ",
@@ -257,9 +262,10 @@ pub async fn run_shell(
                 perm_msg.push_str(&format!("\n用途说明：{}", description));
             }
 
-            // 附加破坏性命令警告
-            if let Some(warning) = get_destructive_warning(cmd) {
-                perm_msg.push_str(&format!("\n\n{}", warning));
+            // 附加破坏性命令警告（同时透传给前端做弱警示样式，格式与外层弹卡一致）
+            let destructive = get_destructive_warning(cmd);
+            if let Some(warning) = &destructive {
+                perm_msg.push_str(&format!("\n风险提示：{}", warning));
             }
 
             // 第二道门：外层判定（dispatch_tool_call → policy_guard::enforce）已经问过一次，
@@ -267,26 +273,38 @@ pub async fn run_shell(
             // 同一条命令每跑一次还会再弹一次卡，等于那个按钮对命令类不起作用。
             // 键口径与 `policy_guard::allowance_key_for` 共用同一实现，两道门不会打架。
             let key = framework::policy_guard::command_prefix_scope(cmd);
-            let already_allowed =
-                framework::policy_guard::command_allowed(app, session_id, cmd).await;
+            // 危险命令与外层 enforce 同口径（policy::ask_always_repeated）：每次亲手批——
+            // 不查会话允许（防历史登记残留绕过），不发范围键（防「本次会话都允许」
+            // 从这张卡绕回来：下面 AllowSession 分支会真的 grant_session_allowance）
+            let already_allowed = destructive.is_none()
+                && framework::policy_guard::command_allowed(app, session_id, cmd).await;
 
             if !already_allowed {
-                // 把放开范围写进卡片，跟外层弹卡的文案保持一致
-                if let Some((_, label)) = &key {
-                    perm_msg.push_str(&format!("\n允许范围：{}", label));
+                // 把放开范围写进卡片，跟外层弹卡的文案保持一致（危险卡没有范围键，不写）
+                if destructive.is_none() {
+                    if let Some((_, label)) = &key {
+                        perm_msg.push_str(&format!("\n允许范围：{}", label));
+                    }
                 }
-                let pending_key = key.as_ref().map(|(scope, _)| {
-                    (
-                        framework::policy_guard::ALLOWANCE_KIND_COMMAND.to_string(),
-                        scope.clone(),
-                    )
-                });
-                let decision = request_permission(
+                let pending_key = if destructive.is_some() {
+                    // 危险命令：没有「本次会话都允许」，与外层弹卡同口径
+                    None
+                } else {
+                    key.as_ref().map(|(scope, _)| {
+                        (
+                            framework::policy_guard::ALLOWANCE_KIND_COMMAND.to_string(),
+                            scope.clone(),
+                        )
+                    })
+                };
+                let decision = request_permission_with_origin(
                     app,
                     session_id,
                     &perm_msg,
                     PermissionKind::Tool,
                     pending_key,
+                    None,
+                    destructive.as_deref(),
                 )
                 .await;
                 if !decision.is_allowed() {

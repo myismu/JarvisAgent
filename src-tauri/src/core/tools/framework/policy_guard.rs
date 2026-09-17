@@ -74,6 +74,20 @@ mod tests {
     }
 
     #[test]
+    fn prefix_widening_allowlist_never_triggers_destructive_warning() {
+        // 防御锁（改造①）：「点一次管一族」名单若混进危险命令首词，会话允许的
+        // 覆盖宽度会放大危险面。警示判据已让 enforce 对警示命令不给键（语义兜底），
+        // 这里再静态锁死"名单 ∩ 危险警示 = 空"，防止将来误收录。
+        for prefix in PREFIX_WIDENING_ALLOWED {
+            assert!(
+                crate::core::tools::shell_tools::security::get_destructive_warning(prefix)
+                    .is_none(),
+                "前缀白名单里的 {prefix:?} 触发危险命令警示，不该收录"
+            );
+        }
+    }
+
+    #[test]
     fn non_command_tools_have_no_guard_verdict() {
         let verdict = inspect_existing_guards("WriteFile", &json!({ "path": "a.txt" }), None);
         assert!(verdict.deny_reason.is_none() && verdict.warning.is_none());
@@ -328,28 +342,6 @@ mod tests {
         .is_some());
     }
 
-    #[test]
-    fn read_only_git_only_allows_readonly_subcommands() {
-        let facts = facts_with(Some(ToolClass::ReadOnly), false);
-        assert!(
-            read_only_deny_reason("RunGitCommand", &json!({ "args": ["status"] }), &facts).is_none()
-        );
-        assert!(
-            read_only_deny_reason("RunGitCommand", &json!({ "args": ["log", "-5"] }), &facts)
-                .is_none()
-        );
-        // 这几个以前全在黑名单之外，能直接把未提交的改动丢掉
-        for args in [
-            json!(["restore", "."]),
-            json!(["stash"]),
-            json!(["apply", "p.patch"]),
-            json!(["commit", "-m", "x"]),
-        ] {
-            assert!(
-                read_only_deny_reason("RunGitCommand", &json!({ "args": args }), &facts).is_some()
-            );
-        }
-    }
 }
 
 /// 一次调用的事实（判定器与观察层共用）
@@ -935,8 +927,8 @@ pub async fn command_allowed(app: &tauri::AppHandle, session_id: &str, command: 
 /// ## 规则（先命中先返回）
 ///
 /// 1. 写工具（`WRITE_TOOLS`：写入 / 编辑 / 删除 / 改名 / 打补丁 / 跑命令 / 起后台）→ 拒绝。
-///    其中 `RunGitCommand` 与 `RunCommand` 再按"只读命令"细分：
-///    git 只看只读子命令，shell 只放行只读命令（判定复用 `readonly` 模块，不另造一份）。
+///    其中 `RunCommand` 再按"只读命令"细分：git 与 shell 统一走它，
+///    只放行只读命令（判定复用 `readonly` 模块，不另造一份）。
 /// 2. 派子代理（`RunSubagent` / `RunSubagentsSequentially`）→ 拒绝。
 ///    **不能只靠"默认只读"**：`read_only` 是模型可控入参，子代理内层又固定 `edit` 模式，
 ///    所以必须把这两个工具整个收走。
@@ -948,7 +940,6 @@ pub async fn command_allowed(app: &tauri::AppHandle, session_id: &str, command: 
 /// 走 Ask 的后果是用户点一下"允许"就破了只读保护（而且 shell 工具内部还有第二道门
 /// 会再问一次）。只读保护的语义是"这次根本不做"，所以只能硬拒。
 pub fn read_only_deny_reason(tool: &str, input: &Value, facts: &PreparedFacts) -> Option<String> {
-    use crate::core::tools::shell_tools::readonly;
     use crate::core::tools::framework::registry::ToolRegistry;
 
     // 1. 写工具
@@ -983,21 +974,6 @@ pub fn read_only_deny_reason(tool: &str, input: &Value, facts: &PreparedFacts) -
             "只读保护已开启：本会话不允许派子代理（子代理内层固定编辑模式，写工具对它全量可见）。"
                 .to_string(),
         );
-    }
-
-    // 3. git：只放行只读子命令
-    if tool == "RunGitCommand" {
-        let args: Vec<&str> = input["args"]
-            .as_array()
-            .map(|list| list.iter().filter_map(|v| v.as_str()).collect())
-            .unwrap_or_default();
-        if readonly::is_readonly_git_args(&args) {
-            return None;
-        }
-        return Some(format!(
-            "只读保护已开启：`git {}` 不是只读操作，本会话不允许执行。",
-            args.join(" ")
-        ));
     }
 
     None
@@ -1053,9 +1029,14 @@ pub async fn enforce(
             )))
         }
         Outcome::Ask => {
-            // "覆盖已有文件"这类询问刻意**每次都要问**（见 `policy::ask_always_repeated`）。
-            // 这类卡片也**不给会话级允许**：键登记了也吞不掉下一次，显示按钮就是骗人。
-            let key = if policy::ask_always_repeated(facts.class, facts.target_exists) {
+            // "覆盖已有文件"和"危险命令警示命中"这两类询问刻意**每次都要问**
+            // （见 `policy::ask_always_repeated`，唯一口径）。这类卡片也**不给会话级允许**：
+            // 键登记了也吞不掉下一次，显示按钮就是骗人——递归强删不该有"本会话随便来"的待遇。
+            let key = if policy::ask_always_repeated(
+                facts.class,
+                facts.target_exists,
+                facts.warning.is_some(),
+            ) {
                 None
             } else {
                 facts.allowance.clone()
@@ -1081,6 +1062,7 @@ pub async fn enforce(
                 PermissionKind::Tool,
                 pending_key,
                 Some((tool, input)),
+                facts.warning.as_deref(),
             )
             .await;
             match decision {
@@ -1134,6 +1116,9 @@ fn build_permission_message(
     let _ = reason;
     if let Some(warning) = &facts.warning {
         msg.push_str(&format!("\n风险提示：{}", warning));
+        // 危险命令每次都问（ask_always_repeated），卡片上提前说清，
+        // 免得用户找不到「本次会话都允许」按钮而困惑。
+        msg.push_str("\n此命令每次都需要人工批准，无法用「本次会话都允许」。");
     }
     if let Some(key) = &facts.allowance {
         msg.push_str(&format!("\n允许范围：{}", key.label));

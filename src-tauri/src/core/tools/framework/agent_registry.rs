@@ -28,8 +28,8 @@ const GENERAL_TOOLS: &[&str] = &[
     "EditFile",
     "EditNotebook",
     "RunCommand",
-    "RunGitCommand",
-    "StartBackgroundCommand",
+    // StartBackgroundCommand 不给子代理：后台服务由主 Agent 统一管理（registry.rs 意图过滤同口径），
+    // CheckBackgroundCommand 保留——只读探测后台输出，不违反"统一管理启动"
     "CheckBackgroundCommand",
 ];
 
@@ -45,7 +45,6 @@ const READ_ONLY_RESEARCH_TOOLS: &[&str] = &[
     "ReadSymbol",
     "FindReferences",
     "CodeSearch",
-    "RunGitCommand",
     "CheckBackgroundCommand",
 ];
 
@@ -62,7 +61,6 @@ const VERIFICATION_TOOLS: &[&str] = &[
     "FindReferences",
     "CodeSearch",
     "RunCommand",
-    "RunGitCommand",
     "CheckBackgroundCommand",
 ];
 
@@ -259,6 +257,8 @@ mod tests {
         assert!(names.contains(&"EditFile"));
         assert!(names.contains(&"EditNotebook"));
         assert!(names.contains(&"RunCommand"));
+        // 后台服务锁：子代理（含 implementation）不许启动后台服务，主 Agent 统一管理
+        assert!(!names.contains(&"StartBackgroundCommand"));
     }
 
     #[test]

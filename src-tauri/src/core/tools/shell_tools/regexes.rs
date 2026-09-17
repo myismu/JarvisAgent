@@ -185,15 +185,28 @@ pub fn new_object_typename_re() -> &'static Regex {
 pub fn destructive_remove_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        // Remove-Item -Recurse, rm -rf, rd /s, rmdir /s
-        Regex::new(r"(?i)(Remove-Item\s+.*-Recurse|rm\s+.*-rf|rd\s+/s|rmdir\s+/s)").unwrap()
+        // 对照 CC（destructiveCommandWarning）删除类补缺：Remove-Item 及别名（ri/del/erase）
+        // + -Recurse/-Force 组合；rm -r / -rf / --recursive；cmd 的 rd /s、rmdir /s。
+        // 标志两侧用 (\s|^)…(\s|$) 锚定，防 `--preserve-root` 这类内含 "-r" 的 token 误报；
+        // 纯 `Remove-Item x` 单文件删除属正常操作，不警示（与 CC 一致）。
+        // 警示纯提示不拦截，宁多勿漏。
+        Regex::new(
+            r"(?i)(\b(Remove-Item|ri|del|erase)\b\s+(.*\s)?(-Recurse|-Force)(\s|$)|\brm\s+(.*\s)?(-rf|-r|--recursive)(\s|$)|\b(rd|rmdir)\s+/s)",
+        )
+        .unwrap()
     })
 }
 
 pub fn destructive_git_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)(git\s+reset\s+--hard|git\s+push\s+.*--force|git\s+clean\s+-f|git\s+stash\s+(drop|clear))").unwrap()
+        // 对照 CC 补缺：push 的短标志 -f 与 --force 同等警示（--force-with-lease 刻意
+        // 不警示——带 lease 保护，不是裸强推）；clean 补 --force，且 -f 无右边界
+        // 让 -fd / -fdx 家族一并命中。reset --hard / stash drop|clear 与 CC 一致。
+        Regex::new(
+            r"(?i)(\bgit\s+reset\s+--hard|\bgit\s+push\s+(.*\s)?(--force(\s|$)|-f(\s|$))|\bgit\s+clean\s+(.*\s)?(-f|--force)|\bgit\s+stash\s+(drop|clear))",
+        )
+        .unwrap()
     })
 }
 
@@ -260,6 +273,10 @@ pub const READONLY_CMDLETS: &[&str] = &[
     // 输出格式
     "write-output",
     "write-host",
+    // 清控制台缓冲区（cls/clear 的归一目标）：不改文件系统。
+    // 缺它的话别名归一（PS_ALIAS_TO_CANONICAL）会把 `cls` 从 WIN 名单的免问
+    // 变成弹卡——回归，故随改造②一并补入。
+    "clear-host",
     "format-table",
     "format-list",
     "format-wide",
@@ -278,6 +295,12 @@ pub const READONLY_CMDLETS: &[&str] = &[
     "get-netroute",
     "get-dnsclientcache",
     "get-dnsclient",
+    // 网络探活（纯查询/等待，无副作用；服务启动验证高频使用）
+    "get-nettcpconnection",
+    "get-netudpconnection",
+    "test-netconnection",
+    "resolve-dnsname",
+    "start-sleep",
     // 事件日志
     "get-eventlog",
     "get-winevent",
@@ -294,12 +317,115 @@ pub const READONLY_CMDLETS: &[&str] = &[
     "pop-location",
 ];
 
+/// PowerShell 别名 → canonical cmdlet（**单跳映射**，全部小写）。
+///
+/// 照搬 Claude Code `COMMON_ALIASES`（parser.ts:1326），全量 75 条收录，
+/// 由 [`super::readonly::normalize_ps_alias`] 消费（唯一口径）：
+/// Windows 侧只读判定先归一再查 `READONLY_CMDLETS` / `READONLY_WIN_COMMANDS`，
+/// `rm`/`del`/`erase`/`ri` 从此不需要在每张名单里重复列别名，漏列即穿透的问题消失。
+///
+/// 曾因"归一目标可执行脚本块"砍掉 `foreach` / `%` / `?` / `select` 四条；
+/// 脚本块一票否决（readonly.rs：命令含 `{` 即非只读，对应 CC hasScriptBlocks）
+/// 落地后已收回——`dir | ? { Remove-Item $_ }` 这类形态由否决兜底，归一只管口径统一。
+///
+/// 单跳映射：`md` 直接映射 `new-item`，不做 `md → mkdir → new-item` 链式解析。
+/// 归一后目标不在免问名单的（`kill` → `stop-process`、`iwr` → `invoke-webrequest` …）
+/// 仍弹卡——归一只统一口径，不改变"能不能免问"。
+pub const PS_ALIAS_TO_CANONICAL: &[(&str, &str)] = &[
+    // 文件系统
+    ("ls", "get-childitem"),
+    ("dir", "get-childitem"),
+    ("gci", "get-childitem"),
+    ("cat", "get-content"),
+    ("type", "get-content"),
+    ("gc", "get-content"),
+    ("gi", "get-item"),
+    ("gp", "get-itemproperty"),
+    ("ni", "new-item"),
+    ("mkdir", "new-item"),
+    ("md", "new-item"),
+    ("ri", "remove-item"),
+    ("del", "remove-item"),
+    ("rd", "remove-item"),
+    ("rmdir", "remove-item"),
+    ("rm", "remove-item"),
+    ("erase", "remove-item"),
+    ("mi", "move-item"),
+    ("mv", "move-item"),
+    ("move", "move-item"),
+    ("ci", "copy-item"),
+    ("cp", "copy-item"),
+    ("copy", "copy-item"),
+    ("cpi", "copy-item"),
+    ("si", "set-item"),
+    ("rni", "rename-item"),
+    ("ren", "rename-item"),
+    // 位置/导航
+    ("cd", "set-location"),
+    ("sl", "set-location"),
+    ("chdir", "set-location"),
+    ("pushd", "push-location"),
+    ("popd", "pop-location"),
+    ("pwd", "get-location"),
+    ("gl", "get-location"),
+    // 进程
+    ("ps", "get-process"),
+    ("gps", "get-process"),
+    ("kill", "stop-process"),
+    ("spps", "stop-process"),
+    // 执行/作业/模块/网络
+    ("start", "start-process"),
+    ("saps", "start-process"),
+    ("sajb", "start-job"),
+    ("ipmo", "import-module"),
+    ("iex", "invoke-expression"),
+    ("iwr", "invoke-webrequest"),
+    ("irm", "invoke-restmethod"),
+    ("icm", "invoke-command"),
+    ("ii", "invoke-item"),
+    // 远程会话
+    ("nsn", "new-pssession"),
+    ("etsn", "enter-pssession"),
+    ("exsn", "exit-pssession"),
+    ("gsn", "get-pssession"),
+    ("rsn", "remove-pssession"),
+    // 输出/帮助/杂项
+    ("echo", "write-output"),
+    ("write", "write-output"),
+    ("sleep", "start-sleep"),
+    ("help", "get-help"),
+    ("man", "get-help"),
+    ("gcm", "get-command"),
+    ("gsv", "get-service"),
+    ("gv", "get-variable"),
+    ("sv", "set-variable"),
+    ("h", "get-history"),
+    ("history", "get-history"),
+    ("cls", "clear-host"),
+    ("clear", "clear-host"),
+    // `where`/`?` 在 pwsh 里是 Where-Object 别名（裸 where 不是 where.exe）。
+    // Where-Object 的 -FilterScript 可执行脚本块，但脚本块一票否决已兜底：
+    // 带 `{` 的命令根本到不了名单匹配。免问名单本就含 where/where-object，无新增风险。
+    ("where", "where-object"),
+    ("?", "where-object"),
+    // foreach 在 pwsh 里既是 ForEach-Object 别名也是语句关键字；语句形式必带 `{ }`，
+    // 由脚本块否决兜底。归一目标不在免问名单 → 无脚本块时仍弹卡，仅口径统一。
+    ("foreach", "foreach-object"),
+    ("%", "foreach-object"),
+    ("select", "select-object"),
+    ("measure", "measure-object"),
+    ("ft", "format-table"),
+    ("fl", "format-list"),
+    ("fw", "format-wide"),
+    ("oh", "out-host"),
+];
+
 /// 只读 git 子命令（**正向白名单**，唯一口径）。
 ///
-/// 由 `readonly::is_readonly_git_args` 消费，同时供 `RunGitCommand` 工具与
-/// `is_readonly_command` 的 git 分支使用，保证两处结论不会漂移。
+/// 由 `readonly::is_readonly_git_args` 消费（RunCommand 中 `git ...` 段的只读判定；
+/// RunGitCommand 专用工具已退役，git 读写统一走 RunCommand），保证结论不会漂移。
 ///
-/// 为什么是白名单：以前 `RunGitCommand` 用的是「黑名单」（push/commit/rebase/reset/
+/// 为什么是白名单：以前这里用的是「黑名单」（push/commit/rebase/reset/
 /// revert/clean/checkout），漏掉了 `git restore .`、`git stash`、`git apply`、`git add`、
 /// `git rm` —— 这些在规划模式（以及只读保护下）能直接把未提交的改动丢掉。
 /// 黑名单永远补不全，所以翻成正向。
@@ -336,6 +462,38 @@ pub const READONLY_GIT_ARGS: &[&str] = &[
     "verify-tag",
     "fsck",
     "version",
+];
+
+/// git 危险全局标志（**黑名单**，只读判定的第三道关）。
+///
+/// 由 `readonly::is_readonly_git_args` 消费：这些标志出现在**子命令之前**（全局域）时，
+/// 整段 git 命令一律不算只读。理由分三类：
+/// 1. **能执行任意代码**：`-c core.fsmonitor=命令` / `core.pager=命令` 借 config 执行；
+///    `--exec-path=x` 重定向 git 自身的辅助程序查找路径。
+/// 2. **篡改判定基准**：`--git-dir` / `--work-tree` / `--shallow-file` 把对象库/配置
+///    换成别处的（那些仓库的 config 同样能配 fsmonitor 之类），路径校验与实际读写位置漂移。
+/// 3. **解析差分**：`--attr-source` 后面的 tree-ish 是值、再往后才是子命令——
+///    扁平扫描会把值误当子命令匹配白名单（Claude Code 用 GIT_TRACE 实证过
+///    `git --attr-source HEAD~10 log status` 实际跑的是 status），出现即拒。
+///
+/// **值消费型标志必须全量收录**（-c/-C/--exec-path/--config-env/--git-dir/--work-tree/
+/// --namespace/--super-prefix/--shallow-file，对照 man git 审计；名单参考 Claude Code
+/// `DANGEROUS_GIT_GLOBAL_FLAGS` ∪ `GIT_GLOBAL_FLAGS_WITH_VALUES`）：任何漏网的
+/// "标志+值"组合都会让值被误当子命令，制造白名单匹配错乱。
+///
+/// 注意：名单按**小写**前缀匹配，`-C` 与 `-c` 归一后同为 `-c`（-C 切目录同样危险）；
+/// 匹配只作用于全局域（子命令之前的 token），因此不影响子命令自己的选项
+/// （如 `git diff -c` 的合并 diff 输出格式）。
+pub const DANGEROUS_GIT_GLOBAL_FLAGS: &[&str] = &[
+    "-c",
+    "--exec-path",
+    "--config-env",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--super-prefix",
+    "--shallow-file",
+    "--attr-source",
 ];
 
 pub const READONLY_GH_ARGS: &[&str] = &[
@@ -376,6 +534,7 @@ pub const READONLY_DOCKER_ARGS: &[&str] = &[
 pub const READONLY_WIN_COMMANDS: &[&str] = &[
     "ipconfig",
     "netstat",
+    "ping",
     "systeminfo",
     "tasklist",
     "where.exe",

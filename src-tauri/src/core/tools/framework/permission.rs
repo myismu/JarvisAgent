@@ -207,12 +207,15 @@ pub async fn request_permission(
     kind: PermissionKind,
     allowance: Option<(String, String)>,
 ) -> PermissionDecision {
-    request_permission_with_origin(app, session_id, message, kind, allowance, None).await
+    request_permission_with_origin(app, session_id, message, kind, allowance, None, None).await
 }
 
 /// 带"发起来源"的权限请求：工具确认应传 `(工具名, 原始入参)`，切权限档位时的
 /// 挂起卡清扫（`policy_guard::sweep_pending_on_mode_change`）据此按新档位重放判定，
 /// 自动消化"新档位下根本不用问"的卡；循环续跑确认、方案审批没有档位语义，传 `None`。
+///
+/// `warning` 是命中"危险命令警示"时的警示文案：随事件与 `get_permission_state`
+/// 透传给前端，供卡片把风险行渲染成弱警示样式（琥珀小字）。不参与任何判定。
 pub async fn request_permission_with_origin(
     app: &tauri::AppHandle,
     session_id: &str,
@@ -220,6 +223,7 @@ pub async fn request_permission_with_origin(
     kind: PermissionKind,
     allowance: Option<(String, String)>,
     origin: Option<(&str, &serde_json::Value)>,
+    warning: Option<&str>,
 ) -> PermissionDecision {
     let session_manager = app.state::<SessionManager>();
     let ctx = session_manager.get_or_create(session_id).await;
@@ -255,6 +259,7 @@ pub async fn request_permission_with_origin(
                 kind,
                 allowance: allowance.clone(),
                 origin: origin.map(|(tool, input)| (tool.to_string(), input.clone())),
+                warning: warning.map(|w| w.to_string()),
                 responder: tx,
             },
         );
@@ -278,6 +283,8 @@ pub async fn request_permission_with_origin(
             // 只有"工具确认"且这条操作**真的有范围键**时，会话级允许才有个明确的含义；
             // 否则按钮点了等于没点（旧实现里这是个会骗人的按钮）
             "allowSession": kind.allows_session_wide_approval() && allowance.is_some(),
+            // 危险警示文案（无则 null）：会话流卡片据此把风险行渲染成弱警示样式
+            "warning": warning,
         }),
     );
 

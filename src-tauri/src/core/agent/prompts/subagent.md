@@ -23,7 +23,7 @@
 
 - 禁止递归遍历 node_modules、.git、target、dist、build、__pycache__ 等目录
 - 禁止读取二进制/压缩文件（.exe/.dll/.pdb/.zip/.gz/.tar/.png/.pdf/.db 等）
-- 禁止用 RunCommand 启动服务器，用 StartBackgroundCommand
+- 禁止用 RunCommand 启动服务器/长周期服务——后台服务由主 Agent 统一管理（见「后台任务」）
 - 禁止未确认修改就声称完成
 - 禁止用 RunCommand 执行 cd/Set-Location 切换目录
 - 失败后不要重试相同的命令，分析错误换一种方式

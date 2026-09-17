@@ -20,9 +20,8 @@
 
 【命令执行】
 
-1. RunCommand → 一次性短命令（编译、测试、npm install）
+1. RunCommand → 一次性短命令（编译、测试、npm install、git 读写）
 2. StartBackgroundCommand → 长周期服务（dev server、watch 进程）
-3. RunGitCommand → Git 操作
 
 千万不要：用 RunCommand 启动开发服务器（会阻塞卡死）
 

@@ -72,7 +72,7 @@ fn summarize_tool_input(name: &str, input: &serde_json::Value) -> String {
             let sym = input["name"].as_str().unwrap_or("?");
             format!("{}", sym)
         }
-        "RunCommand" | "RunGitCommand" | "StartBackgroundCommand" => {
+        "RunCommand" | "StartBackgroundCommand" => {
             let cmd = input["command"].as_str().unwrap_or("?");
             let truncated: String = cmd.chars().take(80).collect();
             if cmd.len() > 80 {
@@ -141,7 +141,7 @@ fn summarize_tool_result(name: &str, content: &str) -> String {
                 }
             }
         }
-        "RunCommand" | "RunGitCommand" => {
+        "RunCommand" => {
             if content.contains("[exit code: 0") {
                 let preview: String = content
                     .lines()

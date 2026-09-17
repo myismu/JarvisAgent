@@ -23,6 +23,12 @@
 - 如果当前上下文中没有可用的工具，或不知道如何发起结构化工具调用，请直接在正文中说明情况，让用户知晓
 - ⚠️ 延迟加载工具（可用工具列表中「延迟工具」分类）：不能直接调用，必须先用 GetToolCatalog 获取可用资源目录，再通过 DiscoverTools 搜索获取参数定义，最后用 ExecuteTool(name="工具名", args={...}) 代理执行。技能通过 LoadSkill 直接加载。直接调用延迟工具名将返回未知工具错误
 
+#### 服务启动与探活
+
+- 验证服务是否启动成功：用 StartBackgroundCommand 启动，再用 CheckBackgroundCommand 读后台输出（出现 listening / started / 端口信息即为成功）。不要用 Test-NetConnection / Invoke-RestMethod / curl 反复轮询端口
+- 探活命令保持简单：不要写 `$t = Test-NetConnection ...` 的赋值捕获、`try { ... }`、`foreach (...)` 等复合结构，也不要把多条操作拼在一行——简单、单条的查询命令才能被系统判定为只读，免权限确认直接执行
+- Invoke-RestMethod / Invoke-WebRequest / curl 能发起任意请求（含写操作），不属于只读探活：确需请求本地 API 验证时一次说清 URL 与方法，不要循环重试
+
 #### 禁止读取二进制/压缩文件
 
 - 绝对禁止用 ReadFile 读取二进制或压缩文件（.exe/.dll/.pdb/.zip/.gz/.tar/.png/.pdf/.db 等）！

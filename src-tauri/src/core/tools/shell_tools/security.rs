@@ -18,11 +18,12 @@ pub fn get_destructive_warning(cmd: &str) -> Option<String> {
     let mut warnings = Vec::new();
 
     if destructive_remove_re().is_match(cmd) {
-        warnings.push("⚠ 检测到递归删除操作（Remove-Item -Recurse / rm -rf）");
+        warnings.push("⚠ 检测到递归/强制删除操作（Remove-Item -Recurse/-Force、rm -rf 及等价别名）");
     }
     if destructive_git_re().is_match(cmd) {
-        warnings
-            .push("⚠ 检测到 Git 破坏性操作（reset --hard / push --force / clean -f / stash drop）");
+        warnings.push(
+            "⚠ 检测到 Git 破坏性操作（reset --hard / push -f / clean -f / stash drop|clear）",
+        );
     }
     if destructive_sql_re().is_match(cmd) {
         warnings.push("⚠ 检测到 SQL 破坏性操作（DROP TABLE / TRUNCATE）");

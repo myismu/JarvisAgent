@@ -1,6 +1,7 @@
 //! # mod.rs — Shell 工具模块入口
 //!
-//! 导出 Shell、Git 和后台任务管理工具定义，统筹模块内部的各个安全与执行组件。
+//! 导出 Shell 和后台任务管理工具定义，统筹模块内部的各个安全与执行组件。
+//! （git 不再有专用工具：读写统一走 RunCommand，权限与拦截系统分层管控。）
 //!
 //! ## Key Exports
 //! - `register_tools()`: 注册 shell 相关的 ToolDef
@@ -11,7 +12,6 @@
 
 pub mod background;
 pub mod execution;
-pub mod git;
 pub mod guards;
 pub mod readonly;
 pub mod regexes;
@@ -21,7 +21,6 @@ pub mod utils;
 
 pub use background::{background_run, check_background};
 pub use execution::run_shell;
-pub use git::git_command;
 
 use crate::core::tools::framework::registry::ToolDef;
 use serde_json::json;
@@ -49,34 +48,9 @@ crate::define_tools! {
                     "required": ["command", "description"]
                 }
             }),
-            should_defer: true,
+            should_defer: false,
             is_read_only: false,
             is_concurrency_safe: false,
-            is_enabled: true,
-        },
-        ToolDef {
-            name: "RunGitCommand",
-            description: "执行低风险的 git 操作（status/diff/log 等）",
-            search_hint: "git status diff log version control",
-            category: "命令执行",
-            schema: json!({
-                "name": "RunGitCommand",
-                "description": "执行低风险的 git 操作（如 status, diff, log）。禁止执行修改历史或推送的操作。",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "args": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "git 命令的参数列表，例如 [\"status\"] 或 [\"log\", \"-n\", \"5\"]"
-                        }
-                    },
-                    "required": ["args"]
-                }
-            }),
-            should_defer: true,
-            is_read_only: true,
-            is_concurrency_safe: true,
             is_enabled: true,
         },
         ToolDef {
@@ -96,7 +70,7 @@ crate::define_tools! {
                     "required": ["command", "dir"]
                 }
             }),
-            should_defer: true,
+            should_defer: false,
             is_read_only: false,
             is_concurrency_safe: true,
             is_enabled: true,
@@ -116,7 +90,7 @@ crate::define_tools! {
                     }
                 }
             }),
-            should_defer: true,
+            should_defer: false,
             is_read_only: true,
             is_concurrency_safe: true,
             is_enabled: true,

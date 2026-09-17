@@ -336,8 +336,9 @@ pub async fn dispatch_tool_call(
         "ApplyPatch" => file_tools::apply_patch(app, input, session_id).await,
 
         // Shell 工具
-        "RunGitCommand" => shell_tools::git_command(app, input, session_id).await,
-        "RunCommand" => shell_tools::run_shell(app, input, session_id).await,
+        // RunCommand：外层人审在上方 enforce 已完成（弹卡或会话允许放行），
+        // 传 true = 跳过二道门重复弹卡（防同一次执行连弹两张卡）；直调路径才传 false 兜底
+        "RunCommand" => shell_tools::run_shell(app, input, session_id, true).await,
         "StartBackgroundCommand" => shell_tools::background_run(app, input, session_id).await,
         "CheckBackgroundCommand" => shell_tools::check_background(app, input, session_id).await,
 

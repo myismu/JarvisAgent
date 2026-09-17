@@ -153,7 +153,6 @@ pub const TOOL_POLICIES: &[(&str, ToolPolicy)] = &[
     ("SearchText", ToolPolicy { class: READ_ONLY, path_fields: &["path", "dir"], command_field: None, patch_field: None }),
     ("FindFiles", ToolPolicy { class: READ_ONLY, path_fields: &["dir"], command_field: None, patch_field: None }),
     ("ListDirectory", ToolPolicy { class: READ_ONLY, path_fields: &["path"], command_field: None, patch_field: None }),
-    ("RunGitCommand", ToolPolicy { class: READ_ONLY, path_fields: &[], command_field: None, patch_field: None }),
     ("CheckBackgroundCommand", ToolPolicy { class: READ_ONLY, path_fields: &[], command_field: None, patch_field: None }),
     ("ListTasks", ToolPolicy { class: READ_ONLY, path_fields: &[], command_field: None, patch_field: None }),
     ("GetTask", ToolPolicy { class: READ_ONLY, path_fields: &[], command_field: None, patch_field: None }),
@@ -327,8 +326,9 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
         };
     }
 
-    // 5. 覆盖已有文件（这次询问**每次都要问**，不能被"本次会话都允许"吞掉）
-    if ask_always_repeated(class, input.target_exists) {
+    // 5. 覆盖已有文件 / 危险命令警示（这次询问**每次都要问**，不能被"本次会话都允许"吞掉）。
+    //    命令类在规则 4（always ask）就已 Ask，走不到这里；本条对命令类是防御性一致。
+    if ask_always_repeated(class, input.target_exists, input.existing_warning.is_some()) {
         return ShadowDecision {
             class,
             outcome: Outcome::Ask,
@@ -386,14 +386,22 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
 
 /// 这次询问是不是"每次都要问"——即不能被"本次会话都允许"记下来免掉。
 ///
-/// 目前只有一种：**覆盖已有文件**（`judge` 规则 5）。它会把一个已存在文件的内容换成新的，
-/// 用户授权"在这个目录里改文件"时想表达的通常是"新建与正常编辑不用问"，
-/// 而不是"随便覆盖我已有的文件"。所以这条询问刻意不提供会话级允许。
+/// 现有两种：
+/// 1. **覆盖已有文件**（`judge` 规则 5）。它会把一个已存在文件的内容换成新的，
+///    用户授权"在这个目录里改文件"时想表达的通常是"新建与正常编辑不用问"，
+///    而不是"随便覆盖我已有的文件"。
+/// 2. **危险命令警示命中**（改造①）。`Remove-Item -Recurse`、`git reset --hard`
+///    这类不可恢复操作，登记"会话允许"等于说"本会话内随便递归强删"，语义不成立；
+///    卡片照弹、警示照显，但不给「本次会话都允许」按钮。
 ///
 /// **唯一口径**：`judge()` 规则 5 与 `policy_guard::enforce()` 的会话允许检查都调用这里，
 /// 避免"什么时候问"和"问了之后能不能记住"两套判据各说各话。
-pub fn ask_always_repeated(class: Option<ToolClass>, target_exists: Option<bool>) -> bool {
-    matches!(class, Some(ToolClass::CreateFile)) && target_exists == Some(true)
+pub fn ask_always_repeated(
+    class: Option<ToolClass>,
+    target_exists: Option<bool>,
+    has_warning: bool,
+) -> bool {
+    (matches!(class, Some(ToolClass::CreateFile)) && target_exists == Some(true)) || has_warning
 }
 
 /// 从补丁文本里数出涉及的文件（`*** Update File:` / `*** Add File:` / `*** Delete File:` / `+++ b/x`）。
@@ -477,6 +485,26 @@ mod tests {
         for mode in [ApprovalMode::RequestApproval, ApprovalMode::AutoApprove] {
             assert_eq!(judge("RunCommand", mode, &allow_input()).outcome, Outcome::Ask);
         }
+    }
+
+    #[test]
+    fn ask_always_repeated_covers_warning_and_overwrite() {
+        // 覆盖已有文件：CreateFile + 目标已存在 → 每次都问
+        assert!(ask_always_repeated(
+            Some(ToolClass::CreateFile),
+            Some(true),
+            false
+        ));
+        // 改造①：危险命令警示命中 → 无论类别都"每次都要问"（不给会话允许键）
+        assert!(ask_always_repeated(Some(ToolClass::RunCommand), None, true));
+        assert!(ask_always_repeated(None, None, true));
+        // 普通新建 / 无警示命令 → 可以被"本次会话都允许"吞掉
+        assert!(!ask_always_repeated(
+            Some(ToolClass::CreateFile),
+            Some(false),
+            false
+        ));
+        assert!(!ask_always_repeated(Some(ToolClass::RunCommand), None, false));
     }
 
     #[test]

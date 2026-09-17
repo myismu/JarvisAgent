@@ -105,6 +105,9 @@ pub struct PendingPermission {
     /// 用它按新档位**重放** `policy::judge`，自动消化"新档位下根本不用问"的挂起卡。
     /// 循环续跑确认、方案审批没有档位语义，为 `None`，不会被清扫重放。
     pub origin: Option<(String, serde_json::Value)>,
+    /// 命中"危险命令警示"时的警示文案（仅工具确认可能有）。
+    /// 只用于前端把风险行做弱化的视觉分级（琥珀色小字），不参与任何判定逻辑。
+    pub warning: Option<String>,
     /// 决策发送端（结构化决策，不是字符串）
     pub responder: tokio::sync::oneshot::Sender<
         crate::core::tools::framework::permission::PermissionDecision,

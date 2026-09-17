@@ -265,6 +265,8 @@ pub async fn propose_plan(
                 allowance: None,
                 // 方案审批没有档位语义，不参与切档位时的挂起卡清扫
                 origin: None,
+                // 方案审批没有"危险命令警示"语义
+                warning: None,
                 responder: tx,
             },
         );
