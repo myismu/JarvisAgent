@@ -37,8 +37,12 @@ pub fn strip_extended_path_prefix(path: &str) -> &str {
     path.strip_prefix(r"\\?\").unwrap_or(path)
 }
 
-/// 图片存储目录：`<agent_home>/sessions/<id>/attachments/images/`
-/// 将 base64 图片数据解码并保存到文件，返回文件名
+/// 将 base64 图片数据解码后写入数据库，返回文件名。
+///
+/// 图片本体存在 `<agent_home>/jarvis.sqlite3` 的 `session_attachments` 表
+/// （`data` 列为 BLOB 原始字节），**不落磁盘**。
+/// 返回的文件名形如 `{session_id}_{8位uuid}.{ext}`，仅作为该行的主键，
+/// 被写入消息块的 `file_path`，供后续 `load_image_data` 取回。
 pub fn save_image_to_file(session_id: &str, media_type: &str, data: &str) -> String {
     let ext = if media_type.contains("jpeg") || media_type.contains("jpg") {
         "jpg"
@@ -57,7 +61,7 @@ pub fn save_image_to_file(session_id: &str, media_type: &str, data: &str) -> Str
     filename
 }
 
-/// 从文件加载图片并返回 base64 编码
+/// 按文件名从数据库取回图片原始字节，重新 base64 编码后返回
 pub fn load_image_data(filename: &str) -> Option<String> {
     let (_, bytes) = resource_repository::load_attachment(filename)
         .ok()
@@ -65,6 +69,7 @@ pub fn load_image_data(filename: &str) -> Option<String> {
     Some(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
 
+/// 按文件名删除数据库中的图片记录
 pub fn delete_image_file(filename: &str) {
     let _ = resource_repository::delete_attachment(filename);
 }
@@ -413,6 +418,8 @@ pub fn save_session(
                         })
                         .map(|b| {
                             if let ContentBlock::Image { source } = b {
+                                // 落库前把图片本体转存进 `session_attachments` 表，消息记录里只留文件名。
+                                // 内存中的 base64 不回写磁盘，真正的字节在数据库。
                                 let file_path = if source.file_path.is_some() {
                                     source.file_path.clone()
                                 } else if !source.data.is_empty() {
