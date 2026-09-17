@@ -27,6 +27,9 @@
   --surface-danger: rgba(220, 38, 38, 0.96);
   --surface-danger-hover: rgba(185, 28, 28, 0.98);
   --border-danger: rgba(185, 28, 28, 0.46);
+  /* 弱警示（琥珀）：危险卡视觉分级用，刻意比 danger 低一档饱和度 */
+  --text-warning: #b45309;
+  --border-warning: rgba(180, 83, 9, 0.4);
 
   /* 字体系统 */
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -92,6 +95,8 @@ body.dark-mode {
   --surface-danger: rgba(153, 27, 27, 0.94);
   --surface-danger-hover: rgba(127, 29, 29, 0.98);
   --border-danger: rgba(248, 113, 113, 0.42);
+  --text-warning: #d97706;
+  --border-warning: rgba(217, 119, 6, 0.45);
 
   --glass-bg: rgba(39, 39, 42, 0.8);
   --glass-bg-heavy: rgba(39, 39, 42, 0.92);

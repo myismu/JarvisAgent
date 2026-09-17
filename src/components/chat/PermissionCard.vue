@@ -44,10 +44,15 @@ watch(() => perm.permissionRequest?.id, () => {
  */
 const parsed = computed(() => {
   const msg = perm.permissionRequest?.message ?? '';
+  // 有独立警示字段时，把正文里的"风险提示："行抽出来用弱警示样式渲染（避免重复展示）
+  const warning = perm.permissionRequest?.warning?.trim() || '';
   const lines = msg.split('\n');
   const title = (lines[0] ?? '').trim();
-  const details = lines.slice(1).join('\n').trim();
-  return { title, details };
+  const details = lines.slice(1)
+    .filter((line) => !(warning && line.trimStart().startsWith('风险提示：')))
+    .join('\n')
+    .trim();
+  return { title, details, warning };
 });
 
 /// 输入框/可编辑元素里的按键永远是打字，不是快捷键
@@ -78,6 +83,9 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
         <span class="perm-title">{{ parsed.title }}</span>
         <span v-if="queueLength > 1" class="perm-queue">+{{ queueLength - 1 }}</span>
       </div>
+
+      <!-- 弱警示：琥珀小字，不做大红大跳的视觉冲击（主打极简） -->
+      <p v-if="parsed.warning" class="perm-warning">{{ parsed.warning }}</p>
 
       <pre v-if="parsed.details" class="perm-detail">{{ parsed.details }}</pre>
 
@@ -132,6 +140,15 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
 .perm-queue {
   font-size: 0.7rem;
   color: var(--text-muted);
+}
+
+/* 弱警示（琥珀小字）：比正文小一档，只靠颜色提示，不加图标不加底色 */
+.perm-warning {
+  margin: 0 0 8px;
+  font-size: 0.7rem;
+  line-height: 1.5;
+  color: var(--text-warning);
+  white-space: pre-line;
 }
 
 .perm-detail {

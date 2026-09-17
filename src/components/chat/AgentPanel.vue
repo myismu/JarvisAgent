@@ -31,7 +31,7 @@ const permission = usePermissionStore();
 const permissionAllowanceCount = ref(0)
 const permissionAllowances = ref<Array<{ kind: string; scope: string; label: string }>>([])
 const permissionPendingCount = ref(0)
-const pendingPermissions = ref<Array<{ id: string; message: string; allowSession?: boolean; kind?: string }>>([])
+const pendingPermissions = ref<Array<{ id: string; message: string; allowSession?: boolean; kind?: string; warning?: string | null }>>([])
 let permissionPollTimer: ReturnType<typeof setInterval> | null = null
 
 const loadPermissionState = async () => {
@@ -54,6 +54,7 @@ const loadPermissionState = async () => {
       message: string;
       allowSession?: boolean;
       kind?: string;
+      warning?: string | null;
     }>
   } catch { /* ignore */ }
 }
@@ -379,7 +380,7 @@ const backgroundStatusLabel = (status: string): string => {
 
       <!-- 权限请求卡片列表 -->
       <div v-if="permissionPendingCount > 0 && pendingPermissions.length > 0" class="perm-cards">
-        <div v-for="req in pendingPermissions" :key="req.id" class="perm-card-inline">
+        <div v-for="req in pendingPermissions" :key="req.id" class="perm-card-inline" :class="{ 'perm-card-warning': !!req.warning }">
           <p class="perm-card-msg">{{ req.message }}</p>
           <div class="perm-card-actions">
             <button class="perm-card-btn reject" @click="resolvePermission(req.id, 'reject')">{{ t('permission.reject') }}</button>
@@ -724,6 +725,11 @@ const backgroundStatusLabel = (status: string): string => {
   border: 1px solid color-mix(in srgb, var(--accent-blue) 20%, transparent);
   border-radius: 10px;
   background: color-mix(in srgb, var(--accent-blue) 6%, transparent);
+}
+
+/* 危险卡弱分级：只把左边框换成琥珀（2px），底色不动——一条边的信号量，够认出不吵 */
+.perm-card-inline.perm-card-warning {
+  border-left: 2px solid var(--border-warning);
 }
 
 .perm-card-msg {

@@ -152,6 +152,8 @@ export interface PermissionRequest {
   sessionId?: string;
   kind?: "tool" | "loop_continuation" | string;
   allowSession?: boolean;
+  /** 命中"危险命令警示"的警示文案（无则 null）：卡片据此把风险行渲染成弱警示样式 */
+  warning?: string | null;
 }
 
 export interface PlanProposal {
