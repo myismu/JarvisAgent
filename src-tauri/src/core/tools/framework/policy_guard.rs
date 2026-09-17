@@ -39,7 +39,7 @@ use tauri::{Emitter, Manager};
 /// 会话内的"本轮"状态：只保留判定真正需要跨调用保持的东西。
 ///
 /// 用途：批量规则——同一轮（一次用户请求）里改到第 3 个文件时要停下问用户。
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct PermissionTurnState {
     /// 当前轮的标识（用 run_id）；换了就重置
     pub turn_id: String,
@@ -134,6 +134,69 @@ mod tests {
         )
         .is_none());
         assert!(allowance_key_for(None, &json!({}), &[], None).is_none());
+    }
+
+    #[test]
+    fn file_scope_prefers_project_root_over_target_dir() {
+        // 范围键 = 项目根，而不是目标文件所在目录：
+        // 往 frontend/src、server、test2 各写一个文件，都算"同一个项目里的改动"，
+        // 用户授权一次就覆盖整个项目（否则一次脚手架搭建要挨个目录点 N 遍）
+        let in_src = allowance_key_for(
+            Some(ToolClass::ModifyContent),
+            &json!({ "path": "frontend/src/a.ts" }),
+            &["frontend/src/a.ts".to_string()],
+            Some(std::path::Path::new("E:/proj")),
+        )
+        .expect("应有键");
+        let in_root = allowance_key_for(
+            Some(ToolClass::CreateFile),
+            &json!({ "path": "b.ts" }),
+            &["b.ts".to_string()],
+            Some(std::path::Path::new("E:/proj")),
+        )
+        .expect("应有键");
+        assert_eq!(in_src.scope, "E:/proj", "项目内目标应归到项目根");
+        assert_eq!(in_root.scope, "E:/proj");
+        assert_eq!(in_src.scope, in_root.scope, "不同目录的目标应算同一个范围");
+    }
+
+    #[test]
+    fn file_scope_falls_back_to_target_dir_without_project() {
+        // 非沙箱会话（没有项目）：退回目标所在目录，避免"允许一次"放开整个磁盘
+        let key = allowance_key_for(
+            Some(ToolClass::ModifyContent),
+            &json!({ "path": "C:/elsewhere/src/a.ts" }),
+            &["C:/elsewhere/src/a.ts".to_string()],
+            None,
+        )
+        .expect("应有键");
+        assert_eq!(key.scope, "C:/elsewhere/src", "无项目时范围 = 目标所在目录");
+
+        // 项目外绝对路径（同样只出现在非沙箱会话）也退回目标所在目录，
+        // 不能把不相干的外部目录并进项目范围
+        let outside = allowance_key_for(
+            Some(ToolClass::ModifyContent),
+            &json!({ "path": "C:/other/x.ts" }),
+            &["C:/other/x.ts".to_string()],
+            Some(std::path::Path::new("E:/proj")),
+        )
+        .expect("应有键");
+        assert_eq!(outside.scope, "C:/other");
+    }
+
+    #[test]
+    fn scope_covers_child_directories_and_normalizes() {
+        // 项目根授权覆盖子目录请求
+        assert!(scope_covers("E:/proj", "E:/proj/frontend/src"));
+        // 无关目录不覆盖
+        assert!(!scope_covers("E:/proj", "E:/other"));
+        assert!(!scope_covers("E:/proj-a", "E:/proj-b"));
+        // 兄弟目录不能靠前缀字符巧合匹配（E:/proj2 不是 E:/proj 的子目录）
+        assert!(!scope_covers("E:/proj", "E:/proj2/x"));
+        // 规范化：\\?\ 前缀与尾部分隔符的差异不该被当成两个范围
+        assert!(scope_covers(r"\\?\E:\proj\", r"E:\proj\src\a.ts"));
+        assert!(scope_covers("E:/proj/", "E:/proj"));
+        assert!(scope_covers("E:/proj", "E:/proj"));
     }
 
     #[test]
@@ -574,7 +637,8 @@ pub fn command_prefix_scope(command: &str) -> Option<(String, String)> {
 
 /// 会话级允许的类别与范围。
 ///
-/// 文件类：类别 = `edit_project` / `delete`，范围 = 目标所在目录（绝对路径）
+/// 文件类：类别 = `edit_project` / `delete`，范围 = **会话工作目录（项目根）**，
+/// 见 [`file_scope_for`] 的两级回退。
 /// 命令类：类别 = `run_command`，范围 = 命令前缀（见 [`command_prefix_scope`]）
 /// 其它类别（读、编排、改工作目录等）：`None`，即不提供"本次会话都允许"
 fn allowance_key_for(
@@ -591,26 +655,72 @@ fn allowance_key_for(
     }
 
     let first = targets.first()?;
-    let dir = std::path::Path::new(first)
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_default();
-    let resolved = if dir.is_absolute() {
-        dir
-    } else {
-        workspace.map(|ws| ws.join(&dir)).unwrap_or(dir)
-    };
-    let display = normalize_dir_key(&resolved);
+    let (scope, display) = file_scope_for(first, workspace)?;
     let label = if kind == ALLOWANCE_KIND_DELETE {
         format!("在 {} 里删除文件", display)
     } else {
         format!("在 {} 里改动项目文件（新建 / 编辑 / 改名都算）", display)
     };
-    Some(AllowanceKey {
-        kind,
-        scope: display,
-        label,
-    })
+    Some(AllowanceKey { kind, scope, label })
+}
+
+/// 文件类范围键：**优先整个项目，没有项目才退回单个目录**。
+///
+/// 为什么粒度是项目根而不是"目标文件所在目录"：目录粒度会让一次脚手架搭建
+/// 弹出 N 张卡（往 `frontend/src`、`frontend`、`server`、`test2` 各写一个文件 = 各授权一次），
+/// 用户点完 N 次只能得出"这个按钮没用"的结论。范围里的"项目"由 `ctx.workspace` 定义，
+/// 而它同时是越界判定的沙箱边界（见 `policy::judge` 规则 2，越界一律 Deny 且问不出来），
+/// 所以"项目级允许"并不会让 agent 够到项目外的东西。
+///
+/// 回退顺序（第一级命中即返回）：
+/// 1. 目标**落在会话项目内** → 范围 = 项目根
+/// 2. 目标**是绝对路径且在项目外**（只可能出现在非沙箱会话：沙箱会话早被 Deny 拦下）
+///    → 退回该目标所在目录，避免把不相干的外部目录一起放开
+/// 3. 会话没有项目（非沙箱）→ 退回该目标所在目录
+///
+/// 返回 `(范围键, 展示路径)`。
+fn file_scope_for(
+    first: &str,
+    workspace: Option<&std::path::Path>,
+) -> Option<(String, String)> {
+    let target = std::path::Path::new(first);
+    let dir = target
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+
+    if let Some(ws) = workspace {
+        if super::permission::is_within_workspace(first, Some(ws)) {
+            return Some((normalize_dir_key(ws), normalize_dir_key(ws)));
+        }
+        let resolved_dir = if dir.is_absolute() { dir } else { ws.join(&dir) };
+        return Some((
+            normalize_dir_key(&resolved_dir),
+            normalize_dir_key(&resolved_dir),
+        ));
+    }
+
+    let dir_key = normalize_dir_key(&dir);
+    Some((dir_key.clone(), dir_key))
+}
+
+/// 范围键是否落在某条已授权范围内（用于"上级目录或同一项目曾授权"的继承）。
+///
+/// 目前范围键都是目录路径（或项目根），所以判断"是否在...里"就是**按路径分隔符比前缀**。
+/// 命令前缀另有一套精确匹配口径（见 `command_prefix_scope` 的说明），不走这里。
+pub fn scope_covers(granted: &str, candidate: &str) -> bool {
+    if granted == candidate {
+        return true;
+    }
+    // 先把两侧都规范化：`\\?\` 前缀与结尾分隔符的差异不该被当成两个范围
+    let granted_norm = normalize_dir_key(std::path::Path::new(granted));
+    let candidate_norm = normalize_dir_key(std::path::Path::new(candidate));
+    if granted_norm == candidate_norm {
+        return true;
+    }
+    let prefix = format!("{}\\", granted_norm.trim_end_matches(['\\', '/']));
+    let prefix_slash = format!("{}/", granted_norm.trim_end_matches(['\\', '/']));
+    candidate_norm.starts_with(&prefix) || candidate_norm.starts_with(&prefix_slash)
 }
 
 /// 目录范围键的规范化：剥掉 Windows 长路径前缀与**结尾的分隔符**。
@@ -699,6 +809,106 @@ pub async fn grant_session_allowance(
             }),
         );
     }
+}
+
+/// 切换权限档位后，把**已经挂起**的权限请求按新档位重判一遍。
+///
+/// 为什么需要：`set_session_approval_mode` 只改 `ctx.approval_mode`，不碰
+/// `pending_permissions`——已经弹出来的卡仍挂在界面上等用户点击，观感就是
+/// "切了档位没反应"。这里用与 [`enforce`] **完全相同**的判据（`policy::judge`）
+/// 重放每条挂起请求：新档位下会自动放行的直接放行，会硬拒的直接拒绝，
+/// 其余仍要问的（删除 / 改名 / 命令 / 覆盖已有文件 / 批量）原样保留等用户点。
+///
+/// 判据必须复用 `judge`：这里若另写一套"什么能放行"，就会出现
+/// "清扫放行了、下一次执行又被拦"的口径分裂。
+///
+/// 只处理带 `origin`（工具名 + 原始入参）的工具确认卡；循环续跑确认与
+/// 方案审批没有档位语义，插卡时就没带 origin，天然不会被重放。
+/// 命令类卡重放必然还是 Ask（档位不豁免命令），所以 shell 第二道门无需带 origin。
+///
+/// 返回消化掉的条数（放行 + 拒绝），仅用于日志。
+pub async fn sweep_pending_on_mode_change(app: &tauri::AppHandle, session_id: &str) -> usize {
+    let manager = app.state::<crate::infra::state::state::SessionManager>();
+    let ctx = manager.get_or_create(session_id).await;
+    let mode = match ctx.approval_mode.lock().await.as_str() {
+        "auto_approve" => ApprovalMode::AutoApprove,
+        _ => ApprovalMode::RequestApproval,
+    };
+
+    // 收集可重放的挂起工具确认（id, 工具名, 原始入参）
+    let replay: Vec<(String, String, Value)> = {
+        let perms = ctx.pending_permissions.lock().await;
+        perms
+            .iter()
+            .filter(|(_, entry)| entry.kind == PermissionKind::Tool)
+            .filter_map(|(id, entry)| {
+                entry
+                    .origin
+                    .as_ref()
+                    .map(|(tool, input)| (id.clone(), tool.clone(), input.clone()))
+            })
+            .collect()
+    };
+    if replay.is_empty() {
+        return 0;
+    }
+
+    // `prepare_facts` 有副作用（更新"本轮改过哪些文件"的批量计数）；
+    // 清扫是重放不是新调用，结束后把计数恢复原样，避免凭空推高批量阈值
+    let saved_turn = ctx.permission_turn.lock().await.clone();
+
+    let mut swept: Vec<(String, PermissionDecision)> = Vec::new();
+    for (id, tool, input) in &replay {
+        let facts = prepare_facts(&ctx, tool, input).await;
+        let verdict = policy::judge(tool, mode, &facts.to_input());
+        match verdict.outcome {
+            Outcome::Allow => swept.push((id.clone(), PermissionDecision::Allow)),
+            // 理论上到不了：插卡的前提就是当时判为 Ask，而 Deny 规则（越界/现有检查）
+            // 排在档位之前。留着是防御——真发生了也不能让卡一直挂着。
+            Outcome::Deny => swept.push((
+                id.clone(),
+                PermissionDecision::Reject {
+                    feedback: Some(verdict.reason.clone()),
+                },
+            )),
+            Outcome::Ask => {}
+        }
+    }
+
+    *ctx.permission_turn.lock().await = saved_turn;
+    if swept.is_empty() {
+        return 0;
+    }
+
+    // 先收锁摘条目，再唤醒等待方：send 会立刻唤醒对方，而对方醒来马上要锁同一张表
+    let mut dispatched: Vec<(String, PermissionDecision)> = Vec::new();
+    {
+        let mut perms = ctx.pending_permissions.lock().await;
+        for (id, decision) in swept {
+            if let Some(entry) = perms.remove(&id) {
+                let _ = entry.responder.send(decision.clone());
+                dispatched.push((id, decision));
+            }
+        }
+    }
+    for (id, decision) in &dispatched {
+        println!(
+            "[JARVIS] 档位切换清扫：挂起请求 {} 按「{}」重判为 {}",
+            id,
+            mode.label(),
+            decision.status_label()
+        );
+        let _ = app.emit(
+            "permission-resolved",
+            serde_json::json!({
+                "id": id,
+                "sessionId": session_id,
+                "decision": decision.status_label(),
+                "decisionText": decision.model_note(),
+            }),
+        );
+    }
+    dispatched.len()
 }
 
 /// "这条命令是否已被本会话允许"——给 shell 工具内部的第二道门用。
@@ -862,12 +1072,15 @@ pub async fn enforce(
             //    明确含义（没键就别显示这个按钮），二是用户点了之后能据此消化积压。
             let message = build_permission_message(tool, &facts, &decision.reason, agent_type);
             let pending_key = key.as_ref().map(|k| (k.kind.to_string(), k.scope.clone()));
-            let decision = super::permission::request_permission(
+            // 带上发起来源（工具名 + 原始入参）：切档位时清扫逻辑据此按新档位重放判定，
+            // 自动消化"新档位下根本不用问"的挂起卡（见 sweep_pending_on_mode_change）
+            let decision = super::permission::request_permission_with_origin(
                 app,
                 session_id,
                 &message,
                 PermissionKind::Tool,
                 pending_key,
+                Some((tool, input)),
             )
             .await;
             match decision {

@@ -248,6 +248,20 @@ pub async fn set_session_approval_mode(
         serde_json::json!({ "sessionId": session_id, "mode": mode }),
     );
     println!("[JARVIS] 会话 {} 权限档位切换为：{}", session_id, mode);
+
+    // 切档位后把**已经挂起**的权限卡按新档位重判一遍：新档位下不用问的直接放行。
+    // 没有这一步，已弹出的卡仍然挂在界面上等点击，观感就是"切了档位没反应"。
+    // 重判复用 policy::judge，不会与执行期判定出现两套口径；仍要问的（命令/删除/
+    // 改名/覆盖已有文件/批量）原样保留。返回值只是清扫条数，失败不阻断切档。
+    let swept =
+        crate::core::tools::framework::policy_guard::sweep_pending_on_mode_change(&app, &session_id)
+            .await;
+    if swept > 0 {
+        println!(
+            "[JARVIS] 档位切换清扫：消化了 {} 条挂起请求",
+            swept
+        );
+    }
     Ok(())
 }
 

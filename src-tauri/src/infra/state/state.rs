@@ -65,7 +65,11 @@ pub struct PendingSnapshotPatch {
 /// 本会话已允许的范围（用户点过"本次会话都允许"）
 ///
 /// 粒度 = **操作类别 + 范围**（不是"工具 + 范围"）：
-/// - 文件类：类别 = `edit_project`（新建/编辑/改名）或 `delete`，范围 = 目标所在目录
+/// - 文件类：类别 = `edit_project`（新建/编辑/改名）或 `delete`，
+///   范围 = **会话项目根**（`ctx.workspace`；无项目的会话退回目标所在目录）。
+///   粒度刻意提到项目级：目录级会让一次脚手架搭建弹 N 张卡（每个目录各授权一次），
+///   用户点完只能得出"这个按钮没用"。越界由沙箱边界（`policy::judge` 规则 2）挡住，
+///   项目级授权不会让 agent 够到项目外。
 /// - 命令类：类别 = `run_command`，范围 = 命令前缀（例如 `npm run`）
 ///
 /// 类别刻意收敛成 3 个：类别越细，"本次会话都允许"就越等于每次都得点一遍，
@@ -75,7 +79,7 @@ pub struct PendingSnapshotPatch {
 pub struct SessionAllowance {
     /// 操作类别（`edit_project` / `delete` / `run_command`）
     pub kind: String,
-    /// 范围键（文件类 = 目标目录绝对路径；命令类 = 命令前缀）
+    /// 范围键（文件类 = 项目根或目标所在目录的绝对路径；命令类 = 命令前缀）
     pub scope: String,
     /// 展示给用户看的说明（弹窗与"已允许"面板共用）
     pub label: String,
@@ -95,6 +99,12 @@ pub struct PendingPermission {
     /// 2. 用户点了"本次会话都允许"之后，据此把**已经挂起**、会被同一条允许覆盖的
     ///    请求一次性放行，不用用户挨个点（口径见 `policy_guard::allowance_key_for`）
     pub allowance: Option<(String, String)>,
+    /// 发起这条请求的工具名与原始入参（仅工具确认有）。
+    ///
+    /// 切换权限档位时，清扫逻辑（`policy_guard::sweep_pending_on_mode_change`）
+    /// 用它按新档位**重放** `policy::judge`，自动消化"新档位下根本不用问"的挂起卡。
+    /// 循环续跑确认、方案审批没有档位语义，为 `None`，不会被清扫重放。
+    pub origin: Option<(String, serde_json::Value)>,
     /// 决策发送端（结构化决策，不是字符串）
     pub responder: tokio::sync::oneshot::Sender<
         crate::core::tools::framework::permission::PermissionDecision,
@@ -205,12 +215,27 @@ impl SessionContext {
     /// 权限请求（`permission::request_permission`）的"还要不要问用户"检查、
     /// 以及 shell 工具内部的第二道门（`policy_guard::command_allowed`）都走这里，
     /// 避免出现两套"已允许"标准。
+    ///
+    /// 匹配规则按类别分两套：
+    /// - 文件类（`edit_project` / `delete`）：**上级覆盖下级**——范围键是项目根
+    ///   （或无项目时的目标所在目录），所以"整个项目授权过"自然覆盖其子目录的请求
+    ///   （继承判定见 `policy_guard::scope_covers`）。
+    /// - 命令类（`run_command`）：字符串**精确相等**——命令前缀没有"包含"语义，
+    ///   `npm run` 的授权不能放宽到 `npm run build` 以外的前缀。
     pub async fn allowance_covers(&self, kind: &str, scope: &str) -> bool {
+        let file_kind = kind != crate::core::tools::framework::policy_guard::ALLOWANCE_KIND_COMMAND;
         self.session_allowances
             .lock()
             .await
             .iter()
-            .any(|a| a.kind == kind && a.scope == scope)
+            .any(|a| {
+                a.kind == kind
+                    && if file_kind {
+                        crate::core::tools::framework::policy_guard::scope_covers(&a.scope, scope)
+                    } else {
+                        a.scope == scope
+                    }
+            })
     }
 }
 

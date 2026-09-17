@@ -207,6 +207,20 @@ pub async fn request_permission(
     kind: PermissionKind,
     allowance: Option<(String, String)>,
 ) -> PermissionDecision {
+    request_permission_with_origin(app, session_id, message, kind, allowance, None).await
+}
+
+/// 带"发起来源"的权限请求：工具确认应传 `(工具名, 原始入参)`，切权限档位时的
+/// 挂起卡清扫（`policy_guard::sweep_pending_on_mode_change`）据此按新档位重放判定，
+/// 自动消化"新档位下根本不用问"的卡；循环续跑确认、方案审批没有档位语义，传 `None`。
+pub async fn request_permission_with_origin(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    message: &str,
+    kind: PermissionKind,
+    allowance: Option<(String, String)>,
+    origin: Option<(&str, &serde_json::Value)>,
+) -> PermissionDecision {
     let session_manager = app.state::<SessionManager>();
     let ctx = session_manager.get_or_create(session_id).await;
 
@@ -240,6 +254,7 @@ pub async fn request_permission(
                 message: message.to_string(),
                 kind,
                 allowance: allowance.clone(),
+                origin: origin.map(|(tool, input)| (tool.to_string(), input.clone())),
                 responder: tx,
             },
         );

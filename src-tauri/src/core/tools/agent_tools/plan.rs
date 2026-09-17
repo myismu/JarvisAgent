@@ -263,6 +263,8 @@ pub async fn propose_plan(
                 kind: crate::core::tools::framework::permission::PermissionKind::PlanApproval,
                 // 方案审批走产品层状态机，没有"会话级允许"语义
                 allowance: None,
+                // 方案审批没有档位语义，不参与切档位时的挂起卡清扫
+                origin: None,
                 responder: tx,
             },
         );
