@@ -69,19 +69,23 @@ export function resolveContextPercent(
 /**
  * 手动压缩的消息条数下限（**与后端同源**）。
  *
- * 镜像 Rust 侧唯一真源 `infra::types::constants::COMPACT_KEEP_RECENT_MESSAGES`（= 6）。
+ * 镜像 Rust 侧唯一真源 `infra::types::constants::COMPACT_MIN_MESSAGES`（= 6）。
  * 后端判据在 `command/session.rs::compact_inner()`：`messages.len() <= keep` 就直接返回
  * "消息不足…无需压缩"，**全程不看 token**。改一侧必须同步另一侧。
+ *
+ * ⚠️ 2026-09-17 改名 + 改语义：旧名 `COMPACT_KEEP_RECENT_MESSAGES` 兼管"自动压缩后保留几条第尾"
+ * 与"手动压缩下限"两件事。前者已撤销（自动压缩现在**不留尾巴**，压完只剩摘要），
+ * 本常量只剩后者一层含义，故改名以免误导。
  */
-export const COMPACT_KEEP_RECENT_MESSAGES = 6;
+export const COMPACT_MIN_MESSAGES = 6;
 
 /**
  * 建议压缩的占用百分比（**仅用于提示，不是闸门**）。
  *
  * 注意它**不等于**后端的自动压缩阈值：自动压缩是
- * `(窗口 − 输出预算) × COMPACT_TRIGGER_PERCENT`（见 `infra/llm/context_budget.rs`），
- * 200K 窗口 / 32K 输出预算下实际在窗口的 58.8% 就触发，比这里的 70% 更早。
- * 所以这里只回答"要不要提醒用户"，不回答"能不能压"。
+ * `(窗口 − 输出预算) × COMPACT_TRIGGER_PERCENT`（见 `infra/llm/context_budget.rs`，
+ * 2026-09-17 起为 85%），200K 窗口 / 32K 输出预算下实际在窗口的 71.4% 触发，
+ * 与本值 70% 接近。所以这里只回答"要不要提醒用户"，不回答"能不能压"。
  */
 export const COMPACT_SUGGEST_PERCENT = 70;
 
@@ -101,5 +105,5 @@ export const COMPACT_SUGGEST_PERCENT = 70;
  * 不会出现"亮了点不动"。宁可偶尔早一格禁用，也不要给一个按下去被拒的按钮。
  */
 export function canManuallyCompact(messageCount?: number | null): boolean {
-  return typeof messageCount === 'number' && messageCount > COMPACT_KEEP_RECENT_MESSAGES;
+  return typeof messageCount === 'number' && messageCount > COMPACT_MIN_MESSAGES;
 }

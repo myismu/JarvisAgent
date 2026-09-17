@@ -12,7 +12,7 @@
 ## Constraints
 - 占用口径与输入框读数环同源（`utils/contextUsage.ts`）：厂商实测优先、本地估算兜底，
   估算态必须显式标注；分区明细无法实测（API 只回总量），只能估算
-- 手动压缩按钮的**可用性判据必须与后端同源**：看消息条数（`COMPACT_KEEP_RECENT_MESSAGES`，
+- 手动压缩按钮的**可用性判据必须与后端同源**：看消息条数（`COMPACT_MIN_MESSAGES`，
   对应 `command/session.rs::compact_inner()`），**不是** token 占比；占比只用于"建议压缩"徽标。
   自动压缩走另一套（`infra/llm/context_budget.rs` 的 token 判据），两者按设计分开
 - 只读展示，不改变 Agent 请求或压缩策略（压缩按钮是显式用户操作）
@@ -23,7 +23,7 @@ import { useI18n } from 'vue-i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { emit as tauriEmit } from '@tauri-apps/api/event';
 import ConfirmModal from '../common/ConfirmModal.vue';
-import { canManuallyCompact, COMPACT_KEEP_RECENT_MESSAGES, COMPACT_SUGGEST_PERCENT, isContextMeasured, resolveContextPercent, resolveContextTokens } from '../../utils/contextUsage';
+import { canManuallyCompact, COMPACT_MIN_MESSAGES, COMPACT_SUGGEST_PERCENT, isContextMeasured, resolveContextPercent, resolveContextTokens } from '../../utils/contextUsage';
 import type { CacheHitPoint, ContextSectionSnapshot, SessionContextSnapshot } from '../../types';
 
 const props = defineProps<{
@@ -236,7 +236,7 @@ const compactHint = computed(() => {
   if (!canCompact.value) {
     return t('monitor.context.compactHintTooFew', {
       count,
-      min: COMPACT_KEEP_RECENT_MESSAGES,
+      min: COMPACT_MIN_MESSAGES,
     });
   }
   const percent = contextUsagePercent.value;
@@ -341,7 +341,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
             v-else-if="sessionId && !canCompact && !compacting"
             class="compact-blocked-note"
             :title="compactHint"
-          >{{ t('monitor.context.compactBlockedNote', { min: COMPACT_KEEP_RECENT_MESSAGES }) }}</span>
+          >{{ t('monitor.context.compactBlockedNote', { min: COMPACT_MIN_MESSAGES }) }}</span>
           <button
             v-if="sessionId"
             class="compact-btn"

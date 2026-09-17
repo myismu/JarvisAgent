@@ -31,7 +31,7 @@ pub const FILE_LAST_ACTIVE_SESSION: &str = "_last_active.txt";
 
 // --- Limits & Thresholds ---
 pub const MAX_TOKENS_CONTEXT: i32 = 8192;
-// 上下文压缩的触发阈值已不再是一个固定常量：它 =（模型窗口 − 输出预算）× 70%，
+// 上下文压缩的触发阈值已不再是一个固定常量：它 =（模型窗口 − 输出预算）× 85%，
 // 见 `infra::llm::context_budget`（主 Agent 与子代理共用）。
 pub const MAX_AGENT_LOOP_BEFORE_CONFIRM: usize = 30;
 pub const MAX_AGENT_LOOP_ABSOLUTE: usize = 200;
@@ -42,7 +42,13 @@ pub const MAX_BACKGROUND_OUTPUT_LEN: usize = 50000;
 pub const MAX_BACKGROUND_NOTIFY_LEN: usize = 500;
 /// 上下文快照里保留的"逐 loop 缓存命中"记录条数（用于渲染趋势曲线）
 pub const CACHE_HISTORY_MAX_POINTS: usize = 12;
-pub const COMPACT_KEEP_RECENT_MESSAGES: usize = 6;
+/// 手动压缩的**消息条数下限**：少于这个条数不值得压（压了等于没压）。
+///
+/// ⚠️ 2026-09-17 改名 + 改语义。旧名 `COMPACT_KEEP_RECENT_MESSAGES` 兼管两件事：
+/// ① 自动压缩后保留几条第尾（**已撤销** —— 现在"不留尾巴"，压缩后只剩 2 条）；
+/// ② 手动压缩低于几条直接拒绝（**保留** —— 就是本常量现在的唯一含义）。
+/// 前端 `src/utils/contextUsage.ts` 有一份同值镜像，改一侧必须同步另一侧。
+pub const COMPACT_MIN_MESSAGES: usize = 6;
 pub const SUBAGENT_TIMEOUT_SECS: u64 = 480;
 
 // --- HTTP 超时（分层，覆盖不同的沉默形态，详见 doc/流式请求超时与中断落库机制方案.md 第 11 节）---

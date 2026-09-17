@@ -2538,7 +2538,7 @@ impl PipelineState {
             est_now,
         );
 
-        // >70% 可用窗口：LLM 摘要压缩
+        // >85% 可用窗口：LLM 摘要压缩
         if crate::infra::llm::context_budget::should_compact(tokens, trigger) {
             println!(
                 "[贾维斯] 上下文占用 {} > {}% 可用窗口（窗口 {} − 输出预算 {} = {}, 本地估算 {}, 上轮实测 {:?}）, 触发 LLM 摘要压缩",
@@ -2552,10 +2552,58 @@ impl PipelineState {
             );
 
             let mut session = self.ctx.memory.lock().await;
-            // 2. 压缩前先临时取出最后一条用户消息，压缩完成后再放回
+            // 2. 压缩前先临时取出最后一条用户消息，压缩完成后再放回。
+            //
+            // ⚠️ 注意「最后一条是用户消息」并不等于「最后一条是本轮提问」：
+            // 工具结果同样是 `Message::User`（Anthropic 约定）。所以这段 pop/restore
+            // 单独用**保不住本轮提问** —— 真正保证本轮任务不被压掉的是下面的
+            // 「本轮区间白名单」（`initial_msg_index` 之后整段不参与压缩）。
+            // 它在这里的职责只剩一个：避免压缩后历史以 User 结尾（Anthropic 要求
+            // 首条须为 User、且相邻同角色需合并，这里补 Assistant 垫片兜住）。
             let mut last_user_msg = None;
             if let Some(Message::User { .. }) = session.messages.last() {
                 last_user_msg = pop_message(&mut session);
+            }
+
+            // 2b. 本轮区间白名单：`initial_msg_index` = 本轮用户消息在 messages 中的下标
+            //     （见 pre_loop 的 inject_user_message）。它之后的所有消息都属于
+            //     「本轮任务」——本轮提问、本轮 assistant 块、本轮工具结果、
+            //     中途切换工作模式追加的 context 快照 —— 一律不参与压缩。
+            //
+            //     取**连续区间**而非挑选消息：Assistant(ToolUse) 与其后的
+            //     User(ToolResult) 必须成对出现在请求里，切开会让 provider 直接 400。
+            let turn_start = self.initial_msg_index.min(session.messages.len());
+            let turn_messages: Vec<Message> = session.messages.drain(turn_start..).collect();
+            let turn_sources: Vec<String> = if session.sources.len() >= turn_messages.len() {
+                let keep = session.sources.len().saturating_sub(turn_messages.len());
+                session.sources.drain(keep..).collect()
+            } else {
+                Vec::new()
+            };
+            let turn_len = turn_messages.len();
+
+            // 2c. 本轮就是全部历史（`initial_msg_index` 指向第 0 条）⇒ 没有可压的前缀。
+            //     此时**不切开本轮**，直接放弃本次压缩，等下一次用户提问重新划界。
+            //     切开本轮正是要消除的问题：模型会重做已做过的动作。
+            let prefix_len = session.messages.len();
+            if prefix_len == 0 {
+                // 放回本轮区间后直接返回。
+                //（用 append_message 而非直接 push：它会先 normalize_message_ids
+                // 把 message_ids 与 messages 重新对齐 —— drain 之后两者长度已不同步）
+                for (msg, src) in turn_messages.into_iter().zip(turn_sources) {
+                    append_message(&mut session, msg, &src);
+                }
+                // 本轮起点 = 放回后「区间起点」的下标
+                self.initial_msg_index = session.messages.len().saturating_sub(turn_len);
+                if let Some((msg, message_id)) = last_user_msg {
+                    restore_message(&mut session, msg, message_id, "chat");
+                    self.initial_msg_index = session.messages.len().saturating_sub(1);
+                }
+                println!(
+                    "[JARVIS] 本轮即为全部历史（{} 条），无可压缩前缀，跳过本次压缩 —— 本轮区间保持完整",
+                    session.messages.len()
+                );
+                return;
             }
 
             let compact_result = auto_compact(
@@ -2569,26 +2617,63 @@ impl PipelineState {
             )
             .await;
 
-            if let Err(e) = compact_result {
-                println!("[JARVIS] 自动压缩失败: {}，继续使用原始上下文", e);
-            } else {
-                self.initial_msg_index = session.messages.len();
+            // 无论压缩成功与否，本轮区间都必须原样拼回
+            match compact_result {
+                Err(e) => {
+                    println!("[JARVIS] 自动压缩失败: {}，继续使用原始上下文", e);
+                    for (msg, src) in turn_messages.into_iter().zip(turn_sources) {
+                        append_message(&mut session, msg, &src);
+                    }
+                    // 前缀未被压，本轮起点仍落在原前缀之后
+                    self.initial_msg_index = prefix_len;
+                }
+                Ok(()) => {
+                    // 压缩成功：前缀已被压成「压缩请求 + 摘要」两条，
+                    // 本轮区间原样拼回，本轮起点 = 压缩后的前缀长度。
+                    //
+                    // ⚠️ 本轮提问「原本就在区间里」（turn_start 就是它的下标），
+                    // 所以这里**不能**再用 last_user_msg 恢复一次，否则会插入两条提问。
+                    // last_user_msg 只用于「最后一条是工具结果」的情形（见下），
+                    // 那种情况下它属于本轮区间，已被上面拼回。
+                    let compacted_len = session.messages.len();
+                    for (msg, src) in turn_messages.into_iter().zip(turn_sources) {
+                        append_message(&mut session, msg, &src);
+                    }
+                    self.initial_msg_index = compacted_len;
+                    println!(
+                        "[JARVIS] 压缩完成：前缀 {} 条 → {} 条，本轮区间 {} 条原样保留（本轮起点 = {}）",
+                        prefix_len,
+                        compacted_len,
+                        session.messages.len() - compacted_len,
+                        self.initial_msg_index
+                    );
+                }
             }
 
-            // 3. 把最新用户消息恢复到历史末尾，保证上下文连贯
+            // 3. 兜底：历史不能以 User 结尾（补一条 Assistant 垫片）。
+            //    正常路径下本轮区间末尾是 assistant 块或工具结果，这里只是防御。
             if let Some((msg, message_id)) = last_user_msg {
-                let needs_assistant_pad = match session.messages.last() {
-                    Some(Message::User { .. }) => true,
-                    None => true,
-                    _ => false,
-                };
-                if needs_assistant_pad {
-                    append_message(&mut session, Message::Assistant {
-                        content: Content::Single("Context compressed.".to_string()),
-                    }, "internal");
+                // ⚠️ 去重：最后一条用户消息若已随本轮区间拼回（message_id 已存在），
+                //    就不能再恢复一次 —— 否则历史里会出现两条同样的提问。
+                let already_present = session
+                    .message_ids
+                    .iter()
+                    .any(|existing| existing == &message_id);
+                if already_present {
+                    let needs_assistant_pad = match session.messages.last() {
+                        Some(Message::User { .. }) => true,
+                        None => true,
+                        _ => false,
+                    };
+                    if needs_assistant_pad {
+                        append_message(&mut session, Message::Assistant {
+                            content: Content::Single("Context compressed.".to_string()),
+                        }, "internal");
+                    }
+                } else {
+                    restore_message(&mut session, msg, message_id, "chat");
+                    self.initial_msg_index = session.messages.len().saturating_sub(1);
                 }
-                self.initial_msg_index = session.messages.len();
-                restore_message(&mut session, msg, message_id, "chat");
             }
         }
     }
@@ -2845,6 +2930,38 @@ impl PipelineState {
             }
         }
 
+        /// 计数口径与展示内容分离的版本：`content` 仍用可读文本（面板展示用），
+        /// 但 `chars` / `estimated_tokens` 按 `count_text` 计算（真实 payload 口径）。
+        ///
+        /// 2026-09-17 起 `messages` 分区改用这个：`format_messages_readable` 会把
+        /// `tool_result` 截断到 3 行、ToolUse 截到 200 字符、Thinking 截到 80 字符，
+        /// 而真实发出去的是完整内容 —— 拿截断文本计数会系统性低估
+        /// （长会话实测 17.3k vs 实际 52.0k，约 3 倍），压缩该触发时不触发。
+        fn section_with_raw_counting_full(
+            model_id: &str,
+            key: &str,
+            label: &str,
+            display_content: String,
+            counting_text: &str,
+            item_count: usize,
+            raw: String,
+        ) -> ContextSectionSnapshot {
+            let chars = counting_text.chars().count();
+            let token_count = crate::infra::llm::token_count::count_text(model_id, counting_text);
+            ContextSectionSnapshot {
+                key: key.to_string(),
+                label: label.to_string(),
+                chars,
+                estimated_tokens: token_count.tokens,
+                token_count_method: token_count.method.as_str().to_string(),
+                item_count,
+                // 面板展开看的是可读文本；计数走 counting_text
+                content: display_content,
+                truncated: false,
+                raw_content: Some(raw),
+            }
+        }
+
         fn count_blocks(messages: &[Message]) -> (usize, usize, usize, usize) {
             let mut tool_calls = 0;
             let mut tool_results = 0;
@@ -2890,13 +3007,20 @@ impl PipelineState {
             // 上面的 `messages` 分区现在按未 strip 的 history 计数，已经包含它。
             // 保留独立分区等于把本轮动态上下文重复计一次，总量会虚高。
             // 需要看它有多大时，展开 `messages` 分区找 `[Context]` 段即可。
-            section_with_raw(
+            // ⚠️ 计数口径（2026-09-17 修）：`format_messages_readable` 会把 tool_result
+            // 截断到 3 行、ToolUse 截到 200 字符、Thinking 截到 80 字符 —— 那是**给人看**的
+            // 可读摘要。真实发给厂商的 payload 是完整内容，用截断文本计数会系统性低估
+            // （长会话实测 17.3k vs 实际 52.0k，约 3 倍），导致压缩该触发时不触发。
+            // 故：`content`（面板展示）继续用可读文本，`chars` / `estimated_tokens`
+            // （判据消费）改用完整 JSON。
+            section_with_raw_counting_full(
                 &self.model_id,
                 "messages",
                 "Session Messages",
                 messages_text,
+                &messages_json,
                 history_snapshot.len(),
-                messages_json,
+                messages_json.clone(),
             ),
             section_with_raw(
                 &self.model_id,

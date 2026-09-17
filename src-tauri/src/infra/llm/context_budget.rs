@@ -14,7 +14,7 @@
 //!      [`FALLBACK_CONTEXT_WINDOW`]（注册表里补全之前，宁可保守）
 //!    - `R`：输出预算，与请求体里的 `max_tokens` **同源**（用户覆盖 > 注册表 > 常量兜底）。
 //!      不预留的话，上下文可以一路涨到窗口边沿，回复反而没地方写
-//! 2. **阈值** `= (W − R) × 70%`
+//! 2. **阈值** `= (W − R) × 85%`
 //! 3. **分子（当前占用）** `= est_now × k`
 //!
 //! 标定系数 `k` 的意义：本地估算系统性低估（实测常见 2~3 倍），单看估算值会以为
@@ -33,7 +33,11 @@
 //! 没有实测参考时（会话首轮）退回纯估算 `est_now`：宁可能晚压，不无依据地编数。
 
 /// 触发压缩的可用窗口占用百分比
-pub const COMPACT_TRIGGER_PERCENT: usize = 70;
+///
+/// 2026-09-17 由 70 提到 85：压缩是有信息损耗的操作（摘要无法绝对保证保住进行中的任务），
+/// 且"不留尾巴"后压缩一次要丢掉整个前缀，代价比过去更高。与其频繁触发反复损耗，
+/// 不如少触发、把余量留给一次压得干净。
+pub const COMPACT_TRIGGER_PERCENT: usize = 85;
 
 /// 模型窗口未知时的兜底值（注册表补齐前的保守取值）
 pub const FALLBACK_CONTEXT_WINDOW: usize = 100_000;
@@ -60,7 +64,7 @@ pub fn resolve_output_budget(model_id: &str, user_override: Option<i32>) -> usiz
     resolved.max(0) as usize
 }
 
-/// 触发阈值 =（窗口 − 输出预算）× 70%
+/// 触发阈值 =（窗口 − 输出预算）× 85%
 ///
 /// 输出预算 ≥ 窗口（配置异常）时不减，直接按整窗口算，避免可用窗口被削成 0
 /// 导致每轮都触发压缩。
@@ -114,13 +118,13 @@ mod tests {
 
     #[test]
     fn trigger_reserves_output_budget() {
-        // 200k 窗口、32k 输出预算 → 可用 168k → 阈值 117.6k
-        assert_eq!(compact_trigger_tokens(200_000, 32_000), 117_600);
+        // 200k 窗口、32k 输出预算 → 可用 168k → 阈值 142.8k（85% 口径）
+        assert_eq!(compact_trigger_tokens(200_000, 32_000), 142_800);
     }
 
     #[test]
     fn output_budget_larger_than_window_does_not_underflow() {
-        assert_eq!(compact_trigger_tokens(1_000, 5_000), 700);
+        assert_eq!(compact_trigger_tokens(1_000, 5_000), 850);
     }
 
     #[test]

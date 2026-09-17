@@ -1215,9 +1215,9 @@ async fn compact_inner(
 ) -> Result<String, String> {
     let ctx = session_manager.get_or_create(session_id).await;
     let mut memory = ctx.memory.lock().await;
-    let keep = crate::infra::types::constants::COMPACT_KEEP_RECENT_MESSAGES;
+    let keep = crate::infra::types::constants::COMPACT_MIN_MESSAGES;
     if memory.messages.len() <= keep {
-        return Ok(format!("消息不足（仅有 {} 条，保留阈值 {} 条），无需压缩。", memory.messages.len(), keep));
+        return Ok(format!("消息不足（仅有 {} 条，下限 {} 条），无需压缩。", memory.messages.len(), keep));
     }
     // 辅助调用统一走带超时的客户端
     let client = api_client::build_utility_client();

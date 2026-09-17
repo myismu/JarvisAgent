@@ -72,6 +72,11 @@ pub fn append_transcript(session_id: &str, text: &str) -> Result<String, MemoryE
 }
 
 /// 对消息列表执行 LLM 摘要压缩（会话无关，不保存转录，供子 Agent 等场景使用）
+///
+/// ⚠️ **本函数会压掉传进来的全部消息**（2026-09-17 起不再保留尾部）：
+/// 调用方必须先把「本轮任务区间」从 `memory` 里摘出去，只把**已完成轮次的前缀**传进来。
+/// 主 Agent 的做法见 `pipeline::compact_if_needed`（按 `initial_msg_index` 切分后
+/// 把前缀压缩、把本轮区间拼回）。
 pub async fn compact_messages(
     memory: &mut SessionMemory,
     client: &reqwest::Client,
@@ -95,18 +100,15 @@ pub async fn compact_messages(
     let messages = &mut memory.messages;
     let sources = &mut memory.sources;
 
-    // 2. 保留最近 N 条消息不参与压缩
-    let keep_recent = crate::infra::types::constants::COMPACT_KEEP_RECENT_MESSAGES;
-    let recent: Vec<_> = if messages.len() > keep_recent {
-        messages.drain(messages.len() - keep_recent..).collect()
-    } else {
-        Vec::new()
-    };
-    let recent_sources: Vec<_> = if sources.len() > keep_recent {
-        sources.drain(sources.len() - keep_recent..).collect()
-    } else {
-        Vec::new()
-    };
+    // 2. 不留尾巴：整个前缀都参与压缩，压缩后历史只剩「压缩请求 + 摘要」两条。
+    //
+    // 2026-09-17 起撤掉「固定保留最近 N 条」：以消息条数为轴切不出任务边界
+    // （一次工具调用就占 2 条，6 条可能只覆盖 3 次调用，也可能横跨多个已完结任务）。
+    // 改为按任务边界切 —— 由调用方（`pipeline::compact_if_needed`）保证
+    // **本轮任务不出现在传进来的 messages 里**（本轮区间由 `initial_msg_index` 白名单保护），
+    // 因此这里可以放心压掉全部输入。
+    //
+    // ⚠️ 调用方必须先把本轮区间摘出去，否则会把正在执行的任务也压掉。
 
     let summary = call_summarize_llm(messages, client, api_key, base_url, model_id, api_format).await?;
 
@@ -123,10 +125,6 @@ pub async fn compact_messages(
         )),
     });
     sources.push("compact".to_string());
-
-    // 把保留的最近消息追加回来
-    messages.extend(recent);
-    sources.extend(recent_sources);
 
     Ok(())
 }
@@ -167,14 +165,19 @@ async fn call_summarize_llm(
          3) Key technical decisions made and WHY\n\
          4) Any error messages encountered and how they were resolved\n\
          5) Preserve exact code snippets, file paths, and API signatures where present\n\
-         Be concise but prioritize technical precision over brevity.\n\n{}",
+         6) If the conversation shows tasks that were explicitly requested, list which ones are \
+         DONE and which ones are still UNFINISHED (including anything half-applied, \
+         pending verification, or blocked on a decision). Only include this list if such tasks \
+         actually exist — do not invent items or pad with generic statements.\n\
+         Be concise but prioritize technical precision over brevity. \
+         Never drop an unfinished task in order to save space.\n\n{}",
         summarized_text
     );
 
     let request_body = AnthropicRequest {
         model: model_id.to_string(),
         max_tokens: 2000,
-        system: "You are a technical conversation summarizer. Your job is to compress chat history while preserving all information needed for an AI coding agent to continue work without losing context. Prioritize: file paths, code snippets, error messages, technical decisions, and current task state. If in doubt, include it.".to_string(),
+        system: "You are a technical conversation summarizer. Your job is to compress chat history while preserving all information needed for an AI coding agent to continue work without losing context. Prioritize: file paths, code snippets, error messages, technical decisions, current task state, and — above all — any task that was requested but not yet finished. Never omit an unfinished task to save space. If in doubt, include it.".to_string(),
         messages: vec![Message::User {
             content: Content::Single(summary_prompt),
         }],
@@ -296,7 +299,8 @@ pub async fn auto_compact(
         println!("[auto_compact] 清理 internal/background 消息失败: {}", e);
     }
 
-    // 生成 message_ids（前两条是压缩摘要，后面是保留的最近消息）
+    // 生成 message_ids（同样走 message_ids 重建：本函数只负责把整体压缩掉，
+    // 拼接本轮区间、重算下标由调用方完成 —— 见 `pipeline::compact_if_needed`）
     let message_ids: Vec<String> = (0..memory.messages.len())
         .map(|i| format!("compact:{}:{}", i, uuid::Uuid::new_v4().simple()))
         .collect();
