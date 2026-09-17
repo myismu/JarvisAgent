@@ -38,6 +38,10 @@ impl LlmProvider for AnthropicProvider {
         // 丢弃无 signature 的 thinking 块（回传给 Anthropic 会被判 400）
         messages = crate::infra::llm::adapters::strip_unsigned_thinking_for_anthropic(&messages);
 
+        // 采样参数：注册表声明不接受的模型一律剥离（Anthropic 自 Opus 4.7 起
+        // 以及 5 系全系已废弃 temperature/top_p/top_k，传了直接 400）。
+        let sampling_ok = crate::infra::llm::registry::supports_sampling_params(model_id);
+
         let mut body = AnthropicRequest {
             model: model_id.to_string(),
             max_tokens,
@@ -46,17 +50,19 @@ impl LlmProvider for AnthropicProvider {
             tools,
             stream: true,
             thinking: None,
-            temperature,
-            top_p,
-            top_k,
+            temperature: if sampling_ok { temperature } else { None },
+            top_p: if sampling_ok { top_p } else { None },
+            top_k: if sampling_ok { top_k } else { None },
+            output_config: None,
         };
 
-        body.thinking = Some(ThinkingConfig {
-            r#type: Some(if should_think { "enabled" } else { "disabled" }.to_string()),
-            budget_tokens: if should_think { Some(1024) } else { None },
-            enable: None,
-        });
-        if should_think && body.max_tokens <= 1024 {
+        // 与主/子代理同一个决策口，不再各自硬编码 thinking 形态。
+        let thinking_plan =
+            crate::infra::llm::registry::plan_anthropic_thinking(model_id, should_think, None);
+        let thinking_active = thinking_plan.thinking_active();
+        body.thinking = thinking_plan.thinking;
+        body.output_config = thinking_plan.output_config;
+        if thinking_active && body.max_tokens <= 1024 {
             body.max_tokens = 4096;
         }
 

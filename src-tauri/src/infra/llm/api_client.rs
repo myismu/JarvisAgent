@@ -318,6 +318,7 @@ pub async fn call_llm_simple(
         temperature: None,
         top_p: None,
         top_k: None,
+        output_config: None,
     };
 
     let (req_json, is_openai) = match api_format {
@@ -417,6 +418,7 @@ pub async fn call_llm_with_messages(
         temperature: None,
         top_p: None,
         top_k: None,
+        output_config: None,
     };
 
     let (req_json, is_openai) = match api_format {

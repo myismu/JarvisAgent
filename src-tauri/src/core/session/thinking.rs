@@ -264,6 +264,8 @@ mod tests {
             notes: String::new(),
             thinking_forced: forced,
             cache_usage_style: None,
+            thinking_effort_values: Vec::new(),
+            thinking_mode: None,
         }
     }
 

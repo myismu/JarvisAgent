@@ -31,7 +31,8 @@ pub const FILE_LAST_ACTIVE_SESSION: &str = "_last_active.txt";
 
 // --- Limits & Thresholds ---
 pub const MAX_TOKENS_CONTEXT: i32 = 8192;
-pub const MAX_TOKENS_COMPACT_TRIGGER: usize = 100_000;
+// 上下文压缩的触发阈值已不再是一个固定常量：它 =（模型窗口 − 输出预算）× 70%，
+// 见 `infra::llm::context_budget`（主 Agent 与子代理共用）。
 pub const MAX_AGENT_LOOP_BEFORE_CONFIRM: usize = 30;
 pub const MAX_AGENT_LOOP_ABSOLUTE: usize = 200;
 pub const PLAN_WATCHDOG_MAX_CONSECUTIVE_STALLS: usize = 6;

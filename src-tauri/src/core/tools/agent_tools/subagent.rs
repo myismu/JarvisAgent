@@ -482,6 +482,15 @@ pub async fn run_subagent(
         return (msg, 0, 0);
     }
 
+    // 压缩判据（`infra::llm::context_budget`）要用「本地估算 vs 厂商实测」的比值标定，
+    // 而 system prompt 与工具 schema 不进 messages、却真实占用 prompt token。不把它们
+    // 补进估算，比值会被系统性抬高，阈值就判不准。
+    let fixed_overhead_tokens = {
+        let tools_json = serde_json::to_string(&tools).unwrap_or_default();
+        crate::infra::llm::token_count::count_text("gpt-4", &system_prompt).tokens
+            + crate::infra::llm::token_count::count_text("gpt-4", &tools_json).tokens
+    };
+
     let mode_str = if read_only {
         "只读模式"
     } else {
@@ -552,13 +561,17 @@ pub async fn run_subagent(
         )
         .await;
 
-        let max_tokens = cfg.max_tokens
-            .or_else(|| {
-                crate::infra::llm::registry::query_capabilities(&model_id)
-                    .map(|cap| cap.max_tokens as i32)
-            })
-            .unwrap_or(crate::infra::types::constants::MAX_TOKENS_CONTEXT);
+        // 本轮的本地估算（含 system/tools 固定开销）：与 stream_result.input_tokens 是
+        // 同一份请求的一对，本轮结束后作为压缩判据的标定基准（实测 ÷ 估算）。
+        let est_before_request = estimate_tokens(&messages) + fixed_overhead_tokens;
 
+        // 与主 Agent 同源：用户覆盖 > 注册表 > 常量兜底（压缩判据的输出预算也用这个函数）
+        let max_tokens =
+            crate::infra::llm::context_budget::resolve_output_budget(&model_id, cfg.max_tokens)
+                as i32;
+
+        // 采样参数与思考参数都与主 Agent 同源（注册表驱动），不再各自硬编码。
+        let sampling_ok = crate::infra::llm::registry::supports_sampling_params(&model_id);
         let mut request_body = AnthropicRequest {
             model: model_id.clone(),
             max_tokens,
@@ -567,17 +580,21 @@ pub async fn run_subagent(
             tools: tools.clone(),
             stream: true,
             thinking: None,
-            temperature: cfg.temperature,
-            top_p: cfg.top_p,
-            top_k: cfg.top_k,
+            temperature: if sampling_ok { cfg.temperature } else { None },
+            top_p: if sampling_ok { cfg.top_p } else { None },
+            top_k: if sampling_ok { cfg.top_k } else { None },
+            output_config: None,
         };
 
-        request_body.thinking = Some(crate::infra::types::models::ThinkingConfig {
-            r#type: Some(if should_think { "enabled" } else { "disabled" }.to_string()),
-            budget_tokens: if should_think { Some(1024) } else { None },
-            enable: None,
-        });
-        if should_think && request_body.max_tokens <= 1024 {
+        let thinking_plan = crate::infra::llm::registry::plan_anthropic_thinking(
+            &model_id,
+            should_think,
+            None,
+        );
+        let thinking_active = thinking_plan.thinking_active();
+        request_body.thinking = thinking_plan.thinking;
+        request_body.output_config = thinking_plan.output_config;
+        if thinking_active && request_body.max_tokens <= 1024 {
             request_body.max_tokens = 4096;
         }
 
@@ -733,6 +750,8 @@ pub async fn run_subagent(
             .await;
         }
 
+        // 本轮请求的厂商实测输入量（配 est_before_request 作压缩判据的标定基准）
+        let request_input_tokens = stream_result.input_tokens;
         sub_input_tokens += stream_result.input_tokens;
         sub_output_tokens += stream_result.output_tokens;
 
@@ -1012,13 +1031,30 @@ pub async fn run_subagent(
             messages.push(Message::User {
                 content: Content::Multiple(tool_results),
             });
-            // Token > 70% 上限时触发 LLM 摘要压缩
-            let estimated = estimate_tokens(&messages);
-            if estimated > crate::infra::types::constants::MAX_TOKENS_COMPACT_TRIGGER * 70 / 100 {
+            // 超阈值时触发 LLM 摘要压缩。判据与主 Agent 共用
+            // （`infra::llm::context_budget`）：阈值 =（模型窗口 − 输出预算）× 70%，
+            // 占用 = 本地估算 ×（本轮实测 ÷ 本轮估算）。
+            let window = crate::infra::llm::context_budget::resolve_context_window(&model_id);
+            let output_budget =
+                crate::infra::llm::context_budget::resolve_output_budget(&model_id, cfg.max_tokens);
+            let trigger =
+                crate::infra::llm::context_budget::compact_trigger_tokens(window, output_budget);
+            let est_now = estimate_tokens(&messages) + fixed_overhead_tokens;
+            let context_tokens = crate::infra::llm::context_budget::calibrated_context_tokens(
+                Some(request_input_tokens),
+                Some(est_before_request),
+                est_now,
+            );
+            if crate::infra::llm::context_budget::should_compact(context_tokens, trigger) {
                 println!(
-                    "[SUBAGENT] 上下文估算值 > {} ({})，触发自动压缩",
-                    crate::infra::types::constants::MAX_TOKENS_COMPACT_TRIGGER,
-                    estimated
+                    "[SUBAGENT] 上下文占用 {} > {}% 可用窗口（窗口 {} − 输出预算 {} = {}, 本地估算 {}, 本轮实测 {}），触发自动压缩",
+                    context_tokens,
+                    crate::infra::llm::context_budget::COMPACT_TRIGGER_PERCENT,
+                    window,
+                    output_budget,
+                    window.saturating_sub(output_budget),
+                    est_now,
+                    request_input_tokens
                 );
                 let mut temp_memory = crate::infra::types::models::SessionMemory {
                     messages: std::mem::take(&mut messages),

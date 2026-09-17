@@ -1,6 +1,6 @@
 {
   "_comment": "模型能力注册表 - 使用 include_str!() 编译时内嵌，无需运行时文件。参数依据 doc/ai-models-guide.md 同步；maxTokens 表示最大输出，maxContextTokens 表示最大上下文窗口。",
-  "_lastUpdated": "2026-09-15",
+  "_lastUpdated": "2026-09-17",
   "models": [
     {
       "id": "deepseek-v4-pro",
@@ -108,11 +108,90 @@
         "streaming": true,
         "thinking": true,
         "thinkingParam": "thinking",
+        "thinkingMode": "adaptive_optional",
+        "thinkingEffortValues": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
         "temperature": false,
         "maxTokens": 32768,
-        "notes": "最强模型，适合 Agent 和编码；Extended Thinking，200K 上下文；输入 $5.00/1M tokens（缓存读 $0.50），输出 $25.00/1M tokens；参数表未给出最大输出，沿用 32K 注册上限",
+        "notes": "最强模型，适合 Agent 和编码；**自适应思考（Adaptive Thinking）**：省略 thinking 参数即不思考，开启只能传 thinking.type=adaptive（旧的 type=enabled+budget_tokens 已在该代移除，传了直接 400），深度用 output_config.effort 调（low/medium/high/xhigh/max，默认 high）；思考文本默认不返回（display=omitted），需显式 display=summarized；temperature/top_p/top_k 已废弃，传了会 400；200K 上下文；输入 $5.00/1M tokens（缓存读 $0.50），输出 $25.00/1M tokens；参数表未给出最大输出，沿用 32K 注册上限",
         "vision": true,
         "maxContextTokens": 200000
+      }
+    },
+    {
+      "id": "claude-fable-5-1",
+      "provider": "Anthropic",
+      "displayName": "Claude Fable 5.1",
+      "apiFormat": "anthropic",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "thinking",
+        "thinkingMode": "adaptive_only",
+        "thinkingForced": true,
+        "thinkingEffortValues": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "temperature": false,
+        "maxTokens": 131072,
+        "notes": "最强推理与长周期 Agent 模型；自适应思考**恒开且不可关闭** —— thinking.type 传 enabled 或 disabled 都会 400，只能省略或传 adaptive，深度用 output_config.effort 调（默认 high）；不支持强制工具调用（tool_choice=any/tool 会 400，auto/none 正常）；不支持 assistant 预填；1M 上下文 / 128K 输出；输入 $10.00/1M（缓存读 $0.25），输出 $50.00/1M；要求 30 天数据保留，ZDR 组织的 key 会被上游拒绝",
+        "vision": true,
+        "maxContextTokens": 1000000
+      }
+    },
+    {
+      "id": "claude-opus-5",
+      "provider": "Anthropic",
+      "displayName": "Claude Opus 5",
+      "apiFormat": "anthropic",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "thinking",
+        "thinkingMode": "adaptive_default",
+        "thinkingEffortValues": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "temperature": false,
+        "maxTokens": 131072,
+        "notes": "通用首选模型（多数工作负载从这里开始）；自适应思考**省略参数即开启**，关闭需显式 thinking.type=disabled，且此时 output_config.effort 不得高于 high（配 xhigh/max 会 400）；1M 上下文 / 128K 输出；输入 $5.00/1M，输出 $25.00/1M",
+        "vision": true,
+        "maxContextTokens": 1000000
+      }
+    },
+    {
+      "id": "claude-sonnet-5",
+      "provider": "Anthropic",
+      "displayName": "Claude Sonnet 5",
+      "apiFormat": "anthropic",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "thinking",
+        "thinkingMode": "adaptive_default",
+        "thinkingEffortValues": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "temperature": false,
+        "maxTokens": 131072,
+        "notes": "速度与成本优先；自适应思考省略参数即开启，关闭需 thinking.type=disabled 且 effort 不得高于 high；**output_config.effort 不支持 xhigh（上游会降级为 high）与 max**，故档位只列 low/medium/high；1M 上下文 / 128K 输出；输入 $2.00/1M，输出 $10.00/1M",
+        "vision": true,
+        "maxContextTokens": 1000000
       }
     },
     {
@@ -207,7 +286,8 @@
         "temperature": false,
         "maxTokens": 16000,
         "notes": "首个支持显式扩展思考参数的 Claude 模型",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 200000
       }
     },
     {
@@ -221,7 +301,8 @@
         "temperature": true,
         "maxTokens": 8096,
         "notes": "经典高性能模型，不支持思考模式",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 200000
       }
     },
     {
@@ -235,7 +316,80 @@
         "temperature": true,
         "maxTokens": 8096,
         "notes": "快速低成本模型，适合工具代理使用",
-        "vision": false
+        "vision": false,
+        "maxContextTokens": 200000
+      }
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "provider": "OpenAI",
+      "displayName": "GPT-5.6 Sol",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "reasoning_effort",
+        "thinkingEffortValues": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "temperature": false,
+        "maxTokens": 131072,
+        "notes": "GPT-5.6 旗舰档（裸名 gpt-5.6 是它的别名）；reasoning_effort 可选 none/low/medium/high/xhigh/max，省略则默认 medium；Responses API 另有独立的 reasoning.mode=standard|pro 旋钮，本仓库未接入；1.05M 上下文 / 128K 输出；输入 $4.00/1M（缓存 $0.40），输出 $20.00/1M；思考模式下温度不可调",
+        "vision": true,
+        "maxContextTokens": 1050000
+      }
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "provider": "OpenAI",
+      "displayName": "GPT-5.6 Terra",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "reasoning_effort",
+        "thinkingEffortValues": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "temperature": false,
+        "maxTokens": 131072,
+        "notes": "GPT-5.6 平衡档，日常生产流量的默认选择（约为 5.5 的一半成本）；档位与上下文同 Sol：reasoning_effort none/low/medium/high/xhigh/max（省略默认 medium），1.05M 上下文 / 128K 输出；输入 $2.00/1M（缓存 $0.20），输出 $12.00/1M",
+        "vision": true,
+        "maxContextTokens": 1050000
+      }
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "provider": "OpenAI",
+      "displayName": "GPT-5.6 Luna",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "reasoning_effort",
+        "thinkingEffortValues": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "temperature": false,
+        "maxTokens": 131072,
+        "notes": "GPT-5.6 低成本档，适合高吞吐的分类/抽取/初筛；档位与上下文同 Sol（reasoning_effort none/low/medium/high/xhigh/max，省略默认 medium），1.05M 上下文 / 128K 输出；**长上下文召回明显弱于 Sol/Terra**，不适合重文档/多文件场景；输入 $0.20/1M（缓存 $0.02），输出 $1.20/1M",
+        "vision": true,
+        "maxContextTokens": 1050000
       }
     },
     {
@@ -257,7 +411,8 @@
         "temperature": false,
         "maxTokens": 131072,
         "notes": "最新旗舰模型，适合编码和专业工作；reasoning_effort 可选 none/low/medium(默认)/high/xhigh；输入 $5.00/1M tokens（缓存 $0.50），输出 $30.00/1M tokens；参数表未给出上下文/最大输出，保留现有 128K 输出注册上限；思考模式下温度不可调",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 1050000
       }
     },
     {
@@ -278,8 +433,9 @@
         ],
         "temperature": false,
         "maxTokens": 131072,
-        "notes": "最新旗舰 Pro 版，更多算力深度思考；参数表未单列 Pro 版，保留现有 128K 输出注册上限；仅支持 Responses API，不支持流式，思考模式下温度不可调",
-        "vision": true
+        "notes": "最新旗舰 Pro 版，更多算力深度思考；参数表未单列 Pro 版，保留现有 128K 输出注册上限；仅支持 Responses API，不支持流式，思考模式下温度不可调；上下文窗口 1.05M（2026-09-17 核对，官方模型页）",
+        "vision": true,
+        "maxContextTokens": 1050000
       }
     },
     {
@@ -301,7 +457,8 @@
         "temperature": false,
         "maxTokens": 131072,
         "notes": "专业推理模型，reasoning_effort 可选 none(默认)/low/medium/high/xhigh；输入 $2.50/1M tokens（缓存 $0.25），输出 $15.00/1M tokens；参数表未给出上下文/最大输出，保留现有 128K 输出注册上限；思考模式下温度不可调",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 1050000
       }
     },
     {
@@ -320,8 +477,9 @@
         ],
         "temperature": false,
         "maxTokens": 131072,
-        "notes": "前代旗舰 Pro 版，reasoning_effort 仅可选 medium/high/xhigh；参数表未单列 Pro 版，保留现有 128K 输出注册上限；思考模式下温度不可调",
-        "vision": true
+        "notes": "前代旗舰 Pro 版，reasoning_effort 仅可选 medium/high/xhigh；参数表未单列 Pro 版，保留现有 128K 输出注册上限；思考模式下温度不可调；上下文窗口 1.05M（2026-09-17 核对，官方未单列 Pro 版，取自第三方一致口径）",
+        "vision": true,
+        "maxContextTokens": 1050000
       }
     },
     {
@@ -343,7 +501,8 @@
         "temperature": false,
         "maxTokens": 131072,
         "notes": "最强 mini 模型，适合编码/计算机使用；reasoning_effort 可选 none/low/medium/high/xhigh；输入 $0.75/1M tokens（缓存 $0.075），输出 $4.50/1M tokens；参数表未给出上下文/最大输出，保留现有 128K 输出注册上限；思考模式下温度不可调",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 400000
       }
     },
     {
@@ -365,7 +524,8 @@
         "temperature": false,
         "maxTokens": 131072,
         "notes": "最便宜的 GPT-5.4 级模型，适合分类/数据提取/排序/子代理；参数表未单列 nano 版，保留现有 128K 输出注册上限；思考模式下温度不可调",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 400000
       }
     },
     {
@@ -488,7 +648,8 @@
         "temperature": true,
         "maxTokens": 32768,
         "notes": "轻量版非推理模型，擅长指令遵循和工具调用；参数表未单列 mini 版，保留现有 32K 输出注册上限；不支持 reasoning_effort",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 1047576
       }
     },
     {
@@ -502,7 +663,8 @@
         "temperature": true,
         "maxTokens": 32768,
         "notes": "通用非推理模型，偏写作/编码/快速解决问题；参数表未给出上下文、最大输出和价格，沿用 32K 输出注册上限；不支持 reasoning_effort",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 128000
       }
     },
     {
@@ -670,8 +832,9 @@
         "thinkingParam": "extra_enable_thinking",
         "temperature": true,
         "maxTokens": 32768,
-        "notes": "MoE 大模型，参数表标注支持深度思考和视觉；参数表未给出上下文和最大输出，沿用 32K 注册上限",
-        "vision": true
+        "notes": "MoE 大模型，参数表标注支持深度思考和视觉；参数表未给出上下文和最大输出，沿用 32K 注册上限；上下文窗口 128K（2026-09-17 核对，官方口径 128K / 最多生成 8K）",
+        "vision": true,
+        "maxContextTokens": 128000
       }
     },
     {
@@ -686,7 +849,8 @@
         "temperature": true,
         "maxTokens": 32768,
         "notes": "阿里旗舰 MoE 推理模型，使用 extra_body:{enable_thinking:bool} 控制深度思考；参数表未单列 Qwen3，保留现有 32K 输出注册上限",
-        "vision": false
+        "vision": false,
+        "maxContextTokens": 128000
       }
     },
     {
@@ -701,7 +865,8 @@
         "temperature": true,
         "maxTokens": 32768,
         "notes": "通义千问 3 稠密旗舰，支持思考模式；参数表未单列 Qwen3，保留现有 32K 输出注册上限",
-        "vision": false
+        "vision": false,
+        "maxContextTokens": 128000
       }
     },
     {
@@ -716,7 +881,8 @@
         "temperature": true,
         "maxTokens": 32768,
         "notes": "中量级推理模型；参数表未单列 Qwen3，保留现有 32K 输出注册上限",
-        "vision": false
+        "vision": false,
+        "maxContextTokens": 128000
       }
     },
     {
@@ -784,7 +950,7 @@
     {
       "id": "mimo-v2-flash",
       "provider": "XiaoMi",
-      "displayName": "MIMO V2 Flash",
+      "displayName": "MIMO V2 Flash（已下线）",
       "apiFormat": "openai",
       "capabilities": {
         "streaming": true,
@@ -792,14 +958,15 @@
         "thinkingParam": "reasoning_effort",
         "temperature": true,
         "maxTokens": 16384,
-        "notes": "小米 MiMo 快速模型，兼容 OpenAI 格式 reasoning_effort 控制深度思考；默认关闭，需手动开启",
-        "vision": false
+        "notes": "【已下线】2026-06-30 官方下线 MiMo-V2 系列，请迁移至 V2.5 系。原记录：小米 MiMo 快速模型，兼容 OpenAI 格式 reasoning_effort 控制深度思考；默认关闭，需手动开启",
+        "vision": false,
+        "maxContextTokens": 256000
       }
     },
     {
       "id": "mimo-v2-pro",
       "provider": "XiaoMi",
-      "displayName": "MIMO V2 Pro",
+      "displayName": "MIMO V2 Pro（已下线）",
       "apiFormat": "openai",
       "capabilities": {
         "streaming": true,
@@ -807,8 +974,9 @@
         "thinkingParam": "reasoning_effort",
         "temperature": true,
         "maxTokens": 32768,
-        "notes": "小米 MiMo 旗舰模型，兼容 OpenAI 格式 reasoning_effort 控制深度思考；默认关闭，需手动开启",
-        "vision": true
+        "notes": "【已下线】2026-06-30 官方下线 MiMo-V2 系列（mimo-v2-pro / omni / flash），请迁移至 V2.5 系（mimo-v2.5-pro）。原记录：小米 MiMo 旗舰模型，兼容 OpenAI 格式 reasoning_effort 控制深度思考；默认关闭，需手动开启",
+        "vision": true,
+        "maxContextTokens": 1000000
       }
     },
     {
@@ -823,13 +991,14 @@
         "temperature": true,
         "maxTokens": 65536,
         "notes": "小米 MiMo 最新旗舰，兼容 OpenAI 格式 reasoning_effort 控制深度思考；默认关闭，需手动开启",
-        "vision": true
+        "vision": true,
+        "maxContextTokens": 1000000
       }
     },
     {
       "id": "mimo-v2-omni",
       "provider": "XiaoMi",
-      "displayName": "MIMO V2 Omni（全模态）",
+      "displayName": "MIMO V2 Omni（已下线）",
       "apiFormat": "openai",
       "capabilities": {
         "streaming": true,
@@ -837,8 +1006,9 @@
         "thinkingParam": "reasoning_effort",
         "temperature": true,
         "maxTokens": 65536,
-        "notes": "小米 MiMo 全模态模型，支持文本/图像/音频/视频输入；兼容 OpenAI 格式 reasoning_effort；默认关闭，需手动开启",
-        "vision": true
+        "notes": "【已下线】2026-06-30 官方下线 MiMo-V2 系列，请迁移至 V2.5 系。原记录：小米 MiMo 全模态模型，支持文本/图像/音频/视频输入；兼容 OpenAI 格式 reasoning_effort；默认关闭，需手动开启",
+        "vision": true,
+        "maxContextTokens": 256000
       }
     },
     {
@@ -853,7 +1023,8 @@
         "temperature": true,
         "maxTokens": 16384,
         "notes": "百度文心旗舰推理模型，使用 extra_body:{enable_thinking:bool} 控制深度思考；默认关闭",
-        "vision": false
+        "vision": false,
+        "maxContextTokens": 128000
       }
     },
     {
@@ -867,8 +1038,9 @@
         "thinkingParam": "extra_thinking",
         "temperature": true,
         "maxTokens": 32768,
-        "notes": "智谱AI最新旗舰，使用 extra_body:{thinking:bool} 控制深度思考；默认关闭",
-        "vision": true
+        "notes": "智谱AI最新旗舰，使用 extra_body:{thinking:bool} 控制深度思考；默认关闭；上下文窗口 200K（2026-09-17 核对，智谱官方文档；阿里云百炼页标注实测上限 202745）",
+        "vision": true,
+        "maxContextTokens": 200000
       }
     },
     {
@@ -882,8 +1054,9 @@
         "thinkingParam": "thinking_enable",
         "temperature": true,
         "maxTokens": 32768,
-        "notes": "腾讯混元推理模型，使用 thinking:{enable:bool} 控制深度思考；默认关闭",
-        "vision": false
+        "notes": "腾讯混元推理模型，使用 thinking:{enable:bool} 控制深度思考；默认关闭；上下文窗口 32K（2026-09-17 核对：腾讯云现行模型表已无该型号，同族 hunyuan-pro 为最大输入 28k；新的 HY 2.0 Think 才是 128k）",
+        "vision": false,
+        "maxContextTokens": 32000
       }
     },
     {
@@ -897,23 +1070,64 @@
         "thinkingParam": "enable_thought",
         "temperature": true,
         "maxTokens": 16384,
-        "notes": "MiniMax 推理模型，使用 parameters:{enable_thought:bool} 控制深度思考；默认关闭",
-        "vision": false
+        "notes": "MiniMax 推理模型，使用 parameters:{enable_thought:bool} 控制深度思考；默认关闭；上下文窗口 200k（2026-09-17 核对：MiniMax 官方新闻稿写 200k，阿里云百炼 abab6.5s-chat 标 245000，两处官方口径冲突，取保守值）",
+        "vision": false,
+        "maxContextTokens": 200000
       }
     },
     {
-      "id": "kimi-k2.5-pro",
+      "id": "kimi-k3",
       "provider": "Moonshot",
-      "displayName": "Kimi K2.5 Pro",
+      "displayName": "Kimi K3",
       "apiFormat": "openai",
       "capabilities": {
         "streaming": true,
         "thinking": true,
-        "thinkingParam": "extra_chain_of_thought",
-        "temperature": true,
+        "thinkingParam": "reasoning_effort",
+        "thinkingForced": true,
+        "thinkingEffortValues": [
+          "low",
+          "high",
+          "max"
+        ],
+        "temperature": false,
+        "maxTokens": 131072,
+        "notes": "2026-09-17 核对（platform.moonshot.cn「模型参数参考」「思考模型」）：Kimi 旗舰，1M 上下文（1048576），输出默认上限 131072、参数上限 1048576（输入+上限须共同适配窗口）。始终推理且不可关闭——不要传 thinking，传 type:disabled 会报错；推理强度用顶层 reasoning_effort：low/high/max，官方默认 max，切换档位会打掉前缀缓存（同一会话应固定档位）。采样被锁定：temperature 固定 1.0、top_p 0.95、n 1、两个 penalty 0，传入其他值报错。原生视觉（图片/视频；仅 base64 或已上传文件 ID，不支持公网 URL 直传）。Preserved Thinking 强制开启：多轮与工具调用必须把完整 assistant 消息（含 reasoning_content、tool_calls）原样回传。价格（元/百万 tokens）缓存命中 2.00、未命中 20.00、输出 100.00（USD $0.30/$3.00/$15.00）。2026-07-16 发布。",
+        "vision": true,
+        "maxContextTokens": 1048576
+      }
+    },
+    {
+      "id": "kimi-k2.7-code",
+      "provider": "Moonshot",
+      "displayName": "Kimi K2.7 Code",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "thinking",
+        "thinkingForced": true,
+        "temperature": false,
         "maxTokens": 32768,
-        "notes": "月之暗面旗舰推理模型，使用 extra_body:{chain_of_thought:bool} 控制深度思考；默认关闭",
-        "vision": false
+        "notes": "2026-09-17 核对（platform.moonshot.cn「Kimi K2.7 Code」「模型参数参考」）：Kimi 最强 Coding 模型，上下文 262144，输出默认 32768。思考与 Preserved Thinking 均强制开启且不可关闭（thinking.type 只接受 enabled，传 disabled 报 400），不支持 reasoning_effort；多轮与工具调用须原样回传含 reasoning_content 的完整 assistant 消息。temperature 固定 1.0、top_p 0.95，传入其他值报错；tool_choice 仅支持 auto/none，不支持 required。⚠️ 本条目走注册表 thinking 通道，该通道会额外附带 budget_tokens:1024，Moonshot 文档未定义此字段——接入前建议实测一次确认不被拒。价格（元/百万 tokens）缓存命中 1.30、未命中 6.50、输出 27.00；高速变体 kimi-k2.7-code-highspeed 参数约束完全一致、仅速度不同。",
+        "vision": true,
+        "maxContextTokens": 262144
+      }
+    },
+    {
+      "id": "kimi-k2.6",
+      "provider": "Moonshot",
+      "displayName": "Kimi K2.6",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "thinking",
+        "temperature": false,
+        "maxTokens": 32768,
+        "notes": "2026-09-17 核对（platform.moonshot.cn「模型参数参考」「思考模型」）：通用模型，支持视觉与文本输入，上下文 262144，输出默认 32768。思考默认开启、可关闭（thinking.type = enabled/disabled），并支持 thinking.keep:\"all\" 保留历史推理（本注册表未下发该字段）；不支持 reasoning_effort。temperature 固定（思考模式 1.0、非思考模式 0.6），传入其他值报错；tool_choice 不支持 required。⚠️ 同 kimi-k2.7-code：走注册表 thinking 通道会额外附带 budget_tokens:1024，Moonshot 未定义该字段，建议实测。价格（元/百万 tokens）缓存命中 1.10、未命中 6.50、输出 27.00。",
+        "vision": true,
+        "maxContextTokens": 262144
       }
     }
   ]

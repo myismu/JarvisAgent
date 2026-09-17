@@ -184,6 +184,7 @@ async fn call_summarize_llm(
         temperature: None,
         top_p: None,
         top_k: None,
+        output_config: None,
     };
 
     let (req_json, is_openai) = match api_format {
@@ -355,6 +356,7 @@ pub async fn auto_compact_summary(
         temperature: None,
         top_p: None,
         top_k: None,
+        output_config: None,
     };
 
     let is_openai = api_format.is_openai();
@@ -505,6 +507,7 @@ pub async fn rewrite_global_memory(
         temperature: config.temperature,
         top_p: config.top_p,
         top_k: config.top_k,
+        output_config: None,
     };
 
     let api_format = ApiFormat::from_str(&config.api_format);

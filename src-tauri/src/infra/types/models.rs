@@ -64,11 +64,19 @@ pub struct JarvisResult {
 #[derive(Serialize, Clone, Debug)]
 pub struct ThinkingConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub r#type: Option<String>, // "enabled" / "disabled" (Doubao/DeepSeek)
+    pub r#type: Option<String>, // "enabled" / "disabled" / "adaptive"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_tokens: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable: Option<bool>, // Hunyuan 格式
+    /// 思考文本的呈现方式：`"summarized"` 才会返回可读文本。
+    ///
+    /// Anthropic 自 Opus 4.7 起默认 `"omitted"` —— 思考块只有一个空字符串加
+    /// 加密签名，`delta["thinking"]` 拿不到任何内容，前端思考区会是空的。
+    /// 其它厂商不认识该字段，故只在 Anthropic 出口、且注册表声明支持 adaptive
+    /// 思考时下发（见 `registry::plan_anthropic_thinking`）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -88,6 +96,14 @@ pub struct AnthropicRequest {
     pub top_p: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_k: Option<u32>,
+    /// Anthropic 新代的输出配置 —— 目前只用于思考深度：
+    /// `{"effort": "low" | "medium" | "high" | "xhigh" | "max"}`。
+    ///
+    /// 自 Opus 4.7 起思考深度不再靠 `budget_tokens`，改用这个字段。老模型不
+    /// 认识它，故只在注册表声明了 `thinkingEffortValues` 时下发
+    /// （见 `registry::plan_anthropic_thinking`）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_config: Option<serde_json::Value>,
 }
 
 // --- OpenAI Format Structs ---

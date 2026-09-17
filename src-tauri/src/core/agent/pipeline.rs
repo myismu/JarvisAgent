@@ -2495,9 +2495,13 @@ impl PipelineState {
         }
     }
 
-    /// 上下文压缩检查（项目内唯一的 LLM 摘要压缩，属单级）：本地估算 token，
-    /// 超过上限（100k）的 70% 时调 LLM 把旧历史压缩成一段摘要；
-    /// 压缩前后保证用户最新消息仍在历史末尾，且后续轮次能正确计算 initial_msg_index
+    /// 上下文压缩检查（项目内唯一的 LLM 摘要压缩，属单级）：超阈值时调 LLM 把旧历史
+    /// 压缩成一段摘要；压缩前后保证用户最新消息仍在历史末尾，且后续轮次能正确计算
+    /// initial_msg_index
+    ///
+    /// 判据算法统一在 `infra::llm::context_budget`（与子代理共用，见该模块文档）：
+    /// - 阈值 =（模型窗口 − 输出预算）× 70%
+    /// - 占用 = 本地估算 ×（上一轮实测 ÷ 上一轮估算）
     async fn compact_if_needed(&mut self) {
         // 1. 估算当前上下文 token（消息 + 工具 schema）
         let (messages_for_estimate, sources_for_estimate) = {
@@ -2510,14 +2514,41 @@ impl PipelineState {
         );
         let tools = self.current_tools();
         let estimate = self.build_context_estimate(&history_snapshot, &tools);
-        let tokens = estimate.estimated_tokens;
-        let trigger = crate::infra::types::constants::MAX_TOKENS_COMPACT_TRIGGER;
+        let est_now = estimate.estimated_tokens;
 
-        // >70% 上限：LLM 摘要压缩
-        if tokens > trigger * 70 / 100 {
+        // 2. 判据：分母用模型的真实窗口并预留输出预算；分子用上一轮的厂商实测值
+        //    标定本地估算（估算系统性偏低，直接比会一路不触发）。
+        let window = crate::infra::llm::context_budget::resolve_context_window(&self.model_id);
+        let output_budget = crate::infra::llm::context_budget::resolve_output_budget(
+            &self.model_id,
+            self.cfg.max_tokens,
+        );
+        let trigger =
+            crate::infra::llm::context_budget::compact_trigger_tokens(window, output_budget);
+        // 上一轮快照里的「实测 input / 本地估算」是同一时刻写入的一对，可直接作标定基准。
+        // 首轮（或快照缺失）为 None，此时退回纯估算。
+        let (prev_measured, est_prev) = crate::core::session::get_context_snapshot(&self.sid)
+            .ok()
+            .flatten()
+            .map(|snapshot| (snapshot.provider_input_tokens, Some(snapshot.estimated_tokens)))
+            .unwrap_or((None, None));
+        let tokens = crate::infra::llm::context_budget::calibrated_context_tokens(
+            prev_measured,
+            est_prev,
+            est_now,
+        );
+
+        // >70% 可用窗口：LLM 摘要压缩
+        if crate::infra::llm::context_budget::should_compact(tokens, trigger) {
             println!(
-                "[贾维斯] 上下文 > {}% 上限 ({}/{}), 触发 LLM 摘要压缩",
-                70, tokens, trigger
+                "[贾维斯] 上下文占用 {} > {}% 可用窗口（窗口 {} − 输出预算 {} = {}, 本地估算 {}, 上轮实测 {:?}）, 触发 LLM 摘要压缩",
+                tokens,
+                crate::infra::llm::context_budget::COMPACT_TRIGGER_PERCENT,
+                window,
+                output_budget,
+                window.saturating_sub(output_budget),
+                est_now,
+                prev_measured
             );
 
             let mut session = self.ctx.memory.lock().await;
@@ -2958,7 +2989,10 @@ impl PipelineState {
             drift_percent: None,
             max_context_tokens: crate::infra::llm::registry::query_capabilities(&self.model_id)
                 .and_then(|capabilities| capabilities.max_context_tokens),
-            max_output_tokens: crate::infra::types::constants::MAX_TOKENS_CONTEXT,
+            // 必须与请求体里的 `max_tokens` **同源**（`resolve_max_tokens()`）。原先写死
+            // `MAX_TOKENS_CONTEXT`(=8192)，导致快照里给用户看的输出上限与真正发出去的不是一个数；
+            // 自动压缩判据（`context_budget`）的输出预算也是同一个函数，三处从此对齐。
+            max_output_tokens: self.resolve_max_tokens(),
             message_count: estimate.message_count,
             tool_schema_count: estimate.tool_schema_count,
             tool_call_count: estimate.tool_call_count,
@@ -3045,13 +3079,15 @@ impl PipelineState {
     }
 
     /// 解析 max_tokens：用户覆盖 > 模型注册表 > 常量兜底
+    ///
+    /// 它与上下文压缩判据里的「输出预算」是**同一个数**（都走
+    /// `infra::llm::context_budget::resolve_output_budget`）——给模型留出的输出
+    /// 空间，必须和真正发出去的 `max_tokens` 对得上。
     fn resolve_max_tokens(&self) -> i32 {
-        self.cfg.max_tokens
-            .or_else(|| {
-                crate::infra::llm::registry::query_capabilities(&self.model_id)
-                    .map(|cap| cap.max_tokens as i32)
-            })
-            .unwrap_or(crate::infra::types::constants::MAX_TOKENS_CONTEXT)
+        crate::infra::llm::context_budget::resolve_output_budget(
+            &self.model_id,
+            self.cfg.max_tokens,
+        ) as i32
     }
 
     /// 构建 LLM API 请求体（内部统一按 Anthropic 结构建模）
@@ -3071,6 +3107,10 @@ impl PipelineState {
 
         let max_tokens = self.resolve_max_tokens();
 
+        // 采样参数：注册表声明不接受的模型一律剥离。Anthropic 自 Opus 4.7 起、
+        // 以及 Opus 5 / Sonnet 5 / Fable 5 全系已废弃 temperature/top_p/top_k，
+        // 传了直接 400（改造前这个能力标志全仓没人读）。
+        let sampling_ok = crate::infra::llm::registry::supports_sampling_params(&self.model_id);
         let mut request_body = AnthropicRequest {
             model: self.model_id.clone(),
             max_tokens,
@@ -3079,17 +3119,26 @@ impl PipelineState {
             tools,
             stream: true,
             thinking: None,
-            temperature: self.cfg.temperature,
-            top_p: self.cfg.top_p,
-            top_k: self.cfg.top_k,
+            temperature: if sampling_ok { self.cfg.temperature } else { None },
+            top_p: if sampling_ok { self.cfg.top_p } else { None },
+            top_k: if sampling_ok { self.cfg.top_k } else { None },
+            output_config: None,
         };
 
-        request_body.thinking = Some(ThinkingConfig {
-            r#type: Some(if self.should_think { "enabled" } else { "disabled" }.to_string()),
-            budget_tokens: if self.should_think { Some(1024) } else { None },
-            enable: None,
-        });
-        if self.should_think && request_body.max_tokens <= 1024 {
+        // 思考参数走注册表统一决策（`registry::plan_anthropic_thinking`）。原先这里
+        // 写死 `{type: enabled|disabled, budget_tokens: 1024}`，而该形态在 Opus 4.7
+        // 及之后已被移除（Fable 5 系连 disabled 都拒），直连必然 400。
+        let thinking_plan = crate::infra::llm::registry::plan_anthropic_thinking(
+            &self.model_id,
+            self.should_think,
+            None,
+        );
+        let thinking_active = thinking_plan.thinking_active();
+        request_body.thinking = thinking_plan.thinking;
+        request_body.output_config = thinking_plan.output_config;
+        // 用计划里的实际状态判断，而不是 `self.should_think`：`adaptive_only` 类模型
+        // 无法关闭，调用方传 false 时思考依然是开着的。
+        if thinking_active && request_body.max_tokens <= 1024 {
             request_body.max_tokens = 4096;
         }
 
