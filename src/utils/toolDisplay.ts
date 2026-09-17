@@ -147,6 +147,11 @@ function hasDependencyUpdate(tools: AgentToolCallView[]) {
       text.includes("blocked_by") ||
       text.includes("dependency") ||
       text.includes("dependencies") ||
+      text.includes("依赖") ||
+      // ⚠️ 不要删：`渚濊禆` 是「依赖」的 UTF-8 字节被按 GBK 解码后的样子。
+      // 后端只有一处 GBK 解码 —— `file_tools/common.rs::decode_text` 在**严格 UTF-8 校验失败**时
+      // 会整篇按 GBK 重解，一个坏字节就能把全文中文变成这种乱码（静默、不报错）。
+      // 所以运行时确实可能收到乱码；删掉这行会让兜底静默失效。根治前两条并存。
       text.includes("渚濊禆")
     );
   });
