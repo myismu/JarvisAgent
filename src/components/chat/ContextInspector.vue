@@ -10,7 +10,12 @@
 - Internal: `../../types`
 
 ## Constraints
-- 只展示后端提供的估算值，不改变 Agent 请求或压缩策略
+- 占用口径与输入框读数环同源（`utils/contextUsage.ts`）：厂商实测优先、本地估算兜底，
+  估算态必须显式标注；分区明细无法实测（API 只回总量），只能估算
+- 手动压缩按钮的**可用性判据必须与后端同源**：看消息条数（`COMPACT_KEEP_RECENT_MESSAGES`，
+  对应 `command/session.rs::compact_inner()`），**不是** token 占比；占比只用于"建议压缩"徽标。
+  自动压缩走另一套（`infra/llm/context_budget.rs` 的 token 判据），两者按设计分开
+- 只读展示，不改变 Agent 请求或压缩策略（压缩按钮是显式用户操作）
 -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
@@ -18,6 +23,7 @@ import { useI18n } from 'vue-i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { emit as tauriEmit } from '@tauri-apps/api/event';
 import ConfirmModal from '../common/ConfirmModal.vue';
+import { canManuallyCompact, COMPACT_KEEP_RECENT_MESSAGES, COMPACT_SUGGEST_PERCENT, isContextMeasured, resolveContextPercent, resolveContextTokens } from '../../utils/contextUsage';
 import type { CacheHitPoint, ContextSectionSnapshot, SessionContextSnapshot } from '../../types';
 
 const props = defineProps<{
@@ -76,14 +82,21 @@ const methodLabel = (method?: string | null): string => {
   }
 };
 
-const totalTokens = computed(() => Math.max(0, props.snapshot?.estimatedTokens || 0));
+/**
+ * 上下文占用（分子）。
+ *
+ * 口径与输入框读数环**完全同源**（`utils/contextUsage.ts`）：实测优先、估算兜底。
+ * 面板早期全量使用 `estimatedTokens`，那时输入框用的也是估算，两边一致；输入框改成
+ * 实测口径后两边会差出数倍（估算对 `tool_result` 截断，系统性偏低），所以这里一并统一。
+ */
+const totalTokens = computed(() => resolveContextTokens(props.snapshot));
+/** 分子是否来自厂商实测（false = 本地估算兜底，显示时要标出来，别和实测值长得一样） */
+const contextMeasured = computed(() => isContextMeasured(props.snapshot));
 const providerTotalTokens = computed(() => props.snapshot?.providerTotalTokens ?? null);
 const maxContextTokens = computed(() => props.snapshot?.maxContextTokens ?? null);
-const contextUsagePercent = computed(() => {
-  const max = maxContextTokens.value;
-  if (!max) return null;
-  return Math.min(999, Math.round((totalTokens.value / max) * 1000) / 10);
-});
+const contextUsagePercent = computed(() =>
+  resolveContextPercent(totalTokens.value, maxContextTokens.value),
+);
 
 // ── 缓存命中 ──
 // 语义：null = 该模型/链路未报告（显示 --，绝不显示 0%）；0 = 报告了但本次未命中（预热期）
@@ -192,30 +205,45 @@ const compactError = ref('');
 const compactMessage = ref('');
 const showCompactConfirm = ref(false);
 
-const compactThreshold = 70; // 达到上下文窗口 70% 才建议压缩
+/** 快照里的消息条数（后端判据的同一个量，可能偏小、不会偏大 —— 见 `canManuallyCompact`） */
+const compactMessageCount = computed(() => props.snapshot?.messageCount ?? 0);
 
-const canCompact = computed(() => {
-  if (!props.snapshot) return false;
-  const tokens = props.snapshot.estimatedTokens || 0;
-  const max = props.snapshot.maxContextTokens;
-  if (max && tokens > 0) return tokens >= max * compactThreshold / 100;
-  // 如果不知道上下文窗口大小，用 token 绝对值判断: > 30k 可压缩
-  return tokens > 30_000;
+/**
+ * 按钮能不能按 —— **判据是消息条数，与后端 `compact_inner()` 同源**。
+ *
+ * 不再是"token 占比 ≥ 70%"。旧写法把容量信号当成了功能闸门，导致按钮亮着
+ * 点下去后端回"消息不足"。口径统一后按钮状态永远可信。
+ */
+const canCompact = computed(() => canManuallyCompact(props.snapshot?.messageCount));
+
+/**
+ * 要不要提示"建议压缩"（**只是提示，不参与按钮可用性**）。
+ *
+ * 窗口未知时不给建议：没有分母就没有诚实的占比，旧代码用一个 30k 绝对值兜底，
+ * 那是旧闸门逻辑的拐杖，闸门搬走后一并去掉，避免再造一个没有依据的阈值。
+ */
+const suggestCompact = computed(() => {
+  const percent = contextUsagePercent.value;
+  return percent !== null && percent >= COMPACT_SUGGEST_PERCENT;
 });
+
+/** 徽标只在"该压"和"能压"同时成立时出现，避免"建议压缩"和"按钮不可用"打架 */
+const showCompactSuggest = computed(() => suggestCompact.value && canCompact.value);
 
 const compactHint = computed(() => {
   if (!props.snapshot) return t('monitor.context.compactDisabled');
-  const tokens = props.snapshot.estimatedTokens || 0;
-  const max = props.snapshot.maxContextTokens;
-  if (max) {
-    const pct = Math.round(tokens / max * 100);
-    if (pct >= 90) return `Token 占用 ${pct}%，建议立即压缩`;
-    if (pct >= compactThreshold) return `${t('monitor.context.compact')}（${pct}%）`;
-    return `Token 占用 ${pct}%，可手动压缩`;
+  const count = compactMessageCount.value;
+  if (!canCompact.value) {
+    return t('monitor.context.compactHintTooFew', {
+      count,
+      min: COMPACT_KEEP_RECENT_MESSAGES,
+    });
   }
-  if (tokens >= 50_000) return `Token 占用 ${formatNumber(tokens)}，建议立即压缩`;
-  if (tokens >= 30_000) return t('monitor.context.compact');
-  return `Token 占用 ${formatNumber(tokens)}，可手动压缩`;
+  const percent = contextUsagePercent.value;
+  if (percent !== null && percent >= COMPACT_SUGGEST_PERCENT) {
+    return t('monitor.context.compactHintSuggested', { percent, count });
+  }
+  return t('monitor.context.compactHintReady', { count });
 });
 
 const triggerCompact = () => {
@@ -282,8 +310,15 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
     <div class="context-top-grid">
       <div class="context-hero" :class="`tone-${usageTone}`">
         <div>
-          <div class="context-kicker">Context Budget</div>
-          <div class="context-token-value">≈ {{ formatToken(snapshot.estimatedTokens) }}</div>
+          <div class="context-kicker">
+            Context Budget
+            <span class="context-source-tag" :class="contextMeasured ? 'is-measured' : 'is-estimated'">
+              {{ contextMeasured ? t('monitor.context.measuredTag') : t('monitor.context.estimatedTag') }}
+            </span>
+          </div>
+          <div class="context-token-value" :title="contextMeasured ? t('monitor.context.measuredHint') : t('monitor.context.estimatedHint')">
+            {{ contextMeasured ? '' : '≈ ' }}{{ formatToken(totalTokens) }}
+          </div>
           <div class="context-subtitle">
             <template v-if="maxContextTokens">
               / {{ formatNumber(maxContextTokens) }} {{ t('monitor.context.contextSuffix') }} · {{ contextUsagePercent }}%
@@ -295,20 +330,36 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
           </div>
         </div>
         <div class="context-hero-actions">
+          <span
+            v-if="sessionId && showCompactSuggest"
+            class="compact-suggest-badge"
+            :title="compactHint"
+          >{{ t('monitor.context.compactSuggestBadge') }}</span>
+          <!-- 按钮在会话早期（≤ 阈值条数）会长期灰着：必须把原因摆在旁边，
+               否则又是一个"看起来坏了"。 -->
+          <span
+            v-else-if="sessionId && !canCompact && !compacting"
+            class="compact-blocked-note"
+            :title="compactHint"
+          >{{ t('monitor.context.compactBlockedNote', { min: COMPACT_KEEP_RECENT_MESSAGES }) }}</span>
           <button
             v-if="sessionId"
             class="compact-btn"
-            :class="{ 'compact-ready': canCompact, 'is-compacting': compacting }"
-            :disabled="compacting"
+            :class="{
+              'compact-ready': canCompact,
+              'is-compacting': compacting,
+              'is-blocked': !canCompact && !compacting,
+            }"
+            :disabled="compacting || !canCompact"
             @click="triggerCompact"
-            :title="compacting ? '压缩中...' : compactHint"
+            :title="compacting ? t('monitor.context.compactingTitle') : compactHint"
           >
             <svg v-if="compacting" class="compact-spinner" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
               <circle cx="12" cy="12" r="10" stroke-opacity="0.2" />
               <path d="M12 2a10 10 0 0 1 10 10" />
             </svg>
             <span v-else class="compact-btn-icon">&#9881;</span>
-            <span class="compact-btn-text">{{ compacting ? '压缩中' : '压缩' }}</span>
+            <span class="compact-btn-text">{{ compacting ? t('monitor.context.compacting') : t('monitor.context.compactAction') }}</span>
           </button>
           <span class="context-health">{{ usageLabel }}</span>
         </div>
@@ -398,6 +449,10 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
         </div>
       </div>
 
+      <!-- 分区明细只能靠本地分词器估算：厂商 API 只回总量，不回"消息 / 工具 / 系统提示词各占多少"。
+           所以这里必须显式说明，避免用户拿分区之和去核对上面的实测总量。 -->
+      <div class="context-estimate-note">{{ t('monitor.context.sectionsEstimatedHint') }}</div>
+
       <div class="context-bars">
         <div v-for="section in sectionViews" :key="section.key" class="context-bar-row">
           <div class="context-bar-head">
@@ -423,9 +478,9 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
           class="raw-toggle-btn"
           :class="{ active: showRawContent }"
           @click="showRawContent = !showRawContent"
-          :title="showRawContent ? '显示格式化内容' : '显示原始 JSON'"
+          :title="showRawContent ? t('monitor.context.contentModeFormattedTitle') : t('monitor.context.contentModeRawTitle')"
         >
-          {{ showRawContent ? 'Formatted' : 'Raw JSON' }}
+          {{ showRawContent ? t('monitor.context.contentModeFormatted') : t('monitor.context.contentModeRaw') }}
         </button>
       </div>
       <details
@@ -455,7 +510,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
               :class="{ copied: copiedSection === section.key }"
               @click.stop="copySectionContent(section)"
             >
-              {{ copiedSection === section.key ? '已复制' : '复制' }}
+              {{ copiedSection === section.key ? t('common.copied') : t('common.copy') }}
             </button>
           </div>
         </div>
@@ -468,7 +523,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   <ConfirmModal
     :open="showCompactConfirm"
     :title="t('monitor.context.compact')"
-    :message="t('monitor.context.cacheWarning', { tokens: formatToken(snapshot?.estimatedTokens || 0) })"
+    :message="t('monitor.context.cacheWarning', { tokens: formatToken(totalTokens) })"
     confirm-kind="primary"
     @cancel="showCompactConfirm = false"
     @confirm="confirmCompact"
@@ -548,6 +603,29 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   font-weight: 800;
 }
 
+/* 数据来源标记：实测 / 本地估算。两者可信度差一个量级，必须长得不一样，
+   否则用户会把兜底估算当成实测值。 */
+.context-source-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 5px;
+  font-size: 0.56rem;
+  letter-spacing: 0;
+  text-transform: none;
+  vertical-align: 1px;
+}
+
+.context-source-tag.is-measured {
+  color: var(--accent-blue);
+  background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+}
+
+.context-source-tag.is-estimated {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 16%, transparent);
+}
+
 .context-token-value {
   margin-top: 4px;
   color: var(--text-main);
@@ -591,14 +669,46 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   color: var(--accent-blue);
   border-color: color-mix(in srgb, var(--accent-blue) 50%, transparent);
 }
-.compact-btn.is-compacting {
+/* 压缩中与"条数不够不可按"都会 disabled，但语义不同，光标与配色必须能分开 */
+.compact-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.compact-btn:disabled:hover {
+  color: var(--text-muted);
+  border-color: var(--border-color);
+}
+.compact-btn.is-compacting:disabled,
+.compact-btn.is-compacting:disabled:hover {
   color: var(--accent-blue);
   border-color: color-mix(in srgb, var(--accent-blue) 40%, transparent);
   cursor: wait;
 }
-.compact-btn:disabled {
-  opacity: 0.6;
-  cursor: wait;
+.compact-btn.is-blocked:disabled {
+  opacity: 0.5;
+}
+/* "建议压缩"徽标：容量信号，只在按钮可用时出现（否则会和不可按状态打架） */
+.compact-suggest-badge {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--accent-blue);
+  background: color-mix(in srgb, var(--accent-blue) 16%, transparent);
+  font-size: 0.58rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.tone-critical .compact-suggest-badge {
+  color: var(--accent-red);
+  background: color-mix(in srgb, var(--accent-red) 18%, transparent);
+}
+/* 灰按钮旁边的原因说明：低调但可见，别让它抢走状态标签的注意力 */
+.compact-blocked-note {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 0.58rem;
+  white-space: nowrap;
+  cursor: help;
 }
 .compact-btn-icon {
   font-size: 0.75rem;
@@ -887,6 +997,13 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 
 .context-chart-copy p {
   margin: 4px 0 0;
+  line-height: 1.45;
+}
+
+.context-estimate-note {
+  margin: 8px 0 6px;
+  color: var(--text-muted);
+  font-size: 0.62rem;
   line-height: 1.45;
 }
 

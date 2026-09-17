@@ -19,6 +19,7 @@ import { useAgentStore } from '../../stores/agent';
 import { usePreferences } from '../../composables/usePreferences';
 import { useThinkingMode } from '../../composables/useThinkingMode';
 import { isThinkingToggleDisabled, type ThinkingCaps } from '../../utils/thinking';
+import { resolveContextTokens } from '../../utils/contextUsage';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { readFile } from '@tauri-apps/plugin-fs';
@@ -50,23 +51,59 @@ const sessionTokenTotal = computed(() => (session.totalInputTokens || 0) + (sess
 /**
  * 当前上下文占用。
  *
- * 优先取 `providerInputTokens`——它是最近一次请求**实际发出去**的 prompt token 总量，
- * 也是"上下文有多大"唯一权威的答案。后端已把各家族口径归一
- * （`usage.rs` 的 `CacheUsage::total_input`：OpenAI 家族取 `prompt_tokens`，
- * Anthropic 家族 = 命中 + 未命中），所以这里不需要再判断厂商。
+ * 口径统一在 `utils/contextUsage.ts`（右侧监控面板 `ContextInspector.vue` 用的是同一个函数）：
+ * 优先取 `providerInputTokens`——最近一次请求**实际发出去**的 prompt token 总量，
+ * 也是"上下文有多大"唯一权威的答案；厂商没上报才退回本地估算（**系统性偏低**，见该模块注释）。
  * 它同时也是浮层里「命中 X / 共 Y 输入 token」的 Y，两处显示同一个数才不会互相打架。
- *
- * 厂商没上报时才退回本地估算 `estimatedTokens`。**这个估算系统性偏低**：
- * 它的 messages 段是对 tool_result 截断到 3 行的"可读摘要"做的 token 计数
- * （见 `pipeline.rs` 的 `format_messages_readable`），工具结果越多偏低越多——
- * 实测长会话里 17.3k vs 实际 52.0k，差了 3 倍。所以它只配当兜底，不能当主口径。
  */
-const contextTokens = computed(() => {
-  const snap = agent.currentContextSnapshot;
-  if (!snap) return 0;
-  const actual = snap.providerInputTokens;
-  if (typeof actual === 'number' && actual > 0) return actual;
-  return Math.max(0, snap.estimatedTokens || 0);
+const contextTokens = computed(() => resolveContextTokens(agent.currentContextSnapshot));
+
+/**
+ * 上下文窗口上限（快照的 `maxContextTokens`）。
+ *
+ * 来源是**编译期内嵌的 `model_registry.json`**（不是 API 上报，见 `registry.rs:64`），
+ * 模型没登记窗口时为 null——此时不猜、只报已用量，并给一句「未知上下文窗口」的提示。
+ */
+const contextWindow = computed(() => agent.currentContextSnapshot?.maxContextTokens ?? null);
+
+/**
+ * 上下文占用读数（Codex / WorkBuddy 同款结构）：`70.8% · 212.5K / 300.0K 上下文已使用`。
+ *
+ * 概览栏不再直接铺这行字，而是收进**进度环的悬停浮层**（环由 `contextRingDash` 画）；
+ * 窗口未登记时环不填色，读数里补一句「窗口未知」——不知道分母就不编百分比，
+ * 与"未知 ≠ 0"的既有口径一致。
+ *
+ * 与「本次上下文」**共用同一个分子**（`contextTokens`，provider 实测优先）——同一行里
+ * 百分比、已用、窗口三者必须自洽，若这里改用估算值就会出现"已用 / 窗口"与百分比对不上。
+ *
+ * ⚠️ **未扣输出预算**：环与读数展示的是「已用 / 窗口」，没有为下一次回复的 `max_tokens` 预留。
+ * （此前快照里的 `maxOutputTokens` 是硬编码常量、不可信，故无从扣减；2026-09-17 起该字段已与
+ * 请求体 `max_tokens` 同源，技术上前提具备。扣不扣是**口径选择**——「占窗口多少」还是「还剩多少可输入」，
+ * 前者更贴近各家工具的通行展示，故暂不扣。）
+ */
+const contextUsageLabel = computed(() => {
+  if (contextTokens.value <= 0) return null;
+  const used = formatToken(contextTokens.value);
+  const max = contextWindow.value;
+  if (!max) {
+    return `${used} ${t('input.tokenContextUsed')} · ${t('input.tokenWindowUnknown')}`;
+  }
+  const percent = Math.min(100, Math.round((contextTokens.value / max) * 1000) / 10);
+  return `${percent.toFixed(1)}% · ${used} / ${formatToken(max)} ${t('input.tokenContextUsed')}`;
+});
+
+/** 进度环的圆周长（r=9，必须与模板里 `<circle r>` 一致，否则环会画不满/溢出） */
+const CONTEXT_RING_CIRCUMFERENCE = 2 * Math.PI * 9;
+
+/**
+ * 进度环填充长度。窗口未知或无读数时返回 0：只画灰色轨道，**不画进度**——
+ * 不知道分母就不能把环填到某个比例，那等于编一个占用率出来。
+ */
+const contextRingDash = computed(() => {
+  const max = contextWindow.value;
+  if (!max || contextTokens.value <= 0) return 0;
+  const ratio = Math.min(1, contextTokens.value / max);
+  return ratio * CONTEXT_RING_CIRCUMFERENCE;
 });
 
 /**
@@ -191,6 +228,9 @@ const barCacheUsage = computed(() => {
 
 // 缓存读数浮层：hover 时展示明细（命中率进度条 + token 明细）
 const showCacheTip = ref(false);
+
+// 上下文进度环的浮层：只在悬停进度环时出现（与上面那个缓存浮层互不干扰）
+const showContextTip = ref(false);
 
 const openContextPanel = () => {
   // 打开右侧上下文监控窗口（App.vue 监听该状态并负责开窗）
@@ -1077,20 +1117,41 @@ const handleRecallEdit = async () => {
 
       <!-- 上下文与缓存读数 -->
       <div class="token-bar" v-if="contextTokens > 0 || sessionTokenTotal > 0">
-        <!-- 上下文 + 缓存命中合成一组：hover 出明细浮层，点一下打开右侧上下文监控窗口 -->
+        <!-- 上下文占用：概览栏只留一个进度环，读数收进悬停浮层（Codex / WorkBuddy 同款）。
+             环的填充比例 = 已用 / 窗口；窗口未登记时只画灰轨道，浮层文字里注明「窗口未知」。
+
+             刻意放在 `.token-bar-usage` **外面**：那一组整体 hover 会弹缓存明细浮层，
+             环若嵌在里面，悬停时会同时冒出两个浮层、互相遮挡。 -->
+        <span
+          v-if="contextUsageLabel"
+          class="token-bar-item token-bar-ring"
+          @mouseenter="showContextTip = true"
+          @mouseleave="showContextTip = false"
+          @click="openContextPanel"
+        >
+          <svg class="context-ring" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+            <circle class="ring-track" cx="12" cy="12" r="9" />
+            <circle
+              class="ring-fill"
+              cx="12"
+              cy="12"
+              r="9"
+              :stroke-dasharray="`${contextRingDash} ${CONTEXT_RING_CIRCUMFERENCE}`"
+              transform="rotate(-90 12 12)"
+            />
+          </svg>
+          <span v-if="showContextTip" class="context-tip" role="tooltip">
+            {{ contextUsageLabel }}
+          </span>
+        </span>
+
+        <!-- 缓存命中：hover 出明细浮层，点一下打开右侧上下文监控窗口 -->
         <span
           class="token-bar-usage"
           @mouseenter="showCacheTip = true"
           @mouseleave="showCacheTip = false"
           @click="openContextPanel"
         >
-          <span
-            v-if="contextTokens > 0"
-            class="token-bar-item token-bar-total"
-            :title="t('input.tokenContextTitle')"
-          >
-            {{ t('input.tokenContext') }} {{ formatToken(contextTokens) }}
-          </span>
           <template v-if="barCacheUsage">
             <span v-if="contextTokens > 0" class="token-bar-sep">·</span>
             <span class="token-bar-item token-bar-cache" :class="`cache-${barCacheUsage.state}`">
@@ -1859,6 +1920,81 @@ const handleRecallEdit = async () => {
 
 .token-bar-total {
   font-weight: 650;
+}
+
+/* ── 上下文进度环（取代原来铺在概览栏上的一长串读数）── */
+
+/* 环是浮层的定位上下文；`.token-bar-item svg { opacity: .5 }` 那条通用规则要盖掉，
+   否则环会跟旁边的文字一样半透明，进度就看不出来了 */
+.token-bar-ring {
+  position: relative;
+  cursor: pointer;
+  padding: 0 3px;
+  border-radius: 4px;
+  transition: background-color 0.15s;
+}
+
+/* 与缓存读数同一套 hover 反馈：只给背景、不改字色 */
+.token-bar-ring:hover {
+  background: var(--glass-bg);
+}
+
+.token-bar-ring svg.context-ring {
+  display: block;
+  opacity: 1;
+}
+
+.ring-track {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-opacity: 0.22;
+  stroke-width: 2.5;
+}
+
+.ring-fill {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  transition: stroke-dasharray var(--transition-fast);
+}
+
+/* 单行读数浮层：宽度交给内容（读数本来就是一行），贴环正上方 */
+.context-tip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 120;
+  padding: 5px 9px;
+  white-space: nowrap;
+  background: var(--surface-strong);
+  backdrop-filter: blur(var(--glass-blur-heavy));
+  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
+  border: 1px solid color-mix(in srgb, var(--text-muted) 22%, transparent);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  color: var(--text-muted);
+  font-size: 0.65rem;
+  user-select: none;
+  /* 只淡入：位移动画会和定位打架（与 CacheHitTooltip 同一处理） */
+  animation: contextTipIn var(--transition-fast);
+}
+
+/* 本组件 scoped，keyframes 必须自己定义：CacheHitTooltip 里的同名动画
+   会被 scoped 重命名，跨组件引用拿不到。 */
+@keyframes contextTipIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* 透明桥接块，盖住浮层与环之间的 8px 间隙，指针往上挪不会中途触发 mouseleave */
+.context-tip::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: 8px;
 }
 
 .token-bar-spacer {
