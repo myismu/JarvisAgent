@@ -227,6 +227,24 @@
                   </label>
                   <div class="setting-desc">{{ t('settings.general.compactModeDesc') }}</div>
                 </div>
+                <!--
+                  图片压缩档位：全局偏好（UiPreferences），**所有预设共用**、不随预设切换而变。
+                  因此放在常规设置里，而不是模型预设页；改档位立刻生效，无需点保存。
+                -->
+                <div class="setting-item">
+                  <label>{{ t('settings.general.imageCompressTier') }}</label>
+                  <div class="display-mode-toggle">
+                    <button
+                      v-for="tier in imageCompressTiers"
+                      :key="tier.value"
+                      class="display-mode-btn"
+                      :class="{ active: imageCompressTier === tier.value }"
+                      :title="t(tier.tooltip)"
+                      @click="setImageCompressTier(tier.value)"
+                    >{{ t(tier.label) }}</button>
+                  </div>
+                  <div class="setting-desc">{{ t(`settings.general.imageCompressTier${imageCompressTier === 'eco' ? 'Eco' : imageCompressTier === 'hd' ? 'Hd' : 'Standard'}Desc`) }}</div>
+                </div>
                 <div class="setting-item">
                   <label>{{ t('settings.general.agentMessageOpacity') }}</label>
                   <div class="font-size-control">
@@ -455,10 +473,6 @@
                   <div class="setting-desc">{{ t('settings.profileEditor.thinkingDefaultDesc') }}</div>
                 </div>
 
-                <div class="setting-item">
-                  <div class="setting-desc image-info">{{ t('settings.profileEditor.imageCompressInfo') }}</div>
-                </div>
-
                 <div class="advanced-toggle" @click="showAdvanced = !showAdvanced">
                   <span>{{ t('settings.profileEditor.advancedParams') }}</span>
                   <svg :class="{ rotated: showAdvanced }" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,8.58Z"/></svg>
@@ -520,7 +534,7 @@ import { ref, watch, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { invoke } from '@tauri-apps/api/core'
 import { useTheme } from '../../composables/useTheme'
-import { usePreferences, type AgentPanelPosition } from '../../composables/usePreferences'
+import { usePreferences, type AgentPanelPosition, type ImageCompressTier } from '../../composables/usePreferences'
 import { useWindow } from '../../composables/useWindow'
 import { useSessionStore } from '../../stores/session'
 import type { AgentUserMode, AgentWorkMode } from '../../types'
@@ -597,6 +611,21 @@ const userMessageOpacity = computed(() => uiPrefs.userMessageOpacity)
 const setUserMessageOpacity = (val: number) => uiPrefs.setUserMessageOpacity(val)
 const reflectionMode = computed(() => uiPrefs.reflectionMode)
 const setReflectionMode = (val: "always" | "smart" | "off") => uiPrefs.setReflectionMode(val)
+/**
+ * 图片压缩三档。`title` 是**悬停用**的一句话说明（什么时候该选这一档），
+ * 下方的 setting-desc 则是当前档位的展开描述 —— 两者分工不同，不要合并。
+ */
+const imageCompressTiers: {
+  value: ImageCompressTier
+  label: string
+  tooltip: string
+}[] = [
+  { value: 'eco', label: 'settings.general.imageCompressTierEco', tooltip: 'settings.general.imageCompressTierEcoTooltip' },
+  { value: 'standard', label: 'settings.general.imageCompressTierStandard', tooltip: 'settings.general.imageCompressTierStandardTooltip' },
+  { value: 'hd', label: 'settings.general.imageCompressTierHd', tooltip: 'settings.general.imageCompressTierHdTooltip' },
+]
+const imageCompressTier = computed(() => uiPrefs.imageCompressTier)
+const setImageCompressTier = (val: ImageCompressTier) => uiPrefs.setImageCompressTier(val)
 const langMenuOpen = ref(false)
 const reflectionMenuOpen = ref(false)
 const localeOptions: Record<string, string> = { 'zh-CN': '简体中文', 'en-US': 'English' }

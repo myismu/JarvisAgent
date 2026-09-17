@@ -109,7 +109,10 @@
     "visionWarning": "当前模型不支持多模态，图片/视频将仅作为文件路径传递",
     "placeholder": "给贾维斯发送指令... (Shift+Enter 换行)",
     "send": "发送 (Enter)",
-    "stop": "停止生成"
+    "stop": "停止生成",
+    "imageNotCompressed": "未压缩",
+    "imageTokenEstimate": "约 {count} token",
+    "videoTokenUnknown": "视频不计入图片 token"
   },
   "permission": {
     "complexCommandReason": "请求执行以下复杂系统指令：",
@@ -485,6 +488,16 @@
       "reflectionOff": "关闭",
       "reflectionOffDesc": "完全关闭反思审查，Agent 执行工具后直接继续，不做任何结果校验。恢复默认 Agent 行为，零额外 Token 消耗。",
       "reflectionModeDesc": "智能：模型不确定时自动审查；总是：变更操作后自动审查；关闭：不审查。",
+      "imageCompressTier": "图片压缩档位",
+      "imageCompressTierEco": "省流",
+      "imageCompressTierEcoTooltip": "什么时候用：一次要传好几张图，或者图片只是让 Agent 看个大概（报错截图、界面全貌、示意图）。最省上下文，细节会变糊。",
+      "imageCompressTierEcoDesc": "压缩到 1280×720，每张约 1200 token。适合批量传图或只需看个大概；图上的小字、细线条可能糊掉。",
+      "imageCompressTierStandard": "标准",
+      "imageCompressTierStandardTooltip": "什么时候用：日常情况都用这档。模型能看清代码截图和报错信息，又不会吃掉太多上下文。",
+      "imageCompressTierStandardDesc": "压缩到 1568×896，每张约 1900 token。1568 也是 Anthropic 服务端的长边上限，超过它也只会看到 1568，所以这档在清晰度上已经够用。日常推荐。",
+      "imageCompressTierHd": "高清",
+      "imageCompressTierHdTooltip": "什么时候用：图里密密麻麻全是小字（终端全屏、超长堆栈、密集表格），需要模型逐字看清时。代价是每张多花一倍多 token。",
+      "imageCompressTierHdDesc": "压缩到 1920×1080，每张约 2800 token。小字保真度最高，但 token 消耗约为标准档的 1.5 倍，拖累上下文余量。仅在需要逐字辨认时使用。",
       "behavior": "交互行为",
       "autoScroll": "自动跟随滚动",
       "autoScrollDesc": "Agent 输出新内容时自动滚动到底部。",
@@ -527,12 +540,7 @@
       "thinkingDefaultAuto": "跟随全局（推荐）",
       "thinkingDefaultOn": "默认开启",
       "thinkingDefaultOff": "默认关闭",
-      "thinkingDefaultDesc": "本预设的默认推理档位。会话未单独设置时按此值执行；选「跟随全局」则按上方「用户类型」决定（开发者默认开启、普通用户默认关闭）。会话内仍可用输入框的深度思考按钮单独覆盖。",
-      "imageCompression": "图片压缩设置",
-      "imageCompressInfo": "上传图片将自动压缩至 1920×1080 像素，JPEG 质量 80%。如需调整请修改配置文件。",
-      "maxWidth": "最大宽度",
-      "maxHeight": "最大高度",
-      "quality": "质量"
+      "thinkingDefaultDesc": "本预设的默认推理档位。会话未单独设置时按此值执行；选「跟随全局」则按上方「用户类型」决定（开发者默认开启、普通用户默认关闭）。会话内仍可用输入框的深度思考按钮单独覆盖。"
     },
     "actions": {
       "save": "保存所有更改",

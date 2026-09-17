@@ -32,7 +32,28 @@ const { t } = useI18n();
 const userInput = ref("");
 const isDragging = ref(false);
 const inputRef = ref<HTMLTextAreaElement | null>(null);
-const mediaFiles = ref<{path: string, type: 'image' | 'video', url: string, base64: string}[]>([]);
+
+/**
+ * 待发送的附件。
+ *
+ * `natural*` 是原图尺寸、`compressed*` 是压缩后尺寸 —— 两者都留着只为了在缩略图上
+ * 悬停时告诉用户"这张图被压到多大、大概吃多少 token"。**它们不参与发送**，
+ * 发送用的仍是 `base64`；后端也只认 base64。
+ *
+ * 尺寸为 `null` 表示这张图没能解码（`createImageBitmap` 失败），此时提示里降级显示。
+ */
+interface MediaFile {
+  path: string;
+  type: 'image' | 'video';
+  url: string;
+  base64: string;
+  naturalWidth: number | null;
+  naturalHeight: number | null;
+  compressedWidth: number | null;
+  compressedHeight: number | null;
+}
+
+const mediaFiles = ref<MediaFile[]>([]);
 const showVisionWarning = ref(false);
 const showProfileCacheWarning = ref(false);
 const pendingProfileId = ref<string | null>(null);
@@ -295,50 +316,82 @@ const thinkingLocked = computed(
   () => isThinkingForced.value && canModelThink.value && !thinkingSaving.value,
 );
 
-const imageCompressConfig = ref({ maxWidth: 1920, maxHeight: 1080, quality: 0.8 });
+/**
+ * 图片压缩参数直接读全局偏好（唯一来源是 `UiPreferences`，取值口径与后端
+ * `get_image_compress_config` 完全一致）。
+ *
+ * 早期这里是"挂载时 invoke 一次、之后永不刷新"：用户在设置里改了档位，
+ * 得等下次 `config-updated` 事件（只有存预设才发）才会重新拉，表现就是改完不生效。
+ * 现在改成 computed，跟着偏好的响应式数据实时变（设置面板改档位后同窗口立即生效）。
+ */
+const imageCompressConfig = computed(() => ({
+  maxWidth: uiPrefs.imageMaxWidth,
+  maxHeight: uiPrefs.imageMaxHeight,
+  quality: uiPrefs.imageQuality,
+}));
+
 const showInterruptedResumeHint = computed(() => {
   const view = session.currentSessionView;
   return !isRunning && (view.status === "INTERRUPTED" || Boolean(view.resumableRunId));
 });
 
-const loadImageCompressConfig = async () => {
-  try {
-    const cfg = await invoke<{ maxWidth: number; maxHeight: number; quality: number }>('get_image_compress_config');
-    imageCompressConfig.value = cfg;
-  } catch (e) {
-    console.error('Failed to load image compress config:', e);
-  }
+/**
+ * 把压缩后的尺寸换算成"大约多少 token"。
+ *
+ * 口径：Anthropic 官方给出的图像 token 估算式 `(宽 × 高) / 750`。
+ * 这是**展示用的估算值**，不参与任何请求构造 —— 真实用量以 API 返回为准。
+ * 只给用户一个"这张图大概多贵"的数量级，因此不追求逐像素精确。
+ */
+const estimateImageTokens = (w: number | null, h: number | null): number | null => {
+  if (!w || !h) return null;
+  return Math.round((w * h) / 750);
 };
 
-const compressImage = async (fileData: Uint8Array, mimeType: string): Promise<{ base64: string; mimeType: string }> => {
+const compressImage = async (
+  fileData: Uint8Array,
+  mimeType: string,
+): Promise<{
+  base64: string;
+  mimeType: string;
+  naturalWidth: number;
+  naturalHeight: number;
+  compressedWidth: number;
+  compressedHeight: number;
+}> => {
   const { maxWidth, maxHeight, quality } = imageCompressConfig.value;
   const blob = new Blob([new Uint8Array(fileData)], { type: mimeType });
   const bitmap = await createImageBitmap(blob);
-  
-  let w = bitmap.width;
-  let h = bitmap.height;
-  
+
+  const naturalWidth = bitmap.width;
+  const naturalHeight = bitmap.height;
+  let w = naturalWidth;
+  let h = naturalHeight;
+
   if (w > maxWidth || h > maxHeight) {
     const ratio = Math.min(maxWidth / w, maxHeight / h);
     w = Math.round(w * ratio);
     h = Math.round(h * ratio);
   }
-  
+
   const canvas = new OffscreenCanvas(w, h);
   const ctx = canvas.getContext('2d')!;
   ctx.drawImage(bitmap, 0, 0, w, h);
   bitmap.close();
-  
+
   const outputType = mimeType === 'image/png' ? 'image/png' : 'image/jpeg';
   const outputBlob = await canvas.convertToBlob({ type: outputType, quality });
   const reader = new FileReader();
-  
+
   return new Promise((resolve) => {
     reader.onload = () => {
       const dataUrl = reader.result as string;
       resolve({
         base64: dataUrl,
         mimeType: outputType,
+        naturalWidth,
+        naturalHeight,
+        compressedWidth: w,
+        compressedHeight: h,
       });
     };
     reader.readAsDataURL(outputBlob);
@@ -596,6 +649,43 @@ const hideVisionWarning = () => {
   showVisionWarning.value = false;
 };
 
+/**
+ * 缩略图悬停提示：讲清"这张图被压到多大、大概吃多少 token"。
+ *
+ * 存在的理由：图片 token 混在总输入里根本看不出来（系统提示词+工具定义占大头），
+ * 用户没法判断压缩档位到底有没有生效。这里把原图→压缩后的尺寸和估算 token 直接摆出来，
+ * 切换档位时一眼可见。
+ */
+const mediaTooltip = (media: MediaFile): string => {
+  const lines: string[] = [media.path.split(/[/\\]/).pop() || media.path];
+
+  if (media.naturalWidth && media.naturalHeight) {
+    let sizeLine = `${media.naturalWidth}×${media.naturalHeight}`;
+    // 只有真的缩放过才显示箭头，避免"1920×1080 → 1920×1080"这种废话
+    if (
+      media.compressedWidth &&
+      media.compressedHeight &&
+      (media.compressedWidth !== media.naturalWidth || media.compressedHeight !== media.naturalHeight)
+    ) {
+      sizeLine += ` → ${media.compressedWidth}×${media.compressedHeight}`;
+    } else {
+      sizeLine += ` → ${t('input.imageNotCompressed')}`;
+    }
+    lines.push(sizeLine);
+  }
+
+  const tokens = estimateImageTokens(media.compressedWidth, media.compressedHeight);
+  if (tokens !== null) {
+    lines.push(t('input.imageTokenEstimate', { count: tokens.toLocaleString() }));
+  }
+
+  if (media.type === 'video') {
+    lines.push(t('input.videoTokenUnknown'));
+  }
+
+  return lines.join('\n');
+};
+
 const processDroppedFiles = async (paths: string[]) => {
   let hasMediaFiles = false;
   
@@ -609,7 +699,12 @@ const processDroppedFiles = async (paths: string[]) => {
       
       let url = '';
       let base64 = '';
-      
+      // 尺寸在解码失败时保持 null → 缩略图提示降级显示，不编造数字
+      let naturalWidth: number | null = null;
+      let naturalHeight: number | null = null;
+      let compressedWidth: number | null = null;
+      let compressedHeight: number | null = null;
+
       if (isImage && canModelVision.value) {
         try {
           const fileData = await readFile(droppedPath);
@@ -620,6 +715,10 @@ const processDroppedFiles = async (paths: string[]) => {
           
           const compressed = await compressImage(new Uint8Array(fileData), mimeType);
           base64 = compressed.base64;
+          naturalWidth = compressed.naturalWidth;
+          naturalHeight = compressed.naturalHeight;
+          compressedWidth = compressed.compressedWidth;
+          compressedHeight = compressed.compressedHeight;
           url = URL.createObjectURL(new Blob([new Uint8Array(fileData)], { type: mimeType }));
         } catch (e) {
           console.error('Failed to read image file:', e);
@@ -631,6 +730,10 @@ const processDroppedFiles = async (paths: string[]) => {
         type: isImage ? 'image' : 'video',
         url,
         base64,
+        naturalWidth,
+        naturalHeight,
+        compressedWidth,
+        compressedHeight,
       });
     } else {
       if (userInput.value) {
@@ -660,11 +763,9 @@ onMounted(async () => {
     appConfig.value.activeProfileId = appConfig.value.globalProfileId;
     await invoke('save_config_cmd', { newConfig: appConfig.value });
   }
-  await loadImageCompressConfig();
 
   unlistenConfig = await listen('config-updated', async () => {
     loadConfig();
-    loadImageCompressConfig();
     try {
       if (session.activeSessionId) {
         const view = session.getSessionView(session.activeSessionId);
@@ -1025,7 +1126,7 @@ const handleRecallEdit = async () => {
       <div v-if="mediaFiles.length > 0" class="media-preview-container">
         <div v-for="(media, index) in mediaFiles" :key="index" class="media-preview-item">
           <template v-if="media.type === 'image' && media.url">
-            <img :src="media.url" class="media-thumbnail" alt="preview" />
+            <img :src="media.url" class="media-thumbnail" alt="preview" :title="mediaTooltip(media)" />
           </template>
           <template v-else>
             <div class="media-icon">
@@ -1040,7 +1141,7 @@ const handleRecallEdit = async () => {
               </svg>
             </div>
           </template>
-          <span class="media-name">{{ media.path.split(/[/\\]/).pop() }}</span>
+          <span class="media-name" :title="mediaTooltip(media)">{{ media.path.split(/[/\\]/).pop() }}</span>
           <button class="remove-media-btn" @click.stop="removeMediaFile(index)" :title="t('input.remove')" :aria-label="t('input.remove')">
             <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <line x1="18" y1="6" x2="6" y2="18"></line>

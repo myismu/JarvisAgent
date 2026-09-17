@@ -108,7 +108,10 @@
     "visionWarning": "The current model does not support multimodal input. Images/videos will be passed as file paths only.",
     "placeholder": "Send instructions to Jarvis... (Shift+Enter for newline)",
     "send": "Send (Enter)",
-    "stop": "Stop generation"
+    "stop": "Stop generation",
+    "imageNotCompressed": "not compressed",
+    "imageTokenEstimate": "~{count} tokens",
+    "videoTokenUnknown": "Videos do not count toward image tokens"
   },
   "permission": {
     "complexCommandReason": "Request to execute the following complex system instruction:",
@@ -484,6 +487,16 @@
       "reflectionOff": "Off",
       "reflectionOffDesc": "Disables reflection entirely — the agent continues directly after tool execution with no result validation. Zero additional token cost.",
       "reflectionModeDesc": "Smart: review when model is uncertain; Always: review after mutations; Off: no review.",
+      "imageCompressTier": "Image compression",
+      "imageCompressTierEco": "Data saver",
+      "imageCompressTierEcoTooltip": "When to use: sending several images at once, or the image only needs a rough read (error screenshots, full UI, diagrams). Cheapest on context, but fine detail gets blurry.",
+      "imageCompressTierEcoDesc": "Compressed to 1280×720, about 1,200 tokens each. Good for batches or rough reads; small text and thin lines may become unreadable.",
+      "imageCompressTierStandard": "Standard",
+      "imageCompressTierStandardTooltip": "When to use: the everyday option. The model can still read code screenshots and error messages clearly without burning much context.",
+      "imageCompressTierStandardDesc": "Compressed to 1568×896, about 1,900 tokens each. 1568 is also Anthropic's server-side long-edge cap — anything larger is downscaled to 1568 anyway, so this tier is already lossless in practice. Recommended.",
+      "imageCompressTierHd": "High fidelity",
+      "imageCompressTierHdTooltip": "When to use: the image is dense with small text (full-screen terminal, long stack trace, tight table) and the model must read it character by character. Costs over 50% more tokens per image.",
+      "imageCompressTierHdDesc": "Compressed to 1920×1080, about 2,800 tokens each. Best fidelity for small text, but roughly 1.5× the tokens of Standard, eating into your context budget. Use only when exact characters matter.",
       "behavior": "Behavior",
       "autoScroll": "Auto-scroll",
       "autoScrollDesc": "Automatically scroll to bottom when the agent outputs new content.",
@@ -526,12 +539,7 @@
       "thinkingDefaultAuto": "Follow global (recommended)",
       "thinkingDefaultOn": "On by default",
       "thinkingDefaultOff": "Off by default",
-      "thinkingDefaultDesc": "Default reasoning level for this preset. Used when a session hasn't set its own level. \"Follow global\" defers to the user type above (developers default to on, regular users to off). You can still override it per session with the thinking button in the input bar.",
-      "imageCompression": "Image Compression",
-      "imageCompressInfo": "Uploaded images are automatically compressed to 1920×1080 pixels, JPEG quality 80%. Edit the config file to adjust.",
-      "maxWidth": "Max width",
-      "maxHeight": "Max height",
-      "quality": "Quality"
+      "thinkingDefaultDesc": "Default reasoning level for this preset. Used when a session hasn't set its own level. \"Follow global\" defers to the user type above (developers default to on, regular users to off). You can still override it per session with the thinking button in the input bar."
     },
     "actions": {
       "save": "Save all changes",
