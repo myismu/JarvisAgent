@@ -1,7 +1,8 @@
 <!--
-# PermissionCard.vue — 会话流里的权限确认卡片
+# PermissionCard.vue — 权限确认卡片（挂在输入框正上方 0px，随输入框浮动）
 
-风格：灰白朴素（无彩色强调、无毛玻璃、无阴影），信息分层为"动作 + 明细 + 三个选择"。
+风格：灰白朴素（无彩色强调、无阴影），与输入框同宽同底色，底部无缝相接（Codex 风格）。
+信息分层为"动作 + 明细 + 三个选择"。
 
 ## 交互
 - 三个选择：拒绝 / 本项目允许（登记会话键并落盘，跨会话记住）/ 允许一次
@@ -113,14 +114,24 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
 </template>
 
 <style scoped>
-/* 灰白朴素：只用边框与文字层级区分，不用彩色、不用毛玻璃、不用阴影 */
+/*
+ * 灰白朴素：只用边框与文字层级区分，不用彩色、不用毛玻璃、不用阴影。
+ * 挂载位置 = 输入框正上方 0px（floating-terminal-container 内，Codex 风格）：
+ * - 宽度与输入框同一口径（chat-input-wrapper 的 min(85%, 960px)），左右对齐；
+ * - 底部直角 + 去底边框 → 与输入框顶边无缝相接（0px 间隔）；
+ * - 背景与输入框同用 surface-strong + 玻璃模糊，视觉上是输入框的"帽子"。
+ */
 .perm-card {
-  margin: 8px 16px 12px;
-  padding: 12px 14px;
-  border: 1px solid var(--glass-border-subtle);
-  border-radius: var(--radius-md);
-  background: transparent;
-  max-width: 620px;
+  margin: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--glass-border);
+  border-bottom: none;
+  border-radius: 16px 16px 0 0;
+  background: var(--surface-strong);
+  backdrop-filter: blur(var(--glass-blur-heavy));
+  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
+  width: 100%;
+  max-width: min(85%, 960px);
   font-size: 0.78rem;
   line-height: 1.5;
 }

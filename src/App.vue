@@ -24,6 +24,7 @@ import TitleBar from "./components/layout/TitleBar.vue";
 import Sidebar from "./components/layout/Sidebar.vue";
 import ChatArea from "./components/chat/ChatArea.vue";
 import TerminalInput from "./components/chat/TerminalInput.vue";
+import PermissionCard from "./components/chat/PermissionCard.vue";
 import PlanPreviewPanel from "./components/common/PlanPreviewPanel.vue";
 import SettingsPanel from "./components/settings/SettingsPanel.vue";
 import SkillManager from "./components/skill/SkillManager.vue";
@@ -229,6 +230,10 @@ onBeforeUnmount(() => {
             <ChatArea />
             <PlanPreviewPanel />
             <div class="floating-terminal-container">
+              <!-- 权限卡：贴输入框顶部 0px（Codex 风格）。放进本容器后，
+                   卡片高度变化由 TerminalInput 对容器的 ResizeObserver 自动测入
+                   --input-area-height，聊天流底部留白无需另行补偿 -->
+              <PermissionCard />
               <TerminalInput />
             </div>
           </template>
@@ -413,7 +418,9 @@ onBeforeUnmount(() => {
   padding: 0 40px 32px;
   pointer-events: none;
   display: flex;
-  justify-content: center;
+  /* column：权限卡堆叠在输入框正上方（0px 间隔，Codex 风格），整体随输入框浮动 */
+  flex-direction: column;
+  align-items: center;
 }
 
 .floating-terminal-container > * {

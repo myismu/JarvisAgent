@@ -368,13 +368,13 @@ const backgroundStatusLabel = (status: string): string => {
         <button v-if="permissionAllowanceCount > 0" class="perm-revoke-btn" @click="clearSessionAllowances">{{ t('permission.revokeAll') }}</button>
       </div>
 
-      <!-- 本会话已允许的范围（操作类别 + 范围），逐条可撤销 -->
-      <div v-if="permissionAllowances.length > 0" class="perm-cards">
-        <div v-for="allowance in permissionAllowances" :key="allowance.kind + '|' + allowance.scope" class="perm-card-inline">
-          <p class="perm-card-msg">{{ allowance.label }}</p>
-          <div class="perm-card-actions">
-            <button class="perm-card-btn reject" @click="revokeAllowance(allowance)">{{ t('permission.revoke') }}</button>
-          </div>
+      <!-- 本会话已允许的范围：紧凑行式，一行一条，悬停行显撤销。
+           清单可能很长（覆盖/命令各一条 easily 20+），max-height 内部滚动，
+           不再把下方的 CONTEXT 等监控区挤走 -->
+      <div v-if="permissionAllowances.length > 0" class="perm-allow-list">
+        <div v-for="allowance in permissionAllowances" :key="allowance.kind + '|' + allowance.scope" class="perm-allow-row">
+          <span class="perm-allow-label" :title="allowance.label">{{ allowance.label }}</span>
+          <button class="perm-allow-revoke" @click="revokeAllowance(allowance)">{{ t('permission.revoke') }}</button>
         </div>
       </div>
 
@@ -718,6 +718,64 @@ const backgroundStatusLabel = (status: string): string => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* 已允许清单（紧凑行式）：一行一条 + 悬停显撤销 + 内部滚动 */
+.perm-allow-list {
+  margin: 8px 12px 0;
+  max-height: 200px;
+  overflow-y: auto;
+  border-top: 1px solid var(--glass-border-subtle);
+  border-bottom: 1px solid var(--glass-border-subtle);
+}
+
+.perm-allow-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+}
+
+.perm-allow-row + .perm-allow-row {
+  border-top: 1px solid color-mix(in srgb, var(--glass-border-subtle) 55%, transparent);
+}
+
+.perm-allow-row:hover {
+  background: var(--glass-bg-light);
+}
+
+.perm-allow-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.72rem;
+  line-height: 1.7;
+  color: var(--text-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 撤销是低频动作：悬停行才浮现，列表常时只留内容本身 */
+.perm-allow-revoke {
+  flex: none;
+  padding: 1px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+
+.perm-allow-row:hover .perm-allow-revoke {
+  opacity: 1;
+}
+
+.perm-allow-revoke:hover {
+  color: var(--accent-red);
+  background: color-mix(in srgb, var(--accent-red) 8%, transparent);
 }
 
 .perm-card-inline {

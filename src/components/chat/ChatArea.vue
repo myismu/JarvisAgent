@@ -11,7 +11,6 @@ import AgentTurn from './AgentTurn.vue';
 import ThinkingStatus from './ThinkingStatus.vue';
 import SessionTaskBoard from './SessionTaskBoard.vue';
 import TodoPanel from './TodoPanel.vue';
-import PermissionCard from './PermissionCard.vue';
 import WelcomeScreen from './WelcomeScreen.vue';
 import MessageRail from './MessageRail.vue';
 import type { PlanDocument, AgentTurnSnapshot, AgentCurrentTurn } from '../../types';
@@ -772,7 +771,6 @@ onMounted(() => {
           />
         </div>
       </div>
-      <PermissionCard />
       <Transition name="notice-fade">
         <div v-if="chat.memoryNotice" class="memory-notice" @click="chat.memoryNotice = null">
           <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
