@@ -118,6 +118,21 @@ export const usePermissionStore = defineStore("permission", () => {
     planProposals.value[sessionId] = proposal;
   }
 
+  // 清理流式态方案预览（id = plan_stream_*）。
+  // run 以任何方式结束（完成 / 看门狗截胡 / 取消 / 中断 / 错误）时，若方案
+  // 始终没走到 plan-proposal 正式提交，"生成中..." 面板会永久卡死——
+  // run 收口（applyAgentRunState）处统一调用此函数兜底。
+  // 正式方案（plan_xxx）不受影响，只有流式占位会被清掉。
+  function clearStreamingPlanProposal(sessionId: string) {
+    if (!sessionId) return;
+    const existing = planProposals.value[sessionId];
+    if (existing && (existing.id ?? "").startsWith("plan_stream_")) {
+      const next = { ...planProposals.value };
+      delete next[sessionId];
+      planProposals.value = next;
+    }
+  }
+
   return {
     permissionRequests,
     planProposals,
@@ -133,5 +148,6 @@ export const usePermissionStore = defineStore("permission", () => {
     updatePlanProposalContent,
     updatePlanProposalStreamingContent,
     finalizePlanProposal,
+    clearStreamingPlanProposal,
   };
 });

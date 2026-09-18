@@ -259,15 +259,6 @@ struct ContextEstimate {    total_chars: usize,
 
 const DIRECT_DEVELOPER_INTENT: &str = "PROJECT_ACTION";
 
-/// 标准化受众（audience）：非 user 一律视为 developer。
-/// 受众决定 agent loop 默认是否开启深度思考（developer → 开，user → 关）。
-fn normalize_agent_audience(audience: &str) -> &'static str {
-    match audience {
-        "user" => "user",
-        _ => "developer",
-    }
-}
-
 /// 本轮（一次用户指令）最终采用的 thinking 状态：用户临时开关优先，否则用受众默认值。
 ///
 /// 已被 `core::session::thinking::decide` 取代（后者还包含 L2 会话档位与能力夹紧）。
@@ -286,6 +277,27 @@ fn resolve_turn_think(override_val: Option<bool>, loop_default: bool) -> bool {
 /// `content[].thinking in the thinking mode must be passed back to the API`。
 fn should_think_for_loop(turn_think: bool, _loop_count: usize) -> bool {
     turn_think
+}
+
+/// 判断本 loop 的工具调用中是否提交了规划方案。
+///
+/// 两种等价形态都要认（喂狗判定必须同时覆盖，否则提交方案的那轮会被当成
+/// 空转、看门狗误触发把收尾截胡——B 修复诊断出的真实事故路径）：
+/// - 裸调用：工具名就是 `ProposePlan`；
+/// - 延迟工具包装：工具名是 `ExecuteTool`，参数 JSON 的 `name` 字段指向
+///   真实工具（延迟工具的统一执行入口，模型提交方案固定走这条形态）。
+fn loop_submitted_plan(tool_calls: &[(String, String)]) -> bool {
+    tool_calls.iter().any(|(name, input)| {
+        if name == "ProposePlan" {
+            return true;
+        }
+        if name == "ExecuteTool" {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(input) {
+                return value.get("name").and_then(|n| n.as_str()) == Some("ProposePlan");
+            }
+        }
+        false
+    })
 }
 
 /// 判断给定的助手文本是否已存在于消息列表尾部。
@@ -392,16 +404,6 @@ fn fix_broken_tool_call_pairs(messages: &mut Vec<Message>) {
     }
 }
 
-/// 标准化工作模式（work_mode）：plan（规划）/ edit（编辑，默认）。
-/// 工作模式决定系统提示词、写操作工具是否可用、以及是否走方案审批流程。
-/// 说明：第二步起"chat（只读保护）"已取消，安全由权限档位（请求审批/帮我批准）承担。
-fn normalize_agent_work_mode(mode: &str) -> &'static str {
-    match mode {
-        "plan" => "plan",
-        _ => "edit",
-    }
-}
-
 impl PipelineState {
     /// 阶段 1：初始化 — 会话与配置准备 + 意图分类
     ///
@@ -499,42 +501,16 @@ impl PipelineState {
         // api_client::build_client 的说明。
         let client = api_client::build_streaming_client();
 
-        // 步骤 6：读取偏好（受众 × 工作模式 × 权限档位），并写入会话上下文
-        // 权限档位：新会话从偏好继承；已有会话保持自己的设置
-        let approval_mode_from_prefs: String;
-        let (audience, work_mode) = {
-            let prefs = crate::command::app_config::get_ui_preferences()
-                .await
-                .unwrap_or_default();
-            let audience = normalize_agent_audience(&prefs.agent_audience).to_string();
-            let work_mode = normalize_agent_work_mode(&prefs.agent_work_mode).to_string();
-            approval_mode_from_prefs = if prefs.agent_approval_mode == "auto_approve" {
-                "auto_approve".to_string()
-            } else {
-                "request_approval".to_string()
-            };
-            (audience, work_mode)
-        };
-        *ctx.agent_audience.lock().await = audience.clone();
-        // 工作模式：新会话从用户偏好初始化，已有历史的会话跨 pipeline 保持
-        // 这样 plan → break_loop → 审批 → 新 pipeline 时不会被重置为 edit
-        {
-            let has_history = !ctx.memory.lock().await.messages.is_empty();
-            let mut mode = ctx.agent_work_mode.lock().await;
-            if !has_history {
-                *mode = work_mode.clone();
-            }
-        }
+        // 步骤 6：工作模式 / 权限档位 / 用户类型以会话上下文为准。
+        //
+        // 三者已是会话级属性（sessions 表落库，get_or_create 恢复：落库值，否则设置默认），
+        // pipeline 不再做任何"按偏好覆盖"——否则会把用户在本会话内的切换/落库值冲掉
+        // （历史包袱：这里曾按 has_history 用偏好覆盖模式与档位、每轮覆盖受众；
+        // 设置里的默认现在只决定"新会话的初始值"这一个用途）。
         let current_work_mode = ctx.agent_work_mode.lock().await.clone();
-        // 权限档位：会话里没有历史（新会话）时按偏好初始化，否则沿用会话自己的
-        {
-            let has_history = !ctx.memory.lock().await.messages.is_empty();
-            if !has_history {
-                *ctx.approval_mode.lock().await = approval_mode_from_prefs.clone();
-            }
-        }
+        let current_audience = ctx.agent_audience.lock().await.clone();
         let system_prompt = crate::core::agent::prompts::get_system_prompt(
-            &audience,
+            &current_audience,
             &current_work_mode,
             request_workspace.as_deref(),
         );
@@ -569,10 +545,10 @@ impl PipelineState {
         let detected_intent = {
             let is_complex = crate::core::complex_task::is_complex_task(&msg_for_intent);
             if is_complex && !is_approval_continuation {
-                println!("[JARVIS] {} 模式：规则检测到复杂任务，首轮直接进入方案审批流程", work_mode);
+                println!("[JARVIS] {} 模式：规则检测到复杂任务，首轮直接进入方案审批流程", current_work_mode);
                 "TASK_PLAN".to_string()
             } else {
-                println!("[JARVIS] {} 模式：直接进入项目操作流程", work_mode);
+                println!("[JARVIS] {} 模式：直接进入项目操作流程", current_work_mode);
                 DIRECT_DEVELOPER_INTENT.to_string()
             }
         };
@@ -645,6 +621,13 @@ impl PipelineState {
                     if mode.as_str() != "edit" {
                         let old_mode = mode.clone();
                         *mode = "edit".to_string();
+                        drop(mode);
+                        // 模式是会话级属性：同步落库（sessions.work_mode），随会话恢复
+                        if let Err(e) =
+                            crate::core::session::update_session_work_mode(&session_id, "edit")
+                        {
+                            eprintln!("[JARVIS] 工作模式落库失败（会话 {}）：{}", session_id, e);
+                        }
                         let _ = app.emit(
                             "agent-work-mode-changed",
                             json!({
@@ -680,7 +663,7 @@ impl PipelineState {
         );
         let profile_thinking_default =
             crate::core::session::thinking::ThinkingDefault::parse(&cfg.thinking_default);
-        let loop_think_default = profile_thinking_default.resolve(audience == "developer");
+        let loop_think_default = profile_thinking_default.resolve(current_audience == "developer");
 
         // 步骤 9：组装 PipelineState（意图、提示词、取消令牌等已就绪）
         let mut state = Self {
@@ -733,6 +716,12 @@ impl PipelineState {
         if detected_intent == "TASK_PLAN" && current_work_mode != "plan" {
             println!("[JARVIS] 意图前置拦截：TASK_PLAN 意图，首轮强制切换到 Plan 模式");
             *state.ctx.agent_work_mode.lock().await = "plan".to_string();
+            // 模式是会话级属性：同步落库（sessions.work_mode），随会话恢复
+            if let Err(e) =
+                crate::core::session::update_session_work_mode(&state.sid, "plan")
+            {
+                eprintln!("[JARVIS] 工作模式落库失败（会话 {}）：{}", state.sid, e);
+            }
             // system 必须全程字节恒定：这里只切换 work_mode，不重建 system。
             state.detected_intent = "TASK_PLAN".to_string();
             let _ = state.app.emit(
@@ -1821,8 +1810,9 @@ impl PipelineState {
 
                 // B3 Plan 看门狗：仅 plan 模式；连续无喂狗的工具调用 / 累计无 ProposePlan 的空转达到阈值时，
                 // 先做一次缓存友好的 LLM 进度小结，再强制停下交还决策权。
+                // 传 tool_calls（含参数 JSON）而非纯名字列表：喂狗判定要解包 ExecuteTool 包装。
                 let current_mode_after = self.ctx.agent_work_mode.lock().await.clone();
-                if self.update_plan_watchdog(&current_mode_after, &tool_names_for_reflection) {
+                if self.update_plan_watchdog(&current_mode_after, &tool_calls) {
                     println!(
                         "[JARVIS] Plan 看门狗触发：consecutive={}, loops_without_plan={}",
                         self.plan_consecutive_stalls, self.plan_total_loops_without_plan
@@ -3467,9 +3457,10 @@ impl PipelineState {
     /// B3 Plan 看门狗：更新计数并判断是否触发（仅 plan 模式）。
     ///
     /// 喂狗动作（重置两个计数器）：
-    /// - 本 loop 调用了 ProposePlan；
+    /// - 本 loop 提交了规划方案（`loop_submitted_plan`：裸 ProposePlan 或
+    ///   经 ExecuteTool 包装——只匹配裸名时，包装形态的提交轮不喂狗，看门狗误触发）；
     /// - 本 loop 已把 work_mode 切出 plan（SwitchWorkMode 到 edit）。
-    fn update_plan_watchdog(&mut self, work_mode: &str, tool_names: &[String]) -> bool {
+    fn update_plan_watchdog(&mut self, work_mode: &str, tool_calls: &[(String, String)]) -> bool {
         use crate::infra::types::constants::{PLAN_WATCHDOG_MAX_CONSECUTIVE_STALLS, PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN};
 
         if work_mode != "plan" {
@@ -3478,13 +3469,13 @@ impl PipelineState {
             return false;
         }
 
-        if tool_names.iter().any(|n| n == "ProposePlan") {
+        if loop_submitted_plan(tool_calls) {
             self.plan_consecutive_stalls = 0;
             self.plan_total_loops_without_plan = 0;
             return false;
         }
 
-        self.plan_consecutive_stalls = self.plan_consecutive_stalls.saturating_add(tool_names.len());
+        self.plan_consecutive_stalls = self.plan_consecutive_stalls.saturating_add(tool_calls.len());
         self.plan_total_loops_without_plan = self.plan_total_loops_without_plan.saturating_add(1);
 
         self.plan_consecutive_stalls >= PLAN_WATCHDOG_MAX_CONSECUTIVE_STALLS
@@ -3494,10 +3485,20 @@ impl PipelineState {
     /// B3 触发后：先复用当前 system + 历史做一次缓存友好的 LLM 进度小结，
     /// 再把决策权交还用户并强制结束当前 loop。
     async fn handle_plan_watchdog_summary(&mut self) {
-        let instruction = "【系统通知】规划探索已达到看门狗阈值。请立即停止探索，不要调用任何工具，只用一段话输出当前进度小结与下一步建议（继续探索 / 缩小范围 / 直接执行）。";
+        use crate::infra::types::constants::{PLAN_WATCHDOG_MAX_CONSECUTIVE_STALLS, PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN};
+
+        // 触发指令带实际计数：触发时两个计数器尚未清零（触发分支直接 break），
+        // 把真实值与阈值一起告诉模型，让它对"空转了多久"有量化感知。
+        let instruction = format!(
+            "【系统通知】规划探索已达到看门狗阈值（本轮已累计 {} 次工具调用未提交方案 / {} 轮未提交方案；阈值：{} 次或 {} 轮）。请立即停止探索，不要调用任何工具，只用一段话输出当前进度小结与下一步建议（继续探索 / 缩小范围 / 直接执行）。",
+            self.plan_consecutive_stalls,
+            self.plan_total_loops_without_plan,
+            PLAN_WATCHDOG_MAX_CONSECUTIVE_STALLS,
+            PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN,
+        );
         let mut snapshot = self.prepare_history_snapshot().await;
         snapshot.push(Message::User {
-            content: Content::Single(instruction.to_string()),
+            content: Content::Single(instruction),
         });
 
         let (req_json, is_openai) = self.build_llm_request(snapshot);
@@ -3535,7 +3536,7 @@ impl PipelineState {
         }
 
         self.final_answer = summary.clone();
-        self.tool_execution_summary = Some(summary);
+        self.tool_execution_summary = Some(summary.clone());
         let _ = self.app.emit(
             "chat-stream",
             json!({
@@ -3544,6 +3545,29 @@ impl PipelineState {
                 "loopCount": self.total_loop_count + 1
             }),
         );
+
+        // 小结落库：此前看门狗收尾只进 final_answer 与事件流，session_messages
+        // 零痕迹（尾部悬 tool_result，刷新后聊天流回退到上一条正文）。
+        // 这里把小结补成 assistant 消息并立即整仓落库，尾部以 assistant 收口。
+        // 尾注为系统视角的客观陈述（对齐中断标记措辞原则：最小信息量，避免
+        // 模型把系统描述当成自己的话）；⚠️ 前缀走前端 splitInterruptMarker 剥成小字。
+        let record = format!(
+            "{}\n\n> ⚠️ **[规划看门狗]** 规划探索已达到阈值，本轮自动停下，等待用户决策。",
+            summary
+        );
+        {
+            let mut session = self.ctx.memory.lock().await;
+            if !assistant_text_exists_at_tail(&session.messages, &record) {
+                append_message(
+                    &mut session,
+                    Message::Assistant {
+                        content: Content::Single(record),
+                    },
+                    "chat",
+                );
+            }
+            crate::core::session::save_session(&self.sid, &session, None);
+        }
     }
 
     /// 中途模式切换：生成一条 seq 更大的完整上下文快照，并入本 loop 的
@@ -3680,6 +3704,67 @@ async fn run_pipeline_inner(
 
     // ── 阶段 4：收尾（持久化 / 快照 / 记忆 / 结果组装）──
     Ok(state.finalize().await)
+}
+
+#[cfg(test)]
+mod plan_watchdog_feeding_tests {
+    use super::loop_submitted_plan;
+
+    fn call(name: &str, input: &str) -> (String, String) {
+        (name.to_string(), input.to_string())
+    }
+
+    /// 裸 ProposePlan 喂狗（既有行为，回归防护）
+    #[test]
+    fn bare_propose_plan_feeds_the_watchdog() {
+        let calls = vec![call("ProposePlan", "{}")];
+        assert!(loop_submitted_plan(&calls));
+    }
+
+    /// ExecuteTool 包装的 ProposePlan 必须喂狗——模型提交方案的固定形态，
+    /// 旧实现只匹配裸名，导致提交轮不喂狗、看门狗误触发截胡收尾（B 事故路径）
+    #[test]
+    fn execute_tool_wrapped_propose_plan_feeds_the_watchdog() {
+        let calls = vec![call(
+            "ExecuteTool",
+            r#"{"name":"ProposePlan","args":{"title":"方案","content":"..."}}"#,
+        )];
+        assert!(loop_submitted_plan(&calls));
+    }
+
+    /// ExecuteTool 包装的其他延迟工具不算提交方案，照常计空转
+    #[test]
+    fn execute_tool_wrapped_other_tools_do_not_feed() {
+        let calls = vec![call(
+            "ExecuteTool",
+            r#"{"name":"ReadFile","args":{"path":"src/main.rs"}}"#,
+        )];
+        assert!(!loop_submitted_plan(&calls));
+    }
+
+    /// 普通核心工具不算提交方案
+    #[test]
+    fn core_tools_do_not_feed() {
+        let calls = vec![call("ListTasks", "{}"), call("ReadFile", "{}")];
+        assert!(!loop_submitted_plan(&calls));
+    }
+
+    /// 参数 JSON 坏了不能 panic，按"未提交"处理
+    #[test]
+    fn malformed_execute_tool_input_does_not_panic() {
+        let calls = vec![call("ExecuteTool", "{not-json")];
+        assert!(!loop_submitted_plan(&calls));
+    }
+
+    /// 同轮混合调用：一个 ExecuteTool(ProposePlan) 就算提交（喂狗是 any 语义）
+    #[test]
+    fn mixed_calls_with_one_submit_feed() {
+        let calls = vec![
+            call("ExecuteTool", r#"{"name":"SearchWorkspace","args":{}}"#),
+            call("ExecuteTool", r#"{"name":"ProposePlan","args":{}}"#),
+        ];
+        assert!(loop_submitted_plan(&calls));
+    }
 }
 
 #[cfg(test)]

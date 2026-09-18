@@ -188,6 +188,8 @@ export function useAgentEvents() {
     view.activeRunId = null;
     view.streamActive = false;
     view.runStartTime = null;
+    // run 中断收口：流式态方案预览（"生成中..."）已无主，清掉防面板永久卡死
+    perm.clearStreamingPlanProposal(sessionId);
 
     if (interrupted) {
       view.resumableRunId = interrupted.runId;
@@ -218,6 +220,8 @@ export function useAgentEvents() {
       view.status = "IDLE";
     }
     view.currentTurn.isRunning = false;
+    // run 正常收口：同上，清理未走完正式提交流程的流式态方案预览
+    perm.clearStreamingPlanProposal(sessionId);
     view.hydrated = true;
   }
 
