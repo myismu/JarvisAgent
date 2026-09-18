@@ -797,6 +797,68 @@ pub fn update_session_thinking_mode(id: &str, mode: Option<&str>) -> Result<(), 
     })
 }
 
+/// 会话级运行偏好的恢复读：工作模式 / 权限档位 / 用户类型。
+///
+/// 与 thinking_mode 同语义：`None` = 用户在本会话从未表态，恢复时回落设置默认。
+/// 刻意**不进** `SessionMeta` / `upsert_session` 全量链——这三列只由下面的
+/// `update_session_*` 单列写入，避免 `save_session` 全量落库时被内存快照里的值覆盖。
+#[derive(Debug, Clone, Default)]
+pub struct SessionRuntimePrefs {
+    pub work_mode: Option<String>,
+    pub approval_mode: Option<String>,
+    pub agent_audience: Option<String>,
+}
+
+pub fn get_session_runtime_prefs(id: &str) -> Result<SessionRuntimePrefs, String> {
+    crate::infra::db::with_connection(|conn| {
+        conn.query_row(
+            "SELECT work_mode, approval_mode, agent_audience FROM sessions \
+             WHERE id = ?1 AND deleted_at IS NULL",
+            [id],
+            |row| {
+                Ok(SessionRuntimePrefs {
+                    work_mode: row.get(0)?,
+                    approval_mode: row.get(1)?,
+                    agent_audience: row.get(2)?,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())
+    })
+}
+
+/// 三个运行偏好共用的单列写入：`column` 只接受本模块三个包装传入的字面量，
+/// 不接外部输入，无注入面。会话不存在或已软删时报错（与 thinking_mode 同口径）。
+fn update_session_text_column(id: &str, column: &str, value: &str) -> Result<(), String> {
+    crate::infra::db::with_connection(|conn| {
+        let changed = conn
+            .execute(
+                &format!(
+                    "UPDATE sessions SET {} = ?2 WHERE id = ?1 AND deleted_at IS NULL",
+                    column
+                ),
+                params![id, value],
+            )
+            .map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Err(format!("会话 {} 不存在", id));
+        }
+        Ok(())
+    })
+}
+
+pub fn update_session_work_mode(id: &str, mode: &str) -> Result<(), String> {
+    update_session_text_column(id, "work_mode", mode)
+}
+
+pub fn update_session_approval_mode(id: &str, mode: &str) -> Result<(), String> {
+    update_session_text_column(id, "approval_mode", mode)
+}
+
+pub fn update_session_agent_audience(id: &str, audience: &str) -> Result<(), String> {
+    update_session_text_column(id, "agent_audience", audience)
+}
+
 pub fn get_last_active_session_id() -> Option<String> {
     crate::infra::db::with_connection(|conn| {
         conn.query_row(

@@ -34,6 +34,10 @@ pub async fn switch_work_mode(
     }
 
     *ctx.agent_work_mode.lock().await = target_mode.clone();
+    // 模式是会话级属性：同步落库（sessions.work_mode），随会话恢复
+    if let Err(e) = crate::core::session::update_session_work_mode(session_id, &target_mode) {
+        eprintln!("[JARVIS] 工作模式落库失败（会话 {}）：{}", session_id, e);
+    }
 
     let _ = app.emit(
         "agent-work-mode-changed",

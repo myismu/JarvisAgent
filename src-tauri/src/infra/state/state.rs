@@ -268,9 +268,35 @@ impl SessionManager {
         }
 
         let ctx = SessionContext::new(session_id.to_string());
+        // 新会话（及重启后首次访问的存量会话）初始值 = 用户设置里的默认。
+        // 此前 SessionContext::new 硬编码 edit/request_approval/developer，
+        // 设置页的默认工作模式/权限档位/用户类型形同虚设（新建会话永远从硬编码值起步）。
+        // 注意：这三个字段仍是纯内存态（不落库），这里只是把"出厂默认"换成"用户设置的默认"。
+        {
+            let prefs = crate::command::app_config::read_file().ui_preferences;
+            let work_mode = if prefs.agent_work_mode == "plan" { "plan" } else { "edit" };
+            let approval = if prefs.agent_approval_mode == "auto_approve" { "auto_approve" } else { "request_approval" };
+            let audience = if prefs.agent_audience == "user" { "user" } else { "developer" };
+            *ctx.agent_work_mode.lock().await = work_mode.to_string();
+            *ctx.approval_mode.lock().await = approval.to_string();
+            *ctx.agent_audience.lock().await = audience.to_string();
+        }
         // 尝试从磁盘加载历史数据和工作目录
         if let Ok(memory) = crate::core::session::load_session(session_id) {
             *ctx.memory.lock().await = memory;
+        }
+        // 会话级运行偏好恢复：用户在本会话表态过（落库非 NULL）则以落库值为准，
+        // 否则保持上面按设置默认初始化的值（与 thinking_mode 的恢复路径对称）
+        if let Ok(prefs) = crate::core::session::get_session_runtime_prefs(session_id) {
+            if let Some(mode) = prefs.work_mode {
+                *ctx.agent_work_mode.lock().await = mode;
+            }
+            if let Some(mode) = prefs.approval_mode {
+                *ctx.approval_mode.lock().await = mode;
+            }
+            if let Some(audience) = prefs.agent_audience {
+                *ctx.agent_audience.lock().await = audience;
+            }
         }
         if let Ok(meta) = crate::core::session::get_session_meta(session_id) {
             // 存量记录可能带 \\?\ 前缀，绑定前剥离（下游报错文案与显示才干净）
@@ -285,6 +311,10 @@ impl SessionManager {
                     meta.thinking_mode.as_deref(),
                 )
                 .map(|s| s.to_string());
+        }
+        // 挂载项目后把该项目的授权账本注入内存（用户此前点过的「本项目允许」自动生效）
+        if let Some(root) = ctx.workspace.lock().await.clone() {
+            crate::core::tools::framework::allowance_store::load_into(&ctx, &root).await;
         }
 
         let arc_ctx = Arc::new(ctx);

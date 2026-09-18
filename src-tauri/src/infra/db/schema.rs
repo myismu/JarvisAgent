@@ -10,7 +10,7 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// 删除废弃的旧 checkpoint 表（v3 迁移）
 fn migrate_v3_drop_deprecated_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -342,6 +342,33 @@ fn migrate_v12_add_session_cache_tokens(conn: &Connection) -> Result<(), rusqlit
     Ok(())
 }
 
+/// 引入 `sessions.work_mode` / `approval_mode` / `agent_audience`（v13 迁移）
+///
+/// 三个会话级运行偏好的落库：`NULL` = 用户在本会话从未表态，
+/// 恢复时回落到用户设置里的默认（app-config.json）；一旦在会话内切换即落库，
+/// 此后该会话与设置默认解耦（切换会话/修改设置不再互相牵连）。
+///
+/// 刻意**不回填**：老会话一律 `NULL`（等价"跟随设置默认"），与 v11 的 thinking_mode 同语义。
+fn migrate_v13_add_session_runtime_prefs(conn: &Connection) -> Result<(), rusqlite::Error> {
+    for column in ["work_mode", "approval_mode", "agent_audience"] {
+        let exists = {
+            let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;
+            let columns: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(Result::ok)
+                .collect();
+            columns.iter().any(|c| c == column)
+        };
+        if !exists {
+            conn.execute(
+                &format!("ALTER TABLE sessions ADD COLUMN {} TEXT", column),
+                [],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 pub fn init_schema(conn: &Connection) -> Result<(), String> {
     // 获取当前 schema 版本
     let current_version: i64 = conn
@@ -412,6 +439,10 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
         migrate_v12_add_session_cache_tokens(conn)
             .map_err(|e| format!("v12 迁移失败: {}", e))?;
     }
+    if current_version < 13 {
+        migrate_v13_add_session_runtime_prefs(conn)
+            .map_err(|e| format!("v13 迁移失败: {}", e))?;
+    }
 
     conn.execute_batch(
         r#"
@@ -444,6 +475,9 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             project_id TEXT,
             deleted_at INTEGER,
             thinking_mode TEXT,
+            work_mode TEXT,
+            approval_mode TEXT,
+            agent_audience TEXT,
             FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE SET NULL
         );
 
@@ -730,15 +764,19 @@ mod tests {
             .expect("read legacy row");
         assert_eq!(value, None, "老会话必须保持 NULL(auto)，不得编造档位");
 
-        // 版本号推进到 12
-        let version: String = conn
+        // 版本号至少推进到 12（后续新增迁移会继续推进，不硬编码最新版）
+        let version: i64 = conn
             .query_row(
-                "SELECT value FROM app_state WHERE key = 'schema_version'",
+                "SELECT CAST(value AS INTEGER) FROM app_state WHERE key = 'schema_version'",
                 [],
                 |r| r.get(0),
             )
             .expect("read version");
-        assert_eq!(version, "12");
+        assert!(
+            version >= 12,
+            "v11 升级后版本号至少到 12（实际 {}）",
+            version
+        );
 
         // 幂等：再次初始化不报错，且不破坏已有值
         conn.execute("UPDATE sessions SET thinking_mode = 'never' WHERE id = 's1'", [])
@@ -825,5 +863,95 @@ mod tests {
             )
             .expect("read legacy row");
         assert_eq!((hit, miss), (0, 0), "老会话两列必须留在 0，不得编造命中率");
+    }
+
+    /// v12 老库升级到 v13：补上工作模式/权限档位/用户类型三列，且老行保持 NULL。
+    ///
+    /// 老行必须留在 NULL 而不是被回填：NULL 等价于"用户在该会话从未表态"，
+    /// 恢复会话时回落到设置默认值；回填任何具体值都等于替用户做了选择。
+    #[test]
+    fn v13_migration_adds_session_runtime_prefs_to_legacy_db() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        // v12 形态的 sessions 表（有 thinking_mode 与缓存两列，无三列运行时偏好）
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                message_count INTEGER NOT NULL,
+                profile_id TEXT,
+                deleted_at INTEGER,
+                thinking_mode TEXT,
+                total_cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cache_miss_tokens INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO app_state(key, value) VALUES('schema_version', '12');
+            INSERT INTO sessions(id, title, created_at, updated_at, message_count, profile_id, deleted_at, thinking_mode, total_cache_hit_tokens, total_cache_miss_tokens)
+                VALUES('s1', '老会话', 1, 1, 0, 'default', NULL, NULL, 0, 0);",
+        )
+        .expect("create legacy schema");
+
+        assert!(!column_exists(&conn, "sessions", "work_mode"));
+        assert!(!column_exists(&conn, "sessions", "approval_mode"));
+        assert!(!column_exists(&conn, "sessions", "agent_audience"));
+
+        init_schema(&conn).expect("upgrade v12 -> v13");
+
+        assert!(
+            column_exists(&conn, "sessions", "work_mode"),
+            "v13 迁移必须补上 work_mode 列"
+        );
+        assert!(
+            column_exists(&conn, "sessions", "approval_mode"),
+            "v13 迁移必须补上 approval_mode 列"
+        );
+        assert!(
+            column_exists(&conn, "sessions", "agent_audience"),
+            "v13 迁移必须补上 agent_audience 列"
+        );
+        // 老行不得被回填：NULL 才等价于"用户从未表态"，恢复时回落设置默认
+        let (work, approval, audience): (Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT work_mode, approval_mode, agent_audience FROM sessions WHERE id = 's1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("read legacy row");
+        assert_eq!(
+            (work, approval, audience),
+            (None, None, None),
+            "老会话三列必须保持 NULL，不得替用户选模式"
+        );
+
+        // 版本号推进到 13
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM app_state WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read version");
+        assert_eq!(version, "13");
+
+        // 幂等：再次初始化不报错，且不破坏已有值
+        conn.execute_batch(
+            "UPDATE sessions SET work_mode = 'plan', approval_mode = 'auto', agent_audience = 'normal' WHERE id = 's1'",
+        )
+        .expect("set prefs");
+        init_schema(&conn).expect("re-init idempotent");
+        let after: (Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT work_mode, approval_mode, agent_audience FROM sessions WHERE id = 's1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("re-read");
+        assert_eq!(
+            (after.0.as_deref(), after.1.as_deref(), after.2.as_deref()),
+            (Some("plan"), Some("auto"), Some("normal")),
+            "重复初始化不得清掉用户表态"
+        );
     }
 }

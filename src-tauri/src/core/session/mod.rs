@@ -777,6 +777,27 @@ pub fn get_session_thinking_mode(id: &str) -> Result<Option<String>, String> {
     Ok(get_session_meta(id)?.thinking_mode)
 }
 
+/// 读取会话级运行偏好（工作模式 / 权限档位 / 用户类型）。
+/// `None` = 用户在本会话从未表态，恢复方应回落到设置默认。
+pub fn get_session_runtime_prefs(id: &str) -> Result<repository::SessionRuntimePrefs, String> {
+    repository::get_session_runtime_prefs(id)
+}
+
+/// 落库会话的工作模式（用户切换 / 服务端自动切换共用）
+pub fn update_session_work_mode(id: &str, mode: &str) -> Result<(), String> {
+    repository::update_session_work_mode(id, mode)
+}
+
+/// 落库会话的权限档位
+pub fn update_session_approval_mode(id: &str, mode: &str) -> Result<(), String> {
+    repository::update_session_approval_mode(id, mode)
+}
+
+/// 落库会话的用户类型
+pub fn update_session_agent_audience(id: &str, audience: &str) -> Result<(), String> {
+    repository::update_session_agent_audience(id, audience)
+}
+
 /// 获取最后活跃的会话 ID
 pub fn get_last_active_session_id() -> Option<String> {
     repository::get_last_active_session_id()

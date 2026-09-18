@@ -32,10 +32,9 @@ pub async fn clear_active_session_id() -> Result<(), String> {
 
 /// 用户手动切换当前会话的工作模式（edit / plan）。
 ///
-/// 以前模式只写进 UI 偏好（app-config.json），已有会话的 `ctx.agent_work_mode`
-/// 永远不会被更新，导致界面显示"规划"而后端仍在"编辑"。这个命令补上那条链路：
-/// 写会话状态 → 广播 `agent-work-mode-changed`（前端已在监听该事件）→ 偏好由前端落盘，
-/// 供新会话继承。
+/// 模式是会话级属性：写会话状态 + **落库**（`sessions.work_mode`，随会话恢复），
+/// 再广播 `agent-work-mode-changed`（前端已在监听该事件）。
+/// 设置里的"默认工作模式"只决定新会话的初始值，不再被这里的切换牵动。
 ///
 /// 第二步起"只读保护（chat）"已取消：安全由权限档位承担（见 set_session_approval_mode）。
 /// 这里只接受 edit / plan。
@@ -59,6 +58,9 @@ pub async fn set_session_work_mode(
         return Ok(());
     }
     *ctx.agent_work_mode.lock().await = mode.clone();
+    if let Err(e) = crate::core::session::update_session_work_mode(&session_id, &mode) {
+        eprintln!("[JARVIS] 工作模式落库失败（会话 {}）：{}", session_id, e);
+    }
 
     let _ = app.emit(
         "agent-work-mode-changed",
@@ -124,6 +126,11 @@ pub async fn create_session(
         .working_directory
         .clone()
         .map(|ws| std::path::PathBuf::from(session::strip_extended_path_prefix(&ws)));
+
+    // 挂载项目后把该项目的授权账本注入内存（与 state.rs 会话恢复路径同口径）
+    if let Some(root) = ctx.workspace.lock().await.clone() {
+        crate::core::tools::framework::allowance_store::load_into(&ctx, &root).await;
+    }
 
     // 新会话的工作模式与权限档位跟随用户偏好
     let prefs = crate::command::app_config::get_ui_preferences()

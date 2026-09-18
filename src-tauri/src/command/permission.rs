@@ -246,6 +246,10 @@ pub async fn set_session_approval_mode(
     }
     let ctx = session_manager.get_or_create(&session_id).await;
     *ctx.approval_mode.lock().await = mode.clone();
+    // 档位是会话级属性：落库（sessions.approval_mode），随会话恢复
+    if let Err(e) = crate::core::session::update_session_approval_mode(&session_id, &mode) {
+        eprintln!("[JARVIS] 权限档位落库失败（会话 {}）：{}", session_id, e);
+    }
     let _ = app.emit(
         "approval-mode-changed",
         serde_json::json!({ "sessionId": session_id, "mode": mode }),
@@ -255,7 +259,7 @@ pub async fn set_session_approval_mode(
     // 切档位后把**已经挂起**的权限卡按新档位重判一遍：新档位下不用问的直接放行。
     // 没有这一步，已弹出的卡仍然挂在界面上等点击，观感就是"切了档位没反应"。
     // 重判复用 policy::judge，不会与执行期判定出现两套口径；仍要问的（命令/删除/
-    // 改名/覆盖已有文件/批量）原样保留。返回值只是清扫条数，失败不阻断切档。
+    // 改名/批量）原样保留。返回值只是清扫条数，失败不阻断切档。
     let swept =
         crate::core::tools::framework::policy_guard::sweep_pending_on_mode_change(&app, &session_id)
             .await;
@@ -311,6 +315,8 @@ pub async fn revoke_session_allowance(
         .lock()
         .await
         .retain(|a| !(a.kind == kind && a.scope == scope));
+    // 「撤销」连项目账本一起清：留一条在盘上，下次会话又会自动加载回来
+    crate::core::tools::framework::allowance_store::revoke(&ctx, &kind, &scope).await;
     let _ = app.emit(
         "session-allowances-changed",
         serde_json::json!({ "sessionId": session_id }),
@@ -327,6 +333,8 @@ pub async fn clear_session_allowances(
 ) -> Result<(), String> {
     let ctx = session_manager.get_or_create(&session_id).await;
     ctx.session_allowances.lock().await.clear();
+    // 「清空」连项目账本一起删
+    crate::core::tools::framework::allowance_store::clear(&ctx).await;
     let _ = app.emit(
         "session-allowances-changed",
         serde_json::json!({ "sessionId": session_id }),

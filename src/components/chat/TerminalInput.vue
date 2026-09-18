@@ -539,7 +539,6 @@ const toggleReadOnly = async () => {
 const applyApprovalMode = async (mode: AgentApprovalMode) => {
   showApprovalMenu.value = false;
   if (mode === currentApprovalMode.value) {
-    uiPrefs.setAgentApprovalMode(mode);
     return;
   }
   const prevApproval = currentApprovalMode.value;
@@ -547,8 +546,10 @@ const applyApprovalMode = async (mode: AgentApprovalMode) => {
   try {
     if (session.activeSessionId) {
       await invoke('set_session_approval_mode', { sessionId: session.activeSessionId, mode });
+    } else {
+      // 无会话态：改的是"下一次新会话的默认"（设置本身），会话建立时后端会读到
+      uiPrefs.setAgentApprovalMode(mode);
     }
-    uiPrefs.setAgentApprovalMode(mode);
     currentApprovalMode.value = mode;
   } catch (e) {
     currentApprovalMode.value = prevApproval;
@@ -568,9 +569,11 @@ const applyWorkMode = async (mode: AgentUserMode) => {
   try {
     if (session.activeSessionId) {
       await invoke('set_session_work_mode', { sessionId: session.activeSessionId, mode });
+    } else {
+      // 无会话态：改的是"下一次新会话的默认"（设置本身），会话建立时后端会读到
+      uiPrefs.setAgentWorkMode(mode);
     }
     currentWorkMode.value = mode;
-    uiPrefs.setAgentWorkMode(mode);
   } catch (e) {
     currentWorkMode.value = prev;
     workModeWarning.value = String(e);
@@ -578,20 +581,27 @@ const applyWorkMode = async (mode: AgentUserMode) => {
   }
 };
 
-/** 会话状态才是事实来源：切换会话 / 刷新后校准档位与模式 */
+/** 会话状态才是事实来源：切换会话 / 刷新后校准档位与模式。
+ *  无会话态（新建会话尚未发送首条消息）回落到设置默认——
+ *  否则选择器会残留上一个会话的模式，"新会话吃默认设置"就断了这一环。
+ *  注意：这里不再把会话值反写进 UI 偏好——模式/档位是会话级属性（后端已落库），
+ *  反写会把"设置里的默认"悄悄覆盖成"最后看过的会话"，默认设置形同虚设。 */
 const syncPermissionFromSession = async () => {
   const sid = session.activeSessionId;
-  if (!sid) return;
+  if (!sid) {
+    currentWorkMode.value = uiPrefs.agentWorkMode.value;
+    currentApprovalMode.value = uiPrefs.agentApprovalMode.value;
+    agentReadOnly.value = false;
+    return;
+  }
   try {
     const mode = await invoke<AgentWorkMode>('get_session_work_mode', { sessionId: sid });
     currentWorkMode.value = mode;
-    uiPrefs.setAgentWorkMode(mode);
     const settings = await invoke<{ approvalMode: AgentApprovalMode; readOnly?: boolean }>(
       'get_session_permission_settings',
       { sessionId: sid },
     );
     currentApprovalMode.value = settings.approvalMode;
-    uiPrefs.setAgentApprovalMode(settings.approvalMode);
     agentReadOnly.value = settings.readOnly === true;
   } catch (e) {
     console.error('Failed to read session permission settings:', e);

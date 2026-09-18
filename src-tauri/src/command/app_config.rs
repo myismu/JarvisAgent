@@ -215,11 +215,12 @@ impl UiPreferences {
 /// 顶层配置文件结构
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AppConfigFile {
+pub(crate) struct AppConfigFile {
     #[serde(default)]
     windows: HashMap<String, CustomWindowState>,
+    /// pub(crate)：SessionManager 创建新会话 ctx 时读取默认设置（见 infra/state/state.rs）。
     #[serde(default = "UiPreferences::default")]
-    ui_preferences: UiPreferences,
+    pub(crate) ui_preferences: UiPreferences,
     /// 技能激活状态：skill_name → active。未记录的技能默认激活。
     #[serde(default)]
     skills: HashMap<String, bool>,
@@ -233,7 +234,10 @@ fn old_config_path() -> std::path::PathBuf {
     data_paths::data_root().join("window-state.json")
 }
 
-fn read_file() -> AppConfigFile {
+/// 读取 app-config.json（同步小文件 IO）。
+/// pub(crate)：除本模块的设置命令外，SessionManager 创建新会话 ctx 时也用它
+/// 读默认的工作模式/权限档位/用户类型（见 infra/state/state.rs get_or_create）。
+pub(crate) fn read_file() -> AppConfigFile {
     let path = app_config_path();
 
     // 旧文件迁移：如果新文件不存在但旧文件存在，重命名
