@@ -192,6 +192,126 @@ pub fn extract_base_tokens(usage: &Value) -> (Option<u64>, Option<u64>) {
     (input, output)
 }
 
+// ───────────────────────── 流式 usage 观测累积器 ─────────────────────────
+
+/// 本次请求的 usage 读数累积器（字段级 last-wins）。
+///
+/// **为什么是 last-wins 而不是累加**：`usage` 字段的语义是"本次请求的累计量"（OpenAI 末帧的
+/// `prompt_tokens`、Anthropic `message_start` 的 `input_tokens` 都是整段 prompt 的规模），
+/// 不是增量。逐帧 `+=` 只在"恰好只上报一次"时才碰巧正确：实测有中转站每帧都带累计 usage，
+/// Anthropic 的 `message_delta` 也可能回带 `input_tokens`，累加会把这些读数放大数倍。
+///
+/// 覆盖面与"只在 incoming 已知时覆盖"配套：只带 `output_tokens` 的 delta 帧不会把已拿到的
+/// `input_tokens` 抹掉（缓存侧同理，由 `merge_cache_usage` 保证）。
+///
+/// 输入口径归一（Anthropic 家族 `input_tokens` 只是未命中部分）在 `resolve()` 里做。
+///
+/// 协议家族判断**收在构造器**：调用方构造时传入 `ApiFormat`，之后 `observe`/`resolve`
+/// 都不再需要（也不知道）协议——这是"模型接入层收口协议知识"的一部分
+/// （自 `core/agent/stream.rs` 迁入，2026-09-19）。
+///
+/// Rust 语法注（Java 类比）：结构体的字段全是私有的，外部只能走 `impl` 里的方法，
+/// 相当于把字段全设 private、只暴露 public 方法。
+pub struct UsageObservation {
+    /// 最近一次观测到的输入 token（协议原值，尚未归一）
+    latest_input: Option<u64>,
+    /// 最近一次观测到的输出 token（两家口径同名同义，无需归一）
+    latest_output: Option<u64>,
+    /// 缓存命中/未命中读数（复用本模块的探测与合并）
+    cache: CacheUsage,
+    /// usage JSON 里的输入字段名（OpenAI: `prompt_tokens` / Anthropic: `input_tokens`）
+    input_key: &'static str,
+    /// usage JSON 里的输出字段名（`completion_tokens` / `output_tokens`）
+    output_key: &'static str,
+    /// 是否 OpenAI 家族（决定 `resolve` 的输入归一口径）
+    openai_family: bool,
+    /// 注册表可选的缓存字段写法覆盖（`cacheUsageStyle`）；None = 按候选表自动探测
+    cache_style: Option<String>,
+}
+
+impl UsageObservation {
+    /// 按协议格式构造。家族判断只发生在这里，之后的方法全部与协议无关。
+    pub fn for_format(api_format: crate::infra::llm::api_format::ApiFormat, cache_style: Option<String>) -> Self {
+        use crate::infra::llm::api_format::ApiFormat;
+        let (input_key, output_key, openai_family) = match api_format {
+            ApiFormat::OpenAI => ("prompt_tokens", "completion_tokens", true),
+            ApiFormat::Anthropic => ("input_tokens", "output_tokens", false),
+        };
+        Self {
+            latest_input: None,
+            latest_output: None,
+            cache: CacheUsage::default(),
+            input_key,
+            output_key,
+            openai_family,
+            cache_style,
+        }
+    }
+
+    /// 观测一帧 `usage`，按协议取字段名覆盖写入（字段级 last-wins）。
+    pub fn observe(&mut self, usage: &Value) {
+        // 只在键存在且是数字时覆盖：只带 output 的 delta 帧不会抹掉已有的 input
+        if let Some(value) = usage.get(self.input_key).and_then(|v| v.as_u64()) {
+            self.latest_input = Some(value);
+        }
+        if let Some(value) = usage.get(self.output_key).and_then(|v| v.as_u64()) {
+            self.latest_output = Some(value);
+        }
+        // 缓存侧：探测 + 合并（"只在 incoming 已知时覆盖"的规则在 merge 里）
+        self.cache = merge_cache_usage(
+            self.cache.clone(),
+            extract_cache_usage_with_style(usage, self.cache_style.as_deref()),
+        );
+    }
+
+    /// 收尾取值（口径归一 + 从未上报时落 0）。
+    pub fn resolve(&self) -> (u64, u64) {
+        resolve_request_tokens(
+            self.openai_family,
+            self.latest_input,
+            self.latest_output,
+            &self.cache,
+        )
+    }
+
+    /// 收尾快照：缓存命中 / 未命中 / 命中字段名（供 `StreamResult` 直接取用）。
+    /// 命中字段名仅在"已知"时返回 Some——排查"这家为什么显示未知"时用它定位来源。
+    pub fn cache_snapshot(&self) -> (Option<u64>, Option<u64>, Option<&'static str>) {
+        (
+            self.cache.hit,
+            self.cache.miss,
+            self.cache.is_known().then_some(self.cache.source),
+        )
+    }
+}
+
+/// 归一本次请求的输入 / 输出 token 口径。
+///
+/// 输入侧**两个协议家族的 `input` 口径不同**，混用会让"上下文有多大"这个数字自相矛盾：
+/// - OpenAI 家族：`prompt_tokens` **已含**缓存命中部分（`cached_tokens` 是它的子集）→ 直接用；
+/// - Anthropic 家族：`input_tokens` **只是未命中部分**，命中量在 `cache_read_input_tokens` 里
+///   （实测样例 `input_tokens=190` + `cache_read_input_tokens=1536` → 真实 prompt 1726，
+///   见 `doc/缓存命中量化方案.md` §1/§6）→ 必须补成 `hit + miss`。
+///
+/// 缓存字段整家未上报时不推导（`CacheUsage::total()` 返回 `None`），退回裸 `input_tokens`，
+/// 宁可偏小也不编数——与"未知 ≠ 0"的既有口径一致。
+///
+/// 输出侧两家同名同义（`completion_tokens` / `output_tokens`），只需 last-wins 取最后一次观测；
+/// 一次 usage 都没收到时返回 0（调用方据此跳过快照更新）。
+fn resolve_request_tokens(
+    openai_family: bool,
+    latest_input: Option<u64>,
+    latest_output: Option<u64>,
+    cache_usage: &CacheUsage,
+) -> (u64, u64) {
+    let input = if openai_family {
+        latest_input
+    } else {
+        cache_usage.total().or(latest_input)
+    };
+    (input.unwrap_or(0), latest_output.unwrap_or(0))
+}
+
 // ───────────────────────── 测试（样本取自真机实测原文）─────────────────────────
 
 #[cfg(test)]
@@ -371,5 +491,83 @@ mod tests {
             extract_cache_usage_with_style(&mixed, Some(" NESTED ")).source,
             "prompt_tokens_details.cached_tokens"
         );
+    }
+}
+
+/// 流式观测累积器的测试（自 `core/agent/stream.rs` 迁入，2026-09-19）。
+/// 构造统一走 `for_format`——协议家族判断收进构造器后，测试顺便锁住这条口径。
+#[cfg(test)]
+mod usage_observation_tests {
+    use super::*;
+    use crate::infra::llm::api_format::ApiFormat;
+    use serde_json::json;
+
+    /// 核心回归：同一个 usage 帧重复出现时**不能翻倍**（这就是原先 `+=` 的缺陷）。
+    /// 实测有的中转站每帧都带累计 usage，累加会让"本次上下文"虚高数倍。
+    #[test]
+    fn repeated_usage_frames_do_not_multiply() {
+        let mut obs = UsageObservation::for_format(ApiFormat::OpenAI, None);
+        let usage = json!({ "prompt_tokens": 1726, "completion_tokens": 24, "total_tokens": 1750 });
+        for _ in 0..5 {
+            obs.observe(&usage);
+        }
+        assert_eq!(obs.resolve(), (1726, 24), "last-wins 不得累加");
+    }
+
+    /// Anthropic 家族：`input_tokens` 只是"未命中"部分，必须补上 `cache_read_input_tokens`
+    /// （样本取自真机实测：190 + 1536 = 1726）。
+    #[test]
+    fn anthropic_input_is_normalized_to_hit_plus_miss() {
+        let mut obs = UsageObservation::for_format(ApiFormat::Anthropic, None);
+        obs.observe(&json!({
+            "input_tokens": 190, "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 1536, "output_tokens": 19
+        }));
+        assert_eq!(obs.resolve(), (1726, 19), "Anthropic 的输入应归一为 hit + miss");
+    }
+
+    /// 两组协议口径必须可比：同一个 prompt 规模下，OpenAI 与 Anthropic 出口归一出同一个数。
+    #[test]
+    fn both_protocols_agree_on_prompt_size() {
+        let mut openai = UsageObservation::for_format(ApiFormat::OpenAI, None);
+        openai.observe(&json!({
+            "prompt_tokens": 1726, "completion_tokens": 24,
+            "prompt_tokens_details": { "cached_tokens": 1536 }
+        }));
+        let mut anthropic = UsageObservation::for_format(ApiFormat::Anthropic, None);
+        anthropic.observe(&json!({ "input_tokens": 190, "cache_read_input_tokens": 1536, "output_tokens": 24 }));
+        assert_eq!(openai.resolve().0, anthropic.resolve().0);
+    }
+
+    /// 缓存字段整家未上报时不许编数：退回裸 `input_tokens`（宁可偏小，不推导）。
+    #[test]
+    fn anthropic_without_cache_fields_falls_back_to_raw_input() {
+        let mut obs = UsageObservation::for_format(ApiFormat::Anthropic, None);
+        obs.observe(&json!({ "input_tokens": 1813, "output_tokens": 24 }));
+        assert_eq!(obs.resolve(), (1813, 24));
+        assert!(obs.cache.hit.is_none(), "未识别到字段时必须保持未知，而不是 0");
+    }
+
+    /// delta 帧只带 output 时，不得把 `message_start` 已给的 input 抹掉，也不得覆盖缓存读数；
+    /// 反过来，delta 回带 input_tokens（有出口这么干）时以最后一次为准，不累加。
+    #[test]
+    fn later_delta_frame_overwrites_only_the_fields_it_carries() {
+        let mut obs = UsageObservation::for_format(ApiFormat::Anthropic, None);
+        obs.observe(&json!({ "input_tokens": 190, "cache_read_input_tokens": 1536, "output_tokens": 1 }));
+        obs.observe(&json!({ "output_tokens": 42 }));
+        assert_eq!(obs.resolve(), (1726, 42));
+        assert_eq!(obs.cache.hit, Some(1536), "字段缺失的 delta 不得冲掉缓存读数");
+
+        obs.observe(&json!({ "input_tokens": 190, "output_tokens": 42 }));
+        assert_eq!(obs.resolve().0, 1726, "回带的 input 只覆盖、不叠加");
+    }
+
+    /// 一次 usage 都没收到 → 0（调用方据此跳过快照更新），不是 None 冒充 0 的"未知"。
+    #[test]
+    fn no_usage_at_all_resolves_to_zero() {
+        let openai = UsageObservation::for_format(ApiFormat::OpenAI, None);
+        assert_eq!(openai.resolve(), (0, 0));
+        let anthropic = UsageObservation::for_format(ApiFormat::Anthropic, None);
+        assert_eq!(anthropic.resolve(), (0, 0));
     }
 }

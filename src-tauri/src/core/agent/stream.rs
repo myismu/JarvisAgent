@@ -1,13 +1,19 @@
-//! # stream.rs — SSE 流式响应处理
+//! # stream.rs — SSE 流式接收（会话运行时侧）
 //!
-//! 解析 LLM 返回的 SSE 流式响应，支持 Anthropic 和 OpenAI 两种格式。
-//! 实时提取文本、思考过程、工具调用等 ContentBlock，并通过 Tauri 事件推送到前端。
+//! 接收 LLM 返回的 SSE 流，逐帧交给模型接入层的 `stream_parse::parse_frame`
+//! 翻译成统一事件，然后处理**运行时事务**：累积内容块、推送前端事件、写 agent_runs 日志、
+//! 空闲超时与取消、重试判据。
+//!
+//! 协议知识（Anthropic/OpenAI 的帧长什么样）全部住在 `infra/llm/stream_parse.rs`，
+//! 本文件不应再出现任何协议分支——全文 grep 不到 `is_openai` 是拆分的验收标准之一
+//! （方案见 `doc/模型接入层-流式解析拆分方案.md`）。
 //!
 //! ## 关键导出
 //! - `process_stream()`: 解析 SSE 流，返回内容块、工具输入缓冲、token 统计等
 //!
 //! ## 依赖
-//! - Internal: `crate::core::orchestration::agent_runs`, `crate::infra::debug_logger::DebugLogger`, `crate::infra::types::models`
+//! - Internal: `crate::core::orchestration::agent_runs`, `crate::infra::debug_logger::DebugLogger`,
+//!   `crate::infra::types::models`, `crate::infra::llm::{api_format::ApiFormat, stream_parse, usage::UsageObservation}`
 //! - External: `futures_util`, `serde_json`, `eventsource_stream`, `tauri`
 //!
 //! ## 约束
@@ -23,6 +29,12 @@ use std::time::Duration;
 use tauri::Emitter;
 
 use crate::infra::debug_logger;
+use crate::infra::llm::api_format::ApiFormat;
+use crate::infra::llm::stream_parse; // 模块本身也要导入，供下方 stream_parse::parse_frame 前缀调用
+use crate::infra::llm::stream_parse::{
+    looks_like_textual_tool_call, parse_textual_tool_calls, ProtocolEvent,
+};
+use crate::infra::llm::usage::UsageObservation;
 use crate::infra::types::models::*;
 use crate::core::orchestration::agent_runs;
 
@@ -56,17 +68,14 @@ pub struct StreamConfig {
     /// 是否为子代理模式（子代理不发送 chat-content/chat-tool-start，
     /// chat-thinking 携带 isSubAgent 标记，不写 agent_runs 日志）
     pub is_subagent: bool,
-    /// 注册表可选的缓存字段写法覆盖（`cacheUsageStyle`）；None = 按候选表自动探测
+    /// 注册表可选的缓存字段写法覆盖（`cacheUsageStyle`）；None = 按候选表自动探测。
+    /// 构造 `UsageObservation` 时传入（它据此决定缓存字段按哪种写法读）。
     pub cache_usage_style: Option<String>,
     /// 每收到一个 SSE 帧时触发，用于重置"等待提示"看门狗的静默计时。
     ///
     /// 用 `Arc<dyn Fn()>` 而非泛型，是为了让 `StreamConfig` 保持 `Clone`
     /// 且不污染 `process_stream` 的签名。不需要提示的调用点留 `None`。
     pub on_frame: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
-}
-
-fn looks_like_textual_tool_call(text: &str) -> bool {
-    text.contains("<tool_call") || text.contains("<function=") || text.contains("<parameter=")
 }
 
 /// 尝试从 ExecuteTool 的参数中提取 ProposePlan 的 content 字段
@@ -212,20 +221,13 @@ fn truncate_sample(text: &str, max_chars: usize) -> String {
     format!("{}…(truncated)", head)
 }
 
-/// 从 `content_block_delta` 的 `delta` 里取出 thinking 签名分片。
+/// 接收并解析一条 SSE 流。
 ///
-/// Anthropic 协议：thinking 块的签名不在 `content_block_start` 里，而是随后以
-/// `{"type":"signature_delta","signature":"…"}` 逐片到达（真 Anthropic 是长 base64，
-/// DeepSeek 的 /anthropic 端点用 UUID 字符串）。空签名视为"没有"，避免拼进空串。
-fn thinking_signature_from_delta(delta: &serde_json::Value) -> Option<&str> {
-    let signature = delta.get("signature")?.as_str()?;
-    if signature.is_empty() {
-        None
-    } else {
-        Some(signature)
-    }
-}
-
+/// # 参数
+/// - `stream`: SSE 事件流（HTTP 响应体按 eventsource 协议切帧后的异步迭代器）
+/// - `api_format`: 本次流使用的协议格式——**只在这一处出现**，往下全部是统一事件
+/// - `app` / `sid` / `run_id` / `loop_count`: 前端事件推送与日志归档的定位信息
+/// - `cancel_token`: 用户取消令牌；`config`: 发送行为开关（见 `StreamConfig`）
 pub async fn process_stream(
     stream: &mut (impl StreamExt<
         Item = Result<
@@ -233,7 +235,7 @@ pub async fn process_stream(
             eventsource_stream::EventStreamError<reqwest::Error>,
         >,
     > + Unpin),
-    is_openai: bool,
+    api_format: ApiFormat,
     app: &tauri::AppHandle,
     sid: &str,
     run_id: &str,
@@ -243,13 +245,17 @@ pub async fn process_stream(
 ) -> StreamResult {
     let mut current_blocks: Vec<ContentBlock> = Vec::new();
     let mut tool_input_buffers: HashMap<usize, String> = HashMap::new();
-    let mut openai_tool_block_map: HashMap<usize, usize> = HashMap::new();
+    // "线上索引 → 内容块位置"映射表。拆分前只有 OpenAI 用（call index → 块下标），
+    // Anthropic 直接拿线上块下标当数组下标；两条协议统一走映射表后行为一致，
+    // 且流里出现未知块类型导致下标错位时工具参数分片仍能正确对位（拆分前会静默丢失）。
+    let mut tool_block_map: HashMap<usize, usize> = HashMap::new();
     let mut current_text_this_turn = String::new();
     let mut current_thinking_this_turn = String::new();
     let mut turn_has_tool = false;
     // usage 与缓存读数统一交给 `UsageObservation`（字段级 last-wins + 缓存合并，见其文档）。
-    // 此前三个解析点各自 `+=`，在"每帧都带累计 usage"的出口上会把读数放大数倍。
-    let mut usage_obs = UsageObservation::new();
+    // 协议家族判断收在 for_format 构造器里，本函数从此不感知 usage 字段的协议差异。
+    let mut usage_obs =
+        UsageObservation::for_format(api_format, config.cache_usage_style.clone());
     let mut stop_reason: Option<String> = None;
     let mut logged_textual_tool_violation = false;
     let mut usage_raw: Option<String> = None;
@@ -344,205 +350,178 @@ pub async fn process_stream(
         }
         let json_val: serde_json::Value = serde_json::from_str(&data).unwrap_or(json!({}));
 
-        if is_openai {
-            if let Some(usage) = json_val.get("usage") {
-                // 字段级覆盖（last-wins）：带 usage 的帧通常只有末帧，重复出现时后者才是完整值
-                usage_obs.observe(usage, true, config.cache_usage_style.as_deref());
-                usage_raw = Some(truncate_sample(&usage.to_string(), 600));
-            }
-
-            if let Some(choices) = json_val["choices"].as_array() {
-                if let Some(first) = choices.first() {
-                    // 提取终止原因（stop / length / tool_calls 等）
-                    if let Some(fr) = first["finish_reason"].as_str() {
-                        stop_reason = Some(fr.to_string());
-                    }
-                    if let Some(delta) = first.get("delta") {
-                        if let Some(t) = delta["content"].as_str() {
-                            if !t.is_empty() {
-                                let is_text = matches!(
-                                    current_blocks.last(),
-                                    Some(ContentBlock::Text { .. })
-                                );
-                                if !is_text {
-                                    current_blocks.push(ContentBlock::Text {
-                                        text: String::new(),
-                                    });
-                                }
-                                if let Some(ContentBlock::Text { text }) = current_blocks.last_mut()
-                                {
-                                    text.push_str(t);
-                                    current_text_this_turn.push_str(t);
-                                    if !logged_textual_tool_violation
-                                        && looks_like_textual_tool_call(&current_text_this_turn)
-                                    {
-                                        logged_textual_tool_violation = true;
-                                        let agent_type = if config.is_subagent {
-                                            "SUBAGENT"
-                                        } else {
-                                            "MAIN"
-                                        };
-                                        logger.log_protocol_violation(
-                                            sid,
-                                            agent_type,
-                                            loop_count,
-                                            &current_text_this_turn,
-                                        );
-                                    }
-                                    if !config.is_subagent {
-                                        let _ = app.emit(
-                                            "chat-content",
-                                            json!({ "content": t, "sessionId": sid, "loopCount": loop_count }),
-                                        );
-                                        agent_runs::append_content(app, run_id, t, loop_count);
-                                    }
-                                }
+        // ── 统一事件循环 ──
+        // 协议解析（parse_frame：纯函数，住在模型接入层）与运行时副作用（本函数）在此解耦：
+        // 这里只认 ProtocolEvent，没有任何协议分支。每个事件臂的副作用代码就是
+        // 拆分前对应协议分支里的原句（chat-content / chat-thinking / chat-tool-start /
+        // plan-proposal-stream / agent_runs 日志），仅触发源从"协议判断"变成"事件匹配"。
+        for ev in stream_parse::parse_frame(api_format, &json_val) {
+            match ev {
+                ProtocolEvent::TextStart { .. } => {
+                    // Anthropic content_block_start(text)：推入空文本块。
+                    // 推入位置 = 数组末尾；正常流中与线上块下标一致（与拆分前行为相同）。
+                    current_blocks.push(ContentBlock::Text { text: String::new() });
+                }
+                ProtocolEvent::ThinkingStart { signature, .. } => {
+                    // Anthropic content_block_start(thinking)：推入空思考块；
+                    // 开始帧可能自带初始签名（None → 空串，与拆分前 unwrap_or("") 一致）
+                    current_blocks.push(ContentBlock::Thinking {
+                        thinking: String::new(),
+                        signature: signature.unwrap_or_default(),
+                    });
+                }
+                ProtocolEvent::TextDelta { block, text } => {
+                    // 落块的两种协议规则已在事件里归一：Some = 精确改写，None = 追加进当前块
+                    match block {
+                        // Anthropic：精确改写第 i 块；该块不是文本/越界则静默（与拆分前一致）
+                        Some(i) => {
+                            if let Some(ContentBlock::Text { text: buf }) = current_blocks.get_mut(i)
+                            {
+                                buf.push_str(&text);
                             }
                         }
-                        if let Some(t) = delta["reasoning_content"].as_str() {
-                            if !t.is_empty() {
-                                let is_thinking = matches!(
-                                    current_blocks.last(),
-                                    Some(ContentBlock::Thinking { .. })
-                                );
-                                if !is_thinking {
-                                    current_blocks.push(ContentBlock::Thinking {
-                                        thinking: String::new(),
-                                        signature: String::new(),
-                                    });
-                                }
-                                if let Some(ContentBlock::Thinking { thinking, .. }) =
-                                    current_blocks.last_mut()
-                                {
-                                    thinking.push_str(t);
-                                    current_thinking_this_turn.push_str(t);
-                                    let _ = app.emit(
-                                        "chat-thinking",
-                                        if config.is_subagent {
-                                            json!({ "content": t, "sessionId": sid, "isSubAgent": true })
-                                        } else {
-                                            json!({ "content": t, "sessionId": sid, "loopCount": loop_count })
-                                        },
-                                    );
-                                    if !config.is_subagent {
-                                        agent_runs::append_thinking(app, run_id, t, loop_count);
-                                    }
-                                }
+                        // OpenAI：当前块是文本就追加，否则新开一块
+                        None => {
+                            let is_text = matches!(
+                                current_blocks.last(),
+                                Some(ContentBlock::Text { .. })
+                            );
+                            if !is_text {
+                                current_blocks.push(ContentBlock::Text {
+                                    text: String::new(),
+                                });
                             }
-                        }
-                        if let Some(tool_calls) = delta["tool_calls"].as_array() {
-                            for tc in tool_calls {
-                                let tool_call_index = tc["index"].as_u64().unwrap_or(0) as usize;
-
-                                if !openai_tool_block_map.contains_key(&tool_call_index) {
-                                    let id = tc["id"].as_str().unwrap_or("").to_string();
-                                    let name =
-                                        tc["function"]["name"].as_str().unwrap_or("").to_string();
-                                    current_blocks.push(ContentBlock::ToolUse {
-                                        id: id.clone(),
-                                        name: name.clone(),
-                                        input: json!({}),
-                                    });
-                                    let block_index = current_blocks.len() - 1;
-                                    openai_tool_block_map.insert(tool_call_index, block_index);
-                                    tool_input_buffers.insert(block_index, String::new());
-                                    turn_has_tool = true;
-                                    if !config.is_subagent {
-                                        let _ = app.emit(
-                                            "chat-tool-start",
-                                            json!({
-                                                "sessionId": sid,
-                                                "loopCount": loop_count,
-                                                "toolCallId": id,
-                                                "tool": name
-                                            }),
-                                        );
-                                        agent_runs::append_tool_log(
-                                            app,
-                                            run_id,
-                                            "\n> 工具参数接收中\n",
-                                            loop_count,
-                                        );
-                                    }
-                                }
-
-                                if let Some(args) = tc["function"]["arguments"].as_str() {
-                                    if let Some(block_index) =
-                                        openai_tool_block_map.get(&tool_call_index)
-                                    {
-                                        if let Some(buf) = tool_input_buffers.get_mut(block_index) {
-                                            buf.push_str(args);
-                                            // 实时提取 ProposePlan 的 content 并推送到前端（通过 ExecuteTool 调用）
-                                            if let Some(ContentBlock::ToolUse { name, .. }) = current_blocks.get(*block_index) {
-                                                let content = if name == "ExecuteTool" {
-                                                    extract_deferred_propose_plan_content(buf)
-                                                } else {
-                                                    None
-                                                };
-                                                if let Some(content) = content {
-                                                    let sent_len = propose_plan_stream_sent.get(block_index).copied().unwrap_or(0);
-                                                    if content.len() > sent_len {
-                                                        let new_chunk = &content[sent_len..];
-                                                        let _ = app.emit(
-                                                            "plan-proposal-stream",
-                                                            json!({
-                                                                "content": new_chunk,
-                                                                "sessionId": sid
-                                                            }),
-                                                        );
-                                                        propose_plan_stream_sent.insert(*block_index, content.len());
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                            if let Some(ContentBlock::Text { text: buf }) = current_blocks.last_mut()
+                            {
+                                buf.push_str(&text);
                             }
                         }
                     }
-                }
-            }
-        } else {
-            match json_val["type"].as_str().unwrap_or("") {
-                "message_start" => {
-                    if let Some(usage) = json_val.get("message").and_then(|m| m.get("usage")) {
-                        // 字段级覆盖。注意此处 `input_tokens` 只是"未命中"部分（Anthropic 协议口径），
-                        // 真实 prompt 规模在收尾时由 `resolve_request_tokens()` 补上命中量。
-                        usage_obs.observe(usage, false, config.cache_usage_style.as_deref());
-                        usage_raw = Some(truncate_sample(&usage.to_string(), 600));
+                    current_text_this_turn.push_str(&text);
+                    // 协议违规检测：模型把工具调用写成正文的 XML 标记（文本形态工具调用）
+                    if !logged_textual_tool_violation
+                        && looks_like_textual_tool_call(&current_text_this_turn)
+                    {
+                        logged_textual_tool_violation = true;
+                        let agent_type = if config.is_subagent {
+                            "SUBAGENT"
+                        } else {
+                            "MAIN"
+                        };
+                        logger.log_protocol_violation(
+                            sid,
+                            agent_type,
+                            loop_count,
+                            &current_text_this_turn,
+                        );
+                    }
+                    if !config.is_subagent {
+                        let _ = app.emit(
+                            "chat-content",
+                            json!({ "content": text, "sessionId": sid, "loopCount": loop_count }),
+                        );
+                        agent_runs::append_content(app, run_id, &text, loop_count);
                     }
                 }
-                "message_delta" => {
-                    if let Some(usage) = json_val.get("usage") {
-                        // 字段级覆盖。规范上 `message_delta` 只带 output_tokens，
-                        // 但实测有出口回带 input_tokens —— 覆盖天然免疫这种重复；
-                        // 而只带 output 的帧也不会把已拿到的 input 抹掉。
-                        usage_obs.observe(usage, false, config.cache_usage_style.as_deref());
-                        usage_raw = Some(truncate_sample(&usage.to_string(), 600));
+                ProtocolEvent::ThinkingDelta { block, text, signature } => {
+                    // 落块 + 追加（text 与 signature 互不依赖：纯签名帧 text 为空串）
+                    match block {
+                        // Anthropic：精确改写第 i 块（签名分片也拼进该块）
+                        Some(i) => {
+                            if let Some(ContentBlock::Thinking { thinking, signature: sig }) =
+                                current_blocks.get_mut(i)
+                            {
+                                if !text.is_empty() {
+                                    thinking.push_str(&text);
+                                }
+                                if let Some(s) = &signature {
+                                    sig.push_str(s);
+                                }
+                            }
+                        }
+                        // OpenAI（DeepSeek 等 reasoning_content）：当前块是思考就追加，否则新开一块。
+                        // signature: String::new() 是"外来思考链"的标记——出站时按服务商
+                        // 决定剥掉（真 Anthropic 判 400）还是保留（DeepSeek 要求回传）。
+                        None => {
+                            let is_thinking = matches!(
+                                current_blocks.last(),
+                                Some(ContentBlock::Thinking { .. })
+                            );
+                            if !is_thinking {
+                                current_blocks.push(ContentBlock::Thinking {
+                                    thinking: String::new(),
+                                    signature: String::new(),
+                                });
+                            }
+                            if let Some(ContentBlock::Thinking { thinking, .. }) =
+                                current_blocks.last_mut()
+                            {
+                                thinking.push_str(&text);
+                            }
+                        }
                     }
-                    // 提取终止原因（end_turn / max_tokens / tool_use 等）
-                    if let Some(sr) = json_val["delta"]["stop_reason"].as_str() {
-                        stop_reason = Some(sr.to_string());
+                    if !text.is_empty() {
+                        current_thinking_this_turn.push_str(&text);
+                        if !config.is_subagent {
+                            let _ = app.emit(
+                                "chat-thinking",
+                                if config.is_subagent {
+                                    json!({ "content": text, "sessionId": sid, "isSubAgent": true })
+                                } else {
+                                    json!({ "content": text, "sessionId": sid, "loopCount": loop_count })
+                                },
+                            );
+                            agent_runs::append_thinking(app, run_id, &text, loop_count);
+                        }
                     }
                 }
-                "content_block_start" => {
-                    let block = &json_val["content_block"];
-                    match block["type"].as_str().unwrap_or("") {
-                        "text" => current_blocks.push(ContentBlock::Text {
-                            text: String::new(),
-                        }),
-                        "thinking" => current_blocks.push(ContentBlock::Thinking {
-                            thinking: String::new(),
-                            signature: block["signature"].as_str().unwrap_or("").to_string(),
-                        }),
-                        "tool_use" => {
-                            let tool_name = block["name"].as_str().unwrap_or("").to_string();
+                ProtocolEvent::ToolStart { wire_idx, id, name } => {
+                    // 非标准实现的重复开始帧（每片都带 id/name）：按映射表去重，
+                    // 不重复建块——与拆分前"仅在 map miss 时建块"的行为一致
+                    if tool_block_map.contains_key(&wire_idx) {
+                        continue;
+                    }
+                    current_blocks.push(ContentBlock::ToolUse {
+                        id: id.clone(),
+                        name: name.clone(),
+                        input: json!({}),
+                    });
+                    let block_index = current_blocks.len() - 1;
+                    tool_block_map.insert(wire_idx, block_index);
+                    tool_input_buffers.insert(block_index, String::new());
+                    turn_has_tool = true;
+                    if !config.is_subagent {
+                        let _ = app.emit(
+                            "chat-tool-start",
+                            json!({
+                                "sessionId": sid,
+                                "loopCount": loop_count,
+                                "toolCallId": id,
+                                "tool": name
+                            }),
+                        );
+                        agent_runs::append_tool_log(
+                            app,
+                            run_id,
+                            "\n> 工具参数接收中\n",
+                            loop_count,
+                        );
+                    }
+                }
+                ProtocolEvent::ToolArgsDelta { wire_idx, fragment } => {
+                    // 线上索引 → 块位置；首个分片就不带 id/name 的非标准实现按空块兜底
+                    //（含 chat-tool-start 通知，与拆分前 map-miss 即建块的行为一致）
+                    let block_index = match tool_block_map.get(&wire_idx) {
+                        Some(p) => *p,
+                        None => {
                             current_blocks.push(ContentBlock::ToolUse {
-                                id: block["id"].as_str().unwrap_or("").to_string(),
-                                name: tool_name.clone(),
+                                id: String::new(),
+                                name: String::new(),
                                 input: json!({}),
                             });
-                            tool_input_buffers.insert(current_blocks.len() - 1, String::new());
+                            let p = current_blocks.len() - 1;
+                            tool_block_map.insert(wire_idx, p);
+                            tool_input_buffers.insert(p, String::new());
                             turn_has_tool = true;
                             if !config.is_subagent {
                                 let _ = app.emit(
@@ -550,8 +529,8 @@ pub async fn process_stream(
                                     json!({
                                         "sessionId": sid,
                                         "loopCount": loop_count,
-                                        "toolCallId": block["id"].as_str().unwrap_or(""),
-                                        "tool": tool_name
+                                        "toolCallId": "",
+                                        "tool": ""
                                     }),
                                 );
                                 agent_runs::append_tool_log(
@@ -561,102 +540,48 @@ pub async fn process_stream(
                                     loop_count,
                                 );
                             }
+                            p
                         }
-                        _ => {}
-                    }
-                }
-                "content_block_delta" => {
-                    let index = json_val["index"].as_u64().unwrap_or(0) as usize;
-                    let delta = &json_val["delta"];
-                    if let Some(block) = current_blocks.get_mut(index) {
-                        match block {
-                            ContentBlock::Text { text } => {
-                                if let Some(t) = delta["text"].as_str() {
-                                    text.push_str(t);
-                                    current_text_this_turn.push_str(t);
-                                    if !logged_textual_tool_violation
-                                        && looks_like_textual_tool_call(&current_text_this_turn)
-                                    {
-                                        logged_textual_tool_violation = true;
-                                        let agent_type = if config.is_subagent {
-                                            "SUBAGENT"
-                                        } else {
-                                            "MAIN"
-                                        };
-                                        logger.log_protocol_violation(
-                                            sid,
-                                            agent_type,
-                                            loop_count,
-                                            &current_text_this_turn,
-                                        );
-                                    }
-                                    if !config.is_subagent {
-                                        let _ = app.emit(
-                                            "chat-content",
-                                            json!({ "content": t, "sessionId": sid, "loopCount": loop_count }),
-                                        );
-                                        agent_runs::append_content(app, run_id, t, loop_count);
-                                    }
-                                }
-                            }
-                            ContentBlock::Thinking { thinking, signature } => {
-                                if let Some(t) = delta["thinking"].as_str() {
-                                    thinking.push_str(t);
-                                    current_thinking_this_turn.push_str(t);
+                    };
+                    if let Some(buf) = tool_input_buffers.get_mut(&block_index) {
+                        buf.push_str(&fragment);
+                        // 实时提取 ProposePlan 的 content 并推送到前端（通过 ExecuteTool 调用）
+                        if let Some(ContentBlock::ToolUse { name, .. }) =
+                            current_blocks.get(block_index)
+                        {
+                            let content = if name == "ExecuteTool" {
+                                extract_deferred_propose_plan_content(buf)
+                            } else {
+                                None
+                            };
+                            if let Some(content) = content {
+                                let sent_len = propose_plan_stream_sent
+                                    .get(&block_index)
+                                    .copied()
+                                    .unwrap_or(0);
+                                if content.len() > sent_len {
+                                    let new_chunk = &content[sent_len..];
                                     let _ = app.emit(
-                                        "chat-thinking",
-                                        if config.is_subagent {
-                                            json!({ "content": t, "sessionId": sid, "isSubAgent": true })
-                                        } else {
-                                            json!({ "content": t, "sessionId": sid, "loopCount": loop_count })
-                                        },
+                                        "plan-proposal-stream",
+                                        json!({
+                                            "content": new_chunk,
+                                            "sessionId": sid
+                                        }),
                                     );
-                                    if !config.is_subagent {
-                                        agent_runs::append_thinking(app, run_id, t, loop_count);
-                                    }
-                                }
-                                // Anthropic 协议把 thinking 的签名放在**独立的** signature_delta 分片里
-                                // （content_block_start 里的 thinking 块不含 signature）。
-                                // 不接住它，回放历史时该块就是"无签名"，而 Anthropic 协议要求
-                                // thinking 块原样回传：真 Anthropic 会直接 400，DeepSeek 的
-                                // /anthropic 端点（UUID 签名）会报
-                                // `content[].thinking in the thinking mode must be passed back to the API`。
-                                if let Some(sig) = thinking_signature_from_delta(delta) {
-                                    signature.push_str(sig);
+                                    propose_plan_stream_sent.insert(block_index, content.len());
                                 }
                             }
-                            ContentBlock::ToolUse { name, .. } => {
-                                if let Some(partial) = delta["partial_json"].as_str() {
-                                    if let Some(buf) = tool_input_buffers.get_mut(&index) {
-                                        buf.push_str(partial);
-                                        // 实时提取 ProposePlan 的 content 并推送到前端（通过 ExecuteTool 调用）
-                                        let content = if name == "ExecuteTool" {
-                                            extract_deferred_propose_plan_content(buf)
-                                        } else {
-                                            None
-                                        };
-                                        if let Some(content) = content {
-                                            let sent_len = propose_plan_stream_sent.get(&index).copied().unwrap_or(0);
-                                            if content.len() > sent_len {
-                                                let new_chunk = &content[sent_len..];
-                                                let _ = app.emit(
-                                                    "plan-proposal-stream",
-                                                    json!({
-                                                        "content": new_chunk,
-                                                        "sessionId": sid
-                                                    }),
-                                                );
-                                                propose_plan_stream_sent.insert(index, content.len());
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            _ => {}
                         }
                     }
                 }
-                _ => {}
+                ProtocolEvent::UsageObserved(usage) => {
+                    // 字段级覆盖（last-wins）：带 usage 的帧通常只有末帧，重复出现时后者才是完整值
+                    usage_obs.observe(&usage);
+                    usage_raw = Some(truncate_sample(&usage.to_string(), 600));
+                }
+                ProtocolEvent::StopReason(sr) => {
+                    stop_reason = Some(sr);
+                }
             }
         }
     }
@@ -693,7 +618,8 @@ pub async fn process_stream(
     );
     let should_retry = should_retry && zero_output;
 
-    let (input_tokens, output_tokens) = usage_obs.resolve(is_openai);
+    let (input_tokens, output_tokens) = usage_obs.resolve();
+    let (cache_hit_tokens, cache_miss_tokens, cache_source) = usage_obs.cache_snapshot();
 
     StreamResult {
         blocks: current_blocks,
@@ -703,218 +629,13 @@ pub async fn process_stream(
         has_tool: turn_has_tool,
         input_tokens,
         output_tokens,
-        cache_hit_tokens: usage_obs.cache.hit,
-        cache_miss_tokens: usage_obs.cache.miss,
-        cache_source: usage_obs.cache.is_known().then_some(usage_obs.cache.source),
+        cache_hit_tokens,
+        cache_miss_tokens,
+        cache_source,
         usage_raw,
         stop_reason,
         idle_timed_out,
         should_retry,
-    }
-}
-
-/// 本次请求的 usage 读数累积器（字段级 last-wins）。
-///
-/// **为什么是 last-wins 而不是累加**：`usage` 字段的语义是"本次请求的累计量"（OpenAI 末帧的
-/// `prompt_tokens`、Anthropic `message_start` 的 `input_tokens` 都是整段 prompt 的规模），
-/// 不是增量。逐帧 `+=` 只在"恰好只上报一次"时才碰巧正确：实测有中转站每帧都带累计 usage，
-/// Anthropic 的 `message_delta` 也可能回带 `input_tokens`，累加会把这些读数放大数倍。
-///
-/// 覆盖面与"只在 incoming 已知时覆盖"配套：只带 `output_tokens` 的 delta 帧不会把已拿到的
-/// `input_tokens` 抹掉（缓存侧同理，由 `merge_cache_usage` 保证）。
-///
-/// 输入口径归一（Anthropic 家族 `input_tokens` 只是未命中部分）在 `resolve()` 里做。
-struct UsageObservation {
-    latest_input: Option<u64>,
-    latest_output: Option<u64>,
-    cache: crate::infra::llm::usage::CacheUsage,
-}
-
-impl UsageObservation {
-    fn new() -> Self {
-        Self {
-            latest_input: None,
-            latest_output: None,
-            cache: crate::infra::llm::usage::CacheUsage::default(),
-        }
-    }
-
-    /// 观测一帧 `usage`，按协议取字段名覆盖写入。
-    fn observe(
-        &mut self,
-        usage: &serde_json::Value,
-        is_openai: bool,
-        cache_usage_style: Option<&str>,
-    ) {
-        let (input_key, output_key) = if is_openai {
-            ("prompt_tokens", "completion_tokens")
-        } else {
-            ("input_tokens", "output_tokens")
-        };
-        if let Some(value) = usage.get(input_key).and_then(|v| v.as_u64()) {
-            self.latest_input = Some(value);
-        }
-        if let Some(value) = usage.get(output_key).and_then(|v| v.as_u64()) {
-            self.latest_output = Some(value);
-        }
-        self.cache = crate::infra::llm::usage::merge_cache_usage(
-            self.cache.clone(),
-            crate::infra::llm::usage::extract_cache_usage_with_style(usage, cache_usage_style),
-        );
-    }
-
-    /// 收尾取值（口径归一 + 从未上报时落 0）。
-    fn resolve(&self, is_openai: bool) -> (u64, u64) {
-        resolve_request_tokens(is_openai, self.latest_input, self.latest_output, &self.cache)
-    }
-}
-
-/// 归一本次请求的输入 / 输出 token 口径。
-///
-/// 输入侧**两个协议家族的 `input` 口径不同**，混用会让"上下文有多大"这个数字自相矛盾：
-/// - OpenAI 家族：`prompt_tokens` **已含**缓存命中部分（`cached_tokens` 是它的子集）→ 直接用；
-/// - Anthropic 家族：`input_tokens` **只是未命中部分**，命中量在 `cache_read_input_tokens` 里
-///   （实测样例 `input_tokens=190` + `cache_read_input_tokens=1536` → 真实 prompt 1726，
-///   见 `doc/缓存命中量化方案.md` §1/§6）→ 必须补成 `hit + miss`。
-///
-/// 缓存字段整家未上报时不推导（`CacheUsage::total()` 返回 `None`），退回裸 `input_tokens`，
-/// 宁可偏小也不编数——与"未知 ≠ 0"的既有口径一致。
-///
-/// 输出侧两家同名同义（`completion_tokens` / `output_tokens`），只需 last-wins 取最后一次观测；
-/// 一次 usage 都没收到时返回 0（调用方据此跳过快照更新）。
-fn resolve_request_tokens(
-    is_openai: bool,
-    latest_input: Option<u64>,
-    latest_output: Option<u64>,
-    cache_usage: &crate::infra::llm::usage::CacheUsage,
-) -> (u64, u64) {
-    let input = if is_openai {
-        latest_input
-    } else {
-        cache_usage.total().or(latest_input)
-    };
-    (input.unwrap_or(0), latest_output.unwrap_or(0))
-}
-
-/// 从模型输出的文本中解析 <tool_call> XML 块，转为 (name, input_json) 列表
-fn parse_textual_tool_calls(text: &str) -> Vec<(String, serde_json::Value)> {
-    let mut results = Vec::new();
-    let mut rest = text;
-
-    while let Some(tc_start) = rest.find("<tool_call>") {
-        let after_start = &rest[tc_start + "<tool_call>".len()..];
-        let tc_end = match after_start.find("</tool_call>") {
-            Some(pos) => pos,
-            None => break,
-        };
-        let tc_body = &after_start[..tc_end].trim();
-        rest = &after_start[tc_end + "</tool_call>".len()..];
-
-        // 解析 <function=NAME>
-        let fn_start = match tc_body.find("<function=") {
-            Some(pos) => pos + "<function=".len(),
-            None => continue,
-        };
-        let fn_body = &tc_body[fn_start..];
-        let fn_end = match fn_body.find('>') {
-            Some(pos) => pos,
-            None => continue,
-        };
-        let fn_name = fn_body[..fn_end].trim().to_string();
-        let after_fn = &fn_body[fn_end + 1..];
-
-        // 找到 </function> 来界定参数范围
-        let fn_close = match after_fn.find("</function>") {
-            Some(pos) => pos,
-            None => continue,
-        };
-        let params_text = &after_fn[..fn_close];
-
-        // 解析 <parameter=KEY>VALUE</parameter>
-        let mut input_map = serde_json::Map::new();
-        let mut param_rest = params_text;
-        while let Some(p_start) = param_rest.find("<parameter=") {
-            let after_p_start = &param_rest[p_start + "<parameter=".len()..];
-            let p_name_end = match after_p_start.find('>') {
-                Some(pos) => pos,
-                None => break,
-            };
-            let p_name = after_p_start[..p_name_end].trim().to_string();
-            let after_p_name = &after_p_start[p_name_end + 1..];
-            let p_value_end = match after_p_name.find("</parameter>") {
-                Some(pos) => pos,
-                None => break,
-            };
-            let p_value = after_p_name[..p_value_end].trim().to_string();
-            param_rest = &after_p_name[p_value_end + "</parameter>".len()..];
-
-            // 尝试将值解析为 JSON（数字/布尔/字符串），失败则保持字符串
-            let value = if let Ok(n) = p_value.parse::<i64>() {
-                serde_json::Value::Number(n.into())
-            } else if let Ok(b) = p_value.parse::<bool>() {
-                serde_json::Value::Bool(b)
-            } else if (p_value.starts_with('{') && p_value.ends_with('}'))
-                || (p_value.starts_with('[') && p_value.ends_with(']'))
-            {
-                serde_json::from_str(&p_value).unwrap_or(serde_json::Value::String(p_value))
-            } else {
-                serde_json::Value::String(p_value)
-            };
-            input_map.insert(p_name, value);
-        }
-
-        results.push((fn_name, serde_json::Value::Object(input_map)));
-    }
-
-    results
-}
-
-#[cfg(test)]
-mod signature_delta_tests {
-    use super::thinking_signature_from_delta;
-    use serde_json::json;
-
-    #[test]
-    fn captures_anthropic_signature_delta() {
-        // 真 Anthropic：长 base64 签名
-        let delta = json!({
-            "type": "signature_delta",
-            "signature": "EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pki"
-        });
-        assert_eq!(
-            thinking_signature_from_delta(&delta),
-            Some("EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pki")
-        );
-    }
-
-    #[test]
-    fn captures_deepseek_uuid_signature() {
-        // DeepSeek 的 /anthropic 端点用 UUID 形式的签名，必须原样回传
-        let delta = json!({
-            "type": "signature_delta",
-            "signature": "3f7c1f5e-2b6a-4f1e-9a5d-0b2c8e7d4a11"
-        });
-        assert_eq!(
-            thinking_signature_from_delta(&delta),
-            Some("3f7c1f5e-2b6a-4f1e-9a5d-0b2c8e7d4a11")
-        );
-    }
-
-    #[test]
-    fn thinking_delta_without_signature_is_ignored() {
-        // 普通的 thinking_delta 不带 signature，不能当成签名
-        assert!(thinking_signature_from_delta(&json!({
-            "type": "thinking_delta",
-            "thinking": "先看看目录"
-        }))
-        .is_none());
-        // 空签名不拼进块里（否则等于把"无签名"伪装成"有签名"）
-        assert!(thinking_signature_from_delta(&json!({
-            "type": "signature_delta",
-            "signature": ""
-        }))
-        .is_none());
-        assert!(thinking_signature_from_delta(&json!({})).is_none());
     }
 }
 
@@ -1016,95 +737,5 @@ mod idle_timeout_tests {
         .await
         .expect("空流应立即返回 None，而不是挂起");
         assert!(won.is_none());
-    }
-}
-
-#[cfg(test)]
-mod usage_observation_tests {
-    use super::UsageObservation;
-    use serde_json::json;
-
-    /// 核心回归：同一个 usage 帧重复出现时**不能翻倍**（这就是原先 `+=` 的缺陷）。
-    /// 实测有的中转站每帧都带累计 usage，累加会让"本次上下文"虚高数倍。
-    #[test]
-    fn repeated_usage_frames_do_not_multiply() {
-        let mut obs = UsageObservation::new();
-        let usage = json!({ "prompt_tokens": 1726, "completion_tokens": 24, "total_tokens": 1750 });
-        for _ in 0..5 {
-            obs.observe(&usage, true, None);
-        }
-        assert_eq!(obs.resolve(true), (1726, 24), "last-wins 不得累加");
-    }
-
-    /// Anthropic 家族：`input_tokens` 只是"未命中"部分，必须补上 `cache_read_input_tokens`
-    /// （样本取自真机实测：190 + 1536 = 1726）。
-    #[test]
-    fn anthropic_input_is_normalized_to_hit_plus_miss() {
-        let mut obs = UsageObservation::new();
-        obs.observe(
-            &json!({
-                "input_tokens": 190, "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 1536, "output_tokens": 19
-            }),
-            false,
-            None,
-        );
-        assert_eq!(obs.resolve(false), (1726, 19), "Anthropic 的输入应归一为 hit + miss");
-    }
-
-    /// 两组协议口径必须可比：同一个 prompt 规模下，OpenAI 与 Anthropic 出口归一出同一个数。
-    #[test]
-    fn both_protocols_agree_on_prompt_size() {
-        let mut openai = UsageObservation::new();
-        openai.observe(
-            &json!({
-                "prompt_tokens": 1726, "completion_tokens": 24,
-                "prompt_tokens_details": { "cached_tokens": 1536 }
-            }),
-            true,
-            None,
-        );
-        let mut anthropic = UsageObservation::new();
-        anthropic.observe(
-            &json!({ "input_tokens": 190, "cache_read_input_tokens": 1536, "output_tokens": 24 }),
-            false,
-            None,
-        );
-        assert_eq!(openai.resolve(true).0, anthropic.resolve(false).0);
-    }
-
-    /// 缓存字段整家未上报时不许编数：退回裸 `input_tokens`（宁可偏小，不推导）。
-    #[test]
-    fn anthropic_without_cache_fields_falls_back_to_raw_input() {
-        let mut obs = UsageObservation::new();
-        obs.observe(&json!({ "input_tokens": 1813, "output_tokens": 24 }), false, None);
-        assert_eq!(obs.resolve(false), (1813, 24));
-        assert!(obs.cache.hit.is_none(), "未识别到字段时必须保持未知，而不是 0");
-    }
-
-    /// delta 帧只带 output 时，不得把 `message_start` 已给的 input 抹掉，也不得覆盖缓存读数；
-    /// 反过来，delta 回带 input_tokens（有出口这么干）时以最后一次为准，不累加。
-    #[test]
-    fn later_delta_frame_overwrites_only_the_fields_it_carries() {
-        let mut obs = UsageObservation::new();
-        obs.observe(
-            &json!({ "input_tokens": 190, "cache_read_input_tokens": 1536, "output_tokens": 1 }),
-            false,
-            None,
-        );
-        obs.observe(&json!({ "output_tokens": 42 }), false, None);
-        assert_eq!(obs.resolve(false), (1726, 42));
-        assert_eq!(obs.cache.hit, Some(1536), "字段缺失的 delta 不得冲掉缓存读数");
-
-        obs.observe(&json!({ "input_tokens": 190, "output_tokens": 42 }), false, None);
-        assert_eq!(obs.resolve(false).0, 1726, "回带的 input 只覆盖、不叠加");
-    }
-
-    /// 一次 usage 都没收到 → 0（调用方据此跳过快照更新），不是 None 冒充 0 的"未知"。
-    #[test]
-    fn no_usage_at_all_resolves_to_zero() {
-        let obs = UsageObservation::new();
-        assert_eq!(obs.resolve(true), (0, 0));
-        assert_eq!(obs.resolve(false), (0, 0));
     }
 }

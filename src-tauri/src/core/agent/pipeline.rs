@@ -1006,7 +1006,7 @@ impl PipelineState {
 
             // 步骤 5：构建 LLM 请求（OpenAI 出口时按模型翻译协议）+ 更新上下文快照
             // 构建请求并更新上下文快照
-            let (req_json, is_openai) = self.build_llm_request(history_snapshot);
+            let (req_json, req_api_format) = self.build_llm_request(history_snapshot);
 
             // 调试日志：logger 内部按 request_base + messages 增量落盘，
             // 这里只打印一个体量（compact 序列化，不再为打印付出 pretty 的开销）
@@ -1193,7 +1193,7 @@ impl PipelineState {
                 let mut stream = response.bytes_stream().eventsource();
                 let mut result = process_stream(
                     &mut stream,
-                    is_openai,
+                    req_api_format,
                     &self.app,
                     &self.sid,
                     &self.run_id,
@@ -1229,7 +1229,7 @@ impl PipelineState {
                             return Some(
                                 process_stream(
                                     &mut stream2,
-                                    is_openai,
+                                    req_api_format,
                                     &self.app,
                                     &self.sid,
                                     &self.run_id,
@@ -3228,11 +3228,11 @@ impl PipelineState {
     ///
     /// - 总是流式请求（stream: true），写入系统提示词、工具 schema、思考配置、温度等
     /// - OpenAI 格式模型：经 adapters 翻译消息/工具，并按模型注册表注入各家“思考参数”
-    /// - 返回值第二项 is_openai 告诉 stream.rs 按哪种协议解析 SSE 事件
+    /// - 返回值第二项 ApiFormat 交给 stream.rs 与 UsageObservation，协议差异在模型接入层内部消化
     fn build_llm_request(
         &self,
         history_snapshot: Vec<Message>,
-    ) -> (serde_json::Value, bool) {
+    ) -> (serde_json::Value, crate::infra::llm::api_format::ApiFormat) {
         // 1. 取系统提示词与工具定义，并更新上下文监控快照
         // system 在 setup 阶段只组装一次并保持字节恒定，整个会话内不再随 work_mode 变化。
         let system_prompt = self.system_prompt.clone();
@@ -3324,7 +3324,7 @@ impl PipelineState {
             crate::infra::llm::registry::apply_thinking_for_model(
                 &mut openai_req, &self.model_id, self.should_think,
             );
-            (serde_json::to_value(openai_req).unwrap(), true)
+            (serde_json::to_value(openai_req).unwrap(), crate::infra::llm::api_format::ApiFormat::OpenAI)
         } else {
             // Anthropic 出口的 thinking 块策略按服务商分两种：
             // - 真 Anthropic：无 signature 的 thinking 回传会被判 400 → 必须剥掉；
@@ -3346,7 +3346,7 @@ impl PipelineState {
                     self.model_id
                 );
             }
-            (serde_json::to_value(request_body).unwrap(), false)
+            (serde_json::to_value(request_body).unwrap(), crate::infra::llm::api_format::ApiFormat::Anthropic)
         }
     }
 
@@ -3501,14 +3501,14 @@ impl PipelineState {
             content: Content::Single(instruction),
         });
 
-        let (req_json, is_openai) = self.build_llm_request(snapshot);
+        let (req_json, req_api_format) = self.build_llm_request(snapshot);
         let mut summary = String::new();
         match self.call_api_with_retry(&req_json).await {
             Ok(Some(resp)) => {
                 let mut stream = resp.bytes_stream().eventsource();
                 let parsed = process_stream(
                     &mut stream,
-                    is_openai,
+                    req_api_format,
                     &self.app,
                     &self.sid,
                     &self.run_id,

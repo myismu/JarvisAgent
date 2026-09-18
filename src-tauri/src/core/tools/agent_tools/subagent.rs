@@ -598,7 +598,7 @@ pub async fn run_subagent(
             request_body.max_tokens = 4096;
         }
 
-        let (req_json, is_openai) = if api_format_enum.is_openai() {
+        let req_json = if api_format_enum.is_openai() {
             use crate::infra::llm::adapters::{
                 should_backfill_deepseek_reasoning_content,
                 translate_messages_to_openai_with_reasoning_backfill, translate_tools_to_openai,
@@ -641,9 +641,9 @@ pub async fn run_subagent(
             crate::infra::llm::registry::apply_thinking_for_model(
                 &mut openai_req, &model_id, should_think,
             );
-            (serde_json::to_value(openai_req).unwrap(), true)
+            serde_json::to_value(openai_req).unwrap()
         } else {
-            (serde_json::to_value(request_body).unwrap(), false)
+            serde_json::to_value(request_body).unwrap()
         };
 
         println!(
@@ -712,7 +712,7 @@ pub async fn run_subagent(
 
         let stream_result = process_stream(
             &mut stream,
-            is_openai,
+            api_format_enum,
             &app,
             &session_id,
             &run_id,
