@@ -760,10 +760,15 @@ pub async fn grant_session_allowance(
             list.push(SessionAllowance {
                 kind: kind.to_string(),
                 scope: scope.to_string(),
-                label,
+                label: label.clone(),
             });
         }
     }
+    // 落盘：语义已升级为「本项目允许」——授权成为项目永久资产，下次挂载自动加载。
+    // 唯一挂点选在这里（而不是各调用方），enforce 主路径与 execution 二道门全覆盖。
+    // 失败只影响"下次记住"，不影响本次放行，allowance_store 内部自吞错误。
+    crate::core::tools::framework::allowance_store::persist(&ctx, session_id, kind, scope, &label)
+        .await;
     // 让界面的"已允许"面板立刻刷新
     let _ = app.emit(
         "session-allowances-changed",
@@ -809,7 +814,7 @@ pub async fn grant_session_allowance(
 /// `pending_permissions`——已经弹出来的卡仍挂在界面上等用户点击，观感就是
 /// "切了档位没反应"。这里用与 [`enforce`] **完全相同**的判据（`policy::judge`）
 /// 重放每条挂起请求：新档位下会自动放行的直接放行，会硬拒的直接拒绝，
-/// 其余仍要问的（删除 / 改名 / 命令 / 覆盖已有文件 / 批量）原样保留等用户点。
+/// 其余仍要问的（删除 / 改名 / 命令 / 批量等）原样保留等用户点。
 ///
 /// 判据必须复用 `judge`：这里若另写一套"什么能放行"，就会出现
 /// "清扫放行了、下一次执行又被拦"的口径分裂。
@@ -1029,14 +1034,12 @@ pub async fn enforce(
             )))
         }
         Outcome::Ask => {
-            // "覆盖已有文件"和"危险命令警示命中"这两类询问刻意**每次都要问**
+            // "危险命令警示命中"这类询问刻意**每次都要问**
             // （见 `policy::ask_always_repeated`，唯一口径）。这类卡片也**不给会话级允许**：
             // 键登记了也吞不掉下一次，显示按钮就是骗人——递归强删不该有"本会话随便来"的待遇。
-            let key = if policy::ask_always_repeated(
-                facts.class,
-                facts.target_exists,
-                facts.warning.is_some(),
-            ) {
+            // （2026-09-18 沐拍板：覆盖已有文件已摘出"每次必问"名单，与普通编辑同权——
+            //   旧内容由快照回滚兜底，覆盖卡可正常登记会话允许。）
+            let key = if policy::ask_always_repeated(facts.warning.is_some()) {
                 None
             } else {
                 facts.allowance.clone()
@@ -1045,6 +1048,15 @@ pub async fn enforce(
             // ① 本会话已允许过"这个操作类别 + 这个范围" → 直接放行
             if let Some(key) = &key {
                 if ctx.allowance_covers(key.kind, &key.scope).await {
+                    super::permission_audit_logger::permission_audit_logger().log_decision(
+                        session_id,
+                        agent_type,
+                        tool,
+                        Some(key.kind),
+                        Some(&key.scope),
+                        super::permission_audit_logger::ACTION_KEY_HIT,
+                        facts.warning.as_deref(),
+                    );
                     return None;
                 }
             }
@@ -1065,18 +1077,58 @@ pub async fn enforce(
                 facts.warning.as_deref(),
             )
             .await;
+            // 审计：弹卡后的每一次人工决策都留痕（允许一次/会话允许/拒绝）。
+            // 键信息提前转 owned——AllowSession 分支会 move key，引用活不到分支内。
+            let audit = super::permission_audit_logger::permission_audit_logger();
+            let audit_key: Option<(String, String)> =
+                key.as_ref().map(|k| (k.kind.to_string(), k.scope.clone()));
+            let (audit_kind, audit_scope) = match &audit_key {
+                Some((k, s)) => (Some(k.as_str()), Some(s.as_str())),
+                None => (None, None),
+            };
             match decision {
-                PermissionDecision::Allow => None,
+                PermissionDecision::Allow => {
+                    audit.log_decision(
+                        session_id,
+                        agent_type,
+                        tool,
+                        audit_kind,
+                        audit_scope,
+                        super::permission_audit_logger::ACTION_ALLOW,
+                        facts.warning.as_deref(),
+                    );
+                    None
+                }
                 PermissionDecision::AllowSession => {
                     if let Some(k) = key {
                         grant_session_allowance(app, session_id, k.kind, &k.scope, k.label).await;
                     }
+                    audit.log_decision(
+                        session_id,
+                        agent_type,
+                        tool,
+                        audit_kind,
+                        audit_scope,
+                        super::permission_audit_logger::ACTION_ALLOW_SESSION,
+                        facts.warning.as_deref(),
+                    );
                     None
                 }
-                other => Some(super::ToolCallResult::blocked(format!(
-                    "这个操作没有执行：{}",
-                    other.model_note()
-                ))),
+                other => {
+                    audit.log_decision(
+                        session_id,
+                        agent_type,
+                        tool,
+                        audit_kind,
+                        audit_scope,
+                        super::permission_audit_logger::ACTION_REJECT,
+                        facts.warning.as_deref(),
+                    );
+                    Some(super::ToolCallResult::blocked(format!(
+                        "这个操作没有执行：{}",
+                        other.model_note()
+                    )))
+                }
             }
         }
     }

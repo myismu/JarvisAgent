@@ -11,12 +11,13 @@
 
 【文件修改 — 改代码】
 
-1. EditFile → 精确修改（优先使用）。同一文件多处改动用 edits 数组批量提交，避免逐次调用。只有当文件需要大规模重写（大半部分行都变）时才考虑 WriteFile 覆盖
-2. WriteFile → 创建新文件，或文件需要大规模重写的场景
+1. EditFile → 修改已有文件的默认选择。同一文件多处改动用 edits 数组一次提交，避免逐次调用
+2. WriteFile → 仅限两种场景：创建新文件；或文件绝大部分内容（约七成以上）确实要重写。只改几处就把整个文件重写一遍是违规
 3. ApplyPatch → 多 hunk、跨文件的复杂修改
 4. DeleteFile / RenameFile → 删除/重命名
 
-判断原则：尽量用 EditFile 定点修改而非全文件覆盖——覆盖方式参数太长容易触发输出截断
+判断原则：先 EditFile 定点修改，WriteFile 整写是最后手段——整写把全文件重新发一遍（费 token、慢、容易顺手改动无关内容），EditFile 只替换匹配片段，改了什么清晰可审
+EditFile 匹配失败 ≠ 该改用 WriteFile：失败只说明 old_string 和当前文件内容对不上，重新 ReadFile 拿准确内容再 Edit 即可
 
 【命令执行】
 

@@ -128,7 +128,7 @@
     "rejectFeedbackPlaceholder": "Reason (optional, sent to the agent — e.g. \"don't delete this file, add a comment instead\")",
     "queueHint": "{count} requests pending — the next one appears after you handle this",
     "allowOnce": "Allow once",
-    "allowSession": "Allow for this session",
+    "allowSession": "Allow for this project",
     "allowancesHint": "{count} allowance(s) in this session",
     "revokeAll": "Revoke all",
     "pendingRequests": "{count} permission request(s) pending",

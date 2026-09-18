@@ -129,7 +129,7 @@
     "rejectFeedbackPlaceholder": "拒绝原因（可选，会告诉 Agent，例如「别删这个文件，改成加注释」）",
     "queueHint": "还有 {count} 个请求待确认，处理完这个会自动显示下一个",
     "allowOnce": "允许一次",
-    "allowSession": "本次会话都允许",
+    "allowSession": "本项目允许",
     "allowancesHint": "本会话已允许 {count} 项",
     "revokeAll": "全部撤销",
     "pendingRequests": "{count} 个权限请求待处理",

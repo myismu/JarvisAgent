@@ -268,7 +268,7 @@ pub const BATCH_FILE_THRESHOLD: usize = 3;
 /// 2. 路径跑出项目 → 拒绝
 /// 3. 工具未登记分类 → 问（保守，同时提醒补表）
 /// 4. 默认就要问的类别（删/改名/跑命令/后台/改工作目录）→ 问
-/// 5. 覆盖已有文件 → 问
+/// 5. 危险操作警示 → 问（覆盖已有文件已于 2026-09-18 摘出本条，与编辑同权走规则 7）
 /// 6. 批量（本次调用 ≥3 个文件，或本轮第 3 个文件）→ 问
 /// 7. 其余按档位：请求审批档问，帮我批准档放行
 pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDecision {
@@ -326,13 +326,14 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
         };
     }
 
-    // 5. 覆盖已有文件 / 危险命令警示（这次询问**每次都要问**，不能被"本次会话都允许"吞掉）。
+    // 5. 危险命令警示（这次询问**每次都要问**，不能被"本次会话都允许"吞掉）。
     //    命令类在规则 4（always ask）就已 Ask，走不到这里；本条对命令类是防御性一致。
-    if ask_always_repeated(class, input.target_exists, input.existing_warning.is_some()) {
+    //    覆盖已有文件已摘出本条（2026-09-18 沐拍板）：与普通编辑同权，走规则 7 按档位判定。
+    if ask_always_repeated(input.existing_warning.is_some()) {
         return ShadowDecision {
             class,
             outcome: Outcome::Ask,
-            reason: "覆盖已有文件".to_string(),
+            reason: "危险操作警示".to_string(),
         };
     }
 
@@ -386,22 +387,19 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
 
 /// 这次询问是不是"每次都要问"——即不能被"本次会话都允许"记下来免掉。
 ///
-/// 现有两种：
-/// 1. **覆盖已有文件**（`judge` 规则 5）。它会把一个已存在文件的内容换成新的，
-///    用户授权"在这个目录里改文件"时想表达的通常是"新建与正常编辑不用问"，
-///    而不是"随便覆盖我已有的文件"。
-/// 2. **危险命令警示命中**（改造①）。`Remove-Item -Recurse`、`git reset --hard`
-///    这类不可恢复操作，登记"会话允许"等于说"本会话内随便递归强删"，语义不成立；
-///    卡片照弹、警示照显，但不给「本次会话都允许」按钮。
+/// 现有一种：
+/// **危险命令警示命中**（改造①）。`Remove-Item -Recurse`、`git reset --hard`
+/// 这类不可恢复操作，登记"会话允许"等于说"本会话内随便递归强删"，语义不成立；
+/// 卡片照弹、警示照显，但不给「本次会话都允许」按钮。
+///
+/// 覆盖已有文件**已摘出本名单**（2026-09-18 沐拍板）：覆盖与普通编辑完全同权——
+/// WriteFile/EditFile 都走"补丁暂存 + 快照回滚"链路（file_tools/workspace.rs），
+/// 旧内容找得回来，语义上不需要每次亲手批。
 ///
 /// **唯一口径**：`judge()` 规则 5 与 `policy_guard::enforce()` 的会话允许检查都调用这里，
 /// 避免"什么时候问"和"问了之后能不能记住"两套判据各说各话。
-pub fn ask_always_repeated(
-    class: Option<ToolClass>,
-    target_exists: Option<bool>,
-    has_warning: bool,
-) -> bool {
-    (matches!(class, Some(ToolClass::CreateFile)) && target_exists == Some(true)) || has_warning
+pub fn ask_always_repeated(has_warning: bool) -> bool {
+    has_warning
 }
 
 /// 从补丁文本里数出涉及的文件（`*** Update File:` / `*** Add File:` / `*** Delete File:` / `+++ b/x`）。
@@ -488,23 +486,13 @@ mod tests {
     }
 
     #[test]
-    fn ask_always_repeated_covers_warning_and_overwrite() {
-        // 覆盖已有文件：CreateFile + 目标已存在 → 每次都问
-        assert!(ask_always_repeated(
-            Some(ToolClass::CreateFile),
-            Some(true),
-            false
-        ));
+    fn ask_always_repeated_covers_warning_only() {
         // 改造①：危险命令警示命中 → 无论类别都"每次都要问"（不给会话允许键）
-        assert!(ask_always_repeated(Some(ToolClass::RunCommand), None, true));
-        assert!(ask_always_repeated(None, None, true));
-        // 普通新建 / 无警示命令 → 可以被"本次会话都允许"吞掉
-        assert!(!ask_always_repeated(
-            Some(ToolClass::CreateFile),
-            Some(false),
-            false
-        ));
-        assert!(!ask_always_repeated(Some(ToolClass::RunCommand), None, false));
+        assert!(ask_always_repeated(true));
+        // 无警示 → 可以被"本次会话都允许"吞掉
+        assert!(!ask_always_repeated(false));
+        // 2026-09-18 沐拍板：覆盖已有文件已摘出"每次必问"名单，与普通编辑同权
+        // （WriteFile/EditFile 同走补丁暂存 + 快照回滚兜底，见 file_tools/workspace.rs）。
     }
 
     #[test]
@@ -521,16 +509,21 @@ mod tests {
     }
 
     #[test]
-    fn overwriting_existing_file_always_asks() {
+    fn overwriting_existing_file_same_as_edit() {
+        // 2026-09-18 沐拍板：覆盖与编辑完全同权（回滚系统兜底）——覆盖不再触发
+        // "每次必问"，走普通类别判定：请求审批档照常问，帮我批准档放行。
         let input = JudgementInput {
             target_exists: Some(true),
             ..allow_input()
         };
-        for mode in [ApprovalMode::RequestApproval, ApprovalMode::AutoApprove] {
-            let decision = judge("WriteFile", mode, &input);
-            assert_eq!(decision.outcome, Outcome::Ask);
-            assert_eq!(decision.reason, "覆盖已有文件");
-        }
+        assert_eq!(
+            judge("WriteFile", ApprovalMode::RequestApproval, &input).outcome,
+            Outcome::Ask
+        );
+        assert_eq!(
+            judge("WriteFile", ApprovalMode::AutoApprove, &input).outcome,
+            Outcome::Allow
+        );
     }
 
     #[test]
