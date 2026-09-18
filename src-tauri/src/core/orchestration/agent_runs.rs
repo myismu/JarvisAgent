@@ -208,6 +208,30 @@ pub fn mark_stale_runs_interrupted(
     }
 }
 
+/// 应用退出（ExitRequested）收尾：把所有仍为 Running 的 run 标记为 Interrupted。
+///
+/// 与 `mark_stale_runs_interrupted` 的区别：无活跃排除集、不判 STALE ——
+/// 退出路径上所有 Running 都是"被进程结束打断的"，全部留痕，
+/// 避免永久 Running 僵尸（此前关闭窗口后 run 状态永远停在 Running，
+/// 崩溃恢复也因找不到 Interrupted 状态而无法收口）。
+pub fn mark_running_interrupted_on_exit() {
+    let runs = agent_run_repository::list_runs(None).unwrap_or_default();
+    for run in runs {
+        if run.status != AgentRunStatus::Running {
+            continue;
+        }
+        let _ = update_run_by_id(&run.run_id, |run| {
+            run.status = AgentRunStatus::Interrupted;
+            run.finished_at = Some(now_millis());
+            run.summary = Some(INTERRUPTED_SUMMARY.to_string());
+            run.resumable = agent_run_repository::load_checkpoint(&run.run_id)
+                .ok()
+                .flatten()
+                .is_some();
+        });
+    }
+}
+
 pub fn list_events(session_id: Option<&str>, run_id: Option<&str>) -> Vec<AgentRunEvent> {
     agent_run_repository::list_events(session_id, run_id).unwrap_or_default()
 }
@@ -512,19 +536,51 @@ pub fn find_interrupted_run(session_id: &str) -> Option<AgentRun> {
         .max_by_key(|r| r.updated_at)
 }
 
+/// 中断恢复的结果语义分层。
+///
+/// `NeedsClosure` 是对称性保证的兜底：崩溃 run 无任何可补内容
+/// （checkpoint 不领先、live 增量为空 —— 典型如"模式快照落库后、
+/// 下一轮 LLM 输出前被杀"），但会话尾部悬尾（最后一条是 user 且
+/// 无人回应）。此时补一条 assistant 中断占位，维持 session_messages
+/// 消息级 user/assistant 严格交替，并把 run 从永久 Running 中捞出。
+pub enum RecoveryOutcome {
+    /// 无可恢复（活跃期内 / 没有中断 run —— 绝大多数加载的正常路径）
+    None,
+    /// 有内容可补：checkpoint 领先的消息 + 半截正文/思考
+    Content {
+        messages: Vec<Message>,
+        live_content: String,
+        live_thinking: String,
+    },
+    /// 无内容可补，但尾部悬尾，需补中断占位收口
+    NeedsClosure,
+}
+
+/// 崩溃恢复的"未产生回复"占位文案（**会发给 LLM**，也会渲染为气泡下方小字）。
+///
+/// 与 pipeline 的 INTERRUPT_MARKER 系同风格：`⚠️` 开头 + Markdown 引用，
+/// 前端 `splitInterruptMarker` 依此把整行剥离成 notice 小字。
+/// 语义区别于 INTERRUPT_MARKER_RESUMABLE（"请基于上下文继续完成"）——
+/// 这里没有任何半截内容可续，模型不该自动续写，等待用户下一条消息
+/// 表达新意图。只在恢复路径出现一次，之后固定为历史前缀的一部分，
+/// 不产生措辞变体（prompt cache 安全）。
+pub const INTERRUPT_PLACEHOLDER_NO_REPLY: &str =
+    "> ⚠️ **[回复被中断]** 本次执行因应用关闭而中断，未产生回复内容。";
+
 /// 从中断的 run 中恢复消息，补回 session_memory 缺失的部分
 ///
 /// 核心逻辑：
 /// 1. 从 checkpoint 加载中断时的完整消息列表
 /// 2. 与当前 session_memory 中的消息做对比，找出 checkpoint 中多出的部分
-/// 3. 返回需要追加的消息 + 半截助手回复（live_content/live_thinking）
-///
-/// 返回 (需要追加的消息, 半截助手文本, 半截思考文本)
+/// 3. 有内容 → 返回需要追加的消息 + 半截助手回复（live_content/live_thinking）
+/// 4. 无内容但尾部悬尾 → 返回 `NeedsClosure`（补中断占位，维持消息级交替）
 pub fn recover_interrupted_messages(
     session_id: &str,
     current_messages: &[Message],
-) -> Option<(Vec<Message>, String, String)> {
-    let run = find_interrupted_run(session_id)?;
+) -> RecoveryOutcome {
+    let Some(run) = find_interrupted_run(session_id) else {
+        return RecoveryOutcome::None;
+    };
 
     // 如果 run 状态是 Running，需要判断它是否真的已经中断
     // 条件：updated_at 超过 STALE 阈值（2分钟），才认为是崩溃导致的
@@ -532,28 +588,36 @@ pub fn recover_interrupted_messages(
         let now = now_millis();
         if now.saturating_sub(run.updated_at) <= RUN_STALE_MS {
             // 还在活跃期内，可能是正在执行的 run，不要恢复
-            return None;
+            return RecoveryOutcome::None;
         }
     }
 
-    // 加载检查点的消息
-    let checkpoint = agent_run_repository::load_checkpoint(&run.run_id)
+    // 加载检查点的消息；无 checkpoint 的死 run 也走收口判定（留痕优先）
+    let checkpoint = match agent_run_repository::load_checkpoint(&run.run_id)
         .ok()
-        .flatten()?;
+        .flatten()
+    {
+        Some(cp) => cp,
+        None => return closure_outcome(current_messages),
+    };
 
     // 如果 checkpoint 的消息数 <= 当前 session_memory 的消息数，
     // 说明 session_memory 已经是最新的，不需要恢复
     if checkpoint.messages.len() <= current_messages.len() {
         // 但可能仍有半截助手回复（live_content 比 checkpoint 更新）
         if run.live_content.trim().is_empty() && run.live_thinking.trim().is_empty() {
-            return None;
+            // 无任何内容可补：仍需收口判定 —— 崩溃点落在"检查点刚落库、
+            // 下一轮 LLM 输出前"的空隙时（典型：模式快照落库后被杀），
+            // 会话尾部悬尾（最后一条是 user 且无人回应），补一条 assistant
+            // 中断占位维持 user/assistant 严格交替
+            return closure_outcome(current_messages);
         }
         // checkpoint 和 session_memory 消息一致，但 live_content 有半截回复
-        return Some((
-            vec![], // 不需要追加消息
-            run.live_content.clone(),
-            run.live_thinking.clone(),
-        ));
+        return RecoveryOutcome::Content {
+            messages: vec![], // 不需要追加消息
+            live_content: run.live_content.clone(),
+            live_thinking: run.live_thinking.clone(),
+        };
     }
 
     // 取出 checkpoint 中多出的消息（从 current_messages.len() 开始）
@@ -564,14 +628,24 @@ pub fn recover_interrupted_messages(
         .collect();
 
     if extra_messages.is_empty() && run.live_content.is_empty() && run.live_thinking.is_empty() {
-        return None;
+        return RecoveryOutcome::None;
     }
 
-    Some((
-        extra_messages,
-        run.live_content.clone(),
-        run.live_thinking.clone(),
-    ))
+    RecoveryOutcome::Content {
+        messages: extra_messages,
+        live_content: run.live_content.clone(),
+        live_thinking: run.live_thinking.clone(),
+    }
+}
+
+/// 悬尾收口判定：会话尾部是 user（含 tool_result 信封形态）且无人回应 → 需补占位；
+/// 尾部已是 assistant / 会话为空 → 消息序列已对称，不动消息
+/// （run 状态由 mark_stale_runs_interrupted / 退出收尾兜底）。
+fn closure_outcome(current_messages: &[Message]) -> RecoveryOutcome {
+    match current_messages.last() {
+        Some(Message::User { .. }) => RecoveryOutcome::NeedsClosure,
+        _ => RecoveryOutcome::None,
+    }
 }
 
 /// 将中断 run 标记为已恢复，避免下次加载时重复恢复
@@ -715,5 +789,87 @@ fn preview(value: &str, max_chars: usize) -> String {
         format!("{}...", preview)
     } else {
         preview
+    }
+}
+
+#[cfg(test)]
+mod recovery_closure_tests {
+    //! 悬尾收口判定与占位文案的防回归。
+    //!
+    //! 背景：崩溃点落在"检查点刚落库、下一轮 LLM 输出前"的空隙时
+    //! （典型：模式快照落库后进程被杀），session_messages 尾部悬尾
+    //! （最后一条是 user 且无人回应），旧恢复逻辑三门槛不满足直接
+    //! 返回 None，既不补内容也不留痕 —— 连续 user 相邻由此产生。
+    use super::{closure_outcome, RecoveryOutcome, INTERRUPT_PLACEHOLDER_NO_REPLY};
+    use crate::infra::types::models::{Content, ContentBlock, Message};
+
+    /// 尾部悬尾（tool_result 信封形态也是 user）→ 需要补占位收口
+    #[test]
+    fn tail_user_tool_result_envelope_needs_closure() {
+        let messages = vec![
+            Message::Assistant {
+                content: Content::Single("计划如下".to_string()),
+            },
+            Message::User {
+                content: Content::Multiple(vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_00_x".to_string(),
+                    content: "ok".to_string(),
+                }]),
+            },
+        ];
+        assert!(matches!(
+            closure_outcome(&messages),
+            RecoveryOutcome::NeedsClosure
+        ));
+    }
+
+    /// 尾部是普通 user 文本（LLM 回复产生前被杀）→ 同样需要收口
+    #[test]
+    fn tail_plain_user_message_needs_closure() {
+        let messages = vec![Message::User {
+            content: Content::Single("开始吧".to_string()),
+        }];
+        assert!(matches!(
+            closure_outcome(&messages),
+            RecoveryOutcome::NeedsClosure
+        ));
+    }
+
+    /// 尾部已是 assistant → 消息序列已对称，不动消息
+    #[test]
+    fn tail_assistant_stays_untouched() {
+        let messages = vec![
+            Message::User {
+                content: Content::Single("开始吧".to_string()),
+            },
+            Message::Assistant {
+                content: Content::Single("已完成".to_string()),
+            },
+        ];
+        assert!(matches!(closure_outcome(&messages), RecoveryOutcome::None));
+    }
+
+    /// 空会话不动
+    #[test]
+    fn empty_messages_stay_untouched() {
+        assert!(matches!(closure_outcome(&[]), RecoveryOutcome::None));
+    }
+
+    /// 占位文案与前端 splitInterruptMarker 的剥离约定兼容：
+    /// ⚠ 符号开头（正则 `[⚠✕]` 识别整行剥成 notice 小字）+ Markdown 引用开头
+    #[test]
+    fn placeholder_matches_frontend_strip_convention() {
+        assert!(
+            INTERRUPT_PLACEHOLDER_NO_REPLY.trim_start().starts_with('>'),
+            "应以 Markdown 引用开头，便于统一剥离：{INTERRUPT_PLACEHOLDER_NO_REPLY}"
+        );
+        assert!(
+            INTERRUPT_PLACEHOLDER_NO_REPLY.contains('⚠'),
+            "前端 splitInterruptMarker 依赖 ⚠/✕ 符号识别：{INTERRUPT_PLACEHOLDER_NO_REPLY}"
+        );
+        assert!(
+            INTERRUPT_PLACEHOLDER_NO_REPLY.contains("[回复被中断]"),
+            "保持与 INTERRUPT_MARKER 系统一的可识别前缀：{INTERRUPT_PLACEHOLDER_NO_REPLY}"
+        );
     }
 }

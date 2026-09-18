@@ -509,6 +509,35 @@ mod tests {
         );
     }
 
+    /// 模式切换快照并入 tool_result 消息（对称性改造）后的出网兼容性：
+    /// materialize 必须把该消息里的 Context 块翻成 Text、ToolResult 原样保留、
+    /// 块顺序不变。这是"快照并入工具结果消息"方案与出网链路兼容的防回归点。
+    #[test]
+    fn materialize_handles_context_block_inside_tool_result_message() {
+        let mut messages = vec![Message::User {
+            content: Content::Multiple(vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "call_00_test".to_string(),
+                    content: "已从 plan 模式切换到 edit 模式。".to_string(),
+                },
+                ContentBlock::Context {
+                    text: "<context_snapshot seq=\"3\" mode=\"edit\" />".to_string(),
+                },
+            ]),
+        }];
+        materialize_context_blocks_for_wire(&mut messages);
+
+        let json = serde_json::to_value(&messages[0]).unwrap();
+        let blocks = json["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "tool_result");
+        assert_eq!(blocks[1]["type"], "text");
+        assert_eq!(
+            blocks[1]["text"],
+            "<context_snapshot seq=\"3\" mode=\"edit\" />"
+        );
+    }
+
     #[test]
     fn strip_context_blocks_keeps_only_real_conversation() {
         let messages = vec![

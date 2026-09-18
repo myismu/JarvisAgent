@@ -1696,25 +1696,36 @@ impl PipelineState {
                     &current_thinking_this_turn,
                 );
 
-                // 添加工具结果到 session
+                // —— 模式切换快照：本 loop 的 SwitchWorkMode 真实变更了 work_mode ——
+                // 不修改已发出的 <context_snapshot>，而是生成一条 seq 更大的完整新快照，
+                // 并入本条 tool_result 消息的块数组尾部（不独立成条）：
+                // - 历史前缀仍逐字节命中缓存（该消息本轮新产生、从未入缓存前缀）
+                // - system 的“最新快照优先”规则随即切到新模式现场
+                // - session_messages 保持消息级 user/assistant 严格交替（数据结构对称）
+                // 出网时 Context 块由 adapters 逐块 materialize 成 Text，与块位置无关；
+                // 前端 user_display_content 对 Context 块本就跳过，不影响界面渲染。
+                let mode_after_execution = { self.ctx.agent_work_mode.lock().await.clone() };
+                let mode_switched = mode_after_execution != work_mode;
+                if mode_switched {
+                    println!(
+                        "[JARVIS] 工作模式在本 loop 内切换：{} -> {}，新快照并入工具结果消息",
+                        work_mode, mode_after_execution
+                    );
+                    self.merge_mode_snapshot_into_blocks(&mut tool_results, &mode_after_execution)
+                        .await;
+                }
+
+                // 添加工具结果（模式切换时末块为新快照）到 session
                 {
                     let mut session = self.ctx.memory.lock().await;
                     append_message(&mut session, Message::User {
                         content: Content::Multiple(tool_results),
                     }, "chat");
+                    // 模式切换当轮立即落库：保证崩溃恢复时 snapshot_seq 与新快照同时存在，避免 seq 回退/重复
+                    if mode_switched {
+                        crate::core::session::save_session(&self.sid, &session, None);
+                    }
                 } // session 锁在这里释放
-
-                // —— 模式切换快照：本 loop 的 SwitchWorkMode 真实变更了 work_mode ——
-                // 不修改已发出的 <context_snapshot>，而是在消息尾部追加一条 seq 更大的完整新快照，
-                // 历史前缀仍逐字节命中缓存；system 的“最新快照优先”规则随即切到新模式现场。
-                let mode_after_execution = { self.ctx.agent_work_mode.lock().await.clone() };
-                if mode_after_execution != work_mode {
-                    println!(
-                        "[JARVIS] 工作模式在本 loop 内切换：{} -> {}，追加完整上下文快照",
-                        work_mode, mode_after_execution
-                    );
-                    self.append_mode_snapshot(&mode_after_execution).await;
-                }
 
                 // —— 反思审查：工具结果已写入 session，审查 Agent 携带完整上下文判断 ——
                 if should_reflect {
@@ -2090,26 +2101,37 @@ impl PipelineState {
         let notice_text = format!("⚠ 本轮执行中断：{}", error);
         println!("[JARVIS] 异常收尾（保留现场）: {}", error);
 
-        // 1. 把已流式输出但尚未入库的内容补进历史（live_content 全程累积，是中断时的快照）
+        // 1. 把已流式输出但尚未入库的内容补进历史（live_content / live_thinking 全程累积，是中断时的快照）。
+        //    思考装进 Thinking 块、正文装进 Text 块——对齐 command::session::recovered_assistant_message
+        //    的崩溃恢复先例：思考按折叠样式展示，不冒充正文。空签名 Thinking 块出网由
+        //    adapters 剥离（infra/llm/adapters.rs 对 Anthropic 空 signature 判 400 的防护）。
         let run = crate::core::orchestration::agent_run_repository::list_runs(Some(&self.sid))
             .ok()
             .and_then(|runs| runs.into_iter().find(|r| r.run_id == self.run_id));
         let live_content = run.as_ref().map(|r| r.live_content.clone()).unwrap_or_default();
         let live_thinking = run.as_ref().map(|r| r.live_thinking.clone()).unwrap_or_default();
-        let partial = if !live_content.trim().is_empty() {
-            live_content.trim().to_string()
-        } else if !live_thinking.trim().is_empty() {
-            live_thinking.trim().to_string()
-        } else {
-            String::new()
-        };
-        if !partial.is_empty() {
+        let thinking = live_thinking.trim().to_string();
+        let text = live_content.trim().to_string();
+        let mut blocks: Vec<ContentBlock> = Vec::new();
+        if !thinking.is_empty() {
+            blocks.push(ContentBlock::Thinking {
+                thinking: thinking.clone(),
+                signature: String::new(),
+            });
+        }
+        if !text.is_empty() {
+            blocks.push(ContentBlock::Text { text: text.clone() });
+        }
+        if !blocks.is_empty() {
+            // 去重口径：正文优先（正常路径 store_assistant_response 整条落库，命中正文即整条已在）；
+            // 纯思考无正文时退化为思考文本比较，与旧纯文本形态的行为等价。
+            let dedup_text = if !text.is_empty() { text.clone() } else { thinking.clone() };
             let mut session = self.ctx.memory.lock().await;
-            if !assistant_text_exists_at_tail(&session.messages, &partial) {
+            if !assistant_text_exists_at_tail(&session.messages, &dedup_text) {
                 append_message(
                     &mut session,
                     Message::Assistant {
-                        content: Content::Single(partial.clone()),
+                        content: Content::Multiple(blocks),
                     },
                     "chat",
                 );
@@ -2122,7 +2144,7 @@ impl PipelineState {
         //    历史标记只需让模型知道"该接着做"）。原因见常量注释。
         self.append_interrupted_marker(INTERRUPT_MARKER_RESUMABLE)
             .await;
-        self.final_answer = partial.clone();
+        self.final_answer = text;
         self.notice = Some(notice_text.clone());
         self.interrupted_reason = Some(error.to_string());
 
@@ -2276,17 +2298,15 @@ impl PipelineState {
             self.initial_msg_index
         );
 
-        // 取回已流式输出的部分结果（live_content / thinking 全程累积，是中断时的唯一快照）
+        // 取回已流式输出的部分结果（live_content 全程累积，是中断时的唯一快照）。
+        // 思考内容（live_thinking）不提升为正文：模型内心独白拼成消息只会给用户添噪。
         let run = crate::core::orchestration::agent_run_repository::list_runs(Some(&self.sid))
             .ok()
             .and_then(|runs| runs.into_iter().find(|r| r.run_id == self.run_id));
         let live_content = run.as_ref().map(|r| r.live_content.clone()).unwrap_or_default();
-        let live_thinking = run.as_ref().map(|r| r.live_thinking.clone()).unwrap_or_default();
 
         let partial = if !live_content.trim().is_empty() {
             live_content.trim().to_string()
-        } else if !live_thinking.trim().is_empty() {
-            live_thinking.trim().to_string()
         } else if !self.final_answer.is_empty() && self.final_answer != "用户已取消执行。" {
             std::mem::take(&mut self.final_answer)
         } else {
@@ -3526,8 +3546,16 @@ impl PipelineState {
         );
     }
 
-    /// 中途模式切换：在消息尾部追加一条 seq 更大的完整上下文快照（追加，不回改旧前缀）。
-    async fn append_mode_snapshot(&mut self, mode: &str) {
+    /// 中途模式切换：生成一条 seq 更大的完整上下文快照，并入本 loop 的
+    /// tool_result 块数组（尾部追加，不回改旧前缀、不独立成条）。
+    ///
+    /// 旧形态（独立 user/context 消息）会在 session_messages 里产生
+    /// user→user 相邻，破坏消息级 user/assistant 严格交替；并入后快照随
+    /// 工具结果消息落库，序列保持 assistant(tool_use) → user(tool_result+快照)
+    /// → assistant 的标准工具循环形态。缓存安全性不变：tool_result 消息
+    /// 是本轮新产生、从未入缓存前缀，加块不影响已缓存前缀。
+    /// 落库由调用侧在 append 后立即执行（防 seq 回退/重复的动机不变）。
+    async fn merge_mode_snapshot_into_blocks(&mut self, blocks: &mut Vec<ContentBlock>, mode: &str) {
         let seq = {
             let mut session = self.ctx.memory.lock().await;
             session.snapshot_seq = session.snapshot_seq.saturating_add(1);
@@ -3549,15 +3577,7 @@ impl PipelineState {
         }
 
         self.dynamic_context_str = snapshot.clone();
-        let snapshot_memory = {
-            let mut session = self.ctx.memory.lock().await;
-            append_message(&mut session, Message::User {
-                content: Content::Multiple(vec![ContentBlock::Context { text: snapshot }]),
-            }, "context");
-            session.clone()
-        };
-        // 立即落库，保证崩溃恢复时 snapshot_seq 与这条新快照同时存在，避免 seq 回退/重复
-        crate::core::session::save_session(&self.sid, &snapshot_memory, None);
+        blocks.push(ContentBlock::Context { text: snapshot });
     }
 }
 

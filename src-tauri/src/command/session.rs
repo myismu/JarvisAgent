@@ -947,44 +947,101 @@ pub async fn prepare_resume_agent_run(
     Ok(plan)
 }
 
+/// 应用退出（ExitRequested）收尾：把内存态会话整仓落库，并把所有仍为
+/// Running 的 run 标记为 Interrupted。
+///
+/// 此前"关闭窗口 = 进程死亡无痕"：事件驱动检查点的落库时机里没有
+/// "进程退出"这一项，活跃 run 永久停留 Running，检查点之后的内存进度
+/// 全部丢失且不留任何痕迹（崩溃恢复也因状态门槛不满足而无法收口）。
+/// 此处在退出路径做最后的同步落库 —— blocking 系列锁在 ExitRequested
+/// 已有先例（后台进程树清理），代价是关窗多一次整仓写（大会话数百毫秒量级）。
+pub fn finalize_active_runs_on_exit(handle: &tauri::AppHandle) {
+    use tauri::Manager;
+
+    if let Some(sm) = handle.try_state::<SessionManager>() {
+        // 先收集再落库：锁只覆盖 clone 的瞬间即释放，不与 pipeline 的短锁长持竞争
+        let snapshots: Vec<(String, SessionMemory)> = {
+            let map = sm.0.blocking_read();
+            map.iter()
+                .map(|(sid, ctx)| {
+                    let memory = ctx.memory.blocking_lock();
+                    (sid.clone(), memory.clone())
+                })
+                .collect()
+        };
+        for (sid, memory) in &snapshots {
+            let _ = session::save_session(sid, memory, None);
+        }
+    }
+    crate::core::orchestration::agent_runs::mark_running_interrupted_on_exit();
+}
+
 pub(crate) fn recover_interrupted_into_memory(
     session_id: &str,
     memory: &mut SessionMemory,
 ) -> bool {
     session::normalize_message_ids(memory);
     let current_messages = memory.messages.clone();
-    let Some((extra_messages, live_content, live_thinking)) =
-        crate::core::orchestration::agent_runs::recover_interrupted_messages(
-            session_id,
-            &current_messages,
-        )
-    else {
-        // 无可恢复的 run 属**正常路径**（绝大多数加载都会走到这里），
-        // 不打日志以免每次刷新都刷屏。
-        return false;
-    };
-    println!(
-        "[JARVIS] 中断恢复：发现可恢复 run（session {}，额外消息 {} 条，半截正文 {} 字）",
+    let outcome = crate::core::orchestration::agent_runs::recover_interrupted_messages(
         session_id,
-        extra_messages.len(),
-        live_content.trim().chars().count()
+        &current_messages,
     );
-    for message in extra_messages {
-        session::append_message(memory, message, "chat");
-    }
-    if let Some(message) = recovered_assistant_message(&live_content, &live_thinking) {
-        if !assistant_message_exists_at_tail(&memory.messages, &message) {
-            session::append_message(memory, message, "chat");
-        } else {
-            // 去重生效：不再重复写入合并副本。加日志便于日后排查
-            // "刷新后又多一条"的复现（此前这里的判定过窄，反复写入）。
+    match outcome {
+        crate::core::orchestration::agent_runs::RecoveryOutcome::None => {
+            // 无可恢复的 run 属**正常路径**（绝大多数加载都会走到这里），
+            // 不打日志以免每次刷新都刷屏。
+            false
+        }
+        crate::core::orchestration::agent_runs::RecoveryOutcome::Content {
+            messages,
+            live_content,
+            live_thinking,
+        } => {
             println!(
-                "[JARVIS] 中断恢复：半截内容已存在于历史，跳过重复写入（session {}）",
+                "[JARVIS] 中断恢复：发现可恢复 run（session {}，额外消息 {} 条，半截正文 {} 字）",
+                session_id,
+                messages.len(),
+                live_content.trim().chars().count()
+            );
+            for message in messages {
+                session::append_message(memory, message, "chat");
+            }
+            if let Some(message) = recovered_assistant_message(&live_content, &live_thinking) {
+                if !assistant_message_exists_at_tail(&memory.messages, &message) {
+                    session::append_message(memory, message, "chat");
+                } else {
+                    // 去重生效：不再重复写入合并副本。加日志便于日后排查
+                    // "刷新后又多一条"的复现（此前这里的判定过窄，反复写入）。
+                    println!(
+                        "[JARVIS] 中断恢复：半截内容已存在于历史，跳过重复写入（session {}）",
+                        session_id
+                    );
+                }
+            }
+            true
+        }
+        crate::core::orchestration::agent_runs::RecoveryOutcome::NeedsClosure => {
+            // 崩溃 run 无内容可补但会话尾部悬尾（最后一条是 user 且无人回应）：
+            // 补一条 assistant 中断占位，维持消息级 user/assistant 严格交替。
+            // source="interrupted" 会进界面渲染；措辞走 ⚠️ 前缀，前端
+            // splitInterruptMarker 把整行剥离成气泡下方小字。
+            println!(
+                "[JARVIS] 中断恢复：run 无内容可补，补中断占位收口（session {}）",
                 session_id
             );
+            session::append_message(
+                memory,
+                Message::Assistant {
+                    content: Content::Single(
+                        crate::core::orchestration::agent_runs::INTERRUPT_PLACEHOLDER_NO_REPLY
+                            .to_string(),
+                    ),
+                },
+                "interrupted",
+            );
+            true
         }
     }
-    true
 }
 
 fn recovered_assistant_message(live_content: &str, live_thinking: &str) -> Option<Message> {

@@ -205,6 +205,10 @@ pub fn run() {
                     guard.kill_all_process_tree();
                     println!("[System] 已清理所有后台任务进程");
                 }
+                // 退出收尾：内存态会话落库 + 活跃 run 标记 Interrupted。
+                // 事件驱动检查点没有"进程退出"这一落库时机，此前直接关窗
+                // 会导致进度无痕丢失、run 永久停留 Running（三连 user 悬尾的根源之一）。
+                crate::command::session::finalize_active_runs_on_exit(handle);
             }
         });
 }
