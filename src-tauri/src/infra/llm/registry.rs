@@ -78,10 +78,11 @@ pub struct ModelCapabilities {
     /// 原则：把检索失败当成事实结论，会把"我们没查到"变成"用户不能用"。
     #[serde(default = "default_model_status")]
     pub status: String,
-    /// 官方给出的迁移目标模型 id（仅 `retired` / `alias` 有意义；官方未指定则省略）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub replaced_by: Option<String>,
-    /// 状态补充说明（给界面展示的官方口径，如退役日期、下线公告来源）
+    /// 状态补充说明（**只放事实**：何时退役、依据哪份官方公告）。
+    ///
+    /// 刻意**不记录"建议换成哪个型号"**：建议会被时间淘汰——被建议的型号自己
+    /// 以后也可能退役，届时这条提示就从"有用"变成"误导"，还得持续维护。
+    /// 界面统一引导用户去厂商官方文档查最新型号。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_note: Option<String>,
 }
@@ -792,17 +793,12 @@ mod status_tests {
 
     #[test]
     fn alias_stays_usable() {
-        // 模型已退役、名字仍受理，请求由 V4.1-Flash 承接——旧会话引用了它也不该被拦。
+        // 模型已退役、名字仍受理，请求由官方指定的新模型承接——旧会话引用了它也不该被拦。
         assert_eq!(
             model_status("deepseek-v4-flash").as_deref(),
             Some("alias")
         );
         assert!(!is_retired("deepseek-v4-flash"));
-        assert_eq!(
-            query_capabilities("deepseek-v4-flash").and_then(|c| c.replaced_by),
-            Some("deepseek-flash".to_string()),
-            "alias 条目必须写清路由目标，否则用户不知道该换成什么"
-        );
     }
 
     #[test]
@@ -813,7 +809,7 @@ mod status_tests {
             caps.status, "active",
             "未写 status 的条目必须被解析为 active，而不是空串或报错"
         );
-        assert!(caps.replaced_by.is_none());
+        assert!(caps.status_note.is_none());
     }
 
     #[test]
@@ -826,26 +822,27 @@ mod status_tests {
     }
 
     #[test]
-    fn retired_entries_carry_a_migration_hint() {
-        // 界面要告诉用户"换成什么"，光说"不可用"等于把问题丢回给他。
-        for id in [
-            "o3",
-            "o4-mini",
-            "claude-3-5-sonnet-20241022",
-            "gemini-2.0-flash",
-            "deepseek-chat",
-            "mimo-v2-pro",
-        ] {
-            let caps = query_capabilities(id).expect("应在注册表中");
+    fn every_non_active_entry_explains_why() {
+        // 非在售条目必须带 statusNote（事实：日期 + 依据哪份官方公告），
+        // 否则界面只能说"不可用"，说不出"凭什么说它不可用"。
+        //
+        // 注意这里**不再**断言"迁移目标"：那个字段已被刻意删除——
+        // 建议换成的型号自己以后也会退役，写死就是持续维护负担，见 status_note 的文档。
+        for m in load_registry() {
+            let status = m.capabilities.status.as_str();
+            if status == "active" {
+                assert!(
+                    m.capabilities.status_note.is_none(),
+                    "在售条目不该带 statusNote（它是退役/降级说明）：「{}」",
+                    m.id
+                );
+                continue;
+            }
             assert!(
-                caps.replaced_by.is_some(),
-                "「{}」官方给了明确迁移目标，replacedBy 不能为空",
-                id
-            );
-            assert!(
-                caps.status_note.is_some(),
-                "「{}」应带 statusNote 说明官方口径（日期/公告），供界面展示",
-                id
+                m.capabilities.status_note.is_some(),
+                "「{}」标了 {} 却没写依据，界面无法向用户解释",
+                m.id,
+                status
             );
         }
     }

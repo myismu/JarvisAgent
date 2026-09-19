@@ -495,7 +495,7 @@
                     v-if="editingMainStatus"
                     class="setting-desc model-status-hint"
                     :class="'hint-' + editingMainStatus"
-                  >{{ statusHint(editingProfile?.config.mainModel?.trim() ?? '', editingMainStatus) }}</div>
+                  >{{ statusHint(editingMainStatus) }}</div>
                   <div class="setting-item" v-if="mainModelCaps !== null">
                     <label>输出上限 (max_tokens)</label>
                     <input
@@ -520,7 +520,7 @@
                     v-if="editingUtilityStatus"
                     class="setting-desc model-status-hint"
                     :class="'hint-' + editingUtilityStatus"
-                  >{{ statusHint(editingProfile?.config.utilityModel?.trim() ?? '', editingUtilityStatus) }}</div>
+                  >{{ statusHint(editingUtilityStatus) }}</div>
                   <div class="setting-desc">{{ t('settings.profileEditor.utilityModelDesc') }}</div>
                 </div>
 
@@ -561,10 +561,23 @@
         </div>
       </div>
 
+      <!--
+        退役阻断提示：必须常驻可见。
+        保存按钮被置灰时点不动，`save()` 里那句报错永远不会显示——
+        用户只会看到"保存是灰的"，却不知道为什么。
+      -->
+      <div
+        v-if="activeTab === 'presets' && retiredBlockLines.length > 0"
+        class="retired-block-notice"
+        role="alert"
+      >
+        <div v-for="(line, i) in retiredBlockLines" :key="i" class="retired-block-line">{{ line }}</div>
+      </div>
+
       <div class="settings-footer">
         <span class="status-msg" :class="{ 'error': isError, 'success': isSuccess }">{{ statusMsg }}</span>
         <div class="footer-actions">
-          <!-- 有退役模型时直接置灰：点得动再报错不如一开始就不让点 -->
+          <!-- 有**本次新引入的**退役模型时置灰：点得动再报错不如一开始就不让点 -->
           <button v-if="activeTab === 'presets'" class="save-btn" @click="save" :disabled="isSaving || actionLoading || retiredBlockers.length > 0">
             {{ isSaving ? t('settings.actions.saving') : t('settings.actions.save') }}
           </button>
@@ -730,9 +743,12 @@ interface ModelCapabilities {
    * - `alias`        旧名，请求被路由到新模型
    */
   status?: string
-  /** 官方给出的迁移目标模型 id（仅 retired / alias 有意义） */
-  replacedBy?: string
-  /** 状态补充说明（官方口径，如退役日期） */
+  /**
+   * 状态补充说明（**只放事实**：何时退役、依据哪份官方公告）。
+   *
+   * 刻意不含"建议换成哪个型号"——建议会被时间淘汰（被建议的型号自己也会退役），
+   * 界面统一引导用户去厂商官方文档查最新型号。
+   */
   statusNote?: string
 }
 
@@ -832,16 +848,16 @@ let capQueryTimer: ReturnType<typeof setTimeout> | null = null
 // ── 模型生命周期状态（退役 / 即将下线 / 未能验证 / 旧名路由）──
 //
 // 为什么需要一份"所有草稿模型"的状态缓存，而不是只看当前编辑预设的 mainModelCaps：
-// 保存时会遍历**全部**预设，任一预设引用了退役模型都必须拦下。只探测当前预设的话，
-// 切到另一个预设点保存就会漏放行。
+// 保存时会遍历**全部**预设，任一预设**本次新引入**了退役模型都要拦下
+// （判据见 retiredHitsIn：与已保存状态比对，既有状态不算）。只探测当前预设的话，
+// 切到另一个预设点保存就会漏判。
 //
-// 状态与 replacedBy 一起缓存：拦截提示要告诉用户"换成什么"，光说"不可用"等于
-// 把问题丢回给他。
+// 只缓存 `status`：注册表刻意不记录"建议换成哪个型号"（那会被时间淘汰，
+// 写死就是持续维护负担），所以这里没有可缓存的迁移目标。
 
 /** 单个模型的生命周期信息；`status === ''` 表示注册表未收录（我们不知道） */
 interface ModelLifecycle {
   status: string
-  replacedBy?: string
 }
 
 const modelLifecycleCache = ref<Record<string, ModelLifecycle>>({})
@@ -853,7 +869,7 @@ const lifecycleOf = (modelId: string): ModelLifecycle =>
 const cacheLifecycle = (modelId: string, caps: ModelCapabilities | null) => {
   modelLifecycleCache.value = {
     ...modelLifecycleCache.value,
-    [modelId]: { status: caps?.status ?? '', replacedBy: caps?.replacedBy },
+    [modelId]: { status: caps?.status ?? '' },
   }
 }
 
@@ -876,7 +892,7 @@ const probeModelLifecycles = async (ids: string[]) => {
 
   const next = { ...modelLifecycleCache.value }
   for (const [id, caps] of results) {
-    next[id] = { status: caps?.status ?? '', replacedBy: caps?.replacedBy }
+    next[id] = { status: caps?.status ?? '' }
   }
   modelLifecycleCache.value = next
 }
@@ -893,21 +909,50 @@ const draftModelIds = computed(() => {
   return ids
 })
 
-/** 草稿里被退役模型挡住的位置；非空即禁止保存 */
-const retiredHitsIn = (profiles: ModelProfile[]) => {
-  const hits: Array<{ profileName: string; field: 'mainModel' | 'utilityModel'; modelId: string; replacedBy?: string }> = []
+/**
+ * 本次草稿里**新引入**的退役模型；非空即禁止保存。
+ *
+ * 判据是"与**已保存状态**比对"，而不是"草稿里存在退役模型"：
+ *
+ * - 已保存状态里就是这个退役型号、草稿没动它 → **不算**（那是既有状态，不是用户刚配的）
+ * - 用户把模型改成了退役型号 → 算
+ * - 新建预设里写了退役型号 → 算（`saved` 找不到，`before` 为空串）
+ *
+ * 为什么必须这么判：默认预设用的就是 `mimo-v2-flash`（已退役）。若按"存在即拦"，
+ * 新装用户打开设置改任何字段都会发现保存按钮是灰的，而且**永远存不进去**。
+ * 另外，A、B 两个预设都含退役型号时，只修 A 也该能保存——B 不该拖住 A。
+ */
+/** 挡住保存的一处：哪个预设的哪个字段、写的哪个退役型号 */
+interface RetiredHit {
+  profileName: string
+  field: 'mainModel' | 'utilityModel'
+  modelId: string
+}
+
+const retiredHitsIn = (profiles: ModelProfile[]): RetiredHit[] => {
+  const hits: RetiredHit[] = []
   for (const p of profiles) {
+    const saved = savedConfig.value.profiles.find(s => s.id === p.id)
     for (const field of ['mainModel', 'utilityModel'] as const) {
       const id = p.config[field]?.trim()
-      if (id && lifecycleOf(id).status === 'retired') {
-        hits.push({ profileName: p.name, field, modelId: id, replacedBy: lifecycleOf(id).replacedBy })
-      }
+      if (!id || lifecycleOf(id).status !== 'retired') continue
+      // 与已保存值一致 → 既有状态，放行
+      if (saved?.config?.[field]?.trim() === id) continue
+      hits.push({ profileName: p.name, field, modelId: id })
     }
   }
   return hits
 }
 
 const retiredBlockers = computed(() => retiredHitsIn(draftConfig.value.profiles))
+
+/**
+ * 阻断原因摘要（逐条列出）。
+ *
+ * 保存按钮被置灰时，光靠"点击报错"是没用的——**按钮点不动，报错永远看不到**。
+ * 所以必须在界面上常驻一条可见提示，并且要列全，不能只说第一个。
+ */
+const retiredBlockLines = computed(() => retiredBlockers.value.map(hit => retiredBlockMessage(hit)))
 
 let lifecycleProbeTimer: ReturnType<typeof setTimeout> | null = null
 watch(draftModelIds, (ids) => {
@@ -945,32 +990,28 @@ const statusLabel = (status: string) => {
   }
 }
 
-/** 状态提示文案；`retired` / `alias` 带迁移目标 */
-const statusHint = (modelId: string, status: string) => {
-  const target = lifecycleOf(modelId).replacedBy
+/**
+ * 状态提示文案。
+ *
+ * **刻意不写"建议换成 X"**：那个 X 会被时间淘汰（它自己以后也可能退役），
+ * 写死就得一直维护，且过期后从"有用"变成"误导"。统一引导去厂商官方文档。
+ */
+const statusHint = (status: string) => {
   switch (status) {
-    case 'retired':
-      return target
-        ? t('settings.profileEditor.retiredHint', { target })
-        : t('settings.profileEditor.retiredHintNoTarget')
-    case 'deprecated':
-      return t('settings.profileEditor.deprecatedHint')
-    case 'unverifiable':
-      return t('settings.profileEditor.unverifiableHint')
-    case 'alias':
-      return target ? t('settings.profileEditor.aliasHint', { target }) : ''
-    default:
-      return ''
+    case 'retired': return t('settings.profileEditor.retiredHint')
+    case 'deprecated': return t('settings.profileEditor.deprecatedHint')
+    case 'unverifiable': return t('settings.profileEditor.unverifiableHint')
+    case 'alias': return t('settings.profileEditor.aliasHint')
+    default: return ''
   }
 }
 
 /** 退役拦截的提示文案（保存时用） */
-const retiredBlockMessage = (hit: { profileName: string; field: 'mainModel' | 'utilityModel'; modelId: string; replacedBy?: string }) => {
-  const isMain = hit.field === 'mainModel'
-  const key = isMain
-    ? (hit.replacedBy ? 'settings.validation.mainModelRetired' : 'settings.validation.mainModelRetiredNoTarget')
-    : (hit.replacedBy ? 'settings.validation.utilityModelRetired' : 'settings.validation.utilityModelRetiredNoTarget')
-  return t(key, { name: hit.profileName, model: hit.modelId, target: hit.replacedBy ?? '' })
+const retiredBlockMessage = (hit: RetiredHit) => {
+  const key = hit.field === 'mainModel'
+    ? 'settings.validation.mainModelRetired'
+    : 'settings.validation.utilityModelRetired'
+  return t(key, { name: hit.profileName, model: hit.modelId })
 }
 
 /** API Key 明文开关：常驻可切，切换 profile 时自动回到隐藏 */
@@ -2159,6 +2200,17 @@ body.dark-mode .badge-deprecated { color: #fbbf24; }
 body.dark-mode .model-status-hint.hint-deprecated { color: #fbbf24; }
 .model-status-hint.hint-unverifiable,
 .model-status-hint.hint-alias { color: var(--text-muted); }
+
+/* 退役阻断提示条：贴在 footer 上方，按钮置灰时唯一能解释原因的地方 */
+.retired-block-notice {
+  padding: 8px 14px;
+  background: color-mix(in srgb, var(--accent-red) 8%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--accent-red) 25%, transparent);
+  color: var(--accent-red);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.retired-block-line + .retired-block-line { margin-top: 4px; }
 
 .empty-state {
   height: 100%;

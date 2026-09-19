@@ -45,8 +45,7 @@
         "vision": true,
         "maxContextTokens": 1000000,
         "status": "alias",
-        "replacedBy": "deepseek-flash",
-        "statusNote": "官方口径：模型已退役、名字仍受理，请求由 V4.1-Flash 承接并按 Flash 价格计费"
+        "statusNote": "官方口径：模型已退役、名字仍受理，请求会被路由到官方指定的新模型并按 Flash 价格计费"
       }
     },
     {
@@ -85,8 +84,7 @@
         "vision": false,
         "maxContextTokens": 128000,
         "status": "retired",
-        "replacedBy": "deepseek-flash",
-        "statusNote": "官方 updates：2026-04-24 公告、2026-07-24 停用；过渡期映射 V4-Flash 非思考模式"
+        "statusNote": "官方 updates：2026-04-24 公告、2026-07-24 停用"
       }
     },
     {
@@ -104,8 +102,7 @@
         "vision": false,
         "maxContextTokens": 128000,
         "status": "retired",
-        "replacedBy": "deepseek-flash",
-        "statusNote": "官方 updates：2026-04-24 公告、2026-07-24 停用；过渡期映射 V4-Flash 思考模式"
+        "statusNote": "官方 updates：2026-04-24 公告、2026-07-24 停用"
       }
     },
     {
@@ -319,7 +316,6 @@
         "vision": true,
         "maxContextTokens": 200000,
         "status": "retired",
-        "replacedBy": "claude-sonnet-4-6",
         "statusNote": "Anthropic model-deprecations 页：2026-02-19 退役，请求会失败"
       }
     },
@@ -337,7 +333,6 @@
         "vision": true,
         "maxContextTokens": 200000,
         "status": "retired",
-        "replacedBy": "claude-sonnet-4-6",
         "statusNote": "Anthropic model-deprecations 页：2025-10-28 退役，请求会失败"
       }
     },
@@ -355,7 +350,6 @@
         "vision": false,
         "maxContextTokens": 200000,
         "status": "retired",
-        "replacedBy": "claude-haiku-4-5",
         "statusNote": "Anthropic model-deprecations 页：2026-02-19 退役，请求会失败"
       }
     },
@@ -587,8 +581,7 @@
         "vision": true,
         "maxContextTokens": 200000,
         "status": "retired",
-        "replacedBy": "gpt-5.6-sol",
-        "statusNote": "官方 deprecations 页：2026-12-11 关停，官方迁移 gpt-5.6-sol"
+        "statusNote": "官方 deprecations 页：2026-12-11 关停"
       }
     },
     {
@@ -611,8 +604,7 @@
         "vision": true,
         "maxContextTokens": 200000,
         "status": "retired",
-        "replacedBy": "gpt-5.6-terra",
-        "statusNote": "官方 deprecations 页：2026-10-23 关停，官方迁移 gpt-5.6-terra"
+        "statusNote": "官方 deprecations 页：2026-10-23 关停"
       }
     },
     {
@@ -652,8 +644,7 @@
         "vision": true,
         "maxContextTokens": 200000,
         "status": "retired",
-        "replacedBy": "gpt-5.6-sol",
-        "statusNote": "官方 deprecations 页：2026-10-23 关停，官方迁移 gpt-5.6-sol"
+        "statusNote": "官方 deprecations 页：2026-10-23 关停"
       }
     },
     {
@@ -671,8 +662,7 @@
         "vision": true,
         "maxContextTokens": 200000,
         "status": "retired",
-        "replacedBy": "gpt-5.6-sol",
-        "statusNote": "官方 deprecations 页：2026-10-23 关停，官方迁移 gpt-5.6-sol（reasoning.mode: pro）"
+        "statusNote": "官方 deprecations 页：2026-10-23 关停"
       }
     },
     {
@@ -719,8 +709,7 @@
         "vision": true,
         "maxContextTokens": 128000,
         "status": "retired",
-        "replacedBy": "gpt-4.1",
-        "statusNote": "官方 deprecations 页：gpt-4.5-preview 已于 2025-07-14 关停，迁移 gpt-4.1；gpt-4.5 裸名无独立模型页"
+        "statusNote": "官方 deprecations 页：gpt-4.5-preview 已于 2025-07-14 关停；gpt-4.5 裸名无独立模型页"
       }
     },
     {
@@ -839,8 +828,7 @@
         "vision": true,
         "maxContextTokens": 1000000,
         "status": "retired",
-        "replacedBy": "gemini-3.6-flash",
-        "statusNote": "Gemini API changelog：2026-06-01 关停，官方建议 gemini-3.6-flash"
+        "statusNote": "Gemini API changelog：2026-06-01 关停"
       }
     },
     {
@@ -857,7 +845,7 @@
         "vision": true,
         "maxContextTokens": 2000000,
         "status": "retired",
-        "statusNote": "Gemini API changelog：2025-09-29 关停；官方未指定具体替代型号"
+        "statusNote": "Gemini API changelog：2025-09-29 关停"
       }
     },
     {
@@ -874,7 +862,7 @@
         "vision": true,
         "maxContextTokens": 1000000,
         "status": "retired",
-        "statusNote": "Gemini API changelog：2025-09-29 关停；官方未指定具体替代型号"
+        "statusNote": "Gemini API changelog：2025-09-29 关停"
       }
     },
     {
@@ -936,7 +924,7 @@
         "vision": true,
         "maxContextTokens": 128000,
         "status": "deprecated",
-        "statusNote": "阿里云下线公告（2026-07-06）：2026-10-10 下线；官方推荐迁移 Qwen3.6/Qwen3.7 系列"
+        "statusNote": "阿里云下线公告（2026-07-06）：2026-10-10 下线"
       }
     },
     {
@@ -972,7 +960,7 @@
         "vision": false,
         "maxContextTokens": 128000,
         "status": "deprecated",
-        "statusNote": "阿里云下线公告（2026-07-06）：2026-10-10 下线；官方推荐迁移 Qwen3.6/Qwen3.7 系列"
+        "statusNote": "阿里云下线公告（2026-07-06）：2026-10-10 下线"
       }
     },
     {
@@ -990,7 +978,7 @@
         "vision": false,
         "maxContextTokens": 128000,
         "status": "deprecated",
-        "statusNote": "阿里云下线公告（2026-07-06）：2026-10-10 下线；官方推荐迁移 Qwen3.6/Qwen3.7 系列"
+        "statusNote": "阿里云下线公告（2026-07-06）：2026-10-10 下线"
       }
     },
     {
@@ -1008,7 +996,7 @@
         "vision": false,
         "maxContextTokens": 128000,
         "status": "deprecated",
-        "statusNote": "阿里云下线公告（2026-07-06）：2026-10-10 下线；官方推荐迁移 Qwen3.6/Qwen3.7 系列"
+        "statusNote": "阿里云下线公告（2026-07-06）：2026-10-10 下线"
       }
     },
     {
@@ -1041,7 +1029,7 @@
         "vision": false,
         "maxContextTokens": 128000,
         "status": "deprecated",
-        "statusNote": "阿里云下线公告（2026-07-06）：2026-10-10 下线；官方推荐迁移 Qwen3.6/Qwen3.7 系列",
+        "statusNote": "阿里云下线公告（2026-07-06）：2026-10-10 下线",
         "thinkingParam": "extra_enable_thinking"
       }
     },
@@ -1219,8 +1207,7 @@
         "vision": false,
         "maxContextTokens": 256000,
         "status": "retired",
-        "replacedBy": "mimo-v2.5",
-        "statusNote": "小米官方 deprecate 页：2026-06-30 下线，官方迁移 mimo-v2.5"
+        "statusNote": "小米官方 deprecate 页：2026-06-30 下线"
       }
     },
     {
@@ -1238,8 +1225,7 @@
         "vision": true,
         "maxContextTokens": 1000000,
         "status": "retired",
-        "replacedBy": "mimo-v2.5-pro",
-        "statusNote": "小米官方 deprecate 页：2026-06-30 下线，官方迁移 mimo-v2.5-pro"
+        "statusNote": "小米官方 deprecate 页：2026-06-30 下线"
       }
     },
     {
@@ -1273,8 +1259,7 @@
         "vision": true,
         "maxContextTokens": 256000,
         "status": "retired",
-        "replacedBy": "mimo-v2.5",
-        "statusNote": "小米官方 deprecate 页：2026-06-30 下线，官方迁移 mimo-v2.5"
+        "statusNote": "小米官方 deprecate 页：2026-06-30 下线"
       }
     },
     {

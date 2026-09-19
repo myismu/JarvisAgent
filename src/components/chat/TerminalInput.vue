@@ -70,18 +70,21 @@ const retiredSwitchNotice = ref<{
   profileName: string
   field: 'mainModel' | 'utilityModel'
   modelId: string
-  replacedBy?: string
 } | null>(null)
 
-/** 退役阻断提示的文案：按「主模型/工具代理模型」与「官方是否给了迁移目标」分支 */
+/**
+ * 退役阻断提示的文案：按「主模型 / 工具代理模型」分支。
+ *
+ * **刻意不写"建议换成 X"**——建议会被时间淘汰，且过期后从"有用"变成"误导"。
+ * 统一引导去厂商官方文档查最新型号。
+ */
 const retiredSwitchMessage = computed(() => {
   const n = retiredSwitchNotice.value
   if (!n) return ''
-  const isMain = n.field === 'mainModel'
-  const key = isMain
-    ? (n.replacedBy ? 'settings.profiles.switchBlockedRetired' : 'settings.profiles.switchBlockedRetiredNoTarget')
-    : (n.replacedBy ? 'settings.profiles.switchBlockedRetiredUtility' : 'settings.profiles.switchBlockedRetiredUtilityNoTarget')
-  return t(key, { name: n.profileName, model: n.modelId, target: n.replacedBy ?? '' })
+  const key = n.field === 'mainModel'
+    ? 'settings.profiles.switchBlockedRetired'
+    : 'settings.profiles.switchBlockedRetiredUtility'
+  return t(key, { name: n.profileName, model: n.modelId })
 })
 
 const session = useSessionStore();
@@ -523,7 +526,7 @@ const findRetiredModel = async (profile: any) => {
     try {
       const caps = await invoke<any>('get_model_capabilities', { modelId })
       if (caps?.status === 'retired') {
-        return { field, modelId, replacedBy: caps.replacedBy as string | undefined }
+        return { field, modelId }
       }
     } catch { /* 探测失败 → 视为未知，不阻断 */ }
   }

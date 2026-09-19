@@ -179,6 +179,10 @@
     "copied": "已复制",
     "close": "关闭"
   },
+  "chat": {
+    "loadingOlderMessages": "正在加载更早的消息…",
+    "scrollForOlderMessages": "上滑加载更早的消息"
+  },
   "rollback": {
     "trigger": "撤回此消息",
     "sandbox": "沙盒",
@@ -472,10 +476,8 @@
       "deleteSuccess": "配置预设已删除并保存",
       "globalUpdated": "全局默认预设已更新",
       "cacheWarning": "⚠ 切换模型预设后，当前会话的 prompt cache 将失效，下一次请求的 token 消耗和响应延迟可能显著增加。\n\n确定切换到「{name}」？",
-      "switchBlockedRetired": "预设「{name}」的主模型「{model}」官方已宣布退役，调用必然失败，无法切换。\n\n请先在设置里改用 {target}。",
-      "switchBlockedRetiredNoTarget": "预设「{name}」的主模型「{model}」官方已宣布退役，调用必然失败，无法切换。\n\n请先在设置里更换模型。",
-      "switchBlockedRetiredUtility": "预设「{name}」的工具代理模型「{model}」官方已宣布退役，调用必然失败，无法切换。\n\n请先在设置里改用 {target}。",
-      "switchBlockedRetiredUtilityNoTarget": "预设「{name}」的工具代理模型「{model}」官方已宣布退役，调用必然失败，无法切换。\n\n请先在设置里更换模型。"
+      "switchBlockedRetired": "预设「{name}」的主模型「{model}」官方已宣布退役，调用必然失败，无法切换。\n\n请先在设置里更换为最新可用型号。",
+      "switchBlockedRetiredUtility": "预设「{name}」的工具代理模型「{model}」官方已宣布退役，调用必然失败，无法切换。\n\n请先在设置里更换为最新可用型号。"
     },
     "general": {
       "appearance": "界面与外观",
@@ -582,11 +584,10 @@
       "statusDeprecated": "即将下线",
       "statusUnverifiable": "未能验证",
       "statusAlias": "旧名路由",
-      "retiredHint": "该型号官方已宣布退役，调用必然失败，无法保存。建议改用 {target}",
-      "retiredHintNoTarget": "该型号官方已宣布退役，调用必然失败，无法保存",
+      "retiredHint": "该型号官方已宣布退役，调用必然失败，无法保存。建议前往厂商官方文档获取最新可用型号",
       "deprecatedHint": "该型号官方已公告即将下线，当前仍可正常调用，建议尽早迁移",
       "unverifiableHint": "未能从官方文档验证该型号，仍可正常使用",
-      "aliasHint": "旧型号名，请求会被路由到 {target}"
+      "aliasHint": "旧型号名，请求会被路由到官方指定的新模型"
     },
     "actions": {
       "save": "保存所有更改",
@@ -605,10 +606,8 @@
       "baseUrlRequired": "预设 [{name}] 的 API Base URL 不能为空",
       "mainModelRequired": "预设 [{name}] 的主代理模型不能为空",
       "utilityModelRequired": "预设 [{name}] 的工具代理模型不能为空",
-      "mainModelRetired": "预设 [{name}] 的主代理模型「{model}」官方已宣布退役，无法保存。请改用 {target}",
-      "mainModelRetiredNoTarget": "预设 [{name}] 的主代理模型「{model}」官方已宣布退役，无法保存",
-      "utilityModelRetired": "预设 [{name}] 的工具代理模型「{model}」官方已宣布退役，无法保存。请改用 {target}",
-      "utilityModelRetiredNoTarget": "预设 [{name}] 的工具代理模型「{model}」官方已宣布退役，无法保存",
+      "mainModelRetired": "预设 [{name}] 的主代理模型「{model}」官方已宣布退役，无法保存。请前往厂商官方文档更换为最新可用型号",
+      "utilityModelRetired": "预设 [{name}] 的工具代理模型「{model}」官方已宣布退役，无法保存。请前往厂商官方文档更换为最新可用型号",
       "keepOneProfile": "至少需要保留一个配置预设"
     }
   }

@@ -178,6 +178,10 @@
     "copied": "Copied",
     "close": "Close"
   },
+  "chat": {
+    "loadingOlderMessages": "Loading earlier messages…",
+    "scrollForOlderMessages": "Scroll up to load earlier messages"
+  },
   "rollback": {
     "trigger": "Recall this message",
     "sandbox": "Sandbox",
@@ -471,10 +475,8 @@
       "deleteSuccess": "Configuration preset deleted and saved",
       "globalUpdated": "Global default preset updated",
       "cacheWarning": "⚠ Switching model presets will invalidate the prompt cache for this session. The next request may consume significantly more tokens and take longer.\n\nSwitch to \"{name}\"?",
-      "switchBlockedRetired": "The main model \"{model}\" in preset \"{name}\" has been officially retired and requests will fail, so it cannot be selected.\n\nPlease switch to {target} in Settings first.",
-      "switchBlockedRetiredNoTarget": "The main model \"{model}\" in preset \"{name}\" has been officially retired and requests will fail, so it cannot be selected.\n\nPlease change the model in Settings first.",
-      "switchBlockedRetiredUtility": "The utility agent model \"{model}\" in preset \"{name}\" has been officially retired and requests will fail, so it cannot be selected.\n\nPlease switch to {target} in Settings first.",
-      "switchBlockedRetiredUtilityNoTarget": "The utility agent model \"{model}\" in preset \"{name}\" has been officially retired and requests will fail, so it cannot be selected.\n\nPlease change the model in Settings first."
+      "switchBlockedRetired": "The main model \"{model}\" in preset \"{name}\" has been officially retired and requests will fail, so it cannot be selected.\n\nPlease switch to the latest available model in Settings first.",
+      "switchBlockedRetiredUtility": "The utility agent model \"{model}\" in preset \"{name}\" has been officially retired and requests will fail, so it cannot be selected.\n\nPlease switch to the latest available model in Settings first."
     },
     "general": {
       "appearance": "Interface & Appearance",
@@ -581,11 +583,10 @@
       "statusDeprecated": "Deprecating",
       "statusUnverifiable": "Unverified",
       "statusAlias": "Alias",
-      "retiredHint": "This model has been officially retired; requests will fail, so it cannot be saved. Use {target} instead",
-      "retiredHintNoTarget": "This model has been officially retired; requests will fail, so it cannot be saved",
+      "retiredHint": "This model has been officially retired; requests will fail, so it cannot be saved. Check the vendor's official docs for the latest available model",
       "deprecatedHint": "Officially announced for shutdown but still callable; migrate as soon as possible",
       "unverifiableHint": "Could not be verified against official docs; still usable",
-      "aliasHint": "Legacy name; requests are routed to {target}"
+      "aliasHint": "Legacy name; requests are routed to the model the vendor designates"
     },
     "actions": {
       "save": "Save all changes",
@@ -604,10 +605,8 @@
       "baseUrlRequired": "API Base URL is required for preset [{name}]",
       "mainModelRequired": "Main agent model is required for preset [{name}]",
       "utilityModelRequired": "Utility agent model is required for preset [{name}]",
-      "mainModelRetired": "The main chat model \"{model}\" in preset [{name}] has been officially retired and cannot be saved. Use {target} instead",
-      "mainModelRetiredNoTarget": "The main chat model \"{model}\" in preset [{name}] has been officially retired and cannot be saved",
-      "utilityModelRetired": "The utility agent model \"{model}\" in preset [{name}] has been officially retired and cannot be saved. Use {target} instead",
-      "utilityModelRetiredNoTarget": "The utility agent model \"{model}\" in preset [{name}] has been officially retired and cannot be saved",
+      "mainModelRetired": "The main chat model \"{model}\" in preset [{name}] has been officially retired and cannot be saved. Check the vendor's official docs and switch to the latest available model",
+      "utilityModelRetired": "The utility agent model \"{model}\" in preset [{name}] has been officially retired and cannot be saved. Check the vendor's official docs and switch to the latest available model",
       "keepOneProfile": "At least one configuration preset is required"
     }
   }
