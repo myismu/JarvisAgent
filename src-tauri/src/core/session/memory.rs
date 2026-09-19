@@ -60,10 +60,11 @@ pub fn estimate_tokens(messages: &[Message]) -> usize {
 
 /// 将对话记录保存为 JSONL 转录文件（用于压缩前的备份）
 pub fn append_transcript(session_id: &str, text: &str) -> Result<String, MemoryError> {
+    // 毫秒时间戳（v16 起全项目统一毫秒口径）；同时用于文件名与 session_transcripts.created_at
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_secs();
+        .as_millis() as u64;
     let filename = format!("transcript_{}.jsonl", timestamp);
     crate::core::session::resource_repository::save_transcript(
         session_id, &filename, text, timestamp,
@@ -321,10 +322,11 @@ pub async fn auto_compact(
     }
 
     // 持久化压缩消息到 session_messages 表
+    // 毫秒口径（v16 起全项目统一）——这里绕过 save_session 直接落表，时间戳不能写成秒
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs();
+        .as_millis() as u64;
     if let Err(e) = crate::core::session::repository::append_or_upsert_session_messages(
         session_id,
         &memory.messages,

@@ -10,7 +10,7 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 16;
 
 /// 删除废弃的旧 checkpoint 表（v3 迁移）
 fn migrate_v3_drop_deprecated_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -374,6 +374,360 @@ fn migrate_v14_thinking_mode_to_bool(conn: &Connection) -> Result<(), rusqlite::
     Ok(())
 }
 
+/// `agent_run_events` 改为「每轮一行的消息表」+ 删除三个 live 列与 checkpoints 表（v15 迁移）
+///
+/// ## 为什么要重构
+///
+/// 旧设计里"一个 run 发生了什么"散在四张载体上，**没有一条承担"每轮记录"的职责**：
+/// - `agent_runs.live_content` / `live_thinking` / `live_tool_buffer`：每 SSE event
+///   一次 `push_str` + 整行 UPDATE（无分隔符），把整个 run 的所有 loop 糊成一根字符串，
+///   写放大 30-60x，且跨轮无边界、异常时无法判断哪段属于第几轮；
+/// - `agent_run_events`：只装 `start`/`checkpoint`/`complete` 的**固定文案** + 最终正文副本，
+///   是日志转储而非消息表，装不下请求/响应，无法重建；
+/// - `agent_run_checkpoints`：每 loop 一次**全量 messages 快照**，O(n²) 膨胀。
+///
+/// 新设计：`agent_run_events` 一行 = 一个 loop，装下"这一轮发生了什么"（响应 + 工具结果），
+/// 成为崩溃重建的**唯一**数据源（详见 `doc/agent_run_events-重构方案*.md`）。
+///
+/// ## 迁移动作
+///
+/// 1. 删除旧 `agent_run_events`（内容全是文案转储，**无保留价值，直接丢弃**）；
+/// 2. 重建 `agent_run_events` 为目标结构（`loop_index` / `resp_blocks` / `tool_results` …）；
+/// 3. 重建 `agent_runs` 去掉三个 live 列（其余列**完整搬移**）；
+/// 4. `DROP TABLE agent_run_checkpoints`。
+///
+/// SQLite 不支持 `DROP COLUMN`（3.35+ 才有，且本项目不依赖该版本），
+/// 也不支持改列约束，因此一律走"建新表 → 搬数据 → 删旧表 → 改名"。
+fn migrate_v15_agent_run_events_per_loop(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let table_exists = |name: &str| -> Result<bool, rusqlite::Error> {
+        conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+            [name],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+    };
+
+    // ── 1. 旧 events 表直接丢弃（文案转储，无重建价值）──
+    if table_exists("agent_run_events")? {
+        conn.execute("DROP TABLE agent_run_events", [])?;
+    }
+
+    // ── 2. 重建 agent_runs：去掉 live_thinking / live_tool_buffer / live_content ──
+    if table_exists("agent_runs")? {
+        conn.execute_batch(
+            "CREATE TABLE agent_runs_new (
+                run_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                user_message_preview TEXT NOT NULL,
+                message_id TEXT,
+                loop_count INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                started_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                finished_at INTEGER,
+                last_safe_point TEXT,
+                error TEXT,
+                summary TEXT,
+                resumable INTEGER NOT NULL DEFAULT 0,
+                resumed_from_run_id TEXT,
+                FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            INSERT INTO agent_runs_new(
+                run_id, session_id, status, user_message_preview, message_id, loop_count,
+                input_tokens, output_tokens, started_at, updated_at, finished_at,
+                last_safe_point, error, summary, resumable, resumed_from_run_id
+            )
+            SELECT
+                run_id, session_id, status, user_message_preview, message_id, loop_count,
+                input_tokens, output_tokens, started_at, updated_at, finished_at,
+                last_safe_point, error, summary, resumable, resumed_from_run_id
+            FROM agent_runs;
+            DROP TABLE agent_runs;
+            ALTER TABLE agent_runs_new RENAME TO agent_runs;",
+        )?;
+    }
+
+    // ── 3. checkpoints 全量快照不再需要 ──
+    conn.execute("DROP TABLE IF EXISTS agent_run_checkpoints", [])?;
+
+    Ok(())
+}
+
+/// 秒级时间戳的判定上限：小于该值视为**秒**（需 ×1000），否则视为已是毫秒。
+///
+/// 两个量级天然不重叠：秒级最大值 1e11（公元 5138 年），毫秒级最小值 1e12（2001-09-09）。
+const TIMESTAMP_SEC_LIMIT: i64 = 100_000_000_000;
+
+/// 把全库时间戳从**秒**统一为**毫秒**（v16 迁移）
+///
+/// ## 为什么改
+/// 此前两套口径并存：运行时表（agent_runs / agent_run_events / subagent_events）写毫秒，
+/// 而会话与回滚体系（sessions / session_messages / projects / snapshot_* ...）写秒。后果：
+/// - 侧边栏 `new Date(session.updatedAt)` 按毫秒解析秒值 → 会话时间显示成 1970 年；
+/// - 排查落库时序（"停止那一刻写了几条"）时秒级精度把多条挤进同一秒，无法区分先后。
+///
+/// ## 为什么必须迁移存量而不是只改写入
+/// 新旧值混存会让**比较逻辑**失真：回滚 GC 按 `now - snapshot.created_at` 算天数，
+/// 旧值仍是秒而 `now` 变毫秒 → 差值放大约 1000 倍 → 存量快照被判成"几万年前"而遭误删。
+/// 会话列表按 `updated_at` 排序同理（旧会话永久沉底）。故一次性把旧秒值 ×1000。
+///
+/// ## 不迁移的表
+/// agent_runs / agent_run_events / subagent_events / session_context_snapshots
+/// 本来就是毫秒，且其秒级判定阈值会跳过它们（毫秒值 ≥ 1e12 > 上限）。
+fn migrate_v16_timestamps_to_millis(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // ── 1. 纯整数列：直接 UPDATE ×1000（SQLite 无多列批量语法，逐列执行）──
+    let columns: [(&str, &str); 18] = [
+        ("sessions", "created_at"),
+        ("sessions", "updated_at"),
+        ("sessions", "deleted_at"),
+        ("session_messages", "created_at"),
+        ("session_messages", "updated_at"),
+        ("session_messages", "hidden_at"),
+        ("session_messages", "recalled_at"),
+        ("projects", "created_at"),
+        ("projects", "updated_at"),
+        ("agent_run_patches", "created_at"),
+        ("checkpoint_user_message_links", "created_at"),
+        ("checkpoint_user_message_links", "updated_at"),
+        ("session_attachments", "created_at"),
+        ("session_tasks", "updated_at"),
+        ("session_transcripts", "created_at"),
+        ("snapshot_trees", "updated_at"),
+        ("snapshot_journal", "created_at"),
+        ("snapshot_sandboxes", "updated_at"),
+    ];
+    for (table, column) in columns {
+        if !db_table_exists(conn, table)? {
+            continue;
+        }
+        conn.execute(
+            &format!(
+                "UPDATE {table} SET {column} = {column} * 1000
+                 WHERE {column} IS NOT NULL AND {column} < {limit}",
+                table = table,
+                column = column,
+                limit = TIMESTAMP_SEC_LIMIT,
+            ),
+            [],
+        )?;
+    }
+
+    // ── 2. JSON 内嵌时间戳：SQL 表达式放大不了，读 → 改 → 写回 ──
+    // 2.1 快照树：nodes / branches 两个对象映射里每个成员的 createdAt
+    scale_json_map_timestamps(
+        conn,
+        "snapshot_trees",
+        "tree_json",
+        "session_id",
+        &[("nodes", "createdAt"), ("branches", "createdAt")],
+    )?;
+    // 2.2 快照日志：create_snapshot 事件对象里的 timestamp（其余变体无时间字段）
+    scale_json_root_timestamp(conn, "snapshot_journal", "event_json", "id", "timestamp")?;
+    // 2.3 会话内存：plan_documents 数组里每条的 createdAt / updatedAt / decidedAt
+    scale_json_array_timestamps(
+        conn,
+        "session_memory",
+        "memory_json",
+        "session_id",
+        "plan_documents",
+        &["createdAt", "updatedAt", "decidedAt"],
+    )?;
+
+    Ok(())
+}
+
+/// 判断表是否存在（旧库可能缺表，迁移需跳过而不是报错）
+fn db_table_exists(conn: &Connection, name: &str) -> Result<bool, rusqlite::Error> {
+    conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        [name],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|c| c > 0)
+}
+
+/// 把数字型的秒级时间戳放大为毫秒；已是毫秒或不是数字时返回 `None`。
+fn scale_to_millis(value: &serde_json::Value) -> Option<serde_json::Value> {
+    let seconds = value.as_i64()?;
+    if seconds < TIMESTAMP_SEC_LIMIT {
+        Some(serde_json::Value::from(seconds * 1000))
+    } else {
+        None
+    }
+}
+
+/// 把 JSON 里若干**对象映射**（`{键: {…, 时间字段}}`）中的秒级时间字段放大为毫秒。
+///
+/// 用于 `snapshot_trees.tree_json` 的 `nodes` / `branches`——两者都是 id → 对象的映射。
+fn scale_json_map_timestamps(
+    conn: &Connection,
+    table: &str,
+    json_column: &str,
+    key_column: &str,
+    map_fields: &[(&str, &str)],
+) -> Result<(), rusqlite::Error> {
+    if !db_table_exists(conn, table)? {
+        return Ok(());
+    }
+    let rows: Vec<(String, String)> = {
+        let mut stmt =
+            conn.prepare(&format!("SELECT {key_column}, {json_column} FROM {table}"))?;
+        let collected = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        collected
+    };
+
+    for (key, json) in rows {
+        // 历史脏数据（非法 JSON）直接跳过：迁移不因个别行失败而中断
+        let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&json) else {
+            continue;
+        };
+        let mut changed = false;
+        for (map_name, time_field) in map_fields {
+            let Some(map) = root.get_mut(*map_name).and_then(|m| m.as_object_mut()) else {
+                continue;
+            };
+            for entry in map.values_mut() {
+                let Some(current) = entry.get(*time_field) else {
+                    continue;
+                };
+                if let Some(scaled) = scale_to_millis(current) {
+                    entry[*time_field] = scaled;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            if let Ok(new_json) = serde_json::to_string(&root) {
+                conn.execute(
+                    &format!(
+                        "UPDATE {table} SET {json_column} = ?1 WHERE {key_column} = ?2",
+                        table = table,
+                        json_column = json_column,
+                        key_column = key_column,
+                    ),
+                    rusqlite::params![new_json, key],
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 把 JSON **根对象**上的单个时间字段放大为毫秒。
+///
+/// 用于 `snapshot_journal.event_json`：`create_snapshot` 变体携带 `timestamp`
+/// （其余变体无该字段，天然跳过）。
+fn scale_json_root_timestamp(
+    conn: &Connection,
+    table: &str,
+    json_column: &str,
+    key_column: &str,
+    time_field: &str,
+) -> Result<(), rusqlite::Error> {
+    if !db_table_exists(conn, table)? {
+        return Ok(());
+    }
+    // 主键是 INTEGER，按 i64 读出
+    let rows: Vec<(i64, String)> = {
+        let mut stmt =
+            conn.prepare(&format!("SELECT {key_column}, {json_column} FROM {table}"))?;
+        let collected = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        collected
+    };
+
+    for (key, json) in rows {
+        let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&json) else {
+            continue;
+        };
+        let Some(current) = root.get(time_field) else {
+            continue;
+        };
+        let Some(scaled) = scale_to_millis(current) else {
+            continue;
+        };
+        root[time_field] = scaled;
+        if let Ok(new_json) = serde_json::to_string(&root) {
+            conn.execute(
+                &format!(
+                    "UPDATE {table} SET {json_column} = ?1 WHERE {key_column} = ?2",
+                    table = table,
+                    json_column = json_column,
+                    key_column = key_column,
+                ),
+                rusqlite::params![new_json, key],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// 把 JSON 里某个**数组**中每条对象的时间字段放大为毫秒。
+///
+/// 用于 `session_memory.memory_json` 的 `plan_documents`
+/// （SessionMemory 字段是 snake_case，PlanDocument 自身字段是 camelCase）。
+fn scale_json_array_timestamps(
+    conn: &Connection,
+    table: &str,
+    json_column: &str,
+    key_column: &str,
+    array_field: &str,
+    time_fields: &[&str],
+) -> Result<(), rusqlite::Error> {
+    if !db_table_exists(conn, table)? {
+        return Ok(());
+    }
+    let rows: Vec<(String, String)> = {
+        let mut stmt =
+            conn.prepare(&format!("SELECT {key_column}, {json_column} FROM {table}"))?;
+        let collected = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        collected
+    };
+
+    for (key, json) in rows {
+        let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&json) else {
+            continue;
+        };
+        let Some(items) = root.get_mut(array_field).and_then(|v| v.as_array_mut()) else {
+            continue;
+        };
+        let mut changed = false;
+        for item in items.iter_mut() {
+            for field in time_fields {
+                let Some(current) = item.get(*field) else {
+                    continue;
+                };
+                if let Some(scaled) = scale_to_millis(current) {
+                    item[*field] = scaled;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            if let Ok(new_json) = serde_json::to_string(&root) {
+                conn.execute(
+                    &format!(
+                        "UPDATE {table} SET {json_column} = ?1 WHERE {key_column} = ?2",
+                        table = table,
+                        json_column = json_column,
+                        key_column = key_column,
+                    ),
+                    rusqlite::params![new_json, key],
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 引入 `sessions.total_cache_hit_tokens` / `total_cache_miss_tokens`（v12 迁移）
 ///
 /// 为什么需要这两列：缓存命中数此前只存在于**当前快照**（每 loop 覆盖）与
@@ -527,6 +881,14 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             migrate_v14_thinking_mode_to_bool(conn)
                 .map_err(|e| format!("v14 迁移失败: {}", e))?;
         }
+        if current_version < 15 {
+            migrate_v15_agent_run_events_per_loop(conn)
+                .map_err(|e| format!("v15 迁移失败: {}", e))?;
+        }
+        if current_version < 16 {
+            migrate_v16_timestamps_to_millis(conn)
+                .map_err(|e| format!("v16 迁移失败: {}", e))?;
+        }
     }
 
     conn.execute_batch(
@@ -602,9 +964,6 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             updated_at INTEGER NOT NULL,
             finished_at INTEGER,
             last_safe_point TEXT,
-            live_thinking TEXT NOT NULL DEFAULT '',
-            live_tool_buffer TEXT NOT NULL DEFAULT '',
-            live_content TEXT NOT NULL DEFAULT '',
             error TEXT,
             summary TEXT,
             resumable INTEGER NOT NULL DEFAULT 0,
@@ -612,21 +971,23 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
 
+        -- 每个 loop 一行：本轮响应（结构化 ContentBlock JSON）+ 本轮工具执行结果。
+        -- 崩溃重建的唯一数据源（起点锚 agent_runs.message_id，顺序由 loop_index 决定）。
         CREATE TABLE IF NOT EXISTS agent_run_events (
             event_id TEXT PRIMARY KEY,
             run_id TEXT NOT NULL,
             session_id TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            message TEXT NOT NULL,
-            tool TEXT,
-            input_summary TEXT,
-            output_summary TEXT,
+            loop_index INTEGER NOT NULL,
+            resp_blocks TEXT NOT NULL DEFAULT '',
+            tool_results TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL,
             error TEXT,
-            loop_count INTEGER NOT NULL,
-            input_tokens INTEGER NOT NULL,
-            output_tokens INTEGER NOT NULL,
-            timestamp INTEGER NOT NULL,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
             model TEXT,
+            started_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(run_id, loop_index),
             FOREIGN KEY(run_id) REFERENCES agent_runs(run_id) ON DELETE CASCADE,
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
@@ -645,19 +1006,6 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             input_tokens INTEGER NOT NULL,
             output_tokens INTEGER NOT NULL,
             timestamp INTEGER NOT NULL,
-            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS agent_run_checkpoints (
-            run_id TEXT PRIMARY KEY,
-            session_id TEXT NOT NULL,
-            loop_count INTEGER NOT NULL,
-            messages_json TEXT NOT NULL,
-            input_tokens INTEGER NOT NULL,
-            output_tokens INTEGER NOT NULL,
-            last_safe_point TEXT NOT NULL,
-            updated_at INTEGER NOT NULL,
-            FOREIGN KEY(run_id) REFERENCES agent_runs(run_id) ON DELETE CASCADE,
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
 
@@ -766,8 +1114,8 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_session_messages_visible_seq ON session_messages(session_id, hidden_at, recalled_at, source, seq);
         CREATE INDEX IF NOT EXISTS idx_session_messages_turn ON session_messages(session_id, turn_id, seq);
         CREATE INDEX IF NOT EXISTS idx_agent_runs_session_started ON agent_runs(session_id, started_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_agent_run_events_session_time ON agent_run_events(session_id, timestamp DESC);
-        CREATE INDEX IF NOT EXISTS idx_agent_run_events_tool_time ON agent_run_events(tool, timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_agent_run_events_run_loop ON agent_run_events(run_id, loop_index);
+        CREATE INDEX IF NOT EXISTS idx_agent_run_events_session_time ON agent_run_events(session_id, started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_session_context_snapshots_updated ON session_context_snapshots(updated_at DESC);
 
         CREATE INDEX IF NOT EXISTS idx_session_attachments_session ON session_attachments(session_id);
@@ -1147,6 +1495,348 @@ mod tests {
             (after.0.as_deref(), after.1.as_deref(), after.2.as_deref()),
             (Some("plan"), Some("auto"), Some("normal")),
             "重复初始化不得清掉用户表态"
+        );
+    }
+
+    fn table_exists(conn: &Connection, table: &str) -> bool {
+        conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+            [table],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+        .unwrap_or(false)
+    }
+
+    /// v14 老库升级到 v15：`agent_run_events` 改为每轮一行、`agent_runs` 去掉三个 live 列、
+    /// `agent_run_checkpoints` 被删除，且 `agent_runs` 的其余列**完整保留**（不得丢数据）。
+    #[test]
+    fn v15_migration_rebuilds_events_and_drops_live_columns() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        // v14 形态的库：agent_runs 带三个 live 列 + 旧结构 events + checkpoints
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                message_count INTEGER NOT NULL,
+                profile_id TEXT,
+                deleted_at INTEGER,
+                thinking_mode INTEGER NOT NULL DEFAULT 0,
+                work_mode TEXT,
+                approval_mode TEXT,
+                agent_audience TEXT,
+                project_id TEXT
+            );
+            CREATE TABLE agent_runs (
+                run_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                user_message_preview TEXT NOT NULL,
+                message_id TEXT,
+                loop_count INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                started_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                finished_at INTEGER,
+                last_safe_point TEXT,
+                live_thinking TEXT NOT NULL DEFAULT '',
+                live_tool_buffer TEXT NOT NULL DEFAULT '',
+                live_content TEXT NOT NULL DEFAULT '',
+                error TEXT,
+                summary TEXT,
+                resumable INTEGER NOT NULL DEFAULT 0,
+                resumed_from_run_id TEXT
+            );
+            CREATE TABLE agent_run_events (
+                event_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                message TEXT NOT NULL,
+                tool TEXT,
+                input_summary TEXT,
+                output_summary TEXT,
+                error TEXT,
+                loop_count INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL,
+                model TEXT
+            );
+            CREATE TABLE agent_run_checkpoints (
+                run_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                loop_count INTEGER NOT NULL,
+                messages_json TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                last_safe_point TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO app_state(key, value) VALUES('schema_version', '14');
+            INSERT INTO sessions(id, title, created_at, updated_at, message_count)
+                VALUES('s1', '老会话', 1, 1, 0);
+            INSERT INTO agent_runs(run_id, session_id, status, user_message_preview, message_id,
+                loop_count, input_tokens, output_tokens, started_at, updated_at, finished_at,
+                last_safe_point, live_thinking, live_tool_buffer, live_content, error, summary,
+                resumable, resumed_from_run_id)
+                VALUES('ar_1', 's1', 'completed', '预览', 'msg_1',
+                3, 1200, 340, 100, 200, 300,
+                '模型已给出最终回复', '思考', '工具日志', '正文', NULL, '完成',
+                0, NULL);
+            INSERT INTO agent_run_events(event_id, run_id, session_id, event_type, message,
+                tool, input_summary, output_summary, error, loop_count, input_tokens,
+                output_tokens, timestamp, model)
+                VALUES('are_1', 'ar_1', 's1', 'start', '主 Agent 开始执行', NULL, NULL, NULL,
+                NULL, 0, 0, 0, 100, NULL);
+            INSERT INTO agent_run_checkpoints(run_id, session_id, loop_count, messages_json,
+                input_tokens, output_tokens, last_safe_point, updated_at)
+                VALUES('ar_1', 's1', 3, '[]', 1200, 340, '模型已给出最终回复', 200);",
+        )
+        .expect("create legacy v14 schema");
+
+        assert!(column_exists(&conn, "agent_runs", "live_content"));
+
+        init_schema(&conn).expect("upgrade v14 -> v15");
+
+        // 1. 三个 live 列消失
+        for col in ["live_content", "live_thinking", "live_tool_buffer"] {
+            assert!(
+                !column_exists(&conn, "agent_runs", col),
+                "v15 迁移必须删除 agent_runs.{}",
+                col
+            );
+        }
+        // 2. 其余列完整保留（不得丢数据）
+        let (status, preview, msg_id, loops, in_tok, out_tok, resumable): (
+            String,
+            String,
+            Option<String>,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = conn
+            .query_row(
+                "SELECT status, user_message_preview, message_id, loop_count, input_tokens, output_tokens, resumable
+                 FROM agent_runs WHERE run_id = 'ar_1'",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
+            )
+            .expect("legacy run row must survive");
+        assert_eq!(status, "completed");
+        assert_eq!(preview, "预览");
+        assert_eq!(msg_id.as_deref(), Some("msg_1"));
+        assert_eq!((loops, in_tok, out_tok, resumable), (3, 1200, 340, 0));
+
+        // 3. events 表重建为目标结构
+        assert!(
+            column_exists(&conn, "agent_run_events", "loop_index")
+                && column_exists(&conn, "agent_run_events", "resp_blocks")
+                && column_exists(&conn, "agent_run_events", "tool_results"),
+            "v15 迁移后 events 表必须具备新结构列"
+        );
+        assert!(
+            !column_exists(&conn, "agent_run_events", "event_type"),
+            "旧 events 列应随重建表消失"
+        );
+        let old_rows: i64 = conn
+            .query_row("SELECT count(*) FROM agent_run_events", [], |r| r.get(0))
+            .expect("count events");
+        assert_eq!(old_rows, 0, "旧 events 是文案转储，无保留价值，应直接丢弃");
+
+        // 4. checkpoints 表被删除
+        assert!(
+            !table_exists(&conn, "agent_run_checkpoints"),
+            "v15 迁移必须删除 agent_run_checkpoints"
+        );
+
+        // 5. 版本号推进
+        let version: i64 = conn
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM app_state WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read version");
+        assert!(version >= 15, "v15 升级后版本号至少到 15（实际 {}）", version);
+
+        // 6. 幂等：重复初始化不报错、不破坏数据
+        init_schema(&conn).expect("re-init idempotent");
+        let after: String = conn
+            .query_row(
+                "SELECT user_message_preview FROM agent_runs WHERE run_id = 'ar_1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("re-read run");
+        assert_eq!(after, "预览", "重复初始化不得丢 run 数据");
+    }
+
+    /// v16：把存量秒级时间戳统一放大为毫秒（含 JSON 内嵌字段），且重复初始化不二次放大。
+    #[test]
+    fn v16_migration_scales_timestamps_to_millis() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+
+        // 先用**当前 DDL** 建出完整表结构（避免手写桩漏列——v10+ 的索引会引用
+        // sessions.profile_id / session_messages.turn_id 等列，桩缺列会导致建索引失败），
+        // 再把版本号改回 15、塞入秒级数据，模拟"真实的 v15 库"。
+        init_schema(&conn).expect("create fresh schema");
+        conn.execute("UPDATE app_state SET value = '15' WHERE key = 'schema_version'", [])
+            .expect("fake v15");
+
+        conn.execute_batch(
+            "INSERT INTO sessions(id, title, created_at, updated_at, message_count)
+                VALUES('s1', '旧会话', 1700000000, 1700000100, 2);
+
+             INSERT INTO session_messages(session_id, message_id, seq, role, content_json,
+                created_at, updated_at, hidden_at)
+                VALUES('s1', 'm1', 0, 'user', '{}', 1700000000, 1700000050, 1700000090);
+
+             INSERT INTO snapshot_trees(session_id, tree_json, updated_at) VALUES(
+                's1',
+                '{\"nodes\":{\"snap_1\":{\"createdAt\":1700000000}},\
+                  \"branches\":{\"main\":{\"createdAt\":1699000000}}}',
+                1700000000);
+
+             INSERT INTO snapshot_journal(session_id, event_json, created_at)
+                VALUES('s1', '{\"type\":\"create_snapshot\",\"id\":\"snap_1\",\
+                              \"timestamp\":1700000000}', 1700000000);
+
+             INSERT INTO session_memory(session_id, memory_json) VALUES(
+                's1',
+                '{\"plan_documents\":[{\"createdAt\":1700000000,\"updatedAt\":1700000050,\
+                                       \"decidedAt\":null}]}');",
+        )
+        .expect("insert legacy seconds data");
+
+        init_schema(&conn).expect("upgrade v15 -> v16");
+
+        // 1. 纯整数列 ×1000
+        let (created, updated): (i64, i64) = conn
+            .query_row(
+                "SELECT created_at, updated_at FROM sessions WHERE id = 's1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("read sessions");
+        assert_eq!(created, 1_700_000_000_000, "sessions.created_at 应为毫秒");
+        assert_eq!(updated, 1_700_000_100_000, "sessions.updated_at 应为毫秒");
+
+        let (msg_created, hidden): (i64, i64) = conn
+            .query_row(
+                "SELECT created_at, hidden_at FROM session_messages WHERE message_id = 'm1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("read session_messages");
+        assert_eq!(msg_created, 1_700_000_000_000, "消息 created_at 应为毫秒");
+        assert_eq!(hidden, 1_700_000_090_000, "hidden_at 应为毫秒");
+
+        // 2. JSON 内嵌字段 ×1000
+        let tree_json: String = conn
+            .query_row(
+                "SELECT tree_json FROM snapshot_trees WHERE session_id = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read tree");
+        let tree: serde_json::Value = serde_json::from_str(&tree_json).expect("parse tree");
+        assert_eq!(
+            tree["nodes"]["snap_1"]["createdAt"],
+            serde_json::json!(1_700_000_000_000i64),
+            "快照节点 createdAt 应为毫秒"
+        );
+        assert_eq!(
+            tree["branches"]["main"]["createdAt"],
+            serde_json::json!(1_699_000_000_000i64),
+            "分支 createdAt 应为毫秒"
+        );
+
+        let event_json: String = conn
+            .query_row("SELECT event_json FROM snapshot_journal", [], |r| r.get(0))
+            .expect("read journal");
+        let event: serde_json::Value = serde_json::from_str(&event_json).expect("parse journal");
+        assert_eq!(
+            event["timestamp"],
+            serde_json::json!(1_700_000_000_000i64),
+            "日志事件 timestamp 应为毫秒"
+        );
+
+        let memory_json: String = conn
+            .query_row(
+                "SELECT memory_json FROM session_memory WHERE session_id = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read memory");
+        let memory: serde_json::Value = serde_json::from_str(&memory_json).expect("parse memory");
+        assert_eq!(
+            memory["plan_documents"][0]["createdAt"],
+            serde_json::json!(1_700_000_000_000i64),
+            "方案文档 createdAt 应为毫秒"
+        );
+        assert_eq!(
+            memory["plan_documents"][0]["updatedAt"],
+            serde_json::json!(1_700_000_050_000i64),
+            "方案文档 updatedAt 应为毫秒"
+        );
+        // null 的时间字段保持 null，不得被写成 0
+        assert!(
+            memory["plan_documents"][0]["decidedAt"].is_null(),
+            "decidedAt 为 null 时不得被改写"
+        );
+
+        // 3. 版本号推进
+        let version: i64 = conn
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM app_state WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read version");
+        assert!(version >= 16, "v16 升级后版本号至少到 16（实际 {}）", version);
+
+        // 4. 幂等：重复初始化不得把毫秒再放大一次（秒级阈值守卫）
+        init_schema(&conn).expect("re-init idempotent");
+        let created_again: i64 = conn
+            .query_row(
+                "SELECT created_at FROM sessions WHERE id = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("re-read sessions");
+        assert_eq!(
+            created_again, 1_700_000_000_000,
+            "重复初始化不得二次放大时间戳"
+        );
+        let tree_again: String = conn
+            .query_row(
+                "SELECT tree_json FROM snapshot_trees WHERE session_id = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("re-read tree");
+        let tree_again_value: serde_json::Value =
+            serde_json::from_str(&tree_again).expect("parse tree again");
+        assert_eq!(
+            tree_again_value["nodes"]["snap_1"]["createdAt"],
+            serde_json::json!(1_700_000_000_000i64),
+            "重复初始化不得二次放大 JSON 内时间字段"
         );
     }
 }

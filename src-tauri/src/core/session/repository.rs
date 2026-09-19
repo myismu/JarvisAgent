@@ -337,7 +337,7 @@ pub fn hide_session_messages_from_seq(
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs();
+            .as_millis() as u64;
         if recalled {
             conn.execute(
                 "UPDATE session_messages
@@ -393,7 +393,7 @@ pub fn hide_orphan_session_messages(session_id: &str, alive_message_ids: &[Strin
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs() as i64;
+            .as_millis() as i64;
         // 将不在 alive_message_ids 中且未被隐藏的行标记 hidden_at
         let placeholders: Vec<String> = alive_message_ids.iter().enumerate()
             .map(|(i, _)| format!("?{}", i + 3))
@@ -947,7 +947,7 @@ pub fn create_project(name: &str, path: &str) -> Result<crate::core::session::Pr
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs() as i64;
+        .as_millis() as i64;
     crate::infra::db::with_connection(|conn| {
         conn.execute(
             "INSERT INTO projects (id, name, path, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",

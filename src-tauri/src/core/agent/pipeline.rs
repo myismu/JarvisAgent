@@ -148,6 +148,24 @@ struct PipelineState {
     interrupted_reason: Option<String>,
     /// 面向用户的状态标注（气泡下方小字），由中断收尾路径填充。
     notice: Option<String>,
+    /// 本 loop 的**结构化**响应块（Text / Thinking / ToolUse，顺序即产生顺序）。
+    ///
+    /// 中断收尾（取消 / 上游失联 / 执行报错）改读这里，不再读 `agent_runs.live_*`
+    /// 那对字符串：结构化块天然带顺序与类型，不会把思考与正文糅成一段。
+    ///
+    /// 生命周期：每个 loop 在流层返回后**整体覆盖**，中断收尾时读当前值。
+    current_blocks: Vec<ContentBlock>,
+    /// 本 loop 的正文 / 思考纯文本（`current_blocks` 为空时的兜底来源）。
+    turn_text_this_turn: String,
+    turn_thinking_this_turn: String,
+    /// 「崩溃保护（实时保存）」——**纯全局**设置（`UiPreferences.crash_protection`）。
+    ///
+    /// 关（默认）：只在 loop 收尾写一次 `agent_run_events`；
+    /// 开：额外开一条帧级通道，进程崩溃时最多丢一个攒批窗口（200ms / 1KB）。
+    ///
+    /// 这是**全局**开关而非会话级：它保护的是"进程突然没了"这种与应用状态无关的
+    /// 故障，与会话内容无关，做成会话级只会让用户在多会话间反复拨动却毫无收益。
+    crash_protection: bool,
 }
 
 /// 判断空闲超时后是否必须结束本轮并按中断收尾。
@@ -293,9 +311,8 @@ fn loop_submitted_plan(tool_calls: &[(String, String)]) -> bool {
 
 /// 判断给定的助手文本是否已存在于消息列表尾部。
 ///
-/// 中断收尾时用于去重：流式内容可能已由 `store_assistant_response()` 或
-/// `agent_runs.live_content` 落库，避免把同一段半截话写两遍。
-/// 只检查尾部若干条，因为中断内容只可能出现在最近的位置。
+/// 中断收尾时用于去重：流式内容可能已由 `store_assistant_response()` 落库，
+/// 避免把同一段半截话写两遍。只检查尾部若干条，因为中断内容只可能出现在最近的位置。
 fn assistant_text_exists_at_tail(messages: &[Message], target: &str) -> bool {
     let target = target.trim();
     if target.is_empty() {
@@ -727,11 +744,21 @@ impl PipelineState {
         // 设置里的默认现在只决定"新会话的初始值"这一个用途）。
         let current_work_mode = ctx.agent_work_mode.lock().await.clone();
         let current_audience = ctx.agent_audience.lock().await.clone();
-        let system_prompt = crate::core::agent::prompts::get_system_prompt(
-            &current_audience,
-            &current_work_mode,
-            request_workspace.as_deref(),
-        );
+        // system 提示词：**会话级缓存，get_or_assemble**。
+        // 提示词磁盘化后（data/prompts/ 用户可覆盖），如果不缓存，用户改了 md 文件
+        // 后同一会话的下一个 turn 会重组 system → 缓存前缀整体失效。
+        // 缓存住 = 会话内字节恒定从"约定"升级为"代码保证"，改动只对新会话生效。
+        let system_prompt = {
+            let mut cache = ctx.system_prompt_cache.lock().await;
+            if cache.is_none() {
+                *cache = Some(crate::core::agent::prompts::get_system_prompt(
+                    &current_audience,
+                    &current_work_mode,
+                    request_workspace.as_deref(),
+                ));
+            }
+            cache.clone().expect("just populated")
+        };
 
         // 步骤 6.5：能力清单
         //
@@ -923,6 +950,13 @@ impl PipelineState {
             plan_total_loops_without_plan: 0,
             interrupted_reason: None,
             notice: None,
+            current_blocks: Vec::new(),
+            turn_text_this_turn: String::new(),
+            turn_thinking_this_turn: String::new(),
+            // 崩溃保护是纯全局设置：读一次当轮快照，中途改设置不影响进行中的轮次
+            crash_protection: crate::command::app_config::read_file()
+                .ui_preferences
+                .crash_protection,
             display_msg,
             tool_execution_summary: None,
         };
@@ -1086,21 +1120,12 @@ impl PipelineState {
         println!("[JARVIS] start_run: message_id={:?} initial_msg_index={}", user_message_id, self.initial_msg_index);
         // 步骤 6：在 agent_runs 表登记本次 run（实时进度 + 崩溃恢复用）
         self.run_id = agent_runs::start_run(&self.app, &self.sid, &self.msg, None, user_message_id);
-        // 步骤 7：标记当前 run 为活跃，并保存第一个检查点
+        // 步骤 7：标记当前 run 为活跃。
+        //
+        // v15 起这里**不再**落 checkpoint：崩溃重建的唯一数据源是「每轮一行」的
+        // `agent_run_events`，而本轮还没有任何 loop 走完，落一条空 checkpoint
+        // 只会在恢复时重建出空内容（→ NeedsClosure 收口），没有信息增量。
         *self.ctx.active_run_id.lock().await = Some(self.run_id.clone());
-        {
-            let session = self.ctx.memory.lock().await;
-            agent_runs::save_checkpoint(
-                &self.app,
-                &self.run_id,
-                &self.sid,
-                self.total_loop_count,
-                session.messages.clone(),
-                self.req_input_tokens,
-                self.req_output_tokens,
-                "用户消息已写入",
-            );
-        }
     }
 
     /// 处理调度器事件（异步调度模式下，主循环与 LLM 请求做 select 时消费）。
@@ -1416,6 +1441,8 @@ impl PipelineState {
                         is_subagent: false,
                         cache_usage_style: cache_usage_style.clone(),
                         on_frame: frame_tick.clone(),
+                        model_id: Some(self.model_id.clone()),
+                        crash_protection: self.crash_protection,
                     },
                 )
                 .await;
@@ -1452,6 +1479,8 @@ impl PipelineState {
                                         is_subagent: false,
                                         cache_usage_style,
                                         on_frame: frame_tick.clone(),
+                                        model_id: Some(self.model_id.clone()),
+                                        crash_protection: self.crash_protection,
                                     },
                                 )
                                 .await,
@@ -1519,6 +1548,11 @@ impl PipelineState {
                 stream_result.input_tokens,
                 stream_result.output_tokens,
             );
+
+            // 中断收尾要读的结构化现场（取消 / 报错可能发生在本 loop 的任意后续位置）
+            self.current_blocks = current_blocks.clone();
+            self.turn_text_this_turn = current_text_this_turn.clone();
+            self.turn_thinking_this_turn = current_thinking_this_turn.clone();
 
             // ── 缓存命中：用"端点能力记忆"解释本次观测 ──
             // 有的厂商（实测 Kimi、小米 anthropic）在 0 命中时【不返回缓存字段】，
@@ -1707,7 +1741,17 @@ impl PipelineState {
             // 步骤 9：把本轮助手响应（文本/思考/工具调用）写入会话历史。
             // 必须在取消判定之后仍执行——工具已在步骤 8 实际运行（可能已改文件），
             // 其结果必须留档；否则历史会出现 Assistant(ToolUse) 缺失 ToolResult 的残缺配对。
-            self.store_assistant_response(&current_blocks).await;
+            //
+            // 取消且无工具结果时跳过（2026-09-19 双写修复）：此时本轮半截内容
+            // （可能只有 thinking，正文还没开始）由 handle_cancellation 的
+            // store_interrupted_turn 统一收口成一条合并消息。若这里照常写入，
+            // 半截内容会先落一条 src=chat 的消息；随后 store_interrupted_turn 的
+            // 分支一去重只匹配 Text 块、匹配不到 thinking-only 消息，会再建一条
+            // src=interrupted —— 同一段内容落库两遍（实测 seq 23/24 重复）。
+            // 工具轮不受影响：tool_results 非空时仍照常写入保持配对完整。
+            if !(was_cancelled_this_loop && tool_results.is_empty()) {
+                self.store_assistant_response(&current_blocks).await;
+            }
 
             // 工具结果为 User 消息，取消时同样必须落库以保持配对完整
             if was_cancelled_this_loop {
@@ -1852,19 +1896,22 @@ impl PipelineState {
                     continue;
                 }
 
-                {
-                    let session = self.ctx.memory.lock().await;
-                    agent_runs::save_checkpoint(
-                        &self.app,
-                        &self.run_id,
-                        &self.sid,
-                        self.total_loop_count + 1,
-                        session.messages.clone(),
-                        self.req_input_tokens,
-                        self.req_output_tokens,
-                        "模型已给出最终回复",
-                    );
-                }
+                // 本轮（无工具 = 最终回复）整轮 fallback 落库。
+                //
+                // ⚠️ 正常路径不靠这里：步骤 9 的 `store_assistant_response` 之后，
+                // 紧跟的 `record_loop_event` 会把 resp（含 thinking/tool_use）与
+                // tool_results 一起结构化写入 `agent_run_events`。这条 **continue 路径**
+                // 绕过了那两处（它不落 session，也不走下面的工具分支），若不补写，
+                // "拦截重定向"这类轮次就会在崩溃重建时凭空消失。
+                //
+                // thinking 从 `current_thinking_this_turn` 补回：它不是 `current_blocks`
+                // 的可靠来源（流层对 thinking 的落块与文本累积是两条独立路径），
+                // 而这里需要的是"这一轮模型说过什么"的完整快照。
+                let resp_for_event = take_resp_blocks_with_thinking(
+                    &current_blocks,
+                    &mut current_thinking_this_turn,
+                );
+                self.record_loop_event(&resp_for_event, &[]).await;
 
                 // 调度器仍在运行时，不退出循环——等待调度器事件
                 if self.ctx.scheduler_rx.lock().await.is_some() {
@@ -1934,7 +1981,7 @@ impl PipelineState {
                 {
                     let mut session = self.ctx.memory.lock().await;
                     append_message(&mut session, Message::User {
-                        content: Content::Multiple(tool_results),
+                        content: Content::Multiple(tool_results.clone()),
                     }, "chat");
                     // 模式切换当轮立即落库：保证崩溃恢复时 snapshot_seq 与新快照同时存在，避免 seq 回退/重复
                     if mode_switched {
@@ -2022,15 +2069,17 @@ impl PipelineState {
                     )
                     .await;
                 }
-                agent_runs::save_checkpoint(
-                    &self.app,
+                agent_runs::upsert_loop_event(
                     &self.run_id,
                     &self.sid,
                     self.total_loop_count + 1,
-                    session.messages.clone(),
-                    self.req_input_tokens,
-                    self.req_output_tokens,
-                    "工具结果已写回上下文",
+                    current_blocks.clone(),
+                    tool_results.clone(),
+                    "complete",
+                    None,
+                    turn_in_tokens,
+                    turn_out_tokens,
+                    Some(self.model_id.clone()),
                 );
                 drop(session);
 
@@ -2302,8 +2351,8 @@ impl PipelineState {
     /// 历史演进说明：旧实现只做「记错误 → fail_run → 返回 Err」，现场全部丢弃。
     /// 由于 `run_pipeline_inner` 在此之后直接 `return Err`，`finalize()` 不会执行，
     /// 于是会话历史里连一句中断说明都没有，用户误以为"根本没执行"。
-    /// 现改为：把 live_content / live_thinking 连同中断提示**合并成一条**助手消息落库
-    /// （见 `store_interrupted_turn` 的丙方案说明），保持一问一答。
+    /// 现改为：把**本轮的结构化响应块**（`current_blocks`）连同中断提示
+    /// **合并成一条**助手消息落库（见 `store_interrupted_turn` 的丙方案说明），保持一问一答。
     ///
     /// 遵守的约束：**错误文本不作为助手消息内容**（避免被当成模型发言污染上下文），
     /// 只写入 agent_runs.error 与 agent_run_events。
@@ -2318,17 +2367,29 @@ impl PipelineState {
         let notice_text = format!("⚠ 本轮执行中断：{}", error);
         println!("[JARVIS] 异常收尾（保留现场）: {}", error);
 
-        // 1. 把已流式输出但尚未入库的内容补进历史（live_content / live_thinking 全程累积，是中断时的快照）。
-        //    思考装进 Thinking 块、正文装进 Text 块——对齐 command::session::recovered_assistant_message
-        //    的崩溃恢复先例：思考按折叠样式展示，不冒充正文。空签名 Thinking 块出网由
-        //    adapters 剥离（infra/llm/adapters.rs 对 Anthropic 空 signature 判 400 的防护）。
-        let run = crate::core::orchestration::agent_run_repository::list_runs(Some(&self.sid))
-            .ok()
-            .and_then(|runs| runs.into_iter().find(|r| r.run_id == self.run_id));
-        let live_content = run.as_ref().map(|r| r.live_content.clone()).unwrap_or_default();
-        let live_thinking = run.as_ref().map(|r| r.live_thinking.clone()).unwrap_or_default();
-        let thinking = live_thinking.trim().to_string();
-        let text = live_content.trim().to_string();
+        // 1. 把已流式输出但尚未入库的内容补进历史。
+        //
+        // v15 起这里改读**内存中的结构化块**（`PipelineState.current_blocks`），
+        // 不再是 `agent_runs.live_content / live_thinking` 那对字符串。理由：
+        //
+        // - 旧实现是"每帧把正文追加进一段大字符串"，思考与正文挤在两条独立的
+        //   累积流里，中断时按字符串顺序拼回去 → 思考必然落在正文之前/之后某一侧，
+        //   **与块的真实交错顺序脱节**（这正是方案 §3.1 记的"正文糅合"）。
+        // - 结构化块从流层出来就是 `Vec<ContentBlock>`（Text / Thinking / ToolUse
+        //   各占一块，顺序即产生顺序），既不用猜顺序，也不会把工具调用当成正文。
+        //
+        // 兜底：`current_blocks` 为空（如尚未收到任何帧就被取消）而 turn 级字符串
+        // 有内容时，用字符串重建，避免"什么都没有"时把内容丢掉。
+        let current_blocks = self.current_blocks.clone();
+        let (thinking, text) = if current_blocks.is_empty() {
+            (
+                self.turn_thinking_this_turn.trim().to_string(),
+                self.turn_text_this_turn.trim().to_string(),
+            )
+        } else {
+            let (t, k) = blocks_to_text_and_thinking(&current_blocks);
+            (k, t)
+        };
 
         // 落库口径（丙方案）：半截内容 + 中断提示合并成**一条**助手消息。
         // 错误文本本身**不作为**助手消息内容（避免被当成模型发言污染上下文），
@@ -2348,15 +2409,8 @@ impl PipelineState {
         self.notice = Some(notice_text.clone());
         self.interrupted_reason = Some(error.to_string());
 
-        // 3. 落库：审计层事件 + 诊断层错误
-        agent_runs::record_tool_result(
-            &self.app,
-            &self.run_id,
-            "pipeline",
-            Some(error.to_string()),
-            None,
-            self.total_loop_count,
-        );
+        // 3. 落库：本轮标记为 interrupted（**保留**帧级通道已写的半截内容）
+        self.mark_loop_event_interrupted(error.to_string()).await;
         agent_runs::interrupt_run(
             &self.app,
             &self.run_id,
@@ -2485,6 +2539,55 @@ impl PipelineState {
         }
     }
 
+    /// 把本 loop 的完整轮次打上 `interrupted` 标记。
+    ///
+    /// 与 [`Self::record_loop_event`] 共用同一把尺子（同一个 `loop_index`、同一套
+    /// resp/tool 块），只差 `status` 与 `error`——中断轮同样要有 events 行，
+    /// 否则崩溃重建时"进行到一半就被打断的那一轮"会整轮消失。
+    ///
+    /// 之所以要**标记而不是删除**：删除等于宣称"这轮没发生过"，而它的工具可能
+    /// 已经改了文件；标记为 interrupted 才能让重建如实还原现场。
+    ///
+    /// 轮号与收尾写入同取 `total_loop_count + 1`（见 [`Self::record_loop_event`] 的
+    /// 取号说明）。`total_loop_count == 0` 时**不再提前返回**：帧级通道可能已经
+    /// 建了第 1 行（streaming），漏标会让崩溃重建把它当有效半截内容重放；
+    /// UPDATE 0 行本就无害，交给 SQL 即可。
+    async fn mark_loop_event_interrupted(&self, error: String) {
+        if self.run_id.is_empty() {
+            return;
+        }
+        agent_runs::mark_loop_event_interrupted(
+            &self.run_id,
+            &self.sid,
+            self.total_loop_count + 1,
+            error,
+        );
+    }
+
+    /// 把本 loop 的响应与工具结果结构化写入 `agent_run_events`（崩溃重建的唯一数据源）。
+    ///
+    /// ## 取号说明（⚠️ 曾因注释错误取错轮号）
+    ///
+    /// `total_loop_count` 在**每轮结束时**才自增（主循环各 continue/break 分支），
+    /// `process_stream` 收到的帧级轮号是 `total_loop_count + 1`。收尾覆盖必须用
+    /// **同一个号**，才能落回帧级通道建的那一行——此处曾误用未自增的
+    /// `total_loop_count`，把本轮内容覆盖到**上一轮**的 events 行上
+    /// （上一轮 tool_results 丢失、取消标记错标上一轮）。
+    async fn record_loop_event(&self, resp_blocks: &[ContentBlock], tool_results: &[ContentBlock]) {
+        agent_runs::upsert_loop_event(
+            &self.run_id,
+            &self.sid,
+            self.total_loop_count + 1,
+            resp_blocks.to_vec(),
+            tool_results.to_vec(),
+            "complete",
+            None,
+            self.req_input_tokens,
+            self.req_output_tokens,
+            Some(self.model_id.clone()),
+        );
+    }
+
     /// 用户取消处理：保留全部历史与已流式输出的部分内容，把中断原因作为
     /// `interrupted` 消息追加，并标记 run 为 CANCELLED。
     ///
@@ -2498,23 +2601,33 @@ impl PipelineState {
             self.initial_msg_index
         );
 
-        // 取回已流式输出的部分结果（live_content 全程累积，是中断时的唯一快照）。
-        // 思考内容（live_thinking）随正文一并落库：按 Thinking 块折叠展示，
-        // 不冒充正文（见 store_interrupted_turn 的设计说明）。
-        let run = crate::core::orchestration::agent_run_repository::list_runs(Some(&self.sid))
-            .ok()
-            .and_then(|runs| runs.into_iter().find(|r| r.run_id == self.run_id));
-        let live_content = run.as_ref().map(|r| r.live_content.clone()).unwrap_or_default();
-        let live_thinking = run.as_ref().map(|r| r.live_thinking.clone()).unwrap_or_default();
-
-        let partial = if !live_content.trim().is_empty() {
-            live_content.trim().to_string()
-        } else if !self.final_answer.is_empty() && self.final_answer != "用户已取消执行。" {
-            std::mem::take(&mut self.final_answer)
-        } else {
-            String::new()
+        // 取回已流式输出的部分结果。
+        //
+        // v15 起改读**内存中的结构化块**（理由见 `abort_after_error`）：
+        // 块顺序即真实产生顺序，思考/正文/工具调用各归其位，不再靠字符串拼接猜。
+        // 兜底与 `abort_after_error` 一致：块为空时回落到 turn 级字符串。
+        let (partial, partial_thinking) = {
+            let blocks = self.current_blocks.clone();
+            if blocks.is_empty() {
+                let t = self.turn_text_this_turn.trim().to_string();
+                let k = self.turn_thinking_this_turn.trim().to_string();
+                (
+                    if !t.is_empty() {
+                        t
+                    } else if !self.final_answer.is_empty()
+                        && self.final_answer != "用户已取消执行。"
+                    {
+                        std::mem::take(&mut self.final_answer)
+                    } else {
+                        String::new()
+                    },
+                    k,
+                )
+            } else {
+                let (t, k) = blocks_to_text_and_thinking(&blocks);
+                (t, k)
+            }
         };
-        let partial_thinking = live_thinking.trim().to_string();
 
         // `reason` 面向用户；写入历史的标记面向 LLM（会进上下文），
         // 故用最小信息量的统一措辞，避免模型把系统视角描述当成自己的话。
@@ -2546,7 +2659,9 @@ impl PipelineState {
                 "loopCount": self.total_loop_count + 1
             }),
         );
-        // 标记 run 为 CANCELLED，并向前端发送取消通知
+        // 标记 run 为 CANCELLED，并向前端发送取消通知。
+        // 轮次事件同样打上 interrupted（保留帧级通道已写的半截内容）。
+        self.mark_loop_event_interrupted("用户取消".to_string()).await;
         agent_runs::cancel_run(
             &self.app,
             &self.run_id,
@@ -2570,6 +2685,12 @@ impl PipelineState {
             stream_result.has_tool,
             self.total_loop_count + 1
         );
+
+        // 本轮的完整响应块（含 thinking / tool_use）——断流时流层已优雅返回，
+        // 这里把它整轮留档，供崩溃重建原样还原（工具调用不能丢：它可能已经改了文件）。
+        let mut thinking_for_event = stream_result.thinking.clone();
+        let resp_blocks_for_event =
+            take_resp_blocks_with_thinking(&stream_result.blocks, &mut thinking_for_event);
 
         // 面向用户的文案：会渲染成气泡下方的小字（notice），
         // 因此不用 Markdown 引用符号 —— 小字是纯文本，`>` 会原样显示。
@@ -2619,14 +2740,20 @@ impl PipelineState {
             self.final_answer.chars().count()
         );
 
-        // 记录到审计层（agent_run_events），供界面「执行详情」展示中断原因
-        agent_runs::record_tool_result(
-            &self.app,
+        // 记录到审计层（agent_run_events），供界面「执行详情」展示中断原因；
+        // 同时保留本轮已收到的响应块，崩溃重建时可原样还原。
+        // 轮号 +1 与帧级通道/收尾覆盖同尺（见 record_loop_event 取号说明）。
+        agent_runs::upsert_loop_event(
             &self.run_id,
-            "stream_idle_timeout",
+            &self.sid,
+            self.total_loop_count + 1,
+            resp_blocks_for_event,
+            Vec::new(),
+            "interrupted",
             Some(reason.clone()),
-            None,
-            self.total_loop_count,
+            0,
+            0,
+            Some(self.model_id.clone()),
         );
     }
 
@@ -2652,7 +2779,7 @@ impl PipelineState {
             ),
             PermissionKind::LoopContinuation,
             // 循环续跑确认没有会话级允许语义：照抄"本次会话都允许"会顺带放行其它工具调用
-            None,
+            Vec::new(),
         )
         .await;
         if decision.is_allowed() {
@@ -3585,15 +3712,8 @@ impl PipelineState {
                             "API 请求超过 {} 秒未返回响应头，已自动终止。",
                             crate::infra::types::constants::API_RESPONSE_HEADER_TIMEOUT_SECS
                         ));
-                        // 记录错误事件到 agent_run_events 表
-                        agent_runs::record_tool_result(
-                            &self.app,
-                            &self.run_id,
-                            "api_call",
-                            Some(error.to_string()),
-                            None,
-                            self.total_loop_count,
-                        );
+                        // 本轮标记为 interrupted（保留帧级通道已写的半截内容）
+                        self.mark_loop_event_interrupted(error.to_string()).await;
                         agent_runs::fail_run(
                             &self.app,
                             &self.run_id,
@@ -3612,15 +3732,8 @@ impl PipelineState {
         } {
             Ok(resp) => Ok(Some(resp)),
             Err(e) => {
-                // 记录错误事件到 agent_run_events 表
-                agent_runs::record_tool_result(
-                    &self.app,
-                    &self.run_id,
-                    "api_call",
-                    Some(e.to_string()),
-                    None,
-                    self.total_loop_count,
-                );
+                // 本轮标记为 interrupted（保留帧级通道已写的半截内容）
+                self.mark_loop_event_interrupted(e.to_string()).await;
                 agent_runs::fail_run(
                     &self.app,
                     &self.run_id,
@@ -3634,7 +3747,7 @@ impl PipelineState {
         }
     }
 
-    /// 存储助手回复到会话历史（过滤空文本/空思考块，工具块原样保留）
+/// 存储助手回复到会话历史（过滤空文本/空思考块，工具块原样保留）
     async fn store_assistant_response(&self, current_blocks: &[ContentBlock]) {
         let mut session = self.ctx.memory.lock().await;
         // 过滤空文本/空思考块，仅保留有效内容
@@ -3731,6 +3844,9 @@ impl PipelineState {
                             crate::infra::llm::registry::cache_usage_style_for(&self.model_id),
                         // 看门狗小结是短请求，不需要等待提示
                         on_frame: None,
+                        model_id: Some(self.model_id.clone()),
+                        // 小结是内部一次性的短请求，没有"崩溃后要续跑"的语义
+                        crash_protection: false,
                     },
                 )
                 .await;
@@ -3814,6 +3930,58 @@ impl PipelineState {
         self.dynamic_context_str = snapshot.clone();
         blocks.push(ContentBlock::Context { text: snapshot });
     }
+}
+
+/// 取本轮响应块，并把"有思考但块里没有"的情形补上。
+///
+/// 为什么需要：流层把思考累积到 `current_thinking_this_turn`，落块走的是另一条
+/// 独立分支（Anthropic 精确改写第 i 块 / OpenAI 按"当前块是不是思考"追加），
+/// 两者并不保证一一对应。而写 `agent_run_events` 需要的是"这一轮模型说过什么"
+/// 的完整快照——缺了 thinking 就等于丢了思考链，恢复时无法回传给 Anthropic。
+///
+/// `take` 掉（而非 `clone`）是刻意的：调用点都是"这轮到此为止"，
+/// 留着只会被下一轮误当成自己的思考。
+fn take_resp_blocks_with_thinking(
+    blocks: &[ContentBlock],
+    thinking_this_turn: &mut String,
+) -> Vec<ContentBlock> {
+    let mut out = blocks.to_vec();
+    if !thinking_this_turn.trim().is_empty()
+        && !out
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Thinking { thinking, .. } if !thinking.trim().is_empty()))
+    {
+        out.insert(
+            0,
+            ContentBlock::Thinking {
+                thinking: std::mem::take(thinking_this_turn),
+                signature: String::new(),
+            },
+        );
+    }
+    out
+}
+
+/// 从结构化响应块里取出（正文, 思考）两段纯文本。
+///
+/// 只认 Text / Thinking 两类块：ToolUse 不是"模型说的话"，ToolResult 属于工具侧，
+/// 都不是中断提示该合并的正文。各类型内部按顺序拼接（`join("\n\n")`），
+/// 与 `store_interrupted_turn` 的分块口径一致。
+fn blocks_to_text_and_thinking(blocks: &[ContentBlock]) -> (String, String) {
+    let mut texts: Vec<String> = Vec::new();
+    let mut thinkings: Vec<String> = Vec::new();
+    for block in blocks {
+        match block {
+            ContentBlock::Text { text } if !text.trim().is_empty() => {
+                texts.push(text.trim().to_string())
+            }
+            ContentBlock::Thinking { thinking, .. } if !thinking.trim().is_empty() => {
+                thinkings.push(thinking.trim().to_string())
+            }
+            _ => {}
+        }
+    }
+    (texts.join("\n\n"), thinkings.join("\n\n"))
 }
 
 /// 主流程入口：依次执行 4 个阶段

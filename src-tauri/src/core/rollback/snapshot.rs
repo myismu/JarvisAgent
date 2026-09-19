@@ -528,11 +528,14 @@ impl SnapshotTree {
 /// 检查点创建间隔（每 10 个补丁自动创建一次）
 const CHECKPOINT_INTERVAL: usize = 10;
 
+/// 当前时间戳（**毫秒**，Unix epoch）——全项目 DB 时间戳统一毫秒口径（v16 起）。
+/// 该值会写入 Snapshot.created_at（进 snapshot_trees.tree_json）与
+/// checkpoint_user_message_links.created_at，GC 的年龄计算同口径（毫秒差 ÷ 86_400_000 = 天）。
 fn current_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs()
+        .as_millis() as u64
 }
 
 fn generate_id() -> String {

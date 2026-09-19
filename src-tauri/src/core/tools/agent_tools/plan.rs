@@ -262,7 +262,7 @@ pub async fn propose_plan(
                 message: format!("方案审批: {}", title),
                 kind: crate::core::tools::framework::permission::PermissionKind::PlanApproval,
                 // 方案审批走产品层状态机，没有"会话级允许"语义
-                allowance: None,
+                allowance: Vec::new(),
                 // 方案审批没有档位语义，不参与切档位时的挂起卡清扫
                 origin: None,
                 // 方案审批没有"危险命令警示"语义
@@ -273,10 +273,12 @@ pub async fn propose_plan(
     }
 
     // Plan documents are persisted through session memory in SQLite.
+    // 毫秒时间戳（v16 起全项目统一毫秒口径）——PlanDocument 进 session_memory JSON，
+    // 存量秒值由 v16 迁移读时归一处理。
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs();
+        .as_millis() as u64;
     let plan_document = PlanDocument {
         id: id.clone(),
         session_id: session_id.to_string(),

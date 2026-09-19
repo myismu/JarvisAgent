@@ -117,7 +117,9 @@ impl GarbageCollector {
             // 立即清理模式：脱离链路即删除，不看年龄
             true
         } else {
-            let age_days = (current_timestamp() - snapshot.created_at) / (24 * 60 * 60);
+            // 时间戳口径为**毫秒**（v16 起），86_400_000 毫秒 = 1 天。
+            // 若误用秒级换算（÷86400），毫秒差值会算出"数万年"的年龄，把全部快照误判为过期。
+            let age_days = (current_timestamp() - snapshot.created_at) / (24 * 60 * 60 * 1000);
             age_days > self.config.max_age_days
         }
     }
@@ -183,12 +185,13 @@ impl GarbageCollector {
 
 /// 从数据库删除单条快照记录
 
+/// 当前时间戳（**毫秒**，Unix epoch）——全项目 DB 时间戳统一毫秒口径（v16 起）。
 fn current_timestamp() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs()
+        .as_millis() as u64
 }
 
 #[cfg(test)]
@@ -244,8 +247,9 @@ mod tests {
             ..Default::default()
         };
         let gc = GarbageCollector::new(config);
-        let old = make_snapshot("old", "main", current_timestamp() - 40 * 24 * 60 * 60);
-        let recent = make_snapshot("recent", "main", current_timestamp() - 5 * 24 * 60 * 60);
+        // 时间戳口径为毫秒：40 天 = 40 * 24 * 60 * 60 * 1000 毫秒
+        let old = make_snapshot("old", "main", current_timestamp() - 40 * 24 * 60 * 60 * 1000);
+        let recent = make_snapshot("recent", "main", current_timestamp() - 5 * 24 * 60 * 60 * 1000);
         assert!(gc.should_remove(&old));
         assert!(!gc.should_remove(&recent));
     }

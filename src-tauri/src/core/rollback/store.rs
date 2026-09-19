@@ -17,11 +17,12 @@ pub struct SnapshotStore {
     session_id: String,
 }
 
+/// 当前时间戳（**毫秒**，Unix epoch）——全项目 DB 时间戳统一毫秒口径（v16 起）。
 fn now_ts() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs()
+        .as_millis() as u64
 }
 
 fn ensure_session_record(session_id: &str) -> Result<(), String> {

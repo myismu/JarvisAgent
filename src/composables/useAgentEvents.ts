@@ -37,7 +37,7 @@ import type {
   PlanDocument,
   AgentStep,
   AgentRun,
-  AgentRunEvent,
+  AgentRunLoopEvent,
   SessionContextSnapshot,
   SessionUsageUpdatedPayload,
   SubAgentRun,
@@ -131,19 +131,20 @@ export function useAgentEvents() {
       .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))[0] ?? null;
   }
 
+  /// 用 run 记录重建「当前 turn」的展示态。
+  ///
+  /// v15 起 `AgentRun` **不再携带 live_content / live_thinking / live_tool_buffer**
+  /// （那三列已删除，改由「每轮一行」的 agent_run_events 承载）。所以这里不再
+  /// 灌任何正文/思考，只恢复**运行态标记**（开始时间、轮次、是否进行中）。
+  ///
+  /// 这个取舍是刻意的：run 记录从来不是内容的权威来源——中断后要显示什么，
+  /// 由 `recover_interrupted_into_memory` 从 events 重放并落进会话历史，
+  /// 界面按历史渲染即可。之前在这里灌 live_* 反而制造了"刷新多一条"的重复渲染
+  /// （见 `applyAgentRunState` 里那两处 `hasPersistedHistory` 守卫的注释）。
   function hydrateCurrentTurnFromRun(view: SessionViewState, run: AgentRun) {
     resetAgentCurrentTurn(view);
     view.currentTurn.startedAt = run.startedAt || Date.now();
     beginAgentLoop(view, run.loopCount || 1);
-    if (run.liveThinking) {
-      appendAgentThinking(view, run.liveThinking, run.loopCount || 1);
-    }
-    if (run.liveToolBuffer) {
-      appendAgentExecutionLog(view, run.liveToolBuffer, run.loopCount || 1);
-    }
-    if (run.liveContent) {
-      appendAgentText(view, run.liveContent, "assistant", run.loopCount || 1);
-    }
     view.currentTurn.isRunning = run.status === "running";
     view.currentTurn.revision += 1;
   }
@@ -339,14 +340,16 @@ export function useAgentEvents() {
     try {
       const effectiveSid = sid ?? session.activeSessionId;
       if (!effectiveSid) return;
-      const events = await invoke<AgentRunEvent[]>("list_agent_run_events", { sessionId: effectiveSid, runId: null });
-      const grouped = events.reduce<Record<string, AgentRunEvent[]>>((acc, item) => {
+      const events = await invoke<AgentRunLoopEvent[]>("list_agent_run_events", { sessionId: effectiveSid, runId: null });
+      const grouped = events.reduce<Record<string, AgentRunLoopEvent[]>>((acc, item) => {
         if (!acc[item.runId]) acc[item.runId] = [];
         acc[item.runId].push(item);
         return acc;
       }, {});
+      // 排序口径：同 run 内按 loopIndex 升序（轮次顺序才是重建顺序）；
+      // 跨 run 无所谓——每 run 一个桶，桶之间不比较。
       for (const runEvents of Object.values(grouped)) {
-        runEvents.sort((a, b) => a.timestamp - b.timestamp);
+        runEvents.sort((a, b) => (a.loopIndex || 0) - (b.loopIndex || 0));
       }
       const otherEvents = Object.fromEntries(
         Object.entries(agent.agentRunEventsByRun).filter(([, runEvents]) => {
@@ -467,8 +470,9 @@ export function useAgentEvents() {
             content: event.payload.content,
             status: "pending",
             path: null,
-            createdAt: Date.now() / 1000,
-            updatedAt: Date.now() / 1000,
+            // 时间戳口径：毫秒（v16 起全项目 DB 统一毫秒，与后端 PlanDocument 一致）
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
             decidedAt: null,
           },
           sid
@@ -492,15 +496,17 @@ export function useAgentEvents() {
       syncActiveSessionView(run.sessionId, false);
     });
 
-    // agent run event
-    await on<AgentRunEvent>("agent-run-event", (event) => {
-      const item = event.payload;
-      if (!item?.runId) return;
-      const events = [...(agent.agentRunEventsByRun[item.runId] ?? []), item]
-        .sort((a, b) => a.timestamp - b.timestamp)
-        .slice(-500);
-      agent.agentRunEventsByRun = { ...agent.agentRunEventsByRun, [item.runId]: events };
-    });
+    // 注意：v15 起后端**不再**推送 `agent-run-event`。
+    //
+    // 旧的 `agent_run_events` 是「一条事件一行」的日志流，每 loop 会产生 start /
+    // delta / tool / complete 若干行，前端必须靠推送逐条追加才不至于落后。
+    // 现在它改成「1 loop 1 行」的**重建数据源**（`(run_id, loop_index)` 唯一键，
+    // 整行覆盖写），语义从"事件流"变成了"快照表"——推送增量已无意义：
+    // 同一行会被反复覆盖，前端拼出来的中间态只会是半截 JSON。
+    //
+    // 因此这里不再注册监听器。界面要看的运行态内容（正文/思考/工具）走
+    // `chat-content` / `chat-thinking` / `agent-step` 等流式事件；
+    // 重建数据只在 `loadAgentRunEventsFromBackend` 里整批拉取。
 
     // context snapshot
     await on<SessionContextSnapshot>("context-snapshot-updated", (event) => {

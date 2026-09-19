@@ -159,12 +159,16 @@ pub struct SessionTokenTotals {
     pub cache_miss: u64,
 }
 
-/// 获取当前时间戳（秒）
+/// 获取当前时间戳（**毫秒**，Unix epoch）。
+///
+/// 2026-09-19 起全项目 DB 时间戳统一为毫秒（v16 迁移已把存量秒值 ×1000）。
+/// 此前本函数返回秒、而 agent_runs 等运行时表用毫秒，两套口径并存导致
+/// 侧边栏会话时间显示错误（前端 `new Date(ts)` 按毫秒解析秒值）。
 fn now_ts() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs()
+        .as_millis() as u64
 }
 
 fn default_title_source() -> String {

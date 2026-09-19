@@ -1,6 +1,7 @@
 // 时间线组件共享工具函数
+// 时间戳口径：**毫秒**（v16 起全项目 DB 统一毫秒；存量秒值已由迁移 ×1000）
 export function formatRelativeTime(timestamp: number): string {
-  const date = new Date(timestamp * 1000);
+  const date = new Date(timestamp);
   const now = new Date();
   const diff = now.getTime() - date.getTime();
 
