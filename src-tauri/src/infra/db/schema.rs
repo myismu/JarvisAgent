@@ -10,7 +10,7 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 /// 删除废弃的旧 checkpoint 表（v3 迁移）
 fn migrate_v3_drop_deprecated_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -295,6 +295,10 @@ fn migrate_v10_add_projects(conn: &Connection) -> Result<(), rusqlite::Error> {
 ///
 /// 刻意**不回填**：老会话一律 `NULL`（等价 auto），语义与"用户从未表态"完全一致；
 /// 用户历史上的临时开关从未持久化，回填任何具体值都是编造。
+///
+/// ⚠️ **v14 已把该列改为布尔语义**（见 [`migrate_v14_thinking_mode_to_bool`]）。
+/// 本函数保留原样是为了让"老库从任意版本升到最新"的迁移链完整——
+/// v10 的库先跑 v11 建出 TEXT 列，再跑 v14 转成布尔，与"新库直接建布尔列"同构。
 fn migrate_v11_add_session_thinking_mode(conn: &Connection) -> Result<(), rusqlite::Error> {
     let has_thinking_mode = {
         let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;
@@ -307,6 +311,66 @@ fn migrate_v11_add_session_thinking_mode(conn: &Connection) -> Result<(), rusqli
     if !has_thinking_mode {
         conn.execute("ALTER TABLE sessions ADD COLUMN thinking_mode TEXT", [])?;
     }
+    Ok(())
+}
+
+/// 把 `sessions.thinking_mode` 从**三态字符串**改为**布尔**（v14 迁移）
+///
+/// ## 为什么改
+///
+/// 旧设计里 `NULL` 表示"未表态"，由裁决层**每轮现读**设置默认值解析。后果是：
+/// 改一个预设的默认档位，**所有 `NULL` 会话下次发消息时全部跟着变**——
+/// `NULL` 不是一个值，而是"每次都去外面问一句"，于是设置改动会无差别倒灌已有会话。
+///
+/// 现设计把"跟随"的解析**提前到会话创建那一刻**（`pipeline::start_run` 首次解析）：
+/// 库里只存确定布尔，设置改动就再也无法回溯修改任何已有会话。
+///
+/// ## 迁移动作
+///
+/// 1. 存量的 `'always'` / `'on'` / `'true'` → `1`；
+/// 2. 存量的 `'never'` / `'off'` / `'false'` → `0`；
+/// 3. 存量的 `NULL` / 其它脏值 → `0`（保守关闭）。
+///
+/// 第 3 条是**刻意的保守选择**：老会话没有可靠的"当时想开还是想关"的历史信息，
+/// 与其猜一个值，不如统一按"关"处理——用户在界面上拨一下即可覆盖。
+/// 开发阶段数据无价，不做更精细的区分。
+///
+/// SQLite 不支持 `ALTER COLUMN`，因此用"加新列 → 回填 → 删旧列 → 重命名"完成。
+fn migrate_v14_thinking_mode_to_bool(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let columns: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        out
+    };
+    if !columns.iter().any(|c| c == "thinking_mode") {
+        // 极端情况：连列都没有（不该发生，v11 已保证）——直接补一个布尔列
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN thinking_mode INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+        return Ok(());
+    }
+
+    conn.execute(
+        "ALTER TABLE sessions ADD COLUMN thinking_mode_bool INTEGER NOT NULL DEFAULT 0",
+        [],
+    )?;
+    // 只有明确的开启语义才置 1，其余（含 NULL 与脏值）一律 0
+    conn.execute(
+        "UPDATE sessions SET thinking_mode_bool = CASE \
+             WHEN thinking_mode IN ('always', 'on', 'true', '1') THEN 1 \
+             ELSE 0 END",
+        [],
+    )?;
+    conn.execute("ALTER TABLE sessions DROP COLUMN thinking_mode", [])?;
+    conn.execute(
+        "ALTER TABLE sessions RENAME COLUMN thinking_mode_bool TO thinking_mode",
+        [],
+    )?;
     Ok(())
 }
 
@@ -370,78 +434,99 @@ fn migrate_v13_add_session_runtime_prefs(conn: &Connection) -> Result<(), rusqli
 }
 
 pub fn init_schema(conn: &Connection) -> Result<(), String> {
-    // 获取当前 schema 版本
+    // 获取当前 schema 版本。
+    //
+    // ⚠️ 必须 `CAST(value AS INTEGER)`：`app_state.value` 列声明为 TEXT，而 SQLite
+    // 是动态类型——写入的其实是 TEXT（本函数末尾用 `SCHEMA_VERSION.to_string()` 绑定）。
+    // rusqlite 的 `row.get::<_, i64>()` 对 TEXT **不做隐式转换**，会直接返回
+    // `InvalidColumnType`；旧代码把该错误 `unwrap_or(0)` 吞掉，于是版本号**永远读成 0**。
+    // 历史后果：迁移被无差别地重复执行（幂等迁移掩盖了症状）。加 CAST 后读取才可靠。
     let current_version: i64 = conn
         .query_row(
-            "SELECT value FROM app_state WHERE key = 'schema_version'",
+            "SELECT CAST(value AS INTEGER) FROM app_state WHERE key = 'schema_version'",
             [],
             |row| row.get(0),
         )
         .unwrap_or(0);
 
-    // 执行迁移
-    if current_version < 3 {
-        migrate_v3_drop_deprecated_tables(conn).map_err(|e| format!("v3 迁移失败: {}", e))?;
-    }
-    if current_version < 6 {
-        migrate_v6_add_session_message_id(conn).map_err(|e| format!("v6 迁移失败: {}", e))?;
-    }
-    if current_version < 7 {
-        migrate_v7_decouple_session_messages(conn).map_err(|e| format!("v7 迁移失败: {}", e))?;
-    }
-    if current_version < 8 {
-        migrate_v8_agent_runs_message_id(conn).map_err(|e| format!("v8 迁移失败: {}", e))?;
-    }
-    if current_version < 9 {
-        conn.execute("DROP TABLE IF EXISTS snapshots", [])
-            .map_err(|e| format!("v9 迁移失败: {}", e))?;
-        let _ = conn.execute(
-            "ALTER TABLE pending_snapshot_patches RENAME TO agent_run_patches",
-            [],
-        );
-        // 重建 checkpoint_user_message_links，移除指向 snapshots 的外键（旧库才有）
-        if conn
-            .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='checkpoint_user_message_links'")
-            .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
-            .map(|c| c > 0)
-            .unwrap_or(false)
-        {
-            conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS checkpoint_user_message_links_new (
-                session_id TEXT NOT NULL,
-                user_message_index INTEGER NOT NULL,
-                checkpoint_id TEXT NOT NULL,
-                has_file_edits INTEGER NOT NULL DEFAULT 0,
-                created_at INTEGER NOT NULL,
-                message_id TEXT,
-                updated_at INTEGER,
-                PRIMARY KEY(session_id, user_message_index),
-                UNIQUE(session_id, checkpoint_id),
-                FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
-            );
-            INSERT OR IGNORE INTO checkpoint_user_message_links_new
-                SELECT session_id, user_message_index, checkpoint_id, has_file_edits, created_at, message_id, updated_at
-                FROM checkpoint_user_message_links;
-            DROP TABLE checkpoint_user_message_links;
-            ALTER TABLE checkpoint_user_message_links_new RENAME TO checkpoint_user_message_links;",
-        )
-        .map_err(|e| format!("v9 迁移失败: {}", e))?;
+    // 全新库（version == 0）：**跳过所有增量迁移**，直接走下面的建表 DDL。
+    //
+    // 必须这样做：增量迁移写的是 `ALTER TABLE ...`，前提是表已存在，而建表 DDL
+    // 在本函数末尾才执行。早期版本里 v10 迁移恰好对空库是幂等的（`CREATE TABLE IF
+    // NOT EXISTS`），所以"空库跑一遍迁移"侥幸没炸；v14 用 `PRAGMA table_info(sessions)`
+    // 探测，空库上直接 `no such table: sessions`，把这个隐患暴露了出来。
+    //
+    // 建表 DDL 始终反映**最新形态**（已包含 v10..v14 引入的全部列），
+    // 因此新库不跑迁移也是同构的。
+    if current_version > 0 {
+        // 执行迁移
+            if current_version < 3 {
+            migrate_v3_drop_deprecated_tables(conn).map_err(|e| format!("v3 迁移失败: {}", e))?;
         }
-    }
-    if current_version < 10 {
-        migrate_v10_add_projects(conn).map_err(|e| format!("v10 迁移失败: {}", e))?;
-    }
-    if current_version < 11 {
-        migrate_v11_add_session_thinking_mode(conn)
-            .map_err(|e| format!("v11 迁移失败: {}", e))?;
-    }
-    if current_version < 12 {
-        migrate_v12_add_session_cache_tokens(conn)
-            .map_err(|e| format!("v12 迁移失败: {}", e))?;
-    }
-    if current_version < 13 {
-        migrate_v13_add_session_runtime_prefs(conn)
-            .map_err(|e| format!("v13 迁移失败: {}", e))?;
+        if current_version < 6 {
+            migrate_v6_add_session_message_id(conn).map_err(|e| format!("v6 迁移失败: {}", e))?;
+        }
+        if current_version < 7 {
+            migrate_v7_decouple_session_messages(conn).map_err(|e| format!("v7 迁移失败: {}", e))?;
+        }
+        if current_version < 8 {
+            migrate_v8_agent_runs_message_id(conn).map_err(|e| format!("v8 迁移失败: {}", e))?;
+        }
+        if current_version < 9 {
+            conn.execute("DROP TABLE IF EXISTS snapshots", [])
+                .map_err(|e| format!("v9 迁移失败: {}", e))?;
+            let _ = conn.execute(
+                "ALTER TABLE pending_snapshot_patches RENAME TO agent_run_patches",
+                [],
+            );
+            // 重建 checkpoint_user_message_links，移除指向 snapshots 的外键（旧库才有）
+            if conn
+                .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='checkpoint_user_message_links'")
+                .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
+                .map(|c| c > 0)
+                .unwrap_or(false)
+            {
+                conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS checkpoint_user_message_links_new (
+                    session_id TEXT NOT NULL,
+                    user_message_index INTEGER NOT NULL,
+                    checkpoint_id TEXT NOT NULL,
+                    has_file_edits INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    message_id TEXT,
+                    updated_at INTEGER,
+                    PRIMARY KEY(session_id, user_message_index),
+                    UNIQUE(session_id, checkpoint_id),
+                    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                );
+                INSERT OR IGNORE INTO checkpoint_user_message_links_new
+                    SELECT session_id, user_message_index, checkpoint_id, has_file_edits, created_at, message_id, updated_at
+                    FROM checkpoint_user_message_links;
+                DROP TABLE checkpoint_user_message_links;
+                ALTER TABLE checkpoint_user_message_links_new RENAME TO checkpoint_user_message_links;",
+            )
+            .map_err(|e| format!("v9 迁移失败: {}", e))?;
+            }
+        }
+        if current_version < 10 {
+            migrate_v10_add_projects(conn).map_err(|e| format!("v10 迁移失败: {}", e))?;
+        }
+        if current_version < 11 {
+            migrate_v11_add_session_thinking_mode(conn)
+                .map_err(|e| format!("v11 迁移失败: {}", e))?;
+        }
+        if current_version < 12 {
+            migrate_v12_add_session_cache_tokens(conn)
+                .map_err(|e| format!("v12 迁移失败: {}", e))?;
+        }
+        if current_version < 13 {
+            migrate_v13_add_session_runtime_prefs(conn)
+                .map_err(|e| format!("v13 迁移失败: {}", e))?;
+        }
+        if current_version < 14 {
+            migrate_v14_thinking_mode_to_bool(conn)
+                .map_err(|e| format!("v14 迁移失败: {}", e))?;
+        }
     }
 
     conn.execute_batch(
@@ -474,7 +559,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             title_source TEXT NOT NULL DEFAULT 'default',
             project_id TEXT,
             deleted_at INTEGER,
-            thinking_mode TEXT,
+            thinking_mode INTEGER NOT NULL DEFAULT 0,
             work_mode TEXT,
             approval_mode TEXT,
             agent_audience TEXT,
@@ -730,7 +815,8 @@ mod tests {
     #[test]
     fn v11_migration_adds_thinking_mode_to_legacy_db() {
         let conn = Connection::open_in_memory().expect("open memory db");
-        // v10 形态的 sessions 表（无 thinking_mode）
+        // v10 形态的 sessions 表（无 thinking_mode，但 **有 project_id**——
+        // project_id 正是 v10 迁引入的，任何真实的 v10 库都带这一列）
         conn.execute_batch(
             "CREATE TABLE sessions (
                 id TEXT PRIMARY KEY,
@@ -739,7 +825,8 @@ mod tests {
                 updated_at INTEGER NOT NULL,
                 message_count INTEGER NOT NULL,
                 profile_id TEXT,
-                deleted_at INTEGER
+                deleted_at INTEGER,
+                project_id TEXT
             );
             CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             INSERT INTO app_state(key, value) VALUES('schema_version', '10');
@@ -750,19 +837,25 @@ mod tests {
 
         assert!(!column_exists(&conn, "sessions", "thinking_mode"));
 
-        init_schema(&conn).expect("upgrade v10 -> v11");
+        init_schema(&conn).expect("upgrade v10 -> latest");
 
         assert!(
             column_exists(&conn, "sessions", "thinking_mode"),
             "v11 迁移必须补上 thinking_mode 列"
         );
-        // 老行不得被回填任何具体档位：NULL 才等价于"用户从未表态"（auto）
-        let value: Option<String> = conn
+        // 注意：init_schema 会一路升到最新版（含 v14），因此这里断言的是**最终形态**——
+        // 布尔列，且老行的 NULL 被 v14 按保守口径转成 0。
+        assert_eq!(
+            column_type(&conn, "sessions", "thinking_mode"),
+            "INTEGER",
+            "升级到最新版后 thinking_mode 必须是布尔列（v14）"
+        );
+        let value: i64 = conn
             .query_row("SELECT thinking_mode FROM sessions WHERE id = 's1'", [], |r| {
                 r.get(0)
             })
             .expect("read legacy row");
-        assert_eq!(value, None, "老会话必须保持 NULL(auto)，不得编造档位");
+        assert_eq!(value, 0, "v10 老会话无有效表态，按保守口径转为关闭");
 
         // 版本号至少推进到 12（后续新增迁移会继续推进，不硬编码最新版）
         let version: i64 = conn
@@ -779,18 +872,19 @@ mod tests {
         );
 
         // 幂等：再次初始化不报错，且不破坏已有值
-        conn.execute("UPDATE sessions SET thinking_mode = 'never' WHERE id = 's1'", [])
+        conn.execute("UPDATE sessions SET thinking_mode = 1 WHERE id = 's1'", [])
             .expect("set mode");
         init_schema(&conn).expect("re-init idempotent");
-        let after: Option<String> = conn
+        let after: i64 = conn
             .query_row("SELECT thinking_mode FROM sessions WHERE id = 's1'", [], |r| {
                 r.get(0)
             })
             .expect("re-read");
-        assert_eq!(after.as_deref(), Some("never"), "重复初始化不得清掉用户表态");
+        assert_eq!(after, 1, "重复初始化不得清掉用户表态");
     }
 
-    /// 建表 DDL 必须自带 thinking_mode（保证新库与升级后的老库同构）
+    /// 建表 DDL 必须自带 thinking_mode，且是**布尔（INTEGER）**列
+    /// （v14 起会话档位不再有 NULL，保证新库与升级后的老库同构）
     #[test]
     fn fresh_ddl_declares_thinking_mode() {
         let conn = Connection::open_in_memory().expect("open memory db");
@@ -808,22 +902,24 @@ mod tests {
                 title_source TEXT NOT NULL DEFAULT 'default',
                 project_id TEXT,
                 deleted_at INTEGER,
-                thinking_mode TEXT
+                thinking_mode INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )
         .expect("create sessions");
         assert!(column_exists(&conn, "sessions", "thinking_mode"));
+        assert_eq!(
+            column_type(&conn, "sessions", "thinking_mode"),
+            "INTEGER",
+            "v14 起 thinking_mode 必须是布尔列（INTEGER），不再是 TEXT"
+        );
     }
 
-    /// v11 老库升级到 v12：补上两列缓存累计，且老行一律留在 0。
-    ///
-    /// 老行必须留在 0 而不是被回填：0 在展示层等价于"未报告"（显示 `--`），
-    /// 回填任何具体值都等于给用户编一个假的命中率。
+    /// v13 老库（thinking_mode 还是 TEXT 三态）升级到 v14：
+    /// 明确开启的值转 1，其余（never / NULL / 脏值）一律转 0，且列为布尔。
     #[test]
-    fn v12_migration_adds_session_cache_tokens_to_legacy_db() {
+    fn v14_migration_converts_thinking_mode_to_bool() {
         let conn = Connection::open_in_memory().expect("open memory db");
-        // v11 形态的 sessions 表（无缓存两列）
         conn.execute_batch(
             "CREATE TABLE sessions (
                 id TEXT PRIMARY KEY,
@@ -833,7 +929,105 @@ mod tests {
                 message_count INTEGER NOT NULL,
                 profile_id TEXT,
                 deleted_at INTEGER,
-                thinking_mode TEXT
+                thinking_mode TEXT,
+                work_mode TEXT,
+                approval_mode TEXT,
+                agent_audience TEXT,
+                project_id TEXT
+            );
+            CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO app_state(key, value) VALUES('schema_version', '13');
+            INSERT INTO sessions(id, title, created_at, updated_at, message_count, thinking_mode)
+                VALUES('s_on', '开的会话', 1, 1, 0, 'always');
+            INSERT INTO sessions(id, title, created_at, updated_at, message_count, thinking_mode)
+                VALUES('s_off', '关的会话', 1, 1, 0, 'never');
+            INSERT INTO sessions(id, title, created_at, updated_at, message_count, thinking_mode)
+                VALUES('s_null', '未表态会话', 1, 1, 0, NULL);
+            INSERT INTO sessions(id, title, created_at, updated_at, message_count, thinking_mode)
+                VALUES('s_dirty', '脏值会话', 1, 1, 0, 'bogus');",
+        )
+        .expect("create legacy schema");
+
+        init_schema(&conn).expect("upgrade v13 -> v14");
+
+        assert_eq!(
+            column_type(&conn, "sessions", "thinking_mode"),
+            "INTEGER",
+            "v14 迁移后该列必须是布尔"
+        );
+        let read = |id: &str| -> i64 {
+            conn.query_row(
+                "SELECT thinking_mode FROM sessions WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .expect("read thinking_mode")
+        };
+        assert_eq!(read("s_on"), 1, "'always' 应转成 1");
+        assert_eq!(read("s_off"), 0, "'never' 应转成 0");
+        assert_eq!(read("s_null"), 0, "NULL 按保守口径转成 0");
+        assert_eq!(read("s_dirty"), 0, "脏值按保守口径转成 0");
+    }
+
+    /// 迁移幂等：已经是布尔形态的库，重复初始化不得改动用户值。
+    #[test]
+    fn v14_migration_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        init_schema(&conn).expect("fresh schema");
+        conn.execute(
+            "INSERT INTO sessions(id, title, created_at, updated_at, message_count, thinking_mode)
+             VALUES('s1', '会话', 1, 1, 0, 1)",
+            [],
+        )
+        .expect("insert session");
+
+        init_schema(&conn).expect("re-init");
+
+        let value: i64 = conn
+            .query_row("SELECT thinking_mode FROM sessions WHERE id = 's1'", [], |r| {
+                r.get(0)
+            })
+            .expect("read thinking_mode");
+        assert_eq!(value, 1, "重复初始化不得清掉用户表态");
+    }
+
+    /// 读取某列的声明类型（用于断言迁移后的列类型）。
+    fn column_type(conn: &Connection, table: &str, column: &str) -> String {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({})", table))
+            .expect("prepare table_info");
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            })
+            .expect("query table_info")
+            .filter_map(Result::ok)
+            .collect();
+        rows.into_iter()
+            .find(|(name, _)| name == column)
+            .map(|(_, ty)| ty.to_uppercase())
+            .unwrap_or_default()
+    }
+
+    /// v11 老库升级到 v12：补上两列缓存累计，且老行一律留在 0。
+    ///
+    /// 老行必须留在 0 而不是被回填：0 在展示层等价于"未报告"（显示 `--`），
+    /// 回填任何具体值都等于给用户编一个假的命中率。
+    #[test]
+    fn v12_migration_adds_session_cache_tokens_to_legacy_db() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        // v11 形态的 sessions 表（无缓存两列，但 **有 project_id**——v10 起就存在）
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                message_count INTEGER NOT NULL,
+                profile_id TEXT,
+                deleted_at INTEGER,
+                thinking_mode TEXT,
+                project_id TEXT
             );
             CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             INSERT INTO app_state(key, value) VALUES('schema_version', '11');
@@ -884,7 +1078,8 @@ mod tests {
                 deleted_at INTEGER,
                 thinking_mode TEXT,
                 total_cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
-                total_cache_miss_tokens INTEGER NOT NULL DEFAULT 0
+                total_cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
+                project_id TEXT
             );
             CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             INSERT INTO app_state(key, value) VALUES('schema_version', '12');
@@ -925,15 +1120,15 @@ mod tests {
             "老会话三列必须保持 NULL，不得替用户选模式"
         );
 
-        // 版本号推进到 13
-        let version: String = conn
+        // 版本号至少推进到 13（后续迁移会继续推进，不硬编码最新版）
+        let version: i64 = conn
             .query_row(
-                "SELECT value FROM app_state WHERE key = 'schema_version'",
+                "SELECT CAST(value AS INTEGER) FROM app_state WHERE key = 'schema_version'",
                 [],
                 |r| r.get(0),
             )
             .expect("read version");
-        assert_eq!(version, "13");
+        assert!(version >= 13, "v13 升级后版本号至少到 13（实际 {}）", version);
 
         // 幂等：再次初始化不报错，且不破坏已有值
         conn.execute_batch(

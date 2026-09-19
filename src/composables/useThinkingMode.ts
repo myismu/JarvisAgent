@@ -1,45 +1,43 @@
 /**
  * # useThinkingMode.ts — 深度思考档位的会话级状态
  *
- * 把「深度思考」从输入框的局部 `ref` 提升为**会话级状态**，与「模型预设」对称：
+ * 把「深度思考」作为**会话级状态**，与「模型预设」「工作模式」「权限档位」对称：
  * 切会话即切档位。
  *
- * ## 数据流（单向）
+ * ## 数据流（单向，前端只渲染）
  * ```
- * 后端 sessions.thinking_mode（唯一真相）
- *   → switch_session / get_session_thinking 带回 thinking_mode
+ * 后端 sessions.thinking_mode（唯一真相，布尔）
+ *   → switch_session / get_session_thinking 带回 thinkingEnabled
  *   → 本 composable 缓存「当前会话」的档位
- *   → decideThinking() 同步投影出开关样式（只读）
- *   → 用户点击 → set_session_thinking_mode 写后端 → 事件/返回值刷新
+ *   → 开关样式直接由该布尔（+ 能力夹紧）投影出来
+ *   → 用户点击 → 只改本地界面值；发送消息时由 chat.flushPendingSessionPrefs 落库
  * ```
  *
+ * ## 职责边界（重要）
+ * 前端**不解析「跟随全局」**、**不读设置默认**、**不推导档位**。
+ * - 新建会话（无 id）：初值由后端 `get_pending_thinking_enabled` 给出；
+ * - 已有会话：值取后端快照；
+ * - 拨动只改本地界面值，**发送消息才落库**（与工作模式/权限档位同一套三值分治）。
+ *
  * ## 关键约束
- * - **发送消息不再携带 `thinkingOverride`**：后端按 sessionId 自行裁决，
- *   因此本 composable 的本地投影即使短暂过期，也**污染不到真实请求**
- * - 写入以**后端返回的权威快照**为准（服务端 last-write-wins）；
- *   本地只做即时乐观显示，失败即回滚
+ * - **发送消息不携带 `thinkingOverride`**：后端按 sessionId 自行裁决
  * - 响应/事件按 `sessionId` + 代次过滤，丢弃乱序回包（快速 A→B→A 切会话）
- * - **拉取失败不猜测档位**：宁可显示为 auto，也不把未知状态写成一个具体档位
  */
 
 import { computed, ref, watch, type Ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useSessionStore } from "../stores/session";
-import { usePreferences } from "../composables/usePreferences";
 import {
   decideThinking,
   isThinkingToggleDisabled,
   type ThinkingCaps,
   type ThinkingDecision,
-  type ThinkingMode,
   type ThinkingSnapshot,
 } from "../utils/thinking";
 
-/** 每个会话各自的档位缓存：`sessionId -> ThinkingMode` */
-const modeBySession = ref<Record<string, ThinkingMode>>({});
-/** 每个会话"当时"的预设默认解析值（后端随快照下发，前端不重复解析预设链） */
-const profileDefaultBySession = ref<Record<string, boolean>>({});
+/** 每个会话各自的档位缓存：`sessionId -> 布尔` */
+const modeBySession = ref<Record<string, boolean>>({});
 /** 写入进行中：期间忽略重复点击 */
 const saving = ref(false);
 /** 最近一次 IPC 失败原因（诊断用） */
@@ -48,32 +46,21 @@ const lastError = ref<string | null>(null);
 let listening = false;
 /**
  * **读**序列号：只由"切会话/重新拉取"推进，用于丢弃过期的 `get_session_thinking` 回包。
- *
- * 刻意与用户点击的写入序列分离——早期版本读、写共用一个计数器，
- * 导致"点击后紧跟着一次 watcher 触发的拉取"会把写入结果作废
- * （表现为开关点了又弹回去，即用户报告的"永远开着、点不动"）。
  */
 let loadGeneration = 0;
-/**
- * **写**序列号：只由用户点击推进，用于丢弃过期的 `set_session_thinking_mode` 回包。
- */
-let writeGeneration = 0;
 
 /**
- * 尚无会话时用户表达的档位意愿（`activeSessionId` 为 `null` 的新会话态）。
+ * "尚无会话"（新建但未发首条消息）期间用户拨过的档位。
  *
- * 新建会话在**发送首条消息前并不存在**（`ensureActiveSessionForSend` 才创建），
- * 若此时点击开关直接返回，用户就会遇到"点了没反应、发了消息才能点"的假故障。
- * 这里先把意愿记下来，等会话一出现立刻落库（见 `useThinkingMode` 里的 null→id watcher）。
+ * 与工作模式/权限档位同构：**只记界面值，不写库**——发送消息时由
+ * `chat.flushPendingSessionPrefs` 统一转交。`null` = 用户没拨过。
  */
-let pendingMode: ThinkingMode | null = null;
+let pendingMode: boolean | null = null;
 
 /**
  * "尚无会话"这一状态在 `modeBySession` 里的键。
  *
- * 刻意用不可能与会话 id 冲突的字面量：会话 id 是 8 位 hex（见 `create_session`），
- * 不可能等于该字符串。这样"无会话期间的档位"能与真实会话档位共存于同一张表，
- * 且切到任意会话后不会被误读。
+ * 会话 id 是 8 位 hex（见 `create_session`），不可能等于该字面量。
  */
 const NO_SESSION_KEY = "__no_session__";
 
@@ -96,58 +83,63 @@ async function loadSessionThinkingInto(sessionId: string | null) {
 /**
  * 模块级导出：供 `Sidebar` 在"切会话 + 预设已落库"之后重新对齐一次，
  * 以及其他非组件路径使用。
- *
- * 与内部调用走同一个 `loadGeneration` 序列，避免两种来源互相作废。
  */
 export async function loadSessionThinking(sessionId: string | null) {
   return loadSessionThinkingInto(sessionId);
 }
 
+/**
+ * 向后端要"尚无会话时的初值"（设置默认 + 当前模型能力，由后端解析）。
+ *
+ * 只影响首屏显示；真正入库的值在首条消息时由后端重新解析。
+ */
+export async function loadPendingThinking() {
+  try {
+    const snapshot = await invoke<ThinkingSnapshot>("get_pending_thinking_enabled");
+    // 只有在用户还没拨过时才用初值覆盖显示，避免把用户的选择顶掉
+    if (pendingMode === null) {
+      modeBySession.value = {
+        ...modeBySession.value,
+        [NO_SESSION_KEY]: snapshot.thinkingEnabled,
+      };
+    }
+    lastError.value = null;
+  } catch (e) {
+    lastError.value = String(e);
+  }
+}
+
+/**
+ * 归一后端回包。
+ *
+ * 注意：`pipeline::ensure_session_thinking_initialized` 发的
+ * `session-thinking-mode-changed` 只带 `{sessionId, thinkingEnabled}`，
+ * 因此这里把缺省字段容错处理，不要假定 `resolvedEnabled` 一定存在。
+ */
 function ingestSnapshot(snapshot: ThinkingSnapshot, expectedSessionId: string) {
   if (snapshot.sessionId !== expectedSessionId) return;
-  modeBySession.value = { ...modeBySession.value, [snapshot.sessionId]: snapshot.thinkingMode };
-  if (typeof snapshot.profileResolvedDefault === "boolean") {
-    profileDefaultBySession.value = {
-      ...profileDefaultBySession.value,
-      [snapshot.sessionId]: snapshot.profileResolvedDefault,
-    };
-  }
+  modeBySession.value = {
+    ...modeBySession.value,
+    [snapshot.sessionId]: snapshot.thinkingEnabled === true,
+  };
 }
 
 export function useThinkingMode(modelCaps: Ref<ThinkingCaps | null>) {
   const session = useSessionStore();
-  const prefs = usePreferences();
 
-  /**
-   * 预设默认（L1）的兜底估算：会话快照尚未到达时使用。
-   *
-   * 只用于"首次绘制"——真正的值以后端快照里的 `profileResolvedDefault` 为准，
-   * 因为后端才知道激活预设的 `thinkingDefault`（前端不读预设链，避免假单源真相）。
-   */
-  const fallbackProfileDefault = computed(() => prefs.agentAudience.value === "developer");
-
-  /**
-   * 当前档位。
-   *
-   * 尚无会话时（`activeSessionId === null`，即新建但未发首条消息）返回该期间用户
-   * 表达的意愿（`NO_SESSION_KEY`），否则返回该会话的权威档位、未取到时按 `auto`。
-   */
-  const currentMode = computed<ThinkingMode>(() => {
+  /** 当前档位（布尔）。尚无会话时返回该期间用户拨过的值，或后端给的初值。 */
+  const currentEnabled = computed<boolean>(() => {
     const sid = session.activeSessionId;
-    if (!sid) return modeBySession.value[NO_SESSION_KEY] ?? "auto";
-    return modeBySession.value[sid] ?? "auto";
-  });
-
-  /** 当前会话生效的预设默认值 */
-  const profileResolvedDefault = computed<boolean>(() => {
-    const sid = session.activeSessionId;
-    if (!sid) return fallbackProfileDefault.value;
-    return profileDefaultBySession.value[sid] ?? fallbackProfileDefault.value;
+    if (!sid) {
+      if (pendingMode !== null) return pendingMode;
+      return modeBySession.value[NO_SESSION_KEY] ?? false;
+    }
+    return modeBySession.value[sid] ?? false;
   });
 
   /** 开关应该显示成什么（只读投影，与后端裁决层同规则） */
   const decision = computed<ThinkingDecision>(() =>
-    decideThinking(null, currentMode.value, profileResolvedDefault.value, modelCaps.value),
+    decideThinking(currentEnabled.value, modelCaps.value),
   );
 
   const isThinkingActive = computed(() => decision.value.enabled);
@@ -155,90 +147,45 @@ export function useThinkingMode(modelCaps: Ref<ThinkingCaps | null>) {
   /**
    * 用户点击开关。
    *
-   * 三种情况：
-   * 1. **锁定/不可点**（模型强制思考、或模型不支持思考）：直接返回，**不记录任何意愿**。
-   *    按钮在 UI 上已是 `disabled`，这里是第二道防线——避免任何路径（键盘、
-   *    程序化调用、未来新增入口）绕过禁用态，悄悄存下一个用户看不见的档位。
-   * 2. **尚无会话**（新建但未发首条消息）：只记录意愿并立即反馈，等会话建立后落库。
-   *    **绝不静默 return**——那正是"点了没反应"这种假故障的来源。
-   * 3. **有会话**：写 L2（`sessions.thinking_mode`）→ 以返回的权威快照刷新。
+   * **只改界面值**：写入 session 的时机推迟到"发送消息"那一刻
+   * （`chat.ensureActiveSessionForSend` → `flushPendingSessionPrefs`），
+   * 与工作模式/权限档位完全一致——拨了不发消息 = 没表态，切走即作废。
    */
-  async function toggleThinking() {
+  function toggleThinking() {
+    // 锁定态不可点：改不了就不给改，也不记账
+    if (isThinkingToggleDisabled(modelCaps.value) || saving.value) return;
+
+    const next = !isThinkingActive.value;
     const sid = session.activeSessionId;
-    if (saving.value) return;
 
-    // 1. 锁定态不可点：改不了就不给改，也不记账（决策 X）
-    if (isThinkingToggleDisabled(modelCaps.value)) return;
-
-    const next: ThinkingMode = isThinkingActive.value ? "never" : "always";
-    const previous = currentMode.value;
-
-    // 2. 尚无会话：记意愿 + 即时反馈，会话一建立就落库
+    // 尚无会话：记界面值（发送首条消息时落库）
     if (!sid) {
       pendingMode = next;
       modeBySession.value = { ...modeBySession.value, [NO_SESSION_KEY]: next };
       return;
     }
 
-    // 3. 点击时立刻作废"在途的档位拉取"，否则它会把写入结果覆盖掉
-    loadGeneration += 1;
-
-    // 即时反馈（纯 UI，失败回滚）
     modeBySession.value = { ...modeBySession.value, [sid]: next };
-    saving.value = true;
-    const myGen = ++writeGeneration;
-    try {
-      const snapshot = await invoke<ThinkingSnapshot>("set_session_thinking_mode", {
-        id: sid,
-        mode: next,
-      });
-      if (myGen !== writeGeneration) return;
-      if (session.activeSessionId !== sid) return; // 期间切走了会话，不污染新会话
-      ingestSnapshot(snapshot, sid);
-      lastError.value = null;
-    } catch (e) {
-      lastError.value = String(e);
-      modeBySession.value = { ...modeBySession.value, [sid]: previous };
-    } finally {
-      saving.value = false;
-    }
   }
 
-  /** 把"无会话期间的意愿"落库到刚建立的会话 */
-  async function flushPendingMode(sid: string) {
-    const mode = pendingMode;
-    if (!mode) return;
+  /** 会话建立后清掉"无会话"期间的临时状态（值已由 chat 层落库） */
+  function clearPendingMode() {
     pendingMode = null;
-    // 清掉无会话态的临时条目，会话档位以刚落库的结果为准
     const { [NO_SESSION_KEY]: _dropped, ...rest } = modeBySession.value;
     modeBySession.value = rest;
-    // 会话建立后模型可能已换成强制思考/不支持思考的：此时不该落库（与决策 X 一致）
-    if (isThinkingToggleDisabled(modelCaps.value)) return;
-    try {
-      const snapshot = await invoke<ThinkingSnapshot>("set_session_thinking_mode", {
-        id: sid,
-        mode,
-      });
-      if (session.activeSessionId !== sid) return;
-      ingestSnapshot(snapshot, sid);
-      lastError.value = null;
-    } catch (e) {
-      lastError.value = String(e);
-      // 落库失败：退回到后端当前值，避免 UI 与后端长期不一致
-      void loadSessionThinkingInto(sid);
-    }
   }
 
-  // 会话切换 → 同步该会话的档位（这一步取代了原来"开关跟着组件走"的行为）
+  // 会话切换 → 同步该会话的档位
   watch(
     () => session.activeSessionId,
     (sid, prevSid) => {
       if (sid) {
-        // null → id 是"新建会话刚被创建"，先把无会话期间的意愿落库
-        if (!prevSid && pendingMode) {
-          void flushPendingMode(sid);
-        }
+        // null → id 是"新建会话刚被创建"：清掉临时态，值以后端为准
+        if (!prevSid) clearPendingMode();
         void loadSessionThinkingInto(sid);
+      } else {
+        // 切回"新建会话"态：问后端初值
+        void loadPendingThinking();
       }
     },
     { immediate: true },
@@ -257,18 +204,19 @@ export function useThinkingMode(modelCaps: Ref<ThinkingCaps | null>) {
   }
 
   return {
-    currentMode,
+    currentEnabled,
     decision,
     isThinkingActive,
     lastError,
     saving,
     toggleThinking,
     loadSessionThinking,
+    loadPendingThinking,
   };
 }
 
 /** 供 store / 非组件路径使用：只读当前会话档位 */
-export function getSessionThinkingMode(sessionId: string | null): ThinkingMode {
-  if (!sessionId) return "auto";
-  return modeBySession.value[sessionId] ?? "auto";
+export function getSessionThinkingEnabled(sessionId: string | null): boolean {
+  if (!sessionId) return false;
+  return modeBySession.value[sessionId] ?? false;
 }

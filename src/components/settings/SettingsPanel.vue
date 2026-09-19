@@ -219,6 +219,32 @@
                   </div>
                   <div class="setting-desc">{{ t('settings.general.workModeDesc') }}</div>
                 </div>
+                <!--
+                  深度思考默认档位：与工作模式/权限档位并列的**设置默认值**（UiPreferences）。
+                  注意它只管「新建会话首次发消息时固化的值」，改它**不会**回溯影响已有会话
+                  （正因如此它必须与预设解耦——挂在预设上会导致改一个预设倒灌所有会话）。
+                -->
+                <div class="setting-item">
+                  <label>{{ t('settings.general.thinkingDefault') }}</label>
+                  <div class="display-mode-toggle">
+                    <button
+                      class="display-mode-btn"
+                      :class="{ active: thinkingDefault === 'follow_global' }"
+                      @click="setThinkingDefault('follow_global')"
+                    >{{ t('settings.general.thinkingFollowGlobal') }}</button>
+                    <button
+                      class="display-mode-btn"
+                      :class="{ active: thinkingDefault === 'on' }"
+                      @click="setThinkingDefault('on')"
+                    >{{ t('settings.general.thinkingOn') }}</button>
+                    <button
+                      class="display-mode-btn"
+                      :class="{ active: thinkingDefault === 'off' }"
+                      @click="setThinkingDefault('off')"
+                    >{{ t('settings.general.thinkingOff') }}</button>
+                  </div>
+                  <div class="setting-desc">{{ t('settings.general.thinkingDefaultDesc') }}</div>
+                </div>
                 <div class="setting-item">
                   <label>{{ t('settings.general.compactMode') }}</label>
                   <label class="toggle-switch">
@@ -463,15 +489,11 @@
                   <div class="setting-desc">{{ t('settings.profileEditor.utilityModelDesc') }}</div>
                 </div>
 
-                <div class="setting-item">
-                  <label>{{ t('settings.profileEditor.thinkingDefault') }}</label>
-                  <select v-model="editingProfile.config.thinkingDefault">
-                    <option value="auto">{{ t('settings.profileEditor.thinkingDefaultAuto') }}</option>
-                    <option value="on">{{ t('settings.profileEditor.thinkingDefaultOn') }}</option>
-                    <option value="off">{{ t('settings.profileEditor.thinkingDefaultOff') }}</option>
-                  </select>
-                  <div class="setting-desc">{{ t('settings.profileEditor.thinkingDefaultDesc') }}</div>
-                </div>
+                <!--
+                  深度思考的默认档位曾放在这里（预设级）。已迁到「常规设置」：
+                  预设级会让"改一个预设"倒灌所有未表态会话（NULL 每轮现读该预设），
+                  而它本质是个**全局默认值**，与预设的采样参数不是同一层概念。
+                -->
 
                 <div class="advanced-toggle" @click="showAdvanced = !showAdvanced">
                   <span>{{ t('settings.profileEditor.advancedParams') }}</span>
@@ -536,9 +558,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { useTheme } from '../../composables/useTheme'
 import { usePreferences, type AgentPanelPosition, type ImageCompressTier } from '../../composables/usePreferences'
 import { useWindow } from '../../composables/useWindow'
-import { useSessionStore } from '../../stores/session'
-import type { AgentUserMode, AgentWorkMode } from '../../types'
-import { parseThinkingDefault, type ThinkingDefault } from '../../utils/thinking'
+import type { AgentUserMode } from '../../types'
+import type { ThinkingDefault } from '../../utils/thinking'
 import ConfirmModal from '../common/ConfirmModal.vue'
 
 const { t, locale } = useI18n()
@@ -546,39 +567,30 @@ const { t, locale } = useI18n()
 const { isDark, toggleTheme } = useTheme()
 const uiPrefs = usePreferences()
 const { resetWindowStates, notifyMonitorLocaleChanged } = useWindow()
-const session = useSessionStore()
 const agentAudience = uiPrefs.agentAudience
 const setAgentAudience = (val: "user" | "developer") => uiPrefs.setAgentAudience(val)
 const agentWorkMode = uiPrefs.agentWorkMode
 const agentApprovalMode = uiPrefs.agentApprovalMode
+// 深度思考的**设置默认档位**（三值）。与其他设置默认值同理：只喂新建会话，
+// 「跟随全局」的解析在后端按模型能力完成，前端不做推导。
+const thinkingDefault = uiPrefs.thinkingDefault
+const setThinkingDefault = (val: ThinkingDefault) => uiPrefs.setThinkingDefault(val)
 
 /**
- * 工作模式 / 权限档位都要同步到当前会话状态（后端才是事实来源），
- * 否则界面变了、LLM 仍按旧的模式与权限工作。
+ * 设置页只写**默认值**，刻意不碰任何会话。
+ *
+ * 这三个值是三条独立通道：设置默认值 / 会话界面值 / session 表值。设置页改的是
+ * "以后新会话用什么"，若顺手把当前会话也改了（旧行为），用户就丧失了"只改默认"的
+ * 能力——而且当前会话本应由用户在该会话界面里自己拨。会话值的写入时机统一在
+ * 发送消息时（`chat.ts ensureActiveSessionForSend` 消费 pending 落库）。
  */
-async function syncSessionWorkMode(mode: AgentWorkMode) {
-  if (!session.activeSessionId) return
-  try {
-    await invoke('set_session_work_mode', { sessionId: session.activeSessionId, mode })
-  } catch (e) {
-    console.error('Failed to sync session work mode:', e)
-  }
-}
-
-const setAgentWorkMode = async (val: AgentUserMode) => {
+const setAgentWorkMode = (val: AgentUserMode) => {
   uiPrefs.setAgentWorkMode(val)
-  await syncSessionWorkMode(val)
 }
 
 /** 权限档位：请求审批（改动一律问）/ 帮我批准（只问风险操作） */
-const setAgentApprovalMode = async (val: "request_approval" | "auto_approve") => {
+const setAgentApprovalMode = (val: "request_approval" | "auto_approve") => {
   uiPrefs.setAgentApprovalMode(val)
-  if (!session.activeSessionId) return
-  try {
-    await invoke('set_session_approval_mode', { sessionId: session.activeSessionId, mode: val })
-  } catch (e) {
-    console.error('Failed to sync session approval mode:', e)
-  }
 }
 const fontSize = computed(() => uiPrefs.fontSize)
 const setFontSize = (val: number) => uiPrefs.setFontSize(val)
@@ -661,13 +673,6 @@ interface AgentConfig {
   topP?: number | null
   topK?: number | null
   maxTokens?: number | null
-  /**
-   * 深度思考的**预设默认档位**（L1）：`auto` | `on` | `off`
-   *
-   * 会话未表态（`thinking_mode = auto`）时按此值决定；`auto` 再回落到
-   * 全局「开发者/普通用户」受众设置。与输入框的会话级开关是两个层次。
-   */
-  thinkingDefault?: ThinkingDefault
 }
 
 interface ModelCapabilities {
@@ -712,7 +717,6 @@ const createBlankProfile = (id: string): ModelProfile => ({
     topP: null,
     topK: null,
     maxTokens: null,
-    thinkingDefault: 'auto',
   }
 })
 
@@ -724,8 +728,6 @@ const normalizeProfileConfig = (config: AppConfig) => {
     p.config.topP = p.config.topP == null ? null : Number(p.config.topP)
     p.config.topK = p.config.topK == null ? null : Number(p.config.topK)
     p.config.maxTokens = p.config.maxTokens == null ? null : Number(p.config.maxTokens)
-    // 老 config.json 没有该字段：补 auto，保证与后端 #[serde(default)] 口径一致
-    p.config.thinkingDefault = parseThinkingDefault(p.config.thinkingDefault)
   })
   return config
 }

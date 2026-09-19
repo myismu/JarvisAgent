@@ -271,8 +271,25 @@ const currentWorkMode = ref<AgentWorkMode>(uiPrefs.agentWorkMode.value);
 // 模式切换失败的提示（后端拒绝时显示）
 const workModeWarning = ref("");
 
+/**
+ * 设置页改了默认值 → 只在**新建会话界面**（无 activeSessionId）刷新选择器。
+ *
+ * 刻意不在"已有会话"下跟改：设置里的是**默认值**，只作用于新会话；已有会话的显示
+ * 来自 session 表，不该被设置页的改动牵动（否则用户在设置页调默认，正开着的会话
+ * 选择器跟着跳，语义就乱了）。顺带清掉新建态的 pending——设置页的显式意图更新，
+ * 以最新为准。
+ */
 watch(() => uiPrefs.agentWorkMode.value, (val) => {
+  if (session.activeSessionId) return;
+  session.pendingWorkMode = null;
   currentWorkMode.value = val;
+});
+
+/** 权限档位的默认值改动，与工作模式同构：只刷新新建态选择器 */
+watch(() => uiPrefs.agentApprovalMode.value, (val) => {
+  if (session.activeSessionId) return;
+  session.pendingApprovalMode = null;
+  currentApprovalMode.value = val;
 });
 
 let unlistenDragDrop: (() => void) | null = null;
@@ -300,8 +317,22 @@ const canModelVision = ref(true);
 const {
   isThinkingActive,
   saving: thinkingSaving,
-  toggleThinking,
+  toggleThinking: toggleThinkingMode,
 } = useThinkingMode(modelThinkingCaps);
+
+/**
+ * 点击深度思考开关。
+ *
+ * 与工作模式/权限档位同一套三值分治：**拨动只改界面值**，写入 session 表
+ * 推迟到"发送消息"那一刻（`chat.ensureActiveSessionForSend`）。
+ * 尚无会话时把界面值也记进 `pendingThinkingEnabled`，供发送时转交后端。
+ */
+const toggleThinking = () => {
+  toggleThinkingMode();
+  if (!session.activeSessionId) {
+    session.pendingThinkingEnabled = isThinkingActive.value;
+  }
+};
 
 /** 开关是否可点：模型不支持思考 / 强制思考时都不可点（点了也没用，但有文案解释） */
 const thinkingToggleDisabled = computed(() => isThinkingToggleDisabled(modelThinkingCaps.value));
@@ -513,10 +544,24 @@ const doSwitchProfile = async (id: string) => {
 /** 当前权限档位（请求审批 / 帮我批准）：后端会话状态为准 */
 const currentApprovalMode = ref<AgentApprovalMode>(uiPrefs.agentApprovalMode.value);
 
-/** 只读保护（本会话禁止一切改动）：后端会话状态为准，不落盘 */
+/**
+ * 只读保护（本会话禁止一切改动）：后端会话状态为准，**不落盘**。
+ *
+ * 三层语义里它只有"会话界面值"这一条通道——既没有设置默认值，也没有 session 表列
+ * （后端 `set_agent_read_only` 刻意纯内存，理由见该命令的 doc：记住会变成幽灵故障）。
+ * 因此新建会话态拨的那一下只能靠 `session.pendingReadOnly` 内存兜住。
+ */
 const agentReadOnly = ref(false);
 
-/** 只读保护是独立闸门：不看权限档位、不看工作模式，切模式绕不过它 */
+/**
+ * 只读保护是独立闸门：不看权限档位、不看工作模式，切模式绕不过它。
+ *
+ * 两条分支：
+ * - **已有会话**：直接调后端（它会立刻生效，且只活在进程内存里）。
+ * - **新建会话态**（尚未发首条消息，会话还不存在）：后端没有 sessionId 可写，
+ *   只记进 `pendingReadOnly`；发消息创建会话时由 `chat.ts` 统一转交给后端。
+ *   这与工作模式/档位的 pending 同构，区别只在于**没有设置默认值可回落**。
+ */
 const toggleReadOnly = async () => {
   const next = !agentReadOnly.value;
   const prev = agentReadOnly.value;
@@ -524,6 +569,9 @@ const toggleReadOnly = async () => {
   try {
     if (session.activeSessionId) {
       await invoke('set_agent_read_only', { sessionId: session.activeSessionId, enabled: next });
+    } else {
+      // 无会话态：只记"待应用选择"，等首条消息创建会话时再让后端生效
+      session.pendingReadOnly = next;
     }
     agentReadOnly.value = next;
   } catch (e) {
@@ -534,66 +582,63 @@ const toggleReadOnly = async () => {
 };
 
 /**
- * 权限档位只改档位，**不碰工作模式**（两条轴分开：一个是"问得多严"，一个是"先出方案还是直接干"）
+ * 权限档位只改档位，**不碰工作模式**（两条轴分开：一个是"问得多严"，一个是"先出方案还是直接干"）。
+ *
+ * 拨动只改**界面值**并记进 pending，**不立刻写 session**：会话级值统一在"发送消息"
+ * 时落库（`chat.ts ensureActiveSessionForSend`）。拨完没发消息就切走 = 没表态，
+ * 切回来仍是 session 表里的原值。
  */
-const applyApprovalMode = async (mode: AgentApprovalMode) => {
+const applyApprovalMode = (mode: AgentApprovalMode) => {
   showApprovalMenu.value = false;
   if (mode === currentApprovalMode.value) {
     return;
   }
-  const prevApproval = currentApprovalMode.value;
-  workModeWarning.value = "";
-  try {
-    if (session.activeSessionId) {
-      await invoke('set_session_approval_mode', { sessionId: session.activeSessionId, mode });
-    } else {
-      // 无会话态：改的是"下一次新会话的默认"（设置本身），会话建立时后端会读到
-      uiPrefs.setAgentApprovalMode(mode);
-    }
-    currentApprovalMode.value = mode;
-  } catch (e) {
-    currentApprovalMode.value = prevApproval;
-    workModeWarning.value = String(e);
-    console.error('Failed to switch approval mode:', e);
-  }
+  session.pendingApprovalMode = mode;
+  currentApprovalMode.value = mode;
 };
 
 /**
- * 工作模式只改模式（编辑 / 规划），**不碰权限档位**
+ * 工作模式只改模式（编辑 / 规划），**不碰权限档位**。
+ * 与档位同构：只改界面值 + 记 pending，写 session 推迟到发送消息时。
  */
-const applyWorkMode = async (mode: AgentUserMode) => {
+const applyWorkMode = (mode: AgentUserMode) => {
   showWorkModeMenu.value = false;
   if (mode === currentWorkMode.value) return;
-  const prev = currentWorkMode.value;
-  workModeWarning.value = "";
-  try {
-    if (session.activeSessionId) {
-      await invoke('set_session_work_mode', { sessionId: session.activeSessionId, mode });
-    } else {
-      // 无会话态：改的是"下一次新会话的默认"（设置本身），会话建立时后端会读到
-      uiPrefs.setAgentWorkMode(mode);
-    }
-    currentWorkMode.value = mode;
-  } catch (e) {
-    currentWorkMode.value = prev;
-    workModeWarning.value = String(e);
-    console.error('Failed to switch work mode:', e);
-  }
+  session.pendingWorkMode = mode;
+  currentWorkMode.value = mode;
 };
 
-/** 会话状态才是事实来源：切换会话 / 刷新后校准档位与模式。
- *  无会话态（新建会话尚未发送首条消息）回落到设置默认——
- *  否则选择器会残留上一个会话的模式，"新会话吃默认设置"就断了这一环。
- *  注意：这里不再把会话值反写进 UI 偏好——模式/档位是会话级属性（后端已落库），
- *  反写会把"设置里的默认"悄悄覆盖成"最后看过的会话"，默认设置形同虚设。 */
+/**
+ * 会话状态才是事实来源：切换会话 / 刷新后校准档位与模式。
+ *
+ * 两条分支对应两套取值来源：
+ * - **无会话态**（新建会话尚未发送首条消息）：取设置默认值。pending 只在这个态下
+ *   有意义——用户在新会话界面拨过、还没发消息，得把这份"意图"显示住。
+ * - **有会话**：一律从 session 表读（`get_session_work_mode` /
+ *   `get_session_permission_settings`），界面值 = 该会话已落库的定论。
+ *
+ * pending 的清理：切到**任何已有会话**都要清空。它只属于"即将出生的那个新会话"，
+ * 若不清，上一个新建界面的拨动会跟着泄漏进你刚切进来的会话显示里。
+ *
+ * 注意：这里不把会话值反写进 UI 偏好——模式/档位是会话级属性（后端已落库），
+ * 反写会把"设置里的默认"悄悄覆盖成"最后看过的会话"，默认设置形同虚设。
+ */
 const syncPermissionFromSession = async () => {
   const sid = session.activeSessionId;
   if (!sid) {
-    currentWorkMode.value = uiPrefs.agentWorkMode.value;
-    currentApprovalMode.value = uiPrefs.agentApprovalMode.value;
-    agentReadOnly.value = false;
+    // 新建会话界面：优先回显"待应用选择"（用户刚在新会话里点过的），否则回落设置默认。
+    // 只读没有设置默认值可回落，所以基准是 false（新建会话默认不开启保护）。
+    currentWorkMode.value = session.pendingWorkMode ?? uiPrefs.agentWorkMode.value;
+    currentApprovalMode.value = session.pendingApprovalMode ?? uiPrefs.agentApprovalMode.value;
+    agentReadOnly.value = session.pendingReadOnly ?? false;
     return;
   }
+  // 进入已有会话：pending 只服务于新建态，离开新建态即作废
+  // （拨完没发消息就切走 = 没表态，切回来仍是 session 表里的原值）
+  session.pendingWorkMode = null;
+  session.pendingApprovalMode = null;
+  session.pendingReadOnly = null;
+  session.pendingThinkingEnabled = null;
   try {
     const mode = await invoke<AgentWorkMode>('get_session_work_mode', { sessionId: sid });
     currentWorkMode.value = mode;

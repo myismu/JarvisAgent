@@ -96,7 +96,8 @@ pub fn upsert_session(meta: &SessionMeta, memory: &SessionMemory) -> Result<(), 
                 meta.total_cache_miss_tokens as i64,
                 meta.title_source,
                 meta.project_id,
-                meta.thinking_mode,
+                // 布尔列显式转 1/0（rusqlite 虽能直接绑 bool，但显式写死口径更清楚）
+                if meta.thinking_mode { 1 } else { 0 },
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -777,17 +778,17 @@ pub fn update_session_profile(id: &str, profile_id: &str) -> Result<(), String> 
     })
 }
 
-/// 写入会话的深度思考档位。
+/// 写入会话的深度思考档位（**布尔**）。
 ///
-/// `mode` 为 `None` / `Some("auto")` 时归一化为 `NULL`（"用户未表态"），
-/// 与 `SessionMeta.thinking_mode` 的读出口径保持一致。
-pub fn update_session_thinking_mode(id: &str, mode: Option<&str>) -> Result<(), String> {
-    let normalized = crate::core::session::thinking::normalize_session_mode(mode);
+/// v14 起该列是 `INTEGER NOT NULL`，只写 `1` / `0`，**永不写 NULL**：
+/// "跟随设置默认"这件事已在会话创建时被解析掉，库里只保留确定值——
+/// 这正是"设置改动不倒灌已有会话"的实现基础（详见 `core::session::thinking`）。
+pub fn update_session_thinking_mode(id: &str, enabled: bool) -> Result<(), String> {
     crate::infra::db::with_connection(|conn| {
         let changed = conn
             .execute(
                 "UPDATE sessions SET thinking_mode = ?2 WHERE id = ?1 AND deleted_at IS NULL",
-                params![id, normalized],
+                params![id, if enabled { 1 } else { 0 }],
             )
             .map_err(|e| e.to_string())?;
         if changed == 0 {
@@ -907,7 +908,7 @@ fn session_meta_from_row(row: &Row<'_>) -> rusqlite::Result<SessionMeta> {
         title_source: row.get(9)?,
         project_id: row.get(10)?,
         working_directory: row.get(11)?,
-        thinking_mode: row.get(12)?,
+        thinking_mode: row.get::<_, i64>(12)? != 0,
         total_cache_hit_tokens: row.get::<_, i64>(13)? as u64,
         total_cache_miss_tokens: row.get::<_, i64>(14)? as u64,
     })

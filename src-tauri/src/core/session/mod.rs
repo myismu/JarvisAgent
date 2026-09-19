@@ -125,12 +125,13 @@ pub struct SessionMeta {
     /// 工作目录（从 projects 表派生，仅读）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_directory: Option<String>,
-    /// 深度思考档位（会话级表态）：None/`"auto"` = 跟随预设默认，
-    /// `"always"` = 本会话强制开启，`"never"` = 本会话强制关闭。
+    /// 深度思考档位（**会话级布尔**）：`true` = 本会话开启思考，`false` = 关闭。
     ///
-    /// 这是"随会话走的推理档"，与 `profile_id`（随会话走的模型预设）对称。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking_mode: Option<String>,
+    /// v14 起只有布尔，**没有"未表态"这个状态**——"跟随设置默认"在会话创建时
+    /// （`pipeline::start_run` 首次解析）就被固化成本列的值，此后设置页怎么改都不会
+    /// 回溯修改它。这是与 `profile_id`（随会话走的模型预设）对称的"随会话走的推理档"。
+    #[serde(default)]
+    pub thinking_mode: bool,
 }
 
 /// 一次 pipeline 运行产生的用量增量，由 `save_session` 累加进会话累计值。
@@ -250,7 +251,9 @@ pub fn create_session(project_id: Option<String>) -> SessionMeta {
         title_source: default_title_source(),
         project_id,
         working_directory,
-        thinking_mode: None,
+        // 新会话的思考档位先落一个保守占位 `false`；
+        // 真正的初值在第一条消息时由 `pipeline::start_run` 按"设置默认 + 模型能力"解析后写入。
+        thinking_mode: false,
     };
     let memory = SessionMemory::default();
     let _ = repository::upsert_session(&meta, &memory);
@@ -385,7 +388,7 @@ pub fn save_session(
                 title_source: default_title_source(),
                 project_id: None,
                 working_directory: None,
-                thinking_mode: None,
+                thinking_mode: false,
             };
         }
     };
@@ -767,13 +770,15 @@ pub fn update_session_profile(id: &str, profile_id: &str) -> Result<(), String> 
     repository::update_session_profile(id, profile_id)
 }
 
-/// 更新会话的深度思考档位（`None` / `"auto"` → 落库为 `NULL`）
-pub fn update_session_thinking_mode(id: &str, mode: Option<&str>) -> Result<(), String> {
-    repository::update_session_thinking_mode(id, mode)
+/// 更新会话的深度思考档位（布尔，落库 `1`/`0`）。
+///
+/// 调用方是"界面拨动后发消息"这一条路径，与工作模式/权限档位完全同构。
+pub fn update_session_thinking_mode(id: &str, enabled: bool) -> Result<(), String> {
+    repository::update_session_thinking_mode(id, enabled)
 }
 
-/// 读取会话的深度思考档位（存储态：`None` = auto）
-pub fn get_session_thinking_mode(id: &str) -> Result<Option<String>, String> {
+/// 读取会话的深度思考档位（布尔）。
+pub fn get_session_thinking_mode(id: &str) -> Result<bool, String> {
     Ok(get_session_meta(id)?.thinking_mode)
 }
 

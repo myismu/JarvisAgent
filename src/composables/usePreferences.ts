@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { AgentApprovalMode, AgentAudience, AgentUserMode, AgentWorkMode } from "../types";
 import { DEFAULT_LOCALE, normalizeLocale, type AppLocale } from "../i18n";
+import { parseThinkingDefault, type ThinkingDefault } from "../utils/thinking";
 
 export type AgentPanelPosition = "left" | "right";
 
@@ -52,6 +53,17 @@ interface UiPreferences {
   agentWorkMode: AgentWorkMode;
   /** 权限档位：请求审批（默认）/ 帮我批准 */
   agentApprovalMode: AgentApprovalMode;
+  /**
+   * 深度思考的**设置默认档位**（三值）：跟随后端 `UiPreferences.thinking_default`。
+   *
+   * - `follow_global`（默认）：按**模型能力**推导——强制思考的模型（如 DeepSeek）为开，
+   *   其余为关；
+   * - `on` / `off`：无论模型如何都开 / 关。
+   *
+   * ⚠️ 它只决定**新建会话首次发消息时**固化的值（后端 `start_run` 解析并落库），
+   * 此后改动设置**不会**回溯影响任何已有会话。与输入框里的会话级开关是两个层次。
+   */
+  thinkingDefault: ThinkingDefault;
   locale: AppLocale;
   agentMessageOpacity: number;
   userMessageOpacity: number;
@@ -81,6 +93,7 @@ const defaults: UiPreferences = {
   agentAudience: "developer",
   agentWorkMode: "edit",
   agentApprovalMode: "request_approval",
+  thinkingDefault: "follow_global",
   locale: DEFAULT_LOCALE,
   agentMessageOpacity: 0,
   userMessageOpacity: 0,
@@ -112,6 +125,9 @@ function normalizePrefs(
   }
   result.agentApprovalMode =
     result.agentApprovalMode === "auto_approve" ? "auto_approve" : "request_approval";
+  // 老配置里的旧值（'auto'/'on'/'off' 或脏值）统一收敛到三值域；
+  // 与后端 `migrate_legacy_work_mode` 的收敛口径保持一致
+  result.thinkingDefault = parseThinkingDefault(result.thinkingDefault);
   result.agentPanelPosition = result.agentPanelPosition === "left" ? "left" : "right";
   result.locale = normalizeLocale(result.locale);
   normalizeImageCompress(result);
@@ -215,6 +231,7 @@ function startWatchers() {
   watch(() => prefs.value.agentAudience, () => scheduleSave());
   watch(() => prefs.value.agentWorkMode, () => scheduleSave());
   watch(() => prefs.value.agentApprovalMode, () => scheduleSave());
+  watch(() => prefs.value.thinkingDefault, () => scheduleSave());
   watch(() => prefs.value.locale, () => scheduleSave());
   watch(() => prefs.value.defaultExpandThinking, () => scheduleSave());
   watch(() => prefs.value.autoScroll, () => scheduleSave());
@@ -292,6 +309,11 @@ export function usePreferences() {
     set: (val) => { prefs.value.agentApprovalMode = val; },
   });
 
+  const thinkingDefault = computed<ThinkingDefault>({
+    get: () => parseThinkingDefault(prefs.value.thinkingDefault),
+    set: (val) => { prefs.value.thinkingDefault = parseThinkingDefault(val); },
+  });
+
   const locale = computed<AppLocale>({
     get: () => prefs.value.locale,
     set: (val) => { prefs.value.locale = normalizeLocale(val); },
@@ -312,6 +334,8 @@ export function usePreferences() {
     setAgentWorkMode: (val: AgentUserMode) => { prefs.value.agentWorkMode = val; },
     agentApprovalMode,
     setAgentApprovalMode: (val: AgentApprovalMode) => { prefs.value.agentApprovalMode = val; },
+    thinkingDefault,
+    setThinkingDefault: (val: ThinkingDefault) => { prefs.value.thinkingDefault = parseThinkingDefault(val); },
     locale,
     setLocale: (val: AppLocale) => { prefs.value.locale = normalizeLocale(val); },
     get defaultExpandThinking() { return prefs.value.defaultExpandThinking; },

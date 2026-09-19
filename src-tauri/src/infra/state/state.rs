@@ -134,11 +134,12 @@ pub struct SessionContext {
     /// 工作模式（"edit" / "plan"）——用户可手动切换，Edit 下 Agent 可自动切 Plan。
     /// 权限档位（问得多严）另存于 `approval_mode`。
     pub agent_work_mode: Mutex<String>,
-    /// 深度思考档位（会话级表态）：`None`/`"auto"` = 跟随预设默认，
-    /// `"always"` = 本会话强制开启，`"never"` = 本会话强制关闭。
+    /// 深度思考档位（会话级，**布尔**）：`true` = 本会话开启，`false` = 关闭。
     ///
     /// 与 `sessions.thinking_mode` 同步；决策逻辑见 `core::session::thinking`。
-    pub thinking_mode: Mutex<Option<String>>,
+    /// v14 起没有"未表态"状态——初值在会话第一条消息时由 pipeline 按
+    /// "设置默认 + 模型能力"解析并落库，此后只由用户在界面上拨动。
+    pub thinking_mode: Mutex<bool>,
     /// **本轮**最终生效的思考状态（由主 Agent 的裁决层写入）。
     ///
     /// 子 Agent 用它**继承主 Agent 的档位**，而不是各自按全局 `agent_audience` 重新推导——
@@ -191,7 +192,7 @@ impl SessionContext {
             dedupe_cache: Mutex::new(HashMap::new()),
             agent_audience: Mutex::new("developer".to_string()),
             agent_work_mode: Mutex::new("edit".to_string()),
-            thinking_mode: Mutex::new(None),
+            thinking_mode: Mutex::new(false),
             turn_think: Mutex::new(None),
             scheduler_rx: Mutex::new(None),
             read_file_paths: Mutex::new(Vec::new()),
@@ -305,12 +306,9 @@ impl SessionManager {
                     crate::core::session::strip_extended_path_prefix(&ws),
                 )
             });
-            // 深度思考档位随会话恢复（None = auto），与 profileId 的恢复路径对称
-            *ctx.thinking_mode.lock().await =
-                crate::core::session::thinking::normalize_session_mode(
-                    meta.thinking_mode.as_deref(),
-                )
-                .map(|s| s.to_string());
+            // 深度思考档位随会话恢复（布尔）。已在建会话/首次发消息时固化为确定值，
+            // 因此直接取库值即可，无需再解析"设置默认"。
+            *ctx.thinking_mode.lock().await = meta.thinking_mode;
         }
         // 挂载项目后把该项目的授权账本注入内存（用户此前点过的「本项目允许」自动生效）
         if let Some(root) = ctx.workspace.lock().await.clone() {

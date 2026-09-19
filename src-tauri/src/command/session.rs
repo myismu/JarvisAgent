@@ -618,49 +618,81 @@ pub async fn get_session_meta(id: String) -> Result<session::SessionMeta, String
     session::get_session_meta(&id)
 }
 
-// ── 深度思考档位（会话级） ──
+// ── 深度思考档位（会话级，布尔） ──
 
-/// 取当前激活预设的「默认思考档位」，并与全局 `agent_audience` 回退合并为确定布尔值。
+/// 取出**当前激活预设**的主模型，用于查模型能力。
 ///
-/// 这里是设计文档决策 **D2** 的落点：预设为 `auto` 时回退到
-/// `agent_audience == "developer"`，与 `pipeline` 里 `loop_think_default` 的既有语义一致，
-/// 保证升级后 developer 用户行为零变化。
-async fn resolve_profile_thinking_default(
+/// 与旧版 `resolve_profile_thinking_default` 的区别：**不再解析任何默认档位**。
+/// 设置默认值的解析只发生在"会话首次发消息"那一刻（`pipeline::start_run`），
+/// 这里只为构造 UI 快照而查能力（能力夹紧仍然需要它）。
+async fn current_main_model(
     config_state: &tauri::State<'_, crate::infra::config::config::ConfigState>,
-) -> (bool, String) {
-    let audience_default = crate::command::app_config::get_ui_preferences()
-        .await
-        .map(|prefs| prefs.agent_audience == "developer")
-        .unwrap_or(false);
-
+) -> String {
     let cfg = config_state.0.lock().await.clone();
-    let active = cfg.active_config();
-    let profile_default = session::thinking::ThinkingDefault::parse(&active.thinking_default);
-
-    (profile_default.resolve(audience_default), active.main_model)
+    cfg.active_config().main_model
 }
 
 /// 组装前端的思考档位快照（`resolvedEnabled` 由后端裁决层算出，前端不做二次判断）。
+///
+/// `thinkingEnabled` 与 `resolvedEnabled` 的区别：
+/// - `thinkingEnabled`：会话库里存的值（用户意图 / 建会话时固化的值）；
+/// - `resolvedEnabled`：**实际生效**的值（已过模型能力夹紧，如 DeepSeek 上恒为 true）。
+///
+/// 前端渲染开关高亮用后者，但要保留前者以便提示"意愿被模型否决"。
 fn build_thinking_snapshot(
     session_id: &str,
     session_mode: session::thinking::ThinkingMode,
     caps: Option<&crate::infra::llm::registry::ModelCapabilities>,
-    profile_resolved_default: bool,
 ) -> serde_json::Value {
-    let decision = session::thinking::decide(
-        None,
-        session_mode,
-        profile_resolved_default,
-        caps,
-    );
+    let decision = session::thinking::decide(None, session_mode, caps);
     serde_json::json!({
         "sessionId": session_id,
-        "thinkingMode": session_mode.as_api(),
-        "profileResolvedDefault": profile_resolved_default,
+        "thinkingEnabled": session_mode.0,
         "resolvedEnabled": decision.enabled,
         "reason": format!("{:?}", decision.reason),
         "noticeI18nKey": decision.notice_i18n_key,
     })
+}
+
+/// 计算「**尚无会话时**」深度思考开关该显示成什么（只读，不落库）。
+///
+/// ## 为什么需要它
+///
+/// 新建会话在**发送首条消息之前并不存在**（`create_session` 时才建行），
+/// 但输入框上的开关此时就要有个确定状态。按「跟随全局」的定义，
+/// 这个值等于「设置默认档位 + 当前主模型是否强制思考」的解析结果——
+/// 这套解析**只能在后端做**（前端不读设置、不查能力），所以单独开一个命令。
+///
+/// 返回值只是为了**首屏渲染**：真正入库的值仍在首条消息时由
+/// `pipeline::ensure_session_thinking_initialized` 重新解析固化，
+/// 所以这里即使短暂过期也污染不到真实请求。
+///
+/// 与 `get_session_thinking` 的回包同构（`sessionId` 为空串），前端可共用解析逻辑。
+#[tauri::command]
+pub async fn get_pending_thinking_enabled(
+    config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
+) -> Result<serde_json::Value, String> {
+    let model_id = current_main_model(&config_state).await;
+    let caps = crate::infra::llm::registry::query_capabilities(&model_id);
+    let thinking_forced = caps.as_ref().map(|c| c.thinking_forced).unwrap_or(false);
+
+    let default_raw = crate::command::app_config::read_file()
+        .ui_preferences
+        .thinking_default;
+    let resolved = session::thinking::ThinkingDefault::parse(&default_raw).resolve(thinking_forced);
+
+    let decision = session::thinking::decide(
+        None,
+        session::thinking::ThinkingMode(resolved),
+        caps.as_ref(),
+    );
+    Ok(serde_json::json!({
+        "sessionId": "",
+        "thinkingEnabled": resolved,
+        "resolvedEnabled": decision.enabled,
+        "reason": format!("{:?}", decision.reason),
+        "noticeI18nKey": decision.notice_i18n_key,
+    }))
 }
 
 /// 读取某会话的思考档位快照。
@@ -674,61 +706,44 @@ pub async fn get_session_thinking(
     config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
 ) -> Result<serde_json::Value, String> {
     let ctx = session_manager.get_or_create(&id).await;
-    let raw = ctx.thinking_mode.lock().await.clone();
-    let session_mode = session::thinking::ThinkingMode::parse(raw.as_deref().unwrap_or("auto"));
+    let session_mode = session::thinking::ThinkingMode(*ctx.thinking_mode.lock().await);
 
-    let (profile_resolved_default, model_id) =
-        resolve_profile_thinking_default(&config_state).await;
+    let model_id = current_main_model(&config_state).await;
     let caps = crate::infra::llm::registry::query_capabilities(&model_id);
 
-    Ok(build_thinking_snapshot(
-        &id,
-        session_mode,
-        caps.as_ref(),
-        profile_resolved_default,
-    ))
+    Ok(build_thinking_snapshot(&id, session_mode, caps.as_ref()))
 }
 
-/// 设置某会话的深度思考档位（`auto` / `always` / `never`）。
+/// 设置某会话的深度思考档位（**布尔**）。
 ///
-/// 单一写入口：校验 → 写 DB → 写 `SessionContext` → 广播事件 → **返回权威快照**。
+/// 与工作模式/权限档位完全同构的"单一写入口"：
+/// 写 DB → 写 `SessionContext` → 广播事件 → **返回权威快照**。
 /// 前端以返回值为准（服务端 last-write-wins），不做乐观本地状态。
+///
+/// 调用时机：界面拨动后**发送消息**时由前端 flush（与另外两个字段共用一个函数），
+/// 因此"拨了不发消息"的表态不会被记住。
 #[tauri::command]
-pub async fn set_session_thinking_mode(
+pub async fn set_session_thinking_enabled(
     id: String,
-    mode: String,
+    enabled: bool,
     session_manager: tauri::State<'_, SessionManager>,
     config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
-    let normalized = match mode.trim().to_ascii_lowercase().as_str() {
-        "auto" => session::thinking::ThinkingMode::Auto,
-        "always" | "on" => session::thinking::ThinkingMode::Always,
-        "never" | "off" => session::thinking::ThinkingMode::Never,
-        other => {
-            return Err(format!(
-                "非法的思考档位：{}（只允许 auto / always / never）",
-                other
-            ))
-        }
-    };
-
-    // 1) 落库（None = auto = NULL）
-    session::update_session_thinking_mode(&id, normalized.as_storage())?;
+    // 1) 落库（布尔，永不写 NULL）
+    session::update_session_thinking_mode(&id, enabled)?;
 
     // 2) 同步内存态，避免本轮决策读到旧值
     let ctx = session_manager.get_or_create(&id).await;
-    *ctx.thinking_mode.lock().await = normalized.as_storage().map(|s| s.to_string());
+    *ctx.thinking_mode.lock().await = enabled;
 
     // 3) 组装权威快照
-    let (profile_resolved_default, model_id) =
-        resolve_profile_thinking_default(&config_state).await;
+    let model_id = current_main_model(&config_state).await;
     let caps = crate::infra::llm::registry::query_capabilities(&model_id);
     let snapshot = build_thinking_snapshot(
         &id,
-        normalized,
+        session::thinking::ThinkingMode(enabled),
         caps.as_ref(),
-        profile_resolved_default,
     );
 
     // 4) 广播（带 payload，跨窗口各自过滤 sessionId）

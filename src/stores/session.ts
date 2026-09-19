@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
-import type { AgentCurrentTurn, SessionListFilter } from "../types";
+import type { AgentCurrentTurn, AgentApprovalMode, AgentUserMode, SessionListFilter } from "../types";
 import { createEmptyAgentCurrentTurn, resetAgentCurrentTurn } from "../utils/agentTurnState";
 
 interface LatestCheckpoint {
@@ -95,6 +95,28 @@ export const useSessionStore = defineStore("session", () => {
   });
   const activeSessionId = ref<string | null>(null);
   const pendingProjectId = ref<string | null>(null);
+  /// 新建会话界面选过的模式/档位：纯内存"待应用选择"——
+  /// 发送首条消息创建会话时应用到新会话（chat.ts ensureActiveSessionForSend 消费）。
+  /// 刻意不写 UI 偏好设置："设置-常规设置"里的默认只由设置页改，
+  /// 选择器不再隐式改写它（否则新建会话里点一下模式就把全局默认改掉了）。
+  const pendingWorkMode = ref<AgentUserMode | null>(null);
+  const pendingApprovalMode = ref<AgentApprovalMode | null>(null);
+  /// 新建会话界面拨过的"深度思考"开关：与上面两个 pending 同构。
+  ///
+  /// 与它们的唯一差别：深度思考的**初值**由后端解析（设置默认 + 模型能力），
+  /// 前端不参与推导；这里存的仅是"用户在会话还没创建时拨的那一下"。
+  /// `null` = 用户没拨过，与 `false`（明确拨到关）语义不同。
+  const pendingThinkingEnabled = ref<boolean | null>(null);
+  /// 新建会话界面拨过的"只读保护"开关：与上面两个 pending 同构，但注意**它没有设置默认值**。
+  ///
+  /// 只读保护是全系统唯一"纯内存态"的会话闸门（既无设置态也无 session 表列），
+  /// 后端 `set_agent_read_only` 刻意不落盘（见 command/permission.rs 的 doc：
+  /// 记住会变成"新会话莫名写不了文件"的幽灵故障）。所以这里的 pending 不是
+  /// "从设置取默认值"，而仅仅是"用户在会话还没创建时拨的那一下别丢"——
+  /// 会话一建立就把它转交给后端内存态，此后与 pending 无关。
+  ///
+  /// `null` = 用户没拨过（不是"关闭"），与 `false`（明确拨到关）语义不同。
+  const pendingReadOnly = ref<boolean | null>(null);
   const workingDirectory = ref<string | null>(null);
   const sessionListFilter = ref<SessionListFilter>({});
 
@@ -247,6 +269,10 @@ export const useSessionStore = defineStore("session", () => {
     sessionViews,
     activeSessionId,
     pendingProjectId,
+    pendingWorkMode,
+    pendingApprovalMode,
+    pendingThinkingEnabled,
+    pendingReadOnly,
     workingDirectory,
     totalInputTokens,
     totalOutputTokens,

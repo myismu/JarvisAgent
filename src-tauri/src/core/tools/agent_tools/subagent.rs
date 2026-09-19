@@ -529,14 +529,15 @@ pub async fn run_subagent(
         let inherited = *ctx.turn_think.lock().await;
         match inherited {
             Some(value) => value,
+            // 兜底：主 Agent 本轮尚未裁决（`turn_think` 为空）时，
+            // 按**本会话的档位**推导——而不是回落受众默认。
+            // 会话档位已是确定布尔，只需再按本模型能力夹紧一次，口径与
+            // `pipeline` 的裁决层一致（DeepSeek 类模型恒为开）。
             None => {
-                let prefs = crate::command::app_config::get_ui_preferences()
-                    .await
-                    .unwrap_or_default();
-                let profile_default = crate::core::session::thinking::ThinkingDefault::parse(
-                    &cfg.thinking_default,
-                );
-                profile_default.resolve(prefs.agent_audience == "developer")
+                let session_mode =
+                    crate::core::session::thinking::ThinkingMode(*ctx.thinking_mode.lock().await);
+                let caps = crate::infra::llm::registry::query_capabilities(&model_id);
+                crate::core::session::thinking::decide(None, session_mode, caps.as_ref()).enabled
             }
         }
     };

@@ -388,15 +388,84 @@ export const useChatStore = defineStore("chat", () => {
     return sendToJarvis(resumeMessage);
   }
 
+  /**
+   * 把"会话界面当前的模式/档位/只读选择"（pending）转交给指定会话。
+   *
+   * 写 session 的时机刻意推迟到**发送消息**这一刻：界面上拨动只改显示值，不动
+   * session 表也不动设置默认值；拨完没发消息就切走 = 没表态，作废（由
+   * TerminalInput 的 syncPermissionFromSession 在切入会话时清空 pending）。
+   *
+   * 两条路径共用：① 新建会话（先创建再转交）② 已有会话（直接转交）。
+   * 应用失败不阻断发送，只记日志。
+   *
+   * ⚠️ 三者的存储性质不同，别看成一回事：
+   * - 工作模式 / 权限档位 / 深度思考：后端 `set_session_*` 会**落库**到 sessions 表，跨重启保留；
+   * - 只读保护：后端 `set_agent_read_only` **只写进程内存**，重启即归零——
+   *   这里"转交"的不是持久化，而是让后端内存态与新会话对上。
+   */
+  async function flushPendingSessionPrefs(sessionId: string) {
+    const session = useSessionStore();
+    if (session.pendingWorkMode) {
+      try {
+        await invoke("set_session_work_mode", { sessionId, mode: session.pendingWorkMode });
+      } catch (e) {
+        console.error('Failed to apply pending work mode:', e);
+      }
+      session.pendingWorkMode = null;
+    }
+    if (session.pendingApprovalMode) {
+      try {
+        await invoke("set_session_approval_mode", { sessionId, mode: session.pendingApprovalMode });
+      } catch (e) {
+        console.error('Failed to apply pending approval mode:', e);
+      }
+      session.pendingApprovalMode = null;
+    }
+    // 深度思考：判据同样是 `!== null`——`false`（明确拨到关）也是一次有效表态。
+    // 注意它**只有布尔**：`follow_global` 的解析在首条消息时由后端完成并固化，
+    // 前端从不解析"跟随全局"，也不读设置默认值。
+    if (session.pendingThinkingEnabled !== null) {
+      try {
+        await invoke("set_session_thinking_enabled", {
+          id: sessionId,
+          enabled: session.pendingThinkingEnabled,
+        });
+      } catch (e) {
+        console.error('Failed to apply pending thinking mode:', e);
+      }
+      session.pendingThinkingEnabled = null;
+    }
+    // 只读保护：判据是 `!== null` 而不是真值判断——`false`（明确拨到关）
+    // 也是一次有效表态，必须转交；只有 `null`（用户没拨过）才跳过。
+    if (session.pendingReadOnly !== null) {
+      try {
+        await invoke("set_agent_read_only", { sessionId, enabled: session.pendingReadOnly });
+      } catch (e) {
+        console.error('Failed to apply pending read-only flag:', e);
+      }
+      session.pendingReadOnly = null;
+    }
+  }
+
   async function ensureActiveSessionForSend() {
     const session = useSessionStore();
     if (session.activeSessionId) {
+      // 已有会话：把界面上拨过但还没落库的选择补写进 session（发送消息 = 表态）。
+      // 必须有这一步——否则在已有会话里切模式/档位将永远写不进 session 表。
+      await flushPendingSessionPrefs(session.activeSessionId);
       return session.activeSessionId;
     }
 
     const meta = await invoke<any>("create_session", {
       projectId: session.pendingProjectId,
     });
+
+    // 新建会话界面选过的模式/档位（pending）：应用到刚创建的会话——
+    // 必须在赋值 activeSessionId 之前完成，syncPermissionFromSession 的 watch
+    // 才能拉到应用后的值。刻意不写 UI 偏好设置："设置-常规设置"里的默认只由设置页改，
+    // 新建会话里的选择只属于这一个会话。
+    await flushPendingSessionPrefs(meta.id);
+
     session.activeSessionId = meta.id;
     session.workingDirectory = meta.workingDirectory || null;
     session.pendingProjectId = null;

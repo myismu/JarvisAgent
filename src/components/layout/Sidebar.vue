@@ -351,8 +351,8 @@ const switchToSession = async (id: string) => {
 
     await syncProfileFromSession(meta);
 
-    // 档位快照里的 profileResolvedDefault 依赖"激活预设"已切换完成，
-    // 因此在 profile 落库之后重取一次权威档位，消除与上方 save 的竞态
+    // 档位快照的 `resolvedEnabled` 依赖"当前主模型"已确定，
+    // 因此在预设落库之后重取一次权威档位，消除与上方 save 的竞态
     //（`activeSessionId` 的 watcher 会先跑一次，这里再对齐一次最终值）。
     void loadSessionThinking(id);
 

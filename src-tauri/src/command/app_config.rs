@@ -62,6 +62,22 @@ pub struct UiPreferences {
     /// 权限档位："request_approval"（请求审批，默认）/ "auto_approve"（帮我批准）
     #[serde(default = "default_approval_mode")]
     pub agent_approval_mode: String,
+    /// 深度思考默认档位（**设置态，三值**）：`"follow_global"`（跟随全局）/ `"on"` / `"off"`。
+    ///
+    /// 语义（2026-09-19 重构后）：
+    /// - `follow_global`：**强制思考模型 → 开，非强制思考模型 → 关**（判据是模型能力
+    ///   `thinking_forced`，与 `agent_audience` 已解耦）；
+    /// - `on` / `off`：无条件开关。
+    ///
+    /// ⚠️ 它**只在新建会话时被解析一次**并固化进 `sessions.thinking_mode`（布尔），
+    /// 此后修改本字段**不会影响任何已有会话**——这是与"工作模式/权限档位"完全一致的
+    /// 三值分治语义（设置态只喂新会话）。
+    ///
+    /// 该字段原先挂在 `profiles[].config.thinkingDefault`（模型预设级），但裁决层每轮
+    /// 现读的是 `active_config()`——即"当前激活预设"，于是改任一副预设都会倒灌所有
+    /// 会话。本次重构把它提到全局设置层，与权限/工作模式并列，并改为只在建会话时生效。
+    #[serde(default = "default_thinking_default")]
+    pub thinking_default: String,
     #[serde(default = "default_locale")]
     pub locale: String,
     /// 图片压缩档位："eco"（省流）/ "standard"（标准）/ "hd"（高清）。
@@ -102,6 +118,9 @@ fn default_agent_panel_position() -> String { "right".to_string() }
 fn default_agent_audience() -> String { "developer".to_string() }
 fn default_agent_work_mode() -> String { "edit".to_string() }
 fn default_approval_mode() -> String { "request_approval".to_string() }
+/// 深度思考默认档位。默认 `follow_global`：跟随模型能力（强制思考模型开、其余关），
+/// 这是"升级后行为最接近旧默认"的选择——旧默认在 DeepSeek 上正是开。
+fn default_thinking_default() -> String { "follow_global".to_string() }
 fn default_locale() -> String { "zh-CN".to_string() }
 fn default_image_compress_tier() -> String { "standard".to_string() }
 /// 图片压缩默认档位 = **标准档**，与前端 `usePreferences.ts` 的 `IMAGE_COMPRESS_TIERS.standard` 同源。
@@ -127,6 +146,7 @@ impl Default for UiPreferences {
             agent_panel_visible: false,
             agent_audience: "developer".to_string(),
             agent_work_mode: "edit".to_string(),
+            thinking_default: default_thinking_default(),
             agent_approval_mode: "request_approval".to_string(),
             locale: "zh-CN".to_string(),
             image_compress_tier: "standard".to_string(),
@@ -181,6 +201,14 @@ impl UiPreferences {
             "request_approval" | "auto_approve"
         ) {
             self.agent_approval_mode = default_approval_mode();
+        }
+        // 深度思考默认档位收敛（三值）：非法值回落 follow_global。
+        // 注意兼容旧值 "auto" —— 它曾经挂在模型预设上，语义与 follow_global 最接近。
+        if !matches!(
+            self.thinking_default.as_str(),
+            "follow_global" | "on" | "off"
+        ) {
+            self.thinking_default = default_thinking_default();
         }
     }
 
