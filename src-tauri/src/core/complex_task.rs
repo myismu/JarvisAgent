@@ -56,52 +56,62 @@ pub fn is_complex_task(input: &str) -> bool {
 // 后置检测：LLM 纯文本输出是否绕过 ProposePlan 写了方案（响应后置拦截的依据）
 // ============================================================================
 
-/// 方案内容的结构特征：分步骤、编号列表、阶段划分等
-static PLAN_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    let patterns = [
-        r"第[一二三四五六七八九十\d]+[步章节部分]",
-        r"Step\s*\d+",
-        r"\d+\.\s*.{4,}",
-        r"[一二三四五六七八九十]、\s*.{4,}",
-        r"首先[，,].*然后[，,]",
-        r"首先[，,].*最后[，,]",
-        r"第一步.*第二步",
-        r"Phase\s*\d+",
-        r"阶段[一二三四五六七八九十\d]",
-    ];
-    patterns.iter().filter_map(|p| Regex::new(p).ok()).collect()
-});
-
-/// 方案内容的关键词：必须先命中其一，再叠加结构特征，降低误判
+/// 方案内容的**结构标签词**：只有真正描述方案骨架的词才算，用于确认
+/// "这段文本的意图是提交一份方案"。
+///
+/// ⚠️ 刻意剔除了一批"元讨论词"——它们描述的是**方案流程本身**，而非方案内容：
+/// `实施方案` / `执行方案` / `技术方案` / `整体方案` / `开发计划` / `实施步骤` /
+/// `项目规划` / `架构设计` / `我来帮你搭建|开发|实现`。
+/// 典型误判案例（2026-09-19 事故）：模型回复"我提交一份**实施方案**供您审批 →
+/// 您批准后我切回编辑模式"，正文是在**说明流程**，却被旧关键词表命中
+/// `实施方案` + 编号列表结构，连续多轮被判为"输出计划"而陷入拦截死循环。
 static PLAN_KEYWORDS: LazyLock<Vec<&str>> = LazyLock::new(|| {
     vec![
-        "实施方案",
+        // 任务拆分类：方案的骨架，必然带依赖/编号等硬特征
         "任务分解",
-        "开发计划",
-        "实施步骤",
-        "执行方案",
-        "架构设计",
-        "技术方案",
-        "项目规划",
-        "我来帮你搭建",
-        "我来帮你开发",
-        "我来帮你实现",
-        "整体方案",
-        "分步实施",
-        // 复杂任务拆解的特征标题
         "任务拆解",
-        "依赖关系",
         "子任务分配",
-        "执行计划",
+        "依赖关系",
         "步骤拆解",
     ]
 });
 
-/// 判断 LLM 的纯文本输出是否包含方案/计划内容。
+/// 方案的**硬特征**：ProposePlan 内容规范（prompt/mode/plan.md §内容规范）里
+/// 定义的核心必填项在人话文本里的可检测形态——依赖记号、任务编号、目录树。
 ///
-/// 判定条件：命中任一方案关键词，且文本中存在至少一处结构特征
-/// （分步骤/编号列表/阶段划分）。两者缺一不可——只有关键词可能是
-/// 普通讨论，只有结构特征可能是普通列举。
+/// 这是新口径的核心：要求文本里**出现方案规范特有的结构性标记**，
+/// 而不是随便一个 `1. xxx` 编号列表。任何普通说明文都能写编号列表，
+/// 但不会去画任务依赖图或目录树。
+static PLAN_HARD_SIGNALS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    let patterns = [
+        // 任务依赖记号：blocked_by / depends_on / [#N] / ← / 并行标注
+        r"(?i)blocked_by",
+        r"(?i)depends_on",
+        r"\[#\d+\]",
+        // 任务编号：#1 初始化项目 / #2 创建路由
+        r"#\d+\s*[\u4e00-\u9fa5A-Za-z]",
+        // 目录树：├── / └── / │
+        r"[├└]──",
+        // "← blocked_by" / "← [#1]" 这类依赖箭头（ASCII 箭头 → 也算）
+        r"←\s*\[?#?\d",
+    ];
+    patterns.iter().filter_map(|p| Regex::new(p).ok()).collect()
+});
+
+/// 判断 LLM 的纯文本输出是否**真的在提交一份方案**（而非说明流程/普通列举）。
+///
+/// 判定条件（三选二式收紧后的口径）：
+/// 1. 命中**方案结构标签**（任务拆解/依赖关系等，已剔除元讨论词）；
+/// 2. 且文本中存在至少一处**方案硬特征**（依赖记号/任务编号/目录树）。
+///
+/// 两者缺一不可：
+/// - 只有标签词 → 可能只是在讨论"任务该怎么拆"，还没给出方案实体；
+/// - 只有硬特征 → 可能是普通代码/目录说明，与方案审批无关。
+///
+/// 与 `task_breakdown` 规范的关系：`task_breakdown` 要求每个任务项带
+/// `subject`（格式 `#序号 任务描述`）与 `depends_on`。真方案的 Markdown 正文
+/// 会把这些结构化信息以「`#1 xxx` + `← blocked_by: [#2]`」的形式呈现，
+/// 上述硬特征正是对这些必填项的检测。
 pub fn detect_plan_in_text(text: &str) -> bool {
     if text.trim().is_empty() {
         return false;
@@ -112,12 +122,7 @@ pub fn detect_plan_in_text(text: &str) -> bool {
         return false;
     }
 
-    let pattern_hits: usize = PLAN_PATTERNS
-        .iter()
-        .map(|p| p.find_iter(text).count())
-        .sum();
-
-    pattern_hits >= 1
+    PLAN_HARD_SIGNALS.iter().any(|p| p.is_match(text))
 }
 
 // ============================================================================
@@ -160,23 +165,68 @@ mod tests {
     // ── 后置：detect_plan_in_text ──
 
     #[test]
-    fn test_detect_plan_steps() {
-        assert!(detect_plan_in_text("好的，我来帮你搭建这个项目。\n第一步，初始化后端\n第二步，创建数据库\n第三步，实现API"));
+    fn test_detect_plan_with_task_graph() {
+        // 规范形态的方案：结构标签词 + 任务编号 + 依赖记号
+        assert!(detect_plan_in_text(
+            "## 任务拆解与依赖关系\n#1 初始化后端项目\n#2 初始化前端项目\n#3 数据库 schema ← blocked_by: [#1]\n#4 /api/users 路由 ← blocked_by: [#3]"
+        ));
     }
 
     #[test]
-    fn test_detect_plan_numbered() {
-        assert!(detect_plan_in_text("实施方案如下：\n1. 创建项目结构\n2. 实现后端API\n3. 搭建前端页面"));
+    fn test_detect_plan_with_directory_tree() {
+        // 目录树 + 结构标签词：规范必填的「目录结构」项
+        assert!(detect_plan_in_text(
+            "任务分解如下，目录结构：\nsrc/\n├── main.rs\n└── api/\n    ├── users.rs\n    └── tasks.rs"
+        ));
     }
 
     #[test]
-    fn test_detect_plan_chinese_number() {
-        assert!(detect_plan_in_text("开发计划：\n一、后端开发\n二、前端开发\n三、集成测试"));
+    fn test_detect_plan_with_depends_on() {
+        assert!(detect_plan_in_text(
+            "依赖关系：任务 1 无依赖；任务 2 depends_on 任务 1。子任务分配完毕。"
+        ));
     }
 
     #[test]
-    fn test_detect_plan_keyword_with_step() {
-        assert!(detect_plan_in_text("我来帮你开发这个系统。第一步是创建项目。"));
+    fn test_detect_plan_step_breakdown() {
+        assert!(detect_plan_in_text(
+            "步骤拆解：\n#1 复现问题\n#2 定位根因 ← [#1]\n#3 修复实现 ← [#2]\n#4 回归测试 ← [#3]"
+        ));
+    }
+
+    // ── 回归防护：2026-09-19 拦截死循环事故 ──
+
+    #[test]
+    fn test_no_false_positive_flow_explanation_with_keyword() {
+        // 事故原文：正文在**说明方案流程**，命中旧关键词「实施方案」+ 编号列表，
+        // 连续 4 轮被判为"输出计划"而陷入拦截死循环。新口径必须放行。
+        assert!(!detect_plan_in_text(
+            "可以，先生，但当前会话处于**规划模式**，本回合系统没有给我写文件的工具，所以我暂时**不能直接动手改代码**。\n\n实际操作路径有两种：\n\n1. **简单改动**（只涉及 1~2 个文件、位置明确）：我直接把工作模式切回编辑模式，然后定点修改即可。\n2. **复杂改动**（3 个以上文件、跨层调整或架构决策）：我先探索代码库，通过方案审批面板提交实施方案，您审批通过后我再切回编辑模式执行。\n\n您想改哪部分？"
+        ));
+    }
+
+    #[test]
+    fn test_no_false_positive_flow_explanation_variant() {
+        // 事故第 2/3 轮变体：同样是"说明解除方式"的编号列表
+        assert!(!detect_plan_in_text(
+            "可以，但有个前提限制要向您说明：当前会话处于**规划模式**，系统没有给我开放文件写入工具。\n\n能做的和解除方式如下：\n\n1. **现在可做**：读取、探索代码库，定位要改的位置。\n2. **要走改动落地**：我提交一份实施方案（ProposePlan）供您审批 → 您批准后我切换到编辑模式。\n3. **如果是小改动**：我也可以直接切回编辑模式动手。\n\n您想改哪部分？"
+        ));
+    }
+
+    #[test]
+    fn test_no_false_positive_keyword_without_hard_signal() {
+        // 有结构标签词但无任何硬特征：仍在讨论阶段，不算提交方案
+        assert!(!detect_plan_in_text(
+            "这个需求的任务拆解我建议先讨论一下，你觉得怎么分比较合理？"
+        ));
+    }
+
+    #[test]
+    fn test_no_false_positive_hard_signal_without_keyword() {
+        // 有硬特征（目录树）但无结构标签词：可能是普通目录说明
+        assert!(!detect_plan_in_text(
+            "项目目录长这样：\nsrc/\n├── main.rs\n└── lib.rs"
+        ));
     }
 
     #[test]

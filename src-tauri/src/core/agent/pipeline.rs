@@ -90,15 +90,11 @@ struct PipelineState {
     msg: String,
     image_base64_list: Option<Vec<String>>,
     thinking_override: Option<bool>,
-    /// 会话级思考档位（L2，随会话走）。`Auto` 时按 `loop_think_default` 裁决。
-    session_think_mode: crate::core::session::thinking::ThinkingMode,
-    /// **L1 预设默认**（已与全局 audience 回退合并为确定布尔值）。
+    /// 会话级思考档位（L2，随会话走的**布尔**）。
     ///
-    /// 语义已**收窄**（设计文档决策 D2）：它不再是"每轮的思考值"，而是
-    /// `profiles[].thinkingDefault` 解析结果——预设为 `auto` 时回落
-    /// `agent_audience == "developer"`（`pipeline.rs` 步骤 6 计算）。
-    /// 仅在会话也未表态（L2 = `auto`）时生效。
-    loop_think_default: bool,
+    /// v14 起不再有"auto"——初值在会话创建/首次发消息时已按"设置默认 + 模型能力"
+    /// 固化进 `sessions.thinking_mode`（见 [`Self::ensure_session_thinking_initialized`]）。
+    session_think_mode: crate::core::session::thinking::ThinkingMode,
     /// 本轮（一次用户指令 = 可能多个 loop）最终采用的思考状态。
     ///
     /// 必须整轮恒定：Anthropic 协议的 thinking 模式要求历史里 assistant 的 thinking
@@ -139,7 +135,11 @@ struct PipelineState {
     reflection_mode: String,
     total_reflections: usize,
     consecutive_reflection_nos: usize,
-    /// Plan 看门狗：plan 模式下连续无喂狗动作的工具调用次数
+    /// Plan 看门狗：plan 模式下连续无喂狗动作的空转计数。
+    ///
+    /// 语义是「**轮次**」而非「工具调用次数」：无工具轮（纯文本）计 1，
+    /// 有工具轮按调用次数计。旧实现只累加 `tool_calls.len()`，导致纯文本
+    /// 轮次恒加 0、这条判据对"无工具空转"天然免疫（2026-09-19 死循环事故）。
     plan_consecutive_stalls: usize,
     /// Plan 看门狗：plan 模式下累计无 ProposePlan / 降级 edit 的 loop 次数
     plan_total_loops_without_plan: usize,
@@ -259,15 +259,6 @@ struct ContextEstimate {    total_chars: usize,
 
 const DIRECT_DEVELOPER_INTENT: &str = "PROJECT_ACTION";
 
-/// 本轮（一次用户指令）最终采用的 thinking 状态：用户临时开关优先，否则用受众默认值。
-///
-/// 已被 `core::session::thinking::decide` 取代（后者还包含 L2 会话档位与能力夹紧）。
-/// 保留仅为回归测试使用——它固化了"L1=auto 时回落 audience"的语义（设计文档决策 D2）。
-#[cfg(test)]
-fn resolve_turn_think(override_val: Option<bool>, loop_default: bool) -> bool {
-    override_val.unwrap_or(loop_default)
-}
-
 /// 每个 loop 使用的 thinking 状态：整轮恒定。
 ///
 /// 回归防护：旧实现在 `loop_count > 0` 时回落到 audience 默认值，导致
@@ -324,6 +315,179 @@ fn assistant_text_exists_at_tail(messages: &[Message], target: &str) -> bool {
             },
             _ => false,
         })
+}
+
+/// 中断收尾共用落库：把当轮已生成的内容（思考 + 正文）与中断提示合并成
+/// **一条**助手消息，保持一问一答。
+///
+/// ## 设计口径（2026-09-19 沐定案，丙方案）
+///
+/// 目标是**保持一问一答的对话结构**：中断不额外新增助手占位消息，
+/// 而是把"半截内容 + 中断提示"收敛进同一条消息里。
+///
+/// 为什么提示必须落在**正文块**末尾而不是单独成条：
+/// 前端渲染助手气泡时以正文块为锚 —— 若思考块有内容而正文块为空，
+/// 界面会从**上一条**助手消息处取文渲染，用户看到的内容顺序会割裂。
+/// 因此提示恒挂在正文块末尾；正文为空（纯思考期中止）时，
+/// **把提示本身作为正文块**，保证渲染锚点存在。
+///
+/// ## 两个写入分支
+///
+/// - **尾部已有本轮的助手消息**（主循环 `store_assistant_response` 已落当轮，
+///   这是最常见的情况）→ **原地追加提示**到该消息的正文块，不新增消息。
+/// - **尾部没有**（如思考期中止、内容尚未落库）→ 新建一条合并消息。
+///
+/// 幂等：正文块尾部已含 `marker` 时直接返回，重复收尾不会写两遍。
+///
+/// 思考内容按 `Thinking` 块落库（空签名），与 `abort_after_error` 的
+/// 既有先例一致：思考按折叠样式展示、不冒充正文，空签名出网由 adapters 剥离。
+///
+/// 返回 true 表示本次确实改动了会话历史。
+async fn store_interrupted_turn(
+    session: &mut crate::infra::types::models::SessionMemory,
+    text: &str,
+    thinking: &str,
+    marker: &str,
+) -> bool {
+    let text = text.trim();
+    let thinking = thinking.trim();
+
+    // 分支一：尾部已有本轮助手消息 → 原地把提示追加到它的正文块。
+    //
+    // 命中条件：尾部近若干条里存在一条正文与 `text` 一致的助手消息
+    // （正常路径 `store_assistant_response` 落的裸正文）。
+    if !text.is_empty() {
+        if let Some(idx) = tail_assistant_text_index(&session.messages, text) {
+            let already = assistant_block_contains(&session.messages[idx], marker);
+            if already {
+                return false;
+            }
+            append_marker_to_assistant(&mut session.messages[idx], marker);
+            return true;
+        }
+    }
+
+    // 分支二：尾部没有 → 新建一条合并消息（正文块恒存在）。
+    if text.is_empty() && thinking.is_empty() {
+        // 完全无产出：给一条只有提示的助手消息，保证界面有锚点。
+        append_message(
+            session,
+            Message::Assistant {
+                content: Content::Multiple(vec![ContentBlock::Text {
+                    text: marker.to_string(),
+                }]),
+            },
+            "interrupted",
+        );
+        return true;
+    }
+
+    let mut blocks: Vec<ContentBlock> = Vec::new();
+    if !thinking.is_empty() {
+        blocks.push(ContentBlock::Thinking {
+            thinking: thinking.to_string(),
+            signature: String::new(),
+        });
+    }
+    let body = if text.is_empty() {
+        marker.to_string()
+    } else {
+        format!("{}\n\n{}", text, marker)
+    };
+    blocks.push(ContentBlock::Text { text: body });
+
+    append_message(
+        session,
+        Message::Assistant {
+            content: Content::Multiple(blocks),
+        },
+        "interrupted",
+    );
+    true
+}
+
+/// 在消息列表**尾部**查找正文与 `target` 一致的助手消息，返回其下标。
+///
+/// 只扫尾部若干条：中断轮的助手消息只可能出现在最近的位置。
+/// 用于中断收尾时判断"当轮是否已被 `store_assistant_response` 落库"——
+/// 命中则原地追加提示，避免再补一条助手消息。
+///
+/// **匹配必须容忍已追加过提示的正文**：提示是追加到正文块**末尾**的，
+/// 一旦追加成功，正文就变成 `原文 + 分隔 + 提示`，此时再用全等比对会失配，
+/// 导致重复收尾时错判为"尾部没有当轮内容"而新建第二条消息（破坏一问一答）。
+/// 故匹配口径为：**正文以 `target` 开头**即可（追加提示只改尾部，不改前缀）。
+fn tail_assistant_text_index(messages: &[Message], target: &str) -> Option<usize> {
+    let target = target.trim();
+    if target.is_empty() {
+        return None;
+    }
+    messages
+        .iter()
+        .enumerate()
+        .rev()
+        .take(4)
+        .find(|(_, msg)| match msg {
+            Message::Assistant { content } => match content {
+                Content::Single(text) => text.trim_start().starts_with(target),
+                Content::Multiple(blocks) => blocks.iter().any(|b| match b {
+                    ContentBlock::Text { text } => text.trim_start().starts_with(target),
+                    _ => false,
+                }),
+            },
+            _ => false,
+        })
+        .map(|(idx, _)| idx)
+}
+
+/// 判断一条助手消息的正文块里是否已包含 `needle`（幂等检查用）。
+fn assistant_block_contains(msg: &Message, needle: &str) -> bool {
+    match msg {
+        Message::Assistant { content } => match content {
+            Content::Single(text) => text.contains(needle),
+            Content::Multiple(blocks) => blocks.iter().any(|b| match b {
+                ContentBlock::Text { text } => text.contains(needle),
+                _ => false,
+            }),
+        },
+        _ => false,
+    }
+}
+
+/// 把 `marker` 追加到一条助手消息的正文块末尾（原地修改）。
+///
+/// 只追加到**正文（Text）块**：思考块不得混入系统提示，否则模型会把
+/// 系统视角的描述当成自己的思考内容。若该消息没有正文块，则补一个。
+fn append_marker_to_assistant(msg: &mut Message, marker: &str) {
+    const SEP: &str = "\n\n";
+    match msg {
+        Message::Assistant { content } => match content {
+            Content::Single(text) => {
+                if !text.trim().is_empty() {
+                    text.push_str(SEP);
+                }
+                text.push_str(marker);
+            }
+            Content::Multiple(blocks) => {
+                // 优先追加到**最后一个** Text 块，保持正文连贯
+                let last_text = blocks.iter_mut().rev().find_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text),
+                    _ => None,
+                });
+                match last_text {
+                    Some(text) => {
+                        if !text.trim().is_empty() {
+                            text.push_str(SEP);
+                        }
+                        text.push_str(marker);
+                    }
+                    None => blocks.push(ContentBlock::Text {
+                        text: marker.to_string(),
+                    }),
+                }
+            }
+        },
+        _ => {}
+    }
 }
 
 /// 防御性修复：确保每个 Assistant(tool_calls) 后跟 ToolResult 消息。
@@ -405,6 +569,60 @@ fn fix_broken_tool_call_pairs(messages: &mut Vec<Message>) {
 }
 
 impl PipelineState {
+    /// **首次固化**会话的深度思考档位。
+    ///
+    /// ## 为什么需要它
+    ///
+    /// 新建会话时（`create_session`）还不知道本次要用哪个模型，因此拿不到
+    /// `thinking_forced`，无法解析"跟随全局"的默认档位，只能先写占位 `false`。
+    /// 真正可解析的时点是**第一条消息**——此时 `model_id` 已确定。
+    ///
+    /// ## 判定"是否需要固化"
+    ///
+    /// 用 `ctx` 里是否已有"用户表态"来区分。但 `ctx.thinking_mode` 只是布尔，
+    /// 无法区分"占位 false"与"用户主动选的 false"。因此这里改用**另一条事实**：
+    /// 会话行是否已被固化过。
+    ///
+    /// 为免再加一列，采用更简单的口径：**只有"本会话从未跑过主 Agent"时才固化**，
+    /// 判据是 `ctx.turn_think` 尚未被写过（`None`）。跑过一轮之后，用户若拨了开关，
+    /// 值会由 `set_session_thinking_enabled` 命令直接写入，不会再进这里。
+    ///
+    /// 这样"用户拨过 → 用用户的值"与"用户没拨 → 用设置默认"两条路径不会互相覆盖。
+    async fn ensure_session_thinking_initialized(
+        app: &tauri::AppHandle,
+        session_id: &str,
+        ctx: &std::sync::Arc<crate::infra::state::state::SessionContext>,
+        thinking_forced: bool,
+    ) {
+        // 已经跑过主 Agent：说明值已固化（或用户已表态），不再改动
+        if ctx.turn_think.lock().await.is_some() {
+            return;
+        }
+
+        // 读设置里的默认档位（L1），解析为确定布尔
+        let default_raw = crate::command::app_config::read_file()
+            .ui_preferences
+            .thinking_default;
+        let resolved = crate::core::session::thinking::ThinkingDefault::parse(&default_raw)
+            .resolve(thinking_forced);
+
+        // 写内存态 + 落库（**只在这里写一次**，此后设置改动不再影响本会话）
+        *ctx.thinking_mode.lock().await = resolved;
+        if let Err(e) = crate::core::session::update_session_thinking_mode(session_id, resolved) {
+            // 落库失败不阻断本轮：内存值仍然生效，下轮会重试固化
+            eprintln!("[JARVIS] 固化会话思考档位失败（不阻断本轮）: {}", e);
+            return;
+        }
+        // 通知前端刷新（监控窗口 / 主窗口的开关都需要跟着显示）
+        let _ = app.emit(
+            "session-thinking-mode-changed",
+            serde_json::json!({
+                "sessionId": session_id,
+                "thinkingEnabled": resolved,
+            }),
+        );
+    }
+
     /// 阶段 1：初始化 — 会话与配置准备 + 意图分类
     ///
     /// 相当于“启动前检查 + 路由决策”，产出可执行的 PipelineState。核心逻辑：
@@ -647,23 +865,21 @@ impl PipelineState {
             .filter(|m| !m.is_empty())
             .unwrap_or_else(|| cfg.reflection_mode.clone());
 
-        // 步骤 8.5：解析深度思考的两层来源（设计文档 §4）
+        // 步骤 8.5：解析深度思考档位（v14 起只有 L2 会话布尔，不再有 L1 现读）
         //
-        // - L2 会话档位：随会话走，切会话即切档位（与 profileId 对称）
-        // - L1 预设默认：`profiles[].thinkingDefault`，为 `auto` 时回落全局 audience
+        // 关键变化：**设置默认值（L1）不在这里参与裁决**。
+        // 它只在"会话还没有值"时被解析一次并落库（见下），此后这个会话就只认库里的布尔。
+        // 这样设置页改默认档位**永远不会倒灌已有会话**——正是本次重构要修的问题。
         //
-        // 决策本身不在这里做，而是在 `start_run` 用 `thinking::decide` 统一裁决；
-        // 这里只负责把两个来源取出来，避免在决策点再做 IO。
-        let session_think_mode = crate::core::session::thinking::ThinkingMode::parse(
-            ctx.thinking_mode
-                .lock()
-                .await
-                .as_deref()
-                .unwrap_or("auto"),
-        );
-        let profile_thinking_default =
-            crate::core::session::thinking::ThinkingDefault::parse(&cfg.thinking_default);
-        let loop_think_default = profile_thinking_default.resolve(current_audience == "developer");
+        // 落点说明：新建会话时 `create_session` 只能写占位 `false`（那时还不知道主模型），
+        // 所以真正的初值必须在**第一条消息**、拿到 `model_id` 之后解析。
+        {
+            let caps = crate::infra::llm::registry::query_capabilities(&model_id);
+            let thinking_forced = caps.as_ref().map(|c| c.thinking_forced).unwrap_or(false);
+            Self::ensure_session_thinking_initialized(&app, &sid, &ctx, thinking_forced).await;
+        }
+        let session_think_mode =
+            crate::core::session::thinking::ThinkingMode(*ctx.thinking_mode.lock().await);
 
         // 步骤 9：组装 PipelineState（意图、提示词、取消令牌等已就绪）
         let mut state = Self {
@@ -683,7 +899,6 @@ impl PipelineState {
             image_base64_list,
             thinking_override,
             session_think_mode,
-            loop_think_default,
             detected_intent: detected_intent.clone(),
             capabilities,
             // 以下字段在后续阶段填充
@@ -848,7 +1063,6 @@ impl PipelineState {
         let decision = crate::core::session::thinking::decide(
             override_val,
             self.session_think_mode,
-            self.loop_think_default,
             model_caps.as_ref(),
         );
         self.turn_thinking_decision = decision.clone();
@@ -858,11 +1072,10 @@ impl PipelineState {
         // 供子 Agent 继承（设计文档 K3）：主 Agent 本轮用什么档位，本轮派生的子 Agent 就用什么
         *self.ctx.turn_think.lock().await = Some(turn_think);
         println!(
-            "[JARVIS] 本轮 thinking 状态固定为 {}（override={:?}, 会话档位={:?}, 预设默认={}, 裁决={:?}）",
+            "[JARVIS] 本轮 thinking 状态固定为 {}（override={:?}, 会话档位={}, 裁决={:?}）",
             if turn_think { "enabled" } else { "disabled" },
             override_val,
-            self.session_think_mode,
-            self.loop_think_default,
+            self.session_think_mode.0,
             decision.reason
         );
 
@@ -1621,6 +1834,19 @@ impl PipelineState {
                         }, "internal");
                     }
 
+                    // ⚠️ 关键修复（2026-09-19）：看门狗必须在这条「无工具 + 计划正文」
+                    // 路径上也被评估。旧实现只挂在工具执行分支，而拦截死循环走的正是
+                    // 无工具分支 —— 计数器永远停在 0，看门狗结构性失效，只能靠用户手点
+                    // 取消脱困。
+                    if self.update_plan_watchdog(&work_mode, &[]) {
+                        println!(
+                            "[JARVIS] Plan 看门狗触发（拦截路径）：consecutive={}, loops_without_plan={}",
+                            self.plan_consecutive_stalls, self.plan_total_loops_without_plan
+                        );
+                        self.handle_plan_watchdog_summary().await;
+                        break;
+                    }
+
                     self.loop_count += 1;
                     self.total_loop_count += 1;
                     continue;
@@ -2076,7 +2302,8 @@ impl PipelineState {
     /// 历史演进说明：旧实现只做「记错误 → fail_run → 返回 Err」，现场全部丢弃。
     /// 由于 `run_pipeline_inner` 在此之后直接 `return Err`，`finalize()` 不会执行，
     /// 于是会话历史里连一句中断说明都没有，用户误以为"根本没执行"。
-    /// 现改为：先把 live_content / live_thinking 补进历史，再落一条 `interrupted` 标记。
+    /// 现改为：把 live_content / live_thinking 连同中断提示**合并成一条**助手消息落库
+    /// （见 `store_interrupted_turn` 的丙方案说明），保持一问一答。
     ///
     /// 遵守的约束：**错误文本不作为助手消息内容**（避免被当成模型发言污染上下文），
     /// 只写入 agent_runs.error 与 agent_run_events。
@@ -2102,38 +2329,21 @@ impl PipelineState {
         let live_thinking = run.as_ref().map(|r| r.live_thinking.clone()).unwrap_or_default();
         let thinking = live_thinking.trim().to_string();
         let text = live_content.trim().to_string();
-        let mut blocks: Vec<ContentBlock> = Vec::new();
-        if !thinking.is_empty() {
-            blocks.push(ContentBlock::Thinking {
-                thinking: thinking.clone(),
-                signature: String::new(),
-            });
-        }
-        if !text.is_empty() {
-            blocks.push(ContentBlock::Text { text: text.clone() });
-        }
-        if !blocks.is_empty() {
-            // 去重口径：正文优先（正常路径 store_assistant_response 整条落库，命中正文即整条已在）；
-            // 纯思考无正文时退化为思考文本比较，与旧纯文本形态的行为等价。
-            let dedup_text = if !text.is_empty() { text.clone() } else { thinking.clone() };
+
+        // 落库口径（丙方案）：半截内容 + 中断提示合并成**一条**助手消息。
+        // 错误文本本身**不作为**助手消息内容（避免被当成模型发言污染上下文），
+        // 只由统一的 INTERRUPT_MARKER_RESUMABLE 提示"该接着做"。
+        {
             let mut session = self.ctx.memory.lock().await;
-            if !assistant_text_exists_at_tail(&session.messages, &dedup_text) {
-                append_message(
-                    &mut session,
-                    Message::Assistant {
-                        content: Content::Multiple(blocks),
-                    },
-                    "chat",
-                );
-            }
+            store_interrupted_turn(
+                &mut session,
+                &text,
+                &thinking,
+                INTERRUPT_MARKER_RESUMABLE,
+            )
+            .await;
         }
 
-        // 2. 追加中断标记（source = interrupted：模型可见，用于"继续"时定位断点）。
-        //
-        //    标记使用**统一措辞**（中断原因已在用户可见的 notice 中给出，
-        //    历史标记只需让模型知道"该接着做"）。原因见常量注释。
-        self.append_interrupted_marker(INTERRUPT_MARKER_RESUMABLE)
-            .await;
         self.final_answer = text;
         self.notice = Some(notice_text.clone());
         self.interrupted_reason = Some(error.to_string());
@@ -2289,11 +2499,13 @@ impl PipelineState {
         );
 
         // 取回已流式输出的部分结果（live_content 全程累积，是中断时的唯一快照）。
-        // 思考内容（live_thinking）不提升为正文：模型内心独白拼成消息只会给用户添噪。
+        // 思考内容（live_thinking）随正文一并落库：按 Thinking 块折叠展示，
+        // 不冒充正文（见 store_interrupted_turn 的设计说明）。
         let run = crate::core::orchestration::agent_run_repository::list_runs(Some(&self.sid))
             .ok()
             .and_then(|runs| runs.into_iter().find(|r| r.run_id == self.run_id));
         let live_content = run.as_ref().map(|r| r.live_content.clone()).unwrap_or_default();
+        let live_thinking = run.as_ref().map(|r| r.live_thinking.clone()).unwrap_or_default();
 
         let partial = if !live_content.trim().is_empty() {
             live_content.trim().to_string()
@@ -2302,28 +2514,25 @@ impl PipelineState {
         } else {
             String::new()
         };
-
-        // 半截内容若已由 store_assistant_response 落库，则不重复写入；
-        // 否则补一条 chat 消息，保证用户仍能看到中断前已生成的内容。
-        if !partial.is_empty() {
-            let mut session = self.ctx.memory.lock().await;
-            if !assistant_text_exists_at_tail(&session.messages, &partial) {
-                append_message(
-                    &mut session,
-                    Message::Assistant {
-                        content: Content::Single(partial.clone()),
-                    },
-                    "chat",
-                );
-            }
-        }
+        let partial_thinking = live_thinking.trim().to_string();
 
         // `reason` 面向用户；写入历史的标记面向 LLM（会进上下文），
         // 故用最小信息量的统一措辞，避免模型把系统视角描述当成自己的话。
         let reason = "> ✕ **用户已取消执行（以上为保留的部分结果，历史未截断）**";
-        let marker_index = self
-            .append_interrupted_marker(INTERRUPT_MARKER_RESUMABLE)
+
+        // 落库口径（丙方案）：半截内容 + 中断提示合并成**一条**助手消息，
+        // 保持一问一答；正文为空时把提示本身作为正文块，保证前端渲染锚点存在。
+        {
+            let mut session = self.ctx.memory.lock().await;
+            store_interrupted_turn(
+                &mut session,
+                &partial,
+                &partial_thinking,
+                INTERRUPT_MARKER_RESUMABLE,
+            )
             .await;
+        }
+
         self.final_answer = partial.clone();
         self.notice = Some(reason.to_string());
         self.interrupted_reason = Some("用户取消".to_string());
@@ -2345,10 +2554,7 @@ impl PipelineState {
             self.req_output_tokens,
             Some(self.final_answer.clone()),
         );
-        println!(
-            "[JARVIS] 已写入中断标记（interrupted），消息下标 {}",
-            marker_index
-        );
+        println!("[JARVIS] 已把中断轮内容与提示合并落库（interrupted）");
     }
 
     /// 上游失联（流内空闲超时）收尾：保留现场，结束本轮，把决策权交还用户。
@@ -2379,21 +2585,19 @@ impl PipelineState {
         // 故用统一的"接着做"措辞（见 INTERRUPT_MARKER_RESUMABLE 注释）。
         let llm_marker = INTERRUPT_MARKER_RESUMABLE;
 
-        let mut session = self.ctx.memory.lock().await;
-        if !partial.is_empty() && !assistant_text_exists_at_tail(&session.messages, &partial) {
-            append_message(
+        // 落库口径（丙方案）：半截内容 + 中断提示合并成**一条**助手消息。
+        // 断流时流层已优雅返回，思考内容同样随正文落库。
+        {
+            let mut session = self.ctx.memory.lock().await;
+            store_interrupted_turn(
                 &mut session,
-                Message::Assistant {
-                    content: Content::Single(partial.clone()),
-                },
-                "chat",
-            );
+                &partial,
+                &stream_result.thinking,
+                llm_marker,
+            )
+            .await;
         }
-        drop(session);
 
-        self.append_interrupted_marker(llm_marker).await;
-        // content 只保留部分结果；状态标注走 notice（气泡下方小字），
-        // 这样前端无需从正文里"猜"哪部分是标注。
         self.final_answer = partial.clone();
         self.notice = Some(reason.clone());
         self.interrupted_reason = Some("上游服务失联（流内空闲超时）".to_string());
@@ -3460,6 +3664,10 @@ impl PipelineState {
     /// - 本 loop 提交了规划方案（`loop_submitted_plan`：裸 ProposePlan 或
     ///   经 ExecuteTool 包装——只匹配裸名时，包装形态的提交轮不喂狗，看门狗误触发）；
     /// - 本 loop 已把 work_mode 切出 plan（SwitchWorkMode 到 edit）。
+    ///
+    /// **调用位置要求**：必须在"有工具"和"无工具"两条路径上都能到达。
+    /// 旧实现只挂在工具执行分支，而"纯文本空转"走的是无工具分支，
+    /// 计数器永远停在 0、看门狗结构性失效（2026-09-19 死循环事故根因）。
     fn update_plan_watchdog(&mut self, work_mode: &str, tool_calls: &[(String, String)]) -> bool {
         use crate::infra::types::constants::{PLAN_WATCHDOG_MAX_CONSECUTIVE_STALLS, PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN};
 
@@ -3475,7 +3683,10 @@ impl PipelineState {
             return false;
         }
 
-        self.plan_consecutive_stalls = self.plan_consecutive_stalls.saturating_add(tool_calls.len());
+        // 无工具轮（tool_calls 为空）计 1：轮次本身就是一次空转，
+        // 不能因为"没调用工具"就加 0（否则纯文本空转永远触发不了）。
+        let stall_increment = tool_calls.len().max(1);
+        self.plan_consecutive_stalls = self.plan_consecutive_stalls.saturating_add(stall_increment);
         self.plan_total_loops_without_plan = self.plan_total_loops_without_plan.saturating_add(1);
 
         self.plan_consecutive_stalls >= PLAN_WATCHDOG_MAX_CONSECUTIVE_STALLS
@@ -3769,38 +3980,33 @@ mod plan_watchdog_feeding_tests {
 
 #[cfg(test)]
 mod thinking_freeze_tests {
-    use super::{resolve_turn_think, should_think_for_loop};
+    use super::should_think_for_loop;
 
-    /// 回归：override=false + audience 默认 true（当前 DeepSeek 用户的实际组合）时，
-    /// 整轮每个 loop 都必须是 disabled。旧实现在 loop>0 回落到 audience 默认，
-    /// 于是第二轮变 enabled，历史里没有 thinking 块的 assistant 无法满足
-    /// Anthropic 的「thinking 必须回传」要求 → 400。
+    /// 回归：整轮每个 loop 的 thinking 状态必须恒定不变。
+    ///
+    /// 旧实现在 `loop_count > 0` 时回落到 audience 默认，于是第二轮变 enabled，
+    /// 而历史里那条 assistant 是在关闭 thinking 时产生的、没有 thinking 块可回传，
+    /// Anthropic 协议（含 DeepSeek 的 anthropic 兼容端点）会直接 400：
+    /// `content[].thinking in the thinking mode must be passed back to the API`。
+    ///
+    /// v14 起"整轮的初始值"由 `thinking::decide` 一次裁决给出，本函数只负责守住"不翻转"。
     #[test]
     fn thinking_state_is_frozen_within_a_turn() {
-        let turn_think = resolve_turn_think(Some(false), true);
-        assert!(!turn_think, "用户临时关闭应覆盖受众默认值");
-        for loop_count in 0..=5 {
-            assert!(
-                !should_think_for_loop(turn_think, loop_count),
-                "loop {} 不得把 thinking 翻转成 enabled",
-                loop_count
-            );
+        let cases = [
+            crate::core::session::thinking::ThinkingMode::ON,
+            crate::core::session::thinking::ThinkingMode::OFF,
+        ];
+        for mode in cases {
+            let turn_think = mode.0;
+            for loop_count in 0..=5 {
+                assert_eq!(
+                    should_think_for_loop(turn_think, loop_count),
+                    turn_think,
+                    "loop {} 不得把 thinking 翻转",
+                    loop_count
+                );
+            }
         }
-    }
-
-    #[test]
-    fn thinking_stays_enabled_for_the_whole_turn() {
-        let turn_think = resolve_turn_think(Some(true), false);
-        assert!(turn_think);
-        for loop_count in 0..=5 {
-            assert!(should_think_for_loop(turn_think, loop_count));
-        }
-    }
-
-    #[test]
-    fn thinking_falls_back_to_audience_default_without_override() {
-        assert!(resolve_turn_think(None, true));
-        assert!(!resolve_turn_think(None, false));
     }
 }
 
@@ -4109,5 +4315,196 @@ mod context_estimate_tests {
 
         let out = PipelineState::format_messages_readable(&messages);
         assert!(!out.contains("[Context]"), "空白上下文块不应渲染：\n{out}");
+    }
+}
+
+#[cfg(test)]
+mod interrupted_turn_store_tests {
+    //! 「中断落库保持一问一答」的语义防护（2026-09-19 丙方案定案）。
+    //!
+    //! 背景事故：取消/断流/报错三条收尾路径各自乱拼——
+    //! 把多段正文拼成一条、又额外补一条 assistant 占位提示，
+    //! 结果一次中断产出好几条助手消息，且正文为空时前端**向上一条**助手
+    //! 消息借文渲染，用户看到的内容顺序割裂。
+    //!
+    //! 现口径：半截内容（思考 + 正文）+ 中断提示**合并成一条**消息；
+    //! 正文为空（纯思考期中止）时把提示本身作为正文块，保证渲染锚点存在。
+    use super::store_interrupted_turn;
+    use crate::infra::types::models::{Content, ContentBlock, Message, SessionMemory};
+
+    const MARKER: &str = "> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。";
+
+    fn empty_memory() -> SessionMemory {
+        SessionMemory::default()
+    }
+
+    /// 模拟正常路径已落库的助手消息（`store_assistant_response` 的产物：裸正文，无提示）
+    fn seed_plain_assistant(session: &mut SessionMemory, text: &str) {
+        super::append_message(
+            session,
+            Message::Assistant {
+                content: Content::Multiple(vec![ContentBlock::Text {
+                    text: text.to_string(),
+                }]),
+            },
+            "chat",
+        );
+    }
+
+    fn only_blocks(session: &SessionMemory) -> Vec<ContentBlock> {
+        blocks_at(session, 0)
+    }
+
+    fn blocks_at(session: &SessionMemory, idx: usize) -> Vec<ContentBlock> {
+        match &session.messages[idx] {
+            Message::Assistant {
+                content: Content::Multiple(blocks),
+            } => blocks.clone(),
+            other => panic!("期望 Multiple 助手消息，实际: {other:?}"),
+        }
+    }
+
+    fn body_text(blocks: &[ContentBlock]) -> String {
+        blocks
+            .iter()
+            .rev()
+            .find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .expect("正文块必须存在（渲染锚点）")
+    }
+
+    // ── 分支二：尾部没有当轮内容 → 新建一条合并消息 ──
+
+    /// 有正文 + 有思考：一条消息，思考在前正文在后，正文末尾附提示
+    #[tokio::test]
+    async fn text_and_thinking_merge_into_single_message() {
+        let mut session = empty_memory();
+        let wrote = store_interrupted_turn(&mut session, "半截正文", "半截思考", MARKER).await;
+
+        assert!(wrote, "有内容时必须落库");
+        assert_eq!(session.messages.len(), 1, "必须只有一条助手消息（一问一答）");
+        let blocks = only_blocks(&session);
+        assert!(
+            matches!(&blocks[0], ContentBlock::Thinking { .. }),
+            "思考块在前"
+        );
+        let body = body_text(&blocks);
+        assert!(body.starts_with("半截正文"), "正文必须保留原文：{body}");
+        assert!(body.ends_with(MARKER), "提示必须落在正文块末尾：{body}");
+        assert_eq!(session.sources[0], "interrupted");
+    }
+
+    /// 纯思考期中止（正文为空）：提示本身作为正文块 —— 前端渲染锚点不能缺
+    #[tokio::test]
+    async fn thinking_only_promotes_marker_to_body() {
+        let mut session = empty_memory();
+        let wrote = store_interrupted_turn(&mut session, "", "只有思考", MARKER).await;
+
+        assert!(wrote);
+        assert_eq!(session.messages.len(), 1);
+        let blocks = only_blocks(&session);
+        assert_eq!(body_text(&blocks), MARKER, "无正文时提示必须独占正文块");
+    }
+
+    /// 正文期中止（无思考）：只有正文块，末尾附提示
+    #[tokio::test]
+    async fn text_only_appends_marker() {
+        let mut session = empty_memory();
+        store_interrupted_turn(&mut session, "半截正文", "", MARKER).await;
+
+        let blocks = only_blocks(&session);
+        assert_eq!(blocks.len(), 1, "无思考时不应凭空造 Thinking 块");
+        let body = body_text(&blocks);
+        assert!(body.ends_with(MARKER));
+        assert!(body.contains("半截正文"));
+    }
+
+    /// 完全无产出：仍需一条只有提示的助手消息（否则界面无锚点，会向上借文）
+    #[tokio::test]
+    async fn nothing_produced_still_anchors_marker() {
+        let mut session = empty_memory();
+        let wrote = store_interrupted_turn(&mut session, "   ", "\n", MARKER).await;
+
+        assert!(wrote, "无产出也必须给出提示锚点");
+        assert_eq!(session.messages.len(), 1);
+        assert_eq!(body_text(&only_blocks(&session)), MARKER);
+    }
+
+    // ── 分支一：尾部已有当轮内容 → 原地追加提示 ──
+
+    /// **核心场景**：主循环 `store_assistant_response` 已落当轮裸正文，
+    /// 收尾时必须在**同一条消息**的正文末尾追加提示，既不新增消息、也不丢提示。
+    ///
+    /// 旧口径（整块精确比对即视为"已落库"直接返回）会让提示**永远写不进去**——
+    /// 这正是本次要修的行为。
+    #[tokio::test]
+    async fn appends_marker_to_existing_tail_message() {
+        let mut session = empty_memory();
+        seed_plain_assistant(&mut session, "半截正文");
+
+        let wrote = store_interrupted_turn(&mut session, "半截正文", "", MARKER).await;
+
+        assert!(wrote, "提示必须被写入（不能因正文已存在就跳过）");
+        assert_eq!(session.messages.len(), 1, "必须仍是一条消息（一问一答）");
+        let body = body_text(&only_blocks(&session));
+        assert!(body.starts_with("半截正文"), "原文不能丢：{body}");
+        assert!(body.ends_with(MARKER), "提示必须在正文末尾：{body}");
+    }
+
+    /// 已有消息带思考+正文时，提示只追加到正文块，绝不污染思考块
+    #[tokio::test]
+    async fn marker_never_pollutes_thinking_block() {
+        let mut session = empty_memory();
+        super::append_message(
+            &mut session,
+            Message::Assistant {
+                content: Content::Multiple(vec![
+                    ContentBlock::Thinking {
+                        thinking: "内心独白".to_string(),
+                        signature: String::new(),
+                    },
+                    ContentBlock::Text {
+                        text: "半截正文".to_string(),
+                    },
+                ]),
+            },
+            "chat",
+        );
+
+        store_interrupted_turn(&mut session, "半截正文", "内心独白", MARKER).await;
+
+        let blocks = only_blocks(&session);
+        match &blocks[0] {
+            ContentBlock::Thinking { thinking, .. } => {
+                assert!(
+                    !thinking.contains(MARKER),
+                    "思考块不得混入系统提示：{thinking}"
+                );
+            }
+            other => panic!("第一个块应为思考，实际: {other:?}"),
+        }
+        assert!(body_text(&blocks).ends_with(MARKER));
+    }
+
+    /// 幂等：同一收尾重复调用，提示只追加一次
+    #[tokio::test]
+    async fn repeated_store_is_idempotent() {
+        let mut session = empty_memory();
+        seed_plain_assistant(&mut session, "半截正文");
+
+        assert!(store_interrupted_turn(&mut session, "半截正文", "", MARKER).await);
+        let after_first = session.messages.len();
+        let first_body = body_text(&only_blocks(&session));
+
+        let wrote = store_interrupted_turn(&mut session, "半截正文", "", MARKER).await;
+        assert!(!wrote, "重复收尾不应再次改动");
+        assert_eq!(session.messages.len(), after_first, "不得新增消息");
+        assert_eq!(
+            body_text(&only_blocks(&session)),
+            first_body,
+            "正文不得被追加两次"
+        );
     }
 }
