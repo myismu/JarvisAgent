@@ -31,7 +31,7 @@
 //! - 历史准备：`prepare_history_snapshot()` / `prepare_history_snapshot_from_messages()` / `fix_broken_tool_call_pairs()`
 //! - 上下文监控：`build_context_estimate()` / `update_context_snapshot()` / `update_provider_usage_snapshot()` / `resolve_max_tokens()`
 //! - 请求构建：`build_llm_request()` / `call_api_with_retry()` / `current_tools()`
-//! - 流程控制：`handle_sched_event()` / `request_loop_continuation()` / `drain_background_notifications()` / `compact_if_needed()`
+//! - 流程控制：`handle_sched_event()` / `request_loop_continuation()` / `compact_if_needed()`
 //! - 异常收尾：`abort_after_error()` / `handle_cancellation()` / `store_assistant_response()`
 //!
 //! ## 依赖
@@ -1223,9 +1223,11 @@ impl PipelineState {
                 }
             }
 
-            // 步骤 2：后台通知注入 —— 把后台任务完成结果推给 LLM 决策
-            // 后台通知注入
-            self.drain_background_notifications().await;
+            // 后台任务结果不再注入会话上下文：失败/完成信息走前端界面提醒
+            // （bg-task-done / background-failed 事件 → 聊天流小字），用户看到后
+            // 主动发消息让 Agent 排查（排查用 CheckBackgroundCommand）。
+            // 这样也消除了 background 注入对（User+Assistant 两条）破坏
+            // 消息级 user/assistant 交替的问题。
 
             // 步骤 3：上下文压缩检查（超上限 70% 时自动摘要旧历史）
             // Token 压缩
@@ -2809,30 +2811,6 @@ impl PipelineState {
                 );
             }
             false
-        }
-    }
-
-    /// 注入后台任务完成通知到会话中
-    async fn drain_background_notifications(&self) {
-        // 取出后台任务完成的待消费通知（无通知则无事可做）
-        let notifs =
-            crate::infra::background::BackgroundManager::drain_notifications(&self.app).await;
-        if !notifs.is_empty() {
-            let mut notif_text = String::new();
-            for n in notifs {
-                notif_text.push_str(&format!("[bg:{}] {}: {}\n", n.task_id, n.status, n.result));
-            }
-            let mut session = self.ctx.memory.lock().await;
-            // 以 User/Assistant 对写入会话（source=background，发给 LLM 前会被过滤）
-            append_message(&mut session, Message::User {
-                content: Content::Single(format!(
-                    "<background-results>\n{}\n</background-results>",
-                    notif_text
-                )),
-            }, "background");
-            append_message(&mut session, Message::Assistant {
-                content: Content::Single("Noted background results.".to_string()),
-            }, "background");
         }
     }
 

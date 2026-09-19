@@ -444,6 +444,32 @@ export function useAgentEvents() {
       }, 30000);
     });
 
+    // 后台任务失败提醒（transient, not persisted）
+    //
+    // 后台任务结果不再注入会话上下文（见后端 drain_background_notifications 的移除）：
+    // 失败信息改走这条通知条给用户看，用户决定是否发消息让 Agent 排查
+    // （排查用 CheckBackgroundCommand 读后台输出）。
+    // 秒挂场景不走这里：错误已经在启动时的 tool_result 里带回，模型当轮就能看到。
+    await on<{ sessionId?: string; taskId: string; command: string; result: string }>(
+      "background-failed",
+      (event) => {
+        const p = event.payload;
+        if (!p) return;
+        const sid = p.sessionId ?? session.activeSessionId;
+        // 只提醒当前活跃会话的任务；非活跃会话的任务在监控面板可见
+        if (!sid || sid !== session.activeSessionId) return;
+        const cmd = (p.command || "").slice(0, 60);
+        const text = `后台任务 ${p.taskId}（${cmd}）失败：${p.result}。可发消息让 Agent 继续检查。`;
+        chat.memoryNotice = text;
+        // 30 秒自动消失；startsWith 防止误清掉之后的其他提醒
+        setTimeout(() => {
+          if (chat.memoryNotice?.startsWith(`后台任务 ${p.taskId}`)) {
+            chat.memoryNotice = null;
+          }
+        }, 30000);
+      },
+    );
+
     // plan proposal stream (chunked)
     await on<{ sessionId?: string; content: string }>("plan-proposal-stream", (event) => {
       const sid = event.payload.sessionId ?? session.activeSessionId;

@@ -3,7 +3,7 @@
 - 启动任何开发服务器、后端服务、dev server、watch 进程等长周期任务，必须使用 StartBackgroundCommand
 - 绝对禁止用 RunCommand 启动服务！RunCommand 是阻塞的，会导致整个对话卡死
 - StartBackgroundCommand 会立即返回任务ID，不阻塞对话
-- 启动服务后告知用户服务地址，不要轮询 CheckBackgroundCommand
+- 启动服务后告知用户服务地址即可；后台任务失败时界面会提醒用户，由用户决定是否让你排查（届时用 CheckBackgroundCommand 读输出定位），不要主动轮询
 - ⚠️ StartBackgroundCommand 和 RunCommand 都有 dir 参数指定工作目录！沙箱禁止 cd，必须用 dir 参数，例如 command=npm install, dir=/path/to/backend
 - npm install / npm run 类命令，dir 必须指向 package.json 所在的子目录，不要用沙箱根目录
 

@@ -119,10 +119,10 @@ pub fn is_file_mutation_command(cmd: &str) -> Option<&'static str> {
 /// 异步执行 shell 命令（按平台选择 PowerShell 或 bash），返回 (stdout, stderr, exit_code)
 async fn run_shell_async(cmd: &str, exec_dir: &std::path::Path) -> (String, String, i32) {
     let (shell, args) = if cfg!(target_os = "windows") {
-        let ps_cmd = format!(
-            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; {}",
-            cmd
-        );
+        // Windows 命令构造统一走 infra 公共层：本机 PowerShell 5.1 不支持 `&&`
+        // （PS 7+ 语法），公共层会把它展开成"逐段执行 + 前段失败即停"，
+        // 语义与 bash 的 `&&` 一致，不依赖 shell 版本（详见 infra/shell_command.rs）。
+        let ps_cmd = crate::infra::shell_command::build_windows_ps_command(cmd);
         (
             "powershell".to_string(),
             vec![

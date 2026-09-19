@@ -26,6 +26,7 @@ pub mod providers;
 pub mod background;
 pub mod debug_logger;
 pub mod log_maintenance;
+pub mod shell_command;
 
 
 // 重导出常用基础类型

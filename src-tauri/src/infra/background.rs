@@ -90,10 +90,11 @@ pub struct Notification {
 
 /// 后台任务管理器
 ///
-/// 维护所有运行中任务的状态和通知队列，以及子进程句柄用于安全终止
+/// 维护所有运行中任务的状态和子进程句柄，用于状态查询与安全终止。
+/// 任务完成/失败的通知走 `bg-task-done` / `background-failed` Tauri 事件推给前端，
+/// 不再经会话上下文注入（前端小字提醒用户，由用户决定是否让 Agent 排查）。
 pub struct BackgroundManager {
     pub tasks: HashMap<String, BackgroundTask>,
-    pub notification_queue: Vec<Notification>,
     pub child_processes: HashMap<String, Arc<tokio::sync::Mutex<Option<tokio::process::Child>>>>,
 }
 
@@ -101,7 +102,6 @@ impl BackgroundManager {
     pub fn new() -> Self {
         Self {
             tasks: HashMap::new(),
-            notification_queue: Vec::new(),
             child_processes: HashMap::new(),
         }
     }
@@ -258,135 +258,190 @@ impl BackgroundManager {
 
         let (detected_port, task_type) = Self::detect_port_and_type(&command, dir.as_deref());
 
-        if let Some(state) = app.try_state::<BackgroundState>() {
-            let state_clone = state.0.clone();
-            let task_id_clone = task_id.clone();
-            let cmd_clone = command.clone();
-
-            let session_id_clone = session_id.clone();
-            {
-                let mut bg = state_clone.lock().await;
-                bg.tasks.insert(
-                    task_id_clone.clone(),
-                    BackgroundTask {
-                        id: task_id_clone.clone(),
-                        session_id: session_id.clone(),
-                        command: cmd_clone.clone(),
-                        status: "running".to_string(),
-                        result: None,
-                        port: detected_port,
-                        task_type: task_type.clone(),
-                        pid: None,
-                        pids: vec![],
-                    },
-                );
+        let state = match app.try_state::<BackgroundState>() {
+            Some(s) => s,
+            // 无全局状态（理论不发生）：诚实返回失败，而不是假"started"
+            None => {
+                return format!("Background task {} failed: background state unavailable", task_id);
             }
+        };
+        let state_clone = state.0.clone();
+        {
+            let mut bg = state_clone.lock().await;
+            bg.tasks.insert(
+                task_id.clone(),
+                BackgroundTask {
+                    id: task_id.clone(),
+                    session_id: session_id.clone(),
+                    command: command.clone(),
+                    status: "running".to_string(),
+                    result: None,
+                    port: detected_port,
+                    task_type: task_type.clone(),
+                    pid: None,
+                    pids: vec![],
+                },
+            );
+        }
 
-            let app_handle = app.clone();
-            let task_id_async = task_id.clone();
-            let cmd_async = command.clone();
-            let dir_async = dir.clone();
-            let port_async = detected_port;
-            let type_async = task_type.clone();
+        let app_handle = app.clone();
+        let task_id_async = task_id.clone();
+        let cmd_async = command.clone();
+        let port_async = detected_port;
+        let type_async = task_type.clone();
+        let session_id_clone = session_id.clone();
 
+        // —— 进程 spawn 挪到 run() 本体（原在 tokio::spawn 闭包内）——
+        // 这样返回给 tool_result 的文案能反映"启动后瞬间的真实状态"，
+        // 而不是无条件的 started（秒挂的命令会被当场拦截，见下）。
+        let target_dir = dir.clone().unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        });
+
+        let (shell, shell_args): (String, Vec<String>) = if cfg!(target_os = "windows") {
+            // 与前台 run_shell_async 同一构造口径：PS 5.1 不支持 `&&`，
+            // 公共层把链式命令展开成"逐段执行 + 前段失败即停"。
+            let ps_cmd = crate::infra::shell_command::build_windows_ps_command(&cmd_async);
+            ("powershell".to_string(), vec!["-NoProfile".to_string(), "-Command".to_string(), ps_cmd])
+        } else {
+            ("bash".to_string(), vec!["-c".to_string(), cmd_async.clone()])
+        };
+
+        let mut cmd = tokio::process::Command::new(&shell);
+        cmd.current_dir(&target_dir).args(&shell_args);
+
+        let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                // spawn 失败：标记 error；错误经返回值直接进 tool_result
+                //（模型与用户当轮可见，无需再走通知队列）
+                let msg = format!("Failed to spawn: {}", e);
+                if let Some(st) = app_handle.try_state::<BackgroundState>() {
+                    let mut bg = st.0.lock().await;
+                    if let Some(task) = bg.tasks.get_mut(&task_id_async) {
+                        task.status = "error".to_string();
+                        task.result = Some(msg.clone());
+                    }
+                }
+                return format!("Background task {} failed to start: {}", task_id, msg);
+            }
+        };
+
+        // —— 快速失败探测 ——
+        // 秒挂的命令（如 shell 语法错误）在数百毫秒内退出。轮询 try_wait，
+        // 命中则把错误输出直接带回 tool_result——模型当轮就能看到失败，
+        // 不必等下一轮 <background-results> 注入后才自我纠正。
+        let mut quick_exit: Option<String> = None;
+        for _ in 0..8 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    // 进程已退出：管道 EOF 已到，残留输出可立即读尽
+                    let mut out = String::new();
+                    {
+                        use tokio::io::AsyncReadExt;
+                        if let Some(mut so) = child.stdout.take() {
+                            let _ = AsyncReadExt::read_to_string(&mut so, &mut out).await;
+                        }
+                        if let Some(mut se) = child.stderr.take() {
+                            let _ = AsyncReadExt::read_to_string(&mut se, &mut out).await;
+                        }
+                    }
+                    let text = if out.trim().is_empty() {
+                        format!("(no output, exit code {:?})", status.code())
+                    } else {
+                        out
+                    };
+                    quick_exit = Some(format!("[error] exit code: {:?}\n{}", status.code(), text));
+                    break;
+                }
+                Ok(None) => {}   // 仍在运行：继续轮询
+                Err(_) => break, // 探测异常：交给异步路径兜底
+            }
+        }
+        if let Some(err_text) = quick_exit {
+            // 与闭包内 error 收尾同口径：task 标 error + emit + 入通知队列
+            let notif = Notification {
+                task_id: task_id_async.clone(),
+                session_id: session_id_clone.clone(),
+                status: "error".to_string(),
+                command: cmd_async.clone(),
+                result: err_text.clone(),
+                port: port_async,
+                task_type: type_async.clone(),
+            };
+            let _ = app_handle.emit("bg-task-done", &notif);
+            if let Some(st) = app_handle.try_state::<BackgroundState>() {
+                let mut bg = st.0.lock().await;
+                if let Some(task) = bg.tasks.get_mut(&task_id_async) {
+                    task.status = "error".to_string();
+                    task.result = Some(err_text.clone());
+                }
+            }
+            return format!(
+                "Background task {} failed immediately:\n{}",
+                task_id, err_text
+            );
+        }
+
+        // —— 正常路径：句柄提取与注册（原闭包内逻辑挪出）——
+        let child_pid = child.id();
+        // 先提取 stdout/stderr pipe，避免延迟期间管道缓冲区满导致进程阻塞
+        let child_stdout = child.stdout.take();
+        let child_stderr = child.stderr.take();
+        let child_arc = Arc::new(tokio::sync::Mutex::new(Some(child)));
+        {
+            let mut bg = state_clone.lock().await;
+            bg.child_processes.insert(task_id.clone(), child_arc.clone());
+            if let (Some(pid), Some(task)) = (child_pid, bg.tasks.get_mut(&task_id)) {
+                // 先存 PowerShell PID 作为 root，稍后延迟捕获完整进程树
+                task.pid = Some(pid);
+            }
+        }
+
+        // 立即启动 stdout/stderr 读取，避免管道阻塞
+        let output_buffer = Arc::new(tokio::sync::Mutex::new(String::new()));
+        let max_output = crate::infra::types::constants::MAX_BACKGROUND_OUTPUT_LEN;
+
+        if let Some(stdout) = child_stdout {
+            let reader = BufReader::new(stdout);
+            let mut lines = reader.lines();
+            let task_id_for_stdout = task_id.clone();
+            let buf = output_buffer.clone();
             tokio::spawn(async move {
-                let target_dir = dir_async.unwrap_or_else(|| {
-                    std::env::current_dir()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string()
-                });
-
-                let (shell, shell_args): (String, Vec<String>) = if cfg!(target_os = "windows") {
-                    let ps_cmd = format!(
-                        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; {}",
-                        cmd_async
-                    );
-                    ("powershell".to_string(), vec!["-NoProfile".to_string(), "-Command".to_string(), ps_cmd])
-                } else {
-                    ("bash".to_string(), vec!["-c".to_string(), cmd_async.clone()])
-                };
-
-                let mut cmd = tokio::process::Command::new(&shell);
-                cmd.current_dir(&target_dir).args(&shell_args);
-
-                let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
-                {
-                    Ok(c) => c,
-                    Err(e) => {
-                        if let Some(st) = app_handle.try_state::<BackgroundState>() {
-                            let mut bg = st.0.lock().await;
-                            if let Some(task) = bg.tasks.get_mut(&task_id_async) {
-                                task.status = "error".to_string();
-                                task.result = Some(format!("Failed to spawn: {}", e));
-                            }
-                            bg.notification_queue.push(Notification {
-                                task_id: task_id_async,
-                                session_id: session_id_clone.clone(),
-                                status: "error".to_string(),
-                                command: cmd_async,
-                                result: format!("Failed to spawn: {}", e),
-                                port: port_async,
-                                task_type: type_async,
-                            });
-                        }
-                        return;
-                    }
-                };
-
-                // 保存子进程句柄和 PID，用于终止和退出清理
-                let child_pid = child.id();
-                // 先提取 stdout/stderr pipe，避免延迟期间管道缓冲区满导致进程阻塞
-                let child_stdout = child.stdout.take();
-                let child_stderr = child.stderr.take();
-                let child_arc = Arc::new(tokio::sync::Mutex::new(Some(child)));
-                {
-                    let mut bg = state_clone.lock().await;
-                    bg.child_processes.insert(task_id_async.clone(), child_arc.clone());
-                    if let (Some(pid), Some(task)) = (child_pid, bg.tasks.get_mut(&task_id_async)) {
-                        // 先存 PowerShell PID 作为 root，稍后延迟捕获完整进程树
-                        task.pid = Some(pid);
+                while let Ok(Some(line)) = lines.next_line().await {
+                    println!("[bg:{}] {}", task_id_for_stdout, line);
+                    let mut b = buf.lock().await;
+                    if b.len() < max_output {
+                        b.push_str(&line);
+                        b.push('\n');
                     }
                 }
+            });
+        }
 
-                // 立即启动 stdout/stderr 读取，避免管道阻塞
-                let output_buffer = Arc::new(tokio::sync::Mutex::new(String::new()));
-                let max_output = crate::infra::types::constants::MAX_BACKGROUND_OUTPUT_LEN;
-
-                if let Some(stdout) = child_stdout {
-                    let reader = BufReader::new(stdout);
-                    let mut lines = reader.lines();
-                    let task_id_for_stdout = task_id_async.clone();
-                    let buf = output_buffer.clone();
-                    tokio::spawn(async move {
-                        while let Ok(Some(line)) = lines.next_line().await {
-                            println!("[bg:{}] {}", task_id_for_stdout, line);
-                            let mut b = buf.lock().await;
-                            if b.len() < max_output {
-                                b.push_str(&line);
-                                b.push('\n');
-                            }
-                        }
-                    });
+        if let Some(stderr) = child_stderr {
+            let reader = BufReader::new(stderr);
+            let mut lines = reader.lines();
+            let task_id_for_stderr = task_id.clone();
+            let buf = output_buffer.clone();
+            tokio::spawn(async move {
+                while let Ok(Some(line)) = lines.next_line().await {
+                    println!("[bg:{} ERR] {}", task_id_for_stderr, line);
+                    let mut b = buf.lock().await;
+                    if b.len() < max_output {
+                        b.push_str(&line);
+                        b.push('\n');
+                    }
                 }
+            });
+        }
 
-                if let Some(stderr) = child_stderr {
-                    let reader = BufReader::new(stderr);
-                    let mut lines = reader.lines();
-                    let task_id_for_stderr = task_id_async.clone();
-                    let buf = output_buffer.clone();
-                    tokio::spawn(async move {
-                        while let Ok(Some(line)) = lines.next_line().await {
-                            println!("[bg:{} ERR] {}", task_id_for_stderr, line);
-                            let mut b = buf.lock().await;
-                            if b.len() < max_output {
-                                b.push_str(&line);
-                                b.push('\n');
-                            }
-                        }
-                    });
-                }
-
+        tokio::spawn(async move {
                 // 延迟等待子进程树完全展开（npm/node 等需要时间启动），再递归捕获全部 PID
                 // 此时 stdout/stderr 已在后台读取，不会阻塞进程
                 tokio::time::sleep(Duration::from_millis(1500)).await;
@@ -448,19 +503,44 @@ impl BackgroundManager {
                 // Tauri 事件推送（实时通知前端，替代轮询）
                 let _ = app_handle.emit("bg-task-done", &notif);
 
+                let mut was_killed = false;
                 if let Some(st) = app_handle.try_state::<BackgroundState>() {
                     let mut bg = st.0.lock().await;
                     if let Some(task) = bg.tasks.get_mut(&task_id_async) {
                         task.status = status.to_string();
                         task.result = Some(notif.result.clone());
+                        // 用户主动 kill 的任务不算失败（他自己停的），不发失败提醒
+                        was_killed = task.status == "killed";
                     }
                     // 不删 child_processes：服务类后台任务（npm run dev 等）的
                     // 子进程（node/nodemon）会随 PowerShell 退出而 orphan，
                     // handle 是最后能杀进程树的手段，保留待用户主动 dismiss/kill
-                    bg.notification_queue.push(notif);
+                }
+
+                // 失败小字提醒：任务以 error 结束（且不是用户主动 kill）时，
+                // 发结构化事件让前端在聊天流里显示 notice 小字。用户看到后
+                // 自行决定是否让 Agent 排查。
+                // 秒挂场景不走这里：错误已经在启动时的 tool_result 里带回。
+                if status == "error" && !was_killed {
+                    // 错误详情接入提醒（截断到合理长度，完整输出仍在任务面板）
+                    let mut summary = notif.result.trim().to_string();
+                    if summary.chars().count() > 400 {
+                        summary = summary.chars().take(400).collect::<String>() + "…";
+                    }
+                    // 字段全部从 notif 取：notif 构造时已 move 掉原变量，这里不能再借用
+                    let _ = app_handle.emit(
+                        "background-failed",
+                        serde_json::json!({
+                            "sessionId": notif.session_id,
+                            "taskId": notif.task_id,
+                            "command": notif.command,
+                            "result": summary,
+                            "port": notif.port,
+                            "taskType": notif.task_type,
+                        }),
+                    );
                 }
             });
-        }
 
         let type_info = task_type
             .as_ref()
@@ -469,8 +549,13 @@ impl BackgroundManager {
         let port_info = detected_port
             .map(|p| format!(" :{}", p))
             .unwrap_or_default();
+        // P0-2：返回"已提交"而非"已启动"——spawn 成功不代表命令会跑成功。
+        // 秒挂的命令已在上面被快速失败探测拦截；此处能返回即表示进程仍在运行，
+        // 但执行结果（如 npm install 是否成功）尚未确认。失败时前端会以小字
+        // 提醒用户（background-failed 事件），由用户决定是否让 Agent 排查；
+        // 模型上下文里不再注入后台任务结果。
         format!(
-            "Background task {} started{}{}: {}",
+            "Background task {} submitted{}{}: {} (已提交，尚未确认执行结果；若任务失败，界面会提醒用户，可发消息让 Agent 排查)",
             task_id, type_info, port_info, short_cmd
         )
     }
@@ -553,18 +638,6 @@ impl BackgroundManager {
             }
         } else {
             "Error: Background state not initialized.".to_string()
-        }
-    }
-
-    /// 取出并清空所有待处理通知（用于前端轮询）
-    pub async fn drain_notifications(app: &tauri::AppHandle) -> Vec<Notification> {
-        if let Some(state) = app.try_state::<BackgroundState>() {
-            let mut bg = state.0.lock().await;
-            let notifs = bg.notification_queue.clone();
-            bg.notification_queue.clear();
-            notifs
-        } else {
-            Vec::new()
         }
     }
 
