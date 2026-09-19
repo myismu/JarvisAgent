@@ -374,13 +374,15 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
           <span>{{ t('monitor.context.model') }}</span>
           <strong :title="snapshot.model">{{ snapshot.model }}</strong>
         </div>
-        <div class="context-stat-card">
+        <!-- 窗口 / 占用两张卡在"窗口未登记"时直接不渲染：此时主数卡已经写了「未知上下文窗口」，
+             再铺两张值为"未知"的卡只是白占格子。有值才占位，格子留给真正有信息的指标 -->
+        <div v-if="maxContextTokens" class="context-stat-card">
           <span>{{ t('monitor.context.contextWindow') }}</span>
-          <strong>{{ maxContextTokens ? formatNumber(maxContextTokens) : t('monitor.context.unknown') }}</strong>
+          <strong>{{ formatNumber(maxContextTokens) }}</strong>
         </div>
-        <div class="context-stat-card">
+        <div v-if="contextUsagePercent !== null" class="context-stat-card">
           <span>{{ t('monitor.context.usage') }}</span>
-          <strong>{{ contextUsagePercent !== null ? `${contextUsagePercent}%` : t('monitor.context.unknown') }}</strong>
+          <strong>{{ contextUsagePercent }}%</strong>
         </div>
         <div class="context-stat-card">
           <span>{{ t('monitor.context.providerActual') }}</span>
@@ -404,14 +406,18 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
         </div>
         <div class="trend-bars">
           <div
-            v-for="point in cacheTrend"
+            v-for="(point, index) in cacheTrend"
             :key="point.loopCount"
             class="trend-slot"
             :class="`cache-${pointTone(point)}`"
             :title="pointTitle(point)"
           >
-            <span class="trend-fill" :style="{ height: `${Math.max(pointRate(point), 3)}%` }" />
+            <span class="trend-fill" :style="{ height: `${Math.max(pointRate(point), 4)}%` }" />
             <span class="trend-rate">{{ pointRate(point) }}</span>
+            <!-- 轮次只标首尾：10 根全标会挤成一团，精确轮次在 title 里 -->
+            <span v-if="index === 0 || index === cacheTrend.length - 1" class="trend-loop">
+              L{{ point.loopCount }}
+            </span>
           </div>
         </div>
       </div>
@@ -453,22 +459,6 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
            所以这里必须显式说明，避免用户拿分区之和去核对上面的实测总量。 -->
       <div class="context-estimate-note">{{ t('monitor.context.sectionsEstimatedHint') }}</div>
 
-      <div class="context-bars">
-        <div v-for="section in sectionViews" :key="section.key" class="context-bar-row">
-          <div class="context-bar-head">
-            <span class="context-dot" :style="{ background: section.color }"></span>
-            <span class="context-bar-title">{{ section.label }}</span>
-            <strong>{{ formatToken(section.estimatedTokens) }}</strong>
-          </div>
-          <div class="context-bar-track" aria-hidden="true">
-            <span :style="{ width: Math.max(3, section.percent) + '%', background: section.color }"></span>
-          </div>
-          <div class="context-bar-meta">
-            <span>{{ Math.round(section.percent) }}%</span>
-            <span>{{ t('monitor.context.sectionMeta', { chars: formatFullNumber(section.chars), items: section.itemCount, method: methodLabel(section.tokenCountMethod) }) }}</span>
-          </div>
-        </div>
-      </div>
     </div>
 
     <div class="context-section-list">
@@ -493,9 +483,14 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
             <span class="context-dot" :style="{ background: section.color }"></span>
             <span class="context-section-title">{{ section.label }}</span>
             <span class="context-section-count">{{ section.itemCount }}</span>
+            <span class="context-section-stat">
+              {{ formatToken(section.estimatedTokens) }} · {{ Math.round(section.percent) }}%
+            </span>
           </span>
-          <span class="context-section-stat">
-            {{ formatToken(section.estimatedTokens) }}
+          <!-- 占比条放进 summary 内：分区占比是主信息，收起状态下也必须看得见；
+               原来它只在已删掉的 .context-bars 里画一遍，导致同一份数据渲染两次 -->
+          <span class="context-bar-track" aria-hidden="true">
+            <span :style="{ width: Math.max(3, section.percent) + '%', background: section.color }"></span>
           </span>
         </summary>
         <div class="context-section-extra">
@@ -538,29 +533,27 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   min-width: 0;
 }
 
-.context-top-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(220px, 0.8fr);
-  gap: 12px;
-}
-
+/* 两层网格都改成单列纵向流。
+   原因：面板内容宽只有 ~578px，先切两列、右列里再切两列，最终每格只剩 ~110px，
+   装不下"标签 + 值"这一行 —— 只能把字号压到 0.6rem 以下、让文字换行挤压。
+   改单列后宽度还给内容，字号也才有条件回到可读区间。 */
+.context-top-grid,
 .context-visual-grid {
-  display: grid;
-  grid-template-columns: minmax(220px, 0.85fr) minmax(0, 1.15fr);
+  display: flex;
+  flex-direction: column;
   gap: 12px;
 }
 
 .section-empty {
   padding: 10px 2px;
   color: var(--text-muted);
-  font-size: 0.68rem;
+  font-size: 0.72rem;
 }
 
 .context-hero,
 .context-chart-card,
 .context-stat-card,
-.context-section-item,
-.context-bar-row {
+.context-section-item {
   border: 1px solid var(--border-color);
   background: var(--glass-bg);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
@@ -590,11 +583,10 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 .context-stat-card span,
 .context-chart-copy span,
 .context-chart-copy p,
-.context-bar-meta,
 .context-section-extra,
 .context-section-stat {
   color: var(--text-muted);
-  font-size: 0.62rem;
+  font-size: 0.78rem;
 }
 
 .context-kicker {
@@ -610,7 +602,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   margin-left: 6px;
   padding: 0 5px;
   border-radius: 5px;
-  font-size: 0.56rem;
+  font-size: 0.66rem;
   letter-spacing: 0;
   text-transform: none;
   vertical-align: 1px;
@@ -655,7 +647,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   border-radius: 6px;
   background: var(--glass-bg);
   color: var(--text-muted);
-  font-size: 0.65rem;
+  font-size: 0.72rem;
   font-weight: 700;
   cursor: pointer;
   transition: all 0.15s;
@@ -694,7 +686,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   border-radius: 999px;
   color: var(--accent-blue);
   background: color-mix(in srgb, var(--accent-blue) 16%, transparent);
-  font-size: 0.58rem;
+  font-size: 0.66rem;
   font-weight: 800;
   white-space: nowrap;
 }
@@ -706,7 +698,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 .compact-blocked-note {
   flex-shrink: 0;
   color: var(--text-muted);
-  font-size: 0.58rem;
+  font-size: 0.66rem;
   white-space: nowrap;
   cursor: help;
 }
@@ -734,7 +726,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   max-width: 340px;
   padding: 5px 14px;
   border-radius: 6px;
-  font-size: 0.65rem;
+  font-size: 0.72rem;
   font-weight: 700;
   line-height: 1.4;
   text-align: center;
@@ -769,7 +761,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   border-radius: 999px;
   color: var(--text-main);
   background: color-mix(in srgb, var(--accent-green) 18%, transparent);
-  font-size: 0.62rem;
+  font-size: 0.72rem;
   font-weight: 800;
 }
 
@@ -781,9 +773,11 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   background: color-mix(in srgb, var(--accent-red) 22%, transparent);
 }
 
+/* auto-fit + 最小格宽 150px：格子放不下就自动落单列，而不是硬切两列。
+   这样"全局字号调大"或"窗口拖窄"都不会再把卡片挤成两行（每张卡的标签要 ~110px） */
 .context-overview-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 8px;
 }
 
@@ -803,7 +797,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   min-width: 0;
   overflow: hidden;
   color: var(--text-main);
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -838,7 +832,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   border-radius: 9px;
   border: 1px dashed var(--border-color);
   color: var(--text-muted);
-  font-size: 0.64rem;
+  font-size: 0.72rem;
   line-height: 1.5;
 }
 
@@ -862,20 +856,24 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   gap: 8px;
   margin-bottom: 7px;
   color: var(--text-muted);
-  font-size: 0.62rem;
+  font-size: 0.72rem;
 }
 
 .trend-head strong {
   color: var(--text-main);
-  font-size: 0.68rem;
+  font-size: 0.72rem;
   font-variant-numeric: tabular-nums;
 }
 
+/* 高度 46px 太矮：命中率 81%~99% 在这一高度里只差 8px，等于看不出差别 ——
+   画了一根"看起来是量化图、实际读不出量"的柱子，比不画更糟。
+   提到 86px（其中 16px 留给轮次标），柱区 70px，再补一条 50% 基线做参照 */
 .trend-bars {
   display: flex;
   align-items: flex-end;
   gap: 4px;
-  height: 46px;
+  height: 86px;
+  padding-bottom: 16px;
 }
 
 .trend-slot {
@@ -887,8 +885,16 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   align-items: flex-end;
   border-radius: 4px;
   background: color-mix(in srgb, var(--text-muted) 14%, transparent);
-  overflow: hidden;
   cursor: default;
+}
+
+/* 50% 基线：没有参照线时 95% 和 81% 长得一模一样，柱子等于白画 */
+.trend-slot::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 50% 0;
+  border-top: 1px dashed color-mix(in srgb, var(--text-muted) 45%, transparent);
+  pointer-events: none;
 }
 
 .trend-fill {
@@ -907,8 +913,14 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   background: var(--accent-blue);
 }
 
+/* 预热态（0 命中）用斜纹：它和"命中了但很低"是两件事，不能长得一样。
+   原来的 Math.max(…,3) 让它变成一根很矮的柱子，看着像"命中率很低"而不是"还没开始命中" */
 .trend-slot.cache-warmup .trend-fill {
-  background: color-mix(in srgb, var(--text-muted) 55%, transparent);
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--text-muted) 55%, transparent) 0 3px,
+    transparent 3px 6px
+  );
 }
 
 .trend-rate {
@@ -916,10 +928,23 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   inset: auto 0 2px 0;
   text-align: center;
   color: var(--text-main);
-  font-size: 0.54rem;
+  font-size: 0.72rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+/* 轮次标：画在槽下方的留白里（.trend-bars 的 padding-bottom 就是为此留的）。
+   slot 去掉了 overflow:hidden，否则它会被裁掉 */
+.trend-loop {
+  position: absolute;
+  inset: auto 0 -15px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
 
@@ -977,7 +1002,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 .donut-center span {
   margin-top: 2px;
   color: var(--text-muted);
-  font-size: 0.58rem;
+  font-size: 0.66rem;
 }
 
 .context-chart-copy {
@@ -1003,36 +1028,16 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 .context-estimate-note {
   margin: 8px 0 6px;
   color: var(--text-muted);
-  font-size: 0.62rem;
+  font-size: 0.72rem;
   line-height: 1.45;
 }
 
-.context-bars {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-
-.context-bar-row {
-  padding: 9px;
-  border-radius: 10px;
-}
-
-.context-bar-head,
 .context-section-head,
-.context-bar-meta,
 .context-section-extra {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
-}
-
-.context-bar-head strong {
-  margin-left: auto;
-  color: var(--text-main);
-  font-size: 0.66rem;
-  font-variant-numeric: tabular-nums;
 }
 
 .context-dot {
@@ -1043,20 +1048,21 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   box-shadow: 0 0 12px currentColor;
 }
 
-.context-bar-title,
 .context-section-title {
   min-width: 0;
   overflow: hidden;
   color: var(--text-main);
-  font-size: 0.7rem;
+  font-size: 0.78rem;
   font-weight: 750;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* 占比条：现在挂在 summary 里（有 gap 撑开），不再需要自己的 margin-top */
 .context-bar-track {
-  height: 5px;
-  margin-top: 7px;
+  display: block;
+  width: 100%;
+  height: 6px;
   overflow: hidden;
   border-radius: 999px;
   background: color-mix(in srgb, var(--text-muted) 12%, transparent);
@@ -1066,12 +1072,6 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   display: block;
   height: 100%;
   border-radius: inherit;
-}
-
-.context-bar-meta {
-  justify-content: space-between;
-  margin-top: 5px;
-  font-variant-numeric: tabular-nums;
 }
 
 .context-section-list {
@@ -1089,7 +1089,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 
 .context-detail-label {
   color: var(--text-muted);
-  font-size: 0.58rem;
+  font-size: 0.66rem;
   font-weight: 850;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1101,7 +1101,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   border-radius: 4px;
   background: var(--glass-bg);
   color: var(--text-muted);
-  font-size: 0.55rem;
+  font-size: 0.66rem;
   font-weight: 700;
   cursor: pointer;
   transition: all 0.15s;
@@ -1123,13 +1123,15 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   overflow: hidden;
 }
 
+/* summary 改成纵向两行：第一行"名称 + 项数 + token + 占比"，第二行占比条。
+   占比条必须在 summary 内 —— summary 之外的内容在 details 收起时是隐藏的，
+   而占比正是收起状态下最该看见的信息（原实现把它画在另一处，等于同一份数据渲染两遍） */
 .context-section-item summary {
-  min-height: 34px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 40px;
+  padding: 8px 10px;
   cursor: pointer;
   list-style: none;
 }
@@ -1152,12 +1154,14 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   justify-content: center;
   color: var(--text-muted);
   background: var(--glass-bg-light);
-  font-size: 0.58rem;
+  font-size: 0.66rem;
   font-weight: 750;
   font-variant-numeric: tabular-nums;
 }
 
 .context-section-stat {
+  flex-shrink: 0;
+  margin-left: auto;
   white-space: nowrap;
   font-weight: 750;
   font-variant-numeric: tabular-nums;
@@ -1190,7 +1194,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   border-radius: 6px;
   background: color-mix(in srgb, var(--bg-dark) 78%, var(--surface-strong));
   font-family: var(--font-mono);
-  font-size: 0.62rem;
+  font-size: 0.72rem;
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1205,7 +1209,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   border-radius: 4px;
   background: var(--glass-bg);
   color: var(--text-muted);
-  font-size: 0.55rem;
+  font-size: 0.66rem;
   font-weight: 700;
   cursor: pointer;
   transition: all var(--transition-fast);
@@ -1221,10 +1225,9 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   border-color: var(--accent-green);
 }
 
-@media (max-width: 560px) {
-  .context-top-grid,
-  .context-visual-grid {
-    grid-template-columns: 1fr;
-  }
-}
+/* 这里不再需要断点：两个容器已改成单列纵向流，`.context-overview-grid` 用
+   auto-fit 自己决定落几列。
+   原写法是 `@media (max-width: 560px)` —— 它挂在**视口**上，而面板宽度与视口无关：
+   独立监控窗口宽 640 > 560，永不触发；内嵌主窗口时视口 1600、面板只有 620，更不可能触发。
+   现在改用 auto-fit，由布局自己决定列数，不需要任何断点。 */
 </style>

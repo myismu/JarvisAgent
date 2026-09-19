@@ -32,6 +32,14 @@ const permissionAllowanceCount = ref(0)
 const permissionAllowances = ref<Array<{ kind: string; scope: string; label: string }>>([])
 const permissionPendingCount = ref(0)
 const pendingPermissions = ref<Array<{ id: string; message: string; allowSession?: boolean; kind?: string; warning?: string | null }>>([])
+
+/**
+ * 已允许清单是否展开。
+ *
+ * 默认折叠：这块在 `.panel-body` 之外（不随内容滚动），原来固定占 200px 内滚，
+ * 在独立监控窗口里长期吃掉约四分之一高度。清单是低频查看项，收起后只留一行计数。
+ */
+const showAllowances = ref(false)
 let permissionPollTimer: ReturnType<typeof setInterval> | null = null
 
 const loadPermissionState = async () => {
@@ -365,13 +373,23 @@ const backgroundStatusLabel = (status: string): string => {
         <span v-if="permissionPendingCount > 0">{{ t('permission.pendingRequests', { count: permissionPendingCount }) }}</span>
         <span v-else-if="permissionAllowanceCount > 0">{{ t('permission.allowancesHint', { count: permissionAllowanceCount }) }}</span>
         <span v-else>{{ t('permission.normalMode') }}</span>
+        <!-- 折叠开关：不加文字文案（箭头 + 数字 title 够用），避免为一条 UI 文案去动 locale -->
+        <button
+          v-if="permissionAllowances.length > 0"
+          class="perm-allow-toggle"
+          :aria-expanded="showAllowances"
+          :title="`${permissionAllowances.length} 项`"
+          @click="showAllowances = !showAllowances"
+        >
+          <span class="perm-chev">{{ showAllowances ? '▾' : '▸' }}</span>
+        </button>
         <button v-if="permissionAllowanceCount > 0" class="perm-revoke-btn" @click="clearSessionAllowances">{{ t('permission.revokeAll') }}</button>
       </div>
 
       <!-- 本会话已允许的范围：紧凑行式，一行一条，悬停行显撤销。
            清单可能很长（覆盖/命令各一条 easily 20+），max-height 内部滚动，
            不再把下方的 CONTEXT 等监控区挤走 -->
-      <div v-if="permissionAllowances.length > 0" class="perm-allow-list">
+      <div v-if="permissionAllowances.length > 0" v-show="showAllowances" class="perm-allow-list">
         <div v-for="allowance in permissionAllowances" :key="allowance.kind + '|' + allowance.scope" class="perm-allow-row">
           <span class="perm-allow-label" :title="allowance.label">{{ allowance.label }}</span>
           <button class="perm-allow-revoke" @click="revokeAllowance(allowance)">{{ t('permission.revoke') }}</button>
@@ -584,6 +602,10 @@ const backgroundStatusLabel = (status: string): string => {
 </template>
 
 <style scoped>
+/* 为什么这里没有断点：面板宽度和**视口宽度无关** —— 内嵌时视口 1600 而面板只有 620，
+   独立窗口时视口 640 而面板占满 640，用 @media 两种场景都不生效。
+   改由内层网格的 auto-fit 自己决定落几列（见 .monitor-grid），
+   比 @container 更稳：容器查询是较新的 at-rule，要依赖 scoped 插件对它的处理。 */
 .agent-panel {
   position: absolute;
   top: 46px;
@@ -646,7 +668,7 @@ const backgroundStatusLabel = (status: string): string => {
 
 .elapsed-time {
   color: var(--text-muted);
-  font-size: 0.7rem;
+  font-size: 0.78rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
@@ -695,6 +717,30 @@ const backgroundStatusLabel = (status: string): string => {
   color: var(--accent-blue);
 }
 .perm-status-bar svg { flex-shrink: 0; }
+/* 已允许清单的折叠开关：只用一个箭头（条数放在 title 里），
+   不为一条 UI 文案去动 locale 文件（那两个文件正被别处改动，避免互相覆盖） */
+.perm-allow-toggle {
+  flex-shrink: 0;
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.perm-allow-toggle:hover {
+  color: var(--text-main);
+  background: var(--glass-bg-light);
+}
+
+.perm-chev {
+  display: inline-block;
+  font-size: 0.72rem;
+  line-height: 1;
+}
+
 .perm-revoke-btn {
   margin-left: auto;
   padding: 3px 10px;
@@ -702,7 +748,7 @@ const backgroundStatusLabel = (status: string): string => {
   border: 1px solid var(--border-color);
   background: transparent;
   color: var(--text-soft);
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s;
@@ -747,7 +793,7 @@ const backgroundStatusLabel = (status: string): string => {
 .perm-allow-label {
   flex: 1;
   min-width: 0;
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   line-height: 1.7;
   color: var(--text-soft);
   white-space: nowrap;
@@ -763,7 +809,7 @@ const backgroundStatusLabel = (status: string): string => {
   border-radius: 4px;
   background: transparent;
   color: var(--text-muted);
-  font-size: 0.68rem;
+  font-size: 0.72rem;
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.12s, color 0.12s, background 0.12s;
@@ -808,7 +854,7 @@ const backgroundStatusLabel = (status: string): string => {
   border-radius: 6px;
   border: 1px solid var(--glass-border);
   background: var(--glass-bg-light);
-  font-size: 0.73rem;
+  font-size: 0.78rem;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.12s;
@@ -827,7 +873,7 @@ const backgroundStatusLabel = (status: string): string => {
 .panel-body {
   flex: 1;
   min-height: 0;
-  padding: 16px;
+  padding: 12px;
   overflow: auto;
 }
 
@@ -837,21 +883,23 @@ const backgroundStatusLabel = (status: string): string => {
   border-radius: 16px;
   background: color-mix(in srgb, var(--glass-bg) 82%, transparent);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.1);
-  padding: 14px;
+  padding: 12px;
 }
 
 .context-section {
   margin-bottom: 12px;
 }
 
+/* 单列纵向流。
+   这三个 section 装的都是"列表 + 长文本"（子 Agent 时间线、后台命令与报错、计划正文），
+   全宽才是它们需要的形状。
+   用两列网格时的问题：Sub Agents 与 Plans 被 `grid-column: 1/-1` 强制跨列，
+   单独的 Background 留在左列，**右列就空出一大片**（截图里的空白正是这么来的）。
+   面板宽度本来就和视口无关，与其在窄面板里硬凑列数，不如老实单列。 */
 .monitor-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 12px;
-}
-
-.plans-section {
-  grid-column: 1 / -1;
 }
 
 .monitor-section-head {
@@ -871,7 +919,7 @@ const backgroundStatusLabel = (status: string): string => {
 
 .monitor-kicker {
   color: var(--text-muted);
-  font-size: 0.58rem;
+  font-size: 0.66rem;
   font-weight: 850;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -888,7 +936,7 @@ const backgroundStatusLabel = (status: string): string => {
   border-radius: 999px;
   color: var(--text-muted);
   background: var(--glass-bg-light);
-  font-size: 0.62rem;
+  font-size: 0.72rem;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
 }
@@ -919,7 +967,7 @@ const backgroundStatusLabel = (status: string): string => {
   flex: 1;
   overflow: hidden;
   color: var(--text-main);
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -928,8 +976,15 @@ const backgroundStatusLabel = (status: string): string => {
 .monitor-item-main span:last-child {
   flex-shrink: 0;
   color: var(--text-muted);
-  font-size: 0.6rem;
+  font-size: 0.72rem;
   font-weight: 750;
+}
+
+/* 失败/出错状态用红字：只靠左侧那个小圆点区分度太弱，
+   一列任务扫下来很容易漏掉失败项 */
+.monitor-item.status-failed .monitor-item-main span:last-child,
+.monitor-item.status-error .monitor-item-main span:last-child {
+  color: var(--accent-red);
 }
 
 .dismiss-task-btn {
@@ -974,7 +1029,7 @@ const backgroundStatusLabel = (status: string): string => {
   border-radius: 50%;
   background: transparent;
   color: var(--accent-red);
-  font-size: 0.7rem;
+  font-size: 0.78rem;
   line-height: 1;
   cursor: pointer;
   opacity: 0;
@@ -996,7 +1051,7 @@ const backgroundStatusLabel = (status: string): string => {
   border: none;
   background: transparent;
   color: var(--text-muted);
-  font-size: 0.6rem;
+  font-size: 0.72rem;
   cursor: pointer;
   transition: color 0.15s;
 }
@@ -1005,15 +1060,22 @@ const backgroundStatusLabel = (status: string): string => {
   color: var(--accent-red);
 }
 
+/* 结果/报错文本：原来放开到 160px（约 9 行），一个任务卡就占掉四分之一面板高度。
+   收到 72px（约 4 行）并保留内部滚动 —— 长报错仍可看全，但不再主导版面 */
 .monitor-item p {
   margin: 6px 0 0;
-  max-height: 160px;
+  max-height: 72px;
   overflow: auto;
   color: var(--text-muted);
-  font-size: 0.66rem;
+  font-size: 0.72rem;
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 计划正文是这一块的主要内容，不该跟后台任务的报错摘要同一个高度上限 */
+.plans-section .monitor-item p {
+  max-height: 200px;
 }
 
 .monitor-item-meta {
@@ -1022,7 +1084,7 @@ const backgroundStatusLabel = (status: string): string => {
   gap: 6px;
   margin-top: 7px;
   color: var(--text-muted);
-  font-size: 0.6rem;
+  font-size: 0.72rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1033,16 +1095,16 @@ const backgroundStatusLabel = (status: string): string => {
   white-space: pre-wrap;
 }
 
-.monitor-section.subagents-section {
-  grid-column: 1 / -1;
-}
-
+/* 子 Agent 列表不再设 max-height / 内部滚动（2026-09-19）：
+   - 列表本来只显示前 12 张卡（currentSubAgents = slice(0, 12)），收起态全长 ~430px，
+     与旧上限 480px 几乎相同 —— 内滚在现实中极少触发，却让面板常驻"滚动套滚动"
+     （外层 .panel-body 一根、这里一根），滚轮悬停位置决定滚哪层，手感割裂；
+   - 主体内容属于阅读流，交给面板整体滚动；展开的详情（.tool-timeline）才是局部焦点，
+     由它自己内滚，见下方注释。 */
 .subagent-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 480px;
-  overflow-y: auto;
 }
 
 .subagent-card {
@@ -1076,7 +1138,7 @@ const backgroundStatusLabel = (status: string): string => {
   flex: 1;
   overflow: hidden;
   color: var(--text-main);
-  font-size: 0.7rem;
+  font-size: 0.78rem;
   font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1088,7 +1150,7 @@ const backgroundStatusLabel = (status: string): string => {
   border-radius: 4px;
   background: var(--glass-bg-light);
   color: var(--text-muted);
-  font-size: 0.55rem;
+  font-size: 0.66rem;
   font-weight: 750;
   text-transform: uppercase;
 }
@@ -1103,7 +1165,7 @@ const backgroundStatusLabel = (status: string): string => {
   border-radius: 3px;
   background: color-mix(in srgb, var(--text-muted) 20%, transparent);
   color: var(--text-muted);
-  font-size: 0.5rem;
+  font-size: 0.66rem;
   font-weight: 900;
 }
 
@@ -1111,7 +1173,7 @@ const backgroundStatusLabel = (status: string): string => {
   flex-shrink: 0;
   padding: 1px 5px;
   border-radius: 4px;
-  font-size: 0.55rem;
+  font-size: 0.66rem;
   font-weight: 750;
 }
 
@@ -1129,14 +1191,14 @@ const backgroundStatusLabel = (status: string): string => {
 .status-label {
   flex-shrink: 0;
   color: var(--text-muted);
-  font-size: 0.6rem;
+  font-size: 0.72rem;
   font-weight: 700;
 }
 
 .loop-badge {
   flex-shrink: 0;
   color: var(--text-muted);
-  font-size: 0.6rem;
+  font-size: 0.72rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
@@ -1144,7 +1206,7 @@ const backgroundStatusLabel = (status: string): string => {
 .countdown-badge {
   flex-shrink: 0;
   color: var(--accent-blue);
-  font-size: 0.6rem;
+  font-size: 0.72rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
@@ -1154,7 +1216,7 @@ const backgroundStatusLabel = (status: string): string => {
   width: 16px;
   text-align: center;
   color: var(--text-muted);
-  font-size: 0.55rem;
+  font-size: 0.66rem;
   transition: transform 120ms ease;
 }
 
@@ -1169,7 +1231,7 @@ const backgroundStatusLabel = (status: string): string => {
   align-items: center;
   gap: 6px;
   padding: 8px 0;
-  font-size: 0.64rem;
+  font-size: 0.72rem;
   border-bottom: 1px solid color-mix(in srgb, var(--border-color) 30%, transparent);
 }
 
@@ -1187,13 +1249,16 @@ const backgroundStatusLabel = (status: string): string => {
 
 .ct-input {
   color: var(--text-muted);
-  font-size: 0.6rem;
+  font-size: 0.72rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* 工具时间线 */
+/* 工具时间线：保留 max-height 内滚（与 .subagent-list 的取舍相反）。
+   它位于"展开的详情卡"内部 —— 一个跑了几十轮的子 Agent 会产出上百行记录，
+   不设上限的话点开一张卡就吞掉整个面板，其他区块全被挤走。
+   展开的详情是"局部放大镜"，不该绑架全局导航。 */
 .tool-timeline {
   max-height: 200px;
   overflow-y: auto;
@@ -1204,7 +1269,7 @@ const backgroundStatusLabel = (status: string): string => {
 .tool-timeline-empty {
   padding: 8px 0;
   color: var(--text-muted);
-  font-size: 0.6rem;
+  font-size: 0.72rem;
 }
 
 .timeline-header {
@@ -1212,7 +1277,7 @@ const backgroundStatusLabel = (status: string): string => {
   align-items: center;
   justify-content: space-between;
   color: var(--text-muted);
-  font-size: 0.58rem;
+  font-size: 0.66rem;
   font-weight: 800;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1225,7 +1290,7 @@ const backgroundStatusLabel = (status: string): string => {
   border-radius: 3px;
   background: var(--glass-bg);
   color: var(--text-muted);
-  font-size: 0.5rem;
+  font-size: 0.66rem;
   font-weight: 700;
   text-transform: none;
   letter-spacing: 0;
@@ -1247,7 +1312,7 @@ const backgroundStatusLabel = (status: string): string => {
   align-items: center;
   gap: 5px;
   padding: 2px 0;
-  font-size: 0.6rem;
+  font-size: 0.72rem;
   font-family: ui-monospace, 'Cascadia Code', monospace;
 }
 
@@ -1255,14 +1320,14 @@ const backgroundStatusLabel = (status: string): string => {
   flex-shrink: 0;
   width: 26px;
   color: var(--text-muted);
-  font-size: 0.55rem;
+  font-size: 0.66rem;
 }
 
 .tl-icon {
   flex-shrink: 0;
   width: 12px;
   text-align: center;
-  font-size: 0.5rem;
+  font-size: 0.66rem;
 }
 
 .tl-tool_call .tl-icon { color: var(--text-muted); }
@@ -1281,7 +1346,7 @@ const backgroundStatusLabel = (status: string): string => {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-muted);
-  font-size: 0.55rem;
+  font-size: 0.66rem;
 }
 
 /* Token 明细 */
@@ -1291,7 +1356,7 @@ const backgroundStatusLabel = (status: string): string => {
   gap: 4px;
   padding: 7px 0;
   color: var(--text-muted);
-  font-size: 0.6rem;
+  font-size: 0.72rem;
   font-variant-numeric: tabular-nums;
   border-top: 1px solid color-mix(in srgb, var(--border-color) 30%, transparent);
 }
@@ -1307,7 +1372,7 @@ const backgroundStatusLabel = (status: string): string => {
   gap: 4px;
   padding-bottom: 6px;
   color: var(--text-muted);
-  font-size: 0.58rem;
+  font-size: 0.66rem;
 }
 
 /* 错误详情 */
@@ -1320,7 +1385,7 @@ const backgroundStatusLabel = (status: string): string => {
 
 .error-label {
   color: var(--accent-red);
-  font-size: 0.6rem;
+  font-size: 0.72rem;
   font-weight: 800;
   margin-bottom: 4px;
 }
@@ -1328,7 +1393,7 @@ const backgroundStatusLabel = (status: string): string => {
 .detail-error pre {
   margin: 0;
   color: var(--accent-red);
-  font-size: 0.58rem;
+  font-size: 0.66rem;
   font-family: ui-monospace, 'Cascadia Code', monospace;
   white-space: pre-wrap;
   word-break: break-all;
@@ -1342,7 +1407,7 @@ const backgroundStatusLabel = (status: string): string => {
 
 .prompt-label {
   color: var(--text-muted);
-  font-size: 0.58rem;
+  font-size: 0.66rem;
   font-weight: 800;
   margin-bottom: 2px;
 }
@@ -1350,7 +1415,7 @@ const backgroundStatusLabel = (status: string): string => {
 .detail-prompt p {
   margin: 0;
   color: var(--text-muted);
-  font-size: 0.62rem;
+  font-size: 0.72rem;
   line-height: 1.45;
 }
 
@@ -1374,15 +1439,17 @@ const backgroundStatusLabel = (status: string): string => {
 }
 
 .status-failed .status-dot,
+.status-error .status-dot,
 .status-rejected .status-dot,
 .status-cancelled .status-dot {
   background: var(--accent-red);
 }
 
+/* 空态与 section 标题之间不再留一整行空白：标题带的 margin-bottom 已经够了 */
 .monitor-empty {
-  padding: 12px 2px 4px;
+  padding: 2px 2px 2px;
   color: var(--text-muted);
-  font-size: 0.66rem;
+  font-size: 0.72rem;
 }
 
 .panel-slide-enter-active,
@@ -1396,12 +1463,13 @@ const backgroundStatusLabel = (status: string): string => {
   transform: translate(8px, -8px) scale(0.98);
 }
 
-@media (max-width: 1180px) {
-  .monitor-grid {
-    grid-template-columns: 1fr;
-  }
-}
+/* 原来的 `@media (max-width: 1180px)` 已删除：它挂在视口上，而面板宽度与视口无关
+   （内嵌时视口 1600 永不触发，于是 620 宽的面板里硬塞两列，每列只剩 ~283px）。
+   列数现在由 .monitor-grid 的 auto-fit 决定，不需要断点。 */
 
+/* 这一条**保留视口断点**（与上面那条不同）：它调的是面板相对窗口的边距，
+   语义本来就是"窗口窄 → 面板贴边"，视口才是正确的判据。
+   （standalone 时 `.agent-panel.standalone` 的 width:100% 优先级更高，不受影响） */
 @media (max-width: 920px) {
   .agent-panel {
     right: 8px;
