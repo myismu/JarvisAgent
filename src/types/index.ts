@@ -657,3 +657,31 @@ export interface SkillDetail {
 }
 
 export type AppView = 'chat' | 'skill-manager';
+
+// === 提示词管理类型 ===
+
+export interface PromptMeta {
+  path: string;
+  displayName: string;
+  description: string;
+  /** "base" | "audience" | "mode" | "os" | "subagent" */
+  category: string;
+  /** true = 进 system（新会话生效）；false = 进动态上下文（下一轮生效） */
+  goesIntoSystem: boolean;
+  customized: boolean;
+  sizeChars: number;
+  /** 仅 os 分类有意义：当前编译平台的那一项 */
+  isPlatformActive: boolean;
+}
+
+export interface PromptDetail {
+  path: string;
+  displayName: string;
+  description: string;
+  goesIntoSystem: boolean;
+  /** 当前生效版（磁盘版或内置版）——编辑器初始内容 */
+  currentContent: string;
+  /** 内置出厂版原文（恢复默认的参照） */
+  embeddedContent: string;
+  customized: boolean;
+}

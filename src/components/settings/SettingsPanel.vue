@@ -39,6 +39,16 @@
               </svg>
               <span>{{ t('settings.tabs.presets') }}</span>
             </div>
+            <div
+              class="nav-item"
+              :class="{ active: activeTab === 'prompts' }"
+              @click="activeTab = 'prompts'"
+            >
+              <svg viewBox="0 0 24 24" width="18" height="18">
+                <path fill="currentColor" d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20M8.5,11.5L10,10L12,12L14,10L15.5,11.5L13.5,13.5L15.5,15.5L14,17L12,15L10,17L8.5,15.5L10.5,13.5L8.5,11.5Z"/>
+              </svg>
+              <span>{{ t('settings.tabs.prompts') }}</span>
+            </div>
           </div>
 
           <template v-if="activeTab === 'presets'">
@@ -98,7 +108,7 @@
 
         <!-- 右侧内容区域 -->
         <div class="settings-content">
-          <div class="settings-body">
+          <div class="settings-body" :class="{ 'no-scroll': activeTab === 'prompts' }">
             <!-- 常规设置页 -->
             <div v-if="activeTab === 'general'" class="tab-content">
               <div class="setting-card">
@@ -380,6 +390,11 @@
               </div>
             </div>
 
+            <!-- 提示词管理页：列表 + 编辑器 + 拼装预览（独立 tab，即时生效型，无"保存全部"按钮） -->
+            <div v-else-if="activeTab === 'prompts'" class="prompts-tab-content">
+              <PromptsTab />
+            </div>
+
             <!-- 预设编辑页 -->
             <div v-else-if="activeTab === 'presets' && editingProfile" class="tab-content">
               <!-- 基本信息卡片 -->
@@ -561,6 +576,7 @@ import { useWindow } from '../../composables/useWindow'
 import type { AgentUserMode } from '../../types'
 import type { ThinkingDefault } from '../../utils/thinking'
 import ConfirmModal from '../common/ConfirmModal.vue'
+import PromptsTab from './PromptsTab.vue'
 
 const { t, locale } = useI18n()
 
@@ -660,7 +676,7 @@ const emit = defineEmits<{
 }>()
 
 // UI 状态
-const activeTab = ref<'general' | 'presets'>('general')
+const activeTab = ref<'general' | 'presets' | 'prompts'>('general')
 const showAdvanced = ref(false)
 
 interface AgentConfig {
@@ -1399,12 +1415,29 @@ const save = async () => {
   overflow-y: auto;
 }
 
+/* 提示词 tab 自带滚动（textarea 内滚），外层锁高度让编辑器占满可视区 */
+.settings-body.no-scroll {
+  overflow-y: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
 .tab-content {
   display: flex;
   flex-direction: column;
   gap: 20px;
   max-width: 800px;
   margin: 0 auto;
+}
+
+/* 提示词 tab：占满整个内容区（编辑器要纵向空间），弹层以内容区为定位容器 */
+.prompts-tab-content {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  max-width: 1100px;
+  margin: 0 auto;
+  width: 100%;
 }
 
 .setting-card {
