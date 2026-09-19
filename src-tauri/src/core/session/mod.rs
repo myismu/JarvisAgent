@@ -600,6 +600,16 @@ pub fn list_visible_session_messages(id: &str) -> Result<Vec<repository::StoredS
     repository::list_visible_session_messages(id)
 }
 
+/// 按轮凑页读取可见消息（懒加载）：一轮 = 一条可渲染 user + 其后所有消息，
+/// 返回 (消息, 是否还有更早的轮)
+pub fn load_visible_turns_page(
+    id: &str,
+    before_seq: Option<i64>,
+    max_turns: usize,
+) -> Result<(Vec<repository::StoredSessionMessage>, bool), String> {
+    repository::load_visible_turns_page(id, before_seq, max_turns)
+}
+
 pub fn find_session_message_by_id(
     session_id: &str,
     message_id: &str,

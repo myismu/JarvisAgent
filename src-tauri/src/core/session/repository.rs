@@ -308,6 +308,176 @@ pub fn list_visible_session_messages(session_id: &str) -> Result<Vec<StoredSessi
     })
 }
 
+/// 分页读取可见消息（懒加载）：以 `before_seq` 为游标向**更早**方向取 `limit` 条，
+/// 取出后按 seq 翻正返回。
+///
+/// - `before_seq = None`：从最新开始（首屏）；
+/// - 游标用 seq 而非 offset：seq 会话内单调且唯一（有索引），插入新数据不会漂移；
+/// - 与 [`list_visible_session_messages`] 同一套可见性过滤（hidden/recalled/compact）。
+pub fn list_visible_session_messages_paged(
+    session_id: &str,
+    before_seq: Option<i64>,
+    limit: usize,
+) -> Result<Vec<StoredSessionMessage>, String> {
+    crate::infra::db::with_connection(|conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT message_id, seq, role, content_json, created_at, updated_at, recalled_at,
+                        hidden_at, source, turn_id
+                 FROM session_messages
+                 WHERE session_id = ?1
+                   AND hidden_at IS NULL
+                   AND recalled_at IS NULL
+                   AND source != 'compact'
+                   AND (?2 IS NULL OR seq < ?2)
+                 ORDER BY seq DESC
+                 LIMIT ?3",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![session_id, before_seq, limit as i64],
+                stored_session_message_from_row,
+            )
+            .map_err(|e| e.to_string())?;
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(row.map_err(|e| e.to_string())?);
+        }
+        // 倒序取出（最新在前），翻正为 ASC 供渲染层直接使用
+        messages.reverse();
+        Ok(messages)
+    })
+}
+
+/// 判断一条存储消息是否为"轮的起点"——即用户真实输入（可渲染的 user 消息）。
+///
+/// 懒加载的窗口必须从轮的起点开始：turn 聚合（多条 assistant/tool 消息合成一个
+/// 气泡）以 user 消息开轮；窗口切在轮中间会让首条渲染成"无 user 开头"的半轮。
+/// 渲染层 `user_display_content` 在 command 层，此处为避免反向依赖用同样判定内联实现。
+fn is_turn_start_message(stored: &StoredSessionMessage) -> bool {
+    if stored.role != "user" {
+        return false;
+    }
+    if let Message::User { content } = &stored.content {
+        let display = user_display_content_for_paging(content);
+        !display.trim().is_empty()
+    } else {
+        false
+    }
+}
+
+/// 与渲染层 `user_display_content` 等价的轻量判定：用户消息里是否有可渲染内容
+/// （Text 文本或 Image 图片——带图消息可能只有 Image 块）。
+/// （tool_result 型 user 消息只携带工具结果块，没有用户输入内容，不构成轮起点。）
+fn user_display_content_for_paging(
+    content: &crate::infra::types::models::Content,
+) -> String {
+    use crate::infra::types::models::ContentBlock;
+    match content {
+        crate::infra::types::models::Content::Single(text) => text.clone(),
+        crate::infra::types::models::Content::Multiple(blocks) => {
+            let mut parts = String::new();
+            for b in blocks {
+                match b {
+                    ContentBlock::Text { text } => {
+                        if !text.trim().is_empty() {
+                            parts.push_str(text.trim());
+                            parts.push('\n');
+                        }
+                    }
+                    // 图片是可渲染内容：有图即视为有用户输入（与渲染层一致）
+                    ContentBlock::Image { .. } => {
+                        parts.push_str("[image]");
+                    }
+                    _ => {}
+                }
+            }
+            parts
+        }
+    }
+}
+
+/// 取一页消息并按**轮**凑页：一轮 = 一条可渲染 user 消息（轮起点）+ 其后所有消息
+/// （assistant / tool_result 等，直到下一条轮起点前）。
+///
+/// 与按条数分页的区别：长任务一轮可能产生几十条消息（每次工具调用 2 条），
+/// 按条数切割会把一轮切成多页（页内出现"无 user 开头"的半轮）甚至一页装不下
+/// 一整轮；按轮凑页保证**每页都是完整的 N 轮**，页大小随轮的密度自适应。
+///
+/// 算法：
+/// 1. 从游标向前按批取（BUFFER 条/批），累计到 `collected`（保持 ASC）；
+/// 2. 数 `collected` 里的轮起点个数，超过 `max_turns` 即停止；
+/// 3. 裁剪：从最新端往前保留 `max_turns` 个完整轮，更早的轮裁掉（has_more=true）；
+///    到达会话最老处仍未凑满则全保留（has_more=false）。
+///
+/// 返回 (消息, 是否还有更早的轮)。
+pub fn load_visible_turns_page(
+    session_id: &str,
+    before_seq: Option<i64>,
+    max_turns: usize,
+) -> Result<(Vec<StoredSessionMessage>, bool), String> {
+    const BUFFER: usize = 200; // 每批缓冲：覆盖 max_turns 轮 × 平均每轮条数
+    const MAX_BATCHES: usize = 50; // 防御上限：极端长轮最多向前补 50 批（1 万条）
+
+    let mut collected: Vec<StoredSessionMessage> = Vec::new();
+    let mut cursor = before_seq;
+    let mut reached_oldest = false;
+    let mut enough_turns = false;
+    let mut batches = 0usize;
+
+    loop {
+        batches += 1;
+        if batches > MAX_BATCHES {
+            reached_oldest = true; // 防御上限触发：停止补取，按现状裁剪
+            break;
+        }
+        let batch = list_visible_session_messages_paged(session_id, cursor, BUFFER)?;
+        if batch.is_empty() {
+            reached_oldest = true; // 游标之前没有更早消息
+            break;
+        }
+        let batch_len = batch.len(); // 先记录：splice 会 move batch
+        collected.splice(0..0, batch); // batch 是 ASC，插到头部保持整体 ASC
+        cursor = Some(collected[0].seq as i64);
+
+        let turns = count_turn_starts(&collected);
+        if turns > max_turns {
+            enough_turns = true; // 轮数已凑够（且仍有更早轮未取）
+            break;
+        }
+        if batch_len < BUFFER {
+            reached_oldest = true; // 本批不满 = 已到会话最老
+            break;
+        }
+    }
+
+    // 轮起点下标（升序）
+    let starts: Vec<usize> = collected
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| is_turn_start_message(m))
+        .map(|(i, _)| i)
+        .collect();
+
+    if starts.len() > max_turns {
+        // 从最新端往前保留 max_turns 个完整轮，更早的裁掉
+        let cut = starts[starts.len() - max_turns];
+        let page = collected.split_off(cut);
+        // 被裁掉的部分非空 → 还有更早的轮；即使 reached_oldest 也以裁剪为准
+        Ok((page, true))
+    } else {
+        // 轮数未超：全保留。collected[0] 可能不是轮起点（跨缓冲的半轮前半）——
+        // 此时要么 reached_oldest（到头了，半轮前半就是最老历史），要么防御上限触发
+        Ok((collected, !reached_oldest || enough_turns))
+    }
+}
+
+/// 数一条消息序列里的轮起点个数
+fn count_turn_starts(messages: &[StoredSessionMessage]) -> usize {
+    messages.iter().filter(|m| is_turn_start_message(m)).count()
+}
+
 pub fn find_session_message_by_id(
     session_id: &str,
     message_id: &str,

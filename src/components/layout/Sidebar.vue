@@ -376,11 +376,10 @@ const switchToSession = async (id: string) => {
     ]);
 
     const view = sessionStore.getSessionView(id);
-    // 首次加载（view 新创建、无消息、无 live turn）时从 DB 初始化
+    // 首次加载（view 新创建、无消息、无 live turn）时从 DB 初始化——懒加载首屏（最新 5 轮）
     if (!view.hydrated) {
       try {
-        const messages = await invoke<any[]>('get_session_messages', { sessionId: id });
-        sessionStore.replaceSessionMessages(id, messages);
+        await chat.loadSessionMessagesReset(id);
       } catch {
         const history = await invoke<string>('get_session_history', { sessionId: id });
         sessionStore.replaceSessionHistory(id, history || 'Ready for input...');
@@ -477,10 +476,9 @@ onMounted(async () => {
         await syncProfileFromSession(switchedMeta);
         void loadSessionThinking(activeId);
 
-        // 加载会话历史
+        // 加载会话历史——懒加载首屏（最新 5 轮），上滑时按需加载更早历史
         try {
-          const messages = await invoke<any[]>('get_session_messages', { sessionId: activeId });
-          sessionStore.replaceSessionMessages(activeId, messages);
+          await chat.loadSessionMessagesReset(activeId);
         } catch {
           const history = await invoke<string>('get_session_history', { sessionId: activeId });
           if (history && history.trim()) {

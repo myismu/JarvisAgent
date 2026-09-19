@@ -269,9 +269,24 @@ const forceScrollToBottomAfterRender = async () => {
   await nextTick();
   setResponseScrollToBottom();
 
-  requestAnimationFrame(() => {
-    setResponseScrollToBottom();
-    requestAnimationFrame(setResponseScrollToBottom);
+  // 渲染是分帧进行的（StreamingMarkdown 逐帧撑高内容）：单次滚动只会停在
+  // "当时的底部"，后续帧内容继续变长就把视口顶离底部——表现为进入会话时
+  // 先看到中间位置、过一会儿才滑到底。持续跟随到高度连续 2 帧稳定才算落底。
+  let lastHeight = -1;
+  let stableFrames = 0;
+  let totalFrames = 0;
+  await new Promise<void>((resolve) => {
+    const tick = () => {
+      if (!responseAreaRef.value) return resolve();
+      setResponseScrollToBottom();
+      const h = responseAreaRef.value.scrollHeight;
+      stableFrames = h === lastHeight ? stableFrames + 1 : 0;
+      lastHeight = h;
+      totalFrames += 1;
+      if (stableFrames >= 2 || totalFrames > 60) return resolve();
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
   });
 };
 
@@ -291,10 +306,57 @@ const scrollToBottom = async (force = false) => {
 
 const handleResponseScroll = () => {
   shouldFollowStream.value = Boolean(isResponseAtBottom());
+  // 懒加载：滚动接近顶部（<60px）时加载更早的历史；防重入与 hasMore 由 store 状态保证
+  void maybeLoadOlderMessages();
+};
+
+/** 懒加载锚定期标志：头部插入 → 渲染 → 补偿滚动期间屏蔽再次触发（否则会连续加载两页并回弹） */
+const historyAnchoring = ref(false);
+
+/** 懒加载：上滑到顶触发加载更早历史，插入后做滚动锚定（补偿 scrollHeight 差值，视口不跳） */
+const maybeLoadOlderMessages = async () => {
+  const el = responseAreaRef.value;
+  if (!el) return;
+  const view = session.currentSessionView;
+  if (!view.pagedHasMore || view.pagedLoadingOlder || historyAnchoring.value) return;
+  if (el.scrollTop > 60) return;
+  const sid = session.activeSessionId;
+  if (!sid) return;
+  const prevHeight = el.scrollHeight;
+  const prevTop = el.scrollTop;
+  historyAnchoring.value = true;
+  const loaded = await chat.loadSessionMessagesOlder(sid);
+  if (!loaded) {
+    historyAnchoring.value = false;
+    return;
+  }
+  // 双 rAF：等 Vue 渲染与浏览器布局稳定后再补偿——单 nextTick 时流式组件可能
+  // 还在继续撑高内容，补偿量不足就会"往回弹"
+  await nextTick();
+  await new Promise<void>((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+  );
+  if (responseAreaRef.value) {
+    responseAreaRef.value.scrollTop =
+      prevTop + (responseAreaRef.value.scrollHeight - prevHeight);
+  }
+  historyAnchoring.value = false;
 };
 
 const showScrollToBottom = computed(() => {
   return !shouldFollowStream.value && (chat.messages.length > 0 || hasCurrentTurnContent.value);
+});
+
+/** 懒加载提示条三态：加载中（转圈）/ 上滑提示 / 已加载全部（翻到最老后常驻小字） */
+const showHistoryLoader = computed(() => {
+  const v = session.currentSessionView;
+  return v.pagedHasMore || v.pagedLoadingOlder || v.pagedOldestSeq !== null;
+});
+const historyLoaderText = computed(() => {
+  const v = session.currentSessionView;
+  if (v.pagedLoadingOlder) return t('chat.loadingOlderMessages');
+  if (v.pagedHasMore) return t('chat.scrollForOlderMessages');
+  return v.pagedOldestSeq !== null ? t('chat.allMessagesLoaded') : '';
 });
 
 watch(() => session.isCurrentSessionRunning, (running) => {
@@ -305,9 +367,17 @@ watch(() => session.isCurrentSessionRunning, (running) => {
 
 const pendingInitialScrollSessionKey = ref<string | null>(null);
 const currentSessionKey = computed(() => session.activeSessionId || '__default__');
+/**
+ * 切会话锚定期：消息列表渲染是分帧撑高的，若渲染过程可见，用户会先看到
+ * 中间位置的内容、再"滚"到底——主流聊天应用（微信/Discord）都是直接出现
+ * 在最新消息。实现：锚定期列表 `visibility: hidden`（保留布局，滚动定位
+ * 照常计算），稳定落底后一次性显现——用户看到的就是"直接在最新消息"。
+ */
+const initialAnchoring = ref(false);
 
 watch(currentSessionKey, (key) => {
   pendingInitialScrollSessionKey.value = key;
+  initialAnchoring.value = true;
 }, { immediate: true });
 
 watch(
@@ -322,7 +392,9 @@ watch(
     if (!hydrated && !msgCount && !hasTurnContent) return;
 
     pendingInitialScrollSessionKey.value = null;
+    // 锚定期：列表不可见状态下稳定落底，完成后一次性显现（直接在最新消息）
     await forceScrollToBottomAfterRender();
+    initialAnchoring.value = false;
   },
   { immediate: true, flush: 'post' }
 );
@@ -635,8 +707,8 @@ const confirmRollback = async () => {
 
     try {
       try {
-        const messages = await invoke<any[]>('get_session_messages', { sessionId });
-        session.replaceSessionMessages(sessionId, messages);
+        // 检查点回滚后重置式懒加载首屏（回滚已截断消息，分页游标一并重置）
+        await chat.loadSessionMessagesReset(sessionId);
       } catch {
         const history = await invoke<string>('get_session_history', { sessionId });
         session.replaceSessionHistory(sessionId, history || 'Ready for input...');
@@ -679,7 +751,21 @@ onMounted(() => {
     <TodoPanel />
     <SessionTaskBoard />
     <WelcomeScreen v-if="!chat.messages.length && !showAgentTurn" />
-    <div class="response-text markdown-body" v-else>
+    <div class="response-text markdown-body" v-else :class="{ 'pre-anchor-hidden': initialAnchoring }">
+      <!-- 懒加载：更早历史提示（顶部小字，无边框；加载中带旋转图标） -->
+      <div v-if="showHistoryLoader" class="history-loader">
+        <svg
+          v-if="session.currentSessionView.pagedLoadingOlder"
+          class="history-loader-spinner"
+          viewBox="0 0 24 24"
+          width="12"
+          height="12"
+          aria-hidden="true"
+        >
+          <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="3" stroke-dasharray="42 21" stroke-linecap="round" />
+        </svg>
+        {{ historyLoaderText }}
+      </div>
       <!-- 结构化消息列表（Vue 组件渲染） -->
       <template v-for="(message, index) in chat.messages" :key="message.id">
         <!-- 用户消息 -->
@@ -859,7 +945,9 @@ onMounted(() => {
   line-height: 1.6;
   min-width: 0;
   min-height: 0;
-  scroll-behavior: smooth;
+  /* 禁用 smooth：程序化 scrollTop 赋值必须是瞬时跳变——smooth 会让每次
+     赋值都变成动画（进入会话"从中间滑到底"、上滑锚定"回弹"的根源），
+     且动画期间反复触发 scroll 事件与状态竞争。手动滚动不受影响。 */
 }
 
 
@@ -1515,6 +1603,32 @@ onMounted(() => {
 .memory-notice svg {
   flex-shrink: 0;
   opacity: 0.5;
+}
+
+/* 懒加载：更早历史提示（顶部小字，无边框，与通知条同风格） */
+.history-loader {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 0 4px;
+  color: var(--text-muted);
+  font-size: 0.73rem;
+  user-select: none;
+}
+
+/* 切会话锚定期：列表不可见但保留布局（滚动定位照常计算），落底后一次性显现 */
+.pre-anchor-hidden {
+  visibility: hidden;
+}
+
+.history-loader-spinner {
+  animation: history-loader-spin 0.8s linear infinite;
+  opacity: 0.7;
+}
+
+@keyframes history-loader-spin {
+  to { transform: rotate(360deg); }
 }
 
 .notice-fade-enter-active { transition: all 0.3s ease; }

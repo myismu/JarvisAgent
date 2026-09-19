@@ -9,7 +9,6 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, computed, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useAgentEvents } from "./composables/useAgentEvents";
@@ -17,6 +16,7 @@ import { usePreferences } from "./composables/usePreferences";
 import { useWindow } from "./composables/useWindow";
 import { useTheme } from "./composables/useTheme";
 import { useSessionStore } from "./stores/session";
+import { useChatStore } from "./stores/chat";
 import { useAgentStore } from "./stores/agent";
 import { useAppViewStore } from "./stores/appView";
 
@@ -36,6 +36,7 @@ const sidebarCollapsed = ref(prefs.sidebarCollapsed);
 useTheme(); // 初始化主题
 
 const session = useSessionStore();
+const chat = useChatStore();
 const agent = useAgentStore();
 const appView = useAppViewStore();
 const { initListeners } = useAgentEvents();
@@ -148,8 +149,8 @@ onMounted(async () => {
     const sid = event.payload.sessionId;
     if (!sid || sid !== session.activeSessionId) return;
     try {
-      const messages = await invoke<any[]>('get_session_messages', { sessionId: sid });
-      session.replaceSessionMessages(sid, messages);
+      // 压缩后重置式懒加载首屏（压缩不删 session_messages，全量拉取代价大）
+      await chat.loadSessionMessagesReset(sid);
     } catch { /* ignore */ }
   });
   await initListeners();

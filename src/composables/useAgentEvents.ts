@@ -228,8 +228,8 @@ export function useAgentEvents() {
 
   async function refreshSessionHistory(sessionId: string) {
     try {
-      const messages = await invoke<any[]>("get_session_messages", { sessionId });
-      session.replaceSessionMessages(sessionId, messages);
+      // 重置式懒加载首屏：与进入会话同口径（全量替换会让分页状态失效）
+      await chat.loadSessionMessagesReset(sessionId);
     } catch {
       const history = await invoke<string>("get_session_history", { sessionId });
       session.replaceSessionHistory(sessionId, history);
@@ -800,8 +800,7 @@ export function useAgentEvents() {
 
           if (!session.hasHydratedSessionView(nextActiveSessionId)) {
             try {
-              const messages = await invoke<any[]>("get_session_messages", { sessionId: nextActiveSessionId });
-              session.replaceSessionMessages(nextActiveSessionId, messages);
+              await chat.loadSessionMessagesReset(nextActiveSessionId);
             } catch {
               const history = await invoke<string>("get_session_history", { sessionId: nextActiveSessionId });
               session.replaceSessionHistory(nextActiveSessionId, history);

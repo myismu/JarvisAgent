@@ -180,7 +180,8 @@
   },
   "chat": {
     "loadingOlderMessages": "Loading earlier messages…",
-    "scrollForOlderMessages": "Scroll up to load earlier messages"
+    "scrollForOlderMessages": "Scroll up to load earlier messages",
+    "allMessagesLoaded": "All messages loaded"
   },
   "rollback": {
     "trigger": "Recall this message",

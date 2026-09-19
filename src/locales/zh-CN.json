@@ -181,7 +181,8 @@
   },
   "chat": {
     "loadingOlderMessages": "正在加载更早的消息…",
-    "scrollForOlderMessages": "上滑加载更早的消息"
+    "scrollForOlderMessages": "上滑加载更早的消息",
+    "allMessagesLoaded": "已加载全部消息"
   },
   "rollback": {
     "trigger": "撤回此消息",

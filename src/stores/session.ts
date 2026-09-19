@@ -32,6 +32,12 @@ export interface SessionViewState {
   currentTurn: AgentCurrentTurn;
   throttling: boolean;
   lastRenderAt: number;
+  /** 懒加载：当前已加载最老消息的 seq（游标），null = 未分页/已全量 */
+  pagedOldestSeq: number | null;
+  /** 懒加载：是否还有更早的历史可加载 */
+  pagedHasMore: boolean;
+  /** 懒加载：上滑加载进行中（防重入） */
+  pagedLoadingOlder: boolean;
   sessionInputTokens: number;
   sessionOutputTokens: number;
   sessionCacheHitTokens: number;
@@ -78,6 +84,9 @@ function createEmptySessionView(initialHistory = READY_TEXT, hydrated = false): 
     currentTurn: createEmptyAgentCurrentTurn(),
     throttling: false,
     lastRenderAt: 0,
+    pagedOldestSeq: null,
+    pagedHasMore: false,
+    pagedLoadingOlder: false,
     sessionInputTokens: 0,
     sessionOutputTokens: 0,
     sessionCacheHitTokens: 0,
@@ -217,6 +226,29 @@ export const useSessionStore = defineStore("session", () => {
     view.messages.push(message);
   }
 
+  /** 懒加载：把更早的历史消息插入到 messages **头部**（不触碰尾部与游标状态） */
+  function prependSessionMessages(sessionId: string | null | undefined, messages: any[]) {
+    if (!messages.length) return;
+    const view = getSessionView(sessionId);
+    const mapped = messages.map((msg) => ({
+      ...msg,
+      content: msg.content ?? msg.userContent,
+      text: msg.text ?? (msg.role === 'user' ? msg.userContent?.replace(/<[^>]*>/g, '') : undefined),
+    }));
+    view.messages.unshift(...mapped);
+  }
+
+  /** 懒加载游标状态更新（由加载函数在响应后调用） */
+  function setSessionPaging(
+    sessionId: string | null | undefined,
+    oldestSeq: number | null,
+    hasMore: boolean,
+  ) {
+    const view = getSessionView(sessionId);
+    view.pagedOldestSeq = oldestSeq;
+    view.pagedHasMore = hasMore;
+  }
+
   function appendSessionHistory(sessionId: string | null | undefined, html: string) {
     const view = getSessionView(sessionId);
     if (view.jarvisResponse === READY_TEXT) {
@@ -290,6 +322,8 @@ export const useSessionStore = defineStore("session", () => {
     replaceSessionHistory,
     replaceSessionMessages,
     appendSessionMessage,
+    prependSessionMessages,
+    setSessionPaging,
     appendSessionHistory,
     removeTrailingUserMessageFromView,
     setSessionUsageTotals,

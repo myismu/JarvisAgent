@@ -730,6 +730,40 @@ async fn extract_session_messages(
     session_manager: &SessionManager,
     registry: &SnapshotRegistry,
 ) -> Result<Vec<SessionMessage>, String> {
+    // 全量语义：窗口不设限（分页元数据被丢弃）
+    let (messages, _, _) =
+        extract_session_messages_window(session_id, session_manager, registry, None, None).await?;
+    Ok(messages)
+}
+
+/// 分页元数据
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PagedSessionMessages {
+    pub messages: Vec<SessionMessage>,
+    /// 是否还有更早的历史可加载（向上翻页游标）
+    pub has_more: bool,
+    /// 本页最老消息的 seq（下次请求的游标）；页为空时为 None
+    pub oldest_seq: Option<i64>,
+}
+
+/// 懒加载核心：从 events 恢复后，按窗口取消息并走与全量完全相同的加工逻辑
+/// （turn 聚合 / checkpoint 关联 / snapshot 组装），只是消息来源换成
+/// `load_visible_turns_page` 的窗口结果。
+///
+/// - `before_seq = None`：首屏（最新一页）；`Some(seq)`：以 seq 为游标向更早取
+/// - `limit = None`：默认 50
+async fn extract_session_messages_window(
+    session_id: &str,
+    session_manager: &SessionManager,
+    registry: &SnapshotRegistry,
+    before_seq: Option<i64>,
+    max_turns: Option<usize>,
+) -> Result<(Vec<SessionMessage>, bool, Option<i64>), String> {
+    // max_turns = None 表示全量语义（不分页）；Some(n) 表示按轮凑页（n = 每页轮数，
+    // 默认 5：2K 屏一屏约 2-3 轮，每页约 2 屏内容，翻页节奏适中）
+    let paged = max_turns.is_some();
+    let max_turns = max_turns.unwrap_or(5).max(1);
     let ctx = session_manager.get_or_create(session_id).await;
     // 注意：**不要**在这里把内存 flush 到 DB。
     //
@@ -760,7 +794,8 @@ async fn extract_session_messages(
     }
 
     if memory.messages.is_empty() && session::session_messages_count(session_id).unwrap_or(0) == 0 {
-        return Ok(Vec::new());
+        // 空会话：窗口版返回空页 + 无更早数据
+        return Ok((Vec::new(), false, None));
     }
 
     let linked_rollbacks = build_linked_rollbacks(session_id);
@@ -797,7 +832,18 @@ async fn extract_session_messages(
         metadata_rollbacks_by_message_id = by_message_id;
     };
 
-    let stored_messages = session::list_visible_session_messages(session_id)?;
+    // 消息来源二选一：
+    // - 按轮凑页：每页 max_turns 个完整轮（长任务轮密度自适应）
+    // - 全量：原逻辑不变（max_turns = None）
+    let (stored_messages, has_more) = if paged {
+        let (page, more) = session::load_visible_turns_page(session_id, before_seq, max_turns)?;
+        (page, Some(more))
+    } else {
+        (
+            session::list_visible_session_messages(session_id)?,
+            None,
+        )
+    };
     let render_messages: Vec<_> = if stored_messages.is_empty() {
         memory
             .messages
@@ -817,6 +863,11 @@ async fn extract_session_messages(
             })
             .collect()
     };
+
+    // 窗口最老消息的 seq（分页游标）；memory 回退分支无 seq，返回 None
+    let oldest_seq = render_messages
+        .first()
+        .and_then(|(_, _, seq, _, _)| seq.map(|s| s as i64));
 
     let display_messages = render_messages
         .iter()
@@ -848,9 +899,14 @@ async fn extract_session_messages(
     let mut visible_user_index = 0usize;
     let mut loop_idx = 1;
     let mut current_ts = 1000u64;
+    // 当前正在处理的消息 seq（懒加载分页下用 seq 生成**跨页稳定唯一**的 id——
+    // 旧的 result.len() 位置编号在每页都从 0 开始，头部插入后 key 大量重复，
+    // Vue diff 整表重建导致翻页时界面闪烁）
+    let mut last_seen_seq: Option<usize> = None;
 
-    for (_, _, _, msg, source) in &render_messages {
+    for (_, _, seq, msg, source) in &render_messages {
         current_ts += 1;
+        last_seen_seq = *seq;
         match msg {
             Message::User { content } => {
                 let display = user_display_content(content);
@@ -879,7 +935,8 @@ async fn extract_session_messages(
                     }
                     result.push(SessionMessage {
                         role: "agent".to_string(),
-                        id: format!("agent_{}", result.len()),
+                        // seq 稳定唯一：分页/全量、跨页都不会撞 key
+                        id: format!("agent_{}", last_seen_seq.map(|s| s.to_string()).unwrap_or_else(|| format!("m{}", result.len()))),
                         snapshot: Some(pending_assistant.clone()),
                         snapshot_id: None,
                         message_id: None,
@@ -899,7 +956,7 @@ async fn extract_session_messages(
 
                 result.push(SessionMessage {
                     role: "user".to_string(),
-                    id: format!("user_{}", result.len()),
+                    id: format!("user_{}", message.seq.map(|s| s.to_string()).unwrap_or_else(|| format!("m{}", result.len()))),
                     snapshot: None,
                     snapshot_id: None,
                     message_id: message.message_id.clone(),
@@ -940,7 +997,7 @@ async fn extract_session_messages(
         }
         result.push(SessionMessage {
             role: "agent".to_string(),
-            id: format!("agent_{}", result.len()),
+            id: format!("agent_{}", last_seen_seq.map(|s| s.to_string()).unwrap_or_else(|| format!("m{}", result.len()))),
             snapshot: Some(pending_assistant),
             snapshot_id: None,
             message_id: None,
@@ -950,7 +1007,7 @@ async fn extract_session_messages(
         });
     }
 
-    Ok(result)
+    Ok((result, has_more.unwrap_or(false), oldest_seq))
 }
 
 #[tauri::command]
@@ -978,6 +1035,43 @@ pub async fn get_session_messages(
         crate::core::session::save_session(&session_id, &memory, None);
     }
     extract_session_messages(&session_id, &session_manager, &registry).await
+}
+
+/// 懒加载分页命令：**按轮凑页**——一轮 = 一条可渲染 user 消息 + 其后所有消息
+/// （assistant / tool_result 等，直到下一条轮起点）。长任务一轮几十条消息时，
+/// 页大小随轮密度自适应，永远不会出现半轮。
+///
+/// - 首屏（`beforeSeq = None`）：最新的 `maxTurns` 个完整轮；
+/// - 上滑翻页（`beforeSeq = 游标`）：更早的 `maxTurns` 个完整轮；
+/// - 游标 = 本页最老消息的 seq（`oldestSeq`）。
+#[tauri::command]
+pub async fn get_session_messages_paged(
+    session_id: String,
+    before_seq: Option<i64>,
+    limit: Option<usize>,
+    session_manager: tauri::State<'_, SessionManager>,
+    registry: tauri::State<'_, SnapshotRegistry>,
+) -> Result<PagedSessionMessages, String> {
+    // 中断恢复前置（与全量版同口径）：恢复落库的是尾部消息，天然包含在首屏窗口内
+    let recovered = {
+        let ctx = session_manager.get_or_create(&session_id).await;
+        let mut memory = ctx.memory.lock().await;
+        crate::command::session::recover_interrupted_into_memory(&session_id, &mut memory)
+    };
+    if recovered {
+        let ctx = session_manager.get_or_create(&session_id).await;
+        let memory = ctx.memory.lock().await.clone();
+        crate::core::session::save_session(&session_id, &memory, None);
+    }
+    // limit 在此命令中语义为 **每页轮数**（默认 5 轮）
+    let (messages, has_more, oldest_seq) =
+        extract_session_messages_window(&session_id, &session_manager, &registry, before_seq, limit)
+            .await?;
+    Ok(PagedSessionMessages {
+        messages,
+        has_more,
+        oldest_seq,
+    })
 }
 
 #[cfg(test)]

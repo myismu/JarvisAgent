@@ -486,6 +486,57 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /**
+   * 懒加载：进入会话 / 重置分页——拉取**最新 5 个完整轮**替换当前界面，
+   * 并记录分页游标。用于：切换会话首屏、启动恢复、中断恢复后、撤回后、压缩后。
+   * 注意后端 limit 语义 = 每页**轮数**（一条可渲染 user + 其后所有消息 = 一轮），
+   * 长任务单轮几十条消息时页大小自适应，不会出现半轮。
+   */
+  async function loadSessionMessagesReset(sessionId: string) {
+    const session = useSessionStore();
+    const res = await invoke<{ messages: any[]; hasMore: boolean; oldestSeq: number | null }>(
+      "get_session_messages_paged",
+      { sessionId, beforeSeq: null, limit: 5 },
+    );
+    session.replaceSessionMessages(sessionId, res.messages);
+    session.setSessionPaging(sessionId, res.oldestSeq, res.hasMore);
+    return res;
+  }
+
+  /**
+   * 懒加载：向上翻页——以当前最老已加载 seq 为游标取更早 5 个完整轮，**头部插入**。
+   * 返回是否真的加载了内容（调用方据此做滚动锚定）。
+   * pagedLoadingOlder 防重入；hasMore=false 时不请求。
+   */
+  async function loadSessionMessagesOlder(sessionId: string): Promise<boolean> {
+    const session = useSessionStore();
+    const view = session.getSessionView(sessionId);
+    if (!view.pagedHasMore || view.pagedLoadingOlder) return false;
+    view.pagedLoadingOlder = true;
+    const start = Date.now();
+    try {
+      const res = await invoke<{ messages: any[]; hasMore: boolean; oldestSeq: number | null }>(
+        "get_session_messages_paged",
+        { sessionId, beforeSeq: view.pagedOldestSeq, limit: 5 },
+      );
+      if (!res.messages.length) {
+        session.setSessionPaging(sessionId, null, false);
+        return false;
+      }
+      // 最小展示 300ms：本地 DB 查询毫秒级完成，spinner 一闪而过没有
+      // "正在加载"的感知；等够展示时间后再插入内容，插入与锚定一次完成
+      const elapsed = Date.now() - start;
+      if (elapsed < 300) {
+        await new Promise((resolve) => setTimeout(resolve, 300 - elapsed));
+      }
+      session.prependSessionMessages(sessionId, res.messages);
+      session.setSessionPaging(sessionId, res.oldestSeq, res.hasMore);
+      return true;
+    } finally {
+      view.pagedLoadingOlder = false;
+    }
+  }
+
+  /**
    * @param thinkingOverride 单轮思考档位覆盖：
    *   - `null` / `undefined`（**正常路径**）：后端按会话档位（`sessions.thinking_mode`）
    *     + 预设默认 + 模型能力自行裁决，前端不参与决策；
@@ -537,13 +588,8 @@ export const useChatStore = defineStore("chat", () => {
         sessionId: sessionIdAtStart,
       });
       if (recovered) {
-        try {
-          const messages = await invoke<any[]>("get_session_messages", { sessionId: sessionIdAtStart });
-          session.replaceSessionMessages(sessionIdAtStart, messages);
-        } catch {
-          const history = await invoke<string>("get_session_history", { sessionId: sessionIdAtStart });
-          session.replaceSessionHistory(sessionIdAtStart, history);
-        }
+        // 恢复落库的消息在尾部，必然包含在首屏窗口内：重拉首屏 + 重置分页游标
+        await loadSessionMessagesReset(sessionIdAtStart);
         session.clearSessionBuffers(sessionIdAtStart);
         resetRenderState(sessionIdAtStart);
       }
@@ -957,5 +1003,7 @@ export const useChatStore = defineStore("chat", () => {
     dismissRecallEdit,
     cancelSubAgentRun,
     resumeAgentRun,
+    loadSessionMessagesReset,
+    loadSessionMessagesOlder,
   };
 });
