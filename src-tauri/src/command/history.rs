@@ -959,6 +959,24 @@ pub async fn get_session_messages(
     session_manager: tauri::State<'_, SessionManager>,
     registry: tauri::State<'_, SnapshotRegistry>,
 ) -> Result<Vec<SessionMessage>, String> {
+    // 重建时机前置：把 interrupted+resumable 的半截内容从 agent_run_events
+    // 重放并落进 session_messages，使崩溃/中断后**仅查看会话**（无需发消息）
+    // 即可看到完整对话。此前恢复只在发消息时触发（chat.ts 发送流程开头），
+    // 重启后界面会一直缺半截内容，直到用户下一次发消息。
+    //
+    // 幂等性：已完整落库时 diff_tail 守卫返回空增量；无 resumable run 时
+    // 走 RecoveryOutcome::None 零开销快速路径，高频调用无额外负担。
+    let recovered = {
+        let ctx = session_manager.get_or_create(&session_id).await;
+        let mut memory = ctx.memory.lock().await;
+        crate::command::session::recover_interrupted_into_memory(&session_id, &mut memory)
+    };
+    if recovered {
+        // 恢复出增量即落库：与 recover_interrupted_session_messages 命令同口径
+        let ctx = session_manager.get_or_create(&session_id).await;
+        let memory = ctx.memory.lock().await.clone();
+        crate::core::session::save_session(&session_id, &memory, None);
+    }
     extract_session_messages(&session_id, &session_manager, &registry).await
 }
 

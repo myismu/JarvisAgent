@@ -1501,7 +1501,6 @@ onMounted(() => {
   padding: 6px 12px;
   border-radius: 6px;
   background: var(--glass-bg-light);
-  border: 1px solid var(--border-color);
   color: var(--text-muted);
   font-size: 0.73rem;
   cursor: pointer;

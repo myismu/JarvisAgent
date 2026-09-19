@@ -491,21 +491,35 @@ pub async fn recall_message(
                 .ok_or_else(|| "撤回消息不存在".to_string())?;
             // 撤回目标消息及之后的所有消息，只保留之前的
             let target_content = visible.get(pos).map(|m| m.content.clone());
+            // 收集**所有被撤回消息**的 id：每条 user 消息都可能触发过 agent_run，
+            // 逐个清理，防止崩溃恢复机制把已撤回的内容重新补回（复活）
+            let removed_ids: Vec<String> = visible[pos..]
+                .iter()
+                .map(|m| m.message_id.clone())
+                .filter(|id| !id.is_empty())
+                .collect();
             let keep: Vec<_> = visible.into_iter().take(pos).collect();
             session.messages = keep.iter().map(|m| m.content.clone()).collect();
             session.message_ids = keep.iter().map(|m| m.message_id.clone()).collect();
+            for mid in &removed_ids {
+                crate::core::orchestration::agent_runs::cleanup_by_message_id(mid);
+            }
             target_content
         } else if let Some(idx) = user_message_index {
             if idx >= session.messages.len() {
                 return Err("撤回消息不存在".to_string());
             }
             let target = session.messages[idx].clone();
-            // 截断前提取 message_id，截断后 idx 就没了
-            let mid_for_cleanup = session.message_ids.get(idx).cloned();
+            // 截断前收集 idx 及之后**所有**被撤消息的 id（与 message_id 分支同口径：
+            // 每条都可能触发过 agent_run），截断后 idx 就没了
+            let removed_ids: Vec<String> = session.message_ids[idx..]
+                .iter()
+                .filter(|id| !id.is_empty())
+                .cloned()
+                .collect();
             session.messages.truncate(idx);
             session.message_ids.truncate(idx);
-            // 清理 agent_run（在截断前已拿到 message_id）
-            if let Some(ref mid) = mid_for_cleanup.filter(|s| !s.is_empty()) {
+            for mid in &removed_ids {
                 crate::core::orchestration::agent_runs::cleanup_by_message_id(mid);
             }
             Some(target)
@@ -520,11 +534,6 @@ pub async fn recall_message(
             recalled_text = message_text_content(content);
         } else {
             return Err("撤回目标不是用户消息".to_string());
-        }
-
-        // 非 user_message_index 路径：用传入的 message_id 清理
-        if let Some(mid) = message_id.as_ref().filter(|s| !s.is_empty()) {
-            crate::core::orchestration::agent_runs::cleanup_by_message_id(mid);
         }
 
         // checkpoint 回滚时的元数据清理
