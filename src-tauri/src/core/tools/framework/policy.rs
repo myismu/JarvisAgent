@@ -115,7 +115,11 @@ impl ToolClass {
         )
     }
 
-    /// 是否属于"默认就要问"的类别（两个档位都问）
+    /// 是否进入"默认要问"的档位判定区（规则 4 的入口名单）。
+    ///
+    /// 名单：删除 / 改名 / 跑命令 / 后台。进入本区不等于一定问——区内三段判定：
+    /// ① 只读命令直接放行；② 帮我批准档下 `auto_approved_in_auto_mode()` 命中且无警示 → 放行；
+    /// ③ 其余落回 Ask。**当前两档都问的只剩删除**（改名/命令/后台在帮我批准档均已放行）。
     pub fn always_asks(&self) -> bool {
         matches!(
             self,
@@ -123,6 +127,37 @@ impl ToolClass {
                 | ToolClass::Rename
                 | ToolClass::RunCommand
                 | ToolClass::Background
+        )
+    }
+
+    /// 该类别在"帮我批准（AutoApprove）"档下是否自动放行。
+    ///
+    /// 语义（2026-09-18 沐拍板）：AutoApprove 档 = "别烦我，我看着结果就行"。
+    /// 用户主动切到这一档即声明接受放行代价，因此**非危险操作**不再弹卡（危险命令仍必问，
+    /// 见 `ask_always_repeated` / 危险警示名单——那是唯一硬边界，不受档位影响）。
+    ///
+    /// 覆盖范围：`CreateFile` / `ModifyContent` / `RunCommand` / `Background` / `Rename`。
+    /// - 文件类：写操作走补丁暂存 + 快照回滚，旧内容找得回来；
+    /// - 命令类：只放行"非危险"的（危险警示命中在规则 4 之前仍 Ask）；
+    /// - **`Background` 也在列**（2026-09-19 沐拍板调整）：帮批准档连后台服务也不再问——
+    ///   一是与 A 的档位语义自洽（"别烦我"），二是修补路径不一致（`RunCommand` 的
+    ///   `run_in_background=true` 已被 A 放行，同为"起服务"的 `StartBackgroundCommand`
+    ///   不应两种待遇）；带危险警示的后台命令仍必问（同一套 `inspect_existing_guards`）。
+    ///   请求审批档下后台**保持恒问**（每次都要人确认）。
+    /// - **`Rename` 也在列**（2026-09-19 沐拍板"和 A 同逻辑"）：改名与编辑/覆盖完全同权——
+    ///   `Patch::RenameFile` 在回滚系统完整支持（snapshot apply_patch / replay 精准清孤儿
+    ///   路径把文件挪回原位 / patch 有专项测试），且它本就共享 edit_project 键
+    ///   （label"新建 / 编辑 / 改名都算"）。闭合 E 之后"帮批准档编辑静默、改名叫卡"的缝隙。
+    ///   请求审批档下改名照旧问，可点「本项目允许」记忆。
+    /// - `Delete` 不在列：删除虽有软删除兜底，但语义上仍属"用户亲自批"的范畴。
+    pub fn auto_approved_in_auto_mode(&self) -> bool {
+        matches!(
+            self,
+            ToolClass::CreateFile
+                | ToolClass::ModifyContent
+                | ToolClass::RunCommand
+                | ToolClass::Background
+                | ToolClass::Rename
         )
     }
 }
@@ -267,7 +302,8 @@ pub const BATCH_FILE_THRESHOLD: usize = 3;
 /// 1. 现有运行时检查已经判定要拒绝 → 拒绝（沿用同一套结论，不另立标准）
 /// 2. 路径跑出项目 → 拒绝
 /// 3. 工具未登记分类 → 问（保守，同时提醒补表）
-/// 4. 默认就要问的类别（删/改名/跑命令/后台/改工作目录）→ 问
+/// 4. 默认就要问的类别（删/改名/跑命令/后台）→ 问；
+///    例外：只读命令直接放行；"帮我批准"档下非危险命令类自动放行（2026-09-18 A）
 /// 5. 危险操作警示 → 问（覆盖已有文件已于 2026-09-18 摘出本条，与编辑同权走规则 7）
 /// 6. 批量（本次调用 ≥3 个文件，或本轮第 3 个文件）→ 问
 /// 7. 其余按档位：请求审批档问，帮我批准档放行
@@ -314,6 +350,19 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
                 class,
                 outcome: Outcome::Allow,
                 reason: "只读命令（免询问）".to_string(),
+            };
+        }
+        // 命令类在"帮我批准"档下自动放行（2026-09-18 沐拍板 A：档位语义 = "别烦我"）。
+        // ⚠️ 危险警示命令不在这里放行——它在上面的只读判断之后、且规则 5 前仍需 Ask；
+        //    为保持"危险永不自动放行"的硬边界，这里先挡一道：有警示就落到规则 5 去 Ask。
+        if mode == ApprovalMode::AutoApprove
+            && policy.class.auto_approved_in_auto_mode()
+            && input.existing_warning.is_none()
+        {
+            return ShadowDecision {
+                class,
+                outcome: Outcome::Allow,
+                reason: format!("{}（帮我批准档自动放行）", policy.class.label()),
             };
         }
         // 原因只说"为什么要问你"（例如"跑命令"）。
@@ -377,6 +426,13 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
                 reason: format!("{}（请求审批档）", policy.class.label()),
             }
         }
+        // 命令类在"帮我批准"档放行（规则 4 已拦截含警示的命令；此处是命令类无警示时的放行路径，
+        // 与规则 4 的放行分支互为兜底——规则 4 早返回，这里是语义完整性）。
+        (ToolClass::RunCommand, ApprovalMode::AutoApprove) => ShadowDecision {
+            class,
+            outcome: Outcome::Allow,
+            reason: "跑命令（帮我批准档自动放行）".to_string(),
+        },
         _ => ShadowDecision {
             class,
             outcome: Outcome::Allow,
@@ -479,10 +535,75 @@ mod tests {
     }
 
     #[test]
-    fn command_asks_in_both_modes() {
+    fn command_asks_in_request_mode_and_silent_in_auto_mode() {
+        // 2026-09-18 沐拍板 A：AutoApprove 档 = "别烦我，我看着结果就行"——
+        // 非危险命令自动放行；请求审批档照旧问。
+        assert_eq!(
+            judge("RunCommand", ApprovalMode::RequestApproval, &allow_input()).outcome,
+            Outcome::Ask
+        );
+        assert_eq!(
+            judge("RunCommand", ApprovalMode::AutoApprove, &allow_input()).outcome,
+            Outcome::Allow
+        );
+    }
+
+    #[test]
+    fn background_asks_in_request_mode_and_silent_in_auto_mode() {
+        // 2026-09-19 沐拍板调整：请求审批档后台恒问（每次人确认）；
+        // 帮我批准档后台放行（"别烦我"语义 + 修补 RunCommand run_in_background 路径不一致）。
+        assert_eq!(
+            judge("StartBackgroundCommand", ApprovalMode::RequestApproval, &allow_input()).outcome,
+            Outcome::Ask
+        );
+        assert_eq!(
+            judge("StartBackgroundCommand", ApprovalMode::AutoApprove, &allow_input()).outcome,
+            Outcome::Allow
+        );
+    }
+
+    #[test]
+    fn dangerous_background_is_never_auto_approved() {
+        // A 的硬边界同样覆盖后台：带危险警示的后台命令在帮我批准档也必须问
+        let input = JudgementInput {
+            existing_warning: Some("检测到递归强制删除".to_string()),
+            ..allow_input()
+        };
+        assert_eq!(
+            judge("StartBackgroundCommand", ApprovalMode::AutoApprove, &input).outcome,
+            Outcome::Ask
+        );
+    }
+
+    #[test]
+    fn dangerous_command_is_never_auto_approved() {
+        // A 的硬边界：带危险警示的命令即使切到 AutoApprove 档也必须问
+        let input = JudgementInput {
+            existing_warning: Some("检测到递归强制删除".to_string()),
+            ..allow_input()
+        };
         for mode in [ApprovalMode::RequestApproval, ApprovalMode::AutoApprove] {
-            assert_eq!(judge("RunCommand", mode, &allow_input()).outcome, Outcome::Ask);
+            assert_eq!(
+                judge("RunCommand", mode, &input).outcome,
+                Outcome::Ask,
+                "mode={:?}",
+                mode
+            );
         }
+    }
+
+    #[test]
+    fn rename_asks_in_request_mode_and_silent_in_auto_mode() {
+        // 2026-09-19 沐拍板"改名也降级，和 A 同逻辑"：改名与编辑/覆盖完全同权
+        // （Patch::RenameFile 回滚链完整——snapshot/replay/patch 三处；共享 edit_project 键）。
+        assert_eq!(
+            judge("RenameFile", ApprovalMode::RequestApproval, &allow_input()).outcome,
+            Outcome::Ask
+        );
+        assert_eq!(
+            judge("RenameFile", ApprovalMode::AutoApprove, &allow_input()).outcome,
+            Outcome::Allow
+        );
     }
 
     #[test]

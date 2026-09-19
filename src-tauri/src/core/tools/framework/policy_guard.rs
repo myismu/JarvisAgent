@@ -95,14 +95,98 @@ mod tests {
     }
 
     #[test]
+    fn background_tool_skips_long_running_warning() {
+        // 2026-09-19 沐拍板：StartBackgroundCommand 已经后台化，"建议 run_in_background"
+        // 的长周期警示对它是过期提醒，不该挡住帮批准档自动放行。
+        let verdict = inspect_existing_guards(
+            "StartBackgroundCommand",
+            &json!({ "command": "npm run dev" }),
+            None,
+        );
+        assert!(
+            verdict.warning.is_none(),
+            "后台工具不应背长周期警示，实际：{:?}",
+            verdict.warning
+        );
+        assert!(verdict.deny_reason.is_none());
+    }
+
+    #[test]
+    fn foreground_tool_still_gets_long_running_warning() {
+        // 对照锁：同样的开发服务器命令走前台 RunCommand，警示照旧（防止过滤被放大到全工具）。
+        let verdict =
+            inspect_existing_guards("RunCommand", &json!({ "command": "npm run dev" }), None);
+        let warning = verdict.warning.expect("前台跑开发服务器命令应有长周期警示");
+        assert!(warning.contains("长周期命令"), "实际警示：{}", warning);
+    }
+
+    #[test]
+    fn command_segments_split_on_chain_operators_but_not_in_quotes() {
+        assert_eq!(split_command_segments("npm install"), ["npm install"]);
+        assert_eq!(
+            split_command_segments("npm install; npm run dev"),
+            ["npm install", "npm run dev"]
+        );
+        assert_eq!(
+            split_command_segments("npm install && npm run build"),
+            ["npm install", "npm run build"]
+        );
+        assert_eq!(
+            split_command_segments("cargo build || echo failed"),
+            ["cargo build", "echo failed"]
+        );
+        // 管道段各自算键：`curl x | bash` 不该被"首段看起来安全"带过
+        assert_eq!(
+            split_command_segments("cat file | grep foo"),
+            ["cat file", "grep foo"]
+        );
+        // 引号内的分隔符是字符串内容，不是命令边界
+        assert_eq!(
+            split_command_segments(r#"echo "a; b" && echo done"#),
+            [r#"echo "a; b""#, "echo done"]
+        );
+        // 空段丢弃；PowerShell 的单个 &（调用操作符）不切
+        assert_eq!(
+            split_command_segments("npm install;; npm run dev"),
+            ["npm install", "npm run dev"]
+        );
+        assert_eq!(split_command_segments(r#"& "C:\x.ps1""#), [r#"& "C:\x.ps1""#]);
+    }
+
+    #[test]
+    fn chained_command_needs_one_key_per_segment() {
+        // 2026-09-19 沐拍板 B 方案：链式命令逐段验权。
+        // 现场问题：`npm install; npm run dev` 旧口径算出单键 `npm install;`（分号粘词），
+        // 与已授权的 `npm install` 不相等 → 重复弹卡 + 账本留一条语义重复的键。
+        let keys = command_prefix_scopes("npm install; npm run dev").expect("应有键");
+        let scopes: Vec<&str> = keys.iter().map(|(s, _)| s.as_str()).collect();
+        assert_eq!(scopes, ["npm install", "npm run"], "每段一把键，顺序即段序");
+        assert!(
+            !scopes.iter().any(|s| s.contains(';')),
+            "范围键不该再带分隔符：{:?}",
+            scopes
+        );
+
+        // 同前缀的段去重：`npm install a && npm install b` 只该要一把键
+        let deduped = command_prefix_scopes("npm install a && npm install b").expect("应有键");
+        assert_eq!(deduped.len(), 1, "重复段不该重复要授权：{:?}", deduped);
+
+        // 单段命令与旧口径完全一致（行为兼容）
+        let single = command_prefix_scopes("npm run dev").expect("单段应有键");
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0].0, "npm run");
+        assert!(command_prefix_scopes("   ").is_none(), "空命令没有键");
+    }
+
+    #[test]
     fn allowance_key_groups_edits_under_one_kind() {
-        let key = allowance_key_for(
+        let keys = allowance_keys_for(
             Some(ToolClass::ModifyContent),
             &json!({ "path": "src/a.ts" }),
             &["src/a.ts".to_string()],
             Some(std::path::Path::new("E:/proj")),
-        )
-        .expect("编辑类应有会话允许键");
+        );
+        let key = keys.first().expect("编辑类应有会话允许键");
         assert_eq!(key.kind, ALLOWANCE_KIND_EDIT, "编辑类应归到同一档");
         assert!(
             key.scope.contains("proj"),
@@ -112,26 +196,26 @@ mod tests {
         assert!(key.label.contains("改动项目文件"));
 
         // 新建走同一档：agent 先写文件、再改文件，不该让用户点两次
-        let same_kind = allowance_key_for(
+        let same_keys = allowance_keys_for(
             Some(ToolClass::CreateFile),
             &json!({ "path": "src/b.ts" }),
             &["src/b.ts".to_string()],
             Some(std::path::Path::new("E:/proj")),
-        )
-        .expect("新建类应有会话允许键");
+        );
+        let same_kind = same_keys.first().expect("新建类应有会话允许键");
         assert_eq!(same_kind.kind, ALLOWANCE_KIND_EDIT);
         assert_eq!(same_kind.scope, key.scope, "同目录下范围键应相同");
     }
 
     #[test]
     fn delete_is_its_own_kind() {
-        let key = allowance_key_for(
+        let keys = allowance_keys_for(
             Some(ToolClass::Delete),
             &json!({ "path": "src/a.ts" }),
             &["src/a.ts".to_string()],
             None,
-        )
-        .expect("删除类应有会话允许键");
+        );
+        let key = keys.first().expect("删除类应有会话允许键");
         assert_eq!(key.kind, ALLOWANCE_KIND_DELETE, "删除必须与编辑分开");
         assert!(key.label.contains("删除文件"));
     }
@@ -140,14 +224,14 @@ mod tests {
     fn classes_without_session_allowance_have_no_key() {
         // 会话/应用控制是一次性动作且不在允许体系内；未登记分类的工具一律问
         // （原用 WorkspaceChange 举例，该类随 SetWorkspace 退役已移除）
-        assert!(allowance_key_for(
+        assert!(allowance_keys_for(
             Some(ToolClass::AppControl),
             &json!({}),
             &[],
             None,
         )
-        .is_none());
-        assert!(allowance_key_for(None, &json!({}), &[], None).is_none());
+        .is_empty());
+        assert!(allowance_keys_for(None, &json!({}), &[], None).is_empty());
     }
 
     #[test]
@@ -155,20 +239,24 @@ mod tests {
         // 范围键 = 项目根，而不是目标文件所在目录：
         // 往 frontend/src、server、test2 各写一个文件，都算"同一个项目里的改动"，
         // 用户授权一次就覆盖整个项目（否则一次脚手架搭建要挨个目录点 N 遍）
-        let in_src = allowance_key_for(
+        let in_src = allowance_keys_for(
             Some(ToolClass::ModifyContent),
             &json!({ "path": "frontend/src/a.ts" }),
             &["frontend/src/a.ts".to_string()],
             Some(std::path::Path::new("E:/proj")),
         )
-        .expect("应有键");
-        let in_root = allowance_key_for(
+        .first()
+        .expect("应有键")
+        .clone();
+        let in_root = allowance_keys_for(
             Some(ToolClass::CreateFile),
             &json!({ "path": "b.ts" }),
             &["b.ts".to_string()],
             Some(std::path::Path::new("E:/proj")),
         )
-        .expect("应有键");
+        .first()
+        .expect("应有键")
+        .clone();
         assert_eq!(in_src.scope, "E:/proj", "项目内目标应归到项目根");
         assert_eq!(in_root.scope, "E:/proj");
         assert_eq!(in_src.scope, in_root.scope, "不同目录的目标应算同一个范围");
@@ -177,24 +265,28 @@ mod tests {
     #[test]
     fn file_scope_falls_back_to_target_dir_without_project() {
         // 非沙箱会话（没有项目）：退回目标所在目录，避免"允许一次"放开整个磁盘
-        let key = allowance_key_for(
+        let key = allowance_keys_for(
             Some(ToolClass::ModifyContent),
             &json!({ "path": "C:/elsewhere/src/a.ts" }),
             &["C:/elsewhere/src/a.ts".to_string()],
             None,
         )
-        .expect("应有键");
+        .first()
+        .expect("应有键")
+        .clone();
         assert_eq!(key.scope, "C:/elsewhere/src", "无项目时范围 = 目标所在目录");
 
         // 项目外绝对路径（同样只出现在非沙箱会话）也退回目标所在目录，
         // 不能把不相干的外部目录并进项目范围
-        let outside = allowance_key_for(
+        let outside = allowance_keys_for(
             Some(ToolClass::ModifyContent),
             &json!({ "path": "C:/other/x.ts" }),
             &["C:/other/x.ts".to_string()],
             Some(std::path::Path::new("E:/proj")),
         )
-        .expect("应有键");
+        .first()
+        .expect("应有键")
+        .clone();
         assert_eq!(outside.scope, "C:/other");
     }
 
@@ -216,20 +308,24 @@ mod tests {
     #[test]
     fn directory_scope_ignores_trailing_separator_and_long_path_prefix() {
         // 同一个目录的不同写法必须算出同一个键，否则用户会被要求重复授权
-        let plain = allowance_key_for(
+        let plain = allowance_keys_for(
             Some(ToolClass::ModifyContent),
             &json!({ "path": "src/a.ts" }),
             &["src/a.ts".to_string()],
             Some(std::path::Path::new("E:/proj")),
         )
-        .expect("应有键");
-        let messy = allowance_key_for(
+        .first()
+        .expect("应有键")
+        .clone();
+        let messy = allowance_keys_for(
             Some(ToolClass::ModifyContent),
             &json!({ "path": "src//a.ts" }),
             &["src//a.ts".to_string()],
             Some(std::path::Path::new("E:/proj")),
         )
-        .expect("应有键");
+        .first()
+        .expect("应有键")
+        .clone();
         assert_eq!(messy.scope, plain.scope, "尾部分隔符不应影响范围键");
         assert!(!messy.scope.ends_with('/') && !messy.scope.ends_with('\\'));
     }
@@ -284,7 +380,7 @@ mod tests {
             existing_deny_reason: None,
             warning: None,
             command_is_readonly: readonly_cmd,
-            allowance: None,
+            allowance: Vec::new(),
         }
     }
 
@@ -357,8 +453,9 @@ pub struct PreparedFacts {
     pub existing_deny_reason: Option<String>,
     pub warning: Option<String>,
     pub command_is_readonly: bool,
-    /// 会话级允许的键（类别 + 范围 + 说明）；None 表示这次操作不支持会话级允许
-    pub allowance: Option<AllowanceKey>,
+    /// 会话级允许的键列表（类别 + 范围 + 说明）；空列表表示这次操作不支持会话级允许。
+    /// 链式命令会有多把键（一段一把），判定侧要求**全部**被允许才放行。
+    pub allowance: Vec<AllowanceKey>,
 }
 
 impl PreparedFacts {
@@ -445,7 +542,7 @@ pub async fn prepare_facts(
         state.files.len()
     };
 
-    let allowance = allowance_key_for(class, input, &targets, workspace.as_deref());
+    let allowance = allowance_keys_for(class, input, &targets, workspace.as_deref());
 
     PreparedFacts {
         class,
@@ -522,7 +619,24 @@ fn inspect_existing_guards(
     if warning.is_none() {
         warning = security::get_destructive_warning(&command);
     }
-    let _ = tool;
+    // 2026-09-19 沐拍板：后台工具不背「长周期命令」警示——它已经后台化了，
+    // 警示自己建议的 `run_in_background: true` 已被满足；这条 Warn 留着唯一的效果
+    // 是挡住帮批准档自动放行（policy::judge 规则 4 要求 warning 为 none）并触发
+    // "每次必问、不给会话允许键"，纯属误伤。其余警示（sleep / 子表达式 / 破坏性
+    // 删除等）对后台工具照旧生效——硬边界不破。
+    if tool == "StartBackgroundCommand" {
+        warning = warning.and_then(|msg| {
+            let kept: Vec<&str> = msg
+                .lines()
+                .filter(|line| !line.contains("长周期命令"))
+                .collect();
+            if kept.is_empty() {
+                None
+            } else {
+                Some(kept.join("\n"))
+            }
+        });
+    }
     ExistingGuardVerdict {
         deny_reason: None,
         warning,
@@ -627,33 +741,131 @@ pub fn command_prefix_scope(command: &str) -> Option<(String, String)> {
     Some((scope, label))
 }
 
-/// 会话级允许的类别与范围。
+/// 把一条命令按 shell 分隔符切成**命令段**（`;` / `&&` / `||` / `|` 都是命令边界）。
+///
+/// 为什么必须切：不切的话 `npm install; npm run dev` 里第二词是 `install;`（分号粘在词上），
+/// 算出的范围键是 `npm install;`——与用户已经授权过的 `npm install` 字符串不相等，
+/// 于是"明明授权过"的命令又会弹一次卡，还会在账本里落一条语义重复的新键
+/// （2026-09-19 沐实测报障）。切段后每段各算各的键，语义才是"这两段都要被允许"。
+///
+/// 引号（单引号 / 双引号）内的分隔符**不切**——`echo "a; b"` 中的分号是字符串内容，
+/// 不是命令边界；不感知引号会把一条命令误切成两半，凭空多出一把莫名其妙的键。
+///
+/// 单个 `&` 不当分隔符：PowerShell 里它是调用操作符（`& "C:\x.ps1"`），切了会把脚本
+/// 路径单独算成一把键。只有 `&&` 才算（bash 的"前一个成功才跑下一个"）。
+fn split_command_segments(command: &str) -> Vec<String> {
+    let mut segments: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = command.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        // 处在引号内：一律当普通字符（分隔符也要原样保留）
+        if let Some(q) = quote {
+            current.push(c);
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                quote = Some(c);
+                current.push(c);
+            }
+            ';' | '|' => {
+                // `||` 是双字符分隔符，把配对字符一并消费掉
+                if chars.peek() == Some(&c) {
+                    chars.next();
+                }
+                segments.push(current.trim().to_string());
+                current = String::new();
+            }
+            '&' => {
+                // 只有 `&&` 是分隔符；单个 `&` 保留在段内（PowerShell 调用操作符）
+                if chars.peek() == Some(&'&') {
+                    chars.next();
+                    segments.push(current.trim().to_string());
+                    current = String::new();
+                } else {
+                    current.push(c);
+                }
+            }
+            _ => current.push(c),
+        }
+    }
+    segments.push(current.trim().to_string());
+    // 空段丢弃：`npm install;; npm run dev` 中间的空段没有语义
+    segments.retain(|s| !s.is_empty());
+    segments
+}
+
+/// 一条命令需要的**全部**范围键：切成命令段后逐段调 [`command_prefix_scope`]，按 scope 去重。
+///
+/// 单段命令（绝大多数）结果与原函数一致，行为不变；链式命令会拿到多把键，
+/// 调用方必须要求**全部**被允许（见 `SessionContext::allowance_covers_all`）。
+///
+/// 唯一口径：`allowance_keys_for`（外层判定）与 `command_allowed`（shell 二道门）共用本函数，
+/// 否则会出现"外层放行、内层又弹卡"。
+pub fn command_prefix_scopes(command: &str) -> Option<Vec<(String, String)>> {
+    let segments = split_command_segments(command);
+    if segments.is_empty() {
+        return None;
+    }
+    let mut out: Vec<(String, String)> = Vec::new();
+    for segment in &segments {
+        let (scope, label) = command_prefix_scope(segment)?;
+        if !out.iter().any(|(existing, _)| existing == &scope) {
+            out.push((scope, label));
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// 会话级允许的类别与范围，**返回这次操作需要的全部键**。
 ///
 /// 文件类：类别 = `edit_project` / `delete`，范围 = **会话工作目录（项目根）**，
-/// 见 [`file_scope_for`] 的两级回退。
-/// 命令类：类别 = `run_command`，范围 = 命令前缀（见 [`command_prefix_scope`]）
-/// 其它类别（读、编排、改工作目录等）：`None`，即不提供"本次会话都允许"
-fn allowance_key_for(
+/// 见 [`file_scope_for`] 的两级回退；一把键。
+/// 命令类：类别 = `run_command`，范围 = 命令前缀（见 [`command_prefix_scopes`]）；
+/// **链式命令一段一把键**——用户点一次「本项目允许」把各段的键一起登记，
+/// 判定侧则要求全部段都拿到允许才放行（2026-09-19 沐拍板 B 方案）。
+/// 其它类别（读、编排、改工作目录等）：返回空列表，即不提供"本次会话都允许"
+fn allowance_keys_for(
     class: Option<ToolClass>,
     input: &Value,
     targets: &[String],
     workspace: Option<&std::path::Path>,
-) -> Option<AllowanceKey> {
-    let kind = allowance_kind(class)?;
+) -> Vec<AllowanceKey> {
+    let Some(kind) = allowance_kind(class) else {
+        return Vec::new();
+    };
 
     if kind == ALLOWANCE_KIND_COMMAND {
-        let (scope, label) = command_prefix_scope(input["command"].as_str().unwrap_or(""))?;
-        return Some(AllowanceKey { kind, scope, label });
+        let Some(pairs) = command_prefix_scopes(input["command"].as_str().unwrap_or("")) else {
+            return Vec::new();
+        };
+        return pairs
+            .into_iter()
+            .map(|(scope, label)| AllowanceKey { kind, scope, label })
+            .collect();
     }
 
-    let first = targets.first()?;
-    let (scope, display) = file_scope_for(first, workspace)?;
+    let Some(first) = targets.first() else {
+        return Vec::new();
+    };
+    let Some((scope, display)) = file_scope_for(first, workspace) else {
+        return Vec::new();
+    };
     let label = if kind == ALLOWANCE_KIND_DELETE {
         format!("在 {} 里删除文件", display)
     } else {
         format!("在 {} 里改动项目文件（新建 / 编辑 / 改名都算）", display)
     };
-    Some(AllowanceKey { kind, scope, label })
+    vec![AllowanceKey { kind, scope, label }]
 }
 
 /// 文件类范围键：**优先整个项目，没有项目才退回单个目录**。
@@ -775,15 +987,25 @@ pub async fn grant_session_allowance(
         serde_json::json!({ "sessionId": session_id }),
     );
 
-    // 挑出会被这条允许覆盖的积压请求：同一个类别 + 同一个范围 + 是工具确认
-    // （循环续跑确认和方案审批没有会话级允许语义，不能顺手放行）
+    // 挑出会被这次允许覆盖的积压请求：工具确认 + **它需要的键已全部被允许**
+    // （循环续跑确认和方案审批没有会话级允许语义，不能顺手放行）。
+    //
+    // 判据用"查整张允许表"而不是"比对本次 grant 的那把键"：链式命令的卡带着多把键，
+    // 只有一部分被覆盖时不该被放行，而这一轮 grant 可能只是补齐最后一把。
+    let granted_now: Vec<(String, String)> = {
+        let list = ctx.session_allowances.lock().await;
+        list.iter().map(|a| (a.kind.clone(), a.scope.clone())).collect()
+    };
     let swept: Vec<(String, tokio::sync::oneshot::Sender<PermissionDecision>)> = {
         let mut perms = ctx.pending_permissions.lock().await;
         let hit: Vec<String> = perms
             .iter()
             .filter(|(_, entry)| {
                 entry.kind == PermissionKind::Tool
-                    && matches!(&entry.allowance, Some((k, s)) if k.as_str() == kind && s.as_str() == scope)
+                    && !entry.allowance.is_empty()
+                    && entry.allowance.iter().all(|(k, s)| {
+                        granted_now.iter().any(|(gk, gs)| gk == k && gs == s)
+                    })
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -913,12 +1135,17 @@ pub async fn sweep_pending_on_mode_change(app: &tauri::AppHandle, session_id: &s
 /// 键口径与 [`allowance_key_for`] 共用 [`command_prefix_scope`]，所以外层判定放行了，
 /// 内层就不会再弹一次卡。
 pub async fn command_allowed(app: &tauri::AppHandle, session_id: &str, command: &str) -> bool {
-    let Some((scope, _)) = command_prefix_scope(command) else {
+    // 链式命令切成多段：每段各算一把键，**全部**被允许这条命令才算放行
+    let Some(scopes) = command_prefix_scopes(command) else {
         return false;
     };
+    let keys: Vec<(String, String)> = scopes
+        .into_iter()
+        .map(|(scope, _)| (ALLOWANCE_KIND_COMMAND.to_string(), scope))
+        .collect();
     let manager = app.state::<crate::infra::state::state::SessionManager>();
     let ctx = manager.get_or_create(session_id).await;
-    ctx.allowance_covers(ALLOWANCE_KIND_COMMAND, &scope).await
+    ctx.allowance_covers_all(&keys).await
 }
 
 /// 只读保护下的判定：返回 `Some(原因)` 表示这个工具在只读保护开启时**不许执行**。
@@ -1022,7 +1249,26 @@ pub async fn enforce(
     let decision = policy::judge(tool, mode, &facts.to_input());
 
     match decision.outcome {
-        Outcome::Allow => None,
+        Outcome::Allow => {
+            // 审计（2026-09-18 A）：`帮我批准`档下命令类自动放行不留痕 = 事后无法追溯。
+            // 只记这一类（非只读、非只读保护拦截），只读命令每轮几百条全是噪音不记。
+            // 判据与 judge 规则 4 的放行分支同口径：档位 AutoApprove + 命令类 + 无警示。
+            if mode == ApprovalMode::AutoApprove
+                && !facts.command_is_readonly
+                && facts.class.map(|c| c.auto_approved_in_auto_mode()).unwrap_or(false)
+                && facts.warning.is_none()
+            {
+                super::permission_audit_logger::permission_audit_logger().log_decision(
+                    session_id,
+                    agent_type,
+                    tool,
+                    facts.allowance.first().map(|k| k.kind),
+                    facts.allowance.first().map(|k| k.scope.as_str()),
+                    super::permission_audit_logger::ACTION_AUTO_APPROVE,                    None,
+                );
+            }
+            None
+        }
         Outcome::Deny => {
             println!(
                 "[JARVIS] 权限判定拒绝：工具={} 原因={}",
@@ -1039,21 +1285,26 @@ pub async fn enforce(
             // 键登记了也吞不掉下一次，显示按钮就是骗人——递归强删不该有"本会话随便来"的待遇。
             // （2026-09-18 沐拍板：覆盖已有文件已摘出"每次必问"名单，与普通编辑同权——
             //   旧内容由快照回滚兜底，覆盖卡可正常登记会话允许。）
-            let key = if policy::ask_always_repeated(facts.warning.is_some()) {
-                None
+            let keys: Vec<AllowanceKey> = if policy::ask_always_repeated(facts.warning.is_some()) {
+                Vec::new()
             } else {
                 facts.allowance.clone()
             };
 
-            // ① 本会话已允许过"这个操作类别 + 这个范围" → 直接放行
-            if let Some(key) = &key {
-                if ctx.allowance_covers(key.kind, &key.scope).await {
+            // ① 本会话已允许过"这个操作类别 + 这个范围" → 直接放行。
+            //    链式命令多把键：**全部**被允许才放行（只授权了第一段不算）。
+            if !keys.is_empty() {
+                let covered: Vec<(String, String)> = keys
+                    .iter()
+                    .map(|k| (k.kind.to_string(), k.scope.clone()))
+                    .collect();
+                if ctx.allowance_covers_all(&covered).await {
                     super::permission_audit_logger::permission_audit_logger().log_decision(
                         session_id,
                         agent_type,
                         tool,
-                        Some(key.kind),
-                        Some(&key.scope),
+                        covered.first().map(|(kind, _)| kind.as_str()),
+                        covered.first().map(|(_, scope)| scope.as_str()),
                         super::permission_audit_logger::ACTION_KEY_HIT,
                         facts.warning.as_deref(),
                     );
@@ -1064,7 +1315,10 @@ pub async fn enforce(
             // ② 弹窗问用户。把键一并交过去：一是让前端知道"本次会话都允许"是否真有
             //    明确含义（没键就别显示这个按钮），二是用户点了之后能据此消化积压。
             let message = build_permission_message(tool, &facts, &decision.reason, agent_type);
-            let pending_key = key.as_ref().map(|k| (k.kind.to_string(), k.scope.clone()));
+            let pending_keys: Vec<(String, String)> = keys
+                .iter()
+                .map(|k| (k.kind.to_string(), k.scope.clone()))
+                .collect();
             // 带上发起来源（工具名 + 原始入参）：切档位时清扫逻辑据此按新档位重放判定，
             // 自动消化"新档位下根本不用问"的挂起卡（见 sweep_pending_on_mode_change）
             let decision = super::permission::request_permission_with_origin(
@@ -1072,16 +1326,16 @@ pub async fn enforce(
                 session_id,
                 &message,
                 PermissionKind::Tool,
-                pending_key,
+                pending_keys,
                 Some((tool, input)),
                 facts.warning.as_deref(),
             )
             .await;
             // 审计：弹卡后的每一次人工决策都留痕（允许一次/会话允许/拒绝）。
-            // 键信息提前转 owned——AllowSession 分支会 move key，引用活不到分支内。
+            // 键信息提前转 owned——AllowSession 分支会 move keys，引用活不到分支内。
             let audit = super::permission_audit_logger::permission_audit_logger();
             let audit_key: Option<(String, String)> =
-                key.as_ref().map(|k| (k.kind.to_string(), k.scope.clone()));
+                keys.first().map(|k| (k.kind.to_string(), k.scope.clone()));
             let (audit_kind, audit_scope) = match &audit_key {
                 Some((k, s)) => (Some(k.as_str()), Some(s.as_str())),
                 None => (None, None),
@@ -1100,8 +1354,16 @@ pub async fn enforce(
                     None
                 }
                 PermissionDecision::AllowSession => {
-                    if let Some(k) = key {
-                        grant_session_allowance(app, session_id, k.kind, &k.scope, k.label).await;
+                    // 链式命令：一次点击把各段的键都登记（用户看到的是"同时登记以下范围"）
+                    for k in &keys {
+                        grant_session_allowance(
+                            app,
+                            session_id,
+                            k.kind,
+                            &k.scope,
+                            k.label.clone(),
+                        )
+                        .await;
                     }
                     audit.log_decision(
                         session_id,
@@ -1172,8 +1434,17 @@ fn build_permission_message(
         // 免得用户找不到「本次会话都允许」按钮而困惑。
         msg.push_str("\n此命令每次都需要人工批准，无法用「本次会话都允许」。");
     }
-    if let Some(key) = &facts.allowance {
-        msg.push_str(&format!("\n允许范围：{}", key.label));
+    // 允许范围：链式命令是多段，一次「本项目允许」会把各段的键一起登记，
+    // 所以这里必须逐个列出来——写一句"整条命令"反而掩盖了放开的宽度。
+    if !facts.allowance.is_empty() {
+        if facts.allowance.len() == 1 {
+            msg.push_str(&format!("\n允许范围：{}", facts.allowance[0].label));
+        } else {
+            msg.push_str("\n允许范围（一条链式命令，点一次会同时登记以下范围）：");
+            for key in &facts.allowance {
+                msg.push_str(&format!("\n· {}", key.label));
+            }
+        }
     }
     if agent_type == "subagent" {
         msg.push_str("\n来源：子代理（并行任务）发起");

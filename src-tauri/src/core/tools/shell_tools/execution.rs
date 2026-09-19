@@ -272,7 +272,9 @@ pub async fn run_shell(
             // 所以先查"本会话都允许"是否已覆盖这条命令——否则用户点过"本次会话都允许"之后，
             // 同一条命令每跑一次还会再弹一次卡，等于那个按钮对命令类不起作用。
             // 键口径与 `policy_guard::allowance_key_for` 共用同一实现，两道门不会打架。
-            let key = framework::policy_guard::command_prefix_scope(cmd);
+            // 与外层判定同口径：链式命令一段一把键（command_prefix_scopes）
+            let keys =
+                framework::policy_guard::command_prefix_scopes(cmd).unwrap_or_default();
             // 危险命令与外层 enforce 同口径（policy::ask_always_repeated）：每次亲手批——
             // 不查会话允许（防历史登记残留绕过），不发范围键（防「本次会话都允许」
             // 从这张卡绕回来：下面 AllowSession 分支会真的 grant_session_allowance）
@@ -282,27 +284,34 @@ pub async fn run_shell(
             if !already_allowed {
                 // 把放开范围写进卡片，跟外层弹卡的文案保持一致（危险卡没有范围键，不写）
                 if destructive.is_none() {
-                    if let Some((_, label)) = &key {
-                        perm_msg.push_str(&format!("\n允许范围：{}", label));
+                    if keys.len() == 1 {
+                        perm_msg.push_str(&format!("\n允许范围：{}", keys[0].1));
+                    } else if keys.len() > 1 {
+                        perm_msg.push_str("\n允许范围（一条链式命令，点一次会同时登记以下范围）：");
+                        for (_, label) in &keys {
+                            perm_msg.push_str(&format!("\n· {}", label));
+                        }
                     }
                 }
-                let pending_key = if destructive.is_some() {
+                let pending_keys: Vec<(String, String)> = if destructive.is_some() {
                     // 危险命令：没有「本次会话都允许」，与外层弹卡同口径
-                    None
+                    Vec::new()
                 } else {
-                    key.as_ref().map(|(scope, _)| {
-                        (
-                            framework::policy_guard::ALLOWANCE_KIND_COMMAND.to_string(),
-                            scope.clone(),
-                        )
-                    })
+                    keys.iter()
+                        .map(|(scope, _)| {
+                            (
+                                framework::policy_guard::ALLOWANCE_KIND_COMMAND.to_string(),
+                                scope.clone(),
+                            )
+                        })
+                        .collect()
                 };
                 let decision = request_permission_with_origin(
                     app,
                     session_id,
                     &perm_msg,
                     PermissionKind::Tool,
-                    pending_key,
+                    pending_keys,
                     None,
                     destructive.as_deref(),
                 )
@@ -323,7 +332,8 @@ pub async fn run_shell(
                 }
                 // 用户授权本会话 → 登记键（顺带放行其它已挂起的同范围请求）
                 if decision == PermissionDecision::AllowSession {
-                    if let Some((scope, label)) = key {
+                    // 一次点击把各段的键都登记（用户已在卡片上看到"同时登记以下范围"）
+                    for (scope, label) in keys {
                         framework::policy_guard::grant_session_allowance(
                             app,
                             session_id,

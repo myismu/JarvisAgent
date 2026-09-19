@@ -117,13 +117,15 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
 /*
  * 灰白朴素：只用边框与文字层级区分，不用彩色、不用毛玻璃、不用阴影。
  * 挂载位置 = 输入框正上方 0px（floating-terminal-container 内，Codex 风格）：
- * - 宽度与输入框同一口径（chat-input-wrapper 的 min(85%, 960px)），左右对齐；
+ * - 宽度 = 输入框的一半（chat-input-wrapper 是 min(85%, 960px)，这里取 min(42.5%, 480px)）；
+ * - 高度压缩（2026-09-19 沐拍板）：内边距/行距全线收紧，命令明细区压到 44px 内滚动，
+ *   不再任由内容撑高；五排内容（标题/警示/明细/备注/按钮）全保留前提下约矮一半。
  * - 底部直角 + 去底边框 → 与输入框顶边无缝相接（0px 间隔）；
  * - 背景与输入框同用 surface-strong + 玻璃模糊，视觉上是输入框的"帽子"。
  */
 .perm-card {
   margin: 0;
-  padding: 12px 16px;
+  padding: 7px 12px;
   border: 1px solid var(--glass-border);
   border-bottom: none;
   border-radius: 16px 16px 0 0;
@@ -131,16 +133,16 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
   backdrop-filter: blur(var(--glass-blur-heavy));
   -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   width: 100%;
-  max-width: min(85%, 960px);
-  font-size: 0.78rem;
-  line-height: 1.5;
+  max-width: min(42.5%, 480px);
+  font-size: 0.74rem;
+  line-height: 1.45;
 }
 
 .perm-head {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  margin-bottom: 6px;
+  gap: 6px;
+  margin-bottom: 3px;
 }
 
 .perm-title {
@@ -155,36 +157,36 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
 
 /* 弱警示（琥珀小字）：比正文小一档，只靠颜色提示，不加图标不加底色 */
 .perm-warning {
-  margin: 0 0 8px;
-  font-size: 0.7rem;
-  line-height: 1.5;
+  margin: 0 0 4px;
+  font-size: 0.68rem;
+  line-height: 1.4;
   color: var(--text-warning);
   white-space: pre-line;
 }
 
 .perm-detail {
-  margin: 0 0 10px;
+  margin: 0 0 6px;
   padding: 0;
   font-family: var(--font-mono);
-  font-size: 0.72rem;
-  line-height: 1.6;
+  font-size: 0.68rem;
+  line-height: 1.45;
   color: var(--text-soft);
   white-space: pre-wrap;
   word-break: break-all;
-  max-height: 160px;
+  max-height: 44px;
   overflow-y: auto;
 }
 
 .perm-feedback {
   width: 100%;
   box-sizing: border-box;
-  margin-bottom: 10px;
-  padding: 6px 0;
+  margin-bottom: 5px;
+  padding: 3px 0;
   border: none;
   border-bottom: 1px solid var(--glass-border-subtle);
   background: transparent;
   color: var(--text-main);
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   outline: none;
 }
 
@@ -199,19 +201,19 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
 .perm-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 6px;
 }
 
 .perm-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
+  gap: 5px;
+  padding: 3px 9px;
   border: 1px solid var(--glass-border-subtle);
   border-radius: var(--radius-sm, 4px);
   background: transparent;
   color: var(--text-soft);
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   cursor: pointer;
   transition: border-color 0.12s ease, color 0.12s ease;
 }

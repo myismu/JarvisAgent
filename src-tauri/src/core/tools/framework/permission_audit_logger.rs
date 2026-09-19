@@ -8,6 +8,10 @@
 //!
 //! 刻意**不记** judge 直接放行（Allow，未弹卡）的调用：只读工具每轮几百条全是噪音。
 //! 这里只关心"问没问、问了之后结果如何"。
+//!
+//! **唯一例外**：`auto_approve`（2026-09-18 A 改造）——"帮我批准"档自动放行**非危险命令**
+//! 时记一条。理由：这是档位策略放行、用户从未逐条表态，不记就彻底无痕；
+//! 只读命令（Get-ChildItem 这类）仍然不记（噪音）。判据见 `policy.rs::always_asks` 分支。
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
@@ -25,6 +29,12 @@ pub const ACTION_ALLOW: &str = "allow";
 pub const ACTION_ALLOW_SESSION: &str = "allow_session";
 /// 决策动作：用户点「拒绝」（中止本次工具调用）
 pub const ACTION_REJECT: &str = "reject";
+/// 决策动作：「帮我批准」档自动放行，未弹卡（2026-09-18 A）
+///
+/// 与 `key_hit` 的区别：`key_hit` 是用户**点过账本**、本次命中；本动作是档位策略
+/// 直接放行，用户从未就这条命令表过态。这是 A 改造的安全垫——AutoApprove 档下
+/// 非危险命令静默执行，唯一的事后追溯手段就是这条流水。
+pub const ACTION_AUTO_APPROVE: &str = "auto_approve";
 
 /// 一条权限决策记录
 #[derive(Serialize)]

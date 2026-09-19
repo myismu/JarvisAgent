@@ -173,7 +173,7 @@ pub async fn get_permission_state(
             // 循环续跑确认若照抄这套语义，会顺带把其它工具调用一起放行；
             // 没有范围键的操作（例如改工作目录）点了按钮也没有任何效果。
             // 口径与 permission::request_permission 广播的 permission-request 一致。
-            "allowSession": entry.kind.allows_session_wide_approval() && entry.allowance.is_some(),
+            "allowSession": entry.kind.allows_session_wide_approval() && !entry.allowance.is_empty(),
             "kind": entry.kind.as_str(),
             // 危险警示文案（无则 null）：监控面板内联卡据此做弱化的视觉分级，
             // 口径与 permission::request_permission_with_origin 广播的 permission-request 一致

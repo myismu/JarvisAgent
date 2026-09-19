@@ -92,13 +92,17 @@ pub struct PendingPermission {
     pub message: String,
     /// 请求来源（工具确认 / 循环续跑确认 / 方案审批），决定前端能提供哪些按钮
     pub kind: crate::core::tools::framework::permission::PermissionKind,
-    /// 这条请求对应的"会话级允许"键 `(操作类别, 范围)`。
+    /// 这条请求对应的"会话级允许"键列表 `(操作类别, 范围)`。
     ///
     /// 两个用途：
-    /// 1. 前端据此决定要不要显示"本次会话都允许"——没有键时点了也没用，不该显示
+    /// 1. 前端据此决定要不要显示"本次会话都允许"——列表为空时点了也没用，不该显示
     /// 2. 用户点了"本次会话都允许"之后，据此把**已经挂起**、会被同一条允许覆盖的
-    ///    请求一次性放行，不用用户挨个点（口径见 `policy_guard::allowance_key_for`）
-    pub allowance: Option<(String, String)>,
+    ///    请求一次性放行，不用用户挨个点（口径见 `policy_guard::allowance_keys_for`）
+    ///
+    /// 为什么是列表：链式命令（`npm install; npm run dev`）要拆段验权，
+    /// 一段一把键——**全部段都拿到允许**这条请求才算被覆盖（2026-09-19 沐拍板 B 方案）。
+    /// 单键操作（文件编辑等）就是长度为 1 的列表；不支持会话级允许的操作是空列表。
+    pub allowance: Vec<(String, String)>,
     /// 发起这条请求的工具名与原始入参（仅工具确认有）。
     ///
     /// 切换权限档位时，清扫逻辑（`policy_guard::sweep_pending_on_mode_change`）
@@ -175,6 +179,13 @@ pub struct SessionContext {
     /// 刻意是**纯内存态**（与 `session_allowances` 同构）：放松的授权可以记住，
     /// 收紧的闸门记住容易变成"新会话里 agent 莫名其妙写不了文件"的幽灵故障。
     pub agent_read_only: Mutex<bool>,
+    /// 会话级 system 提示词缓存（提示词磁盘化后保证"会话内字节恒定"的强制闸门）。
+    ///
+    /// `None` = 尚未组装；首次发消息时由 pipeline 组装一次并存入，此后本会话
+    /// 所有 turn 一律复用。没有它，用户在设置里改了提示词文件后，同一会话的
+    /// 下一个 turn 会重组 system → 缓存前缀整体失效（约 1.5k token 全量重算）。
+    /// 有了它，"改动只对新会话生效"从文档约定升级为代码保证。
+    pub system_prompt_cache: Mutex<Option<String>>,
 }
 
 impl SessionContext {
@@ -202,6 +213,7 @@ impl SessionContext {
             approval_mode: Mutex::new("request_approval".to_string()),
             session_allowances: Mutex::new(Vec::new()),
             agent_read_only: Mutex::new(false),
+            system_prompt_cache: Mutex::new(None),
         }
     }
 
@@ -226,6 +238,30 @@ impl SessionContext {
     ///   （继承判定见 `policy_guard::scope_covers`）。
     /// - 命令类（`run_command`）：字符串**精确相等**——命令前缀没有"包含"语义，
     ///   `npm run` 的授权不能放宽到 `npm run build` 以外的前缀。
+    /// 多把键是否**全部**已被允许（链式命令用：一段一把键，缺一把都不算放行）。
+    ///
+    /// 空列表返回 false（"没有任何键"不该被当成"全都被覆盖"）——调用方要先判空。
+    pub async fn allowance_covers_all(&self, keys: &[(String, String)]) -> bool {
+        if keys.is_empty() {
+            return false;
+        }
+        let list = self.session_allowances.lock().await;
+        keys.iter().all(|(kind, scope)| {
+            if kind == crate::core::tools::framework::policy_guard::ALLOWANCE_KIND_COMMAND {
+                // 命令类：范围键是前缀，同名即同权（精确相等，见 command_prefix_scope 的说明）
+                list.iter().any(|a| a.kind == *kind && a.scope == *scope)
+            } else {
+                // 文件类：上级目录的授权覆盖下级（scope_covers）
+                list.iter().any(|a| {
+                    a.kind == *kind
+                        && crate::core::tools::framework::policy_guard::scope_covers(
+                            &a.scope, scope,
+                        )
+                })
+            }
+        })
+    }
+
     pub async fn allowance_covers(&self, kind: &str, scope: &str) -> bool {
         let file_kind = kind != crate::core::tools::framework::policy_guard::ALLOWANCE_KIND_COMMAND;
         self.session_allowances

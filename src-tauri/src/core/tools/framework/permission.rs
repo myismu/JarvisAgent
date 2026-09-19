@@ -193,8 +193,9 @@ pub async fn ensure_path_permission(
 /// - `Reject` → 本次操作不执行，把 `model_note()` 回灌给模型（loop 继续，让模型换方案）
 /// - `Interrupted` → 没拿到用户结论（例如用户点了停止），也不执行，但不能当成"用户拒绝"
 ///
-/// `allowance` 是这次请求对应的"会话级允许"范围键 `(工具, 范围)`；`None` 表示这次操作
-/// 不支持会话级允许（例如"循环续跑确认"，照抄这套语义会顺带放行其它工具调用）。
+/// `allowance` 是这次请求对应的"会话级允许"范围键列表 `(操作类别, 范围)`；空列表表示
+/// 这次操作不支持会话级允许（例如"循环续跑确认"，照抄这套语义会顺带放行其它工具调用）。
+/// 链式命令会有多把键（一段一把），**全部**被允许才算这条请求被覆盖。
 ///
 /// 由于取消了超时，必须保证"等待这件事本身不会被无声丢弃"：
 /// 如果调用方的 future 被取消/被打断（例如子代理任务撞上调度器 5 分钟超时被 drop），
@@ -205,7 +206,7 @@ pub async fn request_permission(
     session_id: &str,
     message: &str,
     kind: PermissionKind,
-    allowance: Option<(String, String)>,
+    allowance: Vec<(String, String)>,
 ) -> PermissionDecision {
     request_permission_with_origin(app, session_id, message, kind, allowance, None, None).await
 }
@@ -221,7 +222,7 @@ pub async fn request_permission_with_origin(
     session_id: &str,
     message: &str,
     kind: PermissionKind,
-    allowance: Option<(String, String)>,
+    allowance: Vec<(String, String)>,
     origin: Option<(&str, &serde_json::Value)>,
     warning: Option<&str>,
 ) -> PermissionDecision {
@@ -231,10 +232,9 @@ pub async fn request_permission_with_origin(
     // 已经被"本会话都允许"覆盖 → 不问用户，直接放行。
     // 这道前置检查还堵住了另一个窗口：调用方刚判定"未命中允许列表"、用户随后就点了
     // "本次会话都允许"，此时再插一张卡进去就是一张永远等不到点击的僵尸卡片。
-    if let Some((tool, scope)) = &allowance {
-        if ctx.allowance_covers(tool, scope).await {
-            return PermissionDecision::Allow;
-        }
+    // 链式命令多把键：全部被允许才放行（只有一部分被覆盖仍要问）。
+    if !allowance.is_empty() && ctx.allowance_covers_all(&allowance).await {
+        return PermissionDecision::Allow;
     }
 
     // 生成唯一请求 ID，创建 oneshot channel 等待前端回调
@@ -282,7 +282,7 @@ pub async fn request_permission_with_origin(
             "kind": kind.as_str(),
             // 只有"工具确认"且这条操作**真的有范围键**时，会话级允许才有个明确的含义；
             // 否则按钮点了等于没点（旧实现里这是个会骗人的按钮）
-            "allowSession": kind.allows_session_wide_approval() && allowance.is_some(),
+            "allowSession": kind.allows_session_wide_approval() && !allowance.is_empty(),
             // 危险警示文案（无则 null）：会话流卡片据此把风险行渲染成弱警示样式
             "warning": warning,
         }),
