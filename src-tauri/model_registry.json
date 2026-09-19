@@ -1,6 +1,6 @@
 {
   "_comment": "模型能力注册表 - 使用 include_str!() 编译时内嵌，无需运行时文件。参数依据 doc/ai-models-guide.md 同步；maxTokens 表示最大输出，maxContextTokens 表示最大上下文窗口。",
-  "_lastUpdated": "2026-09-17",
+  "_lastUpdated": "2026-09-19",
   "models": [
     {
       "id": "deepseek-v4-pro",
@@ -43,7 +43,10 @@
         "maxTokens": 384000,
         "notes": "【旧模型名】官方 2026-09-15 口径：上一代 V4 Flash 模型已下线，deepseek-v4-flash 这个名字仅为兼容暂时路由到 V4.1-Flash，并按 Flash 价格计费。新接入请直接用 deepseek-flash。1M 上下文 / 最大 384K 输出，思考默认开启，视觉由 V4.1-Flash 提供（本条目按旧名保留，能力随路由目标）。",
         "vision": true,
-        "maxContextTokens": 1000000
+        "maxContextTokens": 1000000,
+        "status": "alias",
+        "replacedBy": "deepseek-flash",
+        "statusNote": "官方口径：模型已退役、名字仍受理，请求由 V4.1-Flash 承接并按 Flash 价格计费"
       }
     },
     {
@@ -80,7 +83,10 @@
         "maxTokens": 8192,
         "notes": "【旧模型名】2026-09-15 核对：当前官方文档与价格表已不再列出 deepseek-chat（旧记录：128K 上下文、8K 输出、输入 0.27 元/百万 tokens）。新接入请使用 deepseek-flash（默认思考，可用 thinking:{type:disabled} 走非思考）；Anthropic 端点上传入不支持的名字会被自动映射到 deepseek-flash。",
         "vision": false,
-        "maxContextTokens": 128000
+        "maxContextTokens": 128000,
+        "status": "retired",
+        "replacedBy": "deepseek-flash",
+        "statusNote": "官方 updates：2026-04-24 公告、2026-07-24 停用；过渡期映射 V4-Flash 非思考模式"
       }
     },
     {
@@ -96,7 +102,10 @@
         "maxTokens": 8192,
         "notes": "【旧模型名】2026-09-15 核对：当前官方文档与价格表已不再列出 deepseek-reasoner（旧记录：128K 上下文、8K 输出、输入 0.55 元/百万 tokens）。新接入请使用 deepseek-flash / deepseek-v4-pro。",
         "vision": false,
-        "maxContextTokens": 128000
+        "maxContextTokens": 128000,
+        "status": "retired",
+        "replacedBy": "deepseek-flash",
+        "statusNote": "官方 updates：2026-04-24 公告、2026-07-24 停用；过渡期映射 V4-Flash 思考模式"
       }
     },
     {
@@ -117,10 +126,10 @@
           "max"
         ],
         "temperature": false,
-        "maxTokens": 32768,
-        "notes": "最强模型，适合 Agent 和编码；**自适应思考（Adaptive Thinking）**：省略 thinking 参数即不思考，开启只能传 thinking.type=adaptive（旧的 type=enabled+budget_tokens 已在该代移除，传了直接 400），深度用 output_config.effort 调（low/medium/high/xhigh/max，默认 high）；思考文本默认不返回（display=omitted），需显式 display=summarized；temperature/top_p/top_k 已废弃，传了会 400；200K 上下文；输入 $5.00/1M tokens（缓存读 $0.50），输出 $25.00/1M tokens；参数表未给出最大输出，沿用 32K 注册上限",
+        "maxTokens": 131072,
+        "notes": "最强模型，适合 Agent 和编码；**自适应思考（Adaptive Thinking）**：省略 thinking 参数即不思考，开启只能传 thinking.type=adaptive（旧的 type=enabled+budget_tokens 已在该代移除，传了直接 400），深度用 output_config.effort 调（low/medium/high/xhigh/max，默认 high）；思考文本默认不返回（display=omitted），需显式 display=summarized；temperature/top_p/top_k 已废弃，传了会 400；200K 上下文；输入 $5.00/1M tokens（缓存读 $0.50），输出 $25.00/1M tokens；2026-09-19 复核官方模型页：上下文 1M、最大输出 128K",
         "vision": true,
-        "maxContextTokens": 200000
+        "maxContextTokens": 1000000
       }
     },
     {
@@ -185,7 +194,9 @@
         "thinkingEffortValues": [
           "low",
           "medium",
-          "high"
+          "high",
+          "xhigh",
+          "max"
         ],
         "temperature": false,
         "maxTokens": 131072,
@@ -204,10 +215,17 @@
         "thinking": true,
         "thinkingParam": "thinking",
         "temperature": false,
-        "maxTokens": 32768,
+        "maxTokens": 131072,
         "notes": "智能/成本/速度平衡模型；Extended Thinking，200K 上下文，可扩展至 1M；输入 $3.00/1M tokens（缓存读 $0.30），输出 $15.00/1M tokens；参数表未给出最大输出，沿用 32K 注册上限",
         "vision": true,
-        "maxContextTokens": 200000
+        "maxContextTokens": 1000000,
+        "thinkingMode": "adaptive_optional",
+        "thinkingEffortValues": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ]
       }
     },
     {
@@ -220,8 +238,8 @@
         "thinking": true,
         "thinkingParam": "thinking",
         "temperature": false,
-        "maxTokens": 32768,
-        "notes": "快速低成本 Claude 4.x 模型；Extended Thinking，200K 上下文；输入 $1.00/1M tokens（缓存读 $0.10），输出 $5.00/1M tokens；参数表未给出最大输出，沿用 32K 注册上限",
+        "maxTokens": 65536,
+        "notes": "快速低成本 Claude 4.x 模型；Extended Thinking，200K 上下文；输入 $1.00/1M tokens（缓存读 $0.10），输出 $5.00/1M tokens；2026-09-19 复核：最大输出 64K",
         "vision": true,
         "maxContextTokens": 200000
       }
@@ -236,10 +254,17 @@
         "thinking": true,
         "thinkingParam": "thinking",
         "temperature": false,
-        "maxTokens": 32768,
-        "notes": "旧版旗舰 Claude 4.x 模型；Extended Thinking，200K 上下文；输入 $5.00/1M tokens，输出 $25.00/1M tokens；参数表未给出最大输出，沿用 32K 注册上限",
+        "maxTokens": 131072,
+        "notes": "旧版旗舰 Claude 4.x 模型；Extended Thinking，200K 上下文；输入 $5.00/1M tokens，输出 $25.00/1M tokens；2026-09-19 复核官方文档：上下文 1M、最大输出 128K、thinking 为 adaptive（省略即不思考）",
         "vision": true,
-        "maxContextTokens": 200000
+        "maxContextTokens": 1000000,
+        "thinkingMode": "adaptive_optional",
+        "thinkingEffortValues": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ]
       }
     },
     {
@@ -252,10 +277,15 @@
         "thinking": true,
         "thinkingParam": "thinking",
         "temperature": false,
-        "maxTokens": 32768,
-        "notes": "Claude 4.x 旗舰模型；Extended Thinking，200K 上下文；输入 $5.00/1M tokens，输出 $25.00/1M tokens；参数表未给出最大输出，沿用 32K 注册上限",
+        "maxTokens": 65536,
+        "notes": "Claude 4.x 旗舰模型；Extended Thinking，200K 上下文；输入 $5.00/1M tokens，输出 $25.00/1M tokens；2026-09-19 复核：最大输出 64K；官方明示它是唯一支持 effort 的 extended-only 模型",
         "vision": true,
-        "maxContextTokens": 200000
+        "maxContextTokens": 200000,
+        "thinkingEffortValues": [
+          "low",
+          "medium",
+          "high"
+        ]
       }
     },
     {
@@ -268,8 +298,8 @@
         "thinking": true,
         "thinkingParam": "thinking",
         "temperature": false,
-        "maxTokens": 32768,
-        "notes": "Claude 4.x 平衡型模型；Extended Thinking，200K 上下文；输入 $3.00/1M tokens，输出 $15.00/1M tokens；参数表未给出最大输出，沿用 32K 注册上限",
+        "maxTokens": 65536,
+        "notes": "Claude 4.x 平衡型模型；Extended Thinking，200K 上下文；输入 $3.00/1M tokens，输出 $15.00/1M tokens；2026-09-19 复核：最大输出 64K",
         "vision": true,
         "maxContextTokens": 200000
       }
@@ -287,7 +317,10 @@
         "maxTokens": 16000,
         "notes": "首个支持显式扩展思考参数的 Claude 模型",
         "vision": true,
-        "maxContextTokens": 200000
+        "maxContextTokens": 200000,
+        "status": "retired",
+        "replacedBy": "claude-sonnet-4-6",
+        "statusNote": "Anthropic model-deprecations 页：2026-02-19 退役，请求会失败"
       }
     },
     {
@@ -302,7 +335,10 @@
         "maxTokens": 8096,
         "notes": "经典高性能模型，不支持思考模式",
         "vision": true,
-        "maxContextTokens": 200000
+        "maxContextTokens": 200000,
+        "status": "retired",
+        "replacedBy": "claude-sonnet-4-6",
+        "statusNote": "Anthropic model-deprecations 页：2025-10-28 退役，请求会失败"
       }
     },
     {
@@ -317,7 +353,10 @@
         "maxTokens": 8096,
         "notes": "快速低成本模型，适合工具代理使用",
         "vision": false,
-        "maxContextTokens": 200000
+        "maxContextTokens": 200000,
+        "status": "retired",
+        "replacedBy": "claude-haiku-4-5",
+        "statusNote": "Anthropic model-deprecations 页：2026-02-19 退役，请求会失败"
       }
     },
     {
@@ -546,7 +585,10 @@
         "maxTokens": 100000,
         "notes": "强推理模型，reasoning_effort 可选 low/medium/high；200K 上下文，100K 输出；输入约 $10.00/1M tokens，输出约 $40.00/1M tokens；支持工具调用和网页搜索；温度不可调",
         "vision": true,
-        "maxContextTokens": 200000
+        "maxContextTokens": 200000,
+        "status": "retired",
+        "replacedBy": "gpt-5.6-sol",
+        "statusNote": "官方 deprecations 页：2026-12-11 关停，官方迁移 gpt-5.6-sol"
       }
     },
     {
@@ -567,7 +609,10 @@
         "maxTokens": 100000,
         "notes": "快速高性价比推理模型，reasoning_effort 可选 low/medium/high；200K 上下文，100K 输出；输入约 $1.10/1M tokens，输出约 $4.40/1M tokens；适合数学/编码/视觉；温度不可调",
         "vision": true,
-        "maxContextTokens": 200000
+        "maxContextTokens": 200000,
+        "status": "retired",
+        "replacedBy": "gpt-5.6-terra",
+        "statusNote": "官方 deprecations 页：2026-10-23 关停，官方迁移 gpt-5.6-terra"
       }
     },
     {
@@ -588,7 +633,9 @@
         "maxTokens": 100000,
         "notes": "o4-mini 增强版，适合更深入技术回答；200K 上下文，100K 输出；输入约 $1.10/1M tokens，输出约 $4.40/1M tokens；温度不可调",
         "vision": true,
-        "maxContextTokens": 200000
+        "maxContextTokens": 200000,
+        "status": "unverifiable",
+        "statusNote": "非官方 API 模型 ID：官方无独立页面（重定向到模型总览），第三方一致称其等价于 o4-mini + reasoning_effort=high"
       }
     },
     {
@@ -603,7 +650,10 @@
         "maxTokens": 100000,
         "notes": "内置推理模型，始终处于推理模式，reasoning_effort 不可调；200K 上下文，100K 输出；温度不可调",
         "vision": true,
-        "maxContextTokens": 200000
+        "maxContextTokens": 200000,
+        "status": "retired",
+        "replacedBy": "gpt-5.6-sol",
+        "statusNote": "官方 deprecations 页：2026-10-23 关停，官方迁移 gpt-5.6-sol"
       }
     },
     {
@@ -619,7 +669,10 @@
         "maxTokens": 100000,
         "notes": "旧有高风险长文本分析推理模型；200K 上下文，100K 输出；参数表未给出价格；温度不可调",
         "vision": true,
-        "maxContextTokens": 200000
+        "maxContextTokens": 200000,
+        "status": "retired",
+        "replacedBy": "gpt-5.6-sol",
+        "statusNote": "官方 deprecations 页：2026-10-23 关停，官方迁移 gpt-5.6-sol（reasoning.mode: pro）"
       }
     },
     {
@@ -664,7 +717,10 @@
         "maxTokens": 32768,
         "notes": "通用非推理模型，偏写作/编码/快速解决问题；参数表未给出上下文、最大输出和价格，沿用 32K 输出注册上限；不支持 reasoning_effort",
         "vision": true,
-        "maxContextTokens": 128000
+        "maxContextTokens": 128000,
+        "status": "retired",
+        "replacedBy": "gpt-4.1",
+        "statusNote": "官方 deprecations 页：gpt-4.5-preview 已于 2025-07-14 关停，迁移 gpt-4.1；gpt-4.5 裸名无独立模型页"
       }
     },
     {
@@ -698,6 +754,29 @@
       }
     },
     {
+      "id": "gpt-6-astra",
+      "provider": "OpenAI",
+      "displayName": "GPT-6 Astra",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "reasoning_effort",
+        "thinkingEffortValues": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "temperature": false,
+        "maxTokens": 131072,
+        "vision": true,
+        "maxContextTokens": 1050000,
+        "notes": "2026-09-19 核对官方模型页（developers.openai.com/api/docs/models）：当前旗舰（2026-09-03 发布），上下文 1.05M / 最大输出 128K，输入 $10 / 输出 $50 每百万 tokens。reasoning_effort 支持 low/medium/high/xhigh/max —— **不支持 none**（传 none 返回 400）。官方 changelog 明示它不支持自定义 temperature/top_p 与 logprobs。裸名 gpt-5.6 是 gpt-5.6-sol 的别名，非本模型。"
+      }
+    },
+    {
       "id": "gemini-2.5-pro",
       "provider": "Google",
       "displayName": "Gemini 2.5 Pro",
@@ -710,7 +789,7 @@
         "maxTokens": 65536,
         "notes": "谷歌旗舰推理模型，原生多模态；1M+ 上下文；使用 thinkingBudget 参数（128-32768），思考模式无法关闭；参数表未给出最大输出",
         "vision": true,
-        "maxContextTokens": 1000000
+        "maxContextTokens": 1048576
       }
     },
     {
@@ -726,7 +805,7 @@
         "maxTokens": 65536,
         "notes": "高速推理模型，原生多模态；1M+ 上下文；使用 thinkingBudget 参数（0-24576），0 表示关闭思考；参数表未给出最大输出",
         "vision": true,
-        "maxContextTokens": 1000000
+        "maxContextTokens": 1048576
       }
     },
     {
@@ -758,7 +837,10 @@
         "maxTokens": 32768,
         "notes": "上一代快速模型，参数表标注支持 Thinking；1M 上下文；参数表未给出最大输出，沿用 32K 注册上限",
         "vision": true,
-        "maxContextTokens": 1000000
+        "maxContextTokens": 1000000,
+        "status": "retired",
+        "replacedBy": "gemini-3.6-flash",
+        "statusNote": "Gemini API changelog：2026-06-01 关停，官方建议 gemini-3.6-flash"
       }
     },
     {
@@ -773,7 +855,9 @@
         "maxTokens": 8192,
         "notes": "旧版超长上下文模型，2M 上下文，8K 输出；支持视觉，不支持 Thinking 参数",
         "vision": true,
-        "maxContextTokens": 2000000
+        "maxContextTokens": 2000000,
+        "status": "retired",
+        "statusNote": "Gemini API changelog：2025-09-29 关停；官方未指定具体替代型号"
       }
     },
     {
@@ -788,7 +872,39 @@
         "maxTokens": 8192,
         "notes": "旧版快速模型，1M 上下文，8K 输出；支持视觉，不支持 Thinking 参数",
         "vision": true,
-        "maxContextTokens": 1000000
+        "maxContextTokens": 1000000,
+        "status": "retired",
+        "statusNote": "Gemini API changelog：2025-09-29 关停；官方未指定具体替代型号"
+      }
+    },
+    {
+      "id": "gemini-3.8-flash",
+      "provider": "Google",
+      "displayName": "Gemini 3.8 Flash",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 65536,
+        "vision": true,
+        "maxContextTokens": 1048576,
+        "notes": "2026-09-19 核对官方模型页：输入 token 上限 1,048,576 / 输出 token 上限 65,536；输入支持 文本/图片/视频/音频/PDF。**官方 thinking 参数为 `thinkingLevel`（3.8-flash 支持 low/medium/high，`minimal` 会报错）**，与本注册表现有的 `thinkingBudget`（顶层整数 thinking_budget）不是同一字段；未核实 Gemini OpenAI 兼容端点的确切字段名之前不下发思考参数，故 thinking=false。"
+      }
+    },
+    {
+      "id": "gemini-3.1-pro-preview",
+      "provider": "Google",
+      "displayName": "Gemini 3.1 Pro (Preview)",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 65536,
+        "vision": true,
+        "maxContextTokens": 1048576,
+        "notes": "2026-09-19 核对官方模型页：输入 token 上限 1,048,576 / 输出 token 上限 65,536；输入支持 文本/图片/视频/音频/PDF。**官方 thinking 参数为 `thinkingLevel`（3.8-flash 支持 low/medium/high，`minimal` 会报错）**，与本注册表现有的 `thinkingBudget`（顶层整数 thinking_budget）不是同一字段；未核实 Gemini OpenAI 兼容端点的确切字段名之前不下发思考参数，故 thinking=false。"
       }
     },
     {
@@ -802,8 +918,8 @@
         "temperature": true,
         "maxTokens": 32768,
         "notes": "通义千问旗舰通用模型，128K 上下文；支持视觉；参数表未给出最大输出，沿用 32K 注册上限",
-        "vision": true,
-        "maxContextTokens": 128000
+        "vision": false,
+        "maxContextTokens": 32768
       }
     },
     {
@@ -818,7 +934,9 @@
         "maxTokens": 32768,
         "notes": "通义千问视觉专用模型，128K 上下文；参数表未给出最大输出，沿用 32K 注册上限",
         "vision": true,
-        "maxContextTokens": 128000
+        "maxContextTokens": 128000,
+        "status": "deprecated",
+        "statusNote": "阿里云下线公告（2026-07-06）：2026-10-10 下线；官方推荐迁移 Qwen3.6/Qwen3.7 系列"
       }
     },
     {
@@ -834,7 +952,9 @@
         "maxTokens": 32768,
         "notes": "MoE 大模型，参数表标注支持深度思考和视觉；参数表未给出上下文和最大输出，沿用 32K 注册上限；上下文窗口 128K（2026-09-17 核对，官方口径 128K / 最多生成 8K）",
         "vision": true,
-        "maxContextTokens": 128000
+        "maxContextTokens": 128000,
+        "status": "unverifiable",
+        "statusNote": "官方文档页 404 且未出现在模型列表中；未找到指名的下线公告，故不判定为已退役"
       }
     },
     {
@@ -850,7 +970,9 @@
         "maxTokens": 32768,
         "notes": "阿里旗舰 MoE 推理模型，使用 extra_body:{enable_thinking:bool} 控制深度思考；参数表未单列 Qwen3，保留现有 32K 输出注册上限",
         "vision": false,
-        "maxContextTokens": 128000
+        "maxContextTokens": 128000,
+        "status": "deprecated",
+        "statusNote": "阿里云下线公告（2026-07-06）：2026-10-10 下线；官方推荐迁移 Qwen3.6/Qwen3.7 系列"
       }
     },
     {
@@ -866,7 +988,9 @@
         "maxTokens": 32768,
         "notes": "通义千问 3 稠密旗舰，支持思考模式；参数表未单列 Qwen3，保留现有 32K 输出注册上限",
         "vision": false,
-        "maxContextTokens": 128000
+        "maxContextTokens": 128000,
+        "status": "deprecated",
+        "statusNote": "阿里云下线公告（2026-07-06）：2026-10-10 下线；官方推荐迁移 Qwen3.6/Qwen3.7 系列"
       }
     },
     {
@@ -882,7 +1006,9 @@
         "maxTokens": 32768,
         "notes": "中量级推理模型；参数表未单列 Qwen3，保留现有 32K 输出注册上限",
         "vision": false,
-        "maxContextTokens": 128000
+        "maxContextTokens": 128000,
+        "status": "deprecated",
+        "statusNote": "阿里云下线公告（2026-07-06）：2026-10-10 下线；官方推荐迁移 Qwen3.6/Qwen3.7 系列"
       }
     },
     {
@@ -896,8 +1022,9 @@
         "temperature": true,
         "maxTokens": 32768,
         "notes": "通义千问性价比通用模型，128K 上下文；支持视觉；参数表未给出最大输出，沿用 32K 注册上限；无思考参数",
-        "vision": true,
-        "maxContextTokens": 128000
+        "vision": false,
+        "maxContextTokens": 1000000,
+        "thinkingParam": "extra_enable_thinking"
       }
     },
     {
@@ -911,8 +1038,138 @@
         "temperature": true,
         "maxTokens": 16384,
         "notes": "通义千问快速模型，128K 上下文；支持视觉；参数表未给出最大输出，沿用 16K 注册上限；无思考参数",
-        "vision": true,
-        "maxContextTokens": 128000
+        "vision": false,
+        "maxContextTokens": 128000,
+        "status": "deprecated",
+        "statusNote": "阿里云下线公告（2026-07-06）：2026-10-10 下线；官方推荐迁移 Qwen3.6/Qwen3.7 系列",
+        "thinkingParam": "extra_enable_thinking"
+      }
+    },
+    {
+      "id": "qwen3.8-max",
+      "provider": "Alibaba",
+      "displayName": "Qwen3.8 Max",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "extra_enable_thinking",
+        "temperature": true,
+        "maxTokens": 32768,
+        "vision": false,
+        "maxContextTokens": 1000000,
+        "notes": "2026-09-19 核对阿里云百炼「文本生成」模型总表（help.aliyun.com/zh/model-studio/text-generation-model，2026-09-11 更新）：上下文 1M、思考模式支持。**最大输出与输入模态未在该表列出**，按文本模型保守填 32768 / 无视觉，待逐模型核实。思考参数 enable_thinking 非 OpenAI 标准字段，Python SDK 需走 extra_body。"
+      }
+    },
+    {
+      "id": "qwen3.8-flash",
+      "provider": "Alibaba",
+      "displayName": "Qwen3.8 Flash",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "extra_enable_thinking",
+        "temperature": true,
+        "maxTokens": 32768,
+        "vision": false,
+        "maxContextTokens": 1000000,
+        "notes": "2026-09-19 核对阿里云百炼「文本生成」模型总表（help.aliyun.com/zh/model-studio/text-generation-model，2026-09-11 更新）：上下文 1M、思考模式支持。**最大输出与输入模态未在该表列出**，按文本模型保守填 32768 / 无视觉，待逐模型核实。思考参数 enable_thinking 非 OpenAI 标准字段，Python SDK 需走 extra_body。"
+      }
+    },
+    {
+      "id": "qwen3.7-plus",
+      "provider": "Alibaba",
+      "displayName": "Qwen3.7 Plus",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "extra_enable_thinking",
+        "temperature": true,
+        "maxTokens": 32768,
+        "vision": false,
+        "maxContextTokens": 1000000,
+        "notes": "2026-09-19 核对阿里云百炼「文本生成」模型总表（help.aliyun.com/zh/model-studio/text-generation-model，2026-09-11 更新）：上下文 1M、思考模式支持。**最大输出与输入模态未在该表列出**，按文本模型保守填 32768 / 无视觉，待逐模型核实。思考参数 enable_thinking 非 OpenAI 标准字段，Python SDK 需走 extra_body。"
+      }
+    },
+    {
+      "id": "qwen3.7-flash",
+      "provider": "Alibaba",
+      "displayName": "Qwen3.7 Flash",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "extra_enable_thinking",
+        "temperature": true,
+        "maxTokens": 32768,
+        "vision": false,
+        "maxContextTokens": 1000000,
+        "notes": "2026-09-19 核对阿里云百炼「文本生成」模型总表（help.aliyun.com/zh/model-studio/text-generation-model，2026-09-11 更新）：上下文 1M、思考模式支持。**最大输出与输入模态未在该表列出**，按文本模型保守填 32768 / 无视觉，待逐模型核实。思考参数 enable_thinking 非 OpenAI 标准字段，Python SDK 需走 extra_body。"
+      }
+    },
+    {
+      "id": "qwen3.7-max",
+      "provider": "Alibaba",
+      "displayName": "Qwen3.7 Max",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "extra_enable_thinking",
+        "temperature": true,
+        "maxTokens": 32768,
+        "vision": false,
+        "maxContextTokens": 1000000,
+        "notes": "2026-09-19 核对阿里云百炼「文本生成」模型总表（help.aliyun.com/zh/model-studio/text-generation-model，2026-09-11 更新）：上下文 1M、思考模式支持。**最大输出与输入模态未在该表列出**，按文本模型保守填 32768 / 无视觉，待逐模型核实。思考参数 enable_thinking 非 OpenAI 标准字段，Python SDK 需走 extra_body。"
+      }
+    },
+    {
+      "id": "qwen3.6-plus",
+      "provider": "Alibaba",
+      "displayName": "Qwen3.6 Plus",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "extra_enable_thinking",
+        "temperature": true,
+        "maxTokens": 32768,
+        "vision": false,
+        "maxContextTokens": 1000000,
+        "notes": "2026-09-19 核对阿里云百炼「文本生成」模型总表（help.aliyun.com/zh/model-studio/text-generation-model，2026-09-11 更新）：上下文 1M、思考模式支持。**最大输出与输入模态未在该表列出**，按文本模型保守填 32768 / 无视觉，待逐模型核实。思考参数 enable_thinking 非 OpenAI 标准字段，Python SDK 需走 extra_body。"
+      }
+    },
+    {
+      "id": "qwen3.6-flash",
+      "provider": "Alibaba",
+      "displayName": "Qwen3.6 Flash",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "extra_enable_thinking",
+        "temperature": true,
+        "maxTokens": 32768,
+        "vision": false,
+        "maxContextTokens": 1000000,
+        "notes": "2026-09-19 核对阿里云百炼「文本生成」模型总表（help.aliyun.com/zh/model-studio/text-generation-model，2026-09-11 更新）：上下文 1M、思考模式支持。**最大输出与输入模态未在该表列出**，按文本模型保守填 32768 / 无视觉，待逐模型核实。思考参数 enable_thinking 非 OpenAI 标准字段，Python SDK 需走 extra_body。"
+      }
+    },
+    {
+      "id": "qwen-long",
+      "provider": "Alibaba",
+      "displayName": "Qwen Long",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 32768,
+        "vision": false,
+        "maxContextTokens": 10000000,
+        "notes": "2026-09-19 核对阿里云百炼「文本生成」模型总表（help.aliyun.com/zh/model-studio/text-generation-model，2026-09-11 更新）：上下文 10M、思考模式不支持。**最大输出与输入模态未在该表列出**，按文本模型保守填 32768 / 无视觉，待逐模型核实。思考参数 enable_thinking 非 OpenAI 标准字段，Python SDK 需走 extra_body。"
       }
     },
     {
@@ -960,7 +1217,10 @@
         "maxTokens": 16384,
         "notes": "【已下线】2026-06-30 官方下线 MiMo-V2 系列，请迁移至 V2.5 系。原记录：小米 MiMo 快速模型，兼容 OpenAI 格式 reasoning_effort 控制深度思考；默认关闭，需手动开启",
         "vision": false,
-        "maxContextTokens": 256000
+        "maxContextTokens": 256000,
+        "status": "retired",
+        "replacedBy": "mimo-v2.5",
+        "statusNote": "小米官方 deprecate 页：2026-06-30 下线，官方迁移 mimo-v2.5"
       }
     },
     {
@@ -976,7 +1236,10 @@
         "maxTokens": 32768,
         "notes": "【已下线】2026-06-30 官方下线 MiMo-V2 系列（mimo-v2-pro / omni / flash），请迁移至 V2.5 系（mimo-v2.5-pro）。原记录：小米 MiMo 旗舰模型，兼容 OpenAI 格式 reasoning_effort 控制深度思考；默认关闭，需手动开启",
         "vision": true,
-        "maxContextTokens": 1000000
+        "maxContextTokens": 1000000,
+        "status": "retired",
+        "replacedBy": "mimo-v2.5-pro",
+        "statusNote": "小米官方 deprecate 页：2026-06-30 下线，官方迁移 mimo-v2.5-pro"
       }
     },
     {
@@ -987,11 +1250,11 @@
       "capabilities": {
         "streaming": true,
         "thinking": true,
-        "thinkingParam": "reasoning_effort",
-        "temperature": true,
-        "maxTokens": 65536,
+        "thinkingParam": "thinking_type",
+        "temperature": false,
+        "maxTokens": 131072,
         "notes": "小米 MiMo 最新旗舰，兼容 OpenAI 格式 reasoning_effort 控制深度思考；默认关闭，需手动开启",
-        "vision": true,
+        "vision": false,
         "maxContextTokens": 1000000
       }
     },
@@ -1008,7 +1271,26 @@
         "maxTokens": 65536,
         "notes": "【已下线】2026-06-30 官方下线 MiMo-V2 系列，请迁移至 V2.5 系。原记录：小米 MiMo 全模态模型，支持文本/图像/音频/视频输入；兼容 OpenAI 格式 reasoning_effort；默认关闭，需手动开启",
         "vision": true,
-        "maxContextTokens": 256000
+        "maxContextTokens": 256000,
+        "status": "retired",
+        "replacedBy": "mimo-v2.5",
+        "statusNote": "小米官方 deprecate 页：2026-06-30 下线，官方迁移 mimo-v2.5"
+      }
+    },
+    {
+      "id": "mimo-v2.5",
+      "provider": "XiaoMi",
+      "displayName": "MIMO V2.5",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "thinkingParam": "thinking_type",
+        "temperature": false,
+        "maxTokens": 131072,
+        "vision": true,
+        "maxContextTokens": 1000000,
+        "notes": "2026-09-19 核对小米官方模型列表（mimo.mi.com/docs/zh-CN/quick-start/model，2026-07-15 更新）：上下文窗口 1M / 最大输出 128K；能力列表含「**全模态理解**」（文本/图像/音频/视频），这是它区别于 mimo-v2.5-pro 的关键项（后者只有文本生成）。它是已下线的 mimo-v2-omni 与 mimo-v2-flash 的官方继任者。深度思考参数为顶层 thinking:{type:enabled|disabled}，**默认开启**；思考开启时 temperature/top_p 被强制 1.0/0.95，故 temperature=false。多轮工具调用时历史 assistant 消息必须带完整 reasoning_content，否则 400。"
       }
     },
     {
@@ -1021,10 +1303,72 @@
         "thinking": true,
         "thinkingParam": "extra_enable_thinking",
         "temperature": true,
-        "maxTokens": 16384,
-        "notes": "百度文心旗舰推理模型，使用 extra_body:{enable_thinking:bool} 控制深度思考；默认关闭",
-        "vision": false,
+        "maxTokens": 65536,
+        "notes": "百度文心旗舰推理模型，2026-09-19 核对百度千帆模型列表：上下文 128k、最大输出 [1,65536]、支持视觉（原生全模态）、思维链长度 60k；官方注明 ernie 系列思考模型**不支持 thinking_budget**，max_tokens 同时限制reasoning_content + content 的总长。思考参数写法沿用 extra_body:{enable_thinking}（该表未给接口字段名，待核实）",
+        "vision": true,
         "maxContextTokens": 128000
+      }
+    },
+    {
+      "id": "ernie-5.1",
+      "provider": "Baidu",
+      "displayName": "文心 ERNIE 5.1",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 65536,
+        "vision": false,
+        "maxContextTokens": 128000,
+        "notes": "2026-09-19 核对百度千帆模型列表：上下文 128k / 最大输入 119k / 最大输出 [1,65536]；输入模态 文本（该表未列在「深度思考」章节，故 thinking=false）。思考参数沿用同厂商既有条目的 extra_body:{enable_thinking} 通道（该表未给接口字段名，待核实）。"
+      }
+    },
+    {
+      "id": "ernie-5.0",
+      "provider": "Baidu",
+      "displayName": "文心 ERNIE 5.0",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "temperature": true,
+        "maxTokens": 65536,
+        "vision": true,
+        "maxContextTokens": 128000,
+        "notes": "2026-09-19 核对百度千帆模型列表：上下文 128k / 最大输入 119k / 最大输出 [1,65536]；输入模态 文本 + 图片（同时列在「视觉理解」章节）。思考参数沿用同厂商既有条目的 extra_body:{enable_thinking} 通道（该表未给接口字段名，待核实）。",
+        "thinkingParam": "extra_enable_thinking"
+      }
+    },
+    {
+      "id": "ernie-5.0-thinking-latest",
+      "provider": "Baidu",
+      "displayName": "文心 ERNIE 5.0 Thinking Latest",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "temperature": true,
+        "maxTokens": 65536,
+        "vision": true,
+        "maxContextTokens": 128000,
+        "notes": "2026-09-19 核对百度千帆模型列表：上下文 128k / 最大输入 119k / 最大输出 [1,65536]；输入模态 文本 + 图片（同时列在「视觉理解」章节）。思考参数沿用同厂商既有条目的 extra_body:{enable_thinking} 通道（该表未给接口字段名，待核实）。",
+        "thinkingParam": "extra_enable_thinking"
+      }
+    },
+    {
+      "id": "ernie-4.5-turbo-vl",
+      "provider": "Baidu",
+      "displayName": "文心 ERNIE 4.5 Turbo VL",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 16384,
+        "vision": true,
+        "maxContextTokens": 128000,
+        "notes": "2026-09-19 核对百度千帆模型列表：上下文 128k / 最大输入 119k / 最大输出 [1,16384]；输入模态 图片（视觉理解；该表未列在「深度思考」章节，故 thinking=false）。思考参数沿用同厂商既有条目的 extra_body:{enable_thinking} 通道（该表未给接口字段名，待核实）。"
       }
     },
     {
@@ -1035,12 +1379,124 @@
       "capabilities": {
         "streaming": true,
         "thinking": true,
-        "thinkingParam": "extra_thinking",
+        "thinkingParam": "thinking_type",
         "temperature": true,
-        "maxTokens": 32768,
+        "maxTokens": 131072,
         "notes": "智谱AI最新旗舰，使用 extra_body:{thinking:bool} 控制深度思考；默认关闭；上下文窗口 200K（2026-09-17 核对，智谱官方文档；阿里云百炼页标注实测上限 202745）",
-        "vision": true,
+        "vision": false,
         "maxContextTokens": 200000
+      }
+    },
+    {
+      "id": "glm-5.3",
+      "provider": "ZhipuAI",
+      "displayName": "智谱 GLM-5.3",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "temperature": true,
+        "maxTokens": 131072,
+        "vision": false,
+        "maxContextTokens": 1000000,
+        "notes": "2026-09-19 核对智谱模型概览 + 定价页：上下文 1M / 最大输出 131072；输入模态 文本。深度思考为顶层 `thinking:{\"type\":\"enabled\"|\"disabled\"}`（见 glm-5.1 官方调用示例），走 thinking_type 通道只发 type、不带 budget_tokens。",
+        "thinkingParam": "thinking_type"
+      }
+    },
+    {
+      "id": "glm-5.3-flash",
+      "provider": "ZhipuAI",
+      "displayName": "智谱 GLM-5.3 Flash",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "temperature": true,
+        "maxTokens": 131072,
+        "vision": true,
+        "maxContextTokens": 1000000,
+        "notes": "2026-09-19 核对智谱模型概览 + 定价页：上下文 1M / 最大输出 131072；输入模态 图片、视频、文件、文本。深度思考为顶层 `thinking:{\"type\":\"enabled\"|\"disabled\"}`（见 glm-5.1 官方调用示例），走 thinking_type 通道只发 type、不带 budget_tokens。",
+        "thinkingParam": "thinking_type"
+      }
+    },
+    {
+      "id": "glm-5.3-flashx",
+      "provider": "ZhipuAI",
+      "displayName": "智谱 GLM-5.3 FlashX",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "temperature": true,
+        "maxTokens": 131072,
+        "vision": true,
+        "maxContextTokens": 1000000,
+        "notes": "2026-09-19 核对智谱模型概览 + 定价页：上下文 1M / 最大输出 131072；输入模态 图片、视频、文件、文本。深度思考为顶层 `thinking:{\"type\":\"enabled\"|\"disabled\"}`（见 glm-5.1 官方调用示例），走 thinking_type 通道只发 type、不带 budget_tokens。",
+        "thinkingParam": "thinking_type"
+      }
+    },
+    {
+      "id": "glm-5.2",
+      "provider": "ZhipuAI",
+      "displayName": "智谱 GLM-5.2",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "temperature": true,
+        "maxTokens": 131072,
+        "vision": false,
+        "maxContextTokens": 1000000,
+        "notes": "2026-09-19 核对智谱模型概览 + 定价页：上下文 1M / 最大输出 131072；输入模态 文本。深度思考为顶层 `thinking:{\"type\":\"enabled\"|\"disabled\"}`（见 glm-5.1 官方调用示例），走 thinking_type 通道只发 type、不带 budget_tokens。",
+        "thinkingParam": "thinking_type"
+      }
+    },
+    {
+      "id": "glm-5",
+      "provider": "ZhipuAI",
+      "displayName": "智谱 GLM-5",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "temperature": true,
+        "maxTokens": 131072,
+        "vision": false,
+        "maxContextTokens": 200000,
+        "notes": "2026-09-19 核对智谱模型概览 + 定价页：上下文 200K / 最大输出 131072；输入模态 文本。深度思考为顶层 `thinking:{\"type\":\"enabled\"|\"disabled\"}`（见 glm-5.1 官方调用示例），走 thinking_type 通道只发 type、不带 budget_tokens。",
+        "thinkingParam": "thinking_type"
+      }
+    },
+    {
+      "id": "glm-5-turbo",
+      "provider": "ZhipuAI",
+      "displayName": "智谱 GLM-5-Turbo",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "temperature": true,
+        "maxTokens": 131072,
+        "vision": false,
+        "maxContextTokens": 200000,
+        "notes": "2026-09-19 核对智谱模型概览 + 定价页：上下文 200K / 最大输出 131072；输入模态 文本。深度思考为顶层 `thinking:{\"type\":\"enabled\"|\"disabled\"}`（见 glm-5.1 官方调用示例），走 thinking_type 通道只发 type、不带 budget_tokens。",
+        "thinkingParam": "thinking_type"
+      }
+    },
+    {
+      "id": "glm-5v-turbo",
+      "provider": "ZhipuAI",
+      "displayName": "智谱 GLM-5V-Turbo",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "temperature": true,
+        "maxTokens": 131072,
+        "vision": true,
+        "maxContextTokens": 200000,
+        "notes": "2026-09-19 核对智谱模型概览 + 定价页：上下文 200K / 最大输出 131072；输入模态 图片、视频。深度思考为顶层 `thinking:{\"type\":\"enabled\"|\"disabled\"}`（见 glm-5.1 官方调用示例），走 thinking_type 通道只发 type、不带 budget_tokens。",
+        "thinkingParam": "thinking_type"
       }
     },
     {
@@ -1056,7 +1512,69 @@
         "maxTokens": 32768,
         "notes": "腾讯混元推理模型，使用 thinking:{enable:bool} 控制深度思考；默认关闭；上下文窗口 32K（2026-09-17 核对：腾讯云现行模型表已无该型号，同族 hunyuan-pro 为最大输入 28k；新的 HY 2.0 Think 才是 128k）",
         "vision": false,
-        "maxContextTokens": 32000
+        "maxContextTokens": 32000,
+        "status": "unverifiable",
+        "statusNote": "未在腾讯任何官方清单（现行或在售/下线清单）中出现；同族 hunyuan-pro 于 2026-06-22 下线"
+      }
+    },
+    {
+      "id": "hy4-preview",
+      "provider": "Tencent",
+      "displayName": "混元 Hy4 Preview",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 65536,
+        "vision": false,
+        "maxContextTokens": 1000000,
+        "notes": "2026-09-19 核对腾讯云 TokenHub 模型列表：上下文 1M / 最大输入 960k / 最大输出 64k；能力含「深度思考（保留式思考）」。**官方模型表只标能力，未给出思考参数的接口写法**，未核实前不下发，故 thinking=false。"
+      }
+    },
+    {
+      "id": "hy3",
+      "provider": "Tencent",
+      "displayName": "混元 Hy3",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 131072,
+        "vision": false,
+        "maxContextTokens": 262144,
+        "notes": "2026-09-19 核对腾讯云 TokenHub 模型列表：上下文 256k / 最大输入 192k / 最大输出 128k；能力含「深度思考（保留式思考）」。**官方模型表只标能力，未给出思考参数的接口写法**，未核实前不下发，故 thinking=false。"
+      }
+    },
+    {
+      "id": "hy-vision-2.0-instruct",
+      "provider": "Tencent",
+      "displayName": "混元 HY-Vision-2.0-Instruct",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 16384,
+        "vision": true,
+        "maxContextTokens": 44000,
+        "notes": "2026-09-19 核对腾讯云 TokenHub 多模态理解模型表：上下文 44k / 最大输入 24k / 最大输出 16k；官方标注为「快思考模型」，未给出思考参数接口写法，故 thinking=false。"
+      }
+    },
+    {
+      "id": "hunyuan-t1-vision-20250916",
+      "provider": "Tencent",
+      "displayName": "混元 HY-Vision-1.5-Thinking",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 24576,
+        "vision": true,
+        "maxContextTokens": 40000,
+        "notes": "2026-09-19 核对腾讯云 TokenHub 多模态理解模型表：上下文 40k / 最大输入 16k / 最大输出 24k；官方标注为「深度思考模型」，但未给出思考参数接口写法，故 thinking=false。"
       }
     },
     {
@@ -1072,7 +1590,39 @@
         "maxTokens": 16384,
         "notes": "MiniMax 推理模型，使用 parameters:{enable_thought:bool} 控制深度思考；默认关闭；上下文窗口 200k（2026-09-17 核对：MiniMax 官方新闻稿写 200k，阿里云百炼 abab6.5s-chat 标 245000，两处官方口径冲突，取保守值）",
         "vision": false,
-        "maxContextTokens": 200000
+        "maxContextTokens": 200000,
+        "status": "unverifiable",
+        "statusNote": "不在 MiniMax 官方现行模型列表；enable_thought 写法无法从官方文档证实"
+      }
+    },
+    {
+      "id": "MiniMax-M3",
+      "provider": "MiniMax",
+      "displayName": "MiniMax M3",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 32768,
+        "vision": true,
+        "maxContextTokens": 1000000,
+        "notes": "2026-09-19 核对 MiniMax 官方模型概览（platform.minimaxi.com/docs/guides/models-intro.md）与腾讯云 TokenHub 列表：上下文 1M、原生多模态（文本/图片/视频）。**官方概览页未给出思考参数的接口写法**（其文档指向 Anthropic 兼容端点），未核实前不下发，故 thinking=false。"
+      }
+    },
+    {
+      "id": "MiniMax-M2.7",
+      "provider": "MiniMax",
+      "displayName": "MiniMax M2.7",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": false,
+        "temperature": true,
+        "maxTokens": 131072,
+        "vision": false,
+        "maxContextTokens": 200000,
+        "notes": "2026-09-19 核对 MiniMax 官方模型概览（platform.minimaxi.com/docs/guides/models-intro.md）与腾讯云 TokenHub 列表：上下文 200k、文本。**官方概览页未给出思考参数的接口写法**（其文档指向 Anthropic 兼容端点），未核实前不下发，故 thinking=false。"
       }
     },
     {
@@ -1128,6 +1678,22 @@
         "notes": "2026-09-17 核对（platform.moonshot.cn「模型参数参考」「思考模型」）：通用模型，支持视觉与文本输入，上下文 262144，输出默认 32768。思考默认开启、可关闭（thinking.type = enabled/disabled），并支持 thinking.keep:\"all\" 保留历史推理（本注册表未下发该字段）；不支持 reasoning_effort。temperature 固定（思考模式 1.0、非思考模式 0.6），传入其他值报错；tool_choice 不支持 required。⚠️ 同 kimi-k2.7-code：走注册表 thinking 通道会额外附带 budget_tokens:1024，Moonshot 未定义该字段，建议实测。价格（元/百万 tokens）缓存命中 1.10、未命中 6.50、输出 27.00。",
         "vision": true,
         "maxContextTokens": 262144
+      }
+    },
+    {
+      "id": "kimi-k2.7-code-highspeed",
+      "provider": "Moonshot",
+      "displayName": "Kimi K2.7 Code HighSpeed",
+      "apiFormat": "openai",
+      "capabilities": {
+        "streaming": true,
+        "thinking": true,
+        "temperature": true,
+        "maxTokens": 32768,
+        "vision": true,
+        "maxContextTokens": 262144,
+        "notes": "2026-09-19 核对腾讯云 TokenHub 列表：该变体在售，上下文 256k，与 kimi-k2.7-code 参数约束一致、仅速度不同。最大输出沿用同族 kimi-k2.7-code 的注册值 32768（Moonshot 官方文档口径），TokenHub 侧标注上限 256k 属其平台封顶，非模型参数默认值。",
+        "thinkingParam": "thinking"
       }
     }
   ]

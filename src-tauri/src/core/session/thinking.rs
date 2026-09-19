@@ -264,6 +264,11 @@ mod tests {
             cache_usage_style: None,
             thinking_effort_values: Vec::new(),
             thinking_mode: None,
+            // 生命周期字段与裁决逻辑无关：这里只测「思考开关怎么被能力夹紧」，
+            // 一律按在售模型构造。
+            status: "active".to_string(),
+            replaced_by: None,
+            status_note: None,
         }
     }
 

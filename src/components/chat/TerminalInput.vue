@@ -58,6 +58,32 @@ const showVisionWarning = ref(false);
 const showProfileCacheWarning = ref(false);
 const pendingProfileId = ref<string | null>(null);
 
+/**
+ * 切预设时撞到退役模型的阻断提示。
+ *
+ * 与设置面板的"禁止保存"是**同一判据**（注册表 `status === "retired"`），
+ * 但这里必须单独拦一次：设置面板管的是"能不能写进配置"，这里管的是
+ * "能不能切过去"。切过去会把会话的 `profile_id` 落库，之后每次发消息
+ * 都拿着一个必然失败的模型去打上游 —— 而且老会话本来就可能是这个预设。
+ */
+const retiredSwitchNotice = ref<{
+  profileName: string
+  field: 'mainModel' | 'utilityModel'
+  modelId: string
+  replacedBy?: string
+} | null>(null)
+
+/** 退役阻断提示的文案：按「主模型/工具代理模型」与「官方是否给了迁移目标」分支 */
+const retiredSwitchMessage = computed(() => {
+  const n = retiredSwitchNotice.value
+  if (!n) return ''
+  const isMain = n.field === 'mainModel'
+  const key = isMain
+    ? (n.replacedBy ? 'settings.profiles.switchBlockedRetired' : 'settings.profiles.switchBlockedRetiredNoTarget')
+    : (n.replacedBy ? 'settings.profiles.switchBlockedRetiredUtility' : 'settings.profiles.switchBlockedRetiredUtilityNoTarget')
+  return t(key, { name: n.profileName, model: n.modelId, target: n.replacedBy ?? '' })
+})
+
 const session = useSessionStore();
 const chat = useChatStore();
 const agent = useAgentStore();
@@ -484,8 +510,40 @@ watch(
   },
 );
 
+/**
+ * 查该预设的主模型 / 工具代理模型是否已被官方宣布退役。
+ *
+ * 探测失败**不阻断**切换：拿不到能力时我们只是"不知道"，按「未知 ≠ 不可用」
+ * 的口径放行（同 `utils/thinking.ts` 的 `isThinkingToggleDisabled`）。
+ */
+const findRetiredModel = async (profile: any) => {
+  for (const field of ['mainModel', 'utilityModel'] as const) {
+    const modelId = profile?.config?.[field]
+    if (!modelId) continue
+    try {
+      const caps = await invoke<any>('get_model_capabilities', { modelId })
+      if (caps?.status === 'retired') {
+        return { field, modelId, replacedBy: caps.replacedBy as string | undefined }
+      }
+    } catch { /* 探测失败 → 视为未知，不阻断 */ }
+  }
+  return null
+}
+
 const switchProfile = async (id: string) => {
-  if (!appConfig.value) return;
+  if (!appConfig.value) return
+
+  // 退役模型拦截放在**最前面**：它比"prompt cache 失效"更硬。
+  // 那个弹窗问的是"要不要换"，而退役模型是"换过去也没用"——问了也白问。
+  const targetProfile = appConfig.value.profiles?.find((p: any) => p.id === id)
+  if (targetProfile) {
+    const hit = await findRetiredModel(targetProfile)
+    if (hit) {
+      retiredSwitchNotice.value = { profileName: targetProfile.name, ...hit }
+      return
+    }
+  }
+
   // 如果已有会话消息，切换模型会导致 prompt cache 失效，需确认
   const currentSessionId = await invoke<string | null>('get_active_session_id').catch(() => null);
   if (currentSessionId) {
@@ -1341,6 +1399,18 @@ const handleRecallEdit = async () => {
     confirm-kind="primary"
     @cancel="showProfileCacheWarning = false; pendingProfileId = null"
     @confirm="confirmSwitchProfile"
+  />
+
+  <!-- 切到退役模型的阻断提示：没有"继续"选项，只能去设置里改 -->
+  <ConfirmModal
+    :open="!!retiredSwitchNotice"
+    :title="t('settings.profileEditor.statusRetired')"
+    :message="retiredSwitchMessage"
+    confirm-kind="primary"
+    :confirm-text="t('common.confirm')"
+    :cancel-text="t('common.close')"
+    @cancel="retiredSwitchNotice = null"
+    @confirm="retiredSwitchNotice = null"
   />
 </template>
 

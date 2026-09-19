@@ -12,7 +12,18 @@ pub struct ModelCapabilities {
     pub streaming: bool,
     /// 是否支持深度思考模式（可通过参数控制）
     pub thinking: bool,
-    /// 控制思考的参数名（如 "thinking", "reasoning_effort", "enable_thinking"）
+    /// 控制思考的参数名。取值与 `apply_thinking_for_model()` 的分支一一对应：
+    ///
+    /// - `"reasoning_effort"` —— 顶层 `reasoning_effort`（OpenAI / Kimi / 小米旧写法）
+    /// - `"thinking"`         —— `{type, budget_tokens}`（DeepSeek、Anthropic 老形态）
+    /// - `"thinking_type"`    —— **只发** `{type}`，不带 `budget_tokens`
+    ///   （智谱 GLM-5.x、小米 MiMo-V2.5：官方只定义 type）
+    /// - `"thinkingBudget"`   —— Gemini 2.x 的 `thinking_budget` 整数
+    /// - `"enable_thinking"`  —— 顶层布尔
+    /// - `"extra_thinking"` / `"extra_enable_thinking"` —— `extra_body` 里的布尔
+    /// - `"extra_chain_of_thought"` —— `extra_body:{chain_of_thought}`
+    /// - `"thinking_enable"`  —— `{enable}`（腾讯混元）
+    /// - `"enable_thought"`   —— `parameters:{enable_thought}`（MiniMax）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_param: Option<String>,
     /// 是否支持温度参数（部分推理模型开启思考后不可调）
@@ -54,6 +65,33 @@ pub struct ModelCapabilities {
     /// - `"adaptive_only"`     —— 恒开、**不可关闭**（传 `disabled` 会 400），只能省略或传 `adaptive`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_mode: Option<String>,
+    /// 模型生命周期状态（**可选，省略 = `"active"`**）。
+    ///
+    /// - `"active"`       —— 官方在售，正常可用（省略字段即此值）
+    /// - `"deprecated"`   —— 官方已公告即将下线，**当前仍可调用**（只告警，不拦）
+    /// - `"retired"`      —— 官方已宣布退役/关停，请求必然失败（预设层禁止保存）
+    /// - `"unverifiable"` —— 官方当前目录查不到该 ID，但**无退役公告**
+    /// - `"alias"`        —— 旧名，请求被路由到新模型，仍可用
+    ///
+    /// **`unverifiable` 不等于 `retired`。** 前者只是"我们查不到"，不能据此
+    /// 禁止用户使用——这与前端 `utils/thinking.ts` 立的「未知 ≠ 不支持」是同一条
+    /// 原则：把检索失败当成事实结论，会把"我们没查到"变成"用户不能用"。
+    #[serde(default = "default_model_status")]
+    pub status: String,
+    /// 官方给出的迁移目标模型 id（仅 `retired` / `alias` 有意义；官方未指定则省略）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced_by: Option<String>,
+    /// 状态补充说明（给界面展示的官方口径，如退役日期、下线公告来源）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_note: Option<String>,
+}
+
+/// `status` 字段缺省值：注册表未写该字段的条目一律视为在售。
+///
+/// 用默认值而非必填，是为了让 63 条里 37 条在售模型不必逐个补字段——
+/// 注册表是编译期内嵌的，字段越少越不容易在下次维护时漏改。
+fn default_model_status() -> String {
+    "active".to_string()
 }
 
 /// 注册表中的单条模型记录
@@ -126,6 +164,22 @@ pub fn get_model_capabilities(model_id: String) -> Option<ModelCapabilities> {
 /// 缓存命中字段写法的注册表覆盖（`cacheUsageStyle`）；None = 交给运行时自动探测
 pub fn cache_usage_style_for(model_id: &str) -> Option<String> {
     query_capabilities(model_id).and_then(|caps| caps.cache_usage_style)
+}
+
+/// 模型生命周期状态；**注册表未收录时返回 `None`**。
+///
+/// 返回 `None` 的语义是"我们不知道"，调用方**不要**把它当成 `"retired"`——
+/// 见 `ModelCapabilities::status` 的文档。
+pub fn model_status(model_id: &str) -> Option<String> {
+    query_capabilities(model_id).map(|caps| caps.status)
+}
+
+/// 该模型是否已被官方宣布退役（请求必然失败）。
+///
+/// 只认 `"retired"`：`"deprecated"`（即将下线但仍可调用）、`"unverifiable"`
+/// （查不到但无退役公告）、`"alias"`（旧名路由，仍可用）都不算。
+pub fn is_retired(model_id: &str) -> bool {
+    model_status(model_id).as_deref() == Some("retired")
 }
 
 /// 该模型是否接受 `temperature` / `top_p` / `top_k` 三个采样参数。
@@ -318,6 +372,20 @@ pub fn apply_thinking_for_model(
                 display: None,
             });
         }
+        // 只下发 `{type: enabled|disabled}`、**不带 budget_tokens** 的形态。
+        //
+        // 智谱 GLM-5.x 与小米 MiMo-V2.5 的官方文档只定义 `thinking.type`，
+        // 从未定义 `budget_tokens`。而上面 `Some("thinking")` 那条通道总会补一个
+        // 1024 —— 那是 DeepSeek / Anthropic 的字段。多带一个上游未定义的字段有
+        // 400 风险，所以给这类"只认 type"的模型单开一条通道。
+        Some("thinking_type") => {
+            req.thinking = Some(crate::infra::types::models::ThinkingConfig {
+                r#type: Some(if should_think { "enabled" } else { "disabled" }.to_string()),
+                budget_tokens: None,
+                enable: None,
+                display: None,
+            });
+        }
         Some("thinkingBudget") => {
             req.thinking_budget = Some(if should_think { 8192 } else { 0 });
         }
@@ -472,11 +540,12 @@ mod anthropic_thinking_tests {
 
     #[test]
     fn unsupported_effort_level_is_clamped() {
-        let plan = plan_anthropic_thinking("claude-sonnet-5", true, Some("xhigh"));
+        // Sonnet 4.6 支持 low/medium/high/max，但**不在**官方 effort 页的 xhigh 可用清单里。
+        let plan = plan_anthropic_thinking("claude-sonnet-4-6", true, Some("xhigh"));
         assert_eq!(
             effort_of(&plan).as_deref(),
             Some("high"),
-            "Sonnet 5 不支持 xhigh，必须夹紧"
+            "Sonnet 4.6 不支持 xhigh，必须夹紧到不高于 high 的最高档"
         );
 
         let plan_max = plan_anthropic_thinking("claude-opus-5", true, Some("max"));
@@ -484,6 +553,51 @@ mod anthropic_thinking_tests {
             effort_of(&plan_max).as_deref(),
             Some("max"),
             "Opus 5 声明支持 max，应当原样保留"
+        );
+
+        // 反例：Sonnet 5 官方明确支持 xhigh（effort 页的 xhigh 可用清单含它），
+        // 夹紧它就是错的——改造前注册表把它写成"不支持"，这条断言正是那处错误的守门人。
+        let sonnet5 = plan_anthropic_thinking("claude-sonnet-5", true, Some("xhigh"));
+        assert_eq!(
+            effort_of(&sonnet5).as_deref(),
+            Some("xhigh"),
+            "官方 effort 页把 Sonnet 5 列进 xhigh 可用清单，不得夹紧"
+        );
+    }
+
+    #[test]
+    fn thinking_type_channel_omits_budget_tokens() {
+        // 智谱 GLM-5.x 与小米 MiMo-V2.5 的官方文档只定义 `thinking.type`，
+        // 从未定义 `budget_tokens`——多带一个上游不认识的字段有 400 风险。
+        for model in ["glm-5.1", "mimo-v2.5-pro"] {
+            let mut on = openai_req(model);
+            apply_thinking_for_model(&mut on, model, true);
+            let thinking = on.thinking.as_ref().unwrap_or_else(|| panic!("「{}」应写入 thinking", model));
+            assert_eq!(thinking.r#type.as_deref(), Some("enabled"));
+            assert_eq!(
+                thinking.budget_tokens, None,
+                "「{}」的官方文档未定义 budget_tokens，不能多带",
+                model
+            );
+
+            let mut off = openai_req(model);
+            apply_thinking_for_model(&mut off, model, false);
+            let thinking = off.thinking.as_ref().unwrap_or_else(|| panic!("「{}」应写入 thinking", model));
+            assert_eq!(thinking.r#type.as_deref(), Some("disabled"));
+            assert_eq!(thinking.budget_tokens, None);
+        }
+    }
+
+    #[test]
+    fn deepseek_still_gets_budget_tokens() {
+        // 反向守门：`thinking_type` 不能把老通道顺手改掉。
+        // DeepSeek 的 `thinking` 通道一直带 budget_tokens:1024，行为必须不变。
+        let mut req = openai_req("deepseek-flash");
+        apply_thinking_for_model(&mut req, "deepseek-flash", true);
+        assert_eq!(
+            req.thinking.as_ref().and_then(|t| t.budget_tokens),
+            Some(1024),
+            "DeepSeek 走的仍是带 budget_tokens 的老通道"
         );
     }
 
@@ -558,10 +672,181 @@ mod anthropic_thinking_tests {
             !supports_sampling_params("claude-opus-4-7"),
             "4.7 起 temperature/top_p/top_k 已废弃，传了 400"
         );
-        assert!(supports_sampling_params("claude-3-5-sonnet-20241022"));
+        // 用**在售**模型做正向断言：原先用的是 claude-3-5-sonnet-20241022，
+        // 它已退役；一旦将来把它删掉，`query_capabilities` 返回 None →
+        // `unwrap_or(true)` 会让这条断言静默通过，测试退化成空断言。
+        assert!(supports_sampling_params("gpt-4o"));
         assert!(
             supports_sampling_params("no-such-model-xyz"),
             "未知模型保守放行，不擅自替用户剥参数"
         );
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    //! 锁住「模型生命周期状态」的分类语义。
+    //!
+    //! 这些断言直接依赖真实 `model_registry.json`。重点不是"某模型退役了"这件事
+    //! 本身（那会随官方更新变化），而是**分类边界不能被写歪**：
+    //! `unverifiable` 一旦被当成 `retired`，就会把"我们没查到"变成"用户不能用"。
+
+    use super::*;
+
+    /// 官方已明确宣布退役/关停的条目。
+    const RETIRED: &[&str] = &[
+        // OpenAI：退役时间表见 developers.openai.com/api/docs/deprecations
+        "o3",         // 2026-12-11 → gpt-5.6-sol
+        "o4-mini",    // 2026-10-23 → gpt-5.6-terra
+        "o1",         // 2026-10-23 → gpt-5.6-sol
+        "o1-pro",     // 2026-10-23 → gpt-5.6-sol
+        "gpt-4.5",    // 2025-07-14（gpt-4.5-preview）→ gpt-4.1
+        // Anthropic：model-deprecations 页标 Retired，请求会失败
+        "claude-3-7-sonnet-20250219",
+        "claude-3-5-sonnet-20241022",
+        "claude-3-5-haiku-20241022",
+        // Google：Gemini API changelog 的 shutdown 条目
+        "gemini-2.0-flash", // 2026-06-01 → gemini-3.6-flash
+        "gemini-1.5-pro",   // 2025-09-29
+        "gemini-1.5-flash", // 2025-09-29
+        // DeepSeek：2026-07-24 停用
+        "deepseek-chat",
+        "deepseek-reasoner",
+        // 小米：2026-06-30 下线
+        "mimo-v2-flash",
+        "mimo-v2-pro",
+        "mimo-v2-omni",
+    ];
+
+    /// **查不到 ≠ 退役**。这些条目在官方当前目录里找不到，但官方从未公告退役，
+    /// 因此只能标 `unverifiable`，不得禁止用户使用。
+    const UNVERIFIABLE: &[&str] = &[
+        "o4-mini-high",     // 非官方 API 模型 ID，官方无独立页面
+        "qwen2.5-max",      // 官方文档 404、模型列表未列，但未找到下线公告
+        "hunyuan-pro-think", // 未在腾讯任何官方清单中出现
+        "abab6.5s-think",   // 不在 MiniMax 官方现行模型列表
+    ];
+
+    #[test]
+    fn retired_models_are_exactly_the_expected_set() {
+        let actual: Vec<String> = load_registry()
+            .into_iter()
+            .filter(|m| m.capabilities.status == "retired")
+            .map(|m| m.id)
+            .collect();
+
+        for id in RETIRED {
+            assert!(
+                actual.iter().any(|a| a == id),
+                "「{}」官方已宣布退役，必须标 status=retired；否则用户选中后直接吃上游错误",
+                id
+            );
+        }
+        assert_eq!(
+            actual.len(),
+            RETIRED.len(),
+            "retired 集合多出或少了条目，实际为: {:?}",
+            actual
+        );
+    }
+
+    #[test]
+    fn unverifiable_must_never_be_classified_as_retired() {
+        for id in UNVERIFIABLE {
+            let status = model_status(id)
+                .unwrap_or_else(|| panic!("「{}」应有注册表条目", id));
+            assert_eq!(
+                status, "unverifiable",
+                "「{}」只是官方目录里查不到，并无退役公告——标成 retired 会把\
+                 「我们没查到」变成「用户不能用」（同 thinking.ts 的「未知 ≠ 不支持」）",
+                id
+            );
+            assert!(
+                !is_retired(id),
+                "「{}」不得被 is_retired 判为真，否则预设层会误禁用户保存",
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn deprecated_models_are_still_usable() {
+        // 阿里云公告 2026-07-06，2026-10-10 下线。公告已发但尚未生效，
+        // 当前仍可正常调用，因此只能告警、不能拦。
+        for id in [
+            "qwen-vl-max",
+            "qwen-turbo",
+            "qwen3-235b-a22b",
+            "qwen3-32b",
+            "qwen3-14b",
+        ] {
+            assert_eq!(
+                model_status(id).as_deref(),
+                Some("deprecated"),
+                "「{}」官方已公告下线但当前仍可调用，应为 deprecated",
+                id
+            );
+            assert!(!is_retired(id), "尚未生效的下线公告不能按 retired 拦");
+        }
+    }
+
+    #[test]
+    fn alias_stays_usable() {
+        // 模型已退役、名字仍受理，请求由 V4.1-Flash 承接——旧会话引用了它也不该被拦。
+        assert_eq!(
+            model_status("deepseek-v4-flash").as_deref(),
+            Some("alias")
+        );
+        assert!(!is_retired("deepseek-v4-flash"));
+        assert_eq!(
+            query_capabilities("deepseek-v4-flash").and_then(|c| c.replaced_by),
+            Some("deepseek-flash".to_string()),
+            "alias 条目必须写清路由目标，否则用户不知道该换成什么"
+        );
+    }
+
+    #[test]
+    fn absent_status_field_defaults_to_active() {
+        // 在售条目刻意不写 status，靠 serde 默认值兜底——省掉 37 个字段的维护成本。
+        let caps = query_capabilities("gpt-4o").expect("gpt-4o 应在注册表中");
+        assert_eq!(
+            caps.status, "active",
+            "未写 status 的条目必须被解析为 active，而不是空串或报错"
+        );
+        assert!(caps.replaced_by.is_none());
+    }
+
+    #[test]
+    fn unknown_model_reports_no_status_rather_than_retired() {
+        assert!(
+            model_status("no-such-model-xyz").is_none(),
+            "注册表未收录应返回 None（我们不知道），不能回落成 retired"
+        );
+        assert!(!is_retired("no-such-model-xyz"));
+    }
+
+    #[test]
+    fn retired_entries_carry_a_migration_hint() {
+        // 界面要告诉用户"换成什么"，光说"不可用"等于把问题丢回给他。
+        for id in [
+            "o3",
+            "o4-mini",
+            "claude-3-5-sonnet-20241022",
+            "gemini-2.0-flash",
+            "deepseek-chat",
+            "mimo-v2-pro",
+        ] {
+            let caps = query_capabilities(id).expect("应在注册表中");
+            assert!(
+                caps.replaced_by.is_some(),
+                "「{}」官方给了明确迁移目标，replacedBy 不能为空",
+                id
+            );
+            assert!(
+                caps.status_note.is_some(),
+                "「{}」应带 statusNote 说明官方口径（日期/公告），供界面展示",
+                id
+            );
+        }
     }
 }

@@ -470,7 +470,11 @@
       "deleteConfirm": "Delete",
       "deleteSuccess": "Configuration preset deleted and saved",
       "globalUpdated": "Global default preset updated",
-      "cacheWarning": "⚠ Switching model presets will invalidate the prompt cache for this session. The next request may consume significantly more tokens and take longer.\n\nSwitch to \"{name}\"?"
+      "cacheWarning": "⚠ Switching model presets will invalidate the prompt cache for this session. The next request may consume significantly more tokens and take longer.\n\nSwitch to \"{name}\"?",
+      "switchBlockedRetired": "The main model \"{model}\" in preset \"{name}\" has been officially retired and requests will fail, so it cannot be selected.\n\nPlease switch to {target} in Settings first.",
+      "switchBlockedRetiredNoTarget": "The main model \"{model}\" in preset \"{name}\" has been officially retired and requests will fail, so it cannot be selected.\n\nPlease change the model in Settings first.",
+      "switchBlockedRetiredUtility": "The utility agent model \"{model}\" in preset \"{name}\" has been officially retired and requests will fail, so it cannot be selected.\n\nPlease switch to {target} in Settings first.",
+      "switchBlockedRetiredUtilityNoTarget": "The utility agent model \"{model}\" in preset \"{name}\" has been officially retired and requests will fail, so it cannot be selected.\n\nPlease change the model in Settings first."
     },
     "general": {
       "appearance": "Interface & Appearance",
@@ -572,7 +576,16 @@
       "thinkingDesc": "Enable reasoning before responding. When off, explicitly disables thinking even for models that default to on.",
       "vision": "Multimodal",
       "outputTokens": "Output {count}",
-      "advancedParams": "Advanced model parameters"
+      "advancedParams": "Advanced model parameters",
+      "statusRetired": "Retired",
+      "statusDeprecated": "Deprecating",
+      "statusUnverifiable": "Unverified",
+      "statusAlias": "Alias",
+      "retiredHint": "This model has been officially retired; requests will fail, so it cannot be saved. Use {target} instead",
+      "retiredHintNoTarget": "This model has been officially retired; requests will fail, so it cannot be saved",
+      "deprecatedHint": "Officially announced for shutdown but still callable; migrate as soon as possible",
+      "unverifiableHint": "Could not be verified against official docs; still usable",
+      "aliasHint": "Legacy name; requests are routed to {target}"
     },
     "actions": {
       "save": "Save all changes",
@@ -591,6 +604,10 @@
       "baseUrlRequired": "API Base URL is required for preset [{name}]",
       "mainModelRequired": "Main agent model is required for preset [{name}]",
       "utilityModelRequired": "Utility agent model is required for preset [{name}]",
+      "mainModelRetired": "The main chat model \"{model}\" in preset [{name}] has been officially retired and cannot be saved. Use {target} instead",
+      "mainModelRetiredNoTarget": "The main chat model \"{model}\" in preset [{name}] has been officially retired and cannot be saved",
+      "utilityModelRetired": "The utility agent model \"{model}\" in preset [{name}] has been officially retired and cannot be saved. Use {target} instead",
+      "utilityModelRetiredNoTarget": "The utility agent model \"{model}\" in preset [{name}] has been officially retired and cannot be saved",
       "keepOneProfile": "At least one configuration preset is required"
     }
   }

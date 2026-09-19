@@ -476,6 +476,11 @@
                   />
                   <!-- 能力徽章 -->
                   <div class="capability-badges" v-if="mainModelCaps !== null">
+                    <span
+                      v-if="editingMainStatus"
+                      class="badge"
+                      :class="statusBadgeClass(editingMainStatus)"
+                    >{{ statusLabel(editingMainStatus) }}</span>
                     <span class="badge" :class="mainModelCaps ? 'badge-ok' : 'badge-none'">
                       <span>{{ mainModelCaps ? t('settings.profileEditor.recognized') : t('settings.profileEditor.unknownModel') }}</span>
                     </span>
@@ -485,6 +490,12 @@
                       <span class="badge badge-info">{{ t('settings.profileEditor.outputTokens', { count: mainModelCaps.maxTokens.toLocaleString() }) }}</span>
                     </template>
                   </div>
+                  <!-- 生命周期提示：退役=红色阻断，即将下线=黄色告警，未能验证/旧名=中性说明 -->
+                  <div
+                    v-if="editingMainStatus"
+                    class="setting-desc model-status-hint"
+                    :class="'hint-' + editingMainStatus"
+                  >{{ statusHint(editingProfile?.config.mainModel?.trim() ?? '', editingMainStatus) }}</div>
                   <div class="setting-item" v-if="mainModelCaps !== null">
                     <label>输出上限 (max_tokens)</label>
                     <input
@@ -501,6 +512,15 @@
                 <div class="setting-item">
                   <label>{{ t('settings.profileEditor.utilityModel') }}</label>
                   <input type="text" v-model="editingProfile.config.utilityModel" placeholder="claude-3-5-haiku-..." />
+                  <!-- 工具代理模型同样受退役拦截约束（徽章紧跟输入框，与主模型版式一致） -->
+                  <div class="capability-badges" v-if="editingUtilityStatus">
+                    <span class="badge" :class="statusBadgeClass(editingUtilityStatus)">{{ statusLabel(editingUtilityStatus) }}</span>
+                  </div>
+                  <div
+                    v-if="editingUtilityStatus"
+                    class="setting-desc model-status-hint"
+                    :class="'hint-' + editingUtilityStatus"
+                  >{{ statusHint(editingProfile?.config.utilityModel?.trim() ?? '', editingUtilityStatus) }}</div>
                   <div class="setting-desc">{{ t('settings.profileEditor.utilityModelDesc') }}</div>
                 </div>
 
@@ -544,7 +564,8 @@
       <div class="settings-footer">
         <span class="status-msg" :class="{ 'error': isError, 'success': isSuccess }">{{ statusMsg }}</span>
         <div class="footer-actions">
-          <button v-if="activeTab === 'presets'" class="save-btn" @click="save" :disabled="isSaving || actionLoading">
+          <!-- 有退役模型时直接置灰：点得动再报错不如一开始就不让点 -->
+          <button v-if="activeTab === 'presets'" class="save-btn" @click="save" :disabled="isSaving || actionLoading || retiredBlockers.length > 0">
             {{ isSaving ? t('settings.actions.saving') : t('settings.actions.save') }}
           </button>
         </div>
@@ -700,6 +721,19 @@ interface ModelCapabilities {
   maxTokens: number
   maxContextTokens?: number | null
   notes: string
+  /**
+   * 模型生命周期状态（后端 `ModelCapabilities.status`，注册表省略即 `active`）：
+   * - `active`       在售
+   * - `deprecated`   官方已公告即将下线，**当前仍可调用**
+   * - `retired`      官方已宣布退役，请求必然失败 → 预设禁止保存
+   * - `unverifiable` 官方当前目录查不到，**但无退役公告**（不等于 retired）
+   * - `alias`        旧名，请求被路由到新模型
+   */
+  status?: string
+  /** 官方给出的迁移目标模型 id（仅 retired / alias 有意义） */
+  replacedBy?: string
+  /** 状态补充说明（官方口径，如退役日期） */
+  statusNote?: string
 }
 
 interface ModelProfile {
@@ -795,6 +829,150 @@ const editingProfile = computed(() => {
 const mainModelCaps = ref<ModelCapabilities | null | undefined>(undefined)
 let capQueryTimer: ReturnType<typeof setTimeout> | null = null
 
+// ── 模型生命周期状态（退役 / 即将下线 / 未能验证 / 旧名路由）──
+//
+// 为什么需要一份"所有草稿模型"的状态缓存，而不是只看当前编辑预设的 mainModelCaps：
+// 保存时会遍历**全部**预设，任一预设引用了退役模型都必须拦下。只探测当前预设的话，
+// 切到另一个预设点保存就会漏放行。
+//
+// 状态与 replacedBy 一起缓存：拦截提示要告诉用户"换成什么"，光说"不可用"等于
+// 把问题丢回给他。
+
+/** 单个模型的生命周期信息；`status === ''` 表示注册表未收录（我们不知道） */
+interface ModelLifecycle {
+  status: string
+  replacedBy?: string
+}
+
+const modelLifecycleCache = ref<Record<string, ModelLifecycle>>({})
+
+/** 读缓存；未收录返回 `{ status: '' }`，**不要当成 retired** */
+const lifecycleOf = (modelId: string): ModelLifecycle =>
+  modelLifecycleCache.value[modelId] ?? { status: '' }
+
+const cacheLifecycle = (modelId: string, caps: ModelCapabilities | null) => {
+  modelLifecycleCache.value = {
+    ...modelLifecycleCache.value,
+    [modelId]: { status: caps?.status ?? '', replacedBy: caps?.replacedBy },
+  }
+}
+
+/** 探测一批模型 id 的状态；已缓存的跳过（本地读内嵌注册表，开销极小） */
+const probeModelLifecycles = async (ids: string[]) => {
+  const missing = [...new Set(ids.map(id => id.trim()).filter(Boolean))]
+    .filter(id => !(id in modelLifecycleCache.value))
+  if (missing.length === 0) return
+
+  const results = await Promise.all(
+    missing.map(async (id) => {
+      try {
+        const caps = await invoke<ModelCapabilities | null>('get_model_capabilities', { modelId: id })
+        return [id, caps] as const
+      } catch {
+        return [id, null] as const
+      }
+    }),
+  )
+
+  const next = { ...modelLifecycleCache.value }
+  for (const [id, caps] of results) {
+    next[id] = { status: caps?.status ?? '', replacedBy: caps?.replacedBy }
+  }
+  modelLifecycleCache.value = next
+}
+
+/** 草稿里被引用的全部模型 id（主模型 + 工具代理模型，跨所有预设） */
+const draftModelIds = computed(() => {
+  const ids: string[] = []
+  for (const p of draftConfig.value.profiles) {
+    const main = p.config.mainModel?.trim()
+    const utility = p.config.utilityModel?.trim()
+    if (main) ids.push(main)
+    if (utility) ids.push(utility)
+  }
+  return ids
+})
+
+/** 草稿里被退役模型挡住的位置；非空即禁止保存 */
+const retiredHitsIn = (profiles: ModelProfile[]) => {
+  const hits: Array<{ profileName: string; field: 'mainModel' | 'utilityModel'; modelId: string; replacedBy?: string }> = []
+  for (const p of profiles) {
+    for (const field of ['mainModel', 'utilityModel'] as const) {
+      const id = p.config[field]?.trim()
+      if (id && lifecycleOf(id).status === 'retired') {
+        hits.push({ profileName: p.name, field, modelId: id, replacedBy: lifecycleOf(id).replacedBy })
+      }
+    }
+  }
+  return hits
+}
+
+const retiredBlockers = computed(() => retiredHitsIn(draftConfig.value.profiles))
+
+let lifecycleProbeTimer: ReturnType<typeof setTimeout> | null = null
+watch(draftModelIds, (ids) => {
+  if (lifecycleProbeTimer) clearTimeout(lifecycleProbeTimer)
+  lifecycleProbeTimer = setTimeout(() => { void probeModelLifecycles(ids) }, 300)
+}, { immediate: true })
+
+/** 当前编辑预设的模型状态（驱动徽章与提示文案） */
+const editingMainStatus = computed(() => {
+  const id = editingProfile.value?.config.mainModel?.trim()
+  return id ? lifecycleOf(id).status : ''
+})
+const editingUtilityStatus = computed(() => {
+  const id = editingProfile.value?.config.utilityModel?.trim()
+  return id ? lifecycleOf(id).status : ''
+})
+
+const statusBadgeClass = (status: string) => {
+  switch (status) {
+    case 'retired': return 'badge-retired'
+    case 'deprecated': return 'badge-deprecated'
+    case 'unverifiable': return 'badge-unverifiable'
+    case 'alias': return 'badge-info'
+    default: return ''
+  }
+}
+
+const statusLabel = (status: string) => {
+  switch (status) {
+    case 'retired': return t('settings.profileEditor.statusRetired')
+    case 'deprecated': return t('settings.profileEditor.statusDeprecated')
+    case 'unverifiable': return t('settings.profileEditor.statusUnverifiable')
+    case 'alias': return t('settings.profileEditor.statusAlias')
+    default: return ''
+  }
+}
+
+/** 状态提示文案；`retired` / `alias` 带迁移目标 */
+const statusHint = (modelId: string, status: string) => {
+  const target = lifecycleOf(modelId).replacedBy
+  switch (status) {
+    case 'retired':
+      return target
+        ? t('settings.profileEditor.retiredHint', { target })
+        : t('settings.profileEditor.retiredHintNoTarget')
+    case 'deprecated':
+      return t('settings.profileEditor.deprecatedHint')
+    case 'unverifiable':
+      return t('settings.profileEditor.unverifiableHint')
+    case 'alias':
+      return target ? t('settings.profileEditor.aliasHint', { target }) : ''
+    default:
+      return ''
+  }
+}
+
+/** 退役拦截的提示文案（保存时用） */
+const retiredBlockMessage = (hit: { profileName: string; field: 'mainModel' | 'utilityModel'; modelId: string; replacedBy?: string }) => {
+  const isMain = hit.field === 'mainModel'
+  const key = isMain
+    ? (hit.replacedBy ? 'settings.validation.mainModelRetired' : 'settings.validation.mainModelRetiredNoTarget')
+    : (hit.replacedBy ? 'settings.validation.utilityModelRetired' : 'settings.validation.utilityModelRetiredNoTarget')
+  return t(key, { name: hit.profileName, model: hit.modelId, target: hit.replacedBy ?? '' })
+}
+
 /** API Key 明文开关：常驻可切，切换 profile 时自动回到隐藏 */
 const showApiKey = ref(false)
 
@@ -844,8 +1022,11 @@ const onMainModelInput = () => {
     try {
       const caps = await invoke<ModelCapabilities | null>('get_model_capabilities', { modelId })
       mainModelCaps.value = caps
+      // 同步进生命周期缓存：徽章与保存拦截共用同一份真相，避免两处结论打架
+      cacheLifecycle(modelId, caps)
     } catch {
       mainModelCaps.value = null
+      cacheLifecycle(modelId, null)
     }
   }, 400)
 }
@@ -1079,6 +1260,18 @@ const persistFilledNewProfilesBeforeClose = async () => {
 
   if (filledNewProfiles.length === 0) return
 
+  // 关窗路径会**自动**保存"已填写的新预设"——只拦保存按钮会被这里绕过。
+  //
+  // 只检查即将写入的这一批：已保存的预设本次不会被重写（close() 会用 savedConfig
+  // 覆盖草稿），把它们也算进来会让用户因为一个没在改的旧预设而关不掉设置面板。
+  await probeModelLifecycles(
+    filledNewProfiles.flatMap(p => [p.config.mainModel ?? '', p.config.utilityModel ?? '']),
+  )
+  const hits = retiredHitsIn(filledNewProfiles)
+  if (hits.length > 0) {
+    throw new Error(retiredBlockMessage(hits[0]))
+  }
+
   const nextConfig = cloneConfig(savedConfig.value)
   nextConfig.profiles.push(...filledNewProfiles.map((profile) => cloneConfig(profile)))
   ensureValidSelection(nextConfig, selectedProfileId.value)
@@ -1128,6 +1321,13 @@ const save = async () => {
       setErrorStatus(t('settings.validation.utilityModelRequired', { name: p.name }))
       return
     }
+  }
+
+  // 退役模型拦截。先补一次探测：缓存有 300ms 防抖，用户刚敲完就点保存时可能还没落缓存。
+  await probeModelLifecycles(draftModelIds.value)
+  if (retiredBlockers.value.length > 0) {
+    setErrorStatus(retiredBlockMessage(retiredBlockers.value[0]))
+    return
   }
 
   isSaving.value = true
@@ -1922,6 +2122,43 @@ const save = async () => {
 .badge-think { background: color-mix(in srgb, var(--text-muted) 12%, transparent); color: var(--text-soft); }
 .badge-info { background: color-mix(in srgb, var(--text-main) 10%, transparent); color: var(--text-main); }
 .badge-none { background: rgba(100, 116, 139, 0.1); color: var(--text-muted); }
+
+/* ── 模型生命周期徽章 ──
+   retired 用红色强调：它是唯一会阻断保存的状态。
+   deprecated 用琥珀色告警（尚未生效）。
+   unverifiable 刻意**不用红色**，改用灰色 + 虚边表达"我们不确定"——
+   它和 retired 不是一回事（见 registry.rs 里 status 字段的文档：
+   查不到 ≠ 已退役，同 thinking.ts 的「未知 ≠ 不支持」）。 */
+.badge-retired {
+  background: color-mix(in srgb, var(--accent-red) 14%, transparent);
+  color: var(--accent-red);
+  border: 1px solid color-mix(in srgb, var(--accent-red) 35%, transparent);
+}
+
+.badge-deprecated {
+  background: color-mix(in srgb, #d97706 14%, transparent);
+  color: #b45309;
+  border: 1px solid color-mix(in srgb, #d97706 35%, transparent);
+}
+
+body.dark-mode .badge-deprecated { color: #fbbf24; }
+
+.badge-unverifiable {
+  background: rgba(100, 116, 139, 0.08);
+  color: var(--text-muted);
+  border: 1px dashed rgba(100, 116, 139, 0.35);
+}
+
+/* 生命周期提示行：与徽章同色系但更弱，避免和"能力徽章"抢注意力 */
+.model-status-hint {
+  margin-top: 4px;
+  line-height: 1.5;
+}
+.model-status-hint.hint-retired { color: var(--accent-red); }
+.model-status-hint.hint-deprecated { color: #b45309; }
+body.dark-mode .model-status-hint.hint-deprecated { color: #fbbf24; }
+.model-status-hint.hint-unverifiable,
+.model-status-hint.hint-alias { color: var(--text-muted); }
 
 .empty-state {
   height: 100%;
