@@ -20,6 +20,11 @@ pub fn data_root() -> PathBuf {
     get_agent_home().clone()
 }
 
+/// 非 panic 版 data_root：`AGENT_HOME_DIR` 未初始化（单测 / 启动极早期）时返回 None。
+pub fn try_data_root() -> Option<&'static PathBuf> {
+    crate::try_agent_home()
+}
+
 pub fn global_dir() -> PathBuf {
     ensure_dir(data_root().join(DIR_GLOBAL))
 }

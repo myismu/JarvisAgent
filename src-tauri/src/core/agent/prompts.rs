@@ -5,6 +5,231 @@
 //! 各规则内容存放在同级 `prompts/` 目录下的 .md 文件中，通过 `include_str!()` 编译期加载。
 
 use std::borrow::Cow;
+use std::path::PathBuf;
+
+// ── 提示词文件注册表（唯一事实源）──
+//
+// 13 个提示词文件的元数据清单，服务于设置页的「提示词」可视化编辑：
+// - 列表展示、分类分组、生效语义标注都以本表为准，**不扫描任何目录**；
+// - `path` 同时是磁盘覆盖层文件名（data/prompts/<path>）与编译期内置文件名
+//   （src/core/agent/prompts/<path>，经 `prompt!` 宏 include_str! 嵌入 exe）；
+// - 分类是显式字段，不从文件夹路径派生——路径是源码组织概念，分类是 UI 语义，
+//   今天对齐但解耦（挪文件夹不动 UI 分组）。
+//
+// 维护约定：加/删/改提示词文件 = 改本文件三处（md 本体、`prompt!` 引用、本表），
+// `all_prompt_files_exist` 测试读本表做存在性断言，漏改编译期/测试期即暴露。
+
+/// UI 分组（与设置页左侧列表一致）
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PromptCategory {
+    /// 基础规则（全进 system）
+    Base,
+    /// 回复风格（按 audience 二选一进 system）
+    Audience,
+    /// 工作模式（进动态上下文，按会话模式二选一，下轮生效）
+    Mode,
+    /// 系统环境（按编译目标选一个进 system）
+    Os,
+    /// 子代理
+    Subagent,
+}
+
+impl PromptCategory {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PromptCategory::Base => "base",
+            PromptCategory::Audience => "audience",
+            PromptCategory::Mode => "mode",
+            PromptCategory::Os => "os",
+            PromptCategory::Subagent => "subagent",
+        }
+    }
+}
+
+pub struct PromptFileMeta {
+    /// 相对 prompts/ 的路径（如 "audience/user.md"）
+    pub path: &'static str,
+    /// UI 显示名
+    pub display_name: &'static str,
+    /// 一句话用途
+    pub description: &'static str,
+    pub category: PromptCategory,
+    /// true = 进 system（会话内字节恒定，改动只对新会话生效）；
+    /// false = 进动态上下文（每轮重发，改动下一轮即生效）。
+    pub goes_into_system: bool,
+}
+
+pub const PROMPT_FILES: &[PromptFileMeta] = &[
+    PromptFileMeta {
+        path: "base_p0.md",
+        display_name: "基础规则",
+        description: "违反即出事故的硬禁令：权限纪律、工具调用格式、禁止读二进制/依赖目录",
+        category: PromptCategory::Base,
+        goes_into_system: true,
+    },
+    PromptFileMeta {
+        path: "base_p0_write.md",
+        display_name: "编辑与审批纪律",
+        description: "改动范围、遵循现有风格、复杂任务先出方案等写操作硬纪律",
+        category: PromptCategory::Base,
+        goes_into_system: true,
+    },
+    PromptFileMeta {
+        path: "base_p1.md",
+        display_name: "探索工具选择",
+        description: "文件探索的工具优先级：FindFiles → SearchRepo → FindSymbol → ReadFile",
+        category: PromptCategory::Base,
+        goes_into_system: true,
+    },
+    PromptFileMeta {
+        path: "base_p1_write.md",
+        display_name: "写操作与命令执行",
+        description: "EditFile/WriteFile/ApplyPatch 的选择原则、启动服务、任务编排指南",
+        category: PromptCategory::Base,
+        goes_into_system: true,
+    },
+    PromptFileMeta {
+        path: "base_p2.md",
+        display_name: "信息获取原则",
+        description: "渐进式探索：不自动深入、不过度操作",
+        category: PromptCategory::Base,
+        goes_into_system: true,
+    },
+    PromptFileMeta {
+        path: "audience/user.md",
+        display_name: "回复风格 — 普通用户",
+        description: "面向普通用户的措辞与详略（与开发者版二选一注入）",
+        category: PromptCategory::Audience,
+        goes_into_system: true,
+    },
+    PromptFileMeta {
+        path: "audience/developer.md",
+        display_name: "回复风格 — 开发者",
+        description: "面向开发者的专业措辞（与普通用户版二选一注入）",
+        category: PromptCategory::Audience,
+        goes_into_system: true,
+    },
+    PromptFileMeta {
+        path: "mode/edit.md",
+        display_name: "编辑模式规则",
+        description: "编辑模式的行为规范（进动态上下文，改动下一轮即生效）",
+        category: PromptCategory::Mode,
+        goes_into_system: false,
+    },
+    PromptFileMeta {
+        path: "mode/plan.md",
+        display_name: "规划模式规则",
+        description: "规划模式的行为规范（进动态上下文，改动下一轮即生效）",
+        category: PromptCategory::Mode,
+        goes_into_system: false,
+    },
+    PromptFileMeta {
+        path: "os/windows.md",
+        display_name: "系统环境 — Windows",
+        description: "PowerShell 5.1 语法约束（三个平台按编译目标选一个注入）",
+        category: PromptCategory::Os,
+        goes_into_system: true,
+    },
+    PromptFileMeta {
+        path: "os/macos.md",
+        display_name: "系统环境 — macOS",
+        description: "macOS/zsh 环境说明（三个平台按编译目标选一个注入）",
+        category: PromptCategory::Os,
+        goes_into_system: true,
+    },
+    PromptFileMeta {
+        path: "os/linux.md",
+        display_name: "系统环境 — Linux",
+        description: "Linux/bash 环境说明（三个平台按编译目标选一个注入）",
+        category: PromptCategory::Os,
+        goes_into_system: true,
+    },
+    PromptFileMeta {
+        path: "subagent.md",
+        display_name: "子代理核心规则",
+        description: "子代理的工具调用格式、验证纪律、禁止事项",
+        category: PromptCategory::Subagent,
+        goes_into_system: true,
+    },
+];
+
+/// path 是否在注册表中（防路径穿越的唯一闸门）。
+pub fn is_registered_prompt(path: &str) -> bool {
+    PROMPT_FILES.iter().any(|m| m.path == path)
+}
+
+// ── 包含路径宏 ──
+// 注意：macro_rules! 是文本顺序作用域，必须先定义后使用（embedded_prompt 依赖它）。
+// include_str! 只接受编译期字面量，因此内置内容经 embedded_prompt 的 match 静态查表
+// 分发——新增文件时在此加一个臂，漏加会被 registry_embedded_not_empty 测试抓住。
+
+macro_rules! prompt {
+    ($path:literal) => {
+        include_str!(concat!("prompts/", $path))
+    };
+}
+
+/// 内置版查表：注册表 path → 编译期嵌入的出厂默认文本。
+/// 未注册 path 返回空串（调用方都过白名单，不会走到）。
+pub fn embedded_prompt(path: &str) -> &'static str {
+    match path {
+        "base_p0.md" => prompt!("base_p0.md"),
+        "base_p0_write.md" => prompt!("base_p0_write.md"),
+        "base_p1.md" => prompt!("base_p1.md"),
+        "base_p1_write.md" => prompt!("base_p1_write.md"),
+        "base_p2.md" => prompt!("base_p2.md"),
+        "audience/user.md" => prompt!("audience/user.md"),
+        "audience/developer.md" => prompt!("audience/developer.md"),
+        "mode/edit.md" => prompt!("mode/edit.md"),
+        "mode/plan.md" => prompt!("mode/plan.md"),
+        "os/windows.md" => prompt!("os/windows.md"),
+        "os/macos.md" => prompt!("os/macos.md"),
+        "os/linux.md" => prompt!("os/linux.md"),
+        "subagent.md" => prompt!("subagent.md"),
+        _ => "",
+    }
+}
+
+/// 磁盘覆盖层目录：data/prompts/（与 app-config.json 同级，运行时数据不进 git）
+pub fn prompt_disk_dir() -> PathBuf {
+    crate::infra::config::data_paths::data_root().join("prompts")
+}
+
+fn prompt_disk_path(path: &str) -> PathBuf {
+    prompt_disk_dir().join(path)
+}
+
+/// 解析提示词内容：**磁盘优先、内置兜底**。
+///
+/// - `data/prompts/<path>` 存在且非空 → 用磁盘版（用户自定义）；
+/// - 否则 → 用编译期内置版（`prompt!` 宏 include_str! 嵌入的出厂默认）。
+///
+/// 数据目录未初始化（单测 / 启动极早期）时直接回落内置，不 panic。
+/// 读盘成本：每次组装 system 时读 ≤13 个共 28KB 小文件，毫秒级，
+/// 且组装只在每轮 turn 发生一次，不值得做缓存。
+pub fn resolve_prompt(path: &'static str) -> Cow<'static, str> {
+    match crate::infra::config::data_paths::try_data_root() {
+        Some(root) => resolve_prompt_from(&root.join("prompts"), path),
+        None => Cow::Borrowed(embedded_prompt(path)),
+    }
+}
+
+/// 可注入磁盘目录的解析纯函数（生产走 `resolve_prompt`，测试用临时目录）。
+pub fn resolve_prompt_from(disk_dir: &std::path::Path, path: &'static str) -> Cow<'static, str> {
+    let embedded = embedded_prompt(path);
+    match std::fs::read_to_string(disk_dir.join(path)) {
+        Ok(content) if !content.trim().is_empty() => Cow::Owned(content),
+        _ => Cow::Borrowed(embedded),
+    }
+}
+
+/// 磁盘上是否存在该文件的用户自定义版。
+pub fn has_disk_override(path: &str) -> bool {
+    is_registered_prompt(path)
+        && std::fs::read_to_string(prompt_disk_path(path))
+            .map(|c| !c.trim().is_empty())
+            .unwrap_or(false)
+}
 
 // ── 数据结构 ──
 
@@ -49,14 +274,6 @@ fn render_prompt(rules: &[PromptRule]) -> String {
     out
 }
 
-// ── 包含路径宏 ──
-
-macro_rules! prompt {
-    ($path:literal) => {
-        include_str!(concat!("prompts/", $path))
-    };
-}
-
 // ── 基础规则 ──
 
 /// 基础规则（所有模式共用）。
@@ -65,20 +282,20 @@ macro_rules! prompt {
 /// 因此写操作/命令执行/任务编排类规则在所有模式下都注入。
 fn base_rules(work_mode: &str) -> Vec<PromptRule> {
     let mut rules = vec![
-        PromptRule::new(PromptLevel::P0Critical, "基础规则", prompt!("base_p0.md")),
-        PromptRule::new(PromptLevel::P1Important, "基础规则", prompt!("base_p1.md")),
-        PromptRule::new(PromptLevel::P2Reference, "基础规则", prompt!("base_p2.md")),
+        PromptRule::new(PromptLevel::P0Critical, "基础规则", resolve_prompt("base_p0.md")),
+        PromptRule::new(PromptLevel::P1Important, "基础规则", resolve_prompt("base_p1.md")),
+        PromptRule::new(PromptLevel::P2Reference, "基础规则", resolve_prompt("base_p2.md")),
     ];
     let _ = work_mode;
     rules.push(PromptRule::new(
         PromptLevel::P0Critical,
         "编辑与审批纪律",
-        prompt!("base_p0_write.md"),
+        resolve_prompt("base_p0_write.md"),
     ));
     rules.push(PromptRule::new(
         PromptLevel::P1Important,
         "写操作与命令执行",
-        prompt!("base_p1_write.md"),
+        resolve_prompt("base_p1_write.md"),
     ));
     rules
 }
@@ -88,20 +305,22 @@ fn base_rules(work_mode: &str) -> Vec<PromptRule> {
 fn audience_rules(audience: &str) -> Vec<PromptRule> {
     match audience {
         "user" => vec![PromptRule::new(PromptLevel::P1Important, "回复风格 — 普通用户模式",
-            prompt!("audience/user.md"),
+            resolve_prompt("audience/user.md"),
         )],
         _ => vec![PromptRule::new(PromptLevel::P1Important, "回复风格 — 开发者模式",
-            prompt!("audience/developer.md"),
+            resolve_prompt("audience/developer.md"),
         )],
     }
 }
 
 // ── Mode 规则（供“上下文快照”使用，不再进 system）──
 
-pub fn get_mode_prompt(work_mode: &str) -> &'static str {
+pub fn get_mode_prompt(work_mode: &str) -> Cow<'static, str> {
+    // 返回 Cow 以支持磁盘覆盖（data/prompts/mode/*.md）：
+    // mode 文件进动态上下文（每轮重发、不进缓存前缀），用户改动**下一轮即生效**。
     match work_mode {
-        "plan" => prompt!("mode/plan.md"),
-        _ => prompt!("mode/edit.md"),
+        "plan" => resolve_prompt("mode/plan.md"),
+        _ => resolve_prompt("mode/edit.md"),
     }
 }
 
@@ -109,11 +328,11 @@ pub fn get_mode_prompt(work_mode: &str) -> &'static str {
 
 fn os_rules() -> Vec<PromptRule> {
     if cfg!(target_os = "windows") {
-        vec![PromptRule::new(PromptLevel::P2Reference, "系统环境", prompt!("os/windows.md"))]
+        vec![PromptRule::new(PromptLevel::P2Reference, "系统环境", resolve_prompt("os/windows.md"))]
     } else if cfg!(target_os = "macos") {
-        vec![PromptRule::new(PromptLevel::P2Reference, "系统环境", prompt!("os/macos.md"))]
+        vec![PromptRule::new(PromptLevel::P2Reference, "系统环境", resolve_prompt("os/macos.md"))]
     } else {
-        vec![PromptRule::new(PromptLevel::P2Reference, "系统环境", prompt!("os/linux.md"))]
+        vec![PromptRule::new(PromptLevel::P2Reference, "系统环境", resolve_prompt("os/linux.md"))]
     }
 }
 
@@ -167,7 +386,7 @@ pub fn get_subagent_system_prompt(cwd: &str, workspace: Option<&str>) -> String 
     let mut rules: Vec<PromptRule> = Vec::new();
 
     rules.push(PromptRule::new(PromptLevel::P0Critical, "子代理核心规则",
-        prompt!("subagent.md"),
+        resolve_prompt("subagent.md"),
     ));
 
     rules.push(PromptRule::new(PromptLevel::P2Reference, "工作目录",
@@ -331,26 +550,95 @@ mod tests {
 
     #[test]
     fn all_prompt_files_exist() {
-        let files: &[&str] = &[
-            "prompts/base_p0.md",
-            "prompts/base_p0_write.md",
-            "prompts/base_p1.md",
-            "prompts/base_p1_write.md",
-            "prompts/base_p2.md",
-            "prompts/audience/user.md",
-            "prompts/audience/developer.md",
-            "prompts/mode/edit.md",
-            "prompts/mode/plan.md",
-            "prompts/os/windows.md",
-            "prompts/os/macos.md",
-            "prompts/os/linux.md",
-            "prompts/subagent.md",
-        ];
-        for path in files {
+        // 清单唯一事实源是 PROMPT_FILES 注册表（与 UI 列表同源），此处遍历它断言
+        // 每个内置 md 都真实存在于源码目录——加文件漏注册/注册了没文件都在此暴露
+        assert!(!PROMPT_FILES.is_empty(), "注册表不能为空");
+        for meta in PROMPT_FILES {
             let full = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src/core/agent")
-                .join(path);
-            assert!(full.exists(), "Prompt file missing: {}", path);
+                .join("src/core/agent/prompts")
+                .join(meta.path);
+            assert!(full.exists(), "Prompt file missing: {}", meta.path);
         }
+    }
+
+    #[test]
+    fn registry_paths_pass_whitelist() {
+        // 注册表里的 path 必须全部通过白名单校验（save_prompt 的防穿越闸门同源）
+        for meta in PROMPT_FILES {
+            assert!(
+                is_registered_prompt(meta.path),
+                "注册表 path 未通过白名单: {}",
+                meta.path
+            );
+        }
+        assert!(!is_registered_prompt("../../Cargo.toml"));
+        assert!(!is_registered_prompt("base_p0.md/../../x.md"));
+    }
+
+    #[test]
+    fn registry_embedded_not_empty() {
+        // 注册表每一项都必须有对应的内置内容（embedded_prompt 的 match 臂漏加在此暴露）
+        for meta in PROMPT_FILES {
+            assert!(
+                !embedded_prompt(meta.path).trim().is_empty(),
+                "内置内容为空：注册表项 {} 缺少 embedded_prompt match 臂",
+                meta.path
+            );
+        }
+    }
+
+    // ── 磁盘覆盖解析（resolve_prompt_from：可注入目录的纯函数）──
+
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "jarvis_prompts_test_{}_{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create tmp dir");
+        dir
+    }
+
+    #[test]
+    fn disk_override_wins_over_embedded() {
+        let dir = tmp_dir("override");
+        let p = dir.join("base_p2.md");
+        std::fs::write(&p, "用户自定义的 P2 内容").expect("write override");
+        let resolved = resolve_prompt_from(&dir, "base_p2.md");
+        assert!(matches!(resolved, Cow::Owned(_)), "磁盘存在时应返回 Owned");
+        assert_eq!(&*resolved, "用户自定义的 P2 内容");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn missing_disk_file_falls_back_to_embedded() {
+        let dir = tmp_dir("missing");
+        let resolved = resolve_prompt_from(&dir, "base_p2.md");
+        assert!(matches!(resolved, Cow::Borrowed(_)), "无磁盘文件应返回内置 Borrowed");
+        // 内置版就是源码 md 的原文
+        assert_eq!(&*resolved, include_str!("prompts/base_p2.md"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn blank_disk_file_falls_back_to_embedded() {
+        // 空文件/纯空白 = 无效覆盖，回落内置（防止用户清空后模型收到空规则）
+        let dir = tmp_dir("blank");
+        std::fs::write(dir.join("base_p2.md"), "   \n  \n").expect("write blank");
+        let resolved = resolve_prompt_from(&dir, "base_p2.md");
+        assert!(matches!(resolved, Cow::Borrowed(_)), "空白磁盘文件应回落内置");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn nested_disk_override_works() {
+        // 子目录文件（audience/os/mode）的覆盖路径拼接
+        let dir = tmp_dir("nested");
+        std::fs::create_dir_all(dir.join("audience")).expect("mkdir");
+        std::fs::write(dir.join("audience/developer.md"), "- 自定义开发者风格").expect("write");
+        let resolved = resolve_prompt_from(&dir, "audience/developer.md");
+        assert_eq!(&*resolved, "- 自定义开发者风格");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -58,7 +58,7 @@ pub fn build_dynamic_context(
         snapshot_seq, mode, mode
     );
     ctx.push_str("<mode_rules>\n");
-    ctx.push_str(get_mode_prompt(mode));
+    ctx.push_str(&get_mode_prompt(mode));
     ctx.push_str("\n</mode_rules>\n");
     ctx.push_str(&format!("<intent>{}</intent>\n", intent));
     // 能力边界：放在最前面，让模型第一轮就知道"哪些事在本会话根本做不到"，

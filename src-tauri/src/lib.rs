@@ -33,6 +33,14 @@ pub fn get_agent_home() -> &'static PathBuf {
         .expect("AGENT_HOME_DIR not initialized")
 }
 
+/// 非 panic 版：`AGENT_HOME_DIR` 尚未初始化（单测 / 启动极早期）时返回 None。
+///
+/// 供提示词磁盘覆盖解析等"可选增强"使用——这类场景在数据目录未就绪时
+/// 应回落内置默认，而不是像核心路径那样直接 panic。
+pub fn try_agent_home() -> Option<&'static PathBuf> {
+    AGENT_HOME_DIR.get()
+}
+
 fn detect_data_dir() -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     if cwd.join("src-tauri").join("Cargo.toml").exists() {
@@ -100,6 +108,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             core::agent::ask_jarvis,
             core::agent::resume_jarvis,
+            command::prompt::list_prompts,
+            command::prompt::get_prompt_detail,
+            command::prompt::save_prompt,
+            command::prompt::reset_prompt,
+            command::prompt::get_assembled_system_prompt,
             command::permission::cancel_jarvis,
             command::permission::resolve_permission,
             command::permission::get_permission_state,

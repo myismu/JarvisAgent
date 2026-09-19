@@ -22,4 +22,5 @@ pub mod sandbox;
 pub mod session;
 pub mod skill;
 pub mod snapshot;
+pub mod prompt;
 pub mod app_config;

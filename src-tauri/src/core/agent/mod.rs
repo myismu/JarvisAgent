@@ -23,6 +23,9 @@ mod reflection;
 pub mod stream;
 mod tools_runner;
 
+// 动态上下文组装（设置页「提示词」预览动态上下文时也要用，故公开）
+pub use context::build_dynamic_context;
+
 // Re-export stream types for use by tools/agent_tools.rs
 pub use stream::{process_stream, StreamConfig, StreamResult};
 
