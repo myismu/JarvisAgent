@@ -64,8 +64,8 @@
           "max"
         ],
         "temperature": false,
-        "maxTokens": 8192,
-        "notes": "官方 2026-09-15 口径：官方推荐模型名（对应 DeepSeek-V4.1-Flash），1M 上下文 / 最大 384K 输出，原生多模态视觉理解，思考模式默认开启（官方默认 effort=high，档位 low/high/max），FIM 仅非思考模式；价格（元/百万 tokens）输入缓存命中 0.02（空闲）/0.04（高峰）、未命中 1/2、输出 4/8；并发 2500。maxTokens 这里刻意取保守值 8192（原常量兜底值，避免输出上限突变），需要更长输出时在预设里覆盖或在下方改大（官方上限 384000）。思考链回传：Agent 场景始终带 tools，官方要求把之前所有轮次的思考完整回传（OpenAI 格式 reasoning_content；Anthropic 格式 thinking 块+签名），否则报 content[].thinking in the thinking mode must be passed back to the API，故标为 thinkingForced 由界面锁定为常开。Anthropic 端点 https://api.deepseek.com/anthropic 忽略 budget_tokens，思考强度用 output_config.effort；传入不支持的模型名会被后端映射到本模型。",
+        "maxTokens": 384000,
+        "notes": "官方 2026-09-15 口径：官方推荐模型名（对应 DeepSeek-V4.1-Flash），1M 上下文 / 最大 384K 输出，原生多模态视觉理解，思考模式默认开启（官方默认 effort=high，档位 low/high/max），FIM 仅非思考模式；价格（元/百万 tokens）输入缓存命中 0.02（空闲）/0.04（高峰）、未命中 1/2、输出 4/8；并发 2500。maxTokens 现按官方同表的 384K 填写；此前取的是常量兜底值 8192，实测会让 ProposePlan 这类大参数工具调用被 max_tokens 截断（2026-09-21 会话 4dd11079：completion_tokens 正好打满 8192、finish_reason=length，方案参数写到一半），故改为官方值。思考链回传：Agent 场景始终带 tools，官方要求把之前所有轮次的思考完整回传（OpenAI 格式 reasoning_content；Anthropic 格式 thinking 块+签名），否则报 content[].thinking in the thinking mode must be passed back to the API，故标为 thinkingForced 由界面锁定为常开。Anthropic 端点 https://api.deepseek.com/anthropic 忽略 budget_tokens，思考强度用 output_config.effort；传入不支持的模型名会被后端映射到本模型。",
         "vision": true,
         "maxContextTokens": 1000000
       }

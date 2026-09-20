@@ -85,6 +85,32 @@ pub struct DiagnosisInfo {
     pub schema_read: bool,
 }
 
+/// 一次工具调用产生的 token 用量。
+///
+/// 只有"自己跑独立 Agent Loop"的工具会产生非零值（`RunSubagent`、
+/// `RunSubagentsSequentially`），其余工具恒为不适用（0）。
+///
+/// 刻意做成结构体，而不是给 `log_deferred_call` 再补两个 `u64` 位置参数：
+/// 那两个参数类型相同、位置相邻，极容易传反——同批次刚修掉一个同类的传参事故
+/// （`tools/mod.rs` 里把变量 `agent_type` 写成了字符串字面量 `"agent_type"`）。
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct TokenUsage {
+    /// 输入 token（该工具自身发起的全部请求之和；不适用时为 0）
+    pub input: u64,
+    /// 输出 token（同上）
+    pub output: u64,
+}
+
+impl TokenUsage {
+    /// 不产生 token 用量的工具（绝大多数）
+    pub const NONE: TokenUsage = TokenUsage { input: 0, output: 0 };
+
+    /// 由工具返回值构造（来源见 `ToolCallResult::with_usage`）
+    pub fn new(input: u64, output: u64) -> Self {
+        Self { input, output }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolCallRecord {
     pub ts: String,
@@ -103,6 +129,13 @@ pub struct ToolCallRecord {
     pub error_message: Option<String>,
     pub correction: CorrectionInfo,
     pub diagnosis: DiagnosisInfo,
+    /// 本次调用的输入 token 用量。
+    ///
+    /// 字段恒定存在（不适用时写 0），读日志的一方可以直接累加，不必先判字段是否存在
+    /// ——缺失在 JS 里会参与运算变成 NaN，比 0 更难排查。
+    pub input_tokens: u64,
+    /// 本次调用的输出 token 用量（语义同上）
+    pub output_tokens: u64,
 }
 
 // ───────────────────────── per-session 纠正追踪状态 ─────────────────────────
@@ -255,6 +288,7 @@ impl ToolCallLogger {
         error_type: Option<ErrorType>,
         error_message: Option<String>,
         searched_before: bool,
+        usage: TokenUsage,
     ) {
         let mut sessions = self.sessions.lock().unwrap();
         let audit = sessions
@@ -294,6 +328,8 @@ impl ToolCallLogger {
                 searched_before,
                 schema_read: searched_before,
             },
+            input_tokens: usage.input,
+            output_tokens: usage.output,
         };
 
         drop(sessions);
@@ -341,6 +377,10 @@ impl ToolCallLogger {
                 searched_before: true,
                 schema_read: true,
             },
+            // 核心工具不产生 token 用量：会产生用量的两个（RunSubagent、
+            // RunSubagentsSequentially）都已是延迟工具，走 log_deferred_call 那条路
+            input_tokens: 0,
+            output_tokens: 0,
         };
 
         drop(sessions);
@@ -456,7 +496,7 @@ fn extract_deferred_args_summary(tool_name: &str, args: &serde_json::Value) -> s
     let source = args.get("args").and_then(|v| v.as_object()).or_else(|| args.as_object());
 
     if let Some(inner_args) = source {
-        for key in &["path", "command", "query", "pattern", "content"] {
+        for key in &["path", "command", "query", "pattern", "content", "subagent_type"] {
             if let Some(val) = inner_args.get(*key) {
                 summary[*key] = val.clone();
             }
@@ -468,7 +508,7 @@ fn extract_deferred_args_summary(tool_name: &str, args: &serde_json::Value) -> s
 /// 从核心工具的 args 中提取关键字段
 fn extract_core_args_summary(tool_name: &str, args: &serde_json::Value) -> serde_json::Value {
     let mut summary = serde_json::json!({ "name": tool_name });
-    for key in &["path", "command", "query", "pattern", "prompt", "skill"] {
+    for key in &["path", "command", "query", "pattern", "prompt", "skill", "subagent_type"] {
         if let Some(val) = args.get(*key) {
             summary[*key] = val.clone();
         }
@@ -524,6 +564,8 @@ mod tests {
                 searched_before: true,
                 schema_read: true,
             },
+            input_tokens: 0,
+            output_tokens: 0,
         };
 
         std::thread::scope(|scope| {

@@ -10,7 +10,7 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 20;
 
 /// 删除废弃的旧 checkpoint 表（v3 迁移）
 fn migrate_v3_drop_deprecated_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -396,8 +396,16 @@ fn migrate_v14_thinking_mode_to_bool(conn: &Connection) -> Result<(), rusqlite::
 /// 3. 重建 `agent_runs` 去掉三个 live 列（其余列**完整搬移**）；
 /// 4. `DROP TABLE agent_run_checkpoints`。
 ///
-/// SQLite 不支持 `DROP COLUMN`（3.35+ 才有，且本项目不依赖该版本），
-/// 也不支持改列约束，因此一律走"建新表 → 搬数据 → 删旧表 → 改名"。
+/// ⚠️ **以下"不支持 DROP COLUMN"的结论已过时**（2026-09-21 更正）：
+/// 本迁移写于 rusqlite 升级之前，当时内置 SQLite 版本不支持该语法，故走
+/// "建新表 → 搬数据 → 删旧表 → 改名"。现在用的是 rusqlite 0.32（`bundled`，
+/// 内置 SQLite **3.46**），`ALTER TABLE ... DROP COLUMN`（3.35+ 起支持）完全可用
+/// —— 同文件的 `sessions.working_directory`、`sessions.thinking_mode`
+/// 以及 v18 删除 `agent_runs.interrupt_kind` 都已在用。
+///
+/// ⇒ **新增迁移若只是删列，直接用 `DROP COLUMN` 即可，不必重建表。**
+/// 本 v15 迁移保留"重建表"写法不动：它同时还要改列约束与表结构（DROP COLUMN
+/// 做不到），且既有库早已执行过，重写无收益且有风险。
 fn migrate_v15_agent_run_events_per_loop(conn: &Connection) -> Result<(), rusqlite::Error> {
     let table_exists = |name: &str| -> Result<bool, rusqlite::Error> {
         conn.query_row(
@@ -787,6 +795,199 @@ fn migrate_v13_add_session_runtime_prefs(conn: &Connection) -> Result<(), rusqli
     Ok(())
 }
 
+/// v17：为 `session_messages` / `agent_runs` 增加 `interrupt_kind`（中断类型结构化）。
+///
+/// 背景（阶段二改造，见 doc/状态标注符号统一与结构化改造方案.md）：
+/// 中断收尾此前把 `**[回复被中断]** …` 标记**拼进 assistant 正文**（模型需要看到），
+/// 界面侧只能靠正则从文本里"猜着剥"。kind 落库后：
+/// - 界面侧直接读字段生成 notice 小字，正文保持干净；
+/// - 发送给模型时按 kind 把标记拼回（模型行为不变）；
+/// - ~~崩溃恢复重建时从 `agent_runs.interrupt_kind` 给重建消息打标~~
+///   —— **该设想未落地**：重建路径从不读那一列，它也从无写入点，
+///   已在 v18 删除（见 `migrate_v18_drop_agent_runs_interrupt_kind`）。
+///   实际承担"哪一轮被打断"的是 `agent_run_events.status`。
+///
+/// 旧行留 `NULL`（= 非中断消息）。旧库的历史中断标记**仍留在正文里**——
+/// 本次不做旧数据兼容层，由用户清理旧会话。
+fn migrate_v17_add_interrupt_kind(conn: &Connection) -> Result<(), rusqlite::Error> {
+    for table in ["session_messages", "agent_runs"] {
+        // ⚠️ 表可能不存在：迁移测试用的是最小桩库（只建 sessions/app_state），
+        // 早期版本库也未必有这两张表。`ALTER TABLE 不存在的表` 会直接报
+        // "no such table"，所以必须先探测表存在性再探测列——
+        // 与 v14 在空库上栽的坑同源（`PRAGMA table_info` 对不存在的表返回空集，
+        // 看起来"列不存在"于是去 ALTER，结果炸在表上）。
+        let table_exists = conn
+            .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name = ?1")
+            .and_then(|mut stmt| stmt.query_row([table], |row| row.get::<_, i64>(0)))
+            .map(|count| count > 0)
+            .unwrap_or(false);
+        if !table_exists {
+            continue;
+        }
+        let column_exists = {
+            let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
+            let columns: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(Result::ok)
+                .collect();
+            columns.iter().any(|c| c == "interrupt_kind")
+        };
+        if !column_exists {
+            conn.execute(
+                &format!("ALTER TABLE {} ADD COLUMN interrupt_kind TEXT", table),
+                [],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// v18：删除 `agent_runs.interrupt_kind`（设计要求了但从未接线，属死列）。
+///
+/// ## 为什么删
+///
+/// v17 给它设想的用途是"崩溃恢复重建时给重建消息打标"，但事实是：
+/// - **无写入点**：`RUN_COLUMNS`（agent_run_repository.rs）与 `upsert_run` 都不含它，
+///   全仓库没有任何一处写过这一列；
+/// - **无读取点**：重建走 `rebuild_messages_from_events`（agent_runs.rs），
+///   它只从 `agent_run_events` 重放，**从不读这一列**。
+///
+/// 真正承担"中断打标"的是另外两处载体：
+/// - `session_messages.interrupt_kind` —— 渲染层读它出小字、发送层按它把标记拼回；
+/// - `agent_run_events.status` / `.error` —— 判断"哪一轮被打断"。
+///
+/// 该列留着只会误导（注释声明的用途与实现不符），故删除。
+/// ⚠️ **只删 agent_runs 这一列**：`session_messages.interrupt_kind` 有真实读写，
+/// 必须保留。
+///
+/// ## 为什么可以直接用 DROP COLUMN
+///
+/// rusqlite 0.32（`bundled`）内置 SQLite 3.46，远高于该语法要求的 3.35；
+/// 本文件既有迁移（`sessions.working_directory`、`sessions.thinking_mode`）
+/// 已在用同一语法，所以无需走"重建表"路线。
+fn migrate_v18_drop_agent_runs_interrupt_kind(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // ⚠️ 表可能不存在：迁移测试用的是最小桩库（只建 sessions/app_state），
+    // 早期版本库也未必有 agent_runs。必须先探表、再探列，
+    // 否则 `ALTER TABLE` 一个不存在的表会直接报 "no such table"
+    // （与 v14 空库、v17 同源的坑）。
+    let table_exists = conn
+        .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'agent_runs'")
+        .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
+        .map(|count| count > 0)
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(());
+    }
+
+    let column_exists = {
+        let mut stmt = conn.prepare("PRAGMA table_info(agent_runs)")?;
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .collect();
+        columns.iter().any(|c| c == "interrupt_kind")
+    };
+    if column_exists {
+        conn.execute("ALTER TABLE agent_runs DROP COLUMN interrupt_kind", [])?;
+    }
+    Ok(())
+}
+
+/// v19：删除 `agent_runs` 两个**只写不读**的列 —— `user_message_preview` 与 `error`。
+///
+/// ## 为什么删（2026-09-21 全链路核查）
+///
+/// 两列都**只写不读**：
+/// - `user_message_preview`：`start_run` 写入用户消息前 120 字符；全仓库无任何
+///   业务读取点，前端 `types/index.ts` 虽声明了类型却**零渲染**；
+/// - `error`：`finish_run` 写入收尾原因；同为无业务读取、无前端渲染
+///   （`AgentPanel.vue` 里渲染的 `run.error` 是**子代理**那一套数据，
+///   与主 Agent 的 `agent_runs` 无关）。
+///
+/// 它们与 v18 删掉的 `interrupt_kind` 同源：都是"在主表上放一份摘要副本"，
+/// 而真正的逐条事实在 `agent_run_events`（每轮一行的 error/status）里。
+/// 冗余副本必然漂移，且本次核查证明它们连"被读"都没做到。
+///
+/// ⚠️ 影响提示：**run 级别的错误原因不再单独落库**。排查错误请查
+/// `agent_run_events.error`（每轮一行、信息更详细）。
+fn migrate_v19_drop_unused_run_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // ⚠️ 表可能不存在（迁移测试的最小桩库只建 sessions/app_state），先探表再探列。
+    let table_exists = conn
+        .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'agent_runs'")
+        .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
+        .map(|count| count > 0)
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(());
+    }
+
+    for column in ["user_message_preview", "error"] {
+        let column_exists = {
+            let mut stmt = conn.prepare("PRAGMA table_info(agent_runs)")?;
+            let columns: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(Result::ok)
+                .collect();
+            columns.iter().any(|c| c == column)
+        };
+        if column_exists {
+            conn.execute(&format!("ALTER TABLE agent_runs DROP COLUMN {}", column), [])?;
+        }
+    }
+    Ok(())
+}
+
+/// v20：把"中断类型"从 `summary` 的魔法字符串里解放出来 ——
+/// 为 `agent_runs` 加回 `interrupt_kind TEXT` 列（**这次是真接线**）。
+///
+/// ## 背景：为什么要加回来
+///
+/// v18 曾删掉这个列，理由是"它没有任何写入点与读取点"——当时属实：它只被设计为
+/// "崩溃重建时给重建消息打标"，而重建路径根本不读它。
+///
+/// 但本次核查发现 `summary` 里藏着一个**真正的状态标志**：`"上次执行在应用关闭
+/// 或进程结束时中断。"` 这句话被 `mark_run_recovered` 与 `keep_run_active` 拿去
+/// 比对，用来判断"这个 run 是不是因应用关闭而中断"。**拿文案当枚举**——
+/// 谁改一个字，恢复链的状态判断就静默失效。
+///
+/// 规范化的正确落点正是 `InterruptKind`（枚举已有 `AppClosed` 变体与
+/// `as_str`/`from_db`）。因此本列回归，职责明确为**记录"本 run 因何中断"**：
+/// - 退出/崩溃收尾 → `app_closed`
+/// - 流空闲超时 → `stream_timeout`
+/// - 用户取消 → `user_cancel`
+/// - 执行错误 → `pipeline_error`
+///
+/// ## 与 `session_messages.interrupt_kind` 的分工
+///
+/// 前者是**消息级**（哪条消息被中断收尾写下 → 界面渲染小字、发送时拼回标记），
+/// 本列是 **run 级**（整次运行为何结束 → 恢复链判定）。粒度不同，不是冗余副本。
+///
+/// 旧行留 `NULL`（= 未中断或早于本次迁移）。
+fn migrate_v20_add_agent_runs_interrupt_kind(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // ⚠️ 表可能不存在（迁移测试的最小桩库只建 sessions/app_state），先探表再探列。
+    let table_exists = conn
+        .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'agent_runs'")
+        .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
+        .map(|count| count > 0)
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(());
+    }
+
+    let column_exists = {
+        let mut stmt = conn.prepare("PRAGMA table_info(agent_runs)")?;
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .collect();
+        columns.iter().any(|c| c == "interrupt_kind")
+    };
+    if !column_exists {
+        conn.execute("ALTER TABLE agent_runs ADD COLUMN interrupt_kind TEXT", [])?;
+    }
+    Ok(())
+}
+
 pub fn init_schema(conn: &Connection) -> Result<(), String> {
     // 获取当前 schema 版本。
     //
@@ -889,6 +1090,22 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             migrate_v16_timestamps_to_millis(conn)
                 .map_err(|e| format!("v16 迁移失败: {}", e))?;
         }
+        if current_version < 17 {
+            migrate_v17_add_interrupt_kind(conn)
+                .map_err(|e| format!("v17 迁移失败: {}", e))?;
+        }
+        if current_version < 18 {
+            migrate_v18_drop_agent_runs_interrupt_kind(conn)
+                .map_err(|e| format!("v18 迁移失败: {}", e))?;
+        }
+        if current_version < 19 {
+            migrate_v19_drop_unused_run_columns(conn)
+                .map_err(|e| format!("v19 迁移失败: {}", e))?;
+        }
+        if current_version < 20 {
+            migrate_v20_add_agent_runs_interrupt_kind(conn)
+                .map_err(|e| format!("v20 迁移失败: {}", e))?;
+        }
     }
 
     conn.execute_batch(
@@ -947,6 +1164,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             hidden_at INTEGER,
             source TEXT NOT NULL DEFAULT 'chat',
             turn_id TEXT,
+            interrupt_kind TEXT,
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
             UNIQUE(session_id, seq)
         );
@@ -955,7 +1173,6 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             run_id TEXT PRIMARY KEY,
             session_id TEXT NOT NULL,
             status TEXT NOT NULL,
-            user_message_preview TEXT NOT NULL,
             message_id TEXT,
             loop_count INTEGER NOT NULL,
             input_tokens INTEGER NOT NULL,
@@ -964,10 +1181,10 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             updated_at INTEGER NOT NULL,
             finished_at INTEGER,
             last_safe_point TEXT,
-            error TEXT,
             summary TEXT,
             resumable INTEGER NOT NULL DEFAULT 0,
             resumed_from_run_id TEXT,
+            interrupt_kind TEXT,
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
 
@@ -1508,6 +1725,83 @@ mod tests {
         .unwrap_or(false)
     }
 
+    /// v18：删掉 `agent_runs.interrupt_kind`（从未接线），但
+    /// `session_messages.interrupt_kind` **必须保留**——那才是真正在用的落点。
+    #[test]
+    fn v18_drops_only_agent_runs_interrupt_kind() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        conn.execute_batch(
+            "CREATE TABLE agent_runs (
+                run_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                interrupt_kind TEXT
+            );
+            CREATE TABLE session_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                interrupt_kind TEXT
+            );",
+        )
+        .expect("build v17-shaped stub");
+
+        migrate_v18_drop_agent_runs_interrupt_kind(&conn).expect("v18 迁移应当成功");
+
+        assert!(
+            !column_exists(&conn, "agent_runs", "interrupt_kind"),
+            "agent_runs.interrupt_kind 应被删除"
+        );
+        assert!(
+            column_exists(&conn, "session_messages", "interrupt_kind"),
+            "session_messages.interrupt_kind 必须保留（唯一在用的落点）"
+        );
+
+        // 幂等：重复执行不得报错（列已不存在时直接跳过）
+        migrate_v18_drop_agent_runs_interrupt_kind(&conn).expect("重复执行应幂等");
+    }
+
+    /// 桩库没有 `agent_runs` 表时不得炸——与 v14 空库、v17 同源的坑。
+    #[test]
+    fn v18_migration_tolerates_missing_table() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        conn.execute_batch("CREATE TABLE sessions (id TEXT PRIMARY KEY);")
+            .expect("minimal stub");
+        migrate_v18_drop_agent_runs_interrupt_kind(&conn).expect("缺表时应直接返回");
+    }
+
+    /// v20：加回 `agent_runs.interrupt_kind`（这次真接线），且必须幂等。
+    #[test]
+    fn v20_adds_agent_runs_interrupt_kind_idempotently() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        conn.execute_batch(
+            "CREATE TABLE agent_runs (
+                run_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                summary TEXT
+            );",
+        )
+        .expect("build stub");
+
+        assert!(!column_exists(&conn, "agent_runs", "interrupt_kind"));
+
+        migrate_v20_add_agent_runs_interrupt_kind(&conn).expect("v20 迁移应当成功");
+        assert!(
+            column_exists(&conn, "agent_runs", "interrupt_kind"),
+            "v20 必须加回 agent_runs.interrupt_kind"
+        );
+
+        // 幂等：重复执行不得报 duplicate column
+        migrate_v20_add_agent_runs_interrupt_kind(&conn).expect("重复执行应幂等");
+    }
+
+    /// 桩库没有 `agent_runs` 表时 v20 也不得炸。
+    #[test]
+    fn v20_migration_tolerates_missing_table() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        conn.execute_batch("CREATE TABLE sessions (id TEXT PRIMARY KEY);")
+            .expect("minimal stub");
+        migrate_v20_add_agent_runs_interrupt_kind(&conn).expect("缺表时应直接返回");
+    }
+
     /// v14 老库升级到 v15：`agent_run_events` 改为每轮一行、`agent_runs` 去掉三个 live 列、
     /// `agent_run_checkpoints` 被删除，且 `agent_runs` 的其余列**完整保留**（不得丢数据）。
     #[test]
@@ -1611,18 +1905,21 @@ mod tests {
                 col
             );
         }
+        // 1b. 本测试跑的是**完整升级链**（到最新版），故 v19 的两个删除也应生效
+        for col in ["user_message_preview", "error"] {
+            assert!(
+                !column_exists(&conn, "agent_runs", col),
+                "v19 迁移必须删除 agent_runs.{}",
+                col
+            );
+        }
         // 2. 其余列完整保留（不得丢数据）
-        let (status, preview, msg_id, loops, in_tok, out_tok, resumable): (
-            String,
-            String,
-            Option<String>,
-            i64,
-            i64,
-            i64,
-            i64,
-        ) = conn
+        // ⚠️ `user_message_preview` 已在 v19 被删除（只写不读），故不再纳入本断言。
+        let (status, loops, in_tok, out_tok, resumable): (String, i64, i64, i64, i64) = conn
             .query_row(
-                "SELECT status, user_message_preview, message_id, loop_count, input_tokens, output_tokens, resumable
+                // ⚠️ 不再选 user_message_preview：该列在 v19 被删除（只写不读）。
+                // 本断言要验证的是"其余列完整搬移"，故只检查仍然存在的列。
+                "SELECT status, loop_count, input_tokens, output_tokens, resumable
                  FROM agent_runs WHERE run_id = 'ar_1'",
                 [],
                 |r| {
@@ -1632,16 +1929,13 @@ mod tests {
                         r.get(2)?,
                         r.get(3)?,
                         r.get(4)?,
-                        r.get(5)?,
-                        r.get(6)?,
                     ))
                 },
             )
             .expect("legacy run row must survive");
         assert_eq!(status, "completed");
-        assert_eq!(preview, "预览");
-        assert_eq!(msg_id.as_deref(), Some("msg_1"));
-        assert_eq!((loops, in_tok, out_tok, resumable), (3, 1200, 340, 0));
+        assert_eq!(loops, 3);
+        assert_eq!((in_tok, out_tok, resumable), (1200, 340, 0));
 
         // 3. events 表重建为目标结构
         assert!(
@@ -1677,14 +1971,15 @@ mod tests {
 
         // 6. 幂等：重复初始化不报错、不破坏数据
         init_schema(&conn).expect("re-init idempotent");
+        // 用仍然存在的列验证（user_message_preview 已在 v19 删除）
         let after: String = conn
             .query_row(
-                "SELECT user_message_preview FROM agent_runs WHERE run_id = 'ar_1'",
+                "SELECT status FROM agent_runs WHERE run_id = 'ar_1'",
                 [],
                 |r| r.get(0),
             )
             .expect("re-read run");
-        assert_eq!(after, "预览", "重复初始化不得丢 run 数据");
+        assert_eq!(after, "completed", "重复初始化不得丢 run 数据");
     }
 
     /// v16：把存量秒级时间戳统一放大为毫秒（含 JSON 内嵌字段），且重复初始化不二次放大。

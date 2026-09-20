@@ -33,6 +33,8 @@ pub struct StoredSessionMessage {
     pub hidden_at: Option<u64>,
     pub source: String,
     pub turn_id: Option<String>,
+    /// 中断类型（`None` = 非中断消息）。取值见 `InterruptKind::as_str`。
+    pub interrupt_kind: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -183,6 +185,7 @@ pub fn append_or_upsert_session_messages(
     messages: &[Message],
     message_ids: &[String],
     sources: &[String],
+    interrupt_kinds: &[Option<String>],
     now: u64,
 ) -> Result<(), String> {
     crate::infra::db::with_transaction(|tx| {
@@ -218,6 +221,8 @@ pub fn append_or_upsert_session_messages(
                 continue;
             };
             let source = sources.get(idx).map(|s| s.as_str()).unwrap_or("chat");
+            // 中断类型（None = 非中断消息）；与 messages/sources 平行取值
+            let interrupt_kind = interrupt_kinds.get(idx).and_then(|k| k.as_deref());
             let role = match message {
                 Message::User { .. } => "user",
                 Message::Assistant { .. } => "assistant",
@@ -243,9 +248,9 @@ pub fn append_or_upsert_session_messages(
                 let (_, seq, _, _) = existing_by_content.remove(position);
                 tx.execute(
                     "UPDATE session_messages
-                     SET message_id = ?3, updated_at = ?4, source = ?5
+                     SET message_id = ?3, updated_at = ?4, source = ?5, interrupt_kind = ?6
                      WHERE session_id = ?1 AND seq = ?2",
-                    params![session_id, seq, message_id, now as i64, source],
+                    params![session_id, seq, message_id, now as i64, source, interrupt_kind],
                 )
                 .map_err(|e| e.to_string())?;
                 seq
@@ -257,13 +262,14 @@ pub fn append_or_upsert_session_messages(
 
             tx.execute(
                 "INSERT INTO session_messages(
-                    session_id, message_id, seq, role, content_json, created_at, updated_at, source
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)
+                    session_id, message_id, seq, role, content_json, created_at, updated_at, source, interrupt_kind
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7, ?8)
                  ON CONFLICT(session_id, message_id) DO UPDATE SET
                     role = excluded.role,
                     content_json = excluded.content_json,
                     updated_at = excluded.updated_at,
                     source = excluded.source,
+                    interrupt_kind = excluded.interrupt_kind,
                     hidden_at = NULL,
                     recalled_at = NULL",
                 params![
@@ -274,6 +280,7 @@ pub fn append_or_upsert_session_messages(
                     content_json,
                     now as i64,
                     source,
+                    interrupt_kind,
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -288,7 +295,7 @@ pub fn list_visible_session_messages(session_id: &str) -> Result<Vec<StoredSessi
         let mut stmt = conn
             .prepare(
                 "SELECT message_id, seq, role, content_json, created_at, updated_at, recalled_at,
-                        hidden_at, source, turn_id
+                        hidden_at, source, turn_id, interrupt_kind
                  FROM session_messages
                  WHERE session_id = ?1
                    AND hidden_at IS NULL
@@ -323,7 +330,7 @@ pub fn list_visible_session_messages_paged(
         let mut stmt = conn
             .prepare(
                 "SELECT message_id, seq, role, content_json, created_at, updated_at, recalled_at,
-                        hidden_at, source, turn_id
+                        hidden_at, source, turn_id, interrupt_kind
                  FROM session_messages
                  WHERE session_id = ?1
                    AND hidden_at IS NULL
@@ -631,6 +638,8 @@ fn stored_session_message_from_row(row: &Row<'_>) -> rusqlite::Result<StoredSess
         hidden_at: hidden_at.map(|value| value.max(0) as u64),
         source: row.get(8)?,
         turn_id: row.get(9)?,
+        // 第 11 列（列序见各处 SELECT：… hidden_at, source, turn_id, interrupt_kind）
+        interrupt_kind: row.get(10)?,
     })
 }
 
@@ -661,7 +670,7 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
                 .map(|(i, _)| format!("?{}", i + 2))
                 .collect();
             let sql = format!(
-                "SELECT message_id, content_json, source FROM session_messages
+                "SELECT message_id, content_json, source, interrupt_kind FROM session_messages
                  WHERE session_id = ?1 AND message_id IN ({})",
                 placeholders.join(",")
             );
@@ -678,20 +687,22 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
                     )),
                 )
                 .map_err(|e| e.to_string())?;
-            let mut content_by_id: HashMap<String, (String, String)> = HashMap::new();
+            let mut content_by_id: HashMap<String, (String, String, Option<String>)> = HashMap::new();
             for row in rows {
-                let (mid, content_json, source) = row.map_err(|e| e.to_string())?;
-                content_by_id.insert(mid, (content_json, source));
+                let (mid, content_json, source, kind) = row.map_err(|e| e.to_string())?;
+                content_by_id.insert(mid, (content_json, source, kind));
             }
-            // 严格按 message_ids 数组顺序重建 messages 和 sources，保证顺序一致
+            // 严格按 message_ids 数组顺序重建 messages / sources / interrupt_kinds，保证三数组平行
             for mid in &memory.message_ids {
-                if let Some((content_json, source)) = content_by_id.get(mid) {
+                if let Some((content_json, source, kind)) = content_by_id.get(mid) {
                     if let Ok(msg) = serde_json::from_str::<Message>(content_json) {
                         memory.messages.push(msg);
                         memory.sources.push(source.clone());
+                        memory.interrupt_kinds.push(kind.clone());
                     }
                 }
             }

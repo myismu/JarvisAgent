@@ -49,13 +49,155 @@ fn normalize_json_string_control_chars(raw: &str) -> String {
     normalized
 }
 
+/// 工具参数解析失败的分类。
+///
+/// 存在意义（2026-09-21 会话 4dd11079 的教训）：此前只把 serde 的英文原文
+/// 丢回给模型，模型把 `trailing characters`（JSON 其实已完整、只是末尾多了一个
+/// `}`）误读成 `EOF while parsing a string`（输出被截断），于是一路缩短参数、
+/// 连错三次也没发现错误类型早就变了。分类后每类配一条**可执行**的处置建议，
+/// 模型才能自我修正，而不是拿着上一次的经验瞎猜。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolInputErrorKind {
+    /// 输出被 max_tokens 截断：JSON 在字符串或结构中间断开
+    Truncated,
+    /// JSON 已完整闭合，但闭合之后还有多余内容（典型：末尾多一个 `}`）
+    TrailingData,
+    /// 其他语法/格式错误（引号未转义、括号不配对等）
+    Malformed,
+}
+
+impl ToolInputErrorKind {
+    /// 给模型的处置建议（追加在工具结果末尾，**模型可见**）
+    pub fn advice(&self) -> &'static str {
+        match self {
+            Self::Truncated => {
+                "你的输出被 max_tokens 截断，工具调用的 JSON 参数不完整。\
+                 请减少单次输出量——缩短正文字段，或拆成多次调用，不要一次塞进全部内容。"
+            }
+            Self::TrailingData => {
+                "参数 JSON 已经完整，但闭合之后多了多余字符（通常是末尾多出一个 `}` 或 `]`）。\
+                 请检查括号配对，最外层闭合后不要再输出任何字符。\
+                 注意：这不是长度问题，缩短内容无法解决。"
+            }
+            Self::Malformed => {
+                "参数 JSON 语法有误（常见于字符串内的引号或换行未转义）。\
+                 请检查转义与括号配对后重新提交。"
+            }
+        }
+    }
+}
+
+/// 工具参数解析失败：保留 serde 原文供排查，同时带上分类以生成精确建议。
+#[derive(Debug, Clone)]
+pub struct ToolInputParseError {
+    pub kind: ToolInputErrorKind,
+    /// serde 的原始错误文本（英文），用于日志与界面展示
+    pub detail: String,
+}
+
+impl ToolInputParseError {
+    pub fn advice(&self) -> &'static str {
+        self.kind.advice()
+    }
+}
+
+/// **只输出 serde 的原始错误文本**（不带「参数解析失败」前缀）。
+///
+/// 前缀由调用点负责：调用点写的是「工具 `X` 参数解析失败：{}」，若这里再带一次，
+/// 模型收到的就是「工具 `X` 参数解析失败：**工具参数解析失败：**EOF while…」——
+/// 同一句话重复两遍（2026-09-21 修正）。
+impl std::fmt::Display for ToolInputParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.detail)
+    }
+}
+
+impl std::error::Error for ToolInputParseError {}
+
+/// 按 serde 错误判定分类。
+///
+/// `Category::Eof` 一律视为截断（流在 JSON 中途耗尽）；语法类里再按消息文本
+/// 认出"闭合后多余字符"——serde 新旧版本的措辞不同（`trailing characters` /
+/// `Extra data`），两者都要覆盖。
+fn classify_tool_input_error(err: &serde_json::Error) -> ToolInputErrorKind {
+    use serde_json::error::Category;
+    let msg = err.to_string();
+    match err.classify() {
+        Category::Eof => ToolInputErrorKind::Truncated,
+        Category::Syntax if msg.contains("trailing characters") || msg.contains("Extra data") => {
+            ToolInputErrorKind::TrailingData
+        }
+        _ => ToolInputErrorKind::Malformed,
+    }
+}
+
+/// 剥离"完整 JSON 之后多余的闭合符"，仅在**确定安全**时返回可解析的片段。
+///
+/// 场景（2026-09-21 实测 deepseek-flash）：厂商流式下发 tool_call 参数时，
+/// 会在合法 JSON 闭合后再多发一个 `}`，serde 报 `trailing characters`。
+/// 此时参数内容其实完整，直接判失败会让模型误以为是内容太长。
+///
+/// 触发条件刻意收紧，避免掩盖真实错误：
+/// 1. 末尾必须存在**一处完整闭合**（带字符串状态机的括号计数归零）；
+/// 2. 闭合之后的剩余字符，去掉空白后**必须全是闭合符**（`}` / `]`）。
+/// 任何其它字符（例如又一段 JSON、半个字符串）都返回 None，交回上层报错。
+fn strip_trailing_closers(raw: &str) -> Option<String> {
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escaping = false;
+    let mut end: Option<usize> = None;
+
+    for (i, ch) in raw.char_indices() {
+        if escaping {
+            escaping = false;
+            continue;
+        }
+        if in_string {
+            match ch {
+                '\\' => escaping = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' | '[' => depth += 1,
+            '}' | ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let end = end?;
+    let tail = &raw[end + 1..];
+    // 尾部为空说明本来就能解析成功，不该走到这里
+    if tail.trim().is_empty() {
+        return None;
+    }
+    if !tail.chars().all(|c| c.is_whitespace() || c == '}' || c == ']') {
+        return None;
+    }
+    Some(raw[..=end].to_string())
+}
+
 /// 解析流式工具调用的输入 JSON
 ///
 /// 返回 (解析结果, 是否经过规范化修正)
-pub fn parse_streamed_tool_input(raw: &str) -> Result<(serde_json::Value, bool), String> {
+pub fn parse_streamed_tool_input(
+    raw: &str,
+) -> Result<(serde_json::Value, bool), ToolInputParseError> {
     match serde_json::from_str::<serde_json::Value>(raw) {
         Ok(value) => Ok((value, false)),
         Err(first_err) => {
+            let kind = classify_tool_input_error(&first_err);
+            let detail = first_err.to_string();
+
             // Pass 1: 控制字符规范化
             let normalized = normalize_json_string_control_chars(raw);
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&normalized) {
@@ -66,7 +208,15 @@ pub fn parse_streamed_tool_input(raw: &str) -> Result<(serde_json::Value, bool),
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&repaired) {
                 return Ok((value, true));
             }
-            Err(format!("工具参数解析失败：{}", first_err))
+            // Pass 3: 剥离"完整 JSON 之后多余的闭合符"
+            // （部分厂商流式生成 tool_call 参数时会多发一个 `}`；此时参数内容
+            //  其实完整，直接判失败会让模型误以为是自己写太长而反复缩短）
+            if let Some(stripped) = strip_trailing_closers(&normalized) {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&stripped) {
+                    return Ok((value, true));
+                }
+            }
+            Err(ToolInputParseError { kind, detail })
         }
     }
 }
@@ -469,6 +619,80 @@ mod tests {
                 },
             ]),
         }
+    }
+
+    // ───────── 工具参数解析：Pass 3 自愈 + 错误分类（2026-09-21 事故回归锁）─────────
+
+    /// 厂商在合法 JSON 闭合后多发一个 `}`（deepseek-flash 实测）→ 应自愈成功。
+    #[test]
+    fn trailing_extra_closer_is_auto_repaired() {
+        let raw = r#"{"name":"ProposePlan","args":{"content":"方案","n":[1,2]}}}"#;
+        let (value, recovered) = parse_streamed_tool_input(raw).expect("应自愈");
+        assert!(recovered, "应标记为已修复");
+        assert_eq!(value["name"], "ProposePlan");
+        assert_eq!(value["args"]["content"], "方案");
+        assert_eq!(value["args"]["n"][1], 2);
+    }
+
+    /// 多余闭合符位于字符串**内部**时不得误修（花括号是内容，不是结构）。
+    #[test]
+    fn braces_inside_string_value_are_not_stripped() {
+        let raw = r#"{"tpl":"if (x) { return 1; }"}"#;
+        let (value, recovered) = parse_streamed_tool_input(raw).expect("本就合法");
+        assert!(!recovered, "合法输入不应走修复路径");
+        assert_eq!(value["tpl"], "if (x) { return 1; }");
+    }
+
+    /// 闭合后多余的是**非闭合符**内容 → 不放水，必须报错（避免掩盖真实错误）。
+    #[test]
+    fn trailing_non_closer_content_is_not_salvaged() {
+        let raw = r#"{"a":1} 多余的一段话"#;
+        let err = parse_streamed_tool_input(raw).expect_err("不应自愈");
+        assert_eq!(err.kind, ToolInputErrorKind::TrailingData);
+    }
+
+    /// 真截断（字符串中途断开）→ 分类为 Truncated，且不尝试自愈。
+    #[test]
+    fn truncated_json_is_classified_as_truncated() {
+        let raw = r#"{"name":"ProposePlan","args":{"content":"方案写到一半"#;
+        let err = parse_streamed_tool_input(raw).expect_err("截断应报错");
+        assert_eq!(err.kind, ToolInputErrorKind::Truncated);
+        assert!(
+            err.advice().contains("max_tokens"),
+            "截断的建议应指向输出上限：{}",
+            err.advice()
+        );
+    }
+
+    /// 无法自愈的"多余闭合符"场景（闭合后既有 `}` 又有别的东西）也应给出
+    /// 明确建议，且必须写明"不是长度问题"——这是上次模型被误导的关键。
+    #[test]
+    fn trailing_data_advice_explicitly_says_not_a_length_problem() {
+        let raw = r#"{"a":1} xyz"#;
+        let err = parse_streamed_tool_input(raw).expect_err("应报错");
+        assert_eq!(err.kind, ToolInputErrorKind::TrailingData);
+        assert!(
+            err.advice().contains("不是长度问题"),
+            "建议须显式否定长度归因：{}",
+            err.advice()
+        );
+    }
+
+    /// Display 只给 serde 原文，**不得带「参数解析失败」前缀**。
+    ///
+    /// 前缀由调用点拼（tools_runner.rs / subagent.rs 均已写「工具 `X` 参数解析失败：」）。
+    /// 曾两边都写，模型收到「…参数解析失败：工具参数解析失败：EOF while…」的重复前缀。
+    #[test]
+    fn parse_error_display_has_no_duplicated_prefix() {
+        let raw = r#"{"a":1} xyz"#;
+        let err = parse_streamed_tool_input(raw).expect_err("应报错");
+        let text = format!("{}", err);
+        assert!(
+            !text.contains("参数解析失败"),
+            "Display 不应重复调用点已写的部分，实际：{}",
+            text
+        );
+        assert_eq!(text, err.detail, "Display 应当就是 serde 原文");
     }
 
     #[test]

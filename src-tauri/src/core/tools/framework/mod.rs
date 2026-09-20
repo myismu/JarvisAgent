@@ -27,6 +27,10 @@ pub struct ToolCallResult {
     /// 用于 ProposePlan 等需要等待用户操作的工具：
     /// 提交方案后立即结束 turn，用户审批后开启新 turn。
     pub break_loop: bool,
+    /// 本次调用消耗的 input token（默认 0，见 [`Self::with_usage`]）
+    pub input_tokens: u64,
+    /// 本次调用消耗的 output token（默认 0，见 [`Self::with_usage`]）
+    pub output_tokens: u64,
 }
 
 impl ToolCallResult {
@@ -37,6 +41,8 @@ impl ToolCallResult {
             is_error: false,
             is_blocked: false,
             break_loop: false,
+            input_tokens: 0,
+            output_tokens: 0,
         }
     }
 
@@ -47,6 +53,8 @@ impl ToolCallResult {
             is_error: true,
             is_blocked: false,
             break_loop: false,
+            input_tokens: 0,
+            output_tokens: 0,
         }
     }
 
@@ -57,6 +65,8 @@ impl ToolCallResult {
             is_error: true,
             is_blocked: true,
             break_loop: false,
+            input_tokens: 0,
+            output_tokens: 0,
         }
     }
 
@@ -67,11 +77,25 @@ impl ToolCallResult {
             is_error: false,
             is_blocked: false,
             break_loop: true,
+            input_tokens: 0,
+            output_tokens: 0,
         }
     }
 
     /// 提取纯文本（丢弃错误标记），用于返回给 LLM
     pub fn into_output(self) -> String {
         self.output
+    }
+
+    /// 附加本次调用的 token 用量（链式调用）。
+    ///
+    /// 目前只有 RunSubagent 会产生非零值：子代理跑的是独立 Agent Loop，
+    /// 它的用量不经过逐请求的 provider usage 快照，只能靠工具返回值带回主循环
+    /// （见 `pipeline` 里 `req_sub_input_tokens` 的说明）。延迟工具统一经
+    /// ExecuteTool → dispatch 执行，若不在这条链路上透传，用量会在 ExecuteTool 那层丢掉。
+    pub fn with_usage(mut self, input_tokens: u64, output_tokens: u64) -> Self {
+        self.input_tokens = input_tokens;
+        self.output_tokens = output_tokens;
+        self
     }
 }

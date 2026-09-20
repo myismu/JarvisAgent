@@ -33,6 +33,9 @@ pub struct Capabilities {
     /// 刻意与 `orchestrate` 分成两个字段：规划模式要禁的是"把活派出去让别人写"
     /// （子代理内层固定 `edit` 模式，写工具对它全量可见），而不是"列任务清单"。
     /// 合成一个字段的后果是规划模式连 `CreateTask` 一起报不可用，把规划能力也砍掉了。
+    ///
+    /// ⚠️ 该能力为 `false` 时，`context_block` / `summary_line` **整项不输出**，
+    /// 而不是输出"不可用"。详见 `context_block` 的文档注释。
     pub delegate: bool,
     /// 提交方案审批（ProposePlan）
     pub plan: bool,
@@ -63,25 +66,38 @@ impl Capabilities {
         }
     }
 
-    /// 单行摘要，用于工具目录/搜索结果的"能力边界"结论
+    /// 单行摘要，用于工具目录/搜索结果的"能力边界"结论。
+    ///
+    /// 「派子代理」**只在可用时列出**（见 `delegate` 字段注释）：规划模式下
+    /// 整项不出现，而不是写成"派子代理 不可用"。
     pub fn summary_line(&self) -> String {
         let mark = |ok: bool| if ok { "可用" } else { "不可用" };
-        format!(
-            "读取文件 {} / 修改文件 {} / 执行命令 {} / 任务编排 {} / 派子代理 {} / 方案规划 {} / 模式切换 {}",
-            mark(self.read),
-            mark(self.write),
-            mark(self.run_commands),
-            mark(self.orchestrate),
-            mark(self.delegate),
-            mark(self.plan),
-            mark(self.switch_mode),
-        )
+        let mut parts = vec![
+            format!("读取文件 {}", mark(self.read)),
+            format!("修改文件 {}", mark(self.write)),
+            format!("执行命令 {}", mark(self.run_commands)),
+            format!("任务编排 {}", mark(self.orchestrate)),
+        ];
+        if self.delegate {
+            parts.push(format!("派子代理 {}", mark(self.delegate)));
+        }
+        parts.push(format!("方案规划 {}", mark(self.plan)));
+        parts.push(format!("模式切换 {}", mark(self.switch_mode)));
+        parts.join(" / ")
     }
 
     /// 注入第一轮上下文的完整能力声明。
     ///
     /// 这段文本的作用是"消灭探测"：模型在第一轮就知道哪些能力不存在，
     /// 不需要（也不允许）用 GetToolCatalog / DiscoverTools 去验证。
+    ///
+    /// ⚠️ 「不可用」分两类，**措辞策略相反**：
+    /// 1. 用户可能主动要求、模型需要当场如实回绝的（写文件 / 执行命令）——
+    ///    必须**显式声明不可用**，否则模型会去试探、绕行；
+    /// 2. 系统流程在别处交代、当前模式下压根不该进入模型考虑范围的（派子代理）——
+    ///    **整项不提**。写成"不可用"等于告诉模型"有这个东西"，它就会围绕它
+    ///    做心理活动，甚至向用户解释"本环境不支持子代理"（真实事故：
+    ///    会话 47ecd917 的 thinking 与 plan.md 相互打架，"派子代理 不可用"是起因之一）。
     pub fn context_block(&self) -> String {
         let mark = |ok: bool| if ok { "可用" } else { "不可用（本会话不存在对应工具）" };
         let mut out = String::from("<capabilities>\n【本会话能力边界 · 系统强制】\n");
@@ -89,7 +105,10 @@ impl Capabilities {
         out.push_str(&format!("- 修改文件（写入/编辑/删除/重命名）：{}\n", mark(self.write)));
         out.push_str(&format!("- 执行命令（含启动服务）：{}\n", mark(self.run_commands)));
         out.push_str(&format!("- 任务编排（建任务清单 / 待办）：{}\n", mark(self.orchestrate)));
-        out.push_str(&format!("- 派子代理（RunSubagent / RunSubagentsSequentially）：{}\n", mark(self.delegate)));
+        // 派子代理：只在可用时列出（规划模式下整项不出现，理由见上方文档注释）
+        if self.delegate {
+            out.push_str("- 派子代理（RunSubagent / RunSubagentsSequentially）：可用\n");
+        }
         out.push_str(&format!("- 提交方案审批（ProposePlan）：{}\n", mark(self.plan)));
         out.push_str(&format!("- 切换工作模式（SwitchWorkMode）：{}\n", mark(self.switch_mode)));
         out.push_str(
@@ -133,7 +152,31 @@ mod tests {
         let block = Capabilities::for_work_mode("plan").context_block();
         assert!(block.contains("不可用（本会话不存在对应工具）"));
         assert!(block.contains("不要调用 GetToolCatalog"));
-        // 子代理能力必须在提示词里显式声明不可用，否则模型会去试探
-        assert!(block.contains("派子代理（RunSubagent / RunSubagentsSequentially）：不可用"));
+        assert!(block.contains("修改文件（写入/编辑/删除/重命名）：不可用"));
+    }
+
+    /// **回归锁（2026-09-21）**：规划模式下「派子代理」**整项不出现**。
+    ///
+    /// 此前写法是"派子代理（…）：不可用（本会话不存在对应工具）"，本意是消灭探测，
+    /// 实际效果相反：它把"子代理"这个概念塞进了模型视野，模型于是围绕它做心理活动，
+    /// 甚至准备在方案里向用户写"本环境不支持子代理"。规划模式压根不该让模型
+    /// 考虑这件事，所以正确做法是**不提**。
+    #[test]
+    fn plan_mode_never_mentions_subagent_at_all() {
+        let caps = Capabilities::for_work_mode("plan");
+        let block = caps.context_block();
+        assert!(!block.contains("派子代理"), "规划模式能力块不得出现「派子代理」");
+        assert!(!block.contains("RunSubagent"), "规划模式能力块不得出现子代理工具名");
+        assert!(!caps.summary_line().contains("派子代理"), "摘要行同样不得出现");
+        assert!(!caps.summary_line().contains("RunSubagent"));
+    }
+
+    /// 反向锁：edit 模式下子代理确实可用，能力块应当照常列出（别把整项删没了）。
+    #[test]
+    fn edit_mode_still_lists_subagent_when_available() {
+        let caps = Capabilities::for_work_mode("edit");
+        assert!(caps.delegate);
+        assert!(caps.context_block().contains("派子代理"));
+        assert!(caps.summary_line().contains("派子代理 可用"));
     }
 }

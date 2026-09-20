@@ -80,6 +80,21 @@ pub struct UiPreferences {
     pub thinking_default: String,
     #[serde(default = "default_locale")]
     pub locale: String,
+    /// 「崩溃保护（实时保存）」开关——**纯全局、默认关**。
+    ///
+    /// 开：主 Agent 流式期间按攒批粒度（200ms / 1KB）把半截正文写进
+    /// `agent_run_events`，进程崩溃/断电后能把"跑到一半的那一轮"恢复出来。
+    /// 关：只在每轮收尾写一次——此时进程崩溃会丢掉**当前这一轮**已输出的内容
+    ///（用户取消、上游断流不受影响，它们进程还活着，走内存态收尾）。
+    ///
+    /// 为什么默认关：正常路径下"崩溃丢半轮"是可接受的（用户重说一句即可），
+    /// 而开启意味着给每个 SSE 帧加一条 SQLite 写的成本；把选择权交给用户，
+    /// 默认保持最省的状态。
+    ///
+    /// 为什么是**全局**而非会话级：它防的是"进程突然没了"这种应用级故障，
+    /// 与具体会话无关；做成会话级只会让用户在多会话间反复拨动却无收益。
+    #[serde(default)]
+    pub crash_protection: bool,
     /// 图片压缩档位："eco"（省流）/ "standard"（标准）/ "hd"（高清）。
     ///
     /// 档位是**用户的选择意图**，宽高数值是它的实现细节，两者一起落库：
@@ -149,6 +164,7 @@ impl Default for UiPreferences {
             thinking_default: default_thinking_default(),
             agent_approval_mode: "request_approval".to_string(),
             locale: "zh-CN".to_string(),
+            crash_protection: false,
             image_compress_tier: "standard".to_string(),
             image_max_width: 1568,
             image_max_height: 896,

@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import type {
   AgentRun,
-  AgentRunEvent,
+  AgentRunLoopEvent,
   SessionContextSnapshot,
   SubAgentRun,
   SubAgentEvent,
@@ -12,7 +12,7 @@ import { useSessionStore } from "./session";
 
 export const useAgentStore = defineStore("agent", () => {
   const agentRuns = ref<Record<string, AgentRun>>({});
-  const agentRunEventsByRun = ref<Record<string, AgentRunEvent[]>>({});
+  const agentRunEventsByRun = ref<Record<string, AgentRunLoopEvent[]>>({});
   const subAgentRuns = ref<Record<string, SubAgentRun>>({});
   const subAgentEventsByRun = ref<Record<string, SubAgentEvent[]>>({});
   const contextSnapshots = ref<Record<string, SessionContextSnapshot>>({});
@@ -76,7 +76,7 @@ export const useAgentStore = defineStore("agent", () => {
     return subAgentEventsByRun.value[runId] ?? [];
   }
 
-  function getAgentRunEvents(runId: string): AgentRunEvent[] {
+  function getAgentRunEvents(runId: string): AgentRunLoopEvent[] {
     return agentRunEventsByRun.value[runId] ?? [];
   }
 

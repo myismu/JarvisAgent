@@ -217,6 +217,7 @@ pub async fn handle_execute_tool(
                 Some(super::tool_call_logger::ErrorType::MissingParam),
                 Some("缺少必填参数 'name'".to_string()),
                 false,
+                super::tool_call_logger::TokenUsage::NONE,
             );
             return super::ToolCallResult::error("缺少必填参数 'name'（要执行的工具名称）。".to_string());
         }
@@ -236,6 +237,7 @@ pub async fn handle_execute_tool(
                 Some(super::tool_call_logger::ErrorType::ToolNotFound),
                 Some(format!("工具 '{}' 不存在", name)),
                 searched_before,
+                super::tool_call_logger::TokenUsage::NONE,
             );
             return super::ToolCallResult::error(format!("工具 '{}' 不存在。请使用 DiscoverTools 查询可用工具。", name));
         }
@@ -249,6 +251,7 @@ pub async fn handle_execute_tool(
             Some(super::tool_call_logger::ErrorType::NotDeferred),
             Some(format!("工具 '{}' 是核心工具", name)),
             searched_before,
+            super::tool_call_logger::TokenUsage::NONE,
         );
         return super::ToolCallResult::error(format!(
             "工具 '{}' 是核心工具，请直接调用，无需通过 ExecuteTool。",
@@ -282,6 +285,7 @@ pub async fn handle_execute_tool(
             Some(super::tool_call_logger::ErrorType::IntentBlocked),
             Some(format!("工具 '{}' 在 {} 意图 / {} 模式下不可用", name, intent, work_mode)),
             searched_before,
+            super::tool_call_logger::TokenUsage::NONE,
         );
         return super::ToolCallResult::error(reason);
     }
@@ -295,6 +299,7 @@ pub async fn handle_execute_tool(
             Some(super::tool_call_logger::ErrorType::ModeBlocked),
             Some(msg.to_string()),
             searched_before,
+            super::tool_call_logger::TokenUsage::NONE,
         );
         return super::ToolCallResult::error(format!("工具 '{}' 在当前状态下不可用。{}", name, msg));
     }
@@ -311,7 +316,10 @@ pub async fn handle_execute_tool(
     )
     .await;
 
-    // 记录执行结果（通过 ToolCallResult.is_error 结构化判断，不再扫描字符串关键词）
+    // 记录执行结果（通过 ToolCallResult.is_error 结构化判断，不再扫描字符串关键词）。
+    // token 用量取自 ToolCallResult：只有"自己跑独立 Agent Loop"的工具
+    // （RunSubagent、RunSubagentsSequentially）是非零，其余工具恒为 0
+    // （见 TokenUsage 的说明；用法由 ToolCallResult::with_usage 写入）。
     if result.is_error {
         logger.log_deferred_call(
             session_id, agent_type, name, &input, intent, work_mode,
@@ -319,6 +327,7 @@ pub async fn handle_execute_tool(
             Some(super::tool_call_logger::ErrorType::ExecutionFailed),
             Some(result.output.chars().take(500).collect()),
             searched_before,
+            super::tool_call_logger::TokenUsage::new(result.input_tokens, result.output_tokens),
         );
     } else {
         logger.log_deferred_call(
@@ -326,6 +335,7 @@ pub async fn handle_execute_tool(
             super::tool_call_logger::ToolCallStatus::Ok,
             None, None,
             searched_before,
+            super::tool_call_logger::TokenUsage::new(result.input_tokens, result.output_tokens),
         );
     }
 

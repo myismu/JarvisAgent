@@ -210,6 +210,16 @@ crate::define_tools! {
             },
             required: ["prompt"],
             category: "Agent 调度",
+            // 延迟工具。曾长期是核心工具，理由是"run_subagent 的 future 不满足 Send，
+            // 进 dispatch_tool_call 会编译失败（E0277）"（2026-09-20 的排查结论）——
+            // 该结论是错的：本工程多处用 `JoinSet::spawn` / `tokio::spawn` 起子代理，
+            // 二者都要求 `F: Send`（tokio/src/task/join_set.rs），而 run_subagent 一直被
+            // 这样 spawn，从未有过编译问题。详见 core/tools/mod.rs 里 RunSubagent 分支的说明。
+            //
+            // 为什么必须退出核心集合：核心工具集要保持字节恒定（多厂商前缀缓存命中），
+            // 而 RunSubagent 在 PLAN_BLOCKED_EXTRA 里——留在恒定集合里，等于让模型在
+            // 规划模式下始终看得见一个"调用必被拦"的工具。它与 RunSubagentsSequentially
+            // 同类，可见性口径必须一致。
             defer: true,
             concurrency_safe: true,
         ),

@@ -17,6 +17,7 @@
 use crate::infra::llm::api_client;
 use crate::infra::types::models::*;
 use crate::core::session;
+use crate::core::orchestration::{agent_run_repository, agent_runs};
 use crate::infra::state::state::*;
 use tauri::{Emitter, Manager};
 
@@ -948,8 +949,8 @@ pub async fn list_agent_runs(
 pub async fn list_agent_run_events(
     session_id: Option<String>,
     run_id: Option<String>,
-) -> Result<Vec<crate::core::orchestration::agent_runs::AgentRunEvent>, String> {
-    Ok(crate::core::orchestration::agent_runs::list_events(
+) -> Result<Vec<crate::core::orchestration::agent_runs::AgentRunLoopEvent>, String> {
+    Ok(crate::core::orchestration::agent_runs::list_loop_events(
         session_id.as_deref(),
         run_id.as_deref(),
     ))
@@ -961,18 +962,17 @@ pub async fn prepare_resume_agent_run(
     session_manager: tauri::State<'_, SessionManager>,
     app: tauri::AppHandle,
 ) -> Result<crate::core::orchestration::agent_runs::ResumeAgentRunPlan, String> {
-    let (checkpoint, plan) = crate::core::orchestration::agent_runs::prepare_resume(&run_id)?;
-    let ctx = session_manager.get_or_create(&checkpoint.session_id).await;
-    let should_mark_recovered = {
+    // v15：`prepare_resume` 不再返回 checkpoint（已无 checkpoint 体系），
+    // 恢复上下文由门卫 `ensure_session_recovered` 从 events 重放。
+    let (_run, plan) = agent_runs::prepare_resume(&run_id)?;
+    let ctx = session_manager.get_or_create(&plan.session_id).await;
+    let active_run_id = ctx.active_run_id.lock().await.clone();
+    let recovered = {
         let mut memory = ctx.memory.lock().await;
-        memory.messages = checkpoint.messages.clone();
         session::reset_message_ids(&mut memory);
-        recover_interrupted_into_memory(&checkpoint.session_id, &mut memory)
+        ensure_session_recovered(&plan.session_id, &mut memory, active_run_id.as_deref())
     };
-    if should_mark_recovered {
-        let memory = ctx.memory.lock().await.clone();
-        session::save_session(&checkpoint.session_id, &memory, None);
-        let _ = crate::core::orchestration::agent_runs::mark_run_recovered(&run_id);
+    if recovered {
         let _ = app.emit("session-updated", ());
     }
     Ok(plan)
@@ -1007,170 +1007,129 @@ pub fn finalize_active_runs_on_exit(handle: &tauri::AppHandle) {
     crate::core::orchestration::agent_runs::mark_running_interrupted_on_exit();
 }
 
-pub(crate) fn recover_interrupted_into_memory(
+/// 中断恢复**唯一闸门**（门卫）。
+///
+/// 全系统所有"把中断/崩溃遗留的消息补回会话"的路径（历史命令、全量/分页消息命令、
+/// 恢复命令、发消息的前端前置与后端 pre_loop）都必须经过本函数，禁止各自实现恢复链
+/// ——此前 6 个入口各自手抄"恢复 + save + 盖章"且无互斥，10b68285 的 13ms
+/// 双写坏数据即两个入口并发的产物。
+///
+/// 流程（锁 → 干活 → 先落库后盖章）：
+///
+/// 1. **活跃闸门**：本会话存在进程内活跃 run（`ctx.active_run_id`）→ 直接返回。
+///    这是比 STALE 时间戳强得多的"run 还活着"判定——活跃 run 跑得再久也不会被误判遗留。
+/// 2. **遗留发现**：`find_interrupted_run`（interrupted / running+STALE / recovering+超时）。
+/// 3. **原子抢占（锁）**：`try_claim_run_for_recovery` 以单条条件 UPDATE 置为
+///    `recovering`。SQLite 单写者保证并发只有一个赢家，抢不到的直接退出。
+/// 4. **重放增量**：从 agent_run_events 重建 + diff_tail，只补缺的部分（纯计算）。
+/// 5. **先落库后盖章**：append 后 `save_session`，成功才 `mark_run_recovered`；
+///    盖章失败必须打日志——run 停留 recovering，由超时接管机制兜底重试，
+///    绝不允许静默吞掉（否则要么永久卡 recovering，要么重复恢复）。
+///
+/// 返回是否补回了消息（调用方据此刷新界面状态）。
+pub(crate) fn ensure_session_recovered(
     session_id: &str,
     memory: &mut SessionMemory,
+    active_run_id: Option<&str>,
 ) -> bool {
     session::normalize_message_ids(memory);
+
+    // 闸门 1：会话内有 run 正在跑 → 不做任何恢复
+    if active_run_id.is_some() {
+        return false;
+    }
+
+    // 闸门 2：发现遗留 run（无可恢复属正常路径，绝大多数加载走这里，不打日志）
+    let Some(run) = crate::core::orchestration::agent_runs::find_interrupted_run(session_id) else {
+        return false;
+    };
+
+    // 闸门 3：原子抢占。stale_cutoff 同时承担两个职责：
+    // running 遗留的 STALE 判定 + recovering 半途而废的接管判定
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let stale_cutoff = now_ms
+        .saturating_sub(crate::core::orchestration::agent_runs::RUN_STALE_MS as i64);
+    match agent_run_repository::try_claim_run_for_recovery(&run.run_id, stale_cutoff) {
+        Ok(true) => {}
+        Ok(false) => return false, // 被其它入口/实例抢走：它们正在恢复，直接退出
+        Err(e) => {
+            eprintln!("[JARVIS][恢复] 抢占 run {} 失败：{}", run.run_id, e);
+            return false;
+        }
+    }
+
+    // 干活：从 events 重放 + diff 增量（纯计算，状态已由抢占闸门保证独占）
     let current_messages = memory.messages.clone();
-    let outcome = crate::core::orchestration::agent_runs::recover_interrupted_messages(
-        session_id,
-        &current_messages,
-    );
-    match outcome {
-        crate::core::orchestration::agent_runs::RecoveryOutcome::None => {
-            // 无可恢复的 run 属**正常路径**（绝大多数加载都会走到这里），
-            // 不打日志以免每次刷新都刷屏。
+    match agent_runs::recover_outcome_for_run(&run, &current_messages) {
+        agent_runs::RecoveryOutcome::None => {
+            // 无内容可补且无悬尾：内容已完整落库。也必须把 run 标掉结束恢复态，
+            // 否则每次加载都重复抢占空转（无害但浪费且日志噪音）。
+            if let Err(e) = agent_runs::mark_run_recovered(&run.run_id) {
+                eprintln!(
+                    "[JARVIS][恢复] 收口：标记 run {} 为已恢复失败：{}（停留 recovering，待超时接管）",
+                    run.run_id, e
+                );
+            }
             false
         }
-        crate::core::orchestration::agent_runs::RecoveryOutcome::Content {
-            messages,
-            live_content,
-            live_thinking,
-        } => {
+        agent_runs::RecoveryOutcome::Content { messages } => {
             println!(
-                "[JARVIS] 中断恢复：发现可恢复 run（session {}，额外消息 {} 条，半截正文 {} 字）",
-                session_id,
+                "[JARVIS][恢复] 抢占 run {} 成功，从 events 重放出 {} 条消息（session {}）",
+                run.run_id,
                 messages.len(),
-                live_content.trim().chars().count()
+                session_id
             );
+            // v15：重放序列本身已是**按 loop 顺序铺开**的完整结构
+            //（assistant 响应 → user 工具结果 → 下一轮 …），
+            // 半截内容本就住在最后一个 loop 的 resp_blocks 里，由重放一并带出。
             for message in messages {
                 session::append_message(memory, message, "chat");
             }
-            if let Some(message) = recovered_assistant_message(&live_content, &live_thinking) {
-                if !assistant_message_exists_at_tail(&memory.messages, &message) {
-                    session::append_message(memory, message, "chat");
-                } else {
-                    // 去重生效：不再重复写入合并副本。加日志便于日后排查
-                    // "刷新后又多一条"的复现（此前这里的判定过窄，反复写入）。
-                    println!(
-                        "[JARVIS] 中断恢复：半截内容已存在于历史，跳过重复写入（session {}）",
-                        session_id
-                    );
-                }
-            }
-            true
+            finish_recovery(session_id, memory, &run.run_id)
         }
-        crate::core::orchestration::agent_runs::RecoveryOutcome::NeedsClosure => {
+        agent_runs::RecoveryOutcome::NeedsClosure => {
             // 崩溃 run 无内容可补但会话尾部悬尾（最后一条是 user 且无人回应）：
             // 补一条 assistant 中断占位，维持消息级 user/assistant 严格交替。
-            // source="interrupted" 会进界面渲染；措辞走 ⚠️ 前缀，前端
-            // splitInterruptMarker 把整行剥离成气泡下方小字。
+            //
+            // source="interrupted" 会进界面渲染；阶段二起小字由**结构化 kind**
+            // 驱动（`command/history.rs::interrupt_notice_for`），正文不再放标记
+            // 文本——标记在发送给模型前按 kind 拼回。
             println!(
-                "[JARVIS] 中断恢复：run 无内容可补，补中断占位收口（session {}）",
-                session_id
+                "[JARVIS][恢复] run {} 无内容可补，补中断占位收口（session {}）",
+                run.run_id, session_id
             );
-            session::append_message(
+            session::append_message_with_kind(
                 memory,
                 Message::Assistant {
-                    content: Content::Single(
-                        crate::core::orchestration::agent_runs::INTERRUPT_PLACEHOLDER_NO_REPLY
-                            .to_string(),
-                    ),
+                    content: Content::Single(String::new()),
                 },
                 "interrupted",
+                Some(crate::infra::types::models::InterruptKind::AppClosed.as_str()),
             );
-            true
+            finish_recovery(session_id, memory, &run.run_id)
         }
     }
 }
 
-fn recovered_assistant_message(live_content: &str, live_thinking: &str) -> Option<Message> {
-    let mut blocks = Vec::new();
-    let thinking = live_thinking.trim();
-    let content = live_content.trim();
-    if !thinking.is_empty() {
-        blocks.push(ContentBlock::Thinking {
-            thinking: thinking.to_string(),
-            signature: String::new(),
-        });
+/// 恢复收尾（第二刀）：**先落库，后盖章；盖章失败必须喊出来**。
+///
+/// `save_session` 不返回 Result（历史签名，19 个调用点，保持口径不变）：
+/// 其内部的 DB 写失败同样会作用在下方盖章的 update 上——真失败时 run
+/// 停留 `recovering`，由超时接管机制在下一次恢复时重试，不会丢恢复机会。
+fn finish_recovery(session_id: &str, memory: &SessionMemory, run_id: &str) -> bool {
+    session::save_session(session_id, memory, None);
+    if let Err(e) = agent_runs::mark_run_recovered(run_id) {
+        eprintln!(
+            "[JARVIS][恢复] 严重：session {} 落库完成，但标记 run {} 为已恢复失败：{}（run 停留 recovering，待超时接管重试）",
+            session_id, run_id, e
+        );
     }
-    if !content.is_empty() {
-        blocks.push(ContentBlock::Text {
-            text: content.to_string(),
-        });
-    }
-    if blocks.is_empty() {
-        None
-    } else {
-        Some(Message::Assistant {
-            content: Content::Multiple(blocks),
-        })
-    }
+    true
 }
 
-/// 去掉中断标记后的纯正文，用于恢复去重比较。
-///
-/// 恢复产出的消息形如 `正文 + 内嵌中断标记`，而库里正常路径下存的是
-/// `正文` 与 `标记` **两条独立消息**。若按整段文本比较，二者永远不相等，
-/// 去重必然失效 → 每加载一次就多一条合并副本（实测反复出现的问题）。
-fn strip_interrupt_marker(text: &str) -> String {
-    let mut out = text.to_string();
-    while let Some(pos) = out.find("[回复被中断]") {
-        // 连同该行开头的引用符号一起裁掉
-        let line_start = out[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let line_end = out[pos..].find('\n').map(|i| pos + i).unwrap_or(out.len());
-        out.replace_range(line_start..line_end, "");
-    }
-    out.trim().to_string()
-}
-
-/// 判断"半截助手回复"是否已存在于历史尾部（用于恢复时去重）。
-///
-/// **实测 bug 的防护（三处窄化）**：
-/// 1. 旧实现只与 `messages.last()` 比较 —— 最后一条是中断标记时判定失败；
-/// 2. 旧实现比较 `(思考, 正文)` **整对** —— 恢复消息常带思考块，历史里可能只有正文；
-/// 3. 旧实现按**整段文本**比较 —— 恢复消息内嵌了中断标记，而库里是正文与标记
-///    分开两条，整段比较必然不相等。
-///
-/// 三者叠加的后果：`recover_interrupted_into_memory()` 每次调用都把同一段半截
-/// 内容再写一遍，表现为"刷新一次多一条"，删掉后再刷新又回来。
-///
-/// 现在改为：尾部窗口（4 条）内扫描，比较前**剥离中断标记**，
-/// 且思考与正文**各自判定**——任一已存助手消息含相同正文（或相同思考）即视为已存在。
-fn assistant_message_exists_at_tail(messages: &[Message], target: &Message) -> bool {
-    let Some((target_thinking, target_text)) = assistant_message_texts(target) else {
-        return false;
-    };
-    let target_text = strip_interrupt_marker(&target_text);
-    let target_thinking = strip_interrupt_marker(&target_thinking);
-
-    let recent: Vec<(String, String)> = messages
-        .iter()
-        .rev()
-        .take(4)
-        .filter_map(assistant_message_texts)
-        .map(|(t, x)| (strip_interrupt_marker(&t), strip_interrupt_marker(&x)))
-        .collect();
-
-    if !target_text.is_empty() && recent.iter().any(|(_, x)| x == &target_text) {
-        return true;
-    }
-    !target_thinking.is_empty() && recent.iter().any(|(t, _)| t == &target_thinking)
-}
-
-fn assistant_message_texts(message: &Message) -> Option<(String, String)> {
-    let Message::Assistant { content } = message else {
-        return None;
-    };
-    let mut thinking_parts = Vec::new();
-    let mut text_parts = Vec::new();
-    match content {
-        Content::Single(text) => text_parts.push(text.trim().to_string()),
-        Content::Multiple(blocks) => {
-            for block in blocks {
-                match block {
-                    ContentBlock::Thinking { thinking, .. } => {
-                        thinking_parts.push(thinking.trim().to_string())
-                    }
-                    ContentBlock::Text { text } => text_parts.push(text.trim().to_string()),
-                    _ => {}
-                }
-            }
-        }
-    }
-    Some((thinking_parts.join("\n\n"), text_parts.join("\n\n")))
-}
 
 #[tauri::command]
 pub async fn recover_interrupted_session_messages(
@@ -1179,19 +1138,12 @@ pub async fn recover_interrupted_session_messages(
     app: tauri::AppHandle,
 ) -> Result<bool, String> {
     let ctx = session_manager.get_or_create(&session_id).await;
+    let active_run_id = ctx.active_run_id.lock().await.clone();
     let recovered = {
         let mut memory = ctx.memory.lock().await;
-        recover_interrupted_into_memory(&session_id, &mut memory)
+        ensure_session_recovered(&session_id, &mut memory, active_run_id.as_deref())
     };
     if recovered {
-        let memory = ctx.memory.lock().await.clone();
-        session::save_session(&session_id, &memory, None);
-        if let Some(interrupted_run) =
-            crate::core::orchestration::agent_runs::find_interrupted_run(&session_id)
-        {
-            let _ =
-                crate::core::orchestration::agent_runs::mark_run_recovered(&interrupted_run.run_id);
-        }
         let _ = app.emit("session-updated", ());
     }
     Ok(recovered)
@@ -1350,152 +1302,4 @@ pub fn is_session_compacting(
     compacting: tauri::State<'_, crate::infra::background::CompactingState>,
 ) -> bool {
     compacting.is_compacting(&session_id)
-}
-
-#[cfg(test)]
-mod recovered_dedup_tests {
-    //! **实测 bug 的防护**：中断恢复的去重曾经只比对 `messages.last()`，
-    //! 当最后一条是别的东西（如 `source=interrupted` 的中断标记）时判定失败，
-    //! 把同一段半截内容重复写入 —— 表现为"每刷新一次就多一条重复消息"。
-    use super::assistant_message_exists_at_tail;
-    use crate::infra::types::models::*;
-
-    fn assistant(text: &str) -> Message {
-        Message::Assistant {
-            content: Content::Single(text.to_string()),
-        }
-    }
-
-    fn assistant_blocks(blocks: Vec<ContentBlock>) -> Message {
-        Message::Assistant {
-            content: Content::Multiple(blocks),
-        }
-    }
-
-    fn text_block(text: &str) -> ContentBlock {
-        ContentBlock::Text {
-            text: text.to_string(),
-        }
-    }
-
-    /// 回归防护（核心）：目标内容在倒数第二条、最后一条是中断标记时，
-    /// 必须判定为"已存在"，否则会重复写入（这正是实测的复现路径）。
-    #[test]
-    fn detects_match_before_trailing_interrupted_marker() {
-        let messages = vec![
-            assistant("This reply was cut off mid-sen"),
-            assistant("> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。"),
-        ];
-        assert!(
-            assistant_message_exists_at_tail(
-                &messages,
-                &assistant("This reply was cut off mid-sen")
-            ),
-            "末尾是中断标记时，仍应认出前面的同一段半截内容，避免重复落库"
-        );
-    }
-
-    /// 最后一条即目标：行为与旧实现一致，不能回归
-    #[test]
-    fn still_detects_trailing_match() {
-        let messages = vec![assistant("同一段内容")];
-        assert!(assistant_message_exists_at_tail(
-            &messages,
-            &assistant("同一段内容")
-        ));
-    }
-
-    /// 多块消息的正文比较应忽略非 Text 块差异之外的内容
-    #[test]
-    fn matches_multiple_blocks_by_text() {
-        let messages = vec![assistant_blocks(vec![
-            ContentBlock::Thinking {
-                thinking: "先看看".to_string(),
-                signature: String::new(),
-            },
-            text_block("半截正文"),
-        ])];
-        assert!(assistant_message_exists_at_tail(
-            &messages,
-            &assistant("半截正文")
-        ));
-    }
-
-    /// 不同内容不得误判为已存在，否则真实的半截回复会被漏掉
-    #[test]
-    fn different_content_is_not_a_match() {
-        let messages = vec![assistant("上一轮的完整回复")];
-        assert!(!assistant_message_exists_at_tail(
-            &messages,
-            &assistant("本轮被打断的半截话")
-        ));
-    }
-
-    /// 超出尾部窗口的历史不应参与判定（避免误吞真正的新内容）
-    #[test]
-    fn only_scans_recent_tail() {
-        let mut messages = vec![assistant("很久以前的同款文本")];
-        for _ in 0..5 {
-            messages.push(assistant("中间过程的其它回复"));
-        }
-        assert!(!assistant_message_exists_at_tail(
-            &messages,
-            &assistant("很久以前的同款文本")
-        ));
-    }
-
-    /// 用户消息不参与助手消息的去重判定
-    #[test]
-    fn user_messages_are_ignored() {
-        let messages = vec![Message::User {
-            content: Content::Single("半截正文".to_string()),
-        }];
-        assert!(!assistant_message_exists_at_tail(
-            &messages,
-            &assistant("半截正文")
-        ));
-    }
-
-    /// **回归防护（核心，实测"删了又回来"）**：库里正常路径是把
-    /// 「正文」与「中断标记」存成两条独立消息，而恢复产出的是
-    /// 「正文 + 内嵌标记」的合并消息。按整段文本比较必然不相等，
-    /// 于是每加载一次就再写一条合并副本。
-    ///
-    /// 修复后按剥离标记的**纯正文**比较，必须判定为已存在。
-    #[test]
-    fn merged_recovery_does_not_duplicate_split_stored_pair() {
-        let stored = vec![
-            assistant("This reply was cut off mid-sen"),
-            assistant("> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。"),
-        ];
-        let recovered = assistant(
-            "This reply was cut off mid-sen\n\n> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。",
-        );
-        assert!(
-            assistant_message_exists_at_tail(&stored, &recovered),
-            "合并副本与已存的分体消息是同一段内容，不得重复写入（实测 bug）"
-        );
-    }
-
-    /// 合并副本自身已存在时也不得再写一次（连续多次加载/刷新的场景）
-    #[test]
-    fn merged_recovery_is_idempotent() {
-        let merged = assistant(
-            "半截正文\n\n> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。",
-        );
-        let stored = vec![merged.clone()];
-        assert!(assistant_message_exists_at_tail(&stored, &merged));
-    }
-
-    /// 剥离标记不得伤及正文本身（防止误判把新内容吞掉）
-    #[test]
-    fn stripping_marker_keeps_body_intact() {
-        assert_eq!(
-            super::strip_interrupt_marker(
-                "正文第一行\n\n> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。"
-            ),
-            "正文第一行"
-        );
-        assert_eq!(super::strip_interrupt_marker("纯正文没有标记"), "纯正文没有标记");
-    }
 }

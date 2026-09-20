@@ -14,7 +14,6 @@
 //! - 用户消息关联检查点 ID，支持前端回滚按钮
 
 use crate::infra::types::models::*;
-use crate::core::orchestration::agent_runs;
 use crate::core::session;
 use crate::infra::state::state::*;
 use std::collections::HashMap;
@@ -415,8 +414,15 @@ fn is_interrupted_source(source: &str) -> bool {
 
 /// 从 `interrupted` 消息里取出给用户看的小字说明。
 ///
-/// 写入历史的标记文案形如 `> ⚠️ **[回复被中断]** …`，早期还带过 `> ✕ **用户已取消执行…**`。
-/// 这里剥掉 Markdown 引用符号与加粗，只留纯文本，交给前端渲染成气泡下方的小字。
+/// 标记文案现行格式为 `**[标签]** …`（如 `**[回复被中断]** …`，不带引用符）；
+/// 旧库遗留格式为 `> ⚠️ **[回复被中断]** …` 与 `> ✕ **用户已取消执行…**`。
+/// 这里剥掉引用符、加粗与 emoji 哨兵，只留纯文本，
+/// 交给前端渲染成气泡下方的小字。
+///
+/// ⚠️ `.replace("⚠️", "⚠")` 专为**旧库数据**保留：新格式已不含 emoji，
+/// 但旧会话历史不会自动改写——删掉它旧小字会显示带变体选择符的 `⚠️`。
+/// 新格式与旧格式的识别锚点在 `strip_interrupt_markers`（agent_runs.rs）
+/// 与前端 `INTERRUPT_MARKER_LINE_RE`（chat.ts / AgentTurn.vue）。
 fn interrupted_notice_text(content: &Content) -> Option<String> {
     let raw = match content {
         Content::Single(s) => s.as_str(),
@@ -438,6 +444,32 @@ fn interrupted_notice_text(content: &Content) -> Option<String> {
     } else {
         Some(cleaned)
     }
+}
+
+/// 按**结构化中断类型**生成用户可见的小字说明（阶段二路径）。
+///
+/// 与 [`interrupted_notice_text`]（从正文文本清洗，旧库兼容路径）的分工：
+/// 新数据正文是干净的（标记不再拼进正文），notice 只能由 kind 生成；
+/// 旧库数据 kind 列为 NULL，回退到文本清洗。
+/// 返回值**不含**方括号标签与 emoji —— 它是给用户看的小字，不是给模型的标记。
+fn interrupt_notice_for(kind: Option<&str>) -> Option<String> {
+    use crate::infra::types::models::InterruptKind;
+    let kind = InterruptKind::from_db(kind?)?;
+    Some(match kind {
+        InterruptKind::StreamTimeout => {
+            "上游长时间未返回数据，本轮已自动终止。以上为已保留的部分结果，回复「继续」即可接着做。"
+                .to_string()
+        }
+        InterruptKind::UserCancel => {
+            "用户已取消执行，以上为保留的部分结果，历史未截断。".to_string()
+        }
+        InterruptKind::PipelineError => {
+            "本轮执行中断，以上为已保留的部分结果，回复「继续」即可接着做。".to_string()
+        }
+        InterruptKind::AppClosed => "本次执行因应用关闭而中断，未产生回复内容。".to_string(),
+        InterruptKind::LoopLimit => "已达回合上限且未获续跑授权，本轮在此停下。".to_string(),
+        InterruptKind::PlanLimit => "规划探索已达到阈值，本轮自动停下，等待用户决策。".to_string(),
+    })
 }
 
 fn render_assistant_message(history: &mut String, assistant: &mut AgentTurnSnapshot) {
@@ -548,24 +580,17 @@ pub async fn get_session_history(
     // 注意：**不要**在这里把内存 flush 到 DB（与 extract_session_messages 同理）。
     // 该 flush 会把内存中已删除的消息复活，"删掉后刷新又回来"即由此产生。
     let mut memory = session::load_session(&session_id)?;
-    let _runs = agent_runs::list_runs(Some(&session_id));
 
-    // ── 中断恢复：检测并补回崩溃/中断时丢失的消息 ──
-    //
-    // 复用 `recover_interrupted_into_memory`（含去重守卫），不要内联重写：
-    // 内联副本没有去重，会**每加载一次就多一条合并副本**。
-    if crate::command::session::recover_interrupted_into_memory(&session_id, &mut memory) {
-        // 将恢复后的内存同步回去，并保存到数据库
-        *ctx.memory.lock().await = memory.clone();
-        session::save_session(&session_id, &memory, None);
-
-        // 标记该 run 为已恢复，避免下次重复恢复
-        if let Some(interrupted_run) = agent_runs::find_interrupted_run(&session_id) {
-            let _ = agent_runs::mark_run_recovered(&interrupted_run.run_id);
-        }
-    } else {
-        *ctx.memory.lock().await = memory.clone();
-    }
+    // ── 中断恢复：唯一闸门 `ensure_session_recovered`（含原子抢占锁 + 先落库后盖章），
+    // 各入口禁止自行实现恢复链或 save/mark 收尾。──
+    let active_run_id = ctx.active_run_id.lock().await.clone();
+    let _ = crate::command::session::ensure_session_recovered(
+        &session_id,
+        &mut memory,
+        active_run_id.as_deref(),
+    );
+    // 读取语义：以 DB 为准的 memory 写回 ctx（无论是否发生恢复）
+    *ctx.memory.lock().await = memory.clone();
 
     if memory.messages.is_empty() && session::session_messages_count(&session_id).unwrap_or(0) == 0 {
         return Ok(String::new());
@@ -615,7 +640,8 @@ pub async fn get_session_history(
             .enumerate()
             .map(|(idx, message)| {
                 let source = memory.sources.get(idx).cloned().unwrap_or_else(|| "chat".to_string());
-                (idx, memory.message_ids.get(idx).cloned(), None, message.clone(), source)
+                let kind = memory.interrupt_kinds.get(idx).cloned().flatten();
+                (idx, memory.message_ids.get(idx).cloned(), None, message.clone(), source, kind)
             })
             .collect()
     } else {
@@ -623,14 +649,21 @@ pub async fn get_session_history(
             .into_iter()
             .enumerate()
             .map(|(idx, stored)| {
-                (idx, Some(stored.message_id), Some(stored.seq), stored.content, stored.source)
+                (
+                    idx,
+                    Some(stored.message_id),
+                    Some(stored.seq),
+                    stored.content,
+                    stored.source,
+                    stored.interrupt_kind,
+                )
             })
             .collect()
     };
 
     let display_messages = render_messages
         .iter()
-        .filter_map(|(memory_index, message_id, seq, msg, source)| {
+        .filter_map(|(memory_index, message_id, seq, msg, source, _kind)| {
             if let Message::User { content } = msg {
                 let display = user_display_content(content);
                 if is_renderable_source(source) && !display.trim().is_empty() {
@@ -659,7 +692,7 @@ pub async fn get_session_history(
     let mut loop_idx = 1;
     let mut current_ts = 1000u64;
 
-    for (_, _, _, msg, source) in &render_messages {
+    for (_, _, _, msg, source, kind) in &render_messages {
         current_ts += 1;
         match msg {
             Message::User { content } => {
@@ -705,7 +738,11 @@ pub async fn get_session_history(
                 // 若混进 text_blocks 会挤进回复气泡内部，既突兀又会与
                 // "已保留的部分结果"重复，看起来像模型自己说的话。
                 if is_interrupted_source(source.as_str()) {
-                    if let Some(notice) = interrupted_notice_text(content) {
+                    // 阶段二：notice 优先按**结构化 kind** 生成（不再从正文猜）；
+                    // kind 缺失（旧库数据 / 恢复重建未打标）才回退文本清洗路径。
+                    let notice = interrupt_notice_for(kind.as_deref())
+                        .or_else(|| interrupted_notice_text(content));
+                    if let Some(notice) = notice {
                         pending_assistant.notice = Some(notice);
                     }
                     continue;
@@ -774,24 +811,16 @@ async fn extract_session_messages_window(
     //
     // 本函数语义是**读取**，应以数据库为准；需要持久化的写入点各自负责落库。
     let mut memory = session::load_session(session_id)?;
-    let _runs = agent_runs::list_runs(Some(session_id));
 
-    // 中断恢复
+    // 中断恢复：唯一闸门 `ensure_session_recovered`（含原子抢占锁 + 先落库后盖章）。
     //
-    // 这里**必须**复用 `recover_interrupted_into_memory`，不要内联重写：
-    // 该函数含有"半截内容是否已存在"的去重守卫，而它的判定需要处理
+    // 该闸门内含"半截内容是否已存在"的去重守卫，而它的判定需要处理
     // 「正文 / 中断标记分体存储」与「正文+标记合并」两种形态。
     // 曾在此内联复制过一份无去重的实现，导致**每加载一次就多一条合并副本**
     // （实测"删掉再刷新，副本又回来"，且因未走到守卫分支连日志都不打印）。
-    if crate::command::session::recover_interrupted_into_memory(session_id, &mut memory) {
-        *ctx.memory.lock().await = memory.clone();
-        session::save_session(session_id, &memory, None);
-        if let Some(interrupted_run) = agent_runs::find_interrupted_run(session_id) {
-            let _ = agent_runs::mark_run_recovered(&interrupted_run.run_id);
-        }
-    } else {
-        *ctx.memory.lock().await = memory.clone();
-    }
+    let active_run_id = ctx.active_run_id.lock().await.clone();
+    let _ = crate::command::session::ensure_session_recovered(session_id, &mut memory, active_run_id.as_deref());
+    *ctx.memory.lock().await = memory.clone();
 
     if memory.messages.is_empty() && session::session_messages_count(session_id).unwrap_or(0) == 0 {
         // 空会话：窗口版返回空页 + 无更早数据
@@ -851,7 +880,8 @@ async fn extract_session_messages_window(
             .enumerate()
             .map(|(idx, message)| {
                 let source = memory.sources.get(idx).cloned().unwrap_or_else(|| "chat".to_string());
-                (idx, memory.message_ids.get(idx).cloned(), None, message.clone(), source)
+                let kind = memory.interrupt_kinds.get(idx).cloned().flatten();
+                (idx, memory.message_ids.get(idx).cloned(), None, message.clone(), source, kind)
             })
             .collect()
     } else {
@@ -859,7 +889,14 @@ async fn extract_session_messages_window(
             .into_iter()
             .enumerate()
             .map(|(idx, stored)| {
-                (idx, Some(stored.message_id), Some(stored.seq), stored.content, stored.source)
+                (
+                    idx,
+                    Some(stored.message_id),
+                    Some(stored.seq),
+                    stored.content,
+                    stored.source,
+                    stored.interrupt_kind,
+                )
             })
             .collect()
     };
@@ -867,11 +904,11 @@ async fn extract_session_messages_window(
     // 窗口最老消息的 seq（分页游标）；memory 回退分支无 seq，返回 None
     let oldest_seq = render_messages
         .first()
-        .and_then(|(_, _, seq, _, _)| seq.map(|s| s as i64));
+        .and_then(|(_, _, seq, _, _, _)| seq.map(|s| s as i64));
 
     let display_messages = render_messages
         .iter()
-        .filter_map(|(memory_index, message_id, seq, msg, source)| {
+        .filter_map(|(memory_index, message_id, seq, msg, source, _kind)| {
             if let Message::User { content } = msg {
                 let display = user_display_content(content);
                 if is_renderable_source(source) && !display.trim().is_empty() {
@@ -904,7 +941,7 @@ async fn extract_session_messages_window(
     // Vue diff 整表重建导致翻页时界面闪烁）
     let mut last_seen_seq: Option<usize> = None;
 
-    for (_, _, seq, msg, source) in &render_messages {
+    for (_, _, seq, msg, source, kind) in &render_messages {
         current_ts += 1;
         last_seen_seq = *seq;
         match msg {
@@ -977,7 +1014,11 @@ async fn extract_session_messages_window(
                 // 若混进 text_blocks 会挤进回复气泡内部，既突兀又会与
                 // "已保留的部分结果"重复，看起来像模型自己说的话。
                 if is_interrupted_source(source.as_str()) {
-                    if let Some(notice) = interrupted_notice_text(content) {
+                    // 阶段二：notice 优先按**结构化 kind** 生成（不再从正文猜）；
+                    // kind 缺失（旧库数据 / 恢复重建未打标）才回退文本清洗路径。
+                    let notice = interrupt_notice_for(kind.as_deref())
+                        .or_else(|| interrupted_notice_text(content));
+                    if let Some(notice) = notice {
                         pending_assistant.notice = Some(notice);
                     }
                     continue;
@@ -1021,18 +1062,21 @@ pub async fn get_session_messages(
     // 即可看到完整对话。此前恢复只在发消息时触发（chat.ts 发送流程开头），
     // 重启后界面会一直缺半截内容，直到用户下一次发消息。
     //
-    // 幂等性：已完整落库时 diff_tail 守卫返回空增量；无 resumable run 时
-    // 走 RecoveryOutcome::None 零开销快速路径，高频调用无额外负担。
+    // 幂等性：走唯一闸门 `ensure_session_recovered`（原子抢占 + 先落库后盖章），
+    // 无遗留 run 时零开销快速路径，高频调用无额外负担。
     let recovered = {
         let ctx = session_manager.get_or_create(&session_id).await;
+        let active_run_id = ctx.active_run_id.lock().await.clone();
         let mut memory = ctx.memory.lock().await;
-        crate::command::session::recover_interrupted_into_memory(&session_id, &mut memory)
+        crate::command::session::ensure_session_recovered(
+            &session_id,
+            &mut memory,
+            active_run_id.as_deref(),
+        )
     };
     if recovered {
-        // 恢复出增量即落库：与 recover_interrupted_session_messages 命令同口径
-        let ctx = session_manager.get_or_create(&session_id).await;
-        let memory = ctx.memory.lock().await.clone();
-        crate::core::session::save_session(&session_id, &memory, None);
+        // 恢复出的增量已由闸门内统一落库；此处仅提示日志口径与恢复命令一致
+        println!("[JARVIS] get_session_messages：中断恢复已补回消息并落库（session {}）", session_id);
     }
     extract_session_messages(&session_id, &session_manager, &registry).await
 }
@@ -1052,16 +1096,22 @@ pub async fn get_session_messages_paged(
     session_manager: tauri::State<'_, SessionManager>,
     registry: tauri::State<'_, SnapshotRegistry>,
 ) -> Result<PagedSessionMessages, String> {
-    // 中断恢复前置（与全量版同口径）：恢复落库的是尾部消息，天然包含在首屏窗口内
+    // 中断恢复前置（唯一闸门 `ensure_session_recovered`，原子抢占 + 先落库后盖章）：
+    // 恢复落库的是尾部消息，天然包含在首屏窗口内。
+    // 下方 extract_session_messages_window 内部还有一次同闸门调用——
+    // 首次已抢占成功并盖章，此处第二次只会走"无遗留 run"快速路径，幂等无害。
     let recovered = {
         let ctx = session_manager.get_or_create(&session_id).await;
+        let active_run_id = ctx.active_run_id.lock().await.clone();
         let mut memory = ctx.memory.lock().await;
-        crate::command::session::recover_interrupted_into_memory(&session_id, &mut memory)
+        crate::command::session::ensure_session_recovered(
+            &session_id,
+            &mut memory,
+            active_run_id.as_deref(),
+        )
     };
     if recovered {
-        let ctx = session_manager.get_or_create(&session_id).await;
-        let memory = ctx.memory.lock().await.clone();
-        crate::core::session::save_session(&session_id, &memory, None);
+        println!("[JARVIS] get_session_messages_paged：中断恢复已补回消息并落库（session {}）", session_id);
     }
     // limit 在此命令中语义为 **每页轮数**（默认 5 轮）
     let (messages, has_more, oldest_seq) =
@@ -1126,7 +1176,7 @@ mod notice_not_empty_tests {
     /// 只有 notice 时不算空：否则整轮被丢弃，用户看不到任何中断/等待提示
     #[test]
     fn notice_only_is_not_empty() {
-        assert!(!snapshot_with_notice(Some("⚠ 上游服务已停止响应")).is_empty());
+        assert!(!snapshot_with_notice(Some("⚠ 上游长时间未返回数据")).is_empty());
     }
 
     /// 空白 notice 仍算空，避免渲染出一个空壳气泡

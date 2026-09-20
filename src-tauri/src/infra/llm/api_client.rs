@@ -214,7 +214,7 @@ pub async fn api_call_with_retry(
                     "attempt": attempt,
                     "max": max_retries,
                     "content": format!(
-                        "⚠ API 调用失败，{} 秒后进行第 {}/{} 次重试…",
+                        "API 调用失败，{} 秒后进行第 {}/{} 次重试…",
                         wait_secs, attempt, max_retries
                     ),
                     "sessionId": session_id

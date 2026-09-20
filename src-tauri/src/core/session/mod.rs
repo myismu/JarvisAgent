@@ -265,7 +265,7 @@ pub fn create_session(project_id: Option<String>) -> SessionMeta {
     meta
 }
 
-/// 保证会话消息 ID、sources 与消息数组长度一致。
+/// 保证会话消息 ID、sources、interrupt_kinds 与消息数组长度一致。
 pub fn normalize_message_ids(memory: &mut SessionMemory) {
     let msg_count = memory.messages.len();
     let id_count = memory.message_ids.len();
@@ -280,6 +280,12 @@ pub fn normalize_message_ids(memory: &mut SessionMemory) {
     if memory.sources.len() > msg_count {
         let excess = memory.sources.len() - msg_count;
         memory.sources.drain(0..excess);
+    }
+
+    // 同步 interrupt_kinds：与 sources 同尺（头部删、尾部补 None）
+    if memory.interrupt_kinds.len() > msg_count {
+        let excess = memory.interrupt_kinds.len() - msg_count;
+        memory.interrupt_kinds.drain(0..excess);
     }
 
     // 填充空的 message_id
@@ -308,6 +314,11 @@ pub fn normalize_message_ids(memory: &mut SessionMemory) {
         memory.sources.push("chat".to_string());
     }
 
+    // 补齐缺失的 interrupt_kinds（非中断消息一律 None）
+    while memory.interrupt_kinds.len() < msg_count {
+        memory.interrupt_kinds.push(None);
+    }
+
     // 最终对齐：如果仍有差异（不应发生），告警并强制对齐
     if memory.message_ids.len() != msg_count {
         eprintln!(
@@ -326,14 +337,33 @@ pub fn normalize_message_ids(memory: &mut SessionMemory) {
     while memory.sources.len() < msg_count {
         memory.sources.push("chat".to_string());
     }
+    memory.interrupt_kinds.truncate(msg_count);
+    while memory.interrupt_kinds.len() < msg_count {
+        memory.interrupt_kinds.push(None);
+    }
 }
 
 pub fn append_message(memory: &mut SessionMemory, message: Message, source: &str) -> String {
+    append_message_with_kind(memory, message, source, None)
+}
+
+/// 追加一条**带中断类型**的消息（中断收尾专用）。
+///
+/// `interrupt_kind` 与 `messages` / `sources` **严格平行**（见 `SessionMemory::interrupt_kinds`）；
+/// 传 `None` 与 `append_message` 完全等价。中断收尾三条路径（用户取消 / 执行报错 /
+/// 流空闲超时）、规划看门狗落库、崩溃恢复重建都走这里。
+pub fn append_message_with_kind(
+    memory: &mut SessionMemory,
+    message: Message,
+    source: &str,
+    interrupt_kind: Option<&str>,
+) -> String {
     normalize_message_ids(memory);
     let message_id = uuid::Uuid::new_v4().to_string();
     memory.messages.push(message);
     memory.message_ids.push(message_id.clone());
     memory.sources.push(source.to_string());
+    memory.interrupt_kinds.push(interrupt_kind.map(|k| k.to_string()));
     message_id
 }
 
@@ -342,20 +372,35 @@ pub fn pop_message(memory: &mut SessionMemory) -> Option<(Message, String)> {
     let message = memory.messages.pop()?;
     let message_id = memory.message_ids.pop().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     memory.sources.pop();
+    memory.interrupt_kinds.pop();
     Some((message, message_id))
 }
 
 pub fn restore_message(memory: &mut SessionMemory, message: Message, message_id: String, source: &str) {
+    restore_message_with_kind(memory, message, message_id, source, None)
+}
+
+/// 恢复一条消息（含可选中断类型）。恢复链若还原的是中断消息，
+/// 必须把 kind 一并带回，否则界面侧会丢掉 notice、模型侧也会丢掉标记。
+pub fn restore_message_with_kind(
+    memory: &mut SessionMemory,
+    message: Message,
+    message_id: String,
+    source: &str,
+    interrupt_kind: Option<&str>,
+) {
     normalize_message_ids(memory);
     memory.messages.push(message);
     memory.message_ids.push(message_id);
     memory.sources.push(source.to_string());
+    memory.interrupt_kinds.push(interrupt_kind.map(|k| k.to_string()));
 }
 
 pub fn reset_message_ids(memory: &mut SessionMemory) {
     // 只清理超出 messages 范围的多余 id，保留已有配对
     memory.message_ids.truncate(memory.messages.len());
     memory.sources.truncate(memory.messages.len());
+    memory.interrupt_kinds.truncate(memory.messages.len());
     normalize_message_ids(memory);
 }
 
@@ -398,16 +443,38 @@ pub fn save_session(
     };
     let mut meta = meta;
 
+    // ── 入库前对账（第三刀）：内存三平行 Vec（消息/编号/来源）必须等长。──
+    // 失衡状态曾原样入库（10b68285：messages=0 / ids=7），下游全部失准。
+    // normalize_message_ids 本可静默修复，但那无痕可查——先报出来再修，
+    // 让"哪条路径写出了失衡数据"在日志里有据可查。
+    if memory.messages.len() != memory.message_ids.len()
+        || memory.messages.len() != memory.sources.len()
+    {
+        eprintln!(
+            "[JARVIS][严重] save_session 三 Vec 失衡（session {}）：messages={} message_ids={} sources={}——以 messages 为准强制对齐后入库，请排查写出方",
+            id,
+            memory.messages.len(),
+            memory.message_ids.len(),
+            memory.sources.len()
+        );
+    }
+
     let mut normalized_memory = memory.clone();
     normalize_message_ids(&mut normalized_memory);
 
-    let filtered_triples: Vec<(String, Message, String)> = normalized_memory
+    let filtered_triples: Vec<(String, Message, String, Option<String>)> = normalized_memory
         .messages
         .iter()
         .enumerate()
         .filter_map(|(idx, msg)| {
             let message_id = normalized_memory.message_ids[idx].clone();
             let source = normalized_memory.sources.get(idx).cloned().unwrap_or_else(|| "chat".to_string());
+            // 中断类型随消息平行带出（`None` = 非中断消息）
+            let interrupt_kind = normalized_memory
+                .interrupt_kinds
+                .get(idx)
+                .cloned()
+                .flatten();
             let filtered_message = match msg {
             Message::User { content } => match content {
                 Content::Single(_) => Some(msg.clone()),
@@ -504,19 +571,29 @@ pub fn save_session(
                 }
             },
         };
-            filtered_message.map(|message| (message_id, message, source))
+            // ⚠️ 带中断类型的消息**不得因正文为空被丢弃**：无产出中断
+            // （纯思考期中止、应用关闭占位）正文本就是空的——阶段二起气泡锚点
+            // 与小字都由 `interrupt_kind` 提供，丢弃会让该轮次从界面彻底消失。
+            let filtered_message = filtered_message
+                .or_else(|| interrupt_kind.as_ref().map(|_| msg.clone()));
+            filtered_message.map(|message| (message_id, message, source, interrupt_kind))
         })
         .collect();
-    let (filtered_message_ids, filtered_messages, filtered_sources): (Vec<String>, Vec<Message>, Vec<String>) =
-        filtered_triples.into_iter().fold(
-            (Vec::new(), Vec::new(), Vec::new()),
-            |(mut ids, mut msgs, mut srcs), (id, msg, src)| {
-                ids.push(id);
-                msgs.push(msg);
-                srcs.push(src);
-                (ids, msgs, srcs)
-            },
-        );
+    let (filtered_message_ids, filtered_messages, filtered_sources, filtered_kinds): (
+        Vec<String>,
+        Vec<Message>,
+        Vec<String>,
+        Vec<Option<String>>,
+    ) = filtered_triples.into_iter().fold(
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+        |(mut ids, mut msgs, mut srcs, mut kinds), (id, msg, src, kind)| {
+            ids.push(id);
+            msgs.push(msg);
+            srcs.push(src);
+            kinds.push(kind);
+            (ids, msgs, srcs, kinds)
+        },
+    );
 
     if let Some(delta) = token_usage_delta {
         meta.total_input_tokens = meta.total_input_tokens.saturating_add(delta.input);
@@ -539,6 +616,7 @@ pub fn save_session(
         messages: filtered_messages,
         message_ids: filtered_message_ids,
         sources: filtered_sources.clone(),
+        interrupt_kinds: filtered_kinds.clone(),
         snapshot_seq: normalized_memory.snapshot_seq,
         plan_documents: normalized_memory.plan_documents.clone(),
     };
@@ -546,6 +624,7 @@ pub fn save_session(
     repository::upsert_session(&meta, &filtered_memory)
         .unwrap_or_else(|err| panic!("保存 SQLite 会话 {} 失败: {}", id, err));
     let visible_sources: Vec<String> = filtered_memory.sources.clone();
+    let visible_kinds: Vec<Option<String>> = filtered_memory.interrupt_kinds.clone();
     let (visible_message_ids, visible_messages): (Vec<String>, Vec<Message>) =
         filtered_memory.message_ids.iter().cloned()
         .zip(filtered_memory.messages.iter().cloned())
@@ -557,6 +636,7 @@ pub fn save_session(
         &visible_messages,
         &visible_message_ids,
         &visible_sources,
+        &visible_kinds,
         meta.updated_at,
     )
     .unwrap_or_else(|err| panic!("保存 SQLite 会话历史 {} 失败: {}", id, err));

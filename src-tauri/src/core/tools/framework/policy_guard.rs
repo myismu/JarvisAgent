@@ -1446,7 +1446,8 @@ fn build_permission_message(
             }
         }
     }
-    if agent_type == "subagent" {
+    // 子代理来源现在带类型后缀（"subagent:<role>"，如 subagent:explore），按前缀判断
+    if agent_type.starts_with("subagent") {
         msg.push_str("\n来源：子代理（并行任务）发起");
     }
     msg

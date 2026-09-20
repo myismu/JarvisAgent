@@ -255,6 +255,11 @@ impl ToolRegistry {
     /// 注意 `RunSubagent` 的 `read_only` 是**模型可控入参**：光靠"默认只读"拦不住，
     /// 必须在这一层把工具整个收走。
     /// （原第三项 `SetWorkspace` 已随工具退役移出，见 `system_tools/mod.rs` 模块注释。）
+    ///
+    /// 这两个都是**延迟工具**，所以这份名单的作用不止运行期拦截：[`Self::is_available`]
+    /// 同时用它过滤工具目录（GetToolCatalog / DiscoverTools），规划模式下它们从目录里
+    /// 直接消失——这就是"规划模式看不见派子代理"的实现方式（2026-09-21 RunSubagent
+    /// 从核心工具降级为延迟工具之后；此前它的 schema 常驻 tools 参数，规划模式一直看得见）。
     pub const PLAN_BLOCKED_EXTRA: &'static [&'static str] = &[
         "RunSubagent",
         "RunSubagentsSequentially",

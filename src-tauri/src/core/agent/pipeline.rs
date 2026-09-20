@@ -57,7 +57,10 @@ use crate::infra::debug_logger;
 use crate::infra::llm::api_client;
 use crate::infra::types::models::*;
 use crate::core::orchestration::agent_runs;
-use crate::core::session::{append_message, memory::*, pop_message, restore_message};
+use crate::core::session::{
+    append_message, append_message_with_kind, memory::*, normalize_message_ids, pop_message,
+    restore_message,
+};
 use crate::core::tools::*;
 
 use super::context::*;
@@ -190,11 +193,14 @@ fn now_millis() -> u64 {
 
 /// 判断此刻是否应当发出"仍在等待"提示。
 ///
+/// 阈值**由流空闲超时派生**（`stream::waiting_hint_secs()` = 超时阈值 / 3），
+/// 不再是独立常量——两者曾各自为政、必须人工同步，超时放宽后提示会落在尴尬位置。
+///
 /// 回归防护：首版每 30 秒无条件发一条，页面被「已 30 秒未收到数据」刷屏
 /// （用户实测反馈）。现在约定：**同一段静默期只提示一次**，
 /// 直到收到新数据（`touch()` 复位 `already_sent`）才允许再次提示。
 fn should_emit_waiting_hint(silent_secs: u64, already_sent: bool) -> bool {
-    silent_secs >= crate::infra::types::constants::API_WAITING_HINT_SECS && !already_sent
+    silent_secs >= crate::core::agent::stream::waiting_hint_secs() && !already_sent
 }
 
 /// 等待上游响应期间的"进度提示"看门狗句柄。
@@ -258,13 +264,86 @@ impl WaitingHint {
 ///
 /// 具体原因仍完整保留在**用户可见的 notice**（气泡下方小字）、
 /// `interrupted_reason`（状态）与 `agent_runs.error`（审计）里，信息不丢失。
+///
+/// 格式约定（2026-09-20 统一，详见 doc/状态标注符号统一与结构化改造方案.md）：
+/// 标记行形如 `**[标签]** 说明文字`，**不带 `>` 引用符**——本标记会被拼进
+/// assistant 正文，前端按 `**[` 锚点把整行剥离成 notice 小字（chat.ts
+/// splitInterruptedNotice / AgentTurn.vue splitInterruptMarker，正则同时兼容
+/// 旧格式 `> ⚠️ **[回复被中断]**` 以免旧库历史裸露）。去 `>` 的理由：剥离时
+/// 本就会清掉它，对模型理解也无帮助。括号标签是**枚举**，比 emoji 哨兵精确。
 const INTERRUPT_MARKER_RESUMABLE: &str =
-    "> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。";
+    "**[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。";
 
 /// 已达轮次上限：与上面刻意不同 —— 此时模型**不该**接着写，
 /// 否则会立刻再次触达上限。
 const INTERRUPT_MARKER_STOPPED: &str =
-    "> ⚠️ **[回复被中断]** 已达回合上限且未获续跑授权，本轮在此停下。";
+    "**[回复被中断]** 已达回合上限且未获续跑授权，本轮在此停下。";
+
+/// 规划探索到上限：与 INTERRUPT_MARKER 系同风格（`**[标签]**` 开头），
+/// 语义是"停下等用户决策"，模型**不该**续写。
+const PLAN_LIMIT_MARKER: &str =
+    "**[规划探索已到上限]** 规划探索已达到阈值，本轮自动停下，等待用户决策。";
+
+/// 按中断类型取"写给模型看"的标记行。
+///
+/// 落库时正文是**干净**的（kind 独立成列）；发送给模型前由
+/// `prepare_history_snapshot_from_messages` 按 kind 把标记拼回正文尾部 ——
+/// 模型必须知道自己上一句被截断了，否则续跑会重复或断片。
+/// 措辞按 kind 收敛（见 INTERRUPT_MARKER_RESUMABLE 注释：变体越少、
+/// prompt cache 越稳）。
+fn interrupt_marker_for(kind: InterruptKind) -> &'static str {
+    match kind {
+        // 能接着做的三种（流超时 / 用户取消 / 执行报错）共用"接着做"措辞
+        InterruptKind::StreamTimeout
+        | InterruptKind::UserCancel
+        | InterruptKind::PipelineError => INTERRUPT_MARKER_RESUMABLE,
+        // 应用关闭：**没有半截内容可续**，用恢复占位措辞（等用户下一条新意图）
+        InterruptKind::AppClosed => {
+            crate::core::orchestration::agent_runs::INTERRUPT_PLACEHOLDER_NO_REPLY
+        }
+        // 回合上限：停下别写（否则立刻再次触顶）
+        InterruptKind::LoopLimit => INTERRUPT_MARKER_STOPPED,
+        // 规划探索到上限：停下等用户决策
+        InterruptKind::PlanLimit => PLAN_LIMIT_MARKER,
+    }
+}
+
+/// 把中断标记追加到消息的**正文块**末尾（**只在发送给模型前调用**）。
+///
+/// 与存储侧的方向相反：存储时正文干净、kind 独立成列；这里是"拼回"。
+/// 只动 Text 块——标记不得混进 Thinking（否则模型会把系统描述当成自己的
+/// 思考内容，与存储侧旧实现的约定一致）。无 Text 块时补一个。
+fn append_interrupt_marker_to_message(msg: &mut Message, marker: &str) {
+    const SEP: &str = "\n\n";
+    let content = match msg {
+        Message::Assistant { content } => content,
+        // 中断类型只打在 assistant 消息上；User 侧防御性跳过
+        Message::User { .. } => return,
+    };
+    let append_to = |text: &mut String| {
+        if text.trim().is_empty() {
+            *text = marker.to_string();
+        } else {
+            text.push_str(SEP);
+            text.push_str(marker);
+        }
+    };
+    match content {
+        Content::Single(text) => append_to(text),
+        Content::Multiple(blocks) => {
+            let last_text = blocks.iter_mut().rev().find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text),
+                _ => None,
+            });
+            match last_text {
+                Some(text) => append_to(text),
+                None => blocks.push(ContentBlock::Text {
+                    text: marker.to_string(),
+                }),
+            }
+        }
+    }
+}
 
 struct ContextEstimate {    total_chars: usize,
     estimated_tokens: usize,
@@ -360,45 +439,47 @@ fn assistant_text_exists_at_tail(messages: &[Message], target: &str) -> bool {
 /// 既有先例一致：思考按折叠样式展示、不冒充正文，空签名出网由 adapters 剥离。
 ///
 /// 返回 true 表示本次确实改动了会话历史。
+///
+/// ## 阶段二改造（2026-09-20）：标记不再拼进正文
+///
+/// 此前把 `**[回复被中断]** …` 直接 `format!` 拼在正文块尾部，界面侧只能靠
+/// 正则从文本里"猜着剥"。现在改为把**中断类型**写进 `interrupt_kinds`
+/// （与 messages/sources 平行的数组，随消息落库），正文保持干净：
+/// - 模型侧：发送前由 `prepare_history_snapshot_from_messages` 按 kind 拼回标记；
+/// - 界面侧：`command/history.rs` 读 kind 生成 notice 小字。
+///
+/// **分支一的 `source` 保持 `chat` 不变**——那条消息是模型的真实回复，
+/// 在发给模型的白名单里，改 source 会让它掉出模型上下文（阶段二的硬约束）。
 async fn store_interrupted_turn(
     session: &mut crate::infra::types::models::SessionMemory,
     text: &str,
     thinking: &str,
-    marker: &str,
+    kind: InterruptKind,
 ) -> bool {
     let text = text.trim();
     let thinking = thinking.trim();
+    let kind_str = kind.as_str();
 
-    // 分支一：尾部已有本轮助手消息 → 原地把提示追加到它的正文块。
+    // 分支一：尾部已有本轮的助手消息（`source="chat"`，主循环已落当轮）
+    // → 就地为它打上中断类型，不新增消息。
     //
-    // 命中条件：尾部近若干条里存在一条正文与 `text` 一致的助手消息
-    // （正常路径 `store_assistant_response` 落的裸正文）。
+    // 幂等：该消息已带 kind 时直接返回，重复收尾不会写两遍。
     if !text.is_empty() {
         if let Some(idx) = tail_assistant_text_index(&session.messages, text) {
-            let already = assistant_block_contains(&session.messages[idx], marker);
-            if already {
+            normalize_message_ids(session);
+            if session.interrupt_kinds.get(idx).cloned().flatten().is_some() {
                 return false;
             }
-            append_marker_to_assistant(&mut session.messages[idx], marker);
+            if idx < session.interrupt_kinds.len() {
+                session.interrupt_kinds[idx] = Some(kind_str.to_string());
+            }
             return true;
         }
     }
 
-    // 分支二：尾部没有 → 新建一条合并消息（正文块恒存在）。
-    if text.is_empty() && thinking.is_empty() {
-        // 完全无产出：给一条只有提示的助手消息，保证界面有锚点。
-        append_message(
-            session,
-            Message::Assistant {
-                content: Content::Multiple(vec![ContentBlock::Text {
-                    text: marker.to_string(),
-                }]),
-            },
-            "interrupted",
-        );
-        return true;
-    }
-
+    // 分支二：尾部没有（思考期中止、内容尚未落库）→ 新建一条消息。
+    // 正文即半截内容；**正文块恒存在**（渲染锚点，前端以正文块定位气泡）——
+    // 无产出时留空块，界面小字由 kind 驱动的 notice 承担。
     let mut blocks: Vec<ContentBlock> = Vec::new();
     if !thinking.is_empty() {
         blocks.push(ContentBlock::Thinking {
@@ -406,19 +487,17 @@ async fn store_interrupted_turn(
             signature: String::new(),
         });
     }
-    let body = if text.is_empty() {
-        marker.to_string()
-    } else {
-        format!("{}\n\n{}", text, marker)
-    };
-    blocks.push(ContentBlock::Text { text: body });
+    blocks.push(ContentBlock::Text {
+        text: text.to_string(),
+    });
 
-    append_message(
+    append_message_with_kind(
         session,
         Message::Assistant {
             content: Content::Multiple(blocks),
         },
         "interrupted",
+        Some(kind_str),
     );
     true
 }
@@ -454,57 +533,6 @@ fn tail_assistant_text_index(messages: &[Message], target: &str) -> Option<usize
             _ => false,
         })
         .map(|(idx, _)| idx)
-}
-
-/// 判断一条助手消息的正文块里是否已包含 `needle`（幂等检查用）。
-fn assistant_block_contains(msg: &Message, needle: &str) -> bool {
-    match msg {
-        Message::Assistant { content } => match content {
-            Content::Single(text) => text.contains(needle),
-            Content::Multiple(blocks) => blocks.iter().any(|b| match b {
-                ContentBlock::Text { text } => text.contains(needle),
-                _ => false,
-            }),
-        },
-        _ => false,
-    }
-}
-
-/// 把 `marker` 追加到一条助手消息的正文块末尾（原地修改）。
-///
-/// 只追加到**正文（Text）块**：思考块不得混入系统提示，否则模型会把
-/// 系统视角的描述当成自己的思考内容。若该消息没有正文块，则补一个。
-fn append_marker_to_assistant(msg: &mut Message, marker: &str) {
-    const SEP: &str = "\n\n";
-    match msg {
-        Message::Assistant { content } => match content {
-            Content::Single(text) => {
-                if !text.trim().is_empty() {
-                    text.push_str(SEP);
-                }
-                text.push_str(marker);
-            }
-            Content::Multiple(blocks) => {
-                // 优先追加到**最后一个** Text 块，保持正文连贯
-                let last_text = blocks.iter_mut().rev().find_map(|b| match b {
-                    ContentBlock::Text { text } => Some(text),
-                    _ => None,
-                });
-                match last_text {
-                    Some(text) => {
-                        if !text.trim().is_empty() {
-                            text.push_str(SEP);
-                        }
-                        text.push_str(marker);
-                    }
-                    None => blocks.push(ContentBlock::Text {
-                        text: marker.to_string(),
-                    }),
-                }
-            }
-        },
-        _ => {}
-    }
 }
 
 /// 防御性修复：确保每个 Assistant(tool_calls) 后跟 ToolResult 消息。
@@ -1025,19 +1053,19 @@ impl PipelineState {
         };
 
         // 步骤 3：恢复 + 注入 —— 处理崩溃残留并把本次用户消息写入历史
+        // 注意：active_run_id 在拿 memory 锁**之前**读取（统一锁顺序，避免交叉持有）
+        let active_run_id_before_recovery = self.ctx.active_run_id.lock().await.clone();
         let memory_after_user_message = {
             let mut session = self.ctx.memory.lock().await;
-            // 3a. 崩溃恢复：上次 run 异常中断时，把残留消息恢复进内存
-            if crate::command::session::recover_interrupted_into_memory(
+            // 3a. 崩溃恢复：上次 run 异常中断时，把残留消息恢复进内存。
+            // 走唯一闸门 `ensure_session_recovered`（原子抢占锁 + 闸门内统一落库/盖章），
+            // 本入口不再自行 save/mark。
+            let recovered = crate::command::session::ensure_session_recovered(
                 &self.sid,
                 &mut session,
-            ) {
-                let recovered_memory = session.clone();
-                crate::core::session::save_session(&self.sid, &recovered_memory, None);
-                if let Some(interrupted_run) = agent_runs::find_interrupted_run(&self.sid) {
-                    let _ = agent_runs::mark_run_recovered(&interrupted_run.run_id);
-                }
-
+                active_run_id_before_recovery.as_deref(),
+            );
+            if recovered {
                 // 检测程序崩溃时残留的 InProgress 任务，注入恢复指令给 LLM
                 let tm = crate::core::orchestration::tasks::TaskManager::for_session(&self.sid);
                 let in_progress: Vec<_> = tm.get_all_tasks()
@@ -1119,7 +1147,8 @@ impl PipelineState {
         };
         println!("[JARVIS] start_run: message_id={:?} initial_msg_index={}", user_message_id, self.initial_msg_index);
         // 步骤 6：在 agent_runs 表登记本次 run（实时进度 + 崩溃恢复用）
-        self.run_id = agent_runs::start_run(&self.app, &self.sid, &self.msg, None, user_message_id);
+        // （不再传用户消息文本：它只曾用于 v19 删掉的 user_message_preview 列）
+        self.run_id = agent_runs::start_run(&self.app, &self.sid, None, user_message_id);
         // 步骤 7：标记当前 run 为活跃。
         //
         // v15 起这里**不再**落 checkpoint：崩溃重建的唯一数据源是「每轮一行」的
@@ -1216,7 +1245,7 @@ impl PipelineState {
                     }
                     // 写入历史的标记面向 LLM（会进上下文），不含"告诉我"这类
                     // 对用户说的措辞——模型会把它们当成自己的话。
-                    self.append_interrupted_marker(INTERRUPT_MARKER_STOPPED)
+                    self.append_interrupted_marker(InterruptKind::LoopLimit)
                         .await;
                     self.interrupted_reason = Some("达到回合上限且未获续跑授权".to_string());
                     break;
@@ -1311,7 +1340,6 @@ impl PipelineState {
                                     let _ = agent_runs::fail_run(
                                         &app,
                                         &run_id_clone,
-                                        error.to_string(),
                                         in_tokens,
                                         out_tokens,
                                     );
@@ -1594,14 +1622,21 @@ impl PipelineState {
                 source: cache_outcome.source.clone(),
             });
 
-            // 检测输出截断状态
+            // 检测输出截断状态。
+            //
+            // 这里**只留日志，不再向 ToolResult 注入提示**：截断的处置建议已由
+            // `infra::llm::adapters::ToolInputErrorKind::Truncated::advice()` 承担
+            // （见 tools_runner.rs 生成 failure 处）。两处都写会在同一个工具结果里
+            // 出现两条内容重叠的建议；且本处原文案写死了"每次只创建 1-2 个文件"，
+            // 源自写文件场景，对 ProposePlan 这类调用并不贴切。
+            // 分类 advice 的依据是 serde 对参数 JSON 的真实报错，比 `stop_reason` 更准。
             let is_truncated = matches!(
                 stream_result.stop_reason.as_deref(),
                 Some("max_tokens") | Some("length")
             );
             if is_truncated {
                 println!(
-                    "[JARVIS] 检测到输出截断 (stop_reason={:?})，将在工具结果中提示 LLM",
+                    "[JARVIS] 检测到输出截断 (stop_reason={:?})；截断提示由工具参数错误分类统一给出",
                     stream_result.stop_reason
                 );
             }
@@ -1687,33 +1722,9 @@ impl PipelineState {
             self.req_sub_input_tokens += sub_in;
             self.req_sub_output_tokens += sub_out;
 
-            // 截断感知：如果输出被 max_tokens 截断导致工具参数不完整，
-            // 在错误的 ToolResult 中追加明确提示，让 LLM 知道原因并调整策略
-            if is_truncated && turn_has_tool {
-                let has_parse_error = tool_results.iter().any(|block| {
-                    if let ContentBlock::ToolResult { content, .. } = block {
-                        content.contains("参数解析失败")
-                    } else {
-                        false
-                    }
-                });
-                if has_parse_error {
-                    // 找到最后一个解析失败的 ToolResult，追加截断提示
-                    for block in tool_results.iter_mut().rev() {
-                        if let ContentBlock::ToolResult { content, .. } = block {
-                            if content.contains("参数解析失败") {
-                                content.push_str(
-                                    "\n\n⚠️ 上述参数解析失败的原因是：你的输出被 max_tokens 截断了，\
-                                    工具调用的 JSON 参数不完整。请减少单次输出量——\
-                                    每次只创建 1-2 个文件，而非一次性生成所有文件。"
-                                );
-                                break;
-                            }
-                        }
-                    }
-                    println!("[JARVIS] 已在 ToolResult 中注入截断提示");
-                }
-            }
+            // （原「截断感知注入」已移除：截断的处置建议改由工具参数错误分类统一给出，
+            //   见上方 `is_truncated` 处注释与 `ToolInputErrorKind::Truncated::advice()`。
+            //   保留 `is_truncated` 仅用于日志诊断。）
 
             let _ = self.app.emit(
                 "chat-turn-end",
@@ -1841,7 +1852,7 @@ impl PipelineState {
                     let _ = self.app.emit(
                         "chat-stream",
                         json!({
-                            "content": "\n> [!] **检测到计划性内容，正在重定向到方案审批流程...**\n",
+                            "content": "\n> **[方案重定向]** 检测到计划性内容，正在重定向到方案审批流程。\n",
                             "sessionId": self.sid,
                             "loopCount": self.total_loop_count + 1
                         }),
@@ -2287,6 +2298,16 @@ impl PipelineState {
                 self.req_output_tokens,
                 Some(self.final_answer.chars().take(180).collect()),
             );
+        } else if interrupted_reason.is_some() {
+            // 方案 6：主动收尾（取消/错误中止/看门狗）已在此前把 run 置为
+            // Interrupted/Cancelled，且上方 save_session 已把半截内容与中断
+            // 标记落库——收尾至此**声明完成**，盖 closed 图章把 run 移出
+            // 恢复候选（门卫 find_interrupted_run 不捞 closed）。此前这类
+            // run 停留 Interrupted，收尾后的正常刷新就会被门卫重放比对，
+            // 因标记只在消息层而误判缺失、重复补同一段（2302e81c）。
+            // 若 save 与盖章之间崩溃（毫秒级窗口），run 停留 Interrupted
+            // 被门卫捞出，由 messages_equivalent 的剥标记比对兜底。
+            agent_runs::mark_run_closed(&self.app, &self.run_id);
         }
 
         let session_input_tokens = session_meta
@@ -2366,7 +2387,7 @@ impl PipelineState {
 
         // 面向用户的小字标注：错误原文可能很长且含技术细节，
         // 这里给一句可读的结论，完整错误走事件层与 agent_runs.error（界面"执行详情"可查）。
-        let notice_text = format!("⚠ 本轮执行中断：{}", error);
+        let notice_text = format!("本轮执行中断：{}", error);
         println!("[JARVIS] 异常收尾（保留现场）: {}", error);
 
         // 1. 把已流式输出但尚未入库的内容补进历史。
@@ -2402,7 +2423,7 @@ impl PipelineState {
                 &mut session,
                 &text,
                 &thinking,
-                INTERRUPT_MARKER_RESUMABLE,
+                InterruptKind::PipelineError,
             )
             .await;
         }
@@ -2413,10 +2434,11 @@ impl PipelineState {
 
         // 3. 落库：本轮标记为 interrupted（**保留**帧级通道已写的半截内容）
         self.mark_loop_event_interrupted(error.to_string()).await;
+        // run 级中断类型与消息级一致（上面 store_interrupted_turn 用的就是 PipelineError）
         agent_runs::interrupt_run(
             &self.app,
             &self.run_id,
-            error.to_string(),
+            InterruptKind::PipelineError,
             self.req_input_tokens,
             self.req_output_tokens,
         );
@@ -2461,15 +2483,21 @@ impl PipelineState {
     ///   使"继续"时模型能看到自己中断于何处；
     /// - UI 渲染：**可见**（`command/history.rs` 的渲染门），否则中断轮次会从界面消失。
     ///
+    /// 阶段二起正文**不再放标记文本**（留空块作渲染锚点），中断类型走
+    /// `interrupt_kinds`；标记在发送给模型前由 `interrupt_marker_for` 按 kind 拼回。
+    ///
     /// 返回该消息在会话历史中的下标。
-    async fn append_interrupted_marker(&mut self, reason: &str) -> usize {
+    async fn append_interrupted_marker(&mut self, kind: InterruptKind) -> usize {
         let mut session = self.ctx.memory.lock().await;
-        append_message(
+        append_message_with_kind(
             &mut session,
             Message::Assistant {
-                content: Content::Single(reason.to_string()),
+                content: Content::Multiple(vec![ContentBlock::Text {
+                    text: String::new(),
+                }]),
             },
             "interrupted",
+            Some(kind.as_str()),
         );
         session.messages.len() - 1
     }
@@ -2491,7 +2519,7 @@ impl PipelineState {
     fn spawn_waiting_hint(&self) -> WaitingHint {
         use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-        let hint_secs = crate::infra::types::constants::API_WAITING_HINT_SECS;
+        let hint_secs = crate::core::agent::stream::waiting_hint_secs();
         let last_tick_ms = Arc::new(AtomicU64::new(now_millis()));
         let hint_sent = Arc::new(AtomicBool::new(false));
         let done = Arc::new(AtomicBool::new(false));
@@ -2517,13 +2545,21 @@ impl PipelineState {
                     // 走 agent-step 而非 chat-stream：等待提示属于**状态标注**，
                     // 应渲染在气泡下方的小字里；经 chat-stream 会混进模型正文，
                     // 在回复气泡内部显示（实测反馈的 UI 问题）。
+                    let silent_secs = silent_ms / 1000;
+                    // 剩余秒数按当前生效的终止阈值算。
+                    // ⚠️ 这里用 `STREAM_IDLE_TIMEOUT_SECS` 是**准确**的：等待响应头
+                    // 阶段由 `API_RESPONSE_HEADER_TIMEOUT_SECS` 收尾，两者当前同为
+                    // 120s，故两个阶段的剩余时间算法一致。**若将来把这两个阈值改成
+                    // 不相等**，需要按阶段把各自的阈值传进来，不能再用同一个常量。
+                    let remain_secs = crate::core::agent::stream::STREAM_IDLE_TIMEOUT_SECS
+                        .saturating_sub(silent_secs);
                     let _ = app.emit(
                         "agent-step",
                         json!({
                             "type": "waiting_hint",
                             "content": format!(
-                                "⏳ 已 {} 秒未收到数据，仍在等待模型响应…深度思考或上游繁忙时可能较慢，接口超时会自动终止，无需手动停止。",
-                                silent_ms / 1000
+                                "⏳ 已等待 {} 秒未收到数据；若持续无响应，约 {} 秒后会自动终止（无需手动停止）。深度思考或上游繁忙时可能较慢。",
+                                silent_secs, remain_secs
                             ),
                             "sessionId": sid,
                             "loopCount": loop_count
@@ -2631,9 +2667,11 @@ impl PipelineState {
             }
         };
 
-        // `reason` 面向用户；写入历史的标记面向 LLM（会进上下文），
-        // 故用最小信息量的统一措辞，避免模型把系统视角描述当成自己的话。
-        let reason = "> ✕ **用户已取消执行（以上为保留的部分结果，历史未截断）**";
+        // `reason` 面向用户（走 notice 结构化字段，纯文本、不经 Markdown 渲染，
+        // 故不带引用符/加粗/emoji —— 见 doc/状态标注符号统一与结构化改造方案.md）；
+        // 写入历史的标记面向 LLM（会进上下文），故用最小信息量的统一措辞，
+        // 避免模型把系统视角描述当成自己的话。
+        let reason = "用户已取消执行，以上为保留的部分结果，历史未截断。";
 
         // 落库口径（丙方案）：半截内容 + 中断提示合并成**一条**助手消息，
         // 保持一问一答；正文为空时把提示本身作为正文块，保证前端渲染锚点存在。
@@ -2643,7 +2681,7 @@ impl PipelineState {
                 &mut session,
                 &partial,
                 &partial_thinking,
-                INTERRUPT_MARKER_RESUMABLE,
+                InterruptKind::UserCancel,
             )
             .await;
         }
@@ -2682,7 +2720,7 @@ impl PipelineState {
     async fn handle_stream_idle_timeout(&mut self, stream_result: crate::core::agent::StreamResult) {
         let partial = stream_result.text.trim().to_string();
         println!(
-            "[JARVIS] 上游失联收尾：已累积文本 {} 字，工具={}，loop={}",
+            "[JARVIS] 上游超时收尾：已累积文本 {} 字，工具={}，loop={}",
             partial.chars().count(),
             stream_result.has_tool,
             self.total_loop_count + 1
@@ -2696,34 +2734,37 @@ impl PipelineState {
 
         // 面向用户的文案：会渲染成气泡下方的小字（notice），
         // 因此不用 Markdown 引用符号 —— 小字是纯文本，`>` 会原样显示。
+        //
+        // ⚠️ 归因范围（勿再混淆）：本函数是**流空闲超时**（SSE 30s 零帧）的收尾，
+        // 与 plan 模式的「规划看门狗」（update_plan_watchdog / 阈值 6 次·10 轮）
+        // 是两套完全不同的机制，只有本函数走这里。文案只描述"等待"这个客观事实，
+        // **不得断言服务端状态**（"已停止响应/已失联"都不行）——静默可能是服务
+        // 繁忙、链路抖动或半开连接，在链路上不可区分，断言会误导用户。
         let reason = format!(
-            "⚠ 上游服务已停止响应（连续 {} 秒未收到数据），已自动终止本轮。\
-             以上为已保留的部分结果，历史未截断。回复「继续」即可接着做。",
+            "上游长时间未返回数据（已等待 {} 秒），本轮已自动终止。\
+             已保留的部分结果见上，历史未截断。回复「继续」即可接着做。",
             crate::core::agent::stream::STREAM_IDLE_TIMEOUT_SECS
         );
 
-        // 写入历史的标记文案与 `reason` 刻意不同：
-        // `reason` 面向用户（含"服务已停止响应"这类系统视角描述），
-        // 而 `interrupted` 消息**会发给 LLM**（见白名单），
-        // 故用统一的"接着做"措辞（见 INTERRUPT_MARKER_RESUMABLE 注释）。
-        let llm_marker = INTERRUPT_MARKER_RESUMABLE;
-
-        // 落库口径（丙方案）：半截内容 + 中断提示合并成**一条**助手消息。
-        // 断流时流层已优雅返回，思考内容同样随正文落库。
+        // 落库口径（丙方案）：半截内容落成**一条**助手消息，中断类型结构化写进
+        // `interrupt_kinds`（标记文本在发送给模型前由 kind 拼回，见
+        // `interrupt_marker_for`）。断流时流层已优雅返回，思考内容同样随正文落库。
         {
             let mut session = self.ctx.memory.lock().await;
             store_interrupted_turn(
                 &mut session,
                 &partial,
                 &stream_result.thinking,
-                llm_marker,
+                InterruptKind::StreamTimeout,
             )
             .await;
         }
 
         self.final_answer = partial.clone();
         self.notice = Some(reason.clone());
-        self.interrupted_reason = Some("上游服务失联（流内空闲超时）".to_string());
+        // 状态字符串（进 agent_runs.error / 审计，非用户可见）：同样只描述等待事实，
+        // 不断言服务端。见本函数上方 handle_stream_idle_timeout 的归因注释。
+        self.interrupted_reason = Some("上游响应超时（流内空闲超时）".to_string());
 
         // 状态标注不再经 chat-stream 推进正文（会挤进回复气泡内部），
         // 改由 JarvisResult.notice 结构化下发，前端渲染为气泡下方小字。
@@ -2757,6 +2798,25 @@ impl PipelineState {
             0,
             Some(self.model_id.clone()),
         );
+
+        // ⚠️ 把 run 状态落为 Interrupted（与错误中止/用户取消两条收尾路对齐）。
+        //
+        // 此前本路径只写 events 行、不更新 agent_runs.status —— run 永久停留
+        // Running，重启后被 find_interrupted_run 以 STALE 判定当崩溃遗留捞出，
+        // 触发恢复链把已收尾的内容再补一遍（session 10b68285 重复数据事故的
+        // 直接根因）。统一收尾处对 interrupted_reason 路径刻意跳过 complete_run，
+        // 所以这里必须自己落状态。
+        //
+        // 注意：本处 reason 属**流空闲超时**（stream.rs 的 STREAM_IDLE_TIMEOUT_SECS），
+        // 不是 plan 模式的「规划看门狗」——后者走 handle_plan_watchdog_summary
+        // 且以 chat source 正常收尾，不会进本路径。措辞只描述超时事实，不断言服务端。
+        agent_runs::interrupt_run(
+            &self.app,
+            &self.run_id,
+            InterruptKind::StreamTimeout,
+            self.req_input_tokens,
+            self.req_output_tokens,
+        );
     }
 
     /// 循环上限确认（满 30 轮触发）：弹窗请用户授权继续
@@ -2766,7 +2826,7 @@ impl PipelineState {
         let _ = self.app.emit(
             "chat-stream",
             json!({
-                "content": format!("\n> **代理执行已达到 {} 回合，正在等待用户确认是否继续...**\n", crate::infra::types::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM),
+                "content": format!("\n> **[等待确认]** 代理执行已达到 {} 回合，等待用户确认是否继续。\n", crate::infra::types::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM),
                 "sessionId": self.sid,
                 "loopCount": self.total_loop_count + 1
             }),
@@ -2791,7 +2851,7 @@ impl PipelineState {
             let _ = self.app.emit(
                 "chat-stream",
                 json!({
-                    "content": "\n> **用户已授权继续执行。**\n",
+                    "content": "\n> **[已授权]** 用户已授权继续执行。\n",
                     "sessionId": self.sid,
                     "loopCount": self.total_loop_count + 1
                 }),
@@ -2823,13 +2883,18 @@ impl PipelineState {
     /// - 占用 = 本地估算 ×（上一轮实测 ÷ 上一轮估算）
     async fn compact_if_needed(&mut self) {
         // 1. 估算当前上下文 token（消息 + 工具 schema）
-        let (messages_for_estimate, sources_for_estimate) = {
+        let (messages_for_estimate, sources_for_estimate, kinds_for_estimate) = {
             let session = self.ctx.memory.lock().await;
-            (session.messages.clone(), session.sources.clone())
+            (
+                session.messages.clone(),
+                session.sources.clone(),
+                session.interrupt_kinds.clone(),
+            )
         };
         let history_snapshot = self.prepare_history_snapshot_from_messages(
             messages_for_estimate,
             &sources_for_estimate,
+            &kinds_for_estimate,
         );
         let tools = self.current_tools();
         let estimate = self.build_context_estimate(&history_snapshot, &tools);
@@ -2899,6 +2964,18 @@ impl PipelineState {
             } else {
                 Vec::new()
             };
+            // 中断类型与本轮区间同尺 drain —— 三个平行数组必须一起摘出来、一起拼回，
+            // 否则压缩后 kind 会错配到别的消息上（拼回时按索引取，越界得 None）。
+            let turn_kinds: Vec<Option<String>> =
+                if session.interrupt_kinds.len() >= turn_messages.len() {
+                    let keep = session
+                        .interrupt_kinds
+                        .len()
+                        .saturating_sub(turn_messages.len());
+                    session.interrupt_kinds.drain(keep..).collect()
+                } else {
+                    Vec::new()
+                };
             let turn_len = turn_messages.len();
 
             // 2c. 本轮就是全部历史（`initial_msg_index` 指向第 0 条）⇒ 没有可压的前缀。
@@ -2907,10 +2984,12 @@ impl PipelineState {
             let prefix_len = session.messages.len();
             if prefix_len == 0 {
                 // 放回本轮区间后直接返回。
-                //（用 append_message 而非直接 push：它会先 normalize_message_ids
-                // 把 message_ids 与 messages 重新对齐 —— drain 之后两者长度已不同步）
-                for (msg, src) in turn_messages.into_iter().zip(turn_sources) {
-                    append_message(&mut session, msg, &src);
+                //（用 append_message_with_kind 而非直接 push：它会先 normalize_message_ids
+                // 把 message_ids / sources / interrupt_kinds 与 messages 重新对齐 ——
+                // drain 之后它们长度已不同步）
+                for (i, (msg, src)) in turn_messages.into_iter().zip(turn_sources).enumerate() {
+                    let kind = turn_kinds.get(i).cloned().flatten();
+                    append_message_with_kind(&mut session, msg, &src, kind.as_deref());
                 }
                 // 本轮起点 = 放回后「区间起点」的下标
                 self.initial_msg_index = session.messages.len().saturating_sub(turn_len);
@@ -2940,8 +3019,9 @@ impl PipelineState {
             match compact_result {
                 Err(e) => {
                     println!("[JARVIS] 自动压缩失败: {}，继续使用原始上下文", e);
-                    for (msg, src) in turn_messages.into_iter().zip(turn_sources) {
-                        append_message(&mut session, msg, &src);
+                    for (i, (msg, src)) in turn_messages.into_iter().zip(turn_sources).enumerate() {
+                        let kind = turn_kinds.get(i).cloned().flatten();
+                        append_message_with_kind(&mut session, msg, &src, kind.as_deref());
                     }
                     // 前缀未被压，本轮起点仍落在原前缀之后
                     self.initial_msg_index = prefix_len;
@@ -2955,8 +3035,9 @@ impl PipelineState {
                     // last_user_msg 只用于「最后一条是工具结果」的情形（见下），
                     // 那种情况下它属于本轮区间，已被上面拼回。
                     let compacted_len = session.messages.len();
-                    for (msg, src) in turn_messages.into_iter().zip(turn_sources) {
-                        append_message(&mut session, msg, &src);
+                    for (i, (msg, src)) in turn_messages.into_iter().zip(turn_sources).enumerate() {
+                        let kind = turn_kinds.get(i).cloned().flatten();
+                        append_message_with_kind(&mut session, msg, &src, kind.as_deref());
                     }
                     self.initial_msg_index = compacted_len;
                     println!(
@@ -3013,6 +3094,7 @@ impl PipelineState {
         &self,
         messages: Vec<Message>,
         sources: &[String],
+        interrupt_kinds: &[Option<String>],
     ) -> Vec<Message> {
         // 步骤 1：过滤 internal/background 内部消息（LLM 不需要看到系统内部通知），
         // 并把「本轮用户消息」的下标换算到过滤后的快照坐标系——initial_msg_index
@@ -3024,9 +3106,18 @@ impl PipelineState {
         let session_turn_start = self.initial_msg_index;
         let mut filtered: Vec<Message> = Vec::with_capacity(messages.len());
         let mut snapshot_turn_start: Option<usize> = None;
-        for (idx, (msg, src)) in messages.into_iter().zip(sources.iter()).enumerate() {
+        for (idx, (mut msg, src)) in messages.into_iter().zip(sources.iter()).enumerate() {
             if !matches!(src.as_str(), "chat" | "compact" | "context" | "interrupted") {
                 continue;
+            }
+            // 中断类型 → 把标记拼回正文末尾（**模型必须看到"上一句被截断"**，
+            // 否则续跑会重复或断片）。存储侧正文是干净的，标记只在发送前出现。
+            if let Some(kind) = interrupt_kinds
+                .get(idx)
+                .and_then(|k| k.as_deref())
+                .and_then(InterruptKind::from_db)
+            {
+                append_interrupt_marker_to_message(&mut msg, interrupt_marker_for(kind));
             }
             if idx == session_turn_start {
                 snapshot_turn_start = Some(filtered.len());
@@ -3053,8 +3144,9 @@ impl PipelineState {
         let session = self.ctx.memory.lock().await;
         let messages = session.messages.clone();
         let sources = session.sources.clone();
+        let interrupt_kinds = session.interrupt_kinds.clone();
         drop(session); // 释放锁
-        self.prepare_history_snapshot_from_messages(messages, &sources)
+        self.prepare_history_snapshot_from_messages(messages, &sources, &interrupt_kinds)
     }
 
     /// 将消息列表转换为人类可读的对话文本，用于上下文快照展示
@@ -3695,7 +3787,6 @@ impl PipelineState {
                         agent_runs::fail_run(
                             &self.app,
                             &self.run_id,
-                            error.to_string(),
                             self.req_input_tokens,
                             self.req_output_tokens,
                         );
@@ -3715,7 +3806,6 @@ impl PipelineState {
                 agent_runs::fail_run(
                     &self.app,
                     &self.run_id,
-                    e.to_string(),
                     self.req_input_tokens,
                     self.req_output_tokens,
                 );
@@ -3845,7 +3935,7 @@ impl PipelineState {
         let _ = self.app.emit(
             "chat-stream",
             json!({
-                "content": "\n> [!] **规划探索未收敛，已自动停下并把决策权交还给你。** 可选择：继续探索 / 缩小范围 / 直接执行。\n",
+                "content": "\n> **[规划探索已到上限]** 规划探索未收敛，已自动停下并把决策权交还给你。可选择：继续探索 / 缩小范围 / 直接执行。\n",
                 "sessionId": self.sid,
                 "loopCount": self.total_loop_count + 1
             }),
@@ -3854,21 +3944,20 @@ impl PipelineState {
         // 小结落库：此前看门狗收尾只进 final_answer 与事件流，session_messages
         // 零痕迹（尾部悬 tool_result，刷新后聊天流回退到上一条正文）。
         // 这里把小结补成 assistant 消息并立即整仓落库，尾部以 assistant 收口。
-        // 尾注为系统视角的客观陈述（对齐中断标记措辞原则：最小信息量，避免
-        // 模型把系统描述当成自己的话）；⚠️ 前缀走前端 splitInterruptMarker 剥成小字。
-        let record = format!(
-            "{}\n\n> ⚠️ **[规划看门狗]** 规划探索已达到阈值，本轮自动停下，等待用户决策。",
-            summary
-        );
+        //
+        // 正文只放小结本身，中断类型走 `interrupt_kinds`（阶段二改造）；
+        // source 保持 `chat`——这条消息**会发给 LLM**，标记由 `interrupt_marker_for`
+        // 在发送前按 kind 拼回（见 doc/状态标注符号统一与结构化改造方案.md）。
         {
             let mut session = self.ctx.memory.lock().await;
-            if !assistant_text_exists_at_tail(&session.messages, &record) {
-                append_message(
+            if !assistant_text_exists_at_tail(&session.messages, &summary) {
+                append_message_with_kind(
                     &mut session,
                     Message::Assistant {
-                        content: Content::Single(record),
+                        content: Content::Single(summary.clone()),
                     },
                     "chat",
+                    Some(InterruptKind::PlanLimit.as_str()),
                 );
             }
             crate::core::session::save_session(&self.sid, &session, None);
@@ -4255,7 +4344,7 @@ mod interrupt_marker_tests {
     fn resumable_markers_are_identical() {
         assert_eq!(
             INTERRUPT_MARKER_RESUMABLE,
-            "> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。"
+            "**[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。"
         );
     }
 
@@ -4275,11 +4364,16 @@ mod interrupt_marker_tests {
         for marker in [INTERRUPT_MARKER_RESUMABLE, INTERRUPT_MARKER_STOPPED] {
             assert!(
                 marker.contains("[回复被中断]"),
-                "前端剥离逻辑依赖该前缀，不得修改：{marker}"
+                "前端剥离逻辑依赖该标签，不得修改：{marker}"
             );
             assert!(
-                marker.trim_start().starts_with('>'),
-                "应以 Markdown 引用开头，便于统一剥离：{marker}"
+                marker.starts_with("**["),
+                "应以 `**[标签]` 开头（2026-09-20 风格统一：去掉 `>` 引用符与 emoji），\
+                 便于统一剥离：{marker}"
+            );
+            assert!(
+                !marker.contains('⚠'),
+                "不应再含 emoji 哨兵：{marker}"
             );
         }
     }
@@ -4331,19 +4425,19 @@ mod stream_retry_gate_tests {
 #[cfg(test)]
 mod waiting_hint_tests {
     use super::should_emit_waiting_hint;
-    use crate::infra::types::constants::API_WAITING_HINT_SECS;
+    use crate::core::agent::stream::{waiting_hint_secs, STREAM_IDLE_TIMEOUT_SECS};
 
     /// 静默未达阈值：不提示（避免正常生成被打扰）
     #[test]
     fn no_hint_before_threshold() {
-        assert!(!should_emit_waiting_hint(API_WAITING_HINT_SECS - 1, false));
+        assert!(!should_emit_waiting_hint(waiting_hint_secs() - 1, false));
         assert!(!should_emit_waiting_hint(0, false));
     }
 
     /// 刚好达到阈值且本段静默期未提示过 → 提示
     #[test]
     fn hints_once_at_threshold() {
-        assert!(should_emit_waiting_hint(API_WAITING_HINT_SECS, false));
+        assert!(should_emit_waiting_hint(waiting_hint_secs(), false));
     }
 
     /// **回归防护（用户实测 bug）**：同一段静默期继续延长时**不得重复提示**。
@@ -4352,11 +4446,24 @@ mod waiting_hint_tests {
     fn does_not_repeat_within_same_silence() {
         for extra in [0, 30, 60, 300] {
             assert!(
-                !should_emit_waiting_hint(API_WAITING_HINT_SECS + extra, true),
+                !should_emit_waiting_hint(waiting_hint_secs() + extra, true),
                 "静默 {} 秒时不应重复提示",
-                API_WAITING_HINT_SECS + extra
+                waiting_hint_secs() + extra
             );
         }
+    }
+
+    /// **提示阈值必须由超时阈值派生**：以后者为唯一事实源，改一处即可。
+    /// 硬编码独立的 30 曾在超时放宽到 120 后把用户晾在中间 90 秒。
+    #[test]
+    fn hint_threshold_is_derived_from_idle_timeout() {
+        assert_eq!(waiting_hint_secs(), (STREAM_IDLE_TIMEOUT_SECS / 3).max(15));
+        assert!(
+            waiting_hint_secs() < STREAM_IDLE_TIMEOUT_SECS,
+            "提示必须早于终止：hint={} timeout={}",
+            waiting_hint_secs(),
+            STREAM_IDLE_TIMEOUT_SECS
+        );
     }
 }
 
@@ -4476,9 +4583,12 @@ mod interrupted_turn_store_tests {
     //! 现口径：半截内容（思考 + 正文）+ 中断提示**合并成一条**消息；
     //! 正文为空（纯思考期中止）时把提示本身作为正文块，保证渲染锚点存在。
     use super::store_interrupted_turn;
-    use crate::infra::types::models::{Content, ContentBlock, Message, SessionMemory};
+    use crate::infra::types::models::{Content, ContentBlock, InterruptKind, Message, SessionMemory};
 
-    const MARKER: &str = "> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。";
+    /// 测试用中断类型（阶段二起 `store_interrupted_turn` 收 kind，不再收标记文本）。
+    /// 取 `PipelineError` 代表"能接着做"一类——它的标记文本仍是
+    /// `INTERRUPT_MARKER_RESUMABLE`，供"发送前拼回"的断言使用。
+    const KIND: InterruptKind = InterruptKind::PipelineError;
 
     fn empty_memory() -> SessionMemory {
         SessionMemory::default()
@@ -4527,7 +4637,7 @@ mod interrupted_turn_store_tests {
     #[tokio::test]
     async fn text_and_thinking_merge_into_single_message() {
         let mut session = empty_memory();
-        let wrote = store_interrupted_turn(&mut session, "半截正文", "半截思考", MARKER).await;
+        let wrote = store_interrupted_turn(&mut session, "半截正文", "半截思考", KIND).await;
 
         assert!(wrote, "有内容时必须落库");
         assert_eq!(session.messages.len(), 1, "必须只有一条助手消息（一问一答）");
@@ -4538,7 +4648,16 @@ mod interrupted_turn_store_tests {
         );
         let body = body_text(&blocks);
         assert!(body.starts_with("半截正文"), "正文必须保留原文：{body}");
-        assert!(body.ends_with(MARKER), "提示必须落在正文块末尾：{body}");
+        assert!(body.contains("半截正文"));
+        assert!(
+            !body.contains("回复被中断"),
+            "阶段二起标记不进正文（只写 interrupt_kinds）：{body}"
+        );
+        assert_eq!(
+            session.interrupt_kinds.last().cloned().flatten().as_deref(),
+            Some(KIND.as_str()),
+            "中断类型必须打在该消息上"
+        );
         assert_eq!(session.sources[0], "interrupted");
     }
 
@@ -4546,24 +4665,28 @@ mod interrupted_turn_store_tests {
     #[tokio::test]
     async fn thinking_only_promotes_marker_to_body() {
         let mut session = empty_memory();
-        let wrote = store_interrupted_turn(&mut session, "", "只有思考", MARKER).await;
+        let wrote = store_interrupted_turn(&mut session, "", "只有思考", KIND).await;
 
         assert!(wrote);
         assert_eq!(session.messages.len(), 1);
         let blocks = only_blocks(&session);
-        assert_eq!(body_text(&blocks), MARKER, "无正文时提示必须独占正文块");
+        assert_eq!(
+            body_text(&blocks),
+            "",
+            "无产出时正文留空块（渲染锚点），小字由 kind 提供"
+        );
     }
 
     /// 正文期中止（无思考）：只有正文块，末尾附提示
     #[tokio::test]
     async fn text_only_appends_marker() {
         let mut session = empty_memory();
-        store_interrupted_turn(&mut session, "半截正文", "", MARKER).await;
+        store_interrupted_turn(&mut session, "半截正文", "", KIND).await;
 
         let blocks = only_blocks(&session);
         assert_eq!(blocks.len(), 1, "无思考时不应凭空造 Thinking 块");
         let body = body_text(&blocks);
-        assert!(body.ends_with(MARKER));
+        assert!(!body.contains("回复被中断"), "标记不得进正文：{body}");
         assert!(body.contains("半截正文"));
     }
 
@@ -4571,11 +4694,15 @@ mod interrupted_turn_store_tests {
     #[tokio::test]
     async fn nothing_produced_still_anchors_marker() {
         let mut session = empty_memory();
-        let wrote = store_interrupted_turn(&mut session, "   ", "\n", MARKER).await;
+        let wrote = store_interrupted_turn(&mut session, "   ", "\n", KIND).await;
 
         assert!(wrote, "无产出也必须给出提示锚点");
         assert_eq!(session.messages.len(), 1);
-        assert_eq!(body_text(&only_blocks(&session)), MARKER);
+        assert_eq!(
+            body_text(&only_blocks(&session)),
+            "",
+            "无产出时正文留空块（渲染锚点）"
+        );
     }
 
     // ── 分支一：尾部已有当轮内容 → 原地追加提示 ──
@@ -4590,13 +4717,13 @@ mod interrupted_turn_store_tests {
         let mut session = empty_memory();
         seed_plain_assistant(&mut session, "半截正文");
 
-        let wrote = store_interrupted_turn(&mut session, "半截正文", "", MARKER).await;
+        let wrote = store_interrupted_turn(&mut session, "半截正文", "", KIND).await;
 
         assert!(wrote, "提示必须被写入（不能因正文已存在就跳过）");
         assert_eq!(session.messages.len(), 1, "必须仍是一条消息（一问一答）");
         let body = body_text(&only_blocks(&session));
         assert!(body.starts_with("半截正文"), "原文不能丢：{body}");
-        assert!(body.ends_with(MARKER), "提示必须在正文末尾：{body}");
+        assert!(!body.contains("回复被中断"), "标记不得进正文：{body}");
     }
 
     /// 已有消息带思考+正文时，提示只追加到正文块，绝不污染思考块
@@ -4619,19 +4746,19 @@ mod interrupted_turn_store_tests {
             "chat",
         );
 
-        store_interrupted_turn(&mut session, "半截正文", "内心独白", MARKER).await;
+        store_interrupted_turn(&mut session, "半截正文", "内心独白", KIND).await;
 
         let blocks = only_blocks(&session);
         match &blocks[0] {
             ContentBlock::Thinking { thinking, .. } => {
                 assert!(
-                    !thinking.contains(MARKER),
+                    !thinking.contains("回复被中断"),
                     "思考块不得混入系统提示：{thinking}"
                 );
             }
             other => panic!("第一个块应为思考，实际: {other:?}"),
         }
-        assert!(body_text(&blocks).ends_with(MARKER));
+        assert!(!body_text(&blocks).contains("回复被中断"));
     }
 
     /// 幂等：同一收尾重复调用，提示只追加一次
@@ -4640,11 +4767,11 @@ mod interrupted_turn_store_tests {
         let mut session = empty_memory();
         seed_plain_assistant(&mut session, "半截正文");
 
-        assert!(store_interrupted_turn(&mut session, "半截正文", "", MARKER).await);
+        assert!(store_interrupted_turn(&mut session, "半截正文", "", KIND).await);
         let after_first = session.messages.len();
         let first_body = body_text(&only_blocks(&session));
 
-        let wrote = store_interrupted_turn(&mut session, "半截正文", "", MARKER).await;
+        let wrote = store_interrupted_turn(&mut session, "半截正文", "", KIND).await;
         assert!(!wrote, "重复收尾不应再次改动");
         assert_eq!(session.messages.len(), after_first, "不得新增消息");
         assert_eq!(

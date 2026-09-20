@@ -96,10 +96,16 @@ pub async fn compact_messages(
     if keep_indices.len() < memory.messages.len() {
         memory.messages = keep_indices.iter().map(|&i| memory.messages[i].clone()).collect();
         memory.sources = keep_indices.iter().map(|&i| memory.sources[i].clone()).collect();
+        // ⚠️ 平行数组必须同步重建：漏掉 interrupt_kinds 会让 kind 错配到别的消息上
+        memory.interrupt_kinds = keep_indices
+            .iter()
+            .map(|&i| memory.interrupt_kinds.get(i).cloned().flatten())
+            .collect();
     }
 
     let messages = &mut memory.messages;
     let sources = &mut memory.sources;
+    let kinds = &mut memory.interrupt_kinds;
 
     // 2. 不留尾巴：整个前缀都参与压缩，压缩后历史只剩「压缩请求 + 摘要」两条。
     //
@@ -115,10 +121,12 @@ pub async fn compact_messages(
 
     messages.clear();
     sources.clear();
+    kinds.clear();
     messages.push(Message::User {
         content: Content::Single("[用户请求压缩上下文]".to_string()),
     });
     sources.push("compact".to_string());
+    kinds.push(None);
     messages.push(Message::Assistant {
         content: Content::Single(format!(
             "[上下文压缩摘要]\n\n以下是对此前对话内容的自动摘要，用于保持上下文连贯性。\n\n---\n{}",
@@ -126,6 +134,7 @@ pub async fn compact_messages(
         )),
     });
     sources.push("compact".to_string());
+    kinds.push(None);
 
     Ok(())
 }
@@ -332,6 +341,7 @@ pub async fn auto_compact(
         &memory.messages,
         &message_ids,
         &memory.sources,
+        &memory.interrupt_kinds,
         now,
     ) {
         println!("[auto_compact] 保存压缩消息到 session_messages 失败: {}", e);

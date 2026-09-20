@@ -14,26 +14,30 @@ use super::regexes::*;
 pub use super::types::SafetyResult;
 
 /// 检测破坏性命令，返回警告信息（仅用于权限确认显示，不拦截）
+///
+/// 文案风格（2026-09-20 统一）：**不带 emoji**——权限确认卡片本身已有视觉上的
+/// 警示呈现（红色危险标记/独立警示区），文案再叠一个 `⚠` 既冗余又"AI 味"重。
+/// 见 doc/状态标注符号统一与结构化改造方案.md。
 pub fn get_destructive_warning(cmd: &str) -> Option<String> {
     let mut warnings = Vec::new();
 
     if destructive_remove_re().is_match(cmd) {
-        warnings.push("⚠ 检测到递归/强制删除操作（Remove-Item -Recurse/-Force、rm -rf 及等价别名）");
+        warnings.push("检测到递归/强制删除操作（Remove-Item -Recurse/-Force、rm -rf 及等价别名）");
     }
     if destructive_git_re().is_match(cmd) {
         warnings.push(
-            "⚠ 检测到 Git 破坏性操作（reset --hard / push -f / clean -f / stash drop|clear）",
+            "检测到 Git 破坏性操作（reset --hard / push -f / clean -f / stash drop|clear）",
         );
     }
     if destructive_sql_re().is_match(cmd) {
-        warnings.push("⚠ 检测到 SQL 破坏性操作（DROP TABLE / TRUNCATE）");
+        warnings.push("检测到 SQL 破坏性操作（DROP TABLE / TRUNCATE）");
     }
     if destructive_system_re().is_match(cmd) {
         warnings
-            .push("⚠ 检测到系统级破坏性操作（Stop-Computer / Format-Volume / Clear-RecycleBin）");
+            .push("检测到系统级破坏性操作（Stop-Computer / Format-Volume / Clear-RecycleBin）");
     }
     if destructive_clear_content_re().is_match(cmd) {
-        warnings.push("⚠ 检测到 Clear-Content 配合通配符（可能清空多个文件内容）");
+        warnings.push("检测到 Clear-Content 配合通配符（可能清空多个文件内容）");
     }
 
     if warnings.is_empty() {

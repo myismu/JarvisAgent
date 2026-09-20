@@ -22,6 +22,8 @@ pub struct TaskUpdateParams {
     pub add_blocked_by: Option<Vec<i32>>,
     pub add_blocks: Option<Vec<i32>>,
     pub metadata: Option<serde_json::Value>,
+    /// 指定该任务由哪种子代理执行（`None` = 不修改）。2026-09-20 新增。
+    pub subagent_type: Option<String>,
 }
 
 impl TaskManager {
@@ -48,7 +50,7 @@ impl TaskManager {
         resource_repository::delete_task(&self.session_id, id)
     }
 
-    /// 创建任务，支持 activeForm、metadata、owner
+    /// 创建任务，支持 activeForm、metadata、owner、subagent_type
     pub fn create(
         &self,
         subject: String,
@@ -56,6 +58,7 @@ impl TaskManager {
         active_form: Option<String>,
         metadata: Option<serde_json::Value>,
         owner: Option<String>,
+        subagent_type: Option<String>,
     ) -> Result<Task, String> {
         // 原子分配 ID + 保存：利用全局 DB Mutex 保证 max_id 查询和 insert 之间无竞态
         let task = Task {
@@ -68,6 +71,7 @@ impl TaskManager {
             owner: owner.unwrap_or_default(),
             active_form,
             metadata,
+            subagent_type,
         };
         self._save_atomic(&task)
     }
@@ -154,6 +158,15 @@ impl TaskManager {
             };
             task.metadata = Some(merged);
             updated_fields.push("metadata".to_string());
+        }
+
+        // 更新 subagent_type（指定该任务由哪种子代理执行；空串视为不修改）
+        if let Some(role) = params.subagent_type {
+            let role = role.trim().to_string();
+            if !role.is_empty() && task.subagent_type.as_deref() != Some(role.as_str()) {
+                task.subagent_type = Some(role);
+                updated_fields.push("subagentType".to_string());
+            }
         }
 
         // 依赖引用校验：引用的 task ID 必须存在，且不能自引用

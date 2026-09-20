@@ -70,15 +70,25 @@ function tryParseApiErrorBody(body: string): string | null {
 }
 
 /**
- * 从正文中剥离"运行被打断"的标记，改为气泡下方的小字说明。
+ * 从正文中剥离"运行被打断"标记，改为气泡下方的小字说明。
  *
- * 后端在中断收尾时会把标记追加进 `res.content`（如 `> ⚠️ **[回复被中断]** …`、
- * `> ✕ **用户已取消执行…**`）。它属于**状态标注**而非模型正文，若留在正文里
- * 会挤进回复气泡内部，既突兀又与"已保留的部分结果"重复。
- * 这里把它取出来交给 `snapshot.notice`，由渲染层放在气泡下方。
+ * 后端在中断收尾时会把标记追加进 `res.content`，存在两种格式：
+ * - **现行**：`**[标签]** 说明`（如 `**[回复被中断]** …`），不带引用符
+ * - **旧库遗留**：`> ⚠️ **[回复被中断]** …`、`> ✕ **用户已取消执行…**`
+ * 两种都必须识别——旧会话历史里的标记不会被自动改写。
+ *
+ * ⚠️ 标签用**枚举白名单**，不用宽松的任意 `**[xxx]**`：模型正文里也可能
+ * 写出加粗方括号，宽松匹配会把正文误剥成小字。**新增标记标签时必须同步
+ * 维护下面的正则**（与 `AgentTurn.vue` 的 splitInterruptMarker 同一份约定）。
+ *
+ * 归属：它属于**状态标注**而非模型正文，若留在正文里会挤进回复气泡内部，
+ * 既突兀又与"已保留的部分结果"重复。这里取出来交给 `snapshot.notice`，
+ * 由渲染层放在气泡下方。
  */
+const INTERRUPT_MARKER_LINE_RE =
+  /\n*(?:>?\s*[⚠✕][^\n]*|\*\*\[(?:回复被中断|规划探索已到上限|工具错误|方案重定向|等待确认|已授权|启动子代理|子代理执行完毕)\][^\n]*)/;
 function splitInterruptedNotice(content: string): { content: string; notice?: string } {
-  const match = content.match(/\n*>?\s*[⚠✕][^\n]*/);
+  const match = content.match(INTERRUPT_MARKER_LINE_RE);
   if (!match || match.index === undefined) return { content };
   const notice = match[0]
     .replace(/^[\s>]+/, "")
@@ -568,7 +578,7 @@ export const useChatStore = defineStore("chat", () => {
         id: `agent_${Date.now()}`,
         snapshot: buildAgentTurnSnapshot(
           view.currentTurn,
-          `> ✕ **${errMsg}**`,
+          `**执行出错：${errMsg}**`,
           "",
           undefined,
           "ERROR",
@@ -842,7 +852,7 @@ export const useChatStore = defineStore("chat", () => {
       // 构建错误快照，追加到 chat.messages（而非遗留字段 jarvisResponse）
       const snapshot = buildAgentTurnSnapshot(
         requestView.currentTurn,
-        `> ✕ **${errMsg}**`,
+        `**执行出错：${errMsg}**`,
         "",
         undefined,
         "ERROR",

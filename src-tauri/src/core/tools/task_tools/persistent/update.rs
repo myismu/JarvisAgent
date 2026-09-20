@@ -25,7 +25,8 @@ pub(super) fn tool_def() -> ToolDef {
                     "owner": {"type": "string", "description": "Responsible agent."},
                     "metadata": {"type": "object", "description": "Metadata to merge."},
                     "add_blocked_by": {"type": "array", "items": {"type": "integer"}, "description": "Prerequisite task IDs to add."},
-                    "add_blocks": {"type": "array", "items": {"type": "integer"}, "description": "Downstream task IDs to mark as blocked by this task."}
+                    "add_blocks": {"type": "array", "items": {"type": "integer"}, "description": "Downstream task IDs to mark as blocked by this task."},
+                    "subagent_type": {"type": "string", "description": "Subagent profile that should execute this task (general/explore/review/verification/implementation). Omit = implementation."}
                 },
                 "required": ["task_id"]
             }
@@ -63,6 +64,7 @@ pub async fn task_update(
         add_blocked_by: optional_i32_vec(input, "add_blocked_by"),
         add_blocks: optional_i32_vec(input, "add_blocks"),
         metadata: input.get("metadata").cloned(),
+        subagent_type: optional_string(input, "subagent_type"),
     };
 
     match TaskManager::for_session(session_id).update(id, params) {

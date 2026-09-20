@@ -94,7 +94,7 @@ impl TaskScheduler {
             let _ = tm.update(task.id, TaskUpdateParams {
                 status: Some(TaskStatus::InProgress),
                 subject: None, description: None, active_form: None,
-                owner: None, add_blocked_by: None, add_blocks: None, metadata: None,
+                owner: None, add_blocked_by: None, add_blocks: None, metadata: None, subagent_type: None,
             });
             let _ = app.emit("agent-step", serde_json::json!({
                 "type": "task_scheduled", "taskId": task.id,
@@ -144,7 +144,7 @@ impl TaskScheduler {
                 let _ = tm.update(task_id, TaskUpdateParams {
                     status: Some(TaskStatus::Completed),
                     subject: None, description: None, active_form: None,
-                    owner: None, add_blocked_by: None, add_blocks: None, metadata: None,
+                    owner: None, add_blocked_by: None, add_blocks: None, metadata: None, subagent_type: None,
                 });
 
                 println!(
@@ -183,7 +183,7 @@ impl TaskScheduler {
                     let _ = tm.update(task.id, TaskUpdateParams {
                         status: Some(TaskStatus::InProgress),
                         subject: None, description: None, active_form: None,
-                        owner: None, add_blocked_by: None, add_blocks: None, metadata: None,
+                        owner: None, add_blocked_by: None, add_blocks: None, metadata: None, subagent_type: None,
                     });
                     let _ = app.emit("agent-step", serde_json::json!({
                         "type": "task_scheduled", "taskId": task.id,
@@ -264,7 +264,7 @@ impl TaskScheduler {
                 let _ = tm.update(task.id, TaskUpdateParams {
                     status: Some(TaskStatus::InProgress),
                     subject: None, description: None, active_form: None,
-                    owner: None, add_blocked_by: None, add_blocks: None, metadata: None,
+                    owner: None, add_blocked_by: None, add_blocks: None, metadata: None, subagent_type: None,
                 });
             }
 
@@ -279,11 +279,17 @@ impl TaskScheduler {
                 };
                 let app_c = app.clone();
                 let sid = session_id.clone();
+                // 子代理类型取自任务（缺省 = implementation，历史行为）
+                let agent_role = task
+                    .subagent_type
+                    .clone()
+                    .filter(|role| !role.trim().is_empty())
+                    .unwrap_or_else(|| IMPLEMENTATION_AGENT_ROLE.to_string());
                 set.spawn(async move {
                     let fut = run_subagent(
                         app_c, prompt, false, sid,
                         Some(tid), None,
-                        Some(IMPLEMENTATION_AGENT_ROLE.to_string()), None, None,
+                        Some(agent_role), None, None,
                     );
                     let result = tokio::time::timeout(
                         std::time::Duration::from_secs(300),
@@ -333,7 +339,7 @@ impl TaskScheduler {
                     let _ = tm.update(task_id, TaskUpdateParams {
                         status: Some(status),
                         subject: None, description: None, active_form: None,
-                        owner: None, add_blocked_by: None, add_blocks: None, metadata: None,
+                        owner: None, add_blocked_by: None, add_blocks: None, metadata: None, subagent_type: None,
                     });
 
                     if is_fail {
@@ -362,7 +368,7 @@ impl TaskScheduler {
                             let _ = tm.update(task.id, TaskUpdateParams {
                                 status: Some(TaskStatus::InProgress),
                                 subject: None, description: None, active_form: None,
-                                owner: None, add_blocked_by: None, add_blocks: None, metadata: None,
+                                owner: None, add_blocked_by: None, add_blocks: None, metadata: None, subagent_type: None,
                             });
                             let tid = task.id;
                             let prompt = if task.description.is_empty() {
@@ -372,11 +378,17 @@ impl TaskScheduler {
                             };
                             let app_c = app.clone();
                             let sid = session_id.clone();
+                            // 子代理类型取自任务（缺省 = implementation，历史行为）
+                            let agent_role = task
+                                .subagent_type
+                                .clone()
+                                .filter(|role| !role.trim().is_empty())
+                                .unwrap_or_else(|| IMPLEMENTATION_AGENT_ROLE.to_string());
                             set.spawn(async move {
                                 let fut = run_subagent(
                                     app_c, prompt, false, sid,
                                     Some(tid), None,
-                                    Some(IMPLEMENTATION_AGENT_ROLE.to_string()), None, None,
+                                    Some(agent_role), None, None,
                                 );
                                 let result = tokio::time::timeout(
                                     std::time::Duration::from_secs(300),
@@ -444,6 +456,12 @@ fn spawn_into_set(
     };
     let tid = task.id;
     let tsubject = task.subject.clone();
+    // 子代理类型取自任务本身（缺省回落到 implementation，保持历史行为）
+    let agent_role = task
+        .subagent_type
+        .clone()
+        .filter(|role| !role.trim().is_empty())
+        .unwrap_or_else(|| IMPLEMENTATION_AGENT_ROLE.to_string());
     set.spawn(async move {
         println!("[SCHEDULER] 启动子Agent: Task #{} - {}", tid, tsubject);
         let label = format!("Task #{}: {}", tid, tsubject);
@@ -452,7 +470,7 @@ fn spawn_into_set(
             run_subagent(
                 app_clone, prompt, false, sid,
                 Some(tid), Some(label),
-                Some(IMPLEMENTATION_AGENT_ROLE.to_string()), None, None,
+                Some(agent_role), None, None,
             ),
         ).await;
         let (answer, si, so) = match result {

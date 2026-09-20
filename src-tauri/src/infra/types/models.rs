@@ -41,7 +41,12 @@ pub struct JarvisResult {
     /// break_loop 时的工具执行结果摘要（前端用于 toolBuffer，避免丢失工具执行日志）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_execution_summary: Option<String>,
-    /// 本轮的状态标注（如"上游服务已停止响应""用户已取消执行"）。
+    /// 本轮的状态标注（如"上游长时间未返回数据""用户已取消执行"）。
+    ///
+    /// ⚠️ 用词口径：只描述**可观测事实**（等待时长/用户动作），不断言服务端状态——
+    /// "上游服务已停止响应/已失联"这类措辞被明确否决（静默原因在链路上不可区分）。
+    /// 另注意区分两套机制：流空闲超时（stream.rs）与 plan 模式「规划看门狗」
+    /// （pipeline.rs::update_plan_watchdog）不是一回事，勿用同一个词指代。
     ///
     /// 与 `content` 的分工：content 是模型正文（渲染在回复气泡内），
     /// notice 是运行状态说明（渲染在气泡**下方**的小字里）。
@@ -374,6 +379,65 @@ pub struct SessionContextSnapshot {
     pub sections: Vec<ContextSectionSnapshot>,
 }
 
+/// 中断类型（**结构化替代"从正文猜标记"**）。
+///
+/// 中断收尾会把 `**[回复被中断]** …` 追到 assistant 正文尾部——**模型必须看到**
+/// （否则续跑时不知道上一句被截断）。但界面不该在气泡里显示它，此前只能靠
+/// 前端正则从文本里"猜着剥"。有了本枚举，界面侧直接读字段生成 notice 小字，
+/// 正文保持干净。
+///
+/// 落库位置（TEXT 列，取值见 `as_str`）：
+/// - `session_messages.interrupt_kind` —— 渲染层与发送层读取（**唯一在用的落点**）。
+///
+/// ⚠️ 曾有第二个落点 `agent_runs.interrupt_kind`（设想用于"崩溃重建时给重建消息
+/// 打标"），但那一列**从未被写入、也从未被读取**，已于 v18 迁移删除。
+/// "哪一轮被打断"由 `agent_run_events.status` 承担。
+///
+/// 详见 doc/状态标注符号统一与结构化改造方案.md（阶段二）。
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InterruptKind {
+    /// 流空闲超时（SSE 阈值内零帧）
+    StreamTimeout,
+    /// 用户取消
+    UserCancel,
+    /// 执行报错（原始错误文本另存 `interrupted_reason` / `agent_runs.error`）
+    PipelineError,
+    /// 应用关闭（崩溃恢复占位）
+    AppClosed,
+    /// 已达回合上限且未获续跑授权（模型**不该**续写，否则立刻再次触顶）
+    LoopLimit,
+    /// 规划探索到上限（规划看门狗）
+    PlanLimit,
+}
+
+impl InterruptKind {
+    /// 落库字符串（`snake_case`，与 serde 序列化一致；TEXT 列直接存取）
+    pub fn as_str(self) -> &'static str {
+        match self {
+            InterruptKind::StreamTimeout => "stream_timeout",
+            InterruptKind::UserCancel => "user_cancel",
+            InterruptKind::PipelineError => "pipeline_error",
+            InterruptKind::AppClosed => "app_closed",
+            InterruptKind::LoopLimit => "loop_limit",
+            InterruptKind::PlanLimit => "plan_limit",
+        }
+    }
+
+    /// 从落库字符串还原；未知值返回 `None`（调用方按"非中断消息"处理）
+    pub fn from_db(value: &str) -> Option<Self> {
+        match value {
+            "stream_timeout" => Some(InterruptKind::StreamTimeout),
+            "user_cancel" => Some(InterruptKind::UserCancel),
+            "pipeline_error" => Some(InterruptKind::PipelineError),
+            "app_closed" => Some(InterruptKind::AppClosed),
+            "loop_limit" => Some(InterruptKind::LoopLimit),
+            "plan_limit" => Some(InterruptKind::PlanLimit),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct SessionMemory {
     /// 运行时消息（从 session_messages 表按 active_message_ids 重建，不序列化存储）
@@ -385,6 +449,15 @@ pub struct SessionMemory {
     /// 每条消息的来源分类（与 messages 平行），从 session_messages 表重建，不序列化存储
     #[serde(default, skip_serializing)]
     pub sources: Vec<String>,
+    /// 每条消息的**中断类型**（与 messages/sources 严格平行），从 session_messages 表重建。
+    ///
+    /// `None` = 非中断消息。中断收尾会往 assistant 正文尾部追一句
+    /// `**[回复被中断]** …`（**模型需要看到**，否则续跑时不知道上一句被截断），
+    /// 但界面不该在气泡里显示它。有了 kind，界面侧直接读字段生成 notice、
+    /// 正文保持干净，不必再用正则从文本里"猜着剥"。
+    /// 详见 doc/状态标注符号统一与结构化改造方案.md（阶段二）。
+    #[serde(default, skip_serializing)]
+    pub interrupt_kinds: Vec<Option<String>>,
     /// 上下文快照单调序号：每次注入快照前自增，压缩/重启后仍保持单调递增
     #[serde(default)]
     pub snapshot_seq: u64,
@@ -469,4 +542,10 @@ pub struct Task {
     /// 任意附加元数据
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    /// 该任务由哪种子代理执行（`RunSubagentsSequentially` 调度时读取）。
+    ///
+    /// `None` = 沿用历史行为（implementation 型）。任务整体以 JSON 存进
+    /// `session_tasks.task_json`，所以新增字段**不需要 DB 迁移**。2026-09-20 新增。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_type: Option<String>,
 }

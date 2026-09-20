@@ -153,6 +153,7 @@
   .legend-count { font-family:var(--mono); font-weight:600; color:var(--text); flex-shrink:0; }
   .legend-pct { font-family:var(--mono); color:var(--text-muted); width:42px; text-align:right; flex-shrink:0; }
   .legend-err { font-family:var(--mono); font-size:10px; color:var(--red); flex-shrink:0; }
+  .legend-tok { font-family:var(--mono); font-size:10px; color:var(--cyan); flex-shrink:0; }
   .hbars { display:flex; flex-direction:column; gap:5px; }
   .hbar-row { display:flex; align-items:center; gap:8px; cursor:pointer; padding:2px 4px; border-radius:4px; }
   .hbar-row:hover { background:var(--bg-hover); }
@@ -163,7 +164,8 @@
   .hbar-seg-ok { background:var(--blue); height:100%; }
   .hbar-seg-err { background:var(--red); height:100%; }
   .hbar-seg-blk { background:var(--orange); height:100%; }
-  .hbar-nums { width:170px; flex-shrink:0; font-family:var(--mono); font-size:10px; color:var(--text-muted); text-align:right; white-space:nowrap; }
+  /* 210px：尾巴上除了「次数 · ✓率 · ✕失败 · ⊘拦截」还要放得下 token 用量（2026-09-21） */
+  .hbar-nums { width:210px; flex-shrink:0; font-family:var(--mono); font-size:10px; color:var(--text-muted); text-align:right; white-space:nowrap; }
   .hbars-more { font-size:10px; color:var(--text-muted); padding:2px 4px; }
   .hist { display:flex; align-items:flex-end; gap:1px; height:60px; }
   .hist-bar { flex:1; min-width:2px; display:flex; flex-direction:column-reverse; border-radius:2px 2px 0 0; overflow:hidden; }
@@ -491,8 +493,12 @@ function buildToolAgg(records) {
   const m = new Map();
   for (const r of records) {
     const k = aggKeyOf(r);
-    let a = m.get(k); if (!a) { a = { count: 0, err: 0, blk: 0 }; m.set(k, a); }
+    let a = m.get(k); if (!a) { a = { count: 0, err: 0, blk: 0, tok: 0 }; m.set(k, a); }
     a.count++; if (r.status === 'error') a.err++; else if (r.status === 'blocked') a.blk++;
+    // token 用量：只有「自己跑独立 Agent Loop」的工具会写出非零值（RunSubagent、
+    // RunSubagentsSequentially），其余工具恒为 0。`|| 0` 兼容 2026-09-21 之前
+    // 落盘、还没有这两个字段的旧日志文件。
+    a.tok += (r.input_tokens || 0) + (r.output_tokens || 0);
   }
   return m;
 }
@@ -512,12 +518,12 @@ function renderToolCharts(agg, records) {
   donutTotal = total;
   const sorted = [...agg.entries()].sort((a, b) => b[1].count - a[1].count);
   // 环形图最多 9 个显著切片（≥2.5%），零碎工具合并为"其他"避免图例爆炸
-  const slices = []; let rest = { count: 0, err: 0, blk: 0 };
+  const slices = []; let rest = { count: 0, err: 0, blk: 0, tok: 0 };
   sorted.forEach(([k, v], i) => {
-    if (i < 9 && v.count / total >= 0.025) slices.push({ key: k, count: v.count, err: v.err, blk: v.blk });
-    else { rest.count += v.count; rest.err += v.err; rest.blk += v.blk; }
+    if (i < 9 && v.count / total >= 0.025) slices.push({ key: k, count: v.count, err: v.err, blk: v.blk, tok: v.tok });
+    else { rest.count += v.count; rest.err += v.err; rest.blk += v.blk; rest.tok += v.tok; }
   });
-  if (rest.count > 0) slices.push({ key: '__others__', count: rest.count, err: rest.err, blk: rest.blk });
+  if (rest.count > 0) slices.push({ key: '__others__', count: rest.count, err: rest.err, blk: rest.blk, tok: rest.tok });
 
   const C = 2 * Math.PI * 44;
   let off = 0, segs = '';
@@ -537,7 +543,7 @@ function renderToolCharts(agg, records) {
     const isOthers = s.key === '__others__';
     const color = isOthers ? '#9ca3af' : toolColor(s.key);
     const label = isOthers ? '其他' : aggLabel(s.key);
-    legend += `<div class="legend-item${!isOthers && s.key === currentFilter ? ' active' : ''}"${isOthers ? '' : ` onclick="chartFilter('${esc(s.key)}')"`} title="${attr(isOthers ? '占比 <2.5% 或排名 10 以后的工具合并' : s.key)}"><span class="legend-swatch" style="background:${color}"></span><span class="legend-ico" style="color:${color}">${isOthers ? '' : toolIconHTML(label, 11)}</span><span class="legend-name">${eh(label)}</span><span class="legend-count">${s.count}</span><span class="legend-pct">${(s.count / total * 100).toFixed(1)}%</span>${s.err ? `<span class="legend-err" title="失败 ${s.err} 次">✕${s.err}</span>` : ''}</div>`;
+    legend += `<div class="legend-item${!isOthers && s.key === currentFilter ? ' active' : ''}"${isOthers ? '' : ` onclick="chartFilter('${esc(s.key)}')"`} title="${attr(isOthers ? '占比 <2.5% 或排名 10 以后的工具合并' : s.key)}"><span class="legend-swatch" style="background:${color}"></span><span class="legend-ico" style="color:${color}">${isOthers ? '' : toolIconHTML(label, 11)}</span><span class="legend-name">${eh(label)}</span><span class="legend-count">${s.count}</span><span class="legend-pct">${(s.count / total * 100).toFixed(1)}%</span>${s.err ? `<span class="legend-err" title="失败 ${s.err} 次">✕${s.err}</span>` : ''}${s.tok ? `<span class="legend-tok" title="token 用量（输入 + 输出）">${fmtK(s.tok)}</span>` : ''}</div>`;
   }
 
   // 健康度：Top 12 工具的 成功/失败/拦截 堆叠条
@@ -547,7 +553,7 @@ function renderToolCharts(agg, records) {
   for (const [k, v] of top) {
     const ok = v.count - v.err - v.blk;
     const okPct = v.count ? Math.round(ok / v.count * 100) : 0;
-    bars += `<div class="hbar-row${k === currentFilter ? ' active' : ''}" onclick="chartFilter('${esc(k)}')" title="${attr(k)}"><span class="hbar-label"><span class="tool-ico" style="color:${toolColor(k)}">${toolIconHTML(aggLabel(k), 12)}</span><span class="hbar-name">${eh(aggLabel(k))}</span></span><div class="hbar-track"><div class="hbar-seg-ok" style="width:${(ok / maxC * 100).toFixed(1)}%"></div><div class="hbar-seg-err" style="width:${(v.err / maxC * 100).toFixed(1)}%"></div><div class="hbar-seg-blk" style="width:${(v.blk / maxC * 100).toFixed(1)}%"></div></div><span class="hbar-nums">${v.count} 次 · ✓${okPct}%${v.err ? ` · <span style="color:var(--red)">✕${v.err}</span>` : ''}${v.blk ? ` · <span style="color:var(--orange)">⊘${v.blk}</span>` : ''}</span></div>`;
+    bars += `<div class="hbar-row${k === currentFilter ? ' active' : ''}" onclick="chartFilter('${esc(k)}')" title="${attr(k)}"><span class="hbar-label"><span class="tool-ico" style="color:${toolColor(k)}">${toolIconHTML(aggLabel(k), 12)}</span><span class="hbar-name">${eh(aggLabel(k))}</span></span><div class="hbar-track"><div class="hbar-seg-ok" style="width:${(ok / maxC * 100).toFixed(1)}%"></div><div class="hbar-seg-err" style="width:${(v.err / maxC * 100).toFixed(1)}%"></div><div class="hbar-seg-blk" style="width:${(v.blk / maxC * 100).toFixed(1)}%"></div></div><span class="hbar-nums">${v.count} 次 · ✓${okPct}%${v.err ? ` · <span style="color:var(--red)">✕${v.err}</span>` : ''}${v.blk ? ` · <span style="color:var(--orange)">⊘${v.blk}</span>` : ''}${v.tok ? ` · <span style="color:var(--cyan)">${fmtK(v.tok)}</span>` : ''}</span></div>`;
   }
   if (sorted.length > 12) bars += `<div class="hbars-more">还有 ${sorted.length - 12} 个工具未展示（表格上方筛选按钮可见全部）</div>`;
 
@@ -598,12 +604,17 @@ function renderToolsMain(records) {
   const corrRate = corrections > 0 ? Math.round(corrOk/corrections*100) : 0;
   const unresolved = computeUnresolvedErrors(records);
   const benignErrors = records.filter(r => isBenignError(r)).length;
+  // 子代理 token 合计（输入 + 输出）。只有派子代理的两个工具会写出非零值，
+  // 所以这个数就是「这一批日志里子代理烧了多少」（2026-09-21 起落盘的字段）
+  const totalTok = records.reduce((a, r) => a + (r.input_tokens || 0) + (r.output_tokens || 0), 0);
   const bd = {}; records.forEach(r => { if (r.error_type) bd[r.error_type]=(bd[r.error_type]||0)+1; });
   const counts = { all:total, error:errors, blocked, correction:corrections, unresolved, benign:benignErrors };
   const unresolvedSeqs = getUnresolvedSeqs(records);
   const benignSeqs = getBenignSeqs(records);
   records.forEach(r => { counts[r.tool]=(counts[r.tool]||0)+1; });
-  const agentCounts = { main:0, subagent:0 };
+  // agent_type 现为 "main" 或 "subagent:<role>"（如 subagent:explore）；
+  // 按原始值计数，渲染时再拆出角色，便于回答"哪种类型的子代理在干活"（2026-09-20）
+  const agentCounts = { main:0 };
   records.forEach(r => { if (r.agent_type) agentCounts[r.agent_type]=(agentCounts[r.agent_type]||0)+1; });
   const filters = [{key:'all',label:'全部'},{key:'error',label:'错误'},{key:'blocked',label:'已拦截'},{key:'correction',label:'纠正'},{key:'unresolved',label:'未解决'},{key:'benign',label:'无需处理'},...Object.keys(counts).filter(k=>!['all','error','blocked','correction','unresolved','benign'].includes(k)).map(k=>({key:k,label:k}))];
   const filtered = records.filter(r => {
@@ -614,7 +625,7 @@ function renderToolsMain(records) {
     if (currentFilter==='unresolved') return unresolvedSeqs.has(r.seq);
     if (currentFilter==='benign') return benignSeqs.has(r.seq);
     if (currentFilter==='agent_main') return r.agent_type==='main';
-    if (currentFilter==='agent_subagent') return r.agent_type==='subagent';
+    if (currentFilter==='agent_subagent') return !!(r.agent_type && r.agent_type.startsWith('subagent'));
     return toolFilterMatch(r);   // 支持 'ExecuteTool·内部工具' 形式的图表筛选键
   });
 
@@ -626,15 +637,21 @@ function renderToolsMain(records) {
     <div class="stat-card"><div class="stat-label">纠正成功率</div><div class="stat-value yellow">${corrRate}%</div></div>
     <div class="stat-card"><div class="stat-label">未解决</div><div class="stat-value orange">${unresolved}</div></div>
     <div class="stat-card"><div class="stat-label">无需处理</div><div class="stat-value cyan">${benignErrors}</div></div>
+    <div class="stat-card" title="RunSubagent / RunSubagentsSequentially 派出的子代理消耗的 token 合计（输入 + 输出）"><div class="stat-label">子代理 Token</div><div class="stat-value blue">${fmtK(totalTok)}</div></div>
   </div>`;
 
   if (Object.keys(bd).length) {
     html += `<div class="breakdown-bar"><span class="breakdown-label">错误类型</span><div class="breakdown-tags">${Object.entries(bd).sort((a,b)=>b[1]-a[1]).map(([t,c])=>`<span class="breakdown-tag">${t} <span class="breakdown-tag-count">${c}</span></span>`).join('')}</div></div>`;
   }
-  if (agentCounts.main > 0 || agentCounts.subagent > 0) {
+  const subKeys = Object.keys(agentCounts).filter(k => k.startsWith('subagent')).sort();
+  if (agentCounts.main > 0 || subKeys.length > 0) {
     html += `<div class="breakdown-bar"><span class="breakdown-label">调用来源</span><div class="breakdown-tags">`;
     if (agentCounts.main > 0) html += `<span class="breakdown-tag" style="background:var(--blue-dim);color:var(--blue)">主Agent <span class="breakdown-tag-count">${agentCounts.main}</span></span>`;
-    if (agentCounts.subagent > 0) html += `<span class="breakdown-tag" style="background:var(--purple-dim);color:var(--purple)">子Agent <span class="breakdown-tag-count">${agentCounts.subagent}</span></span>`;
+    // 子代理按类型细分：agent_type 形如 "subagent:explore"
+    subKeys.forEach(k => {
+      const role = k.includes(':') ? k.split(':')[1] : '未知';
+      html += `<span class="breakdown-tag" style="background:var(--purple-dim);color:var(--purple)">子Agent·${role} <span class="breakdown-tag-count">${agentCounts[k]}</span></span>`;
+    });
     html += `</div></div>`;
   }
 
@@ -643,10 +660,14 @@ function renderToolsMain(records) {
 
   const statusFilterKeys = ['all','error','blocked','correction','unresolved','benign'];
   html += `<div class="toolbar">${filters.map(f => `<button class="filter-btn ${currentFilter===f.key?'active':''}" onclick="currentFilter='${f.key}';renderMain()">${statusFilterKeys.includes(f.key)?'':`<span class="tool-ico" style="color:${toolColor(f.key)}">${toolIconHTML(f.key,12)}</span>`}${f.label}<span class="filter-count">${counts[f.key]||0}</span></button>`).join('')}`;
-  if (agentCounts.main > 0 || agentCounts.subagent > 0) {
+  if (agentCounts.main > 0 || subKeys.length > 0) {
     html += '<div class="toolbar-sep"></div>';
     if (agentCounts.main > 0) html += `<button class="filter-btn ${currentFilter==='agent_main'?'active':''}" onclick="currentFilter='agent_main';renderMain()">主Agent<span class="filter-count">${agentCounts.main}</span></button>`;
-    if (agentCounts.subagent > 0) html += `<button class="filter-btn ${currentFilter==='agent_subagent'?'active':''}" onclick="currentFilter='agent_subagent';renderMain()">子Agent<span class="filter-count">${agentCounts.subagent}</span></button>`;
+    // 子代理按钮按类型细分（点任一按钮筛选全部子代理，便于横向对比）
+    subKeys.forEach(k => {
+      const role = k.includes(':') ? k.split(':')[1] : '未知';
+      html += `<button class="filter-btn ${currentFilter==='agent_subagent'?'active':''}" onclick="currentFilter='agent_subagent';renderMain()">子Agent·${role}<span class="filter-count">${agentCounts[k]}</span></button>`;
+    });
   }
   html += '</div>';
 
@@ -667,8 +688,15 @@ function renderToolsMain(records) {
       const sIcon = r.status==='ok'?'✓':(r.status==='blocked'?'⊘':'✕');
       const time = r.ts?.split('T')[1]?.split('+')[0]?.substring(0,8)||'';
       const args = fmtArgs(r.args_summary); const fn = fileLookup.get(r); const uid = `tc-${i}`;
-      const agentLabel = r.agent_type === 'main' ? '主' : r.agent_type === 'subagent' ? '子' : (r.agent_type || '-');
-      const agentCls = r.agent_type ? `agent-${r.agent_type}` : '';
+      // agent_type = "main" 或 "subagent:<role>"；标签显示"子·explore"这类可读形式
+      const agentLabel = r.agent_type === 'main'
+        ? '主'
+        : (r.agent_type && r.agent_type.startsWith('subagent'))
+          ? ('子·' + (r.agent_type.includes(':') ? r.agent_type.split(':')[1] : '?'))
+          : (r.agent_type || '-');
+      const agentCls = r.agent_type
+        ? (r.agent_type.startsWith('subagent') ? 'agent-subagent' : `agent-${r.agent_type}`)
+        : '';
       // 工具列：专属图标 + 名称；ExecuteTool 追加"内部工具"徽标（调试时最关心的就是它实际调了什么）
       const inner = innerToolOf(r);
       const toolCell = `<span class="tool-ico" style="color:${toolColor(r.tool)}" title="${attr(r.tool)}">${toolIconHTML(r.tool,13)}</span> ${eh(r.tool)}${inner?`<span class="tool-inner" title="ExecuteTool 内部执行的工具"><span style="color:${toolColor(inner)}">${toolIconHTML(inner,10)}</span>${eh(inner)}</span>`:''}`;
@@ -681,7 +709,7 @@ function renderToolsMain(records) {
         <td>${isUnresolved?'<span class="cell-badge badge-abandoned">⚠ 未解决</span>':''}${isBenign?'<span class="cell-badge badge-benign">ℹ 无需处理</span>':''}${isCorr?`<span class="cell-badge badge-corr">↩ #${r.correction.corrects_seq}</span>`:''}${fn?`<span class="cell-badge badge-file">${eh(fn.replace('.jsonl',''))}</span>`:''}${errLine?`<span class="badge-err" title="${attr(r.error_message)}">${eh(errLine)}</span>`:''}</td>
         <td class="cell-time">${time}</td></tr>`;
       html += `<tr class="detail-panel" id="${uid}-d"><td colspan="7"><div class="detail-content"><div class="detail-grid">
-        <span class="detail-key">来源</span><span class="detail-val">${r.agent_type==='main'?'主 Agent':r.agent_type==='subagent'?'子 Agent':(r.agent_type||'-')}</span>
+        <span class="detail-key">来源</span><span class="detail-val">${r.agent_type==='main'?'主 Agent':(r.agent_type&&r.agent_type.startsWith('subagent'))?('子 Agent · '+(r.agent_type.includes(':')?r.agent_type.split(':')[1]:'-')):(r.agent_type||'-')}</span>
         <span class="detail-key">工具</span><span class="detail-val"><span class="tool-ico" style="color:${toolColor(r.tool)}">${toolIconHTML(r.tool,12)}</span> ${r.tool}</span>
         ${inner?`<span class="detail-key">内部工具</span><span class="detail-val"><span class="tool-ico" style="color:${toolColor(inner)}">${toolIconHTML(inner,12)}</span> ${eh(inner)}</span>`:''}
         <span class="detail-key">参数</span><span class="detail-val">${eh(args)}</span>

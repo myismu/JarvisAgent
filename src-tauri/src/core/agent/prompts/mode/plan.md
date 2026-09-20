@@ -84,8 +84,8 @@ ProposePlan 是方案审批面板的唯一入口，计划不得写在正文。�
 
 ---
 
-- 复杂任务：ProposePlan → 审批 → CreateTask 批量创建 → RunSubagentsSequentially 统一调度
-- 单一临时任务：直接 RunSubagent
+- 复杂任务：ProposePlan → 审批 → 切回编辑模式 → CreateTask 批量创建 → RunSubagentsSequentially 统一调度
+- 影响面小的单一任务：SwitchWorkMode(mode="edit") 切回编辑模式后直接执行（规划模式本身不派发子代理）
 
 【⚠️ 方案审批后 — 强制流程】
 收到「用户已同意方案」消息后，你**只能**执行以下三步，禁止任何其他操作：

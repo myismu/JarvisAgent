@@ -20,7 +20,6 @@ use tauri::Emitter;
 
 use crate::infra::llm::adapters::parse_streamed_tool_input;
 use crate::infra::types::models::*;
-use crate::core::orchestration::agent_runs;
 use crate::core::orchestration::scheduler::TaskScheduler;
 use crate::core::tools::*;
 
@@ -103,12 +102,6 @@ pub async fn execute_tool_calls(
                             "loopCount": loop_count
                         }),
                     );
-                    agent_runs::append_tool_log(
-                        app,
-                        run_id,
-                        &format!("\n> ▸ 执行: `{}`\n", name),
-                        loop_count,
-                    );
                     let _ = app.emit(
                         "agent-step",
                         json!({
@@ -118,13 +111,6 @@ pub async fn execute_tool_calls(
                             "sessionId": sid,
                             "loopCount": loop_count
                         }),
-                    );
-                    agent_runs::record_tool_call(
-                        app,
-                        run_id,
-                        name,
-                        Some(input.to_string()),
-                        loop_count,
                     );
 
                     // RunSubagentsSequentially 工具特殊处理：直接调用 TaskScheduler（内部已有并行机制）
@@ -160,9 +146,15 @@ pub async fn execute_tool_calls(
                     } else {
                         preview
                     };
+                    // 追加**分类化**处置建议：让模型知道该缩短内容（截断）、
+                    // 还是该检查括号配对（闭合后多余字符），而不是拿着英文
+                    // 报错去猜——后者会把"多余一个 `}`"误当成长度问题（2026-09-21）。
                     let failure = format!(
-                        "工具 `{}` 参数解析失败：{}\n原始参数片段：{}",
-                        name, err, truncated
+                        "工具 `{}` 参数解析失败：{}\n原始参数片段：{}\n\n{}",
+                        name,
+                        err,
+                        truncated,
+                        err.advice()
                     );
                     println!("[JARVIS] {}", failure);
                     let _ = app.emit(
@@ -172,16 +164,10 @@ pub async fn execute_tool_calls(
                             "status": "error",
                             "tool": name.clone(),
                             "toolCallId": id.clone(),
-                            "content": format!("\n> ✕ 参数解析失败: `{}` - {}\n", name, err),
+                            "content": format!("\n> **[工具错误]** 参数解析失败: `{}` - {}\n", name, err),
                             "sessionId": sid,
                             "loopCount": loop_count
                         }),
-                    );
-                    agent_runs::append_tool_log(
-                        app,
-                        run_id,
-                        &format!("\n> ✕ 参数解析失败: `{}` - {}\n", name, err),
-                        loop_count,
                     );
                     let _ = app.emit(
                         "agent-step",
@@ -194,14 +180,6 @@ pub async fn execute_tool_calls(
                             "sessionId": sid,
                             "loopCount": loop_count
                         }),
-                    );
-                    agent_runs::record_tool_result(
-                        app,
-                        run_id,
-                        name,
-                        None,
-                        Some(format!("{}", err)),
-                        loop_count,
                     );
                     immediate_results.push(ToolTaskResult {
                         index,
@@ -310,12 +288,6 @@ pub async fn execute_tool_calls(
                 "loopCount": loop_count
             }),
         );
-        agent_runs::append_tool_log(
-            app,
-            run_id,
-            &format!("> ◈ 完成: `{}`\n", result.name),
-            loop_count,
-        );
 
         let is_error = status == "error";
         let _ = app.emit(
@@ -328,19 +300,6 @@ pub async fn execute_tool_calls(
                 "sessionId": sid,
                 "loopCount": loop_count
             }),
-        );
-        let db_summary = if result.output.len() > 200 {
-            format!("{}...", result.output.chars().take(200).collect::<String>())
-        } else {
-            result.output.clone()
-        };
-        agent_runs::record_tool_result(
-            app,
-            run_id,
-            &result.name,
-            Some(db_summary),
-            None, // 不单独记录 error 字段，避免重复显示
-            loop_count,
         );
 
         // 截断超大工具结果，防止极长输出（如 node_modules 全量列目录）撑爆上下文

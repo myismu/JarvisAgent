@@ -358,6 +358,14 @@
                   <div class="setting-desc">{{ t('settings.general.defaultExpandThinkingDesc') }}</div>
                 </div>
                 <div class="setting-item">
+                  <label>{{ t('settings.general.crashProtection') }}</label>
+                  <label class="toggle-switch">
+                    <input type="checkbox" :checked="crashProtection" @change="setCrashProtection(($event.target as HTMLInputElement).checked)" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                  <div class="setting-desc">{{ t('settings.general.crashProtectionDesc') }}</div>
+                </div>
+                <div class="setting-item">
                   <label>{{ t('settings.general.agentPanelPosition') }}</label>
                   <div class="display-mode-toggle">
                     <button
@@ -663,6 +671,9 @@ const defaultExpandThinking = computed(() => uiPrefs.defaultExpandThinking)
 const setDefaultExpandThinking = (val: boolean) => uiPrefs.setDefaultExpandThinking(val)
 const autoScroll = computed(() => uiPrefs.autoScroll)
 const setAutoScroll = (val: boolean) => uiPrefs.setAutoScroll(val)
+// 崩溃保护（实时保存）：纯后端口径开关，前端只负责落到偏好里
+const crashProtection = computed(() => uiPrefs.crashProtection)
+const setCrashProtection = (val: boolean) => uiPrefs.setCrashProtection(val)
 const agentPanelPosition = computed(() => uiPrefs.agentPanelPosition)
 const setAgentPanelPosition = (val: AgentPanelPosition) => uiPrefs.setAgentPanelPosition(val)
 const compactMode = computed(() => uiPrefs.compactMode)

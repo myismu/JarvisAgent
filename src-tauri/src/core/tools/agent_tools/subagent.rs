@@ -253,7 +253,11 @@ async fn extract_subagent_context(
                     {
                         if matches!(
                             name.as_str(),
-                            "DiscoverTools"
+                            // ExecuteTool 一并跳过：RunSubagent 已是延迟工具，父代理的委派
+                            // 现在以 ExecuteTool(name="RunSubagent") 的形式出现；不跳过就会把
+                            // "派子代理"当成一条普通操作摘要喂进子代理上下文（2026-09-21）
+                            "ExecuteTool"
+                                | "DiscoverTools"
                                 | "RunSubagent"
                                 | "RunSubagentsSequentially"
                                 | "CompactConversation"
@@ -499,7 +503,7 @@ pub async fn run_subagent(
     let _ = app.emit(
         "chat-stream",
         json!({
-            "content": format!("\n> ◆ **[启动子代理]** ({}, {}) 任务: `{}`\n", agent_role, mode_str, prompt),
+            "content": format!("\n> **[启动子代理]** ({}, {}) 任务: `{}`\n", agent_role, mode_str, prompt),
             "sessionId": session_id.clone(),
             "isSubAgent": true
         }),
@@ -724,6 +728,10 @@ pub async fn run_subagent(
                 cache_usage_style: crate::infra::llm::registry::cache_usage_style_for(&model_id),
                 // 子 Agent 有自己的监控面板与阶段提示，不需要主聊天流的等待提示
                 on_frame: None,
+                model_id: Some(model_id.clone()),
+                // 子 Agent 的轮次不进 `agent_run_events`（那是主 Agent 崩溃重建的数据源），
+                // 故这里恒关——开了只会往一张不参与重建的表里写无关行。
+                crash_protection: false,
             },
         )
         .await;
@@ -841,7 +849,7 @@ pub async fn run_subagent(
                             let _ = app.emit(
                                 "chat-stream",
                                 json!({
-                                    "content": format!("\n>   └─ 子代理自动修复了工具 `{}` 的流式参数格式\n", name),
+                                    "content": format!("\n>   - 子代理自动修复了工具 `{}` 的流式参数格式\n", name),
                                     "sessionId": session_id.clone(),
                                     "isSubAgent": true
                                 }),
@@ -851,7 +859,7 @@ pub async fn run_subagent(
                         let _ = app.emit(
                             "chat-stream",
                             json!({
-                                "content": format!("\n>   └─ 子代理使用工具: `{}`\n", name),
+                                "content": format!("\n>   - 子代理使用工具: `{}`\n", name),
                                 "sessionId": session_id.clone(),
                                 "isSubAgent": true
                             }),
@@ -912,15 +920,19 @@ pub async fn run_subagent(
                             sub_output_tokens,
                         )
                         .await;
+                        // 与主 Agent 同口径：追加分类化处置建议（见 tools_runner.rs）
                         let failure = format!(
-                            "子代理工具 `{}` 参数解析失败：{}\n原始参数片段：{}",
-                            name, err, truncated
+                            "子代理工具 `{}` 参数解析失败：{}\n原始参数片段：{}\n\n{}",
+                            name,
+                            err,
+                            truncated,
+                            err.advice()
                         );
                         crate::jarvis_warn!("SUBAGENT", "[SUBAGENT] {}", failure);
                         let _ = app.emit(
                             "chat-stream",
                             json!({
-                                "content": format!("\n>   └─ 子代理工具 `{}` 参数解析失败\n>   错误: `{}`\n", name, err),
+                                "content": format!("\n>   - 子代理工具 `{}` 参数解析失败\n>   错误: `{}`\n", name, err),
                                 "sessionId": session_id.clone(),
                                 "isSubAgent": true
                             }),
@@ -955,14 +967,18 @@ pub async fn run_subagent(
                 .map(|task| {
                     let app_clone = app.clone();
                     let sid_clone = session_id.clone();
+                    // 把子代理身份带进日志与审计（agent_type = "subagent:<role>"），
+                    // 供 log-viewer / 审计区分"哪种类型的子代理在干活"（2026-09-20）
+                    let agent_tag = format!("subagent:{}", agent_role);
                     tokio::spawn(async move {
                         let output = handle_tool_call_inner_owned(
                             app_clone.clone(),
                             task.name.clone(),
                             task.input.clone(),
                             sid_clone,
-                            "SUBAGENT".to_string(),
-                            "edit".to_string(),  // 子agent使用 edit 模式
+                            "SUBAGENT".to_string(),  // intent：子代理执行的意图标记
+                            "edit".to_string(),      // 子agent使用 edit 模式
+                            agent_tag,               // agent_type：带子代理类型（2026-09-20）
                         )
                         .await;
                         SubToolTaskResult {
@@ -1080,7 +1096,7 @@ pub async fn run_subagent(
     let _ = app.emit(
         "chat-stream",
         json!({
-            "content": format!("\n> ◆ **[子代理执行完毕]**\n"),
+            "content": format!("\n> **[子代理执行完毕]**\n"),
             "sessionId": session_id.clone(),
             "isSubAgent": true
         }),

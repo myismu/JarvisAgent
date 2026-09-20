@@ -340,13 +340,15 @@ export type AgentRunStatus =
   | "completed"
   | "failed"
   | "cancelled"
-  | "interrupted";
+  | "interrupted"
+  | "recovering"
+  | "closed";
 
 export interface AgentRun {
   runId: string;
   sessionId: string;
   status: AgentRunStatus | string;
-  userMessagePreview: string;
+  messageId?: string | null;
   loopCount: number;
   inputTokens: number;
   outputTokens: number;
@@ -354,29 +356,34 @@ export interface AgentRun {
   updatedAt: number;
   finishedAt?: number | null;
   lastSafePoint?: string | null;
-  liveThinking: string;
-  liveToolBuffer: string;
-  liveContent: string;
-  error?: string | null;
   summary?: string | null;
+  /** run 级中断类型（枚举字符串，见后端 InterruptKind）；未中断为 null */
+  interruptKind?: string | null;
   resumable: boolean;
   resumedFromRunId?: string | null;
 }
 
-export interface AgentRunEvent {
+/// 一轮（1 loop）的落库记录——后端 `agent_run_events` 的「每轮一行」。
+///
+/// 它是**崩溃重建的唯一数据源**：`respBlocks` 是本轮响应（正文/思考/工具调用，
+/// 按产生顺序排列），`toolResults` 是本轮工具执行结果。
+/// 行内可能还有帧级通道写入的半截文本（崩溃保护开启时），status 为 `streaming`。
+export interface AgentRunLoopEvent {
   eventId: string;
   runId: string;
   sessionId: string;
-  eventType: string;
-  message: string;
-  tool?: string | null;
-  input?: string | null;
-  output?: string | null;
+  /** 第几轮（从 1 起），与界面显示的"第 N 轮"一致 */
+  loopIndex: number;
+  respBlocks: Array<Record<string, unknown>>;
+  toolResults: Array<Record<string, unknown>>;
+  /** "streaming" | "complete" | "interrupted" */
+  status: string;
   error?: string | null;
-  loopCount: number;
   inputTokens: number;
   outputTokens: number;
-  timestamp: number;
+  model?: string | null;
+  startedAt: number;
+  updatedAt: number;
 }
 
 export type SubAgentStatus = "running" | "completed" | "failed" | "cancelled";

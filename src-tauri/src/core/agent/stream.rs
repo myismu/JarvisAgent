@@ -44,12 +44,49 @@ use crate::core::orchestration::agent_runs;
 /// 会永久 pending。此计时器以「收到任意 SSE 事件」为重置基准，因此不会误杀
 /// 正常的长时间生成（只要还在吐字就一直续命）。
 ///
-/// **取值取舍（实测反馈"等太久"后从 90s 下调）**：
-/// 正常情况下流式输出很密集，几万 token 也会持续吐字，连续 30s 无帧基本可直接
-/// 判定异常。但需注意：部分厂商（如 DeepSeek）在**思考阶段**就已建立 SSE 连接
-/// 并推送 thinking 增量，若某个模型"静默思考"超过该阈值就会被误判。
-/// 若实测遇到正常请求被截断，把此值调回 60~90 即可。
-pub const STREAM_IDLE_TIMEOUT_SECS: u64 = 30;
+/// ⚠️ 概念边界（勿与「规划看门狗」混淆）：本机制只管**链路**（SSE 有没有来帧），
+/// 全模式/全 agent 通用（主 agent 每轮 + 子代理 + 后台 LLM），与 plan 模式的
+/// 「规划看门狗」（pipeline.rs::update_plan_watchdog，管的是"探索轮数"）是
+/// 两套独立机制。历史教训：曾在对话中用"看门狗"称呼本机制，导致与项目既有
+/// 术语「规划看门狗」撞名、被误认为同一件事——**代码里本机制从不叫看门狗**。
+///
+/// **取值取舍（2026-09-21 由 90 提到 120）**：
+///
+/// 历史沿革：曾因体验反馈"等太久"从 90 下调到 30；30 会误杀**真实的工具调用**——
+/// 实测 GLM（glm-5.3-flash）生成 tool_call 参数时**服务端零字节静默**：同一模型
+/// 的纯文本流式输出 468 秒零个 >1s 间隔（永不停顿），换成 ProposePlan 巨型参数
+/// 则静默 **64.4~68.6 秒**才吐出首个 tool_calls 帧（arguments 仅 9KB，属服务端
+/// 内部耗时而非带宽问题）。线上三次中断（session 10b68285 / 2302e81c /
+/// 47ecd917）全部命中此形态：都是在参数走到一半时被本阈值掐断。故先调回 90。
+///
+/// 再提到 120 的理由：**上面量到的都是 flash 档**（最快的档位）。pro 档
+/// （GLM pro / deepseek-v4-pro）推理量更大、工具参数生成更慢，静默只会更长，
+/// 90 对它们余量不足。120 = flash 实测上限 68.6s 的约 1.75 倍，为慢档留出空间。
+///
+/// ⚠️ 本值只影响"多久没收到数据才算失联"这一件事，**不影响压缩时机**——压缩判据
+/// 用的是 `(窗口 − 输出预算) × 85%`（见 infra::llm::context_budget），与 max_tokens
+/// 相关、与本值无关。
+///
+/// 已实证**不属于**本地检测缺陷：那 64s 是真的零字节（计时锚点下沉到字节层
+/// 也测不到东西），因此本值只能按厂商行为留够余量。**治本方向是减小单次
+/// 工具参数体积**（如 ProposePlan 分片提交），而不是无限上调本阈值。
+pub const STREAM_IDLE_TIMEOUT_SECS: u64 = 120;
+
+/// 界面"仍在等待"提示的触发阈值 —— **由 [`STREAM_IDLE_TIMEOUT_SECS`] 派生**，
+/// 不再作为独立常量存在。
+///
+/// ## 为什么要派生（2026-09-21 沐指出的问题）
+///
+/// 原先这里是独立的 `constants::API_WAITING_HINT_SECS = 30`，与超时阈值是两个
+/// 互不相干的常量。一旦为慢模型（pro 档推理更久）把超时放宽到 120，提示却仍在
+/// 30 秒出现——用户"刚提完示，还要干等 90 秒"，两个值必须人工同步、极易漏改。
+///
+/// 改为按超时阈值的 **1/3** 派生后：阈值 90 → 提示 30 秒（与改造前完全一致），
+/// 阈值 120 → 提示 40 秒。以后调超时阈值，提示自动跟随，**不需要记得同步**。
+/// 下限 15 秒是防止有人把超时阈值调到极小值后提示永不出现。
+pub fn waiting_hint_secs() -> u64 {
+    (STREAM_IDLE_TIMEOUT_SECS / 3).max(15)
+}
 
 /// 连续流错误容忍次数：超出即终止，避免底层流已死时无限空转
 const STREAM_MAX_CONSECUTIVE_ERRORS: u32 = 5;
@@ -76,6 +113,18 @@ pub struct StreamConfig {
     /// 用 `Arc<dyn Fn()>` 而非泛型，是为了让 `StreamConfig` 保持 `Clone`
     /// 且不污染 `process_stream` 的签名。不需要提示的调用点留 `None`。
     pub on_frame: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    /// 模型标识（落 `agent_run_events.model`，监控/重建时可追溯本次用的哪个模型）。
+    pub model_id: Option<String>,
+    /// 「崩溃保护（实时保存）」开关。
+    ///
+    /// **关（默认）**：本次流不写任何帧级数据，只有 loop 收尾那一次结构化落库。
+    /// **开**：文本按粒度攒批（见 [`FRAME_FLUSH_INTERVAL`] / [`FRAME_FLUSH_CHARS`]）
+    /// 写进 `agent_run_events`，工具参数等**结构事件强制立即 flush**
+    /// （工具调用 JSON 不能切半——半截 JSON 无法在崩溃后还原出工具调用）。
+    ///
+    /// 之所以要攒批：单条 `append_loop_delta` 是一次 SQLite 写 + fsync，
+    /// 逐帧（每几十字一次）调用会把写放大重新拉回 30-60x，正是本次重构要消灭的东西。
+    pub crash_protection: bool,
 }
 
 /// 尝试从 ExecuteTool 的参数中提取 ProposePlan 的 content 字段
@@ -221,6 +270,86 @@ fn truncate_sample(text: &str, max_chars: usize) -> String {
     format!("{}…(truncated)", head)
 }
 
+/// 帧级攒批的两个阈值（仅「崩溃保护」开启时生效）。
+///
+/// - `INTERVAL`：距上次落盘超过该时长就 flush —— 覆盖"模型吐得很慢"的场景，
+///   否则最后几个字要等到 loop 收尾才落盘，崩溃窗口被拉长到无法接受。
+/// - `CHARS`：攒够这么多字符就 flush —— 覆盖"模型狂吐"的场景，
+///   否则一次 flush 要写一个几 KB 的大字符串。
+///
+/// 两者**谁先到谁触发**。取值权衡：调小 = 崩溃丢得少、写放大回升；
+/// 调大 = 省写入、崩溃窗口变长。200ms / 1KB 在"丢不超过一次呼吸的内容"
+/// 与"每次写只有 1KB"之间取平衡。
+const FRAME_FLUSH_INTERVAL: Duration = Duration::from_millis(200);
+const FRAME_FLUSH_CHARS: usize = 1024;
+
+/// 结构事件标记：工具调用已开始、参数正在接收。
+///
+/// 它落在 `tool_results` 列里而非 `resp_blocks`：`resp_blocks` 是**正文/思考**
+/// 的纯文本累积（可任意切分），而"发生过一次工具调用"是结构化事实，
+/// 崩溃重建时要能原样读出来，不能和正文混在同一条流里。
+const TOOL_ARGS_PENDING_MARKER: &str = "\n> 工具参数接收中\n";
+
+/// 崩溃保护的帧级攒批器（仅开关开启时构造）。
+/// 只管**文本**（正文 + 思考）：这两者是高频、可任意切分的内容，攒批无副作用。
+/// 工具参数之类的**结构事件**不走这里 —— 它们必须立即整段落盘
+/// （半截 JSON 在崩溃后无法还原成工具调用），见调用点直接调 append。
+struct FrameFlusher {
+    run_id: String,
+    session_id: String,
+    loop_index: usize,
+    model: Option<String>,
+    buf: String,
+    last_flush: std::time::Instant,
+}
+
+impl FrameFlusher {
+    fn new(
+        run_id: &str,
+        session_id: &str,
+        loop_index: usize,
+        model: Option<String>,
+    ) -> Self {
+        Self {
+            run_id: run_id.to_string(),
+            session_id: session_id.to_string(),
+            loop_index,
+            model,
+            buf: String::new(),
+            last_flush: std::time::Instant::now(),
+        }
+    }
+
+    /// 追加一段文本；达到阈值（时间或字数）即落盘。
+    fn push(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.buf.push_str(text);
+        if self.buf.chars().count() >= FRAME_FLUSH_CHARS
+            || self.last_flush.elapsed() >= FRAME_FLUSH_INTERVAL
+        {
+            self.flush();
+        }
+    }
+
+    /// 结构事件发生前调用：把攒着的文本先落盘，保证落盘顺序与产生顺序一致。
+    fn flush(&mut self) {
+        if self.buf.is_empty() {
+            return;
+        }
+        agent_runs::append_loop_text_delta(
+            &self.run_id,
+            &self.session_id,
+            self.loop_index,
+            &self.buf,
+            self.model.as_deref(),
+        );
+        self.buf.clear();
+        self.last_flush = std::time::Instant::now();
+    }
+}
+
 /// 接收并解析一条 SSE 流。
 ///
 /// # 参数
@@ -262,12 +391,24 @@ pub async fn process_stream(
     // 追踪 ProposePlan 工具调用的流式内容，用于实时推送到前端
     let mut propose_plan_stream_sent: HashMap<usize, usize> = HashMap::new();
     // 空闲超时：只统计"一个有效帧都没收到"的情况。
-    // 已收到帧却中断时，部分内容已推送给前端并写入 live_content，
+    // 已收到帧却中断时，部分内容已推送给前端（可能已进入本轮的 events 行），
     // 此时重试会在界面上拼出重复文本，因此仅零产出才标记为可重试。
     let mut idle_timed_out = false;
     let mut should_retry = false;
     let mut received_event = false;
     let mut consecutive_errors: u32 = 0;
+    // 崩溃保护的帧级通道：开关关闭时恒为 None，全程零 DB 写入。
+    // 开与不开都**不影响** loop 收尾那次结构化落库（那是 upsert_loop_event 的事）。
+    let mut frame_flusher: Option<FrameFlusher> = if config.crash_protection {
+        Some(FrameFlusher::new(
+            run_id,
+            sid,
+            loop_count,
+            config.model_id.clone(),
+        ))
+    } else {
+        None
+    };
 
     let logger = debug_logger::debug_logger();
     // SSE 聚合按 (session, agent_type, loop) 归档，才能落到对应循环卡上
@@ -281,7 +422,11 @@ pub async fn process_stream(
 
     loop {
         // 每次迭代重建计时器 = 每收到一个 SSE 事件即重置空闲计时。
-        // 上游静默超过阈值即判定失联，优雅终止（保留已累积结果）。
+        // 上游静默超过阈值即按超时终止，保留已累积结果。
+        //
+        // ⚠️ 这是**流空闲超时**（链路级），不是「规划看门狗」（plan 模式探索轮数）：
+        // 只在"零帧"时触发，与模型在干什么无关。措辞不断言服务端状态——静默可能
+        // 是服务繁忙、链路抖动或半开连接，链路上不可区分。
         let idle_deadline = tokio::time::sleep(Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS));
         tokio::pin!(idle_deadline);
 
@@ -289,7 +434,7 @@ pub async fn process_stream(
             next = stream.next() => next,
             _ = &mut idle_deadline => {
                 println!(
-                    "[JARVIS] SSE 流空闲超过 {}s，判定上游服务已失联，优雅终止本轮接收",
+                    "[JARVIS] SSE 流空闲超过 {}s（未收到任何数据），按超时优雅终止本轮接收",
                     STREAM_IDLE_TIMEOUT_SECS
                 );
                 // 两个含义必须分开：
@@ -361,6 +506,11 @@ pub async fn process_stream(
                     // Anthropic content_block_start(text)：推入空文本块。
                     // 推入位置 = 数组末尾；正常流中与线上块下标一致（与拆分前行为相同）。
                     current_blocks.push(ContentBlock::Text { text: String::new() });
+                    // 块边界：先结清攒批缓冲再开新块（方案 §5.3），
+                    // 保证崩溃瞬间 DB 里的拼串与块边界对齐。
+                    if let Some(flusher) = frame_flusher.as_mut() {
+                        flusher.flush();
+                    }
                 }
                 ProtocolEvent::ThinkingStart { signature, .. } => {
                     // Anthropic content_block_start(thinking)：推入空思考块；
@@ -369,6 +519,10 @@ pub async fn process_stream(
                         thinking: String::new(),
                         signature: signature.unwrap_or_default(),
                     });
+                    // 块边界：同上
+                    if let Some(flusher) = frame_flusher.as_mut() {
+                        flusher.flush();
+                    }
                 }
                 ProtocolEvent::TextDelta { block, text } => {
                     // 落块的两种协议规则已在事件里归一：Some = 精确改写，None = 追加进当前块
@@ -420,7 +574,10 @@ pub async fn process_stream(
                             "chat-content",
                             json!({ "content": text, "sessionId": sid, "loopCount": loop_count }),
                         );
-                        agent_runs::append_content(app, run_id, &text, loop_count);
+                        // 崩溃保护帧级通道（攒批；未开启时无操作）
+                        if let Some(flusher) = frame_flusher.as_mut() {
+                            flusher.push(&text);
+                        }
                     }
                 }
                 ProtocolEvent::ThinkingDelta { block, text, signature } => {
@@ -471,7 +628,10 @@ pub async fn process_stream(
                                     json!({ "content": text, "sessionId": sid, "loopCount": loop_count })
                                 },
                             );
-                            agent_runs::append_thinking(app, run_id, &text, loop_count);
+                            // 崩溃保护帧级通道（思考与正文共用同一条文本流）
+                            if let Some(flusher) = frame_flusher.as_mut() {
+                                flusher.push(&text);
+                            }
                         }
                     }
                 }
@@ -500,12 +660,18 @@ pub async fn process_stream(
                                 "tool": name
                             }),
                         );
-                        agent_runs::append_tool_log(
-                            app,
-                            run_id,
-                            "\n> 工具参数接收中\n",
-                            loop_count,
-                        );
+                        // 结构事件：工具调用开始。先 flush 攒批文本（保证落盘顺序），
+                        // 再把"参数接收中"这一结构化行**立即**落盘（不能与文本合并切分）。
+                        if let Some(flusher) = frame_flusher.as_mut() {
+                            flusher.flush();
+                            agent_runs::append_loop_tool_result_delta(
+                                &flusher.run_id,
+                                &flusher.session_id,
+                                flusher.loop_index,
+                                TOOL_ARGS_PENDING_MARKER,
+                                flusher.model.as_deref(),
+                            );
+                        }
                     }
                 }
                 ProtocolEvent::ToolArgsDelta { wire_idx, fragment } => {
@@ -533,12 +699,17 @@ pub async fn process_stream(
                                         "tool": ""
                                     }),
                                 );
-                                agent_runs::append_tool_log(
-                                    app,
-                                    run_id,
-                                    "\n> 工具参数接收中\n",
-                                    loop_count,
-                                );
+                                // 结构事件：同上（非标准实现的 map-miss 兜底路径）
+                                if let Some(flusher) = frame_flusher.as_mut() {
+                                    flusher.flush();
+                                    agent_runs::append_loop_tool_result_delta(
+                                        &flusher.run_id,
+                                        &flusher.session_id,
+                                        flusher.loop_index,
+                                        TOOL_ARGS_PENDING_MARKER,
+                                        flusher.model.as_deref(),
+                                    );
+                                }
                             }
                             p
                         }
@@ -581,6 +752,12 @@ pub async fn process_stream(
                 }
                 ProtocolEvent::StopReason(sr) => {
                     stop_reason = Some(sr);
+                    // 收尾边界（方案 §5.3）：StopReason 意味着本轮内容已到尾，
+                    // 提前结清攒批——若此后连接直接断掉（收不到正常 break），
+                    // 帧级半截内容也已完整落盘。
+                    if let Some(flusher) = frame_flusher.as_mut() {
+                        flusher.flush();
+                    }
                 }
             }
         }
@@ -607,6 +784,12 @@ pub async fn process_stream(
 
     // 流结束时把本 loop 的 SSE 聚合落盘（MAIN 路径 log_response 也会刷一次，幂等）
     logger.flush_sse_summary(sid, agent_type, loop_count);
+
+    // 崩溃保护：把攒批里剩下的文本落盘（不足一个阈值的尾巴，
+    // 不 flush 就会一直悬到 loop 收尾，白白拉长崩溃窗口）
+    if let Some(flusher) = frame_flusher.as_mut() {
+        flusher.flush();
+    }
 
     // 零产出判据在此一次算清：正文/思考/工具调用三者皆空。
     // 放在 stream 层是因为这里同时掌握"是否收到过帧"与"解析出什么"，
@@ -648,7 +831,7 @@ mod idle_timeout_tests {
     /// 空闲阈值必须是有限正数：0 会误杀一切正常流，过大则失去兜底意义。
     ///
     /// 这里刻意**不锁死具体数值**（曾是仅断言 == 90 的脆弱测试）：
-    /// 该值会随体验调优变化（实测反馈"等太久"后已从 90s 下调到 30s），
+    /// 该值随实测数据变化过（90 → 30 → 90，依据见常量处的探针实测注释），
     /// 断言区间既能防住"误改成 0 或超大值"，又不会阻碍合理调优。
     #[test]
     fn idle_timeout_is_a_sane_finite_bound() {

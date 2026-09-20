@@ -32,9 +32,18 @@ const props = defineProps<{
   paused: boolean;
 }>();
 
-/** 从正文里剥离"运行被打断"标记（如 `> ⚠️ **[回复被中断]** …`）。 */
+/**
+ * 从正文里剥离"运行被打断"标记，改为 notice 小字。
+ *
+ * 两种格式都要识别：现行 `**[标签]** 说明`（如 `**[回复被中断]** …`）
+ * 与旧库遗留 `> ⚠️ **[回复被中断]** …`。标签用**枚举白名单**（宽松匹配
+ * 会把模型正文里的加粗方括号误剥），与 `chat.ts` 的 splitInterruptedNotice
+ * 是同一份约定，**两处必须同步维护**。
+ */
+const INTERRUPT_MARKER_LINE_RE =
+  /\n*(?:>?\s*[⚠✕][^\n]*|\*\*\[(?:回复被中断|规划探索已到上限|工具错误|方案重定向|等待确认|已授权|启动子代理|子代理执行完毕)\][^\n]*)/;
 function splitInterruptMarker(text: string): { text: string; notice?: string } {
-  const match = text.match(/\n*>?\s*[⚠✕][^\n]*/);
+  const match = text.match(INTERRUPT_MARKER_LINE_RE);
   if (!match || match.index === undefined) return { text };
   const notice = match[0]
     .replace(/^[\s>]+/, "")

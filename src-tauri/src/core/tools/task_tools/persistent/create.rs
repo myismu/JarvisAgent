@@ -21,12 +21,14 @@ pub(super) fn tool_def() -> ToolDef {
                     "activeForm": {"type": "string", "description": "进行时描述，如\"修复登录Bug中\"。"},
                     "metadata": {"type": "object", "description": "可选元数据。"},
                     "owner": {"type": "string", "description": "负责人名称。"},
+                    "subagent_type": {"type": "string", "description": "可选：执行该任务的子代理类型（general/explore/review/verification/implementation）。省略=implementation。RunSubagentsSequentially 调度时按此派子代理。"},
                     "tasks": {"type": "array", "items": {"type": "object", "properties": {
                         "subject": {"type": "string", "description": "任务标题（必填）。"},
                         "description": {"type": "string", "description": "任务详情，说明要做什么。"},
                         "activeForm": {"type": "string", "description": "进行时描述，如\"实现API中\"。"},
                         "depends_on": {"type": "array", "items": {"type": "integer"}, "description": "依赖的任务在数组中的 1-based 索引"},
-                        "owner": {"type": "string", "description": "负责人名称。"}
+                        "owner": {"type": "string", "description": "负责人名称。"},
+                        "subagent_type": {"type": "string", "description": "可选：该任务的子代理类型（省略=implementation）。"}
                     }, "required": ["subject"]}, "description": "批量创建的任务列表。每项的 depends_on 为数组内索引。"}
                 }
             }
@@ -59,7 +61,8 @@ pub async fn task_create(
             let active_form = optional_string(item, "activeForm");
             let metadata = item.get("metadata").cloned();
             let owner = optional_string(item, "owner");
-            match tm.create(subject.clone(), description, active_form, metadata, owner) {
+            let subagent_type = optional_string(item, "subagent_type");
+            match tm.create(subject.clone(), description, active_form, metadata, owner, subagent_type) {
                 Ok(t) => { created_ids.insert(idx, t.id); },
                 Err(e) => failures.push(format!("「{}」: {}", subject, e)),
             }
@@ -77,7 +80,7 @@ pub async fn task_create(
                         let _ = tm.update(*task_id, crate::core::orchestration::tasks::TaskUpdateParams {
                             status: None, subject: None, description: None, active_form: None,
                             owner: None, metadata: None, add_blocked_by: Some(blocked_by),
-                            add_blocks: None,
+                            add_blocks: None, subagent_type: None,
                         });
                     }
                 }
@@ -103,6 +106,7 @@ pub async fn task_create(
     let active_form = optional_string(input, "activeForm");
     let metadata = input.get("metadata").cloned();
     let owner = optional_string(input, "owner");
+    let subagent_type = optional_string(input, "subagent_type");
 
     match TaskManager::for_session(session_id).create(
         subject,
@@ -110,6 +114,7 @@ pub async fn task_create(
         active_form,
         metadata,
         owner,
+        subagent_type,
     ) {
         Ok(task) => framework::ToolCallResult::ok(serde_json::json!({
             "success": true,

@@ -69,6 +69,19 @@ interface UiPreferences {
   userMessageOpacity: number;
   reflectionMode: "always" | "smart" | "off";
   /**
+   * 崩溃保护（实时保存）。
+   *
+   * 开启后，流式进行中的文本/思考会**攒批落库**（约 200ms 或 1KB 触发一次，
+   * 工具启动/参数这类结构事件则立即落盘），进程被强杀/断电后重启能恢复到
+   * 崩溃前的半截内容。
+   *
+   * 关闭（默认）时只在**每轮（loop）收尾**写一次，落库次数少、开销低；代价是
+   * 进程崩溃会丢掉**正在进行**的那一轮（已完成的历史轮不受影响）。
+   *
+   * ⚠️ 纯全局设置：后端在每轮开始时读一次快照，**中途改动不影响进行中的轮次**。
+   */
+  crashProtection: boolean;
+  /**
    * 图片压缩档位。
    *
    * ⚠️ 这三个字段必须在前端声明齐全：`save_ui_preferences` 是全量替换结构体，
@@ -98,6 +111,8 @@ const defaults: UiPreferences = {
   agentMessageOpacity: 0,
   userMessageOpacity: 0,
   reflectionMode: "smart",
+  // 默认关：绝大多数场景下"进程崩溃"不是常态，没必要让每一轮都背上帧级写库的开销
+  crashProtection: false,
   imageCompressTier: "standard",
   imageMaxWidth: IMAGE_COMPRESS_TIERS.standard.maxWidth,
   imageMaxHeight: IMAGE_COMPRESS_TIERS.standard.maxHeight,
@@ -234,6 +249,8 @@ function startWatchers() {
   watch(() => prefs.value.thinkingDefault, () => scheduleSave());
   watch(() => prefs.value.locale, () => scheduleSave());
   watch(() => prefs.value.defaultExpandThinking, () => scheduleSave());
+  // 崩溃保护只是给后端读的开关：没有 DOM 副作用，落到后端即可
+  watch(() => prefs.value.crashProtection, () => scheduleSave());
   watch(() => prefs.value.autoScroll, () => scheduleSave());
   watch(() => prefs.value.agentMessageOpacity, () => { applyMessageOpacity(); scheduleSave(); });
   watch(() => prefs.value.userMessageOpacity, () => { applyMessageOpacity(); scheduleSave(); });
@@ -352,6 +369,8 @@ export function usePreferences() {
     setUserMessageOpacity: (val: number) => { prefs.value.userMessageOpacity = Math.round(val); },
     get reflectionMode() { return prefs.value.reflectionMode; },
     setReflectionMode: (val: "always" | "smart" | "off") => { prefs.value.reflectionMode = val; },
+    get crashProtection() { return prefs.value.crashProtection; },
+    setCrashProtection: (val: boolean) => { prefs.value.crashProtection = val; },
     get imageCompressTier() { return prefs.value.imageCompressTier; },
     setImageCompressTier: (val: ImageCompressTier) => { prefs.value.imageCompressTier = val; },
     // 数值只读：唯一写入途径是上面的档位 setter（由 watcher 统一换算），
