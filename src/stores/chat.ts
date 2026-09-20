@@ -69,35 +69,16 @@ function tryParseApiErrorBody(body: string): string | null {
   }
 }
 
-/**
- * 从正文中剥离"运行被打断"标记，改为气泡下方的小字说明。
- *
- * 后端在中断收尾时会把标记追加进 `res.content`，存在两种格式：
- * - **现行**：`**[标签]** 说明`（如 `**[回复被中断]** …`），不带引用符
- * - **旧库遗留**：`> ⚠️ **[回复被中断]** …`、`> ✕ **用户已取消执行…**`
- * 两种都必须识别——旧会话历史里的标记不会被自动改写。
- *
- * ⚠️ 标签用**枚举白名单**，不用宽松的任意 `**[xxx]**`：模型正文里也可能
- * 写出加粗方括号，宽松匹配会把正文误剥成小字。**新增标记标签时必须同步
- * 维护下面的正则**（与 `AgentTurn.vue` 的 splitInterruptMarker 同一份约定）。
- *
- * 归属：它属于**状态标注**而非模型正文，若留在正文里会挤进回复气泡内部，
- * 既突兀又与"已保留的部分结果"重复。这里取出来交给 `snapshot.notice`，
- * 由渲染层放在气泡下方。
- */
-const INTERRUPT_MARKER_LINE_RE =
-  /\n*(?:>?\s*[⚠✕][^\n]*|\*\*\[(?:回复被中断|规划探索已到上限|工具错误|方案重定向|等待确认|已授权|启动子代理|子代理执行完毕)\][^\n]*)/;
-function splitInterruptedNotice(content: string): { content: string; notice?: string } {
-  const match = content.match(INTERRUPT_MARKER_LINE_RE);
-  if (!match || match.index === undefined) return { content };
-  const notice = match[0]
-    .replace(/^[\s>]+/, "")
-    .replace(/\*\*/g, "")
-    .replace(/[⚠️✕]/g, (m) => (m === "✕" ? "✕" : "⚠"))
-    .trim();
-  const cleaned = content.slice(0, match.index).trimEnd();
-  return { content: cleaned, notice: notice || undefined };
-}
+// 这里原有 INTERRUPT_MARKER_LINE_RE + splitInterruptedNotice（"从正文剥离中断标记"），
+// 2026-09-21 删除。它与 `AgentTurn.vue` 的 splitInterruptMarker 是同一份约定，
+// 两处一起删。理由（别再把它加回来）：
+//   1. 阶段二改造后，中断标记不再拼进正文（kind 走 session_messages.interrupt_kind），
+//      状态标注由后端 `notice` 字段结构化下发 —— 剥离对新数据本就永不命中；
+//   2. 那条正则过宽："任意含 ⚠ / ✕ 的行"都算标记，而模型正文里写 ⚠ 是常事
+//      （比如表格的"注意"列）；且命中后是**截断式**处理（`slice(0, match.index)`，
+//      只保留匹配点之前的内容），于是一处误判会吃掉整条回复的后续正文。
+//      真实事故：一份交接单只剩前一节，剩下八成内容没渲染出来。
+// 旧会话若正文里仍带旧标记，按既定决策不做兼容（旧会话自行删除）。
 
 function buildFinalResponseParts(
   view: { contentBuffer: string; tempBuffer: string; toolBuffer: string; thinkingBuffer: string },
@@ -328,9 +309,8 @@ export const useChatStore = defineStore("chat", () => {
           reason: result.resumeWith,
         });
         if (res.status !== "PAUSED_LOOP_LIMIT") {
-          const { content: resumeContent, notice: resumeNotice } = splitInterruptedNotice(
-            stripPseudoToolCalls(res.content),
-          );
+          const resumeContent = stripPseudoToolCalls(res.content);
+          const resumeNotice = res.notice ?? undefined;
           const snapshot = buildAgentTurnSnapshot(
             requestView.currentTurn,
             resumeContent,
@@ -703,11 +683,8 @@ export const useChatStore = defineStore("chat", () => {
       if (res.status === "CANCELLED") {
         if (!requestView.cancelHandled) {
           const cancellationFallback = res.content && res.content !== "用户已取消执行。" ? res.content : "";
-          // 同样先剥离中断/取消标记：后端把它追加在 content 末尾，
-          // 若留在正文里会和下面设置的 notice 重复成两行。
-          const { content: cleanedFallback } = splitInterruptedNotice(
-            stripPseudoToolCalls(cancellationFallback),
-          );
+          // 正文原样使用：取消的状态说明由下面设置的固定 notice 承担
+          const cleanedFallback = stripPseudoToolCalls(cancellationFallback);
           const { finalContent, finalToolBuffer } = buildFinalResponseParts(requestView, cleanedFallback);
           const hasPartialContent = finalContent || finalToolBuffer;
           if (hasPartialContent || cleanedFallback.trim()) {
@@ -774,12 +751,9 @@ export const useChatStore = defineStore("chat", () => {
 
       const { finalContent: rawFinalContent, finalToolBuffer: streamedToolBuffer } =
         buildFinalResponseParts(requestView, res.content);
-      // 状态标注优先取后端结构化字段 `notice`；正则剥离作为兜底
-      // （兼容历史数据里仍把标记写在正文中的情况）。
-      const { content: strippedContent, notice: strippedNotice } =
-        splitInterruptedNotice(rawFinalContent);
-      const finalContent = strippedContent;
-      const interruptedNotice = (res as any).notice || strippedNotice;
+      // 正文原样使用；状态标注**只**取后端结构化字段（见本文件上方的删除说明）
+      const finalContent = rawFinalContent;
+      const interruptedNotice = res.notice ?? undefined;
       // break_loop 时后端通过 tool_execution_summary 传递工具结果，补充到 toolBuffer
       const finalToolBuffer = streamedToolBuffer || (res as any).toolExecutionSummary || "";
       const inputTokens = res.input_tokens ?? (res as any).inputTokens ?? 0;

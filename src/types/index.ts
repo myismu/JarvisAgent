@@ -62,6 +62,14 @@ export interface JarvisResult {
   thinking_reason?: string | null;
   /** 需提示用户时的 i18n key（如模型强制思考夹紧了用户的"关闭"意愿） */
   thinking_notice_i18n_key?: string | null;
+  /**
+   * 本轮的状态标注（渲染在回复气泡**下方**的小字）：中断 / 取消 / 等待说明等。
+   *
+   * 这是状态标注的**唯一来源** —— 正文不再夹带系统标记，前端也不再从正文里
+   * 正则剥离（2026-09-21 删除了 `INTERRUPT_MARKER_LINE_RE` 那套）。
+   * 后端由中断类型 `InterruptKind` 生成，见 `command/history.rs::interrupt_notice_for`。
+   */
+  notice?: string | null;
 }
 
 export interface ContextSectionSnapshot {

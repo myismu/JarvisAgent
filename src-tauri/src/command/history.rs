@@ -421,8 +421,9 @@ fn is_interrupted_source(source: &str) -> bool {
 ///
 /// ⚠️ `.replace("⚠️", "⚠")` 专为**旧库数据**保留：新格式已不含 emoji，
 /// 但旧会话历史不会自动改写——删掉它旧小字会显示带变体选择符的 `⚠️`。
-/// 新格式与旧格式的识别锚点在 `strip_interrupt_markers`（agent_runs.rs）
-/// 与前端 `INTERRUPT_MARKER_LINE_RE`（chat.ts / AgentTurn.vue）。
+/// 新格式与旧格式的识别锚点是 `strip_interrupt_markers`（agent_runs.rs）。
+/// 前端原有的那份 `INTERRUPT_MARKER_LINE_RE` 已于 2026-09-21 删除：
+/// 它对新数据永不命中，却会误伤模型正文里自己写的 `⚠` 并截断整条回复。
 fn interrupted_notice_text(content: &Content) -> Option<String> {
     let raw = match content {
         Content::Single(s) => s.as_str(),

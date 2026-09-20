@@ -32,25 +32,13 @@ const props = defineProps<{
   paused: boolean;
 }>();
 
-/**
- * 从正文里剥离"运行被打断"标记，改为 notice 小字。
- *
- * 两种格式都要识别：现行 `**[标签]** 说明`（如 `**[回复被中断]** …`）
- * 与旧库遗留 `> ⚠️ **[回复被中断]** …`。标签用**枚举白名单**（宽松匹配
- * 会把模型正文里的加粗方括号误剥），与 `chat.ts` 的 splitInterruptedNotice
- * 是同一份约定，**两处必须同步维护**。
- */
-const INTERRUPT_MARKER_LINE_RE =
-  /\n*(?:>?\s*[⚠✕][^\n]*|\*\*\[(?:回复被中断|规划探索已到上限|工具错误|方案重定向|等待确认|已授权|启动子代理|子代理执行完毕)\][^\n]*)/;
-function splitInterruptMarker(text: string): { text: string; notice?: string } {
-  const match = text.match(INTERRUPT_MARKER_LINE_RE);
-  if (!match || match.index === undefined) return { text };
-  const notice = match[0]
-    .replace(/^[\s>]+/, "")
-    .replace(/\*\*/g, "")
-    .trim();
-  return { text: text.slice(0, match.index).trimEnd(), notice: notice || undefined };
-}
+// 这里原有「从正文剥离中断标记」的正则与 splitInterruptMarker，2026-09-21 删除。
+// 理由（别再把它加回来）：
+//   1. 状态标注现在由后端 `notice` 结构化下发，中断标记也不再拼进正文
+//      （kind 走 session_messages.interrupt_kind），剥离对新数据永不命中；
+//   2. 那条正则过宽 —— "任意含 ⚠ / ✕ 的行"都算标记，而模型正文里写 ⚠ 是常事
+//      （比如表格的"注意"列）；且命中后是**截断式**处理（只保留匹配点之前的内容），
+//      一处误判就会吃掉整条回复的后续正文（真实事故：一份交接单只剩前一节）。
 
 const rawAssistantText = computed(() =>
   stripPseudoToolCalls(
@@ -61,14 +49,11 @@ const rawAssistantText = computed(() =>
   ),
 );
 
-// 实时渲染也必须剥离中断标记，否则它会作为正文渲染成一个大方块，
-// 与刷新后（历史渲染已剥离）的小字样式**不一致** —— 实测两张截图对比发现。
-const assistantText = computed(() => splitInterruptMarker(rawAssistantText.value).text);
+/** 正文原样渲染：不再做任何标记剥离 */
+const assistantText = rawAssistantText;
 
-/** 气泡下方的状态标注：显式 notice 优先，否则用从正文剥离出的标记 */
-const turnNotice = computed(
-  () => props.turn.notice || splitInterruptMarker(rawAssistantText.value).notice,
-);
+/** 气泡下方的状态标注：**只**取后端结构化字段 */
+const turnNotice = computed(() => props.turn.notice);
 
 const hasAssistantText = computed(() => assistantText.value.trim().length > 0);
 const hasExecution = computed(() => {
@@ -89,8 +74,7 @@ const developerTimeline = computed(() =>
       textBlocks: props.turn.textBlocks
         .filter((b) => b.kind === "assistant")
         .map((b) => ({
-          // 开发者模式同样剥离中断标记，避免它被当成正文渲染
-          content: splitInterruptMarker(stripPseudoToolCalls(b.content)).text,
+          content: stripPseudoToolCalls(b.content),
           timestamp: b.timestamp,
         }))
         .filter((b) => b.content.trim()),

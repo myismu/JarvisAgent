@@ -519,8 +519,9 @@ pub enum RecoveryOutcome {
 /// 崩溃恢复的"未产生回复"占位文案（**会发给 LLM**，也会渲染为气泡下方小字）。
 ///
 /// 与 pipeline 的 INTERRUPT_MARKER 系同风格：`**[标签]**` 开头（不含 `>` 引用符，
-/// 见 doc/状态标注符号统一与结构化改造方案.md），前端 `splitInterruptMarker`
-/// 依此把整行剥离成 notice 小字。
+/// 见 doc/状态标注符号统一与结构化改造方案.md）。
+/// 气泡下方的小字说明由后端按 `interrupt_kind` 生成（`command/history.rs`），
+/// 不再由前端从正文里剥离。
 /// 语义区别于 INTERRUPT_MARKER_RESUMABLE（"请基于上下文继续完成"）——
 /// 这里没有任何半截内容可续，模型不该自动续写，等待用户下一条消息
 /// 表达新意图。只在恢复路径出现一次，之后固定为历史前缀的一部分，
@@ -687,8 +688,9 @@ fn diff_tail(current: &[Message], rebuilt: &[Message]) -> Vec<Message> {
 ///
 /// 现行标记以 `**[标签]**` 开头；旧库格式为 `> ⚠️ **[回复被中断]** …`
 /// 与 `> ✕ **用户已取消执行…**`（后者无方括号，单列关键词）。
-/// 与前端 `INTERRUPT_MARKER_LINE_RE`（chat.ts / AgentTurn.vue）是同一份约定，
-/// **新增标签时三处都要同步**。
+/// 只服务于"重建消息 vs 现存消息"的等价比较（见 `messages_equivalent`），
+/// 不参与界面渲染 —— 界面的状态标注走结构化 `notice`（前端已在 2026-09-21
+/// 删除同款正则，见 doc/状态标注符号统一与结构化改造方案.md）。
 const INTERRUPT_TAGS: [&str; 3] = ["[回复被中断]", "[规划探索已到上限]", "用户已取消执行"];
 
 fn strip_interrupt_markers(text: &str) -> String {
@@ -930,15 +932,14 @@ mod recovery_closure_tests {
         assert!(matches!(closure_outcome(&[]), RecoveryOutcome::None));
     }
 
-    /// 占位文案与前端 splitInterruptMarker 的剥离约定兼容：
-    /// `**[标签]` 开头（正则按 `**[` 锚点识别整行剥成 notice 小字），
-    /// 不含 `>` 引用符与 emoji 哨兵（2026-09-20 统一风格，
-    /// 见 doc/状态标注符号统一与结构化改造方案.md）
+    /// 占位文案遵循统一风格：`**[标签]` 开头、不含 `>` 引用符与 emoji 哨兵
+    /// （2026-09-20 统一，见 doc/状态标注符号统一与结构化改造方案.md）。
+    /// 该前缀是 `strip_interrupt_markers` 做"重建 vs 现存"等价比较时的识别锚点。
     #[test]
-    fn placeholder_matches_frontend_strip_convention() {
+    fn placeholder_matches_marker_convention() {
         assert!(
             INTERRUPT_PLACEHOLDER_NO_REPLY.starts_with("**["),
-            "应以 `**[标签]` 开头，便于统一剥离：{INTERRUPT_PLACEHOLDER_NO_REPLY}"
+            "应以 `**[标签]` 开头（统一风格，且等价比较依赖它）：{INTERRUPT_PLACEHOLDER_NO_REPLY}"
         );
         assert!(
             !INTERRUPT_PLACEHOLDER_NO_REPLY.contains('⚠')

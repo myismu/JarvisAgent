@@ -266,11 +266,14 @@ impl WaitingHint {
 /// `interrupted_reason`（状态）与 `agent_runs.error`（审计）里，信息不丢失。
 ///
 /// 格式约定（2026-09-20 统一，详见 doc/状态标注符号统一与结构化改造方案.md）：
-/// 标记行形如 `**[标签]** 说明文字`，**不带 `>` 引用符**——本标记会被拼进
-/// assistant 正文，前端按 `**[` 锚点把整行剥离成 notice 小字（chat.ts
-/// splitInterruptedNotice / AgentTurn.vue splitInterruptMarker，正则同时兼容
-/// 旧格式 `> ⚠️ **[回复被中断]**` 以免旧库历史裸露）。去 `>` 的理由：剥离时
-/// 本就会清掉它，对模型理解也无帮助。括号标签是**枚举**，比 emoji 哨兵精确。
+/// 标记行形如 `**[标签]** 说明文字`，**不带 `>` 引用符**。括号标签是**枚举**，
+/// 比 emoji 哨兵精确；`>` 也只是给人看的引用符，对模型理解无帮助。
+///
+/// 去向：本标记**只写给模型看** —— `prepare_history_snapshot_from_messages`
+/// 按 `interrupt_kind` 把它拼回消息尾部，模型据此知道上一句被截断。
+/// 界面侧的小字说明由结构化 `notice` 承担，前端**不再**从正文里剥离标记
+/// （原 `INTERRUPT_MARKER_LINE_RE` 已于 2026-09-21 删除：它对新数据永不命中，
+/// 却会把模型正文里自己写的 `⚠` 当标记、截断整条回复）。
 const INTERRUPT_MARKER_RESUMABLE: &str =
     "**[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。";
 
@@ -4358,13 +4361,14 @@ mod interrupt_marker_tests {
         );
     }
 
-    /// 两种标记共享统一前缀，前端 `splitInterruptMarker` 依赖它做识别
+    /// 两种标记共享统一前缀；`strip_interrupt_markers`（agent_runs.rs）的
+    /// "重建消息 vs 现存消息"等价比较依赖它
     #[test]
     fn both_share_detectable_prefix() {
         for marker in [INTERRUPT_MARKER_RESUMABLE, INTERRUPT_MARKER_STOPPED] {
             assert!(
                 marker.contains("[回复被中断]"),
-                "前端剥离逻辑依赖该标签，不得修改：{marker}"
+                "等价比较逻辑依赖该标签，不得修改：{marker}"
             );
             assert!(
                 marker.starts_with("**["),
