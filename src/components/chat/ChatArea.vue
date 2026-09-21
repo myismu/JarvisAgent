@@ -30,6 +30,11 @@ interface RollbackPreviewResult {
 interface RollbackRecallResult {
   restoredFiles: string[];
   recalledText: string;
+  /**
+   * 回滚后**没能恢复**的对象（快照无内容 且 回收站副本缺失）。
+   * 非空 = 工作区与目标检查点不完全一致，必须提示用户。
+   */
+  restoreWarnings?: string[];
 }
 
 interface RollbackPreviewState {
@@ -239,6 +244,8 @@ const rollbackConfirm = ref<{
   message: string;
   files: RollbackPreviewFile[];
   warning?: string;
+  /** 仅提示态：弹窗只用于告知结果（如"有对象未能恢复"），确认/关闭都只是关掉它 */
+  noticeOnly?: boolean;
 } | null>(null);
 
 const rollbackPreview = ref<RollbackPreviewState>({
@@ -657,9 +664,15 @@ const normalizeRollbackError = (err: unknown) => {
 
 const confirmRollback = async () => {
   if (!rollbackConfirm.value) return;
+  // 仅提示态：只是通知，点任何按钮都只关掉弹窗（绝不能重复执行回滚）
+  if (rollbackConfirm.value.noticeOnly) {
+    rollbackConfirm.value = null;
+    return;
+  }
 
   rollbackLoading.value = true;
   rollbackError.value = '';
+  let restoreWarnings: string[] = [];
   try {
     const sessionId = session.activeSessionId;
     if (!sessionId) {
@@ -680,6 +693,7 @@ const confirmRollback = async () => {
         userMessageIndex: rollbackUserMessageIndex,
       });
       recalledText = result.recalledText;
+      restoreWarnings = result.restoreWarnings ?? [];
     } else if (rollbackMessageId || rollbackUserMessageIndex !== null) {
       recalledText = await invoke<string | null>('recall_message', {
         sessionId,
@@ -690,7 +704,22 @@ const confirmRollback = async () => {
       recalledText = await invoke<string | null>('recall_last_message', { sessionId });
     }
 
-    rollbackConfirm.value = null;
+    // 有对象没能恢复 → 改用"仅提示"态复用这个弹窗告知用户（工作区与目标检查点不一致）；
+    // 否则照常关掉。
+    rollbackConfirm.value = restoreWarnings.length
+      ? {
+          mode: 'session',
+          snapshotId: '',
+          fallbackSnapshotId: '',
+          userMessageIndex: null,
+          messageId: null,
+          title: t('rollback.restoreWarningsTitle'),
+          message: t('rollback.restoreWarningsMessage'),
+          files: [],
+          warning: restoreWarnings.join('\n'),
+          noticeOnly: true,
+        }
+      : null;
     rollbackPreview.value = {
       loading: false,
       checkpointId: '',
@@ -889,9 +918,9 @@ onMounted(() => {
       :title="rollbackConfirm?.title || ''"
       :message="rollbackConfirm?.message || ''"
       :warning="rollbackError || rollbackConfirm?.warning || ''"
-      :confirm-text="t('rollback.confirm')"
-      :cancel-text="t('common.cancel')"
-      confirm-kind="danger"
+      :confirm-text="rollbackConfirm?.noticeOnly ? t('common.confirm') : t('rollback.confirm')"
+      :cancel-text="rollbackConfirm?.noticeOnly ? t('rollback.closeNotice') : t('common.cancel')"
+      :confirm-kind="rollbackConfirm?.noticeOnly ? 'primary' : 'danger'"
       :loading="rollbackLoading"
       @cancel="rollbackConfirm = null"
       @confirm="confirmRollback"

@@ -17,6 +17,7 @@ pub mod rollback_logger;
 pub mod session_manager;
 pub mod snapshot;
 pub mod store;
+pub mod trash;
 
 pub use gc::{GarbageCollector, GcConfig, GcResult};
 pub use journal::{Journal, JournalEntry};

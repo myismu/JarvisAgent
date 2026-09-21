@@ -373,6 +373,17 @@ async fn extract_subagent_context(
     ctx
 }
 
+/// 连续多少轮"本轮所有工具调用都失败"就判定结构性受阻、提前收口。
+///
+/// 取 3 不取 1：单轮失败很常见（参数写错、路径不存在），模型通常下一轮能自行修正；
+/// 连续 3 轮全败才说明这条路根本走不通。
+///
+/// 背景（2026-09-21 实测）：子代理被派去删 `.jarvis_trash` —— 在当时的工具集下这是
+/// **结构性无解**（回收站建在目标自己内部，rename 必然失败）。它于是逐轮换策略重试，
+/// 把轮数上限耗光、空转好几分钟且没有任何进度；主 Agent 收到失败结果后又派了一个
+/// **新子代理**从零再走一遍。这条护栏让"走不通"在 3 轮内收敛，并明确要求不要重复委派。
+const MAX_CONSECUTIVE_FAILED_LOOPS: u32 = 3;
+
 /// 子代理执行引擎：独立 Agent Loop，支持只读/读写模式，返回 (结果, 输入token, 输出token)
 pub async fn run_subagent(
     app: tauri::AppHandle,
@@ -470,6 +481,8 @@ pub async fn run_subagent(
     }];
 
     let mut loop_count = 0;
+    // 空转保护计数：连续多少轮"本轮所有工具调用都失败"（见 `MAX_CONSECUTIVE_FAILED_LOOPS`）
+    let mut consecutive_failed_loops: u32 = 0;
     let mut final_answer = String::new();
     let mut sub_input_tokens: u64 = 0;
     let mut sub_output_tokens: u64 = 0;
@@ -547,6 +560,26 @@ pub async fn run_subagent(
     };
 
     while loop_count < max_loops {
+        // 空转保护：连续多轮工具调用全部失败 → 结构性受阻，提前收口。
+        // 汇报里必须写清"为什么停"，并要求不要重复委派同一任务 —— 否则主 Agent 会再派一个
+        // 新子代理从头试一遍（这正是那次空转被放大成好几分钟的原因）。
+        if consecutive_failed_loops >= MAX_CONSECUTIVE_FAILED_LOOPS {
+            let msg = format!(
+                "子代理连续 {} 轮工具调用全部失败，判定为结构性受阻，已提前停止（未耗满 {} 轮上限）。\
+                 失败原文见上方各轮的工具结果。请换方案，或如实告知用户受阻点；**不要重复委派同一任务**。",
+                consecutive_failed_loops, max_loops
+            );
+            SubAgentMonitor::complete_run(
+                &app,
+                &run_id,
+                sub_input_tokens,
+                sub_output_tokens,
+                Some(msg.clone()),
+            )
+            .await;
+            return (msg, sub_input_tokens, sub_output_tokens);
+        }
+
         if SubAgentMonitor::is_cancelled(&app, &run_id).await {
             SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
             return (
@@ -803,6 +836,9 @@ pub async fn run_subagent(
             tool_use_id: String,
             name: String,
             output: String,
+            /// 本次调用是否失败。用于空转保护：连续多轮"本轮全部失败"就判定结构性受阻（见
+            /// `MAX_CONSECUTIVE_FAILED_LOOPS`）。
+            is_error: bool,
         }
 
         // 阶段 1：预处理（串行） — 解析参数、emit 事件、收集任务
@@ -892,6 +928,8 @@ pub async fn run_subagent(
                                     tool_use_id: id.clone(),
                                     name: name.clone(),
                                     output: blocked,
+                                    // 被去重拦下 = 这次调用没产生任何进展，按失败计入空转统计
+                                    is_error: true,
                                 });
                                 continue;
                             }
@@ -960,6 +998,7 @@ pub async fn run_subagent(
                             tool_use_id: id.clone(),
                             name: name.clone(),
                             output: failure,
+                            is_error: true,
                         });
                     }
                 }
@@ -979,7 +1018,7 @@ pub async fn run_subagent(
                     // 供 log-viewer / 审计区分"哪种类型的子代理在干活"（2026-09-20）
                     let agent_tag = format!("subagent:{}", agent_role);
                     tokio::spawn(async move {
-                        let output = handle_tool_call_inner_owned(
+                        let (output, is_error) = handle_tool_call_inner_owned(
                             app_clone.clone(),
                             task.name.clone(),
                             task.input.clone(),
@@ -994,6 +1033,7 @@ pub async fn run_subagent(
                             tool_use_id: task.tool_use_id,
                             name: task.name,
                             output,
+                            is_error,
                         }
                     })
                 })
@@ -1009,6 +1049,14 @@ pub async fn run_subagent(
 
         // 阶段 3：排序 + 汇总
         all_results.sort_by_key(|r| r.index);
+
+        // 空转保护计数：本轮"所有工具调用都失败"就 +1，只要有一个成功立刻清零。
+        // （`immediate_results` 里的去重拦截与参数解析失败也按失败计入。）
+        if !all_results.is_empty() && all_results.iter().all(|r| r.is_error) {
+            consecutive_failed_loops += 1;
+        } else {
+            consecutive_failed_loops = 0;
+        }
 
         let mut tool_results = Vec::new();
         for result in all_results {

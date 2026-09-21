@@ -331,11 +331,13 @@ impl SessionSnapshotManager {
         Ok(())
     }
 
+    /// 回滚到指定快照。返回 `(目标工作区, 执行结果)` —— 结果里的 `restore_failures`
+    /// 要一路带到 UI（工作区与目标快照不一致时，用户必须知道）。
     pub async fn rollback_to(
         &self,
         snapshot_id: &str,
         target_dir: &PathBuf,
-    ) -> Result<Workspace, String> {
+    ) -> Result<(Workspace, super::replay::RollbackOutcome), String> {
         let mut tree = self.tree.write().await;
 
         let workspace = self
@@ -343,7 +345,8 @@ impl SessionSnapshotManager {
             .rebuild_workspace(&tree, snapshot_id)
             .map_err(|e| format!("重建工作区失败: {}", e))?;
 
-        self.replay_engine
+        let outcome = self
+            .replay_engine
             .rollback_to(&mut tree, snapshot_id, target_dir)
             .await
             .map_err(|e| format!("回滚失败: {}", e))?;
@@ -353,7 +356,7 @@ impl SessionSnapshotManager {
             .map_err(|e| format!("保存树失败: {}", e))?;
         crate::infra::config::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
 
-        Ok(workspace)
+        Ok((workspace, outcome))
     }
 
     pub async fn preview_touched_files_to(&self, snapshot_id: &str) -> Result<Vec<PatchSummary>, String> {
@@ -363,7 +366,11 @@ impl SessionSnapshotManager {
             .map_err(|e| format!("预览回滚文件失败: {}", e))
     }
 
-    pub async fn rollback_to_initial_state(&self, target_dir: &PathBuf) -> Result<Workspace, String> {
+    /// 回滚到初始状态。返回 `(初始工作区, 执行结果)`，理由同 [`Self::rollback_to`]。
+    pub async fn rollback_to_initial_state(
+        &self,
+        target_dir: &PathBuf,
+    ) -> Result<(Workspace, super::replay::RollbackOutcome), String> {
         let tree = self.tree.read().await;
         // 收集每个文件的最早 old_content 作为初始状态
         let mut initial_files: HashMap<String, String> = HashMap::new();
@@ -374,7 +381,9 @@ impl SessionSnapshotManager {
                     Patch::UpdateFile { path, old_content, .. } => {
                         initial_files.entry(path.clone()).or_insert_with(|| old_content.clone());
                     }
-                    Patch::DeleteFile { path, content_hash } => {
+                    Patch::DeleteFile {
+                        path, content_hash, ..
+                    } => {
                         if let Some(hash) = content_hash {
                             if let Ok(Some(content)) = crate::core::rollback::store::load_content(&self.session_id, hash) {
                                 initial_files.entry(path.clone()).or_insert_with(|| content);
@@ -388,6 +397,14 @@ impl SessionSnapshotManager {
                 }
             }
         }
+        // 回滚上下文（清理判据 + 回收站恢复清单）都要趁 tree 还持有先算出来
+        let ctx = super::replay::RollbackContext {
+            known_paths: super::replay::known_paths_in_tree(&tree),
+            // 回滚到初始状态 = 撤销整棵树 → 树里所有"快照装不下本体"的删除都要从回收站搬回
+            trash_restores: super::replay::trash_restores_from_patches(
+                tree.nodes.values().flat_map(|node| node.patches.iter()),
+            ),
+        };
         drop(tree);
 
         // 用每个文件的最早状态构建初始工作区
@@ -395,8 +412,9 @@ impl SessionSnapshotManager {
         workspace.files = initial_files;
         workspace.delete_paths = created_paths;
 
-        self.replay_engine
-            .rollback_to_initial_state(&workspace, target_dir)
+        let outcome = self
+            .replay_engine
+            .rollback_to_initial_state(&workspace, target_dir, &ctx)
             .await
             .map_err(|e| format!("回滚到初始状态失败: {}", e))?;
 
@@ -408,7 +426,7 @@ impl SessionSnapshotManager {
             .map_err(|e| format!("清理快照记录失败: {}", e))?;
         crate::infra::config::data_paths::refresh_session_manifest(&self.session_id, None, None, None);
 
-        Ok(workspace)
+        Ok((workspace, outcome))
     }
 
     pub async fn clear_snapshots_for_initial_state(&self) -> Result<(), String> {

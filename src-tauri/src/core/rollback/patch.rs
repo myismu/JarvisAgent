@@ -16,8 +16,18 @@ pub enum Patch {
     },
     DeleteFile {
         path: String,
-        /// 原文件内容 hash（snapshot_content 表），None 表示读取失败
+        /// 原文件内容 hash（`snapshot_content` 表）。
+        ///
+        /// `None` = 内容读不出来（**目录 / 二进制 / 大文件**）—— 这类对象在快照里
+        /// **没有内容**，回滚时无法靠快照重建，只能靠 `trash_path` 指向的本体。
         content_hash: Option<String>,
+        /// 该对象在回收站里的实际位置（`data/trash/<会话 id>/<时间戳>_<名字>`）。
+        ///
+        /// 与 `content_hash` 是**两条互补的恢复通道**：文本文件两条都有效（快照是主通道），
+        /// 目录 / 二进制 / 大文件只有这一条有效。回滚时由 `replay.rs` 的恢复阶段搬回原位。
+        /// `#[serde(default)]` 兼容本字段引入之前落库的旧快照（那类删除当时无从恢复）。
+        #[serde(default)]
+        trash_path: Option<String>,
     },
     UpdateFile {
         path: String,
@@ -194,6 +204,7 @@ mod tests {
         let patch = Patch::DeleteFile {
             path: "old.rs".to_string(),
             content_hash: None,
+            trash_path: None,
         };
         let summary = patch.to_summary();
         assert_eq!(summary.operation, "delete");

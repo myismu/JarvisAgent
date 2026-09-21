@@ -86,6 +86,11 @@ pub struct BranchInfo {
 pub struct RollbackRecallResult {
     pub restored_files: Vec<String>,
     pub recalled_text: String,
+    /// 回滚后**没能恢复**的对象（快照无内容 **且** 回收站副本缺失）。
+    ///
+    /// 非空 = 工作区与目标快照**不完全一致**，前端必须提示用户。
+    #[serde(default)]
+    pub restore_warnings: Vec<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -291,7 +296,9 @@ async fn rollback_files_to_snapshot(
     registry: &tauri::State<'_, SnapshotRegistry>,
     session_id: &str,
     snapshot_id: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<(Vec<String>, Vec<String>), String> {
+    // 返回 (消息, 未能恢复的对象)。后者非空时必须提示用户：工作区与目标快照不一致，
+    // 而那些对象（目录 / 二进制 / 大文件）快照里没有内容、回收站副本也没了，无法恢复。
     let manager = registry.0.read().await.get_or_create(session_id).await?;
     if !snapshot_id.is_empty() && manager.get_snapshot(snapshot_id).await?.is_none() {
         return Err(log_rollback_abort(
@@ -310,23 +317,36 @@ async fn rollback_files_to_snapshot(
     let target_dir = crate::infra::state::state::effective_workspace(app, session_id)
         .await
         .unwrap_or_default();
-    if snapshot_id.is_empty() {
+    let outcome = if snapshot_id.is_empty() {
         manager
             .rollback_to_initial_state(&target_dir)
             .await
-            .map_err(|e| log_rollback_abort(session_id, &format!("文件回滚到初始状态失败: {}", e)))?;
+            .map_err(|e| log_rollback_abort(session_id, &format!("文件回滚到初始状态失败: {}", e)))?
+            .1
     } else {
         manager
             .rollback_to(snapshot_id, &target_dir)
             .await
-            .map_err(|e| log_rollback_abort(session_id, &format!("文件回滚失败: {}", e)))?;
-    }
+            .map_err(|e| log_rollback_abort(session_id, &format!("文件回滚失败: {}", e)))?
+            .1
+    };
     println!(
         "[Rollback] 会话 {} 已恢复到 {}",
         session_id, target_label
     );
+    if !outcome.restore_failures.is_empty() {
+        eprintln!(
+            "[Rollback] 会话 {} 有 {} 个对象未能恢复（快照无内容且回收站副本缺失）: {:?}",
+            session_id,
+            outcome.restore_failures.len(),
+            outcome.restore_failures
+        );
+    }
 
-    Ok(vec!["文件已恢复到检查点状态".to_string()])
+    Ok((
+        vec!["文件已恢复到检查点状态".to_string()],
+        outcome.restore_failures,
+    ))
 }
 
 /// 将快照映射为兼容的检查点类型（operations 由补丁链聚合而来）
@@ -435,6 +455,7 @@ pub async fn rollback_to_checkpoint(
     use tauri::Emitter;
 
     let mut restored_files = Vec::new();
+    let mut restore_warnings: Vec<String> = Vec::new();
 
     // 决定实际用于文件回滚的快照 ID：
     // 如果 checkpoint_id 非空，直接用；否则向前追溯最近的 checkpoint
@@ -450,8 +471,10 @@ pub async fn rollback_to_checkpoint(
         if let Some(effective_id) = &effective_checkpoint_id {
             // 先终止所有后台任务，释放文件锁
             crate::infra::background::BackgroundManager::kill_all_background(&app).await;
-            restored_files =
+            let (messages, warnings) =
                 rollback_files_to_snapshot(&app, &registry, &session_id, effective_id).await?;
+            restored_files = messages;
+            restore_warnings = warnings;
         }
         // 如果 effective_checkpoint_id 为 None，说明从未有过文件编辑，
         // 无需恢复文件（工作区本身就是初始状态）
@@ -508,6 +531,14 @@ pub async fn rollback_to_checkpoint(
         let memory = ctx.memory.lock().await.clone();
         crate::core::session::save_session(&session_id, &memory, None);
         let _ = app.emit("session-updated", ());
+    }
+
+    // 有对象没能恢复时如实说明 —— 这个命令只回消息列表，就把它拼进列表末尾
+    if !restore_warnings.is_empty() {
+        restored_files.push(format!(
+            "以下对象未能恢复（快照无内容且回收站副本已不在）：{}",
+            restore_warnings.join("、")
+        ));
     }
 
     Ok(restored_files)
@@ -592,6 +623,7 @@ pub async fn rollback_to_checkpoint_with_recall(
     app: tauri::AppHandle,
 ) -> Result<RollbackRecallResult, String> {
     let mut restored_files = Vec::new();
+    let mut restore_warnings: Vec<String> = Vec::new();
 
     let ctx = session_manager.get_or_create(&session_id).await;
     let target = {
@@ -632,9 +664,11 @@ pub async fn rollback_to_checkpoint_with_recall(
         );
         // 先终止所有后台任务，释放文件锁
         crate::infra::background::BackgroundManager::kill_all_background(&app).await;
-        restored_files =
+        let (messages, warnings) =
             rollback_files_to_snapshot(&app, &registry, &session_id, &effective_checkpoint_id)
                 .await?;
+        restored_files = messages;
+        restore_warnings = warnings;
     }
 
     // 委托 recall_message 统一处理：agent_runs清理 → 截断 → DB同步 → 保存重载 → prune_metadata
@@ -656,6 +690,7 @@ pub async fn rollback_to_checkpoint_with_recall(
     Ok(RollbackRecallResult {
         restored_files,
         recalled_text,
+        restore_warnings,
     })
 }
 

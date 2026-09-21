@@ -231,6 +231,8 @@ pub async fn handle_tool_call_owned(
 }
 
 /// 子Agent并行工具执行用的 owned 版本（不含 task 路由）
+///
+/// 返回 `(输出文本, 是否失败)`，供子代理侧统计"本轮是否全军覆没"。
 pub async fn handle_tool_call_inner_owned(
     app: tauri::AppHandle,
     name: String,
@@ -239,7 +241,7 @@ pub async fn handle_tool_call_inner_owned(
     intent: String,
     work_mode: String,
     agent_type: String,
-) -> String {
+) -> (String, bool) {
     handle_tool_call_inner(&app, &name, &input, &session_id, &intent, &work_mode, &agent_type).await
 }
 
@@ -449,7 +451,10 @@ pub async fn handle_tool_call_inner(
     // 调用来源标记：主循环传 "main"；子代理传 "subagent:<role>"（如 subagent:explore）。
     // 它会一路传进工具审计日志与权限审计，用于区分"哪种类型的子代理在干活"（2026-09-20）。
     agent_type: &str,
-) -> String {
+) -> (String, bool) {
+    // 返回 `(输出文本, 是否失败)` —— 子代理侧要用失败标志做空转保护
+    // （连续多轮全失败 = 结构性受阻，提前收口，见 `subagent.rs`）。
+    //
     // 子代理路径只能走**不含 RunSubagent** 的执行器。两个理由：
     //
     // 1. 类型上必须如此：`run_subagent` 内部 `tokio::spawn` 的那条路会回到本函数，
@@ -485,7 +490,7 @@ pub async fn handle_tool_call_inner(
         let mut flags = ctx.tool_result_flags.lock().await;
         flags.insert(name.to_string(), (result.break_loop, result.is_error));
     }
-    result.output
+    (result.output, result.is_error)
 }
 
 /// 判断是否应该阻止工具调用（意图 + 工作模式兜底防护）

@@ -92,7 +92,19 @@ pub async fn snapshot_rollback(
 ) -> Result<Workspace, String> {
     let manager = registry.0.read().await.get_or_create(&session_id).await?;
     let target_path = std::path::PathBuf::from(target_dir);
-    manager.rollback_to(&snapshot_id, &target_path).await
+    let (workspace, outcome) = manager.rollback_to(&snapshot_id, &target_path).await?;
+    // 本命令的返回契约只是 Workspace（前端 snapshotService 也只用它）；
+    // 有对象没能恢复时在这里留一条 stderr，用户可见的提示走检查点回滚那条链路
+    // （`rollback_to_checkpoint_with_recall` 的 restoreWarnings）。
+    if !outcome.restore_failures.is_empty() {
+        eprintln!(
+            "[Rollback] 会话 {} 有 {} 个对象未能恢复: {:?}",
+            session_id,
+            outcome.restore_failures.len(),
+            outcome.restore_failures
+        );
+    }
+    Ok(workspace)
 }
 
 #[tauri::command]

@@ -152,7 +152,9 @@ impl Workspace {
                 self.files.insert(path.clone(), content.clone());
                 Ok(())
             }
-            Patch::DeleteFile { path, content_hash } => {
+            Patch::DeleteFile {
+                path, content_hash, ..
+            } => {
                 if self.files.remove(path).is_none() {
                     if let Some(hash) = content_hash {
                         if let Ok(Some(c)) = crate::core::rollback::store::load_content(session_id, hash) {
@@ -227,7 +229,9 @@ impl Workspace {
                 self.files.remove(path);
                 Ok(())
             }
-            Patch::DeleteFile { path, content_hash } => {
+            Patch::DeleteFile {
+                path, content_hash, ..
+            } => {
                 if let Some(hash) = content_hash {
                     if let Ok(Some(c)) = crate::core::rollback::store::load_content(session_id, hash) {
                         self.files.insert(path.clone(), c);
