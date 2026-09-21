@@ -250,7 +250,7 @@ pub async fn switch_session(
 /// 当前会话"的后端路径都必须对齐一次**，否则后续请求会继续用上一个会话/全局默认的预设。
 ///
 /// 已覆盖的路径：启动恢复会话、点击切会话（前端 `syncProfileFromSession`）、
-/// 删除会话后自动回落（本文件 `switch_away_and_delete_empty_session`）。
+/// 删除会话后自动回落（本文件 `switch_away_and_delete_session`）。
 fn align_active_profile_to_session(
     app: &tauri::AppHandle,
     config_state: &tauri::State<'_, crate::infra::config::config::ConfigState>,
@@ -283,8 +283,12 @@ fn align_active_profile_to_session(
     let _ = app.emit("config-updated", ());
 }
 
-/// 删除会话后自动切换到下一个可用会话（若无则创建新会话）
-pub async fn switch_away_and_delete_empty_session(
+/// 删除会话后自动切换到下一个可用会话（若无则创建新会话）。
+///
+/// **这是所有删除路径的收口**（用户点删除 / 回滚后会话变空 / 删项目），
+/// 所以"软删除还是硬删除"的分流在这里做（见函数内注释）：
+/// 有内容的软删除（可恢复），空会话硬删除（不留噪音）。
+pub async fn switch_away_and_delete_session(
     deleted_session_id: &str,
     app: &tauri::AppHandle,
 ) -> Result<(), String> {
@@ -296,8 +300,21 @@ pub async fn switch_away_and_delete_empty_session(
     let fallback_profile_id = fallback.as_ref().and_then(|m| m.profile_id.clone());
     let fallback_id = fallback.as_ref().map(|m| m.id.clone());
 
-    // 删空会话：走**硬删除**。它没有任何消息，软删了只会让「最近删除」里堆满噪音。
-    session::hard_delete_session(deleted_session_id)?;
+    // 按**有没有内容**分流（本函数是所有删除路径的收口，所以判断必须在这里做，
+    // 不能指望调用方各自判对 —— 用户点删除、回滚后会话变空、删项目都会走到这里）：
+    // - 有消息 → 软删除：用户能从「最近删除」恢复，消息 / 快照 / 回收站全部保留；
+    // - 空会话 → 硬删除：没有内容可挽留，软删了只会让「最近删除」堆满噪音，
+    //   同时清掉它的回滚侧产物（快照表没有 FK 级联）；
+    // - 查询失败（会话已不存在 / 已在已删除列表）→ 什么都不删，只完成"切走"。
+    match session::get_session_meta(deleted_session_id) {
+        Ok(meta) if meta.message_count == 0 => {
+            session::hard_delete_session(deleted_session_id)?;
+        }
+        Ok(_) => {
+            session::delete_session(deleted_session_id)?;
+        }
+        Err(_) => {}
+    }
     if let Some(manager) = app.try_state::<SessionManager>() {
         manager.remove(deleted_session_id).await;
     }
@@ -585,7 +602,7 @@ pub async fn recall_message(
             token.cancel();
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        switch_away_and_delete_empty_session(&session_id, &app).await?;
+        switch_away_and_delete_session(&session_id, &app).await?;
     } else {
         {
             let memory = ctx.memory.lock().await.clone();
@@ -635,7 +652,7 @@ pub async fn delete_session(
     // 早期这里只做"删行 + 清内存"，既不回落也不切预设，删掉当前会话后
     // 前端仍指向已删除的会话、后端仍用被删会话的预设。
     session_manager.remove(&id).await;
-    switch_away_and_delete_empty_session(&id, &app).await
+    switch_away_and_delete_session(&id, &app).await
 }
 
 #[tauri::command]

@@ -981,7 +981,8 @@ pub fn delete_session(id: &str) -> Result<(), String> {
 /// **硬删除**会话（真删行）。
 ///
 /// 只给"确定没有挽留价值"的场景用：目前是自动清理**空会话**
-/// （`switch_away_and_delete_empty_session` —— 它没有任何消息，恢复了也只是一张空会话）。
+/// （`switch_away_and_delete_session` 里"message_count == 0"那一支 —— 它没有任何消息，
+/// 恢复了也只是一张空会话）。
 /// 用户从界面上删会话走的是软删除 [`delete_session`]。
 pub fn hard_delete_session(id: &str) -> Result<(), String> {
     crate::infra::db::with_connection(|conn| {

@@ -451,7 +451,7 @@ pub async fn rollback_to_checkpoint(
     registry: tauri::State<'_, SnapshotRegistry>,
     app: tauri::AppHandle,
 ) -> Result<Vec<String>, String> {
-    use crate::command::session::switch_away_and_delete_empty_session;
+    use crate::command::session::switch_away_and_delete_session;
     use tauri::Emitter;
 
     let mut restored_files = Vec::new();
@@ -526,7 +526,7 @@ pub async fn rollback_to_checkpoint(
     }
 
     if is_empty {
-        switch_away_and_delete_empty_session(&session_id, &app).await?;
+        switch_away_and_delete_session(&session_id, &app).await?;
     } else {
         let memory = ctx.memory.lock().await.clone();
         crate::core::session::save_session(&session_id, &memory, None);

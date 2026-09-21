@@ -850,7 +850,8 @@ pub fn delete_session(id: &str) -> Result<(), String> {
 /// **硬删除**会话，并清掉它的回滚侧产物。
 ///
 /// 两个调用点都属于"确定没有挽留价值"：
-/// - 自动清理**空会话**（`switch_away_and_delete_empty_session`：没有消息，恢复了也是空的）
+/// - 自动清理**空会话**（`command::session::switch_away_and_delete_session` 会按
+///   "有没有消息"分流：空的走这里硬删，有内容的走软删除）
 /// - **删项目**（连带删掉名下所有会话）
 ///
 /// 为什么必须显式清：`snapshot_trees` / `snapshot_content` 等表**没有 FK 级联**
