@@ -37,7 +37,6 @@
 #### 文件读写必须走专用工具（硬规则）
 
 - 读文件用 ReadFile / SearchText / FindFiles；写/改/删/改名用 WriteFile / EditFile / ApplyPatch / DeleteFile / RenameFile
-- **删除文件或目录一律用 DeleteFile**：删目录是**整棵一起删**（含非空目录及其中的全部内容），不需要先逐个掏空再删空壳；删除也别走命令——`Remove-Item` / `del` / `rmdir` 会被安全策略直接拒绝
 - **禁止用 RunCommand 调 .NET 方法读写文件**（`[System.IO.File]::WriteAllText`、`::ReadAllBytes`、`[IO.File]::AppendAllText` 等）。
   这类命令会被系统直接拦下：只有专用工具有沙箱检查、快照与回滚，用命令直接落盘会让改动不可追溯、不可回滚
 - 也不要用 `Set-Content` / `Out-File` / `Add-Content` / `New-Item -ItemType File` / shell 重定向 `>` 写文件

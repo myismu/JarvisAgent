@@ -25,7 +25,6 @@
 
 #### 服务启动与探活
 
-- 排查后台任务问题：用户报告服务异常、或界面弹出任务失败提醒后用户让你检查时，用 CheckBackgroundCommand 读后台输出定位原因（完整输出也可在监控面板查看）。不要主动轮询它
 - 不要用 Test-NetConnection / Invoke-RestMethod / curl 反复轮询端口
 - 探活命令保持简单：不要写 `$t = Test-NetConnection ...` 的赋值捕获、`try { ... }`、`foreach (...)` 等复合结构，也不要把多条操作拼在一行——简单、单条的查询命令才能被系统判定为只读，免权限确认直接执行
 - Invoke-RestMethod / Invoke-WebRequest / curl 能发起任意请求（含写操作），不属于只读探活：确需请求本地 API 验证时一次说清 URL 与方法，不要循环重试

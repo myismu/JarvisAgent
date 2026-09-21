@@ -160,19 +160,22 @@ crate::define_tools! {
             desc: "提交复杂任务实施方案给用户审阅",
             hint: "propose plan review approval",
             schema_desc: "【方案审批工具】将实施方案提交给用户审阅。当面对复杂任务（涉及多步骤修改、架构变更等），必须使用此工具提交方案文档，等待用户确认后才能继续执行。方案内容使用 Markdown 格式。前端会以专门的预览面板展示方案，用户可以选择同意或拒绝。task_breakdown 字段用于结构化任务分解，每项包含 subject（任务名）、description（详情）、depends_on（前置任务序号数组，从1开始）、can_parallel_with（可并行任务序号数组）。",
+            // 内容规范（必填项 / 推荐补充 / 字段格式）统一下沉到这里，提示词那边不再重复：
+            // 从提示词搬来合并（2026-09-21）—— 原先提示词要求写 3 项、schema 要求写 7 项，
+            // 模型看两处会得到两套冲突的要求。现取并集，以此处为唯一口径。
             props: {
                 title: string => "方案标题",
-                content: string => "方案正文（Markdown 格式），必须包含：需求理解、变更范围、具体实现步骤、风险评估、任务拆分统计（任务数、阶段划分、预计耗时）、依赖关系图、并行执行策略",
+                content: string => "方案正文（Markdown 格式）。必填：需求理解、变更范围、目录结构（新增/修改的文件，树形展示）、具体实现步骤、风险评估、任务拆分统计（任务数、阶段划分、预计耗时）、依赖关系图、并行执行策略。推荐补充（有则更好）：技术栈、API 设计、UI 路由结构、各任务的预计耗时/新增行数/复杂度、分波执行建议、并行收益估算、失败处理策略",
                 task_breakdown: array items {
                     "type": "object",
                     "properties": {
-                        "subject": {"type": "string", "description": "任务名。"},
-                        "description": {"type": "string", "description": "任务详情，含预计耗时。"},
-                        "depends_on": {"type": "array", "items": {"type": "integer"}, "description": "前置任务序号数组（1-based）。"},
-                        "can_parallel_with": {"type": "array", "items": {"type": "integer"}, "description": "可并行任务序号数组（1-based）。"}
+                        "subject": {"type": "string", "description": "任务名。格式：#序号 任务描述。"},
+                        "description": {"type": "string", "description": "任务详情，含验收口径；预计耗时如【5 min】建议写上。"},
+                        "depends_on": {"type": "array", "items": {"type": "integer"}, "description": "前置任务序号数组（1-based），无则空数组。"},
+                        "can_parallel_with": {"type": "array", "items": {"type": "integer"}, "description": "可并行任务序号数组（1-based），调度器无强依赖时可由 depends_on 推导。"}
                     },
                     "required": ["subject"]
-                } => "【必填】结构化任务分解列表，每项包含 subject（任务名）、description（详情，含预计耗时）、depends_on（前置任务序号数组）、can_parallel_with（可并行任务序号数组）",
+                } => "【必填】结构化任务分解列表。任务图后续会驱动 CreateTask 与子 Agent 执行，不能省略——重点是拆得可执行、依赖清晰。",
             },
             required: ["title", "content", "task_breakdown"],
             category: "Agent 调度",

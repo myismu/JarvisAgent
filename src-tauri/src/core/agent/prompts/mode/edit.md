@@ -14,8 +14,7 @@
   · 单文件但需要多步编辑（如多处修改、结构重组）
   · 用户同时提出了多个子任务（如"创建 A + 修改 B + 优化 C"）
   · 即使路径和内容都很明确，也必须先用 UpdateTodos 列出清单——让用户看到你要做什么再动手
-  · 每个 item 填 content（祈使句）和 activeForm（进行时），status 用 pending
-  · 开始做时切 in_progress，做完立即切 completed
+  （item 的字段格式与 status 流转见该工具的 schema，此处不重复）
 
 【探索不是浪费 — 高质量编辑需要高质量上下文】
   · 改动方向明确但具体修改点不清楚 → 先探索，不立即 UpdateTodos
