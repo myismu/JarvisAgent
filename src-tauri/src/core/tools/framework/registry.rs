@@ -18,6 +18,37 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 /// 工具定义：包含元数据和完整 JSON Schema
+///
+/// ## 写 description / schema 时的两条硬经验（2026-09-21 那次盘点整理）
+///
+/// ### 一、下沉有边界：区分「怎么用」和「何时用」
+///
+/// - **「怎么用」**（参数语义、适用边界、失败之后怎么办）→ 放进工具自己的 schema。
+///   模型决定用这个工具时必然去查 schema，那时会看到。
+/// - **「何时用 / 为什么用」**（工具选择引导、"遇到 X 就该用 Y"）→ **必须留在提示词**。
+///   对延迟工具尤其如此：它们的 schema 不进 `tools` 参数、平时根本不可见
+///   （要 GetToolCatalog → DiscoverTools 才暴露），引导放进去等于永不生效。
+///
+/// ### 二、提到工具行为，就必须能在实现里指到对应代码
+///
+/// 对不上就是缺陷。上面那次盘点光在 ReadFile / RunCommand / StartBackgroundCommand
+/// 三个工具上就撞出 5 条"文档与实现不符"，且分两种**相反**的形态：
+///
+/// - **文档说有、实现没有**：ReadFile「支持图片渲染」（图片本就在二进制黑名单里，
+///   报错文案却建议"用 ReadFile 看图片" —— 建议自己被触发就证明文件已被拦下）、
+///   ReadFile 的 `pages` 参数、并不存在的"数据库工具"、RunCommand 的 `dir`。
+///   最阴险的是 `pages`：提示词与执行层报错**互相印证**一个假参数，
+///   模型照做、失败、再照做，连纠错的机会都没有。
+/// - **文档把模型引向做不到的方案**：StartBackgroundCommand 的 schema 原写
+///   "推荐优先使用 RunCommand 的 run_in_background"，但后者固定在工作区根目录执行，
+///   只有前者能用 `dir` 进子目录 —— 原句让模型去用一个做不到的替代品。
+///
+/// 两种形态的共同后果都是**模型试错循环**。
+///
+/// 现成护栏：`agent_registry.rs` 的
+/// `every_tool_named_in_subagent_prompt_is_granted_or_explicitly_denied`
+/// 断言 subagent.md 里点名的工具必须在子代理名单内。目前只覆盖那一个文件，
+/// 主提示词（`base_*` / `mode/*`）还没有等价保护。
 pub struct ToolDef {
     /// 工具唯一名称
     pub name: &'static str,
