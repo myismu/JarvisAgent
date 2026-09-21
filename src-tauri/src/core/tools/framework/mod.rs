@@ -91,7 +91,7 @@ impl ToolCallResult {
     ///
     /// 目前只有 RunSubagent 会产生非零值：子代理跑的是独立 Agent Loop，
     /// 它的用量不经过逐请求的 provider usage 快照，只能靠工具返回值带回主循环
-    /// （见 `pipeline` 里 `req_sub_input_tokens` 的说明）。延迟工具统一经
+    /// （见 `pipeline` 里 `req_sub_input_tokens` 的说明）。按需工具统一经
     /// ExecuteTool → dispatch 执行，若不在这条链路上透传，用量会在 ExecuteTool 那层丢掉。
     pub fn with_usage(mut self, input_tokens: u64, output_tokens: u64) -> Self {
         self.input_tokens = input_tokens;

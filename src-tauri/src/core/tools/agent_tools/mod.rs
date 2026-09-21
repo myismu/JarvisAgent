@@ -36,7 +36,7 @@ use super::framework::agent_registry::AgentRegistry;
 use super::framework::registry::ToolRegistry;
 use crate::core::tools::framework;
 
-/// GetToolCatalog 处理函数：从 ToolRegistry 获取延迟工具列表 + 从 skills 目录获取技能列表
+/// GetToolCatalog 处理函数：从 ToolRegistry 获取按需工具列表 + 从 skills 目录获取技能列表
 pub async fn get_tool_catalog(
     app: &tauri::AppHandle,
     _input: &serde_json::Value,
@@ -58,7 +58,7 @@ pub async fn get_tool_catalog(
     }
     out.push('\n');
 
-    // 延迟工具列表
+    // 按需工具列表
     let groups = ToolRegistry::global().get_deferred_by_category(intent, work_mode, &filter);
     if !groups.is_empty() {
         // 面向模型的叫法："按需工具" —— 描述用途（用时才取），而不是机制（首次不注入）。
@@ -221,7 +221,7 @@ crate::define_tools! {
             },
             required: ["prompt"],
             category: "Agent 调度",
-            // 延迟工具。曾长期是核心工具，理由是"run_subagent 的 future 不满足 Send，
+            // 按需工具。曾长期是核心工具，理由是"run_subagent 的 future 不满足 Send，
             // 进 dispatch_tool_call 会编译失败（E0277）"（2026-09-20 的排查结论）——
             // 该结论是错的：本工程多处用 `JoinSet::spawn` / `tokio::spawn` 起子代理，
             // 二者都要求 `F: Send`（tokio/src/task/join_set.rs），而 run_subagent 一直被

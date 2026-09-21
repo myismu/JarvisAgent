@@ -1,10 +1,10 @@
 //! # tool.rs — 工具开关相关命令
 //!
 //! 让用户在设置面板里逐个启停工具。**关掉 = 模型完全看不到该工具** ——
-//! 它不进 `tools` 参数、延迟工具目录里也搜不到，而不是"在、但调用被拒"那种软禁用。
+//! 它不进 `tools` 参数、按需工具目录里也搜不到，而不是"在、但调用被拒"那种软禁用。
 //!
 //! ## 关键导出
-//! - `list_tools()`: 列出全部工具（名称 / 描述 / 分类 / 是否延迟 / 是否启用）
+//! - `list_tools()`: 列出全部工具（名称 / 描述 / 分类 / 是否按需 / 是否启用）
 //! - `set_tool_active()`: 启用或停用某个工具
 //!
 //! ## 依赖
@@ -31,8 +31,8 @@ pub struct ToolMeta {
     /// 一句话简述（`ToolDef.description`），列表上直接显示
     pub description: String,
     pub category: String,
-    /// true = 延迟工具（需 GetToolCatalog → DiscoverTools 三步才能用）。
-    /// UI 据此分组：核心工具常驻 schema，延迟工具按需发现。
+    /// true = 按需工具（需 GetToolCatalog → DiscoverTools 三步才能用）。
+    /// UI 据此分组：核心工具常驻 schema，按需工具按需发现。
     pub deferred: bool,
     /// 是否启用。未在配置里出现过的工具默认启用。
     pub enabled: bool,

@@ -1,8 +1,8 @@
 //! # tool_search.rs — 渐进式工具披露模块
 //!
 //! 核心工具始终携带完整 schema（在 tools 参数中，保证缓存命中），
-//! 延迟工具和技能通过 `GetToolCatalog` 统一发现：
-//!   - 延迟工具: `GetToolCatalog` → `DiscoverTools` → `ExecuteTool`
+//! 按需工具和技能通过 `GetToolCatalog` 统一发现：
+//!   - 按需工具: `GetToolCatalog` → `DiscoverTools` → `ExecuteTool`
 //!   - 技能: `GetToolCatalog` → `LoadSkill`
 //!
 //! 所有工具的 schema 和元数据已迁移到各模块的 `define_tools!` 注册，
@@ -10,12 +10,12 @@
 //!
 //! ## 关键导出
 //! - `get_core_tool_definitions(&ToolFilter::allow_all())`: 获取核心工具（始终带完整 schema）
-//! - `get_deferred_tool_list(, &ToolFilter::allow_all())`: 获取延迟工具列表（名称+简述，供内部筛选/兼容）
-//! - `get_deferred_tool_search_entries(, &ToolFilter::allow_all())`: 获取延迟工具搜索索引（名称+简述+提示词）
-//! - `get_deferred_tool_full_schema(, &ToolFilter::allow_all())`: 按名称获取延迟工具的完整 Schema
-//! - `search_deferred_tools()`: 关键词搜索延迟工具（支持 `select:` 精确选择）
+//! - `get_deferred_tool_list(, &ToolFilter::allow_all())`: 获取按需工具列表（名称+简述，供内部筛选/兼容）
+//! - `get_deferred_tool_search_entries(, &ToolFilter::allow_all())`: 获取按需工具搜索索引（名称+简述+提示词）
+//! - `get_deferred_tool_full_schema(, &ToolFilter::allow_all())`: 按名称获取按需工具的完整 Schema
+//! - `search_deferred_tools()`: 关键词搜索按需工具（支持 `select:` 精确选择）
 //! - `handle_search_tools()`: DiscoverTools 处理函数（纯搜索指引）
-//! - `handle_execute_tool()`: ExecuteTool 处理函数（代理执行延迟工具，含兜底防护）
+//! - `handle_execute_tool()`: ExecuteTool 处理函数（代理执行按需工具，含兜底防护）
 //!
 //! ## 依赖
 //! - Internal: `registry::ToolRegistry`
@@ -23,17 +23,17 @@
 //!
 //! ## 约束
 //! - tools 参数始终不变，保证 prompt cache 命中
-//! - 延迟工具只能通过 ExecuteTool 间接调用
+//! - 按需工具只能通过 ExecuteTool 间接调用
 //! - 搜索评分：精确名称匹配 12 分，名称包含 5 分，搜索提示包含 3 分，描述包含 2 分
 //! - `select:` 前缀支持精确选择多个工具（逗号分隔）
 //! - 兜底防护：CHAT/QUESTION 意图禁止写操作；规划模式下按注册表名单拦下写工具
-//!   延迟工具列表与 ExecuteTool 使用同一个 `ToolRegistry::is_available` 判定，
+//!   按需工具列表与 ExecuteTool 使用同一个 `ToolRegistry::is_available` 判定，
 //!   目录里看不见的工具不可能被调用成功
 
 use super::registry::{ToolDef, ToolFilter, ToolRegistry};
 use serde_json::json;
 
-/// 延迟工具搜索索引项。
+/// 按需工具搜索索引项。
 ///
 /// `description` 和 `search_hint` 不直接暴露在首轮 prompt 中，只作为
 /// DiscoverTools 的内部召回语义索引使用。
@@ -44,13 +44,13 @@ pub struct DeferredToolSearchEntry {
     pub search_hint: String,
 }
 
-/// 获取核心工具（始终带完整 schema，永不延迟）
+/// 获取核心工具（始终带完整 schema，不走按需发现）
 /// 从 ToolRegistry 查询所有 should_defer == false 且未被用户关掉的工具
 pub fn get_core_tool_definitions(filter: &ToolFilter) -> Vec<serde_json::Value> {
     ToolRegistry::global().get_core_definitions(filter)
 }
 
-/// 获取延迟工具列表 (名称, 简述)，按意图 + 工作模式 + 用户开关筛选
+/// 获取按需工具列表 (名称, 简述)，按意图 + 工作模式 + 用户开关筛选
 pub fn get_deferred_tool_list(
     intent: &str,
     work_mode: &str,
@@ -63,7 +63,7 @@ pub fn get_deferred_tool_list(
         .collect()
 }
 
-/// 获取延迟工具搜索索引，按意图 + 工作模式 + 用户开关筛选
+/// 获取按需工具搜索索引，按意图 + 工作模式 + 用户开关筛选
 pub fn get_deferred_tool_search_entries(
     intent: &str,
     work_mode: &str,
@@ -80,7 +80,7 @@ pub fn get_deferred_tool_search_entries(
         .collect()
 }
 
-/// 按名称获取一个延迟工具的完整 JSON Schema
+/// 按名称获取一个按需工具的完整 JSON Schema
 pub fn get_deferred_tool_full_schema(
     name: &str,
     filter: &ToolFilter,
@@ -88,7 +88,7 @@ pub fn get_deferred_tool_full_schema(
     ToolRegistry::global().get_deferred_full_schema(name, filter)
 }
 
-/// 关键词搜索延迟工具，返回匹配的工具名列表
+/// 关键词搜索按需工具，返回匹配的工具名列表
 pub fn search_deferred_tools(
     query: &str,
     deferred_list: &[DeferredToolSearchEntry],
@@ -204,7 +204,7 @@ pub async fn handle_search_tools(
     result
 }
 
-/// ExecuteTool 工具的处理函数（代理执行延迟工具，含兜底防护）
+/// ExecuteTool 工具的处理函数（代理执行按需工具，含兜底防护）
 /// 返回 `ToolCallResult` 而非 `String`，以保留内部工具的 `break_loop`/`is_error` 标志
 pub async fn handle_execute_tool(
     app: &tauri::AppHandle,
@@ -252,7 +252,7 @@ pub async fn handle_execute_tool(
         }
     };
 
-    // 校验：是否为延迟工具
+    // 校验：是否为按需工具
     if !tool_def.should_defer {
         logger.log_deferred_call(
             session_id, agent_type, name, &input, intent, work_mode,
@@ -387,7 +387,7 @@ crate::define_tools! {
         ToolDef {
             name: "ExecuteTool",
             description: "代理执行按需工具（先用 DiscoverTools 获取参数定义，再用此工具执行）",
-            search_hint: "run execute deferred tool invoke call",
+            search_hint: "run execute on-demand tool deferred invoke call",
             category: "",
             schema: json!({
                 "name": "ExecuteTool",
@@ -397,7 +397,7 @@ crate::define_tools! {
                     "properties": {
                         "name": {
                             "type": "string",
-                            "description": "要执行的延迟工具名称（如 'ReadFile'、'RunCommand'）"
+                            "description": "要执行的按需工具名称（如 'ReadFile'、'RunCommand'）"
                         },
                         "args": {
                             "type": "object",
@@ -566,7 +566,7 @@ mod tests {
         let names: Vec<&str> = core.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"ReadMemory"));
         assert!(names.contains(&"UpdateMemory"));
-        // ConsolidateMemory 是延迟工具，不应出现在核心集合里
+        // ConsolidateMemory 是按需工具，不应出现在核心集合里
         assert!(!names.contains(&"ConsolidateMemory"));
 
         let update = core
@@ -590,7 +590,7 @@ mod tests {
         // 验证包含写操作工具
         let all_names: Vec<&str> = groups.iter().flat_map(|(_, names)| names.iter().copied()).collect();
         assert!(all_names.contains(&"WriteFile"));
-        // shell 全家已提为核心工具，不再出现在延迟列表
+        // shell 全家已提为核心工具，不再出现在按需列表
         assert!(!all_names.contains(&"RunCommand"));
     }
 

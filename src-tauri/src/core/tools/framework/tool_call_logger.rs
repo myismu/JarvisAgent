@@ -378,7 +378,7 @@ impl ToolCallLogger {
                 schema_read: true,
             },
             // 核心工具不产生 token 用量：会产生用量的两个（RunSubagent、
-            // RunSubagentsSequentially）都已是延迟工具，走 log_deferred_call 那条路
+            // RunSubagentsSequentially）都已是按需工具，走 log_deferred_call 那条路
             input_tokens: 0,
             output_tokens: 0,
         };

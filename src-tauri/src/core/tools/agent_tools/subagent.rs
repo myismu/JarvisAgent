@@ -253,7 +253,7 @@ async fn extract_subagent_context(
                     {
                         if matches!(
                             name.as_str(),
-                            // ExecuteTool 一并跳过：RunSubagent 已是延迟工具，父代理的委派
+                            // ExecuteTool 一并跳过：RunSubagent 已是按需工具，父代理的委派
                             // 现在以 ExecuteTool(name="RunSubagent") 的形式出现；不跳过就会把
                             // "派子代理"当成一条普通操作摘要喂进子代理上下文（2026-09-21）
                             "ExecuteTool"

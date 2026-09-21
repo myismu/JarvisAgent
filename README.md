@@ -331,7 +331,7 @@ Rust emit("chat-content") ──→ useAgentEvents.listen()
 | 待办 | UpdateTodos | 轻量待办清单 |
 | 子代理 | RunSubagent, RunSubagentsSequentially | 委派子代理、启动调度器 |
 | 规划 | ProposePlan, SwitchWorkMode | 方案审批、模式切换 |
-| 工具发现 | DiscoverTools, GetToolCatalog, ExecuteTool | 渐进式披露：搜索/列举/执行延迟工具 |
+| 工具发现 | DiscoverTools, GetToolCatalog, ExecuteTool | 渐进式披露：搜索/列举/执行按需工具 |
 | 会话 | CompactConversation | 手动压缩对话历史 |
 | 记忆 | ReadMemory, UpdateMemory, ConsolidateMemory | 读/写/整理全局记忆文件 |
 | 系统 | SetWorkspace | 工作区设置（OS/工作目录已由提示词自动注入，无需工具） |

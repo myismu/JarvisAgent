@@ -1,6 +1,6 @@
 //! # capabilities.rs — 会话能力清单（单一事实来源）
 //!
-//! 问题背景：工具定义列表是恒定的（为 prompt cache 命中），写操作类工具都是"延迟工具"，
+//! 问题背景：工具定义列表是恒定的（为 prompt cache 命中），写操作类工具都是"按需工具"，
 //! 模型必须通过 GetToolCatalog → DiscoverTools → ExecuteTool 才能碰到它们。
 //! 只靠运行时拦截（`should_block_write_tool`）意味着：模型要先把发现流程走完，
 //! 才会在执行那一步吃到拦截 —— token 和时间已经烧掉了。

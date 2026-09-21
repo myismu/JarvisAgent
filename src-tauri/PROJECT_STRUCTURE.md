@@ -226,7 +226,7 @@ tools/
 - 工具集保持稳定（tool 参数顺序不变）以利于 prompt cache 命中，不要随意增删工具定义。
 - 文件修改类工具要复用时 `file_tools` 中的检查点、快照与 Notebook 防护逻辑，避免绕过变更追踪。
 - Shell 类工具必须同步考虑 `framework/permission.rs` 审批与 `shell_tools/security.rs` 安全检查。
-- 写工具（WriteFile、EditFile、RunCommand 等）默认注册为延迟工具，Plan 模式下禁止调用。
+- 写工具（WriteFile、EditFile、RunCommand 等）默认注册为按需工具，Plan 模式下禁止调用。
 
 ## 编排系统：`core/orchestration/`
 

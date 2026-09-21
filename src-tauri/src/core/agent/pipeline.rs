@@ -387,8 +387,8 @@ fn should_think_for_loop(turn_think: bool, _loop_count: usize) -> bool {
 /// 两种等价形态都要认（喂狗判定必须同时覆盖，否则提交方案的那轮会被当成
 /// 空转、看门狗误触发把收尾截胡——B 修复诊断出的真实事故路径）：
 /// - 裸调用：工具名就是 `ProposePlan`；
-/// - 延迟工具包装：工具名是 `ExecuteTool`，参数 JSON 的 `name` 字段指向
-///   真实工具（延迟工具的统一执行入口，模型提交方案固定走这条形态）。
+/// - 按需工具包装：工具名是 `ExecuteTool`，参数 JSON 的 `name` 字段指向
+///   真实工具（按需工具的统一执行入口，模型提交方案固定走这条形态）。
 fn loop_submitted_plan(tool_calls: &[(String, String)]) -> bool {
     tool_calls.iter().any(|(name, input)| {
         if name == "ProposePlan" {
@@ -4214,7 +4214,7 @@ mod plan_watchdog_feeding_tests {
         assert!(loop_submitted_plan(&calls));
     }
 
-    /// ExecuteTool 包装的其他延迟工具不算提交方案，照常计空转
+    /// ExecuteTool 包装的其他按需工具不算提交方案，照常计空转
     #[test]
     fn execute_tool_wrapped_other_tools_do_not_feed() {
         let calls = vec![call(

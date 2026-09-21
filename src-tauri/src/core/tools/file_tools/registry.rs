@@ -11,10 +11,10 @@
 //!
 //! ## 工具分类
 //! - **核心工具**（should_defer: false）：ReadFile, SearchRepo, FindSymbol, ReadSymbol, FindReferences, CodeSearch, ListDirectory
-//! - **延迟工具**（should_defer: true）：WriteFile, EditFile, ApplyPatch, ReadFileSkeleton, DeleteFile, RenameFile
+//! - **按需工具**（should_defer: true）：WriteFile, EditFile, ApplyPatch, ReadFileSkeleton, DeleteFile, RenameFile
 //!
 //! ## 设计决策
-//! - 写操作工具（WriteFile, EditFile）设为延迟工具，防止聊天模式下误操作
+//! - 写操作工具（WriteFile, EditFile）设为按需工具，防止聊天模式下误操作
 //! - 只读工具设为核心工具，保证 prompt cache 命中率
 
 use serde_json::json;

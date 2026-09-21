@@ -21,8 +21,8 @@
 //!   opaque 类型自递归、直接编译失败——详见 `dispatch_tool_call` 的文档注释，别合并。
 //!   附带效果：子代理不能再派子代理，从运行时过滤升级成了类型结构上的保证。
 //! - 子代理（SUBAGENT）不能调用 RunSubagent / ConsolidateMemory / CompactConversation / RunSubagentsSequentially
-//! - 写操作工具（WriteFile, EditFile, RunCommand 等）是延迟工具，通过三步协议调用：GetToolCatalog → DiscoverTools → ExecuteTool
-//! - 派子代理（RunSubagent / RunSubagentsSequentially）同为延迟工具：规划模式下它们在工具目录里
+//! - 写操作工具（WriteFile, EditFile, RunCommand 等）是按需工具，通过三步协议调用：GetToolCatalog → DiscoverTools → ExecuteTool
+//! - 派子代理（RunSubagent / RunSubagentsSequentially）同为按需工具：规划模式下它们在工具目录里
 //!   根本不出现（`PLAN_BLOCKED_EXTRA`），编辑模式下才可发现
 //! - 兜底防护：CHAT/QUESTION 意图禁止写操作；规划模式按注册表名单拦下写工具
 //! - 工具目录过滤（GetToolCatalog/DiscoverTools）与运行时校验（should_block_write_tool）
@@ -161,7 +161,7 @@ pub async fn handle_tool_call(
     work_mode: &str,
 ) -> (String, u64, u64) {
     // 说明：RunSubagent 曾在这里有一条独家的"直调分支"（自己接模式拦截与权限判定，
-    // 绕开 dispatch）。该分支已退役——它现在是普通延迟工具，与其他所有工具走同一条路：
+    // 绕开 dispatch）。该分支已退役——它现在是普通按需工具，与其他所有工具走同一条路：
     // ExecuteTool → dispatch_tool_call。退役理由见 dispatch_tool_call 里该工具分支的注释。
     if name == "ExecuteTool" {
         let filter = tool_filter_for(app, session_id).await;
@@ -180,7 +180,7 @@ pub async fn handle_tool_call(
         }
         (result.output, result.input_tokens, result.output_tokens)
     } else {
-        // 拦截直接调用延迟工具：延迟工具必须通过 ExecuteTool 代理执行。
+        // 拦截直接调用按需工具：按需工具必须通过 ExecuteTool 代理执行。
         //
         // 但先判一次它在当前模式/意图下是否可用：不可用的（如规划模式下的 RunSubagent）
         // 直接回模式文案——否则模型会照着"请通过 ExecuteTool 代理执行"再试一次，
@@ -300,7 +300,7 @@ pub async fn dispatch_tool_call(
             .await;
     }
 
-    // 全工程唯一一处派子代理。它现在是**延迟工具**（defer: true），模型经
+    // 全工程唯一一处派子代理。它现在是**按需工具**（defer: true），模型经
     // GetToolCatalog → DiscoverTools → ExecuteTool 抵达这里，与 RunSubagentsSequentially
     // 同级同口径；规划模式下它在工具目录里根本不出现（PLAN_BLOCKED_EXTRA）。
     //
@@ -494,7 +494,7 @@ pub async fn handle_tool_call_inner(
     //    （细节见 `dispatch_tool_call` 的文档注释）。
     // 2. 语义上也本该如此：子代理不能再派子代理。
     //
-    // 这里也不再单独路由 ExecuteTool：延迟工具协议是主 Agent 的上下文经济手段；
+    // 这里也不再单独路由 ExecuteTool：按需工具协议是主 Agent 的上下文经济手段；
     // 子代理的工具集由 agent 名单直接给出完整 schema（`resolve_tools` 不看
     // should_defer），而 ExecuteTool 不在任何 agent 的名单里。走到这里只可能是协议误用，
     // 交给下游的「未知工具」报错即可。
@@ -549,7 +549,7 @@ pub fn should_block_write_tool(name: &str, intent: &str, work_mode: &str) -> boo
 /// 三个调用点，口径必须一致：
 /// - `dispatch_core_tool` 的统一前置检查（核心工具）；
 /// - `dispatch_tool_call` 的 `RunSubagent` 分支（它直接 return，不走上面那条）；
-/// - `handle_tool_call` 里的延迟工具直调拦截（当前模式不可用时优先回这段文案）。
+/// - `handle_tool_call` 里的按需工具直调拦截（当前模式不可用时优先回这段文案）。
 pub fn mode_block_message(name: &str, intent: &str, work_mode: &str) -> Option<String> {
     if !should_block_write_tool(name, intent, work_mode) {
         return None;
@@ -660,7 +660,7 @@ mod write_guard_tests {
             .expect("RunSubagent 必须已注册");
         assert!(
             def.should_defer,
-            "RunSubagent 必须是延迟工具：它进 PLAN_BLOCKED_EXTRA，留在恒定核心集里等于在规划模式下白占 schema"
+            "RunSubagent 必须是按需工具：它进 PLAN_BLOCKED_EXTRA，留在恒定核心集里等于在规划模式下白占 schema"
         );
         // 先绑定到变量：get_core_definitions() 返回 owned Vec，
         // 直接 .iter() 链式会借用临时值，语句结束即释放（E0716）。
@@ -677,8 +677,8 @@ mod write_guard_tests {
 
     /// 目标行为锁：规划模式看不见 RunSubagent，编辑模式找得到。
     ///
-    /// 「看不见」由两条一起保证：它不在恒定的 tools 参数里（延迟工具），
-    /// 且延迟目录按 `is_available` 过滤（PLAN_BLOCKED_EXTRA）。
+    /// 「看不见」由两条一起保证：它不在恒定的 tools 参数里（按需工具），
+    /// 且按需目录按 `is_available` 过滤（PLAN_BLOCKED_EXTRA）。
     #[test]
     fn plan_mode_hides_run_subagent_edit_mode_exposes_it() {
         let registry = framework::registry::ToolRegistry::global();
@@ -698,12 +698,12 @@ mod write_guard_tests {
         let plan_list = framework::tool_search::get_deferred_tool_list("PROJECT_ACTION", "plan", &ToolFilter::allow_all());
         assert!(
             !plan_list.iter().any(|(n, _)| n == "RunSubagent"),
-            "规划模式的延迟工具目录里不得出现 RunSubagent"
+            "规划模式的按需工具目录里不得出现 RunSubagent"
         );
         let edit_list = framework::tool_search::get_deferred_tool_list("PROJECT_ACTION", "edit", &ToolFilter::allow_all());
         assert!(
             edit_list.iter().any(|(n, _)| n == "RunSubagent"),
-            "编辑模式的延迟工具目录里必须有 RunSubagent，否则模型永远发现不了它"
+            "编辑模式的按需工具目录里必须有 RunSubagent，否则模型永远发现不了它"
         );
     }
 }

@@ -4,14 +4,14 @@
 //! 各工具模块通过 `define_tools!` 宏注册自己的工具，tool_search 和路由层从 registry 查询。
 //!
 //! ## 关键导出
-//! - `ToolDef`: 工具定义结构体（名称、描述、搜索提示、Schema、是否延迟/只读/并发安全等）
-//! - `ToolRegistry`: 全局注册表，支持按名称查找、核心/延迟工具过滤、意图筛选
+//! - `ToolDef`: 工具定义结构体（名称、描述、搜索提示、Schema、是否按需（`should_defer`）/只读/并发安全等）
+//! - `ToolRegistry`: 全局注册表，支持按名称查找、核心/按需工具过滤、意图筛选
 //! - `define_tools!`: 注册宏，自动将 ToolDef 列表注册到 registry
 //!
 //! ## 约束
 //! - 注册表通过 `OnceLock` 懒初始化，全局唯一
 //! - 保持插入顺序用于稳定输出
-//! - 写操作工具（WriteFile, EditFile）设为延迟工具，防止聊天模式下误操作
+//! - 写操作工具（WriteFile, EditFile）设为按需工具，防止聊天模式下误操作
 //! - 只读保护模式（work_mode = chat）下按元数据过滤工具目录：只放行只读工具 + 会话管理工具
 
 use std::collections::{HashMap, HashSet};
@@ -26,7 +26,7 @@ use std::sync::{Arc, OnceLock};
 /// - **「怎么用」**（参数语义、适用边界、失败之后怎么办）→ 放进工具自己的 schema。
 ///   模型决定用这个工具时必然去查 schema，那时会看到。
 /// - **「何时用 / 为什么用」**（工具选择引导、"遇到 X 就该用 Y"）→ **必须留在提示词**。
-///   对延迟工具尤其如此：它们的 schema 不进 `tools` 参数、平时根本不可见
+///   对按需工具尤其如此：它们的 schema 不进 `tools` 参数、平时根本不可见
 ///   （要 GetToolCatalog → DiscoverTools 才暴露），引导放进去等于永不生效。
 ///
 /// ### 二、提到工具行为，就必须能在实现里指到对应代码
@@ -58,16 +58,22 @@ pub struct ToolDef {
     pub search_hint: &'static str,
     /// 完整 JSON Schema（符合 Anthropic tool_use 规范）
     pub schema: serde_json::Value,
-    /// 工具分类（用于延迟工具列表分组展示）
+    /// 工具分类（用于按需工具列表分组展示）
     pub category: &'static str,
-    /// 是否延迟加载（true = 需通过 DiscoverTools 获取后才能调用）。
+    /// 是否按需加载（true = 需通过 DiscoverTools 获取后才能调用）。
     ///
-    /// ⚠️ **面向模型/用户的叫法是「按需工具」**（2026-09-21 改）：
-    /// - 这里保留 `defer` / "延迟"，因为它描述的正是机制本身（首次不注入 schema、推迟加载），
-    ///   对读代码的人是准确的；
-    /// - 而"延迟工具"这个词传达不了用途，模型和用户在 `GetToolCatalog`、设置页上看到的
-    ///   一律是「按需工具」—— 用时才取，不占每轮请求。
-    /// 两层刻意不一致：改字段名要动 40 多个注册点且收益为零，改文案只碰显示层。
+    /// ## 命名分层（2026-09-21 定）
+    ///
+    /// **中文一律叫「按需工具」，只有英文标识符保留 `defer`**：
+    ///
+    /// - 中文改叫"按需"，是因为"延迟"是**机制视角**的词（首次不注入 schema、推迟加载）——
+    ///   它准确，但传达不了用途：模型和用户在 `GetToolCatalog`、设置页上看到它，
+    ///   不知道这类工具是干嘛的。"按需"说的是"用时才取，不占每轮请求"。
+    /// - `should_defer` / `get_deferred_*` 这些**标识符**保留：defer 描述机制本身是准确的，
+    ///   且改名要动 40 多个注册点，收益为零。
+    ///
+    /// 之所以连注释也统一成"按需"：留着两套叫法，读代码的人得在脑内维护
+    /// "注释说延迟、界面说按需"的映射 —— 那本身就是负担。分层只保留在语言层面。
     pub should_defer: bool,
     /// 是否只读（read_only 子代理会过滤掉非只读工具）
     pub is_read_only: bool,
@@ -206,7 +212,7 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// 获取延迟工具列表 (name, description)，按意图 + 工作模式筛选
+    /// 获取按需工具列表 (name, description)，按意图 + 工作模式筛选
     pub fn get_deferred_list(
         &self,
         intent: &str,
@@ -222,7 +228,7 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// 获取延迟工具搜索索引 (name, description, search_hint)，按意图 + 工作模式筛选
+    /// 获取按需工具搜索索引 (name, description, search_hint)，按意图 + 工作模式筛选
     pub fn get_deferred_search_entries(
         &self,
         intent: &str,
@@ -238,7 +244,7 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// 获取延迟工具的完整 Schema。
+    /// 获取按需工具的完整 Schema。
     ///
     /// 也必须过 filter：DiscoverTools 支持按名字精确取 schema，这里不拦的话，
     /// 模型凭记忆直接 `select:那个被关掉的工具` 就能把它的完整定义捞出来。
@@ -253,7 +259,7 @@ impl ToolRegistry {
             .map(|t| t.schema.clone())
     }
 
-    /// 获取所有延迟工具的名称列表（用于 search 时的全量展示）
+    /// 获取所有按需工具的名称列表（用于 search 时的全量展示）
     pub fn get_all_deferred_names(
         &self,
         intent: &str,
@@ -269,7 +275,7 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// 获取延迟工具分组（按 category），保持插入顺序，按意图 + 工作模式筛选
+    /// 获取按需工具分组（按 category），保持插入顺序，按意图 + 工作模式筛选
     pub fn get_deferred_by_category(
         &self,
         intent: &str,
@@ -376,10 +382,10 @@ impl ToolRegistry {
     /// 必须在这一层把工具整个收走。
     /// （原第三项 `SetWorkspace` 已随工具退役移出，见 `system_tools/mod.rs` 模块注释。）
     ///
-    /// 这两个都是**延迟工具**，所以这份名单的作用不止运行期拦截：[`Self::is_available`]
+    /// 这两个都是**按需工具**，所以这份名单的作用不止运行期拦截：[`Self::is_available`]
     /// 同时用它过滤工具目录（GetToolCatalog / DiscoverTools），规划模式下它们从目录里
     /// 直接消失——这就是"规划模式看不见派子代理"的实现方式（2026-09-21 RunSubagent
-    /// 从核心工具降级为延迟工具之后；此前它的 schema 常驻 tools 参数，规划模式一直看得见）。
+    /// 从核心工具降级为按需工具之后；此前它的 schema 常驻 tools 参数，规划模式一直看得见）。
     pub const PLAN_BLOCKED_EXTRA: &'static [&'static str] = &[
         "RunSubagent",
         "RunSubagentsSequentially",
@@ -516,7 +522,7 @@ mod tool_filter_tests {
     //! 工具开关（`ToolFilter`）的效力测试。
     //!
     //! 用户关掉一个工具后，它必须从**每一条**可见路径上消失 —— 核心 schema 出口、
-    //! 延迟工具目录、搜索索引、按名字精确取 schema。少堵一条，模型就能绕过开关拿到
+    //! 按需工具目录、搜索索引、按名字精确取 schema。少堵一条，模型就能绕过开关拿到
     //! 那个工具的完整定义（对"两套真相"的警惕见 `is_available` 的文档注释）。
 
     use super::{ToolFilter, ToolRegistry};
@@ -571,7 +577,7 @@ mod tool_filter_tests {
         );
     }
 
-    /// 关掉的延迟工具必须在**四条**路径上都查不到 —— 少堵一条，模型仍能拿到它的 schema。
+    /// 关掉的按需工具必须在**四条**路径上都查不到 —— 少堵一条，模型仍能拿到它的 schema。
     #[test]
     fn disabled_deferred_tool_is_invisible_on_every_path() {
         let registry = ToolRegistry::global();
