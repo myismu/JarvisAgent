@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-use super::registry::ToolRegistry;
+use super::registry::{ToolFilter, ToolRegistry};
 
 pub const IMPLEMENTATION_AGENT_ROLE: &str = "implementation";
 
@@ -192,10 +192,15 @@ impl AgentRegistry {
             .join("\n")
     }
 
+    /// 按角色白名单 + 只读过滤 + **用户开关**装配子代理的工具集。
+    ///
+    /// `filter` 是必须的：子代理不经过 `ToolRegistry::is_available`，
+    /// 只靠这里把住用户开关那道闸（见函数体内注释）。
     pub fn resolve_tools(
         &self,
         agent: &AgentDefinition,
         read_only: bool,
+        filter: &ToolFilter,
     ) -> Vec<serde_json::Value> {
         let tool_registry = ToolRegistry::global();
         let deny: HashSet<&str> = agent.disallowed_tools.iter().copied().collect();
@@ -211,6 +216,14 @@ impl AgentRegistry {
                 continue;
             };
             if !tool.is_enabled {
+                continue;
+            }
+            // ⚠️ 用户开关也必须在这里生效（2026-09-21 补）。
+            //
+            // 这条路径**完全绕开**了核心/按需的分类：子代理拿的是角色白名单里的完整
+            // schema，不看 `should_defer`。如果只把开关挂在 `is_available` 上，主 Agent
+            // 看不到被关的工具、子代理却能全量拿到 —— 关了个寂寞。
+            if !filter.is_enabled(tool.name) {
                 continue;
             }
             if read_only && !tool.is_read_only {
@@ -268,7 +281,7 @@ mod tests {
             "缺省角色必须默认只读：模型忘传参数时不该拿到能改文件的子代理"
         );
 
-        let tools = registry.resolve_tools(agent, agent.read_only_default);
+        let tools = registry.resolve_tools(agent, agent.read_only_default, &ToolFilter::allow_all());
         let names: Vec<&str> = tools
             .iter()
             .filter_map(|tool| tool["name"].as_str())
@@ -284,7 +297,7 @@ mod tests {
     fn implementation_agent_can_include_mutating_tools() {
         let registry = AgentRegistry::global();
         let agent = registry.get("implementation").unwrap();
-        let tools = registry.resolve_tools(agent, false);
+        let tools = registry.resolve_tools(agent, false, &ToolFilter::allow_all());
         let names: Vec<&str> = tools
             .iter()
             .filter_map(|tool| tool["name"].as_str())
@@ -301,7 +314,7 @@ mod tests {
     fn read_only_filter_uses_tool_metadata() {
         let registry = AgentRegistry::global();
         let agent = registry.get("implementation").unwrap();
-        let tools = registry.resolve_tools(agent, true);
+        let tools = registry.resolve_tools(agent, true, &ToolFilter::allow_all());
         let names: Vec<&str> = tools
             .iter()
             .filter_map(|tool| tool["name"].as_str())

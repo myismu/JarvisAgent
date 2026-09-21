@@ -445,6 +445,12 @@ pub async fn run_subagent(
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| "No session workspace is configured".to_string());
     let ws_str = ws.as_ref().map(|p| p.to_string_lossy().to_string());
+
+    // 用户开关（会话快照）。子代理**不走** `is_available` 那条路，所以在
+    // resolve_tools 与下面的技能提示里各把一道闸（见 resolve_tools 的注释）。
+    // 在这之前取好：system_prompt 的拼接要用到它。
+    let filter = crate::core::tools::tool_filter_for(&app, &session_id).await;
+
     let mut system_prompt = get_subagent_system_prompt(&cwd, ws_str.as_deref());
     system_prompt.push_str(&format!(
         "\n\n[Subagent type]\n- type: {}\n- when to use: {}\n\n[Role instructions]\n{}\n\n[Tool boundary]\nOnly use the tools provided in this run. Do not attempt to call parent-control tools such as RunSubagent, RunSubagentsSequentially, UpdateTodos, CompactConversation, or ConsolidateMemory.",
@@ -465,7 +471,10 @@ pub async fn run_subagent(
                 .filter(|s| skill_names.iter().any(|name| name == &s.name))
                 .filter(|s| activations.get(&s.name).copied().unwrap_or(true))
                 .collect();
-            if !matched.is_empty() {
+            // 提示里点名 LoadSkill，所以要确认它真在这个子代理的工具集里 ——
+            // 用户可能把它关掉了，那时 resolve_tools 已经剔除它，这句"Use LoadSkill"
+            // 就成了调用必失败的死指引。
+            if !matched.is_empty() && filter.is_enabled("LoadSkill") {
                 system_prompt.push_str("\n\n[Available skills]\nUse LoadSkill tool to load full content.\n");
                 for skill in &matched {
                     system_prompt.push_str(&format!("  - {}: {}\n", skill.name, skill.description));
@@ -495,7 +504,7 @@ pub async fn run_subagent(
     // 子 Agent 工具去重（与主 Agent 机制一致，scope 为子 Agent run_id）
     let mut agent_dedup_state: HashMap<String, ToolDedupeCacheEntry> = HashMap::new();
 
-    let tools = agent_registry.resolve_tools(agent, read_only);
+    let tools = agent_registry.resolve_tools(agent, read_only, &filter);
     if tools.is_empty() {
         let msg = format!(
             "Subagent '{}' has no available tools after permission filtering.",

@@ -69,23 +69,40 @@ pub async fn get_tool_catalog(
         }
     }
 
-    // 技能列表（只返回激活的技能）
-    let skills = super::load_all_skills();
-    let activations = crate::command::app_config::get_all_skill_activations();
-    let active_skills: Vec<String> = skills
-        .iter()
-        .filter(|s| activations.get(&s.name).copied().unwrap_or(true))
-        .map(|s| s.name.to_string())
-        .collect();
-    if !active_skills.is_empty() {
-        out.push_str(&format!("\n【可用技能】（通过 LoadSkill 加载）:\n- {}\n", active_skills.join(", ")));
+    // 技能列表：**只在 LoadSkill 本身可用时才列**。
+    //
+    // 用户可能在设置里关掉了 LoadSkill —— 那时这段"（通过 LoadSkill 加载）"就是一句
+    // 调不通的指引，模型会照着它去试、然后失败。这正是本项目反复批判的两套真相：
+    // 工具开关把 LoadSkill 从 tools 参数里拿掉了，文案却还在推荐它。
+    //
+    // 实测（2026-09-21）：用户关掉 LoadSkill 后问"你有这个工具吗"，模型照 GetToolCatalog
+    // 的输出回答"有" —— 因为那两段文案里到处是它。
+    let load_skill_available = framework::registry::ToolRegistry::global()
+        .get("LoadSkill")
+        .map(|def| framework::registry::ToolRegistry::is_available(def, intent, work_mode, &filter))
+        .unwrap_or(false);
+
+    if load_skill_available {
+        let skills = super::load_all_skills();
+        let activations = crate::command::app_config::get_all_skill_activations();
+        let active_skills: Vec<String> = skills
+            .iter()
+            .filter(|s| activations.get(&s.name).copied().unwrap_or(true))
+            .map(|s| s.name.to_string())
+            .collect();
+        if !active_skills.is_empty() {
+            out.push_str(&format!("\n【可用技能】（通过 LoadSkill 加载）:\n- {}\n", active_skills.join(", ")));
+        }
     }
 
     if out.is_empty() {
         return framework::ToolCallResult::error("当前意图下没有可用的按需工具或技能。".to_string());
     }
 
-    out.push_str("\n使用方式:\n- 按需工具: 先 DiscoverTools 查询参数，再 ExecuteTool(name=\"工具名\", args={...}) 执行\n- 技能: 直接 LoadSkill(name=\"技能名\") 加载");
+    out.push_str("\n使用方式:\n- 按需工具: 先 DiscoverTools 查询参数，再 ExecuteTool(name=\"工具名\", args={...}) 执行");
+    if load_skill_available {
+        out.push_str("\n- 技能: 直接 LoadSkill(name=\"技能名\") 加载");
+    }
     framework::ToolCallResult::ok(out)
 }
 
@@ -109,7 +126,10 @@ crate::define_tools! {
             "GetToolCatalog",
             desc: "获取可用工具和技能目录",
             hint: "get tool catalog available tools skills discover",
-            schema_desc: "获取当前可用的按需工具列表（按分类分组）和技能列表。当你需要使用非核心工具（如 WriteFile、EditFile、RunCommand 等写操作工具）或加载技能时，必须先调用此工具获取可用资源目录。按需工具通过 DiscoverTools + ExecuteTool 两步执行，技能通过 LoadSkill 直接加载。",
+            // 末端原写"技能通过 LoadSkill 直接加载"，已删（2026-09-21）：
+            // 那是 LoadSkill **自己**的用法说明，该在它的 schema 里（见 LoadSkill 的
+            // schema_desc）。写在这里等于无条件推荐一个用户可能已经关掉的工具。
+            schema_desc: "获取当前可用的按需工具列表（按分类分组）和技能列表。当你需要使用非核心工具（如 WriteFile、EditFile、RunCommand 等写操作工具）或加载技能时，必须先调用此工具获取可用资源目录。按需工具通过 DiscoverTools + ExecuteTool 两步执行。",
             category: "系统",
             read_only: true,
             concurrency_safe: true,

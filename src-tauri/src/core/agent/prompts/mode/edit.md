@@ -4,7 +4,7 @@
   · 只读工具（ReadFile, SearchRepo, FindSymbol 等）可直接调用
   · 按需工具和技能需先通过 GetToolCatalog 获取目录：
     - 按需工具: GetToolCatalog → DiscoverTools 查询参数 → ExecuteTool 执行
-    - 技能: GetToolCatalog → LoadSkill 直接加载
+    - 技能: 目录里会一并列出可用技能，按其加载方式取用
 
 【直接执行】以下情况不调 UpdateTodos：
   · 回答一个问题 / 运行一条命令 / 修改单文件中的少量内容（≤ 3 处改动）
