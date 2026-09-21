@@ -83,8 +83,25 @@ pub struct AgentDefinition {
     pub when_to_use: &'static str,
     pub system_prompt: &'static str,
     pub tools: &'static [&'static str],
+    /// 白名单之外**额外**要排除的工具。
+    ///
+    /// 语义：`tools` 是白名单，本字段是"从白名单里再挖掉几个"。所以填进来的名字若本来
+    /// 就不在 `tools` 里，这条配置**是无效的**（交集为空、拦不住任何东西）。2026-09-21
+    /// 清理过一条这样的：verification 曾 deny 四个写工具，而它的白名单里本就没有它们。
     pub disallowed_tools: &'static [&'static str],
+    /// 按角色覆盖模型。目前五个角色**全是 `None`**（统一走 `cfg.main_model`）。
+    ///
+    /// 保留字段是因为 `run_subagent` 的解析链已经接好
+    /// （`model_override` > `agent.model` > 主模型，见 `subagent.rs`），
+    /// 将来要给某个角色固定模型时只需在这里填值，不必再动调用链。
     pub model: Option<&'static str>,
+    /// 省略 `read_only` 参数时的缺省值。
+    ///
+    /// ⚠️ 两条调用路径的取值方式不同，**这是有意的、不是 bug**（2026-09-21 核实过）：
+    /// - 模型直调 `RunSubagent`：省略 → 用本字段（见 `core/tools/mod.rs` 的 dispatch 分支）；
+    /// - 调度器派发任务：**恒传 `false`**（`scheduler.rs` 三处）—— 调度器就是那个 "caller"，
+    ///   任务图里的活本来就要落地，所以它显式放权。这正是 general 的 `when_to_use` 里
+    ///   "unless the caller explicitly allows writes" 所指的情况。
     pub read_only_default: bool,
     pub max_turns: Option<usize>,
 }
@@ -142,7 +159,11 @@ impl AgentRegistry {
                 when_to_use: "Verify behavior after changes by inspecting code and running targeted checks or tests.",
                 system_prompt: "You are a verification subagent. Run targeted checks when useful, inspect failures, and report pass/fail evidence. Do not edit files.",
                 tools: VERIFICATION_TOOLS,
-                disallowed_tools: &["WriteFile", "EditFile", "EditNotebook", "StartBackgroundCommand"],
+                // 这里原先 deny 了 WriteFile / EditFile / EditNotebook / StartBackgroundCommand，
+                // 但一个都不在 VERIFICATION_TOOLS 里 —— 白名单本就不含它们，deny 与白名单
+                // 的交集恒为空，是条"看着在拦、实际拦不住任何东西"的配置（2026-09-21 清理）。
+                // verification 拿不到写工具，靠的是白名单，不是这一行。
+                disallowed_tools: &[],
                 model: None,
                 read_only_default: false,
                 max_turns: Some(20),

@@ -332,9 +332,8 @@
     "clearDoneTasks": "Clear finished tasks",
     "noPlans": "No plans",
     "subAgentType": {
-      "general-purpose": "General",
+      "general": "General",
       "explore": "Explore Code",
-      "plan": "Design Plan",
       "review": "Review Code",
       "verification": "Verify Result",
       "implementation": "Write Code"

@@ -333,9 +333,8 @@
     "clearDoneTasks": "清除已结束任务",
     "noPlans": "暂无计划记录",
     "subAgentType": {
-      "general-purpose": "通用助手",
+      "general": "通用助手",
       "explore": "探索代码",
-      "plan": "设计方案",
       "review": "审查代码",
       "verification": "验证结果",
       "implementation": "编码实现"
