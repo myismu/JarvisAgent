@@ -131,7 +131,7 @@ pub fn upsert_session(meta: &SessionMeta, memory: &SessionMemory) -> Result<(), 
 /// 回合收尾的 `save_session` 只再补**子代理**那部分增量——子代理走独立循环
 /// （`tools/agent_tools/subagent.rs`），不经过上面那个函数。
 ///
-/// 返回 `None` 表示会话不存在或已软删（`deleted_at` 非空），调用方据此跳过事件推送。
+/// 返回 `None` 表示会话不存在或已归档（`deleted_at` 非空），调用方据此跳过事件推送。
 pub fn accumulate_session_token_usage(
     session_id: &str,
     delta: SessionTokenTotals,
@@ -950,14 +950,14 @@ pub fn ensure_session_exists(id: &str, title: Option<&str>, created_at: u64) -> 
     })
 }
 
-/// **软删除**会话：只打 `deleted_at` 标记。
+/// **归档**会话：只打 `deleted_at` 标记（列名是"删除"时代的遗留，语义已是归档）。
 ///
-/// 为什么软删：软删除的意义就是**能恢复**（入口见 [`restore_session`]）。所以连带地 ——
-/// 消息、快照数据、回收站里的本体**全部保留**，否则恢复之后回滚会缺数据。
+/// 为什么归档必须能撤销：撤销入口见 [`restore_session`]。所以连带地 ——
+/// 消息、快照数据、回收站里的本体**全部保留**，否则取消归档之后回滚会缺数据。
 /// 真正清掉这些回滚侧产物的只有硬删除路径（见 [`hard_delete_session`] 与
 /// `core::session::purge_rollback_artifacts`）。
 ///
-/// 已删会话不再出现在任何列表/统计里（各读路径都带 `AND deleted_at IS NULL`），
+/// 已归档会话不再出现在任何列表/统计里（各读路径都带 `AND deleted_at IS NULL`），
 /// 也**不会**因为再次被 upsert 而复活（见 [`upsert_session`] 的 ON CONFLICT）。
 pub fn delete_session(id: &str) -> Result<(), String> {
     crate::infra::db::with_connection(|conn| {
@@ -972,7 +972,7 @@ pub fn delete_session(id: &str) -> Result<(), String> {
             )
             .map_err(|e| e.to_string())?;
         if changed == 0 {
-            return Err(format!("会话 {} 不存在或已在已删除列表里", id));
+            return Err(format!("会话 {} 不存在或已在归档列表里", id));
         }
         Ok(())
     })
@@ -980,10 +980,8 @@ pub fn delete_session(id: &str) -> Result<(), String> {
 
 /// **硬删除**会话（真删行）。
 ///
-/// 只给"确定没有挽留价值"的场景用：目前是自动清理**空会话**
-/// （`switch_away_and_delete_session` 里"message_count == 0"那一支 —— 它没有任何消息，
-/// 恢复了也只是一张空会话）。
-/// 用户从界面上删会话走的是软删除 [`delete_session`]。
+/// 只给"用户明确要求彻底删除"的场景用（`purge_session`，入口在「归档」区）。
+/// 界面上的归档走的是 [`delete_session`] —— 只打标记，随时可撤销。
 pub fn hard_delete_session(id: &str) -> Result<(), String> {
     crate::infra::db::with_connection(|conn| {
         conn.execute("DELETE FROM sessions WHERE id = ?1", [id])
@@ -992,7 +990,7 @@ pub fn hard_delete_session(id: &str) -> Result<(), String> {
     })
 }
 
-/// 恢复一个被软删除的会话（清掉 `deleted_at`）。
+/// 取消归档（清掉 `deleted_at`），把会话放回活跃列表。
 pub fn restore_session(id: &str) -> Result<(), String> {
     crate::infra::db::with_connection(|conn| {
         let changed = conn
@@ -1002,13 +1000,13 @@ pub fn restore_session(id: &str) -> Result<(), String> {
             )
             .map_err(|e| e.to_string())?;
         if changed == 0 {
-            return Err(format!("会话 {} 不在已删除列表里", id));
+            return Err(format!("会话 {} 不在归档列表里", id));
         }
         Ok(())
     })
 }
 
-/// 已删除的会话列表（供界面的「最近删除 / 恢复」入口用）。
+/// 已归档的会话列表（供界面的「归档」区入口用）。
 ///
 /// 与 `list_sessions` 的唯一区别是过滤条件取反；列清单复用同一份
 /// [`SESSION_META_COLUMNS`]，所以不会出现"两条查询列不一致"的老问题。
@@ -1125,7 +1123,7 @@ pub fn get_session_runtime_prefs(id: &str) -> Result<SessionRuntimePrefs, String
 }
 
 /// 三个运行偏好共用的单列写入：`column` 只接受本模块三个包装传入的字面量，
-/// 不接外部输入，无注入面。会话不存在或已软删时报错（与 thinking_mode 同口径）。
+/// 不接外部输入，无注入面。会话不存在或已归档时报错（与 thinking_mode 同口径）。
 fn update_session_text_column(id: &str, column: &str, value: &str) -> Result<(), String> {
     crate::infra::db::with_connection(|conn| {
         let changed = conn

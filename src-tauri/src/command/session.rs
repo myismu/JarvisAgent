@@ -94,17 +94,17 @@ pub async fn list_sessions() -> Result<Vec<session::SessionMeta>, String> {
     Ok(session::list_sessions())
 }
 
-/// 已删除的会话列表（界面「最近删除」入口）。
+/// 已归档的会话列表（界面「归档」区入口）。
 ///
-/// 与 `list_sessions` 成对：软删除的会话不在这里、也不在那里同时出现。
+/// 与 `list_sessions` 成对：归档的会话不在这里、也不在那里同时出现。
 #[tauri::command]
 pub async fn list_deleted_sessions() -> Result<Vec<session::SessionMeta>, String> {
     session::list_deleted_sessions()
 }
 
-/// 从「最近删除」恢复一个会话。
+/// 取消归档，把一个会话放回活跃列表。
 ///
-/// 恢复后它此前保留的消息、快照数据、回收站本体全部重新可用（软删除从不删这些）。
+/// 它此前保留的消息、快照数据、回收站本体立即重新可用（归档从不删这些）。
 #[tauri::command]
 pub async fn restore_session(id: String) -> Result<(), String> {
     session::restore_session(&id)
@@ -112,9 +112,12 @@ pub async fn restore_session(id: String) -> Result<(), String> {
 
 /// **彻底删除**一个会话（不可恢复）：真删行 + 清快照数据 + 清回收站目录。
 ///
-/// 入口在侧边栏「最近删除」里 —— 用户对已软删的会话点「彻底删除」才会走到这里。
-/// 与软删除 [`delete_session`] 的区别见 `core::session` 的说明；
-/// 这一步做的事情与 [`delete_project`] 连带删会话时完全一致（同一个 `hard_delete_session`）。
+/// 入口在侧边栏「归档」区里 —— 用户对已归档的会话点「彻底删除」才会走到这里。
+/// 与归档 [`delete_session`]（只打标记、可取消）的区别见 `core::session` 的说明。
+///
+/// 这是 `hard_delete_session` 目前**唯一**的用户入口：另一个调用点（自动清理空会话）
+/// 已随归档改造移除 —— 归档不再按"有没有内容"分流。
+/// 另有 [`delete_project`] 连带真删名下会话，效果相同但走各自的 SQL，不复用本函数。
 #[tauri::command]
 pub async fn purge_session(id: String) -> Result<(), String> {
     session::hard_delete_session(&id)
@@ -293,11 +296,11 @@ fn align_active_profile_to_session(
     let _ = app.emit("config-updated", ());
 }
 
-/// 删除会话后自动切换到下一个可用会话（若无则创建新会话）。
+/// 归档会话后自动切换到下一个可用会话（若无则创建新会话）。
 ///
-/// **这是所有删除路径的收口**（用户点删除 / 回滚后会话变空 / 删项目），
-/// 所以"软删除还是硬删除"的分流在这里做（见函数内注释）：
-/// 有内容的软删除（可恢复），空会话硬删除（不留噪音）。
+/// **这是所有归档路径的收口**（用户点归档 / 回滚后会话变空 / 删项目）。
+/// 函数名里的 `delete`、"删除"时代的命名一律保留不动 —— 改名要同时动 tauri 命令名、
+/// 前端 invoke 与 DB 列，成本远大于收益；语义以本注释为准。
 pub async fn switch_away_and_delete_session(
     deleted_session_id: &str,
     app: &tauri::AppHandle,
@@ -310,20 +313,16 @@ pub async fn switch_away_and_delete_session(
     let fallback_profile_id = fallback.as_ref().and_then(|m| m.profile_id.clone());
     let fallback_id = fallback.as_ref().map(|m| m.id.clone());
 
-    // 按**有没有内容**分流（本函数是所有删除路径的收口，所以判断必须在这里做，
-    // 不能指望调用方各自判对 —— 用户点删除、回滚后会话变空、删项目都会走到这里）：
-    // - 有消息 → 软删除：用户能从「最近删除」恢复，消息 / 快照 / 回收站全部保留；
-    // - 空会话 → 硬删除：没有内容可挽留，软删了只会让「最近删除」堆满噪音，
-    //   同时清掉它的回滚侧产物（快照表没有 FK 级联）；
-    // - 查询失败（会话已不存在 / 已在已删除列表）→ 什么都不删，只完成"切走"。
-    match session::get_session_meta(deleted_session_id) {
-        Ok(meta) if meta.message_count == 0 => {
-            session::hard_delete_session(deleted_session_id)?;
-        }
-        Ok(_) => {
-            session::delete_session(deleted_session_id)?;
-        }
-        Err(_) => {}
+    // 归档：一律只打 `deleted_at` 标记，**不再按有没有内容分流**。
+    //
+    // 原先空会话走硬删除（没有内容可挽留，留着只会让列表堆噪音）—— 那是"删除"语义下
+    // 的合理取舍。改成归档后这条分流必须去掉：归档的语义是"东西还在，只是收起来"，
+    // 空会话归档后也得在归档区里找得到。否则用户点了归档，记录却凭空消失，
+    // 而且是静默的（不报错、归档区里也翻不到），等同于数据丢失。
+    //
+    // 查询失败（会话已不存在 / 已在归档列表）→ 什么都不做，只完成"切走"。
+    if session::get_session_meta(deleted_session_id).is_ok() {
+        session::delete_session(deleted_session_id)?;
     }
     if let Some(manager) = app.try_state::<SessionManager>() {
         manager.remove(deleted_session_id).await;

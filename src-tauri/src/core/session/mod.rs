@@ -644,7 +644,7 @@ pub fn save_session(
     meta
 }
 
-/// 逐请求累加会话用量，返回累加后的累计值（`None` = 会话不存在/已软删）。
+/// 逐请求累加会话用量，返回累加后的累计值（`None` = 会话不存在/已归档）。
 ///
 /// 与 `save_session(…, Some(delta))` 的分工：
 /// - **主 Agent 的每个 loop** 走这里，拿到 usage 就立刻落库并推事件，
@@ -839,20 +839,19 @@ pub fn get_session_meta(id: &str) -> Result<SessionMeta, String> {
     repository::get_session_meta(id)
 }
 
-/// 删除会话（**软删除**：只打 `deleted_at` 标记，可从「最近删除」恢复）。
+/// 归档会话（只打 `deleted_at` 标记，可从界面「归档」区取消）。
 ///
-/// ⚠️ 这里**不能**清快照数据与回收站 —— 软删除的意义就是"能恢复"，
-/// 恢复之后回滚还要用它们（见 `repository::delete_session` 的说明）。
+/// ⚠️ 这里**不能**清快照数据与回收站 —— 归档的意义就是"能取消"，
+/// 取消之后回滚还要用它们（见 `repository::delete_session` 的说明）。
 pub fn delete_session(id: &str) -> Result<(), String> {
     repository::delete_session(id)
 }
 
 /// **硬删除**会话，并清掉它的回滚侧产物。
 ///
-/// 两个调用点都属于"确定没有挽留价值"：
-/// - 自动清理**空会话**（`command::session::switch_away_and_delete_session` 会按
-///   "有没有消息"分流：空的走这里硬删，有内容的走软删除）
-/// - **删项目**（连带删掉名下所有会话）
+/// 调用点只剩"用户明确要求彻底删除"：`command::session::purge_session`。
+/// 曾经还有个"自动清理空会话"的调用点，已随归档改造移除 —— 归档不再按
+/// "有没有内容"分流，空会话同样只打标记、留在「归档」区里。
 ///
 /// 为什么必须显式清：`snapshot_trees` / `snapshot_content` 等表**没有 FK 级联**
 /// （只有 `session_messages` 有 `ON DELETE CASCADE`），删了会话它们会永久留在库里。
@@ -862,12 +861,12 @@ pub fn hard_delete_session(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 恢复一个被软删除的会话（它保留的消息 / 快照 / 回收站立即重新可用）。
+/// 取消归档（它保留的消息 / 快照 / 回收站立即重新可用）。
 pub fn restore_session(id: &str) -> Result<(), String> {
     repository::restore_session(id)
 }
 
-/// 已删除的会话列表（界面「最近删除」入口用）。
+/// 已归档的会话列表（界面「归档」区入口用）。
 pub fn list_deleted_sessions() -> Result<Vec<SessionMeta>, String> {
     repository::list_deleted_sessions()
 }

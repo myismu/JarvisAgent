@@ -450,57 +450,35 @@ const switchToSession = async (id: string) => {
   }
 };
 
-// 删除会话：先进入确认态，确认后才真正执行（硬删除、不可撤销）
+// 归档会话：直接执行，不再二次确认。
 //
-// 为什么当前会话也可以删：要求"先切走再删"会让**只有一个会话时删除功能完全不可达**，
+// 归档是可逆的（「归档」区里一键取消），危险度不足以打断用户 —— 原先那个确认框是
+// "删除"语义下的产物。真正不可逆的是「归档」区里的「彻底删除」，那一个仍走确认。
+//
+// 为什么当前会话也可以归档：要求"先切走再归档"会让**只有一个会话时功能完全不可达**，
 // 且整理多个会话时被迫来回切换（切换还带改预设、改思考档位的副作用）。
-// 安全性改由**显式确认**承担：删除当前会话时文案会额外说明将切换到哪个会话。
-const pendingDeleteSession = ref<{ id: string; title: string; isActive: boolean } | null>(null);
-const deleteSessionLoading = ref(false);
+// 后端会把 activeSessionId 回落到另一个会话并同步该会话的模型预设，
+// 前端由 active-session-changed 事件切过去，这里不需要额外处理。
+const archiving = ref(false);
 
-const pendingDeleteMessage = computed(() => {
-  const pending = pendingDeleteSession.value;
-  if (!pending) return '';
-  if (pending.isActive) {
-    const next = sessions.value.find((s) => s.id !== pending.id);
-    return t('sidebar.deleteSessionConfirmActive', { next: next?.title || t('sidebar.newSession') });
-  }
-  return t('sidebar.deleteSessionConfirm', { name: pending.title });
-});
-
-const deleteSession = (session: SessionMeta, event: Event) => {
+const deleteSession = async (session: SessionMeta, event: Event) => {
   event.stopPropagation();
+  if (archiving.value) return;
   if (isSessionRunning(session.id)) {
+    // 正在跑的会话不能归档：run 还在写它的消息与快照
     showSessionActionMessage(t('sidebar.deleteRunning'), 'error');
     return;
   }
-  pendingDeleteSession.value = {
-    id: session.id,
-    title: session.title,
-    isActive: session.id === sessionStore.activeSessionId,
-  };
-};
-
-const cancelDeleteSession = () => {
-  if (deleteSessionLoading.value) return;
-  pendingDeleteSession.value = null;
-};
-
-const confirmDeleteSession = async () => {
-  const pending = pendingDeleteSession.value;
-  if (!pending || deleteSessionLoading.value) return;
-  deleteSessionLoading.value = true;
+  archiving.value = true;
   try {
-    // 后端会把 activeSessionId 回落到另一个会话（并同步该会话的模型预设），
-    // 前端由 active-session-changed 事件切过去，这里不需要额外处理
-    await invoke('delete_session', { id: pending.id });
+    await invoke('delete_session', { id: session.id });
     await loadSessions();
+    showSessionActionMessage(t('sidebar.archived'));
   } catch (err) {
-    console.error('删除会话失败:', err);
+    console.error('归档会话失败:', err);
     showSessionActionMessage(formatErrorMessage(err), 'error');
   } finally {
-    deleteSessionLoading.value = false;
-    pendingDeleteSession.value = null;
+    archiving.value = false;
   }
 };
 
@@ -735,9 +713,10 @@ onUnmounted(() => {
                   @click="deleteSession(session, $event)"
                   :title="t('sidebar.delete')"
                 >
-                  <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" stroke-width="2" fill="none">
-                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                    <rect width="20" height="5" x="2" y="3" rx="1"></rect>
+                    <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"></path>
+                    <path d="M10 12h4"></path>
                   </svg>
                 </button>
               </div>
@@ -789,9 +768,10 @@ onUnmounted(() => {
                 @click="deleteSession(session, $event)"
                 :title="t('sidebar.delete')"
               >
-                <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" stroke-width="2" fill="none">
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                  <rect width="20" height="5" x="2" y="3" rx="1"></rect>
+                  <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"></path>
+                  <path d="M10 12h4"></path>
                 </svg>
               </button>
             </div>
@@ -803,12 +783,13 @@ onUnmounted(() => {
         </ul>
       </div>
 
-      <!-- 最近删除：软删除的会话（消息 / 快照 / 回收站都还在），在这里一键恢复 -->
+      <!-- 归档区：归档的会话（消息 / 快照 / 回收站都还在），可一键取消或彻底删除 -->
       <div v-if="deletedSessions.length > 0">
         <div class="project-header" @click="showDeleted = !showDeleted">
           <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="project-icon">
-            <polyline points="3 6 5 6 21 6"></polyline>
-            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            <rect width="20" height="5" x="2" y="3" rx="1"></rect>
+            <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"></path>
+            <path d="M10 12h4"></path>
           </svg>
           <span class="project-name">{{ t('sidebar.recentlyDeleted') }}</span>
           <span class="project-count">{{ deletedSessions.length }}</span>
@@ -845,19 +826,8 @@ onUnmounted(() => {
         </button>
       </div>
 
-      <!-- 删除会话确认：软删除（可恢复），但仍用显式确认替代"隐藏按钮"式的隐式防护 -->
-      <ConfirmModal
-        :open="pendingDeleteSession !== null"
-        :title="t('sidebar.delete')"
-        :message="pendingDeleteMessage"
-        :confirm-text="t('sidebar.delete')"
-        confirm-kind="danger"
-        :loading="deleteSessionLoading"
-        @confirm="confirmDeleteSession"
-        @cancel="cancelDeleteSession"
-      />
-
-      <!-- 彻底删除确认：真删 + 清快照 + 清回收站，不可恢复 -->
+      <!-- 彻底删除确认：真删 + 清快照 + 清回收站，不可恢复。
+           归档本身不弹确认（可逆），只有这一步不可逆，所以确认框保留在这里。 -->
       <ConfirmModal
         :open="pendingPurgeSession !== null"
         :title="t('sidebar.purgeSession')"
@@ -874,7 +844,7 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* 最近删除里的条目：整行淡一点，右侧给一个"恢复"文字按钮 */
+/* 归档区里的条目：整行淡一点，右侧给"取消归档 / 彻底删除"两个文字按钮 */
 .deleted-item {
   opacity: 0.72;
 }
