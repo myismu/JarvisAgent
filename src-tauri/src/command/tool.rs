@@ -64,7 +64,28 @@ pub async fn list_tools() -> Result<Vec<ToolMeta>, String> {
 /// 启用或停用某个工具。
 ///
 /// ⚠️ 改完只对**新会话**生效（核心工具 schema 必须会话内字节恒定，详见文件头约束）。
+/// 想让当前会话立刻用上，调 [`apply_tool_filter_now`]。
 #[tauri::command]
 pub async fn set_tool_active(tool_name: String, enabled: bool) -> Result<(), String> {
     crate::command::app_config::set_tool_enabled(&tool_name, enabled)
+}
+
+/// 让**当前会话**立刻用上最新的工具开关。
+///
+/// 实现是丢掉会话快照，下一次构建请求时重新读配置。代价明确：`tools` 参数变了，
+/// **会掉一次 prompt cache**（前缀失效，整段历史重算）。
+///
+/// ⚠️ 所以它只应由用户在设置页显式点击触发 —— 绝不能挂到任何自动路径上
+/// （比如"改完开关自动应用"），那样每次改设置都会静默地烧掉一次缓存。
+#[tauri::command]
+pub async fn apply_tool_filter_now(
+    session_id: String,
+    session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
+) -> Result<(), String> {
+    session_manager
+        .get_or_create(&session_id)
+        .await
+        .reset_tool_filter()
+        .await;
+    Ok(())
 }

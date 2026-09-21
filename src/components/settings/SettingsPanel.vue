@@ -49,6 +49,16 @@
               </svg>
               <span>{{ t('settings.tabs.prompts') }}</span>
             </div>
+            <div
+              class="nav-item"
+              :class="{ active: activeTab === 'tools' }"
+              @click="activeTab = 'tools'"
+            >
+              <svg viewBox="0 0 24 24" width="18" height="18">
+                <path fill="currentColor" d="M22.7,19L13.6,9.9C14.5,7.6 14,4.9 12.1,3C10.1,1 7.1,0.6 4.7,1.7L9,6L6,9L1.6,4.7C0.4,7.1 0.9,10.1 2.9,12.1C4.8,14 7.5,14.5 9.8,13.6L18.9,22.7C19.3,23.1 19.9,23.1 20.3,22.7L22.6,20.4C23.1,20 23.1,19.3 22.7,19Z" />
+              </svg>
+              <span>{{ t('settings.tabs.tools') }}</span>
+            </div>
           </div>
 
           <template v-if="activeTab === 'presets'">
@@ -403,6 +413,13 @@
               <PromptsTab />
             </div>
 
+            <!-- 工具开关页：逐个启停工具。
+                 与技能开关不同，改完只对**新会话**生效 —— 核心工具 schema 必须会话内
+                 字节恒定，否则 prompt cache 失效。要立刻生效点页内「应用到当前会话」。 -->
+            <div v-else-if="activeTab === 'tools'" class="tab-content">
+              <ToolsPanel />
+            </div>
+
             <!-- 预设编辑页 -->
             <div v-else-if="activeTab === 'presets' && editingProfile" class="tab-content">
               <!-- 基本信息卡片 -->
@@ -619,6 +636,7 @@ import type { AgentUserMode } from '../../types'
 import type { ThinkingDefault } from '../../utils/thinking'
 import ConfirmModal from '../common/ConfirmModal.vue'
 import PromptsTab from './PromptsTab.vue'
+import ToolsPanel from './ToolsPanel.vue'
 
 const { t, locale } = useI18n()
 
@@ -721,7 +739,7 @@ const emit = defineEmits<{
 }>()
 
 // UI 状态
-const activeTab = ref<'general' | 'presets' | 'prompts'>('general')
+const activeTab = ref<'general' | 'presets' | 'prompts' | 'tools'>('general')
 const showAdvanced = ref(false)
 
 interface AgentConfig {
