@@ -94,6 +94,22 @@ pub async fn list_sessions() -> Result<Vec<session::SessionMeta>, String> {
     Ok(session::list_sessions())
 }
 
+/// 已删除的会话列表（界面「最近删除」入口）。
+///
+/// 与 `list_sessions` 成对：软删除的会话不在这里、也不在那里同时出现。
+#[tauri::command]
+pub async fn list_deleted_sessions() -> Result<Vec<session::SessionMeta>, String> {
+    session::list_deleted_sessions()
+}
+
+/// 从「最近删除」恢复一个会话。
+///
+/// 恢复后它此前保留的消息、快照数据、回收站本体全部重新可用（软删除从不删这些）。
+#[tauri::command]
+pub async fn restore_session(id: String) -> Result<(), String> {
+    session::restore_session(&id)
+}
+
 #[tauri::command]
 pub async fn create_session(
     session_manager: tauri::State<'_, SessionManager>,
@@ -280,8 +296,8 @@ pub async fn switch_away_and_delete_empty_session(
     let fallback_profile_id = fallback.as_ref().and_then(|m| m.profile_id.clone());
     let fallback_id = fallback.as_ref().map(|m| m.id.clone());
 
-    // 删空会话
-    session::delete_session(deleted_session_id)?;
+    // 删空会话：走**硬删除**。它没有任何消息，软删了只会让「最近删除」里堆满噪音。
+    session::hard_delete_session(deleted_session_id)?;
     if let Some(manager) = app.try_state::<SessionManager>() {
         manager.remove(deleted_session_id).await;
     }

@@ -166,7 +166,7 @@ const pickDirectory = async () => {
 
 // 加载会话列表和项目列表
 const loadAll = async () => {
-  await Promise.all([loadSessions(), loadProjects()]);
+  await Promise.all([loadSessions(), loadProjects(), loadDeletedSessions()]);
 };
 
 const loadProjects = async () => {
@@ -174,6 +174,35 @@ const loadProjects = async () => {
     projects.value = await invoke<ProjectMeta[]>('list_projects');
   } catch (err) {
     console.error('加载项目列表失败:', err);
+  }
+};
+
+/**
+ * 最近删除（软删除的会话）。
+ *
+ * 删除会话现在是**软删除**：只打 `deleted_at` 标记，消息 / 快照 / 回收站全部保留，
+ * 所以在这里能一键恢复（恢复后回滚也照常可用）。
+ */
+const deletedSessions = ref<Array<{ id: string; title: string; updatedAt: number }>>([]);
+const showDeleted = ref(false);
+
+const loadDeletedSessions = async () => {
+  try {
+    deletedSessions.value = await invoke<Array<{ id: string; title: string; updatedAt: number }>>(
+      'list_deleted_sessions',
+    );
+  } catch (err) {
+    console.error('加载已删除会话失败:', err);
+  }
+};
+
+const restoreDeletedSession = async (id: string) => {
+  try {
+    await invoke('restore_session', { id });
+    await Promise.all([loadSessions(), loadDeletedSessions()]);
+    showSessionActionMessage(t('sidebar.restored'));
+  } catch (err) {
+    showSessionActionMessage(t('sidebar.restoreError', { error: formatErrorMessage(err) }), 'error');
   }
 };
 
@@ -540,6 +569,8 @@ onMounted(async () => {
 
   unlistenUpdated = await listen('session-updated', () => {
     loadSessions();
+    // 软删除也走这个事件（删会话会广播它），所以"最近删除"要一起刷新
+    loadDeletedSessions();
   });
 });
 
@@ -753,6 +784,31 @@ onUnmounted(() => {
         </ul>
       </div>
 
+      <!-- 最近删除：软删除的会话（消息 / 快照 / 回收站都还在），在这里一键恢复 -->
+      <div v-if="deletedSessions.length > 0">
+        <div class="project-header" @click="showDeleted = !showDeleted">
+          <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="project-icon">
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+          </svg>
+          <span class="project-name">{{ t('sidebar.recentlyDeleted') }}</span>
+          <span class="project-count">{{ deletedSessions.length }}</span>
+        </div>
+        <ul v-if="showDeleted" class="session-list">
+          <li v-for="s in deletedSessions" :key="s.id" class="session-item deleted-item">
+            <div class="session-main-row">
+              <span class="session-title">{{ s.title || t('sidebar.newSession') }}</span>
+              <button
+                type="button"
+                class="restore-btn"
+                :title="t('sidebar.restoreSession')"
+                @click.stop="restoreDeletedSession(s.id)"
+              >{{ t('sidebar.restoreSession') }}</button>
+            </div>
+          </li>
+        </ul>
+      </div>
+
       </div>
       <div class="sidebar-footer">
         <button type="button" class="footer-action" @click="emit('open-settings')" :title="t('sidebar.settingsTitle')">
@@ -764,7 +820,7 @@ onUnmounted(() => {
         </button>
       </div>
 
-      <!-- 删除会话确认：硬删除不可撤销，用显式确认替代"隐藏按钮"式的隐式防护 -->
+      <!-- 删除会话确认：软删除（可恢复），但仍用显式确认替代"隐藏按钮"式的隐式防护 -->
       <ConfirmModal
         :open="pendingDeleteSession !== null"
         :title="t('sidebar.delete')"
@@ -781,6 +837,26 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* 最近删除里的条目：整行淡一点，右侧给一个"恢复"文字按钮 */
+.deleted-item {
+  opacity: 0.72;
+}
+.restore-btn {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  color: var(--text-soft);
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+.restore-btn:hover {
+  color: var(--text-main);
+  background: var(--glass-bg-light);
+}
 .sidebar {
   width: 250px;
   background: var(--glass-bg);

@@ -839,24 +839,39 @@ pub fn get_session_meta(id: &str) -> Result<SessionMeta, String> {
     repository::get_session_meta(id)
 }
 
-/// 删除会话（**硬删除**：`DELETE FROM sessions`）。
+/// 删除会话（**软删除**：只打 `deleted_at` 标记，可从「最近删除」恢复）。
 ///
-/// 连带清理它**再也用不到**的两样东西 —— 不清理的话它们会永久留在库里：
-/// - **快照数据**：`snapshot_trees` / `snapshot_content` 等表**没有 FK 级联**
-///   （只有 `session_messages` 有 `ON DELETE CASCADE`），删会话不会带走它们；
-/// - **回收站目录**：会话没了就没有任何回滚渠道，回收站里的本体留着只是占空间。
-///
-/// 清理失败不阻断删除本身：会话已经删了，回头再清一次比"删不掉"更合理。
+/// ⚠️ 这里**不能**清快照数据与回收站 —— 软删除的意义就是"能恢复"，
+/// 恢复之后回滚还要用它们（见 `repository::delete_session` 的说明）。
 pub fn delete_session(id: &str) -> Result<(), String> {
-    repository::delete_session(id)?;
+    repository::delete_session(id)
+}
+
+/// **硬删除**会话，并清掉它的回滚侧产物。
+///
+/// 两个调用点都属于"确定没有挽留价值"：
+/// - 自动清理**空会话**（`switch_away_and_delete_empty_session`：没有消息，恢复了也是空的）
+/// - **删项目**（连带删掉名下所有会话）
+///
+/// 为什么必须显式清：`snapshot_trees` / `snapshot_content` 等表**没有 FK 级联**
+/// （只有 `session_messages` 有 `ON DELETE CASCADE`），删了会话它们会永久留在库里。
+pub fn hard_delete_session(id: &str) -> Result<(), String> {
+    repository::hard_delete_session(id)?;
     purge_rollback_artifacts(id);
     Ok(())
 }
 
-/// 清掉某会话的回滚侧产物（快照数据 + 回收站目录）。
-///
-/// 抽出来是因为除单会话删除外，**删项目**也会连带删掉它名下的所有会话
-/// （`repository::delete_project` 里的 `DELETE FROM sessions WHERE project_id`）。
+/// 恢复一个被软删除的会话（它保留的消息 / 快照 / 回收站立即重新可用）。
+pub fn restore_session(id: &str) -> Result<(), String> {
+    repository::restore_session(id)
+}
+
+/// 已删除的会话列表（界面「最近删除」入口用）。
+pub fn list_deleted_sessions() -> Result<Vec<SessionMeta>, String> {
+    repository::list_deleted_sessions()
+}
+
+/// 清掉某会话的回滚侧产物（快照数据 + 回收站目录）—— **只给硬删除路径调用**。
 pub fn purge_rollback_artifacts(session_id: &str) {
     if let Err(e) =
         crate::core::rollback::store::SnapshotStore::new(session_id).delete_all_for_session()

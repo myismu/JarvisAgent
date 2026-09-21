@@ -82,8 +82,11 @@ pub fn upsert_session(meta: &SessionMeta, memory: &SessionMemory) -> Result<(), 
                 total_cache_miss_tokens = excluded.total_cache_miss_tokens,
                 title_source = excluded.title_source,
                 project_id = excluded.project_id,
-                thinking_mode = excluded.thinking_mode,
-                deleted_at = NULL",
+                thinking_mode = excluded.thinking_mode",
+            // 注意：这里**故意不重置 `deleted_at`**（2026-09-21 沐拍板）。
+            // 曾经的写法是 `deleted_at = NULL` —— 已删会话只要再被写一次就"自动复活"，
+            // 用户会莫名其妙看到删掉的会话又回来了。删除应当是确定的：恢复只能走显式入口
+            // （`restore_session`）。新行的 `deleted_at` 由 INSERT 里的 NULL 兜底。
             params![
                 meta.id,
                 meta.title,
@@ -947,15 +950,85 @@ pub fn ensure_session_exists(id: &str, title: Option<&str>, created_at: u64) -> 
     })
 }
 
+/// **软删除**会话：只打 `deleted_at` 标记。
+///
+/// 为什么软删：软删除的意义就是**能恢复**（入口见 [`restore_session`]）。所以连带地 ——
+/// 消息、快照数据、回收站里的本体**全部保留**，否则恢复之后回滚会缺数据。
+/// 真正清掉这些回滚侧产物的只有硬删除路径（见 [`hard_delete_session`] 与
+/// `core::session::purge_rollback_artifacts`）。
+///
+/// 已删会话不再出现在任何列表/统计里（各读路径都带 `AND deleted_at IS NULL`），
+/// 也**不会**因为再次被 upsert 而复活（见 [`upsert_session`] 的 ON CONFLICT）。
 pub fn delete_session(id: &str) -> Result<(), String> {
     crate::infra::db::with_connection(|conn| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
         let changed = conn
-            .execute("DELETE FROM sessions WHERE id = ?1", [id])
+            .execute(
+                "UPDATE sessions SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
+                params![id, now],
+            )
             .map_err(|e| e.to_string())?;
         if changed == 0 {
-            return Err(format!("会话 {} 不存在", id));
+            return Err(format!("会话 {} 不存在或已在已删除列表里", id));
         }
         Ok(())
+    })
+}
+
+/// **硬删除**会话（真删行）。
+///
+/// 只给"确定没有挽留价值"的场景用：目前是自动清理**空会话**
+/// （`switch_away_and_delete_empty_session` —— 它没有任何消息，恢复了也只是一张空会话）。
+/// 用户从界面上删会话走的是软删除 [`delete_session`]。
+pub fn hard_delete_session(id: &str) -> Result<(), String> {
+    crate::infra::db::with_connection(|conn| {
+        conn.execute("DELETE FROM sessions WHERE id = ?1", [id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+/// 恢复一个被软删除的会话（清掉 `deleted_at`）。
+pub fn restore_session(id: &str) -> Result<(), String> {
+    crate::infra::db::with_connection(|conn| {
+        let changed = conn
+            .execute(
+                "UPDATE sessions SET deleted_at = NULL WHERE id = ?1 AND deleted_at IS NOT NULL",
+                [id],
+            )
+            .map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Err(format!("会话 {} 不在已删除列表里", id));
+        }
+        Ok(())
+    })
+}
+
+/// 已删除的会话列表（供界面的「最近删除 / 恢复」入口用）。
+///
+/// 与 `list_sessions` 的唯一区别是过滤条件取反；列清单复用同一份
+/// [`SESSION_META_COLUMNS`]，所以不会出现"两条查询列不一致"的老问题。
+pub fn list_deleted_sessions() -> Result<Vec<SessionMeta>, String> {
+    crate::infra::db::with_connection(|conn| {
+        let sql = format!(
+            "SELECT {} FROM sessions s \
+             LEFT JOIN projects p ON s.project_id = p.id \
+             WHERE s.deleted_at IS NOT NULL \
+             ORDER BY s.deleted_at DESC",
+            SESSION_META_COLUMNS
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], session_meta_from_row)
+            .map_err(|e| e.to_string())?;
+        let mut sessions = Vec::new();
+        for row in rows {
+            sessions.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(sessions)
     })
 }
 
