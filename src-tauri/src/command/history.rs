@@ -407,9 +407,26 @@ fn render_user_message(history: &mut String, message: &UserDisplayMessage) {
 
 /// 渲染助手消息 HTML，思考过程用 details 折叠，取最后一段非空文本作为可见回复
 
-/// 判断该 source 是否属于"中断标记消息"（只作状态说明，不是模型正文）。
+/// 判断该 source 是否属于"中断收尾消息"。
+///
+/// ⚠️ 别据此断言它"不是模型正文" —— 新数据的正文块里装的恰恰是半截内容，
+/// 该不该渲染见 [`interrupted_body_is_content`]。
 fn is_interrupted_source(source: &str) -> bool {
     source == "interrupted"
+}
+
+/// `interrupted` 消息的正文块是否应当渲染进 `text_blocks`。
+///
+/// 同一条 `source = "interrupted"` 的消息承载两种截然不同的东西，只有 kind 能区分：
+/// - **kind 有值**（新数据）：正文块里是**半截内容**（`pipeline.rs` 中断收尾的分支二
+///   写明"正文即半截内容；正文块恒存在"），必须渲染 —— 否则用户取消后只剩一句
+///   "用户已取消执行"，已经生成的部分凭空消失（实测 bug）；
+/// - **kind 缺失**（旧库数据）：正文是 `**[回复被中断]** …` 这类标记文本，已由
+///   notice 承载，再渲染会把它当模型正文重复显示一遍。
+///
+/// 判据与 notice 的生成路径**对称**：新数据由 kind 驱动，旧数据回退正文清洗。
+fn interrupted_body_is_content(kind: Option<&str>) -> bool {
+    kind.is_some()
 }
 
 /// 从 `interrupted` 消息里取出给用户看的小字说明。
@@ -734,10 +751,14 @@ pub async fn get_session_history(
                 if !is_renderable_source(source.as_str()) {
                     continue;
                 }
-                // `interrupted` 消息不是模型正文，而是"运行被打断"的状态说明。
-                // 把它挂到本轮快照的 notice 上，由前端渲染在气泡**下方**的小字里；
-                // 若混进 text_blocks 会挤进回复气泡内部，既突兀又会与
-                // "已保留的部分结果"重复，看起来像模型自己说的话。
+                // `interrupted` 消息承载两种东西，按 kind 是否存在区分 —— 这里曾经搞反过：
+                // 渲染侧按"它不是模型正文"整条丢弃，而落库侧（`pipeline.rs` 中断收尾的
+                // 分支二）写的恰恰是"正文即半截内容；正文块恒存在"，于是用户取消后
+                // 只剩一句状态说明，已经生成的部分凭空消失。
+                // - kind 有值（新数据）：正文块里是**半截内容**，必须一并渲染；
+                // - kind 缺失（旧库数据）：正文是 `**[回复被中断]** …` 这类标记文本，
+                //   已由上面的 notice 承载，再 append 会把它当模型正文重复显示一遍。
+                // notice 本身仍渲染在气泡**下方**的小字里，不挤进回复气泡内部。
                 if is_interrupted_source(source.as_str()) {
                     // 阶段二：notice 优先按**结构化 kind** 生成（不再从正文猜）；
                     // kind 缺失（旧库数据 / 恢复重建未打标）才回退文本清洗路径。
@@ -746,7 +767,10 @@ pub async fn get_session_history(
                     if let Some(notice) = notice {
                         pending_assistant.notice = Some(notice);
                     }
-                    continue;
+                    // 只有旧库的标记文本拦在这里；新数据的半截正文继续往下走去 append
+                    if !interrupted_body_is_content(kind.as_deref()) {
+                        continue;
+                    }
                 }
                 append_assistant_content(&mut pending_assistant, content, loop_idx, current_ts);
                 loop_idx += 1;
@@ -1010,10 +1034,14 @@ async fn extract_session_messages_window(
                 if !is_renderable_source(source.as_str()) {
                     continue;
                 }
-                // `interrupted` 消息不是模型正文，而是"运行被打断"的状态说明。
-                // 把它挂到本轮快照的 notice 上，由前端渲染在气泡**下方**的小字里；
-                // 若混进 text_blocks 会挤进回复气泡内部，既突兀又会与
-                // "已保留的部分结果"重复，看起来像模型自己说的话。
+                // `interrupted` 消息承载两种东西，按 kind 是否存在区分 —— 这里曾经搞反过：
+                // 渲染侧按"它不是模型正文"整条丢弃，而落库侧（`pipeline.rs` 中断收尾的
+                // 分支二）写的恰恰是"正文即半截内容；正文块恒存在"，于是用户取消后
+                // 只剩一句状态说明，已经生成的部分凭空消失。
+                // - kind 有值（新数据）：正文块里是**半截内容**，必须一并渲染；
+                // - kind 缺失（旧库数据）：正文是 `**[回复被中断]** …` 这类标记文本，
+                //   已由上面的 notice 承载，再 append 会把它当模型正文重复显示一遍。
+                // notice 本身仍渲染在气泡**下方**的小字里，不挤进回复气泡内部。
                 if is_interrupted_source(source.as_str()) {
                     // 阶段二：notice 优先按**结构化 kind** 生成（不再从正文猜）；
                     // kind 缺失（旧库数据 / 恢复重建未打标）才回退文本清洗路径。
@@ -1022,7 +1050,10 @@ async fn extract_session_messages_window(
                     if let Some(notice) = notice {
                         pending_assistant.notice = Some(notice);
                     }
-                    continue;
+                    // 只有旧库的标记文本拦在这里；新数据的半截正文继续往下走去 append
+                    if !interrupted_body_is_content(kind.as_deref()) {
+                        continue;
+                    }
                 }
                 append_assistant_content(&mut pending_assistant, content, loop_idx, current_ts);
                 loop_idx += 1;
@@ -1185,5 +1216,33 @@ mod notice_not_empty_tests {
     fn blank_notice_is_still_empty() {
         assert!(snapshot_with_notice(Some("   ")).is_empty());
         assert!(snapshot_with_notice(None).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod interrupted_body_tests {
+    //! **实测 bug 的防护**：`source = "interrupted"` 的消息曾被渲染层整条丢弃
+    //! （理由写的是"它不是模型正文"），而落库侧 `pipeline.rs` 写的恰恰是
+    //! "正文即半截内容；正文块恒存在"。
+    //!
+    //! 后果：用户点「停止生成」后，界面只剩一句"用户已取消执行"，
+    //! 已经生成的那部分正文凭空消失。
+    //!
+    //! 两边的契约以 **kind** 为准：别再按 source 一刀切地丢正文。
+    use super::interrupted_body_is_content;
+
+    /// 新数据（kind 有值）：正文是半截内容，必须渲染
+    #[test]
+    fn interrupt_with_kind_renders_body() {
+        assert!(interrupted_body_is_content(Some("user_cancel")));
+        assert!(interrupted_body_is_content(Some("stream_timeout")));
+        assert!(interrupted_body_is_content(Some("app_closed")));
+    }
+
+    /// 旧库数据（kind 为 NULL）：正文是中断标记文本，不得渲染
+    /// （notice 已由文本清洗路径生成并承载，再渲染会重复一遍）
+    #[test]
+    fn legacy_marker_body_stays_hidden() {
+        assert!(!interrupted_body_is_content(None));
     }
 }
