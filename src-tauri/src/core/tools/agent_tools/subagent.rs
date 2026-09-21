@@ -455,9 +455,15 @@ pub async fn run_subagent(
     if let Some(ref skill_names) = skills {
         if !skill_names.is_empty() {
             let all_skills = super::super::load_all_skills();
+            // 只注入**已激活**的技能（2026-09-21 补）：
+            // 主 Agent 可能传一个被用户在设置里关掉的技能名。那种技能连正文都加载不了
+            // （LoadSkill 会直接拒），却仍会出现在子代理的 system prompt 里 ——
+            // 属"看得见调不动"，正是本项目在别处反复批判的两套真相。
+            let activations = crate::command::app_config::get_all_skill_activations();
             let matched: Vec<&crate::infra::types::models::Skill> = all_skills
                 .iter()
                 .filter(|s| skill_names.iter().any(|name| name == &s.name))
+                .filter(|s| activations.get(&s.name).copied().unwrap_or(true))
                 .collect();
             if !matched.is_empty() {
                 system_prompt.push_str("\n\n[Available skills]\nUse LoadSkill tool to load full content.\n");

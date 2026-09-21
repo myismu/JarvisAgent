@@ -503,3 +503,114 @@ macro_rules! define_tools {
         }
     };
 }
+
+#[cfg(test)]
+mod tool_filter_tests {
+    //! 工具开关（`ToolFilter`）的效力测试。
+    //!
+    //! 用户关掉一个工具后，它必须从**每一条**可见路径上消失 —— 核心 schema 出口、
+    //! 延迟工具目录、搜索索引、按名字精确取 schema。少堵一条，模型就能绕过开关拿到
+    //! 那个工具的完整定义（对"两套真相"的警惕见 `is_available` 的文档注释）。
+
+    use super::{ToolFilter, ToolRegistry};
+    use std::collections::HashMap;
+
+    fn states(pairs: &[(&str, bool)]) -> HashMap<String, bool> {
+        pairs.iter().map(|(name, on)| (name.to_string(), *on)).collect()
+    }
+
+    fn names(defs: &[serde_json::Value]) -> Vec<String> {
+        defs.iter()
+            .filter_map(|d| d["name"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    /// 空配置 = 全部启用
+    #[test]
+    fn empty_config_enables_everything() {
+        let filter = ToolFilter::from_states(&HashMap::new());
+        assert!(filter.is_enabled("ReadFile"));
+        assert!(filter.is_enabled("WriteFile"));
+    }
+
+    /// 只收集**被显式关掉**的；显式打开的不进禁用集，未记录的照样启用
+    #[test]
+    fn only_explicitly_disabled_are_collected() {
+        let filter =
+            ToolFilter::from_states(&states(&[("RunCommand", false), ("ReadFile", true)]));
+        assert!(!filter.is_enabled("RunCommand"));
+        assert!(filter.is_enabled("ReadFile"), "显式打开的当然要放行");
+        assert!(filter.is_enabled("SearchRepo"), "没出现在配置里的默认启用");
+        assert_eq!(filter.disabled_names(), vec!["RunCommand"]);
+    }
+
+    /// 关掉的核心工具必须从「模型能看到的 schema」里消失 ——
+    /// 这条出口直接决定请求体的 `tools` 参数。
+    #[test]
+    fn disabled_core_tool_leaves_the_tools_payload() {
+        let registry = ToolRegistry::global();
+        let before = names(&registry.get_core_definitions(&ToolFilter::allow_all()));
+        assert!(before.contains(&"ReadFile".to_string()), "前置：默认应包含 ReadFile");
+
+        let filter = ToolFilter::from_states(&states(&[("ReadFile", false)]));
+        let after = names(&registry.get_core_definitions(&filter));
+        assert!(
+            !after.contains(&"ReadFile".to_string()),
+            "关掉的工具不该还留在 tools 参数里"
+        );
+        assert!(
+            after.contains(&"RunCommand".to_string()),
+            "别的工具不该受牵连"
+        );
+    }
+
+    /// 关掉的延迟工具必须在**四条**路径上都查不到 —— 少堵一条，模型仍能拿到它的 schema。
+    #[test]
+    fn disabled_deferred_tool_is_invisible_on_every_path() {
+        let registry = ToolRegistry::global();
+        let filter = ToolFilter::from_states(&states(&[("EditNotebook", false)]));
+
+        assert!(
+            !registry
+                .get_deferred_list("PROJECT_ACTION", "edit", &filter)
+                .iter()
+                .any(|(name, _)| *name == "EditNotebook"),
+            "GetToolCatalog 的目录里不该出现"
+        );
+        assert!(
+            !registry
+                .get_deferred_search_entries("PROJECT_ACTION", "edit", &filter)
+                .iter()
+                .any(|(name, _, _)| *name == "EditNotebook"),
+            "DiscoverTools 的搜索索引里不该出现"
+        );
+        assert!(
+            !registry
+                .get_all_deferred_names("PROJECT_ACTION", "edit", &filter)
+                .contains(&"EditNotebook"),
+            "全量名单里不该出现"
+        );
+        assert!(
+            registry
+                .get_deferred_full_schema("EditNotebook", &filter)
+                .is_none(),
+            "按名字精确取 schema 也必须拿不到 —— 否则模型凭记忆 select: 一下就绕过去了"
+        );
+    }
+
+    /// 用户开关是**最硬**的一层：不接受"目录里看不见、但调用时放行"
+    #[test]
+    fn disabled_tool_fails_is_available() {
+        let registry = ToolRegistry::global();
+        let def = registry.get("ReadFile").expect("ReadFile 必须已注册");
+        assert!(ToolRegistry::is_available(
+            def,
+            "PROJECT_ACTION",
+            "edit",
+            &ToolFilter::allow_all()
+        ));
+
+        let filter = ToolFilter::from_states(&states(&[("ReadFile", false)]));
+        assert!(!ToolRegistry::is_available(def, "PROJECT_ACTION", "edit", &filter));
+    }
+}
