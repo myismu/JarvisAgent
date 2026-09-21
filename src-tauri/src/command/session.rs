@@ -110,6 +110,16 @@ pub async fn restore_session(id: String) -> Result<(), String> {
     session::restore_session(&id)
 }
 
+/// **彻底删除**一个会话（不可恢复）：真删行 + 清快照数据 + 清回收站目录。
+///
+/// 入口在侧边栏「最近删除」里 —— 用户对已软删的会话点「彻底删除」才会走到这里。
+/// 与软删除 [`delete_session`] 的区别见 `core::session` 的说明；
+/// 这一步做的事情与 [`delete_project`] 连带删会话时完全一致（同一个 `hard_delete_session`）。
+#[tauri::command]
+pub async fn purge_session(id: String) -> Result<(), String> {
+    session::hard_delete_session(&id)
+}
+
 #[tauri::command]
 pub async fn create_session(
     session_manager: tauri::State<'_, SessionManager>,

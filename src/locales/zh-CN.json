@@ -54,6 +54,9 @@
     "restoreSession": "恢复",
     "restored": "已恢复会话",
     "restoreError": "恢复失败：{error}",
+    "purgeSession": "彻底删除",
+    "purgeSessionConfirm": "彻底删除会话「{name}」？它的消息、快照与回收站副本会一并清除，无法恢复。",
+    "purged": "已彻底删除会话",
     "settings": "设置",
     "settingsTitle": "系统设置",
     "skillManager": "技能管理"

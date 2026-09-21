@@ -26,6 +26,7 @@ import ChatArea from "./components/chat/ChatArea.vue";
 import TerminalInput from "./components/chat/TerminalInput.vue";
 import PermissionCard from "./components/chat/PermissionCard.vue";
 import PlanPreviewPanel from "./components/common/PlanPreviewPanel.vue";
+import ToastHost from "./components/common/ToastHost.vue";
 import SettingsPanel from "./components/settings/SettingsPanel.vue";
 import SkillManager from "./components/skill/SkillManager.vue";
 
@@ -243,6 +244,9 @@ onBeforeUnmount(() => {
     </div>
 
     <SettingsPanel v-model="showSettings" />
+
+    <!-- 全局轻提示：挂一次即可（Teleport 到 body，不参与本组件布局） -->
+    <ToastHost />
   </main>
 </template>
 

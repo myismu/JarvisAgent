@@ -136,6 +136,7 @@ pub fn run() {
             command::session::delete_session,
             command::session::list_deleted_sessions,
             command::session::restore_session,
+            command::session::purge_session,
             command::session::rename_session,
             command::session::update_session_profile,
             command::session::get_session_meta,

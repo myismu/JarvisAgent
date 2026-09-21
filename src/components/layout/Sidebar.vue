@@ -22,6 +22,7 @@ import { useAppViewStore } from '../../stores/appView';
 import { useAgentEvents } from '../../composables/useAgentEvents';
 import { loadSessionThinking } from '../../composables/useThinkingMode';
 import { useWindow } from '../../composables/useWindow';
+import { showToast } from '../../composables/useToast';
 import ConfirmModal from '../common/ConfirmModal.vue';
 
 defineProps<{
@@ -52,11 +53,8 @@ const sessionFilterHasTools = ref(false);
 const sessionFilterRange = ref<'all' | '24h' | '7d' | '30d'>('all');
 const showAdvancedSessionFilters = false;
 const showSessionFilters = ref(false);
-const sessionActionMessage = ref('');
 const editingSessionId = ref<string | null>(null);
 const editingTitle = ref('');
-const sessionActionMessageKind = ref<'info' | 'error'>('info');
-let sessionActionTimer: ReturnType<typeof setTimeout> | null = null;
 
 // 按项目分组会话
 const standaloneSessions = computed(() =>
@@ -125,16 +123,14 @@ const formatSessionTokens = (session: SessionMeta) => {
   return `${total} tok`;
 };
 
+/**
+ * 会话操作反馈。
+ *
+ * 2026-09-21 改成**全局气泡**（`useToast`）：原来的页内提示条会把会话列表挤变形。
+ * 保留这个名字与签名，是为了让散落在各处的调用点不必跟着改。
+ */
 const showSessionActionMessage = (message: string, kind: 'info' | 'error' = 'info') => {
-  sessionActionMessage.value = message;
-  sessionActionMessageKind.value = kind;
-  if (sessionActionTimer) {
-    clearTimeout(sessionActionTimer);
-  }
-  sessionActionTimer = setTimeout(() => {
-    sessionActionMessage.value = '';
-    sessionActionTimer = null;
-  }, 3500);
+  showToast(message, kind);
 };
 
 const formatErrorMessage = (err: unknown) => {
@@ -203,6 +199,36 @@ const restoreDeletedSession = async (id: string) => {
     showSessionActionMessage(t('sidebar.restored'));
   } catch (err) {
     showSessionActionMessage(t('sidebar.restoreError', { error: formatErrorMessage(err) }), 'error');
+  }
+};
+
+/**
+ * 彻底删除：真删会话行 + 清快照数据 + 清回收站目录，不可恢复。
+ *
+ * 销毁性操作，所以走二次确认（与删除会话同一套 ConfirmModal 用法）。
+ */
+const pendingPurgeSession = ref<{ id: string; title: string } | null>(null);
+const purgeSessionLoading = ref(false);
+
+const purgeDeletedSession = (s: { id: string; title: string }, event: Event) => {
+  event.stopPropagation();
+  pendingPurgeSession.value = { id: s.id, title: s.title };
+};
+
+const confirmPurgeSession = async () => {
+  const pending = pendingPurgeSession.value;
+  if (!pending) return;
+  purgeSessionLoading.value = true;
+  try {
+    await invoke('purge_session', { id: pending.id });
+    await loadDeletedSessions();
+    showSessionActionMessage(t('sidebar.purged'));
+  } catch (err) {
+    console.error('彻底删除会话失败:', err);
+    showSessionActionMessage(formatErrorMessage(err), 'error');
+  } finally {
+    purgeSessionLoading.value = false;
+    pendingPurgeSession.value = null;
   }
 };
 
@@ -575,7 +601,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
-  if (sessionActionTimer) clearTimeout(sessionActionTimer);
+  // 提示气泡的计时器归 `useToast` 自己管，这里不用清（它挂在模块级队列上）
   if (unlistenRenamed) unlistenRenamed();
   if (unlistenUpdated) unlistenUpdated();
 });
@@ -606,13 +632,6 @@ onUnmounted(() => {
             </svg>
             <span>{{ t('sidebar.skillManager') }}</span>
           </button>
-        </div>
-        <div
-          v-if="sessionActionMessage"
-          class="session-feedback"
-          :class="sessionActionMessageKind"
-        >
-          {{ sessionActionMessage }}
         </div>
         <div v-if="showAdvancedSessionFilters" class="session-filter-toggle-row">
           <button type="button" class="session-filter-toggle" :class="{ active: hasActiveSessionFilters() }" @click="showSessionFilters = !showSessionFilters">
@@ -804,6 +823,12 @@ onUnmounted(() => {
                 :title="t('sidebar.restoreSession')"
                 @click.stop="restoreDeletedSession(s.id)"
               >{{ t('sidebar.restoreSession') }}</button>
+              <button
+                type="button"
+                class="restore-btn purge-btn"
+                :title="t('sidebar.purgeSession')"
+                @click="purgeDeletedSession(s, $event)"
+              >{{ t('sidebar.purgeSession') }}</button>
             </div>
           </li>
         </ul>
@@ -831,6 +856,18 @@ onUnmounted(() => {
         @confirm="confirmDeleteSession"
         @cancel="cancelDeleteSession"
       />
+
+      <!-- 彻底删除确认：真删 + 清快照 + 清回收站，不可恢复 -->
+      <ConfirmModal
+        :open="pendingPurgeSession !== null"
+        :title="t('sidebar.purgeSession')"
+        :message="t('sidebar.purgeSessionConfirm', { name: pendingPurgeSession?.title || '' })"
+        :confirm-text="t('sidebar.purgeSession')"
+        confirm-kind="danger"
+        :loading="purgeSessionLoading"
+        @confirm="confirmPurgeSession"
+        @cancel="pendingPurgeSession = null"
+      />
     </div>
   </div>
 
@@ -856,6 +893,11 @@ onUnmounted(() => {
 .restore-btn:hover {
   color: var(--text-main);
   background: var(--glass-bg-light);
+}
+/* 彻底删除：销毁性操作，用红色区分，别和"恢复"挨着却看不出轻重 */
+.purge-btn:hover {
+  color: var(--accent-red);
+  border-color: var(--accent-red);
 }
 .sidebar {
   width: 250px;
@@ -970,26 +1012,6 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 8px;
   margin: 12px 12px;
-}
-
-.session-feedback {
-  margin: 0 12px 8px;
-  padding: 8px 10px;
-  border-radius: var(--radius-md);
-  font-size: 0.75rem;
-  line-height: 1.4;
-  border: 1px solid transparent;
-  background: var(--glass-bg-light);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-}
-.session-feedback.info {
-  color: var(--accent-blue);
-  border-color: color-mix(in srgb, var(--accent-blue) 20%, transparent);
-}
-.session-feedback.error {
-  color: var(--accent-red);
-  border-color: color-mix(in srgb, var(--accent-red) 20%, transparent);
 }
 
 .new-session-btn {

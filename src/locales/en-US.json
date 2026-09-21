@@ -53,6 +53,9 @@
     "restoreSession": "Restore",
     "restored": "Session restored",
     "restoreError": "Restore failed: {error}",
+    "purgeSession": "Delete permanently",
+    "purgeSessionConfirm": "Permanently delete session \"{name}\"? Its messages, snapshots and trash copies will all be removed — this cannot be undone.",
+    "purged": "Session permanently deleted",
     "settings": "Settings",
     "settingsTitle": "System Settings",
     "skillManager": "Skill Manager"
