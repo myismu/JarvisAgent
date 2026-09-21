@@ -40,7 +40,9 @@ pub(super) async fn get_workspace(
 /// （`ws = None`）保持按进程 CWD 解析的旧行为。
 ///
 /// 注意：必须在 `ensure_path_permission` 通过之后调用（`..` 遍历已被拦截）。
-pub(super) fn resolve_exec_path(raw: &str, ws: Option<&std::path::Path>) -> String {
+// 可见性放宽到 pub(crate)：shell_tools 的 RunCommand 解析 dir 参数时要复用同一套基准，
+// 否则又会踩"校验按 ws join、执行按进程 CWD"的沙箱逃逸（本函数文档注释里那条）。
+pub(crate) fn resolve_exec_path(raw: &str, ws: Option<&std::path::Path>) -> String {
     let path = std::path::Path::new(raw);
     if path.is_absolute() {
         return raw.to_string();

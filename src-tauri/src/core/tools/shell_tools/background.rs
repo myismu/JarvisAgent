@@ -15,15 +15,23 @@ use super::super::framework;
 use super::super::framework::permission::is_within_workspace;
 use super::utils::*;
 
-/// 内部函数：后台执行命令（委托 BackgroundManager）
+/// 内部函数：后台执行命令（委托 BackgroundManager）。
+///
+/// `exec_dir` 由调用方解析好再传（2026-09-21 起）：原先这里只接 workspace，
+/// 于是 RunCommand 的 `dir` 参数在后台模式下会被静默忽略 —— 模型以为换了目录，
+/// 实际仍在工作区根目录跑。
 pub async fn background_run_internal(
     app: &tauri::AppHandle,
     cmd: &str,
-    workspace: &Option<std::path::PathBuf>,
+    exec_dir: &std::path::Path,
 ) -> String {
-    let exec_dir = workspace.as_ref().map(|p| p.to_string_lossy().into_owned());
-    crate::infra::background::BackgroundManager::run(app.clone(), cmd.to_string(), exec_dir, None)
-        .await
+    crate::infra::background::BackgroundManager::run(
+        app.clone(),
+        cmd.to_string(),
+        Some(exec_dir.to_string_lossy().into_owned()),
+        None,
+    )
+    .await
 }
 
 /// 后台执行长时间运行的命令（独立工具，保留供 UI 直接触发）

@@ -13,7 +13,10 @@
 //! - 执行时间受限于 DEFAULT_TIMEOUT_SECS 除非转为后台模式
 
 use super::super::framework;
-use super::super::framework::permission::{request_permission_with_origin, PermissionDecision, PermissionKind};
+use super::super::framework::permission::{
+    is_within_workspace, request_permission_with_origin, PermissionDecision, PermissionKind,
+};
+use crate::core::tools::file_tools::workspace::resolve_exec_path;
 use super::background::background_run_internal;
 use super::readonly::is_readonly_command;
 use super::security::*;
@@ -234,6 +237,31 @@ pub async fn run_shell(
         }
     }
 
+    // --- 2b. 解析 dir 参数（命令的工作目录；2026-09-21 新增）---
+    //
+    // 为什么需要：RunCommand 原先恒在工作区根目录执行，而沙箱禁止 cd（上面刚拦），
+    // 子代理又没有 StartBackgroundCommand 权限 —— "在子目录跑 npm install" 根本无法
+    // 做到，但提示词两处都写着 RunCommand 有 dir（一直是悬空引用）。
+    //
+    // 校验口径与 StartBackgroundCommand 一致（见 background.rs）：沙箱会话下 dir 必须
+    // 落在工作区内；相对路径按工作区目录解析（复用 resolve_exec_path，避免
+    // "校验按 ws join、执行按进程 CWD"的沙箱逃逸）。
+    let exec_dir = match input["dir"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(dir) => {
+            if let Some(ref workspace) = ws {
+                if !is_within_workspace(dir, Some(workspace)) {
+                    return framework::ToolCallResult::blocked(format!(
+                        "沙箱限制：指定的 dir '{}' 不在沙箱内。",
+                        dir
+                    ));
+                }
+            }
+            std::path::PathBuf::from(resolve_exec_path(dir, ws.as_deref()))
+        }
+        // 未指定 → 沿用原行为：沙箱会话用工作区根目录，非沙箱会话用进程 CWD
+        None => ws.unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
+    };
+
     // --- 3. 二道门兜底确认（仅直调路径；正常 dispatch 路径外层已批，不再重复弹卡） ---
     // 正常路径：dispatch_tool_call → enforce（外层弹卡人审）→ 批准后才到这里，
     // outer_approved=true 直接跳过本段——否则同一次执行会连弹两张卡。
@@ -350,7 +378,7 @@ pub async fn run_shell(
 
     // --- 4. 后台模式 → 委托 BackgroundManager ---
     if run_in_bg {
-        let result = background_run_internal(app, cmd, &ws).await;
+        let result = background_run_internal(app, cmd, &exec_dir).await;
         let output = if warnings.is_empty() {
             result
         } else {
@@ -364,8 +392,6 @@ pub async fn run_shell(
     if let Some(hint) = is_file_mutation_command(cmd) {
         return framework::ToolCallResult::blocked(format!("被拦截：{}\n\nRunCommand 不支持文件写入/删除/重命名操作。请使用以下专用工具：\n- 创建/覆盖文件 → WriteFile\n- 修改文件内容 → EditFile\n- 删除文件 → DeleteFile\n- 重命名/移动文件 → RenameFile", hint));
     }
-
-    let exec_dir = ws.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
     let result = tokio::time::timeout(
         Duration::from_secs(timeout_secs),
