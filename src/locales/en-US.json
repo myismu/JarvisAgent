@@ -437,21 +437,19 @@
       "tools": "Tools"
     },
     "tools": {
-      "intro": "Turning a tool off means the model cannot see it at all — it leaves the tool list and disappears from the deferred catalog. Changes apply to new sessions only: core tool schemas must stay constant for the whole session, otherwise every request loses its cache prefix.",
+      "intro": "Turning a tool off means the model cannot see it at all — it leaves the tool list and disappears from the deferred catalog. Changes apply to new sessions only: core tool schemas must stay constant for the whole session, otherwise every request loses its cache prefix. (Skill toggles apply immediately — they don't touch the schema.)",
       "coreGroup": "Core tools",
       "coreHint": "Always in the request, visible at any time",
       "deferredGroup": "Deferred tools",
       "deferredHint": "Discovered on demand — the model must look them up",
-      "applyNow": "Apply to current session",
-      "applying": "Applying…",
-      "applyHint": "Takes effect now, at the cost of one cache rebuild",
-      "applied": "Applied to the current session",
-      "applyError": "Failed to apply: {error}",
-      "noSession": "No active session",
       "loading": "Loading…",
       "loadError": "Failed to load tools: {error}",
       "savedHint": "Saved — applies to new sessions",
-      "saveError": "Failed to save: {error}"
+      "saveError": "Failed to save: {error}",
+      "showSchema": "Parameters",
+      "hideSchema": "Collapse",
+      "noParams": "No parameters",
+      "required": "required"
     },
     "prompts": {
       "loading": "Loading...",

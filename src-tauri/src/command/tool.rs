@@ -28,6 +28,7 @@ use serde::Serialize;
 #[serde(rename_all = "camelCase")]
 pub struct ToolMeta {
     pub name: String,
+    /// 一句话简述（`ToolDef.description`），列表上直接显示
     pub description: String,
     pub category: String,
     /// true = 延迟工具（需 GetToolCatalog → DiscoverTools 三步才能用）。
@@ -35,6 +36,11 @@ pub struct ToolMeta {
     pub deferred: bool,
     /// 是否启用。未在配置里出现过的工具默认启用。
     pub enabled: bool,
+    /// 完整 JSON Schema（含参数名 / 类型 / 必填 / 参数说明），供界面上"展开看详情"。
+    ///
+    /// 直接透传注册表里那份 —— 它就是模型实际收到的东西，所以界面上看到的和模型
+    /// 看到的一定一致，不会出现"文档说一套、模型收另一套"。
+    pub schema: serde_json::Value,
 }
 
 /// 列出全部已注册工具（含启用状态）。
@@ -53,6 +59,7 @@ pub async fn list_tools() -> Result<Vec<ToolMeta>, String> {
             category: def.category.to_string(),
             deferred: def.should_defer,
             enabled: states.get(def.name).copied().unwrap_or(true),
+            schema: def.schema.clone(),
         })
         .collect();
 
@@ -70,22 +77,10 @@ pub async fn set_tool_active(tool_name: String, enabled: bool) -> Result<(), Str
     crate::command::app_config::set_tool_enabled(&tool_name, enabled)
 }
 
-/// 让**当前会话**立刻用上最新的工具开关。
-///
-/// 实现是丢掉会话快照，下一次构建请求时重新读配置。代价明确：`tools` 参数变了，
-/// **会掉一次 prompt cache**（前缀失效，整段历史重算）。
-///
-/// ⚠️ 所以它只应由用户在设置页显式点击触发 —— 绝不能挂到任何自动路径上
-/// （比如"改完开关自动应用"），那样每次改设置都会静默地烧掉一次缓存。
-#[tauri::command]
-pub async fn apply_tool_filter_now(
-    session_id: String,
-    session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
-) -> Result<(), String> {
-    session_manager
-        .get_or_create(&session_id)
-        .await
-        .reset_tool_filter()
-        .await;
-    Ok(())
-}
+// 这里曾有一个 `apply_tool_filter_now`（丢掉会话快照、让当前会话立刻用上最新开关）。
+// 已删除（2026-09-21）：那个按钮摆在设置页上会暗示"不点就不生效"，而实际上新会话
+// 本来就会生效 —— 它制造的是误导，不是能力。真要验证效果，开个新会话的成本远比
+// "烧一次 prompt cache + 多一个生效时机的概念"低。
+//
+// `SessionContext::reset_tool_filter()` 保留着（快照机制该有对称的清除操作），
+// 只是目前没有调用者。

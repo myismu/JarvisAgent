@@ -4,18 +4,21 @@
 逐个启停工具。**关掉 = 模型完全看不到该工具** —— 它不进 tools 参数、延迟工具目录里
 也搜不到，而不是"在、但调用被拒"那种软禁用。
 
-## 生效时机（与技能开关不同，必须让用户知道）
-- 改开关 → 只对**新会话**生效。原因：核心工具的 schema 会进请求体的 tools 参数，
-  而它必须会话内字节恒定，否则每轮一变、prompt cache 前缀整体失效。
-- 想立刻用上 → 点「应用到当前会话」。代价是掉一次 prompt cache，所以只由用户显式触发。
-- 技能开关则是**立即生效**的（它只改运行时数据、不碰 schema）—— 两者并排放在设置里，
-  不写清楚用户一定会困惑。
+## 生效时机：只对新会话生效
+核心工具的 schema 会进请求体的 tools 参数，而它必须**整个会话内字节恒定**，否则每轮一变、
+prompt cache 前缀就整体失效。所以改完开关只对新会话生效。
+
+**刻意没做「应用到当前会话」按钮**（曾有过，2026-09-21 删）：它摆在页面上会暗示
+"不点就不生效"，而实际上新会话本来就会生效 —— 制造的是误导，不是能力。真要验证效果，
+开个新会话的成本远比"烧一次 prompt cache + 多一个生效时机的概念"低。
+（对比：技能开关是立即生效的，因为它只改运行时数据、不碰 schema。这个差异是本质的，
+不该用按钮去抹平。）
 
 ## Key Exports
 - `ToolsPanel`: 工具开关列表（无 props / 无事件）
 
 ## Dependencies
-- Internal: `../../composables/useToast`、`../../stores/session`
+- Internal: `../../composables/useToast`
 - External: `@tauri-apps/api/core`（invoke）、`vue-i18n`
 
 ## Constraints
@@ -27,7 +30,6 @@ import { computed, onMounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { useI18n } from 'vue-i18n';
 import { showToast } from '../../composables/useToast';
-import { useSessionStore } from '../../stores/session';
 
 /** 与后端 `command/tool.rs::ToolMeta` 对应 */
 interface ToolMeta {
@@ -37,14 +39,40 @@ interface ToolMeta {
   /** true = 延迟工具（需 GetToolCatalog → DiscoverTools → ExecuteTool 三步才能用） */
   deferred: boolean;
   enabled: boolean;
+  /** 完整 JSON Schema，与模型收到的那份是同一个对象 */
+  schema?: JsonSchema;
+}
+
+/** Anthropic 工具 schema 的形状（只声明我们渲染用到的字段） */
+interface JsonSchema {
+  input_schema?: {
+    properties?: Record<string, SchemaProp>;
+    required?: string[];
+  };
+}
+
+interface SchemaProp {
+  type?: string;
+  description?: string;
+  enum?: string[];
+  items?: { type?: string };
+}
+
+/** 拍平成可渲染的参数行 */
+interface ParamRow {
+  name: string;
+  type: string;
+  required: boolean;
+  description: string;
+  enumValues: string[];
 }
 
 const { t } = useI18n();
-const session = useSessionStore();
 
 const tools = ref<ToolMeta[]>([]);
 const loading = ref(true);
-const applying = ref(false);
+/** 展开了 schema 的工具名。用 Set 而非给每项加布尔字段：列表来自后端，不污染它 */
+const expanded = ref<Set<string>>(new Set());
 
 /**
  * 分两组展示，语义不同：
@@ -68,6 +96,39 @@ const groups = computed(() => [
 ]);
 
 const formatError = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/**
+ * 把 JSON Schema 的 properties 拍平成参数行。
+ *
+ * 数组类型显示成 `string[]` 这种更好读的形式（原始 schema 里是
+ * `{type:"array", items:{type:"string"}}` 两层嵌套）。
+ */
+const paramsOf = (tool: ToolMeta): ParamRow[] => {
+  const inputSchema = tool.schema?.input_schema;
+  const properties = inputSchema?.properties ?? {};
+  const required = inputSchema?.required ?? [];
+  return Object.entries(properties).map(([name, prop]) => {
+    const type = prop.type ?? 'any';
+    return {
+      name,
+      type: type === 'array' && prop.items?.type ? `${prop.items.type}[]` : type,
+      required: required.includes(name),
+      description: prop.description ?? '',
+      enumValues: prop.enum ?? [],
+    };
+  });
+};
+
+const toggleSchema = (name: string) => {
+  const next = new Set(expanded.value);
+  if (next.has(name)) {
+    next.delete(name);
+  } else {
+    next.add(name);
+  }
+  // 整体替换而非原地改：ref 包 Set 时原地 mutate 不触发更新
+  expanded.value = next;
+};
 
 const load = async () => {
   try {
@@ -93,44 +154,12 @@ const toggle = async (tool: ToolMeta) => {
   }
 };
 
-/**
- * 让当前会话立刻用上最新开关。
- *
- * 后端实现是丢掉会话快照、下次构建请求时重读配置 —— `tools` 参数会变，
- * **掉一次 prompt cache**。所以只在这里、由用户点击触发。
- */
-const applyNow = async () => {
-  if (applying.value) return;
-  const sessionId = session.activeSessionId;
-  if (!sessionId) {
-    showToast(t('settings.tools.noSession'), 'error');
-    return;
-  }
-  applying.value = true;
-  try {
-    await invoke('apply_tool_filter_now', { sessionId });
-    showToast(t('settings.tools.applied'));
-  } catch (err) {
-    console.error('应用工具开关失败:', err);
-    showToast(t('settings.tools.applyError', { error: formatError(err) }), 'error');
-  } finally {
-    applying.value = false;
-  }
-};
-
 onMounted(load);
 </script>
 
 <template>
   <div class="tools-panel">
     <p class="tools-intro">{{ t('settings.tools.intro') }}</p>
-
-    <div class="apply-row">
-      <button type="button" class="apply-btn" :disabled="applying || loading" @click="applyNow">
-        {{ applying ? t('settings.tools.applying') : t('settings.tools.applyNow') }}
-      </button>
-      <span class="apply-hint">{{ t('settings.tools.applyHint') }}</span>
-    </div>
 
     <div v-if="loading" class="tools-empty">{{ t('settings.tools.loading') }}</div>
 
@@ -144,14 +173,41 @@ onMounted(load);
           v-for="tool in group.items"
           :key="tool.name"
           class="tool-row"
-          :class="{ off: !tool.enabled }"
+          :class="{ off: !tool.enabled, expanded: expanded.has(tool.name) }"
         >
           <div class="tool-main">
             <div class="tool-head">
               <span class="tool-name">{{ tool.name }}</span>
               <span class="tool-category">{{ tool.category }}</span>
+              <button
+                type="button"
+                class="schema-toggle"
+                @click="toggleSchema(tool.name)"
+              >
+                {{ expanded.has(tool.name) ? t('settings.tools.hideSchema') : t('settings.tools.showSchema') }}
+              </button>
             </div>
             <div class="tool-desc">{{ tool.description }}</div>
+
+            <!-- 参数表（点开才渲染）：这就是模型实际收到的 schema，不是另写的文档 -->
+            <div v-if="expanded.has(tool.name)" class="tool-schema">
+              <div v-if="paramsOf(tool).length === 0" class="schema-empty">
+                {{ t('settings.tools.noParams') }}
+              </div>
+              <div v-for="param in paramsOf(tool)" :key="param.name" class="param-row">
+                <div class="param-line">
+                  <span class="param-name">{{ param.name }}</span>
+                  <span class="param-type">{{ param.type }}</span>
+                  <span v-if="param.required" class="param-required">
+                    {{ t('settings.tools.required') }}
+                  </span>
+                </div>
+                <div v-if="param.description" class="param-desc">{{ param.description }}</div>
+                <div v-if="param.enumValues.length" class="param-enum">
+                  {{ param.enumValues.join(' / ') }}
+                </div>
+              </div>
+            </div>
           </div>
           <button
             type="button"
@@ -185,37 +241,6 @@ onMounted(load);
   color: var(--text-soft);
   font-size: 0.8rem;
   line-height: 1.6;
-}
-
-/* ── 应用到当前会话 ── */
-.apply-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.apply-btn {
-  padding: 6px 14px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--glass-border);
-  background: var(--glass-bg);
-  color: var(--text-main);
-  font-size: 0.8rem;
-  cursor: pointer;
-  transition: var(--transition-fast);
-}
-.apply-btn:hover:not(:disabled) {
-  background: var(--glass-bg-light);
-  border-color: var(--accent-blue);
-  color: var(--accent-blue);
-}
-.apply-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-.apply-hint {
-  color: var(--text-muted);
-  font-size: 0.75rem;
 }
 
 .tools-empty {
@@ -259,6 +284,9 @@ onMounted(load);
 .tool-row:hover {
   background: var(--glass-bg-light);
 }
+.tool-row.expanded {
+  background: var(--glass-bg-light);
+}
 /* 关掉的行整体压暗：一眼能看出"这些是不生效的" */
 .tool-row.off .tool-name,
 .tool-row.off .tool-desc {
@@ -285,11 +313,78 @@ onMounted(load);
   color: var(--text-muted);
   font-size: 0.7rem;
 }
+.schema-toggle {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+.schema-toggle:hover {
+  color: var(--accent-blue);
+}
 .tool-desc {
   margin-top: 2px;
   color: var(--text-muted);
   font-size: 0.75rem;
   line-height: 1.5;
+  word-break: break-word;
+}
+
+/* ── 参数表 ── */
+.tool-schema {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.schema-empty {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+.param-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.param-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.param-name {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+.param-type {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--accent-blue);
+}
+.param-required {
+  font-size: 0.68rem;
+  color: var(--text-warning);
+}
+.param-desc {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.param-enum {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-soft);
   word-break: break-word;
 }
 

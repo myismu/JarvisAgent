@@ -213,7 +213,6 @@ pub fn run() {
             command::skill::get_skill_detail,
             command::tool::list_tools,
             command::tool::set_tool_active,
-            command::tool::apply_tool_filter_now,
         ])
         .build(tauri::generate_context!())
         .expect("构建失败")

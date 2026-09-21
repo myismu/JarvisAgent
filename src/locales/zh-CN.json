@@ -438,21 +438,19 @@
       "tools": "工具"
     },
     "tools": {
-      "intro": "关掉一个工具 = 模型完全看不到它：不进工具列表、延迟工具目录里也搜不到。改完只对新会话生效 —— 核心工具的 schema 必须整个会话保持不变，否则每轮请求的缓存前缀都会失效。",
+      "intro": "关掉一个工具 = 模型完全看不到它：不进工具列表、延迟工具目录里也搜不到。改完只对新会话生效 —— 核心工具的 schema 必须整个会话保持不变，否则每轮请求的缓存前缀都会失效。（技能开关是立即生效的，因为它不改 schema。）",
       "coreGroup": "核心工具",
       "coreHint": "常驻请求，模型随时可见",
       "deferredGroup": "延迟工具",
       "deferredHint": "按需发现，模型要主动查才看得到",
-      "applyNow": "应用到当前会话",
-      "applying": "应用中…",
-      "applyHint": "立即生效，代价是重建一次缓存",
-      "applied": "已应用到当前会话",
-      "applyError": "应用失败：{error}",
-      "noSession": "没有活跃会话",
       "loading": "加载中…",
       "loadError": "加载工具列表失败：{error}",
       "savedHint": "已保存，对新会话生效",
-      "saveError": "保存失败：{error}"
+      "saveError": "保存失败：{error}",
+      "showSchema": "参数",
+      "hideSchema": "收起",
+      "noParams": "无参数",
+      "required": "必填"
     },
     "prompts": {
       "loading": "加载中...",
