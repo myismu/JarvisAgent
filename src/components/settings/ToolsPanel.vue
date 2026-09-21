@@ -73,6 +73,13 @@ const tools = ref<ToolMeta[]>([]);
 const loading = ref(true);
 /** 展开了 schema 的工具名。用 Set 而非给每项加布尔字段：列表来自后端，不污染它 */
 const expanded = ref<Set<string>>(new Set());
+/** 搜索词：按名称 / 分类 / 描述过滤。40 个工具挨个滑太累，直接定位更快 */
+const keyword = ref('');
+
+const matches = (tool: ToolMeta, needle: string) =>
+  tool.name.toLowerCase().includes(needle) ||
+  tool.category.toLowerCase().includes(needle) ||
+  tool.description.toLowerCase().includes(needle);
 
 /**
  * 分两组展示，语义不同：
@@ -80,20 +87,29 @@ const expanded = ref<Set<string>>(new Set());
  * - 延迟工具：按需发现，模型不走到 DiscoverTools 那一步就看不见它。
  * 分组只是帮用户理解"关掉它的代价是什么"，开关本身的效力完全一样。
  */
-const groups = computed(() => [
-  {
-    key: 'core',
-    title: t('settings.tools.coreGroup'),
-    hint: t('settings.tools.coreHint'),
-    items: tools.value.filter((tool) => !tool.deferred),
-  },
-  {
-    key: 'deferred',
-    title: t('settings.tools.deferredGroup'),
-    hint: t('settings.tools.deferredHint'),
-    items: tools.value.filter((tool) => tool.deferred),
-  },
-]);
+const groups = computed(() => {
+  const needle = keyword.value.trim().toLowerCase();
+  const visible = needle ? tools.value.filter((tool) => matches(tool, needle)) : tools.value;
+  return [
+    {
+      key: 'core',
+      title: t('settings.tools.coreGroup'),
+      hint: t('settings.tools.coreHint'),
+      items: visible.filter((tool) => !tool.deferred),
+    },
+    {
+      key: 'deferred',
+      title: t('settings.tools.deferredGroup'),
+      hint: t('settings.tools.deferredHint'),
+      items: visible.filter((tool) => tool.deferred),
+    },
+  ];
+});
+
+/** 搜索后一个都没匹配上时给个明确交代，而不是一片空白 */
+const noMatch = computed(
+  () => !loading.value && keyword.value.trim() !== '' && groups.value.every((g) => g.items.length === 0),
+);
 
 const formatError = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
@@ -161,64 +177,71 @@ onMounted(load);
   <div class="tools-panel">
     <p class="tools-intro">{{ t('settings.tools.intro') }}</p>
 
+    <input
+      v-model="keyword"
+      type="search"
+      class="tools-search"
+      :placeholder="t('settings.tools.searchPlaceholder')"
+    />
+
     <div v-if="loading" class="tools-empty">{{ t('settings.tools.loading') }}</div>
+    <div v-else-if="noMatch" class="tools-empty">
+      {{ t('settings.tools.noMatch', { keyword: keyword.trim() }) }}
+    </div>
 
     <template v-else>
       <section v-for="group in groups" :key="group.key" class="tools-group">
         <div v-if="group.items.length" class="group-head">
           <h4 class="group-title">{{ group.title }}</h4>
           <span class="group-hint">{{ group.hint }}</span>
+          <span class="group-count">{{ group.items.length }}</span>
         </div>
+        <!-- 每个工具压成一行：名称 / 分类 / 描述（单行省略，hover 看全） / 参数 / 开关。
+             40 个工具挨个占三行的话要滑很久，所以描述不折行，需要看全就 hover。 -->
         <div
           v-for="tool in group.items"
           :key="tool.name"
           class="tool-row"
           :class="{ off: !tool.enabled, expanded: expanded.has(tool.name) }"
         >
-          <div class="tool-main">
-            <div class="tool-head">
-              <span class="tool-name">{{ tool.name }}</span>
-              <span class="tool-category">{{ tool.category }}</span>
-              <button
-                type="button"
-                class="schema-toggle"
-                @click="toggleSchema(tool.name)"
-              >
-                {{ expanded.has(tool.name) ? t('settings.tools.hideSchema') : t('settings.tools.showSchema') }}
-              </button>
-            </div>
-            <div class="tool-desc">{{ tool.description }}</div>
+          <div class="tool-line">
+            <span class="tool-name">{{ tool.name }}</span>
+            <span class="tool-category">{{ tool.category }}</span>
+            <span class="tool-desc" :title="tool.description">{{ tool.description }}</span>
+            <button type="button" class="schema-toggle" @click="toggleSchema(tool.name)">
+              {{ expanded.has(tool.name) ? t('settings.tools.hideSchema') : t('settings.tools.showSchema') }}
+            </button>
+            <button
+              type="button"
+              class="tool-switch"
+              :class="{ on: tool.enabled }"
+              :aria-pressed="tool.enabled"
+              :aria-label="tool.name"
+              @click="toggle(tool)"
+            >
+              <span class="knob" />
+            </button>
+          </div>
 
-            <!-- 参数表（点开才渲染）：这就是模型实际收到的 schema，不是另写的文档 -->
-            <div v-if="expanded.has(tool.name)" class="tool-schema">
-              <div v-if="paramsOf(tool).length === 0" class="schema-empty">
-                {{ t('settings.tools.noParams') }}
+          <!-- 参数表（点开才渲染）：这就是模型实际收到的 schema，不是另写的文档 -->
+          <div v-if="expanded.has(tool.name)" class="tool-schema">
+            <div v-if="paramsOf(tool).length === 0" class="schema-empty">
+              {{ t('settings.tools.noParams') }}
+            </div>
+            <div v-for="param in paramsOf(tool)" :key="param.name" class="param-row">
+              <div class="param-line">
+                <span class="param-name">{{ param.name }}</span>
+                <span class="param-type">{{ param.type }}</span>
+                <span v-if="param.required" class="param-required">
+                  {{ t('settings.tools.required') }}
+                </span>
+                <span v-if="param.description" class="param-desc">{{ param.description }}</span>
               </div>
-              <div v-for="param in paramsOf(tool)" :key="param.name" class="param-row">
-                <div class="param-line">
-                  <span class="param-name">{{ param.name }}</span>
-                  <span class="param-type">{{ param.type }}</span>
-                  <span v-if="param.required" class="param-required">
-                    {{ t('settings.tools.required') }}
-                  </span>
-                </div>
-                <div v-if="param.description" class="param-desc">{{ param.description }}</div>
-                <div v-if="param.enumValues.length" class="param-enum">
-                  {{ param.enumValues.join(' / ') }}
-                </div>
+              <div v-if="param.enumValues.length" class="param-enum">
+                {{ param.enumValues.join(' / ') }}
               </div>
             </div>
           </div>
-          <button
-            type="button"
-            class="tool-switch"
-            :class="{ on: tool.enabled }"
-            :aria-pressed="tool.enabled"
-            :aria-label="tool.name"
-            @click="toggle(tool)"
-          >
-            <span class="knob" />
-          </button>
         </div>
       </section>
     </template>
@@ -229,18 +252,33 @@ onMounted(load);
 .tools-panel {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 12px;
   padding: 4px 0 24px;
 }
 
 .tools-intro {
   margin: 0;
-  padding: 10px 12px;
+  padding: 9px 12px;
   border-radius: var(--radius-md);
   background: var(--glass-bg-light);
   color: var(--text-soft);
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
+.tools-search {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  color: var(--text-main);
   font-size: 0.8rem;
-  line-height: 1.6;
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+.tools-search:focus {
+  border-color: var(--accent-blue);
 }
 
 .tools-empty {
@@ -253,68 +291,85 @@ onMounted(load);
 .tools-group {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 1px; /* 行贴紧：40 个工具要能一眼扫完 */
 }
 .group-head {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  margin-bottom: 4px;
+  margin: 10px 0 4px;
+  position: sticky; /* 滚到中段也知道自己在哪个分组 */
+  top: -24px; /* 抵消 .settings-body 的 padding-top，贴住内容区顶部 */
+  padding: 4px 0;
+  background: var(--bg-dark);
+  z-index: 1;
 }
 .group-title {
   margin: 0;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   font-weight: 650;
   color: var(--text-main);
 }
 .group-hint {
   color: var(--text-muted);
-  font-size: 0.72rem;
+  font-size: 0.7rem;
+}
+.group-count {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 0.7rem;
 }
 
-/* ── 单个工具 ── */
+/* ── 单个工具：一行 ── */
 .tool-row {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 8px 10px;
+  flex-direction: column;
   border-radius: var(--radius-md);
   transition: background var(--transition-fast);
 }
-.tool-row:hover {
-  background: var(--glass-bg-light);
+.tool-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  transition: background var(--transition-fast);
 }
-.tool-row.expanded {
+.tool-row:hover .tool-line,
+.tool-row.expanded .tool-line {
   background: var(--glass-bg-light);
 }
 /* 关掉的行整体压暗：一眼能看出"这些是不生效的" */
 .tool-row.off .tool-name,
 .tool-row.off .tool-desc {
-  opacity: 0.55;
+  opacity: 0.5;
 }
 
-.tool-main {
-  flex: 1;
-  min-width: 0;
-}
-.tool-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
 .tool-name {
+  flex-shrink: 0;
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   font-weight: 600;
   color: var(--text-main);
 }
 .tool-category {
   flex-shrink: 0;
+  width: 4.5em; /* 定宽：名称长度不一时分类列也能对齐 */
   color: var(--text-muted);
   font-size: 0.7rem;
 }
+/* 描述单行省略：需要看全就 hover（title 属性）。
+   折行会让 40 个工具变成 80+ 行，正是"滑下去很累"的来源。 */
+.tool-desc {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .schema-toggle {
-  margin-left: auto;
   flex-shrink: 0;
   padding: 0;
   border: none;
@@ -327,23 +382,16 @@ onMounted(load);
 .schema-toggle:hover {
   color: var(--accent-blue);
 }
-.tool-desc {
-  margin-top: 2px;
-  color: var(--text-muted);
-  font-size: 0.75rem;
-  line-height: 1.5;
-  word-break: break-word;
-}
 
-/* ── 参数表 ── */
+/* ── 参数表（展开后跨全宽，缩进对齐名称列） ── */
 .tool-schema {
-  margin-top: 8px;
+  margin: 2px 10px 6px;
   padding: 8px 10px;
   border-radius: var(--radius-md);
   border: 1px solid var(--glass-border-subtle);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 .schema-empty {
   color: var(--text-muted);
@@ -362,7 +410,7 @@ onMounted(load);
 }
 .param-name {
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-size: 0.74rem;
   font-weight: 600;
   color: var(--text-main);
 }
@@ -376,9 +424,11 @@ onMounted(load);
   color: var(--text-warning);
 }
 .param-desc {
+  flex: 1;
+  min-width: 0;
   color: var(--text-muted);
   font-size: 0.72rem;
-  line-height: 1.5;
+  line-height: 1.45;
   word-break: break-word;
 }
 .param-enum {

@@ -447,6 +447,8 @@
       "loadError": "加载工具列表失败：{error}",
       "savedHint": "已保存，对新会话生效",
       "saveError": "保存失败：{error}",
+      "searchPlaceholder": "搜索工具（名称 / 分类 / 描述）",
+      "noMatch": "没有匹配「{keyword}」的工具",
       "showSchema": "参数",
       "hideSchema": "收起",
       "noParams": "无参数",

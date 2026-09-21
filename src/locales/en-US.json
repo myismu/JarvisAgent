@@ -446,6 +446,8 @@
       "loadError": "Failed to load tools: {error}",
       "savedHint": "Saved — applies to new sessions",
       "saveError": "Failed to save: {error}",
+      "searchPlaceholder": "Search tools (name / category / description)",
+      "noMatch": "No tools match \"{keyword}\"",
       "showSchema": "Parameters",
       "hideSchema": "Collapse",
       "noParams": "No parameters",
