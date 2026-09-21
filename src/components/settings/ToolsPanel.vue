@@ -45,6 +45,8 @@ interface ToolMeta {
 
 /** Anthropic 工具 schema 的形状（只声明我们渲染用到的字段） */
 interface JsonSchema {
+  /** 完整描述。**提示词下沉过来的用法说明都在这里**（列表上那句是另一份简述） */
+  description?: string;
   input_schema?: {
     properties?: Record<string, SchemaProp>;
     required?: string[];
@@ -135,6 +137,19 @@ const paramsOf = (tool: ToolMeta): ParamRow[] => {
   });
 };
 
+/**
+ * schema 里的**完整描述**。
+ *
+ * 这是提示词下沉重构的落点：原先散在提示词里的用法说明（"删目录是整棵一起删"、
+ * "绝对禁止读取二进制文件"、"本工具不能用 cd 要传 dir"…）都搬到了这里 ——
+ * 也就是模型实际收到的那份。列表上那句是 `ToolDef.description`，只是简述，
+ * 两者通常不同。相同就不必重复显示。
+ */
+const fullDescription = (tool: ToolMeta): string => {
+  const text = (tool.schema?.description ?? '').trim();
+  return text === tool.description.trim() ? '' : text;
+};
+
 const toggleSchema = (name: string) => {
   const next = new Set(expanded.value);
   if (next.has(name)) {
@@ -223,9 +238,16 @@ onMounted(load);
             </button>
           </div>
 
-          <!-- 参数表（点开才渲染）：这就是模型实际收到的 schema，不是另写的文档 -->
+          <!-- 完整 schema（点开才渲染）：这就是模型实际收到的那份，不是另写的文档 -->
           <div v-if="expanded.has(tool.name)" class="tool-schema">
-            <div v-if="paramsOf(tool).length === 0" class="schema-empty">
+            <!-- 完整描述：提示词下沉过来的用法说明都在这儿 -->
+            <div v-if="fullDescription(tool)" class="schema-desc">
+              {{ fullDescription(tool) }}
+            </div>
+            <div
+              v-if="paramsOf(tool).length === 0 && !fullDescription(tool)"
+              class="schema-empty"
+            >
               {{ t('settings.tools.noParams') }}
             </div>
             <div v-for="param in paramsOf(tool)" :key="param.name" class="param-row">
@@ -392,6 +414,17 @@ onMounted(load);
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+/* 完整描述：与参数列表用一条淡分隔线隔开（两者是不同的东西 ——
+   上面是"这工具是干嘛的、有什么禁忌"，下面是"每个参数怎么填"） */
+.schema-desc {
+  color: var(--text-soft);
+  font-size: 0.74rem;
+  line-height: 1.6;
+  white-space: pre-wrap; /* 描述里用 \n\n 分段，保留它 */
+  word-break: break-word;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--glass-border-subtle);
 }
 .schema-empty {
   color: var(--text-muted);
