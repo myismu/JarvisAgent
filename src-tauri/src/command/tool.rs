@@ -1,0 +1,70 @@
+//! # tool.rs — 工具开关相关命令
+//!
+//! 让用户在设置面板里逐个启停工具。**关掉 = 模型完全看不到该工具** ——
+//! 它不进 `tools` 参数、延迟工具目录里也搜不到，而不是"在、但调用被拒"那种软禁用。
+//!
+//! ## 关键导出
+//! - `list_tools()`: 列出全部工具（名称 / 描述 / 分类 / 是否延迟 / 是否启用）
+//! - `set_tool_active()`: 启用或停用某个工具
+//!
+//! ## 依赖
+//! - Internal: `core::tools::framework::registry`（工具注册表）、`command::app_config`（持久化）
+//!
+//! ## 约束
+//! - 状态存在 `app-config.json` 的 `tools` 字段，与技能那套同构：**只存被关掉的**，
+//!   未记录的一律默认启用。
+//! - **生效时机是"新会话"**：核心工具的 schema 必须会话内字节恒定，否则每轮
+//!   `tools` 参数一变、prompt cache 整体失效。要让当前会话立刻用上，得清会话快照
+//!   重建（后续阶段的 `apply_tool_filter_now`）。
+//! - ⚠️ 本开关**不是安全边界**：它管的是"模型看不看得见"，不是"准不准做"。
+//!   真正的闸门是 `policy.rs` 的权限策略与只读保护 —— 用户关掉某个工具只是不想让它
+//!   出现在选项里，不构成任何防护承诺。
+
+use crate::core::tools::framework::registry::ToolRegistry;
+use serde::Serialize;
+
+/// 工具的元数据（供设置面板渲染开关列表）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolMeta {
+    pub name: String,
+    pub description: String,
+    pub category: String,
+    /// true = 延迟工具（需 GetToolCatalog → DiscoverTools 三步才能用）。
+    /// UI 据此分组：核心工具常驻 schema，延迟工具按需发现。
+    pub deferred: bool,
+    /// 是否启用。未在配置里出现过的工具默认启用。
+    pub enabled: bool,
+}
+
+/// 列出全部已注册工具（含启用状态）。
+#[tauri::command]
+pub async fn list_tools() -> Result<Vec<ToolMeta>, String> {
+    let registry = ToolRegistry::global();
+    let states = crate::command::app_config::get_all_tool_states();
+
+    let mut tools: Vec<ToolMeta> = registry
+        .all_tool_names()
+        .into_iter()
+        .filter_map(|name| registry.get(name))
+        .map(|def| ToolMeta {
+            name: def.name.to_string(),
+            description: def.description.to_string(),
+            category: def.category.to_string(),
+            deferred: def.should_defer,
+            enabled: states.get(def.name).copied().unwrap_or(true),
+        })
+        .collect();
+
+    // 按分类 + 名称排序：UI 直接渲染，不必自己排
+    tools.sort_by(|a, b| a.category.cmp(&b.category).then_with(|| a.name.cmp(&b.name)));
+    Ok(tools)
+}
+
+/// 启用或停用某个工具。
+///
+/// ⚠️ 改完只对**新会话**生效（核心工具 schema 必须会话内字节恒定，详见文件头约束）。
+#[tauri::command]
+pub async fn set_tool_active(tool_name: String, enabled: bool) -> Result<(), String> {
+    crate::command::app_config::set_tool_enabled(&tool_name, enabled)
+}

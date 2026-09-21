@@ -268,6 +268,18 @@ pub(crate) struct AppConfigFile {
     /// 技能激活状态：skill_name → active。未记录的技能默认激活。
     #[serde(default)]
     skills: HashMap<String, bool>,
+    /// 工具启用状态：tool_name → enabled。未记录的工具默认启用。
+    ///
+    /// 与 `skills` 同构：只存"被显式关掉的"，所以文件里通常只有零星几条。
+    /// 关掉一个工具 = 模型**完全看不到它**（不进 `tools` 参数、延迟工具目录里也搜不到），
+    /// 不是"在、但调用被拒"那种软禁用。
+    ///
+    /// ⚠️ **生效时机与技能不同**：工具开关走**会话级快照**（见 SessionContext），
+    /// 改完只对**新会话**生效 —— 因为核心工具的 schema 必须会话内字节恒定，
+    /// 否则每轮 `tools` 参数一变，prompt cache 整体失效。
+    /// 技能开关则立即生效（它只改运行时数据、不碰 schema）。
+    #[serde(default)]
+    tools: HashMap<String, bool>,
 }
 
 fn app_config_path() -> std::path::PathBuf {
@@ -297,12 +309,14 @@ pub(crate) fn read_file() -> AppConfigFile {
             windows: HashMap::new(),
             ui_preferences: UiPreferences::default(),
             skills: HashMap::new(),
+            tools: HashMap::new(),
         };
     };
     serde_json::from_str(&content).unwrap_or(AppConfigFile {
         windows: HashMap::new(),
         ui_preferences: UiPreferences::default(),
         skills: HashMap::new(),
+        tools: HashMap::new(),
     })
 }
 
@@ -330,6 +344,25 @@ pub fn get_all_skill_activations() -> HashMap<String, bool> {
 pub fn set_skill_activation(skill_name: &str, active: bool) -> Result<(), String> {
     let mut file = read_file();
     file.skills.insert(skill_name.to_string(), active);
+    write_file(&file)
+}
+
+// ── 工具开关（与技能同构，但生效时机不同 —— 见 AppConfigFile.tools 的注释）──
+
+/// 读取某个工具的启用状态，未记录的工具默认启用。
+pub fn get_tool_state(tool_name: &str) -> bool {
+    read_file().tools.get(tool_name).copied().unwrap_or(true)
+}
+
+/// 读取所有工具的启用状态（只含被显式设置过的条目）。
+pub fn get_all_tool_states() -> HashMap<String, bool> {
+    read_file().tools
+}
+
+/// 设置工具启用状态。
+pub fn set_tool_enabled(tool_name: &str, enabled: bool) -> Result<(), String> {
+    let mut file = read_file();
+    file.tools.insert(tool_name.to_string(), enabled);
     write_file(&file)
 }
 

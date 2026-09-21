@@ -211,6 +211,8 @@ pub fn run() {
             infra::llm::registry::list_model_registry,
             command::skill::list_skills,
             command::skill::get_skill_detail,
+            command::tool::list_tools,
+            command::tool::set_tool_active,
         ])
         .build(tauri::generate_context!())
         .expect("构建失败")
