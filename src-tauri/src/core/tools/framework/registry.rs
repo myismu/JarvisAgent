@@ -60,7 +60,14 @@ pub struct ToolDef {
     pub schema: serde_json::Value,
     /// 工具分类（用于延迟工具列表分组展示）
     pub category: &'static str,
-    /// 是否延迟加载（true = 需通过 DiscoverTools 获取后才能调用）
+    /// 是否延迟加载（true = 需通过 DiscoverTools 获取后才能调用）。
+    ///
+    /// ⚠️ **面向模型/用户的叫法是「按需工具」**（2026-09-21 改）：
+    /// - 这里保留 `defer` / "延迟"，因为它描述的正是机制本身（首次不注入 schema、推迟加载），
+    ///   对读代码的人是准确的；
+    /// - 而"延迟工具"这个词传达不了用途，模型和用户在 `GetToolCatalog`、设置页上看到的
+    ///   一律是「按需工具」—— 用时才取，不占每轮请求。
+    /// 两层刻意不一致：改字段名要动 40 多个注册点且收益为零，改文案只碰显示层。
     pub should_defer: bool,
     /// 是否只读（read_only 子代理会过滤掉非只读工具）
     pub is_read_only: bool,

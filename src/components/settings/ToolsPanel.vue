@@ -1,7 +1,7 @@
 <!--
 # ToolsPanel.vue — 设置面板的「工具」页
 
-逐个启停工具。**关掉 = 模型完全看不到该工具** —— 它不进 tools 参数、延迟工具目录里
+逐个启停工具。**关掉 = 模型完全看不到该工具** —— 它不进 tools 参数、按需工具目录里
 也搜不到，而不是"在、但调用被拒"那种软禁用。
 
 ## 生效时机：只对新会话生效
@@ -36,7 +36,8 @@ interface ToolMeta {
   name: string;
   description: string;
   category: string;
-  /** true = 延迟工具（需 GetToolCatalog → DiscoverTools → ExecuteTool 三步才能用） */
+  /** true = 按需工具（需 GetToolCatalog → DiscoverTools → ExecuteTool 三步才能用）。
+   *  字段名沿用后端的 `should_defer`：那边保留"延迟"是准确的机制描述，见 ToolDef 的注释。 */
   deferred: boolean;
   enabled: boolean;
   /** 完整 JSON Schema，与模型收到的那份是同一个对象 */
@@ -86,7 +87,7 @@ const matches = (tool: ToolMeta, needle: string) =>
 /**
  * 分两组展示，语义不同：
  * - 核心工具：schema 常驻请求体，模型随时看得到；
- * - 延迟工具：按需发现，模型不走到 DiscoverTools 那一步就看不见它。
+ * - 按需工具：用时才取，模型不走到 DiscoverTools 那一步就看不见它。
  * 分组只是帮用户理解"关掉它的代价是什么"，开关本身的效力完全一样。
  */
 const groups = computed(() => {

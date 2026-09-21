@@ -202,9 +202,9 @@ pub async fn handle_tool_call(
                 let names: Vec<String> = available.iter().map(|(n, _)| n.clone()).collect();
                 return (
                     format!(
-                        "工具 '{}' 是延迟工具，不能直接调用。请通过 ExecuteTool 代理执行。\n\
+                        "工具 '{}' 是按需工具，不能直接调用。请通过 ExecuteTool 代理执行。\n\
                         用法: ExecuteTool(name=\"{}\", args={{...}})\n\
-                        当前意图下可用的延迟工具: {}",
+                        当前意图下可用的按需工具: {}",
                         name, name,
                         if names.is_empty() { "无".to_string() } else { names.join(", ") }
                     ),
@@ -304,8 +304,8 @@ pub async fn dispatch_tool_call(
     // GetToolCatalog → DiscoverTools → ExecuteTool 抵达这里，与 RunSubagentsSequentially
     // 同级同口径；规划模式下它在工具目录里根本不出现（PLAN_BLOCKED_EXTRA）。
     //
-    // 它曾长期是 handle_tool_call 里的独家"直调分支"，理由是"进 dispatch 会编译失败"——
-    // 现象是真的（见上方文档注释里的 opaque 自递归），但结论"只能当核心工具"是绕路：
+    // 它曾长期是 handle_tool_call 里的独家「直调分支」，理由是「进 dispatch 会编译失败」——
+    // 现象是真的（见上方文档注释里的 opaque 自递归），但结论「只能当核心工具」是绕路：
     // 真正的修法是让执行器分成两支，而不是让它留在恒定的 tools 参数里。
     //
     // 模式拦截与权限判定在这里各接一次：本分支直接 return，不会再经过

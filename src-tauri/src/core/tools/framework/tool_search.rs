@@ -168,7 +168,7 @@ pub async fn handle_search_tools(
     let boundary = format!("【本会话能力边界 · 系统强制】{}", caps.summary_line());
 
     if deferred.is_empty() {
-        return format!("当前意图下没有可用的延迟加载工具。\n\n{}", boundary);
+        return format!("当前意图下没有可用的按需工具。\n\n{}", boundary);
     }
 
     let matches = search_deferred_tools(query, &deferred, max_results);
@@ -176,7 +176,7 @@ pub async fn handle_search_tools(
     if matches.is_empty() {
         let all_names: Vec<String> = deferred.iter().map(|entry| entry.name.clone()).collect();
         return format!(
-            "未找到匹配 '{}' 的工具。\n\n当前可用的延迟加载工具: {}\n\n{}\n\n请使用 'select:工具名' 精确选择，或使用关键词重新搜索。",
+            "未找到匹配 '{}' 的工具。\n\n当前可用的按需工具: {}\n\n{}\n\n请使用 'select:工具名' 精确选择，或使用关键词重新搜索。",
             query,
             all_names.join(", "),
             boundary
@@ -276,13 +276,13 @@ pub async fn handle_execute_tool(
             .collect();
         let reason = if work_mode == "plan" {
             format!(
-                "工具 '{}' 在规划模式下不可用：规划模式只做代码探索和方案提交，写操作需要切回编辑模式。\n当前可用的延迟工具: {}",
+                "工具 '{}' 在规划模式下不可用：规划模式只做代码探索和方案提交，写操作需要切回编辑模式。\n当前可用的按需工具: {}",
                 name,
                 available.join(", ")
             )
         } else {
             format!(
-                "工具 '{}' 在当前 {} 意图下不可用。\n当前可用的延迟工具: {}",
+                "工具 '{}' 在当前 {} 意图下不可用。\n当前可用的按需工具: {}",
                 name,
                 intent,
                 available.join(", ")
@@ -358,12 +358,12 @@ crate::define_tools! {
     pub fn register_tools(registry) {
         ToolDef {
             name: "DiscoverTools",
-            description: "搜索延迟加载工具，返回完整参数定义和用法示例",
+            description: "搜索按需工具，返回完整参数定义和用法示例",
             search_hint: "search tools find discover lookup",
             category: "",
             schema: json!({
                 "name": "DiscoverTools",
-                "description": "搜索延迟加载工具，返回完整参数定义和用法示例。不确定有哪些可用工具时，先调用 GetToolCatalog 获取目录。支持 'select:ToolName1,ToolName2' 精确选择。获取 schema 后使用 ExecuteTool 执行。",
+                "description": "搜索按需工具，返回完整参数定义和用法示例。不确定有哪些可用工具时，先调用 GetToolCatalog 获取目录。支持 'select:ToolName1,ToolName2' 精确选择。获取 schema 后使用 ExecuteTool 执行。",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -386,12 +386,12 @@ crate::define_tools! {
         },
         ToolDef {
             name: "ExecuteTool",
-            description: "代理执行延迟加载工具（先用 DiscoverTools 获取参数定义，再用此工具执行）",
+            description: "代理执行按需工具（先用 DiscoverTools 获取参数定义，再用此工具执行）",
             search_hint: "run execute deferred tool invoke call",
             category: "",
             schema: json!({
                 "name": "ExecuteTool",
-                "description": "代理执行延迟加载工具。先用 GetToolCatalog 获取可用工具目录，再用 DiscoverTools 了解工具参数，最后用此工具执行。name 传工具名，args 传该工具的参数对象。",
+                "description": "代理执行按需工具。先用 GetToolCatalog 获取可用工具目录，再用 DiscoverTools 了解工具参数，最后用此工具执行。name 传工具名，args 传该工具的参数对象。",
                 "input_schema": {
                     "type": "object",
                     "properties": {

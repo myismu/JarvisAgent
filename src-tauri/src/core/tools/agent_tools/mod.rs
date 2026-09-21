@@ -61,7 +61,9 @@ pub async fn get_tool_catalog(
     // 延迟工具列表
     let groups = ToolRegistry::global().get_deferred_by_category(intent, work_mode, &filter);
     if !groups.is_empty() {
-        out.push_str("【延迟工具】（需通过 ExecuteTool 执行）:\n");
+        // 面向模型的叫法："按需工具" —— 描述用途（用时才取），而不是机制（首次不注入）。
+        // 代码里的 `should_defer` / "延迟" 是准确的内部术语，两者刻意不一致，见 ToolDef 的注释。
+        out.push_str("【按需工具】（需通过 ExecuteTool 执行）:\n");
         for (category, names) in &groups {
             out.push_str(&format!("- {}: {}\n", category, names.join(", ")));
         }
@@ -80,10 +82,10 @@ pub async fn get_tool_catalog(
     }
 
     if out.is_empty() {
-        return framework::ToolCallResult::error("当前意图下没有可用的延迟工具或技能。".to_string());
+        return framework::ToolCallResult::error("当前意图下没有可用的按需工具或技能。".to_string());
     }
 
-    out.push_str("\n使用方式:\n- 延迟工具: 先 DiscoverTools 查询参数，再 ExecuteTool(name=\"工具名\", args={...}) 执行\n- 技能: 直接 LoadSkill(name=\"技能名\") 加载");
+    out.push_str("\n使用方式:\n- 按需工具: 先 DiscoverTools 查询参数，再 ExecuteTool(name=\"工具名\", args={...}) 执行\n- 技能: 直接 LoadSkill(name=\"技能名\") 加载");
     framework::ToolCallResult::ok(out)
 }
 
@@ -107,7 +109,7 @@ crate::define_tools! {
             "GetToolCatalog",
             desc: "获取可用工具和技能目录",
             hint: "get tool catalog available tools skills discover",
-            schema_desc: "获取当前可用的延迟工具列表（按分类分组）和技能列表。当你需要使用非核心工具（如 WriteFile、EditFile、RunCommand 等写操作工具）或加载技能时，必须先调用此工具获取可用资源目录。延迟工具通过 DiscoverTools + ExecuteTool 两步执行，技能通过 LoadSkill 直接加载。",
+            schema_desc: "获取当前可用的按需工具列表（按分类分组）和技能列表。当你需要使用非核心工具（如 WriteFile、EditFile、RunCommand 等写操作工具）或加载技能时，必须先调用此工具获取可用资源目录。按需工具通过 DiscoverTools + ExecuteTool 两步执行，技能通过 LoadSkill 直接加载。",
             category: "系统",
             read_only: true,
             concurrency_safe: true,
