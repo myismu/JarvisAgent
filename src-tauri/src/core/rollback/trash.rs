@@ -59,6 +59,54 @@ pub fn move_to(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
 }
 
+/// 删除某会话回收站里**没有被任何快照引用**的条目，返回删除个数。
+///
+/// `referenced` = "仍被快照引用的回收站路径"集合（即 `Patch::DeleteFile.trash_path` 的全集）。
+/// 这是回收站唯一的存活判据：**按引用清，不按时间/会话清** —— 清早了会让回滚缺本体，
+/// 而那属于"事后无法补救"（只能靠回滚时的告警告诉用户）。
+///
+/// 比较只用**文件名**：回收站是平铺的（一次删除 = 一个条目，文件名带时间戳前缀，唯一），
+/// 而路径形态（分隔符、大小写）在不同来源下不保证一致，比文件名字段更稳。
+pub fn remove_unreferenced(
+    session_id: &str,
+    referenced: &std::collections::HashSet<String>,
+) -> usize {
+    let root = trash_root(session_id);
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return 0; // 回收站目录不存在 = 没有可清的
+    };
+    let referenced_names: std::collections::HashSet<&str> = referenced
+        .iter()
+        .filter_map(|p| Path::new(p).file_name().and_then(|n| n.to_str()))
+        .collect();
+
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if referenced_names.contains(name) {
+            continue; // 仍被快照引用 → 留给回滚
+        }
+        let path = entry.path();
+        let ok = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        if ok.is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// 清空某会话的回收站（会话被**删除**时用）。
+///
+/// 会话删了就没有任何回滚渠道了，回收站里的本体再没有任何用处，留着只是占空间。
+pub fn purge_session(session_id: &str) {
+    let _ = std::fs::remove_dir_all(trash_root(session_id));
+}
+
 /// 递归复制（目录/文件通吃）。`std::fs::copy` 只认文件，所以目录要自己走一层。
 pub fn copy_recursively(src: &Path, dst: &Path) -> std::io::Result<()> {
     if src.is_dir() {
@@ -116,6 +164,42 @@ mod tests {
             std::fs::read_to_string(dst.join("nested").join("x.txt")).unwrap(),
             "x"
         );
+    }
+
+    /// 按引用清：被引用的留下、没被引用的清掉。
+    ///
+    /// 这里是"删早了会让回滚缺本体"的那条判据，必须锁住。
+    #[test]
+    fn remove_unreferenced_keeps_referenced_entries_only() {
+        let root = trash_root("sess-gc");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let kept = root.join("111_kept.txt");
+        let stale_file = root.join("222_stale.txt");
+        let stale_dir = root.join("333_stale-dir");
+        std::fs::write(&kept, "x").unwrap();
+        std::fs::write(&stale_file, "y").unwrap();
+        std::fs::create_dir_all(&stale_dir).unwrap();
+
+        let referenced: std::collections::HashSet<String> =
+            [kept.to_string_lossy().to_string()].into_iter().collect();
+        let removed = remove_unreferenced("sess-gc", &referenced);
+
+        assert!(kept.exists(), "被引用的条目必须留下（回滚要用）");
+        assert!(!stale_file.exists() && !stale_dir.exists(), "没被引用的条目应被清掉");
+        assert_eq!(removed, 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 回收站目录不存在时不能报错（没删过东西是常态）
+    #[test]
+    fn remove_unreferenced_is_noop_without_a_trash_dir() {
+        let removed = remove_unreferenced(
+            "sess-never-deleted-anything",
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(removed, 0);
     }
 
     /// 跨卷时的退路：递归复制既能搬文件也能搬目录

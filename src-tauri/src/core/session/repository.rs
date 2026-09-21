@@ -1216,6 +1216,27 @@ pub fn list_projects() -> Result<Vec<crate::core::session::ProjectMeta>, String>
     })
 }
 
+/// 列某项目名下的会话 id。
+///
+/// 给"删项目"用：那条路径会连带删掉名下所有会话（`DELETE FROM sessions WHERE project_id`），
+/// 而回滚侧产物（快照表 / 回收站目录）没有 FK 级联 —— 必须**删之前**把 id 抓出来，
+/// 删完就再也查不到了。
+pub fn list_session_ids_of_project(project_id: &str) -> Result<Vec<String>, String> {
+    crate::infra::db::with_connection(|conn| {
+        let mut stmt = conn
+            .prepare("SELECT id FROM sessions WHERE project_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([project_id], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(ids)
+    })
+}
+
 pub fn delete_project(id: &str) -> Result<(), String> {
     crate::infra::db::with_connection(|conn| {
         conn.execute("DELETE FROM sessions WHERE project_id = ?1", [id])

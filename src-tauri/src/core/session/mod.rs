@@ -839,9 +839,34 @@ pub fn get_session_meta(id: &str) -> Result<SessionMeta, String> {
     repository::get_session_meta(id)
 }
 
-/// 删除会话
+/// 删除会话（**硬删除**：`DELETE FROM sessions`）。
+///
+/// 连带清理它**再也用不到**的两样东西 —— 不清理的话它们会永久留在库里：
+/// - **快照数据**：`snapshot_trees` / `snapshot_content` 等表**没有 FK 级联**
+///   （只有 `session_messages` 有 `ON DELETE CASCADE`），删会话不会带走它们；
+/// - **回收站目录**：会话没了就没有任何回滚渠道，回收站里的本体留着只是占空间。
+///
+/// 清理失败不阻断删除本身：会话已经删了，回头再清一次比"删不掉"更合理。
 pub fn delete_session(id: &str) -> Result<(), String> {
-    repository::delete_session(id)
+    repository::delete_session(id)?;
+    purge_rollback_artifacts(id);
+    Ok(())
+}
+
+/// 清掉某会话的回滚侧产物（快照数据 + 回收站目录）。
+///
+/// 抽出来是因为除单会话删除外，**删项目**也会连带删掉它名下的所有会话
+/// （`repository::delete_project` 里的 `DELETE FROM sessions WHERE project_id`）。
+pub fn purge_rollback_artifacts(session_id: &str) {
+    if let Err(e) =
+        crate::core::rollback::store::SnapshotStore::new(session_id).delete_all_for_session()
+    {
+        eprintln!(
+            "[Session] 清理已删会话 {} 的快照数据失败: {}",
+            session_id, e
+        );
+    }
+    crate::core::rollback::trash::purge_session(session_id);
 }
 
 /// 重命名会话

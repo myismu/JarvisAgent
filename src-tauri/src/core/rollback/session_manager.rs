@@ -9,8 +9,8 @@
 use super::snapshot::Branch;
 use super::store::SnapshotStore;
 use super::{
-    FileInfo, Journal, JournalEntry, Patch, PatchSummary, ReplayEngine, Snapshot,
-    SnapshotSummary, SnapshotTree, SnapshotTreeView, Workspace, WorkspaceState,
+    FileInfo, GarbageCollector, GcConfig, Journal, JournalEntry, Patch, PatchSummary, ReplayEngine,
+    Snapshot, SnapshotSummary, SnapshotTree, SnapshotTreeView, Workspace, WorkspaceState,
 };
 use crate::core::orchestration::multi_agent::{
     AgentSandbox, Conflict, ConflictResolution, MergeEngine, MergeResult,
@@ -48,9 +48,34 @@ impl SessionSnapshotManager {
         let journal = Journal::open(session_id).map_err(|e| format!("打开日志失败: {}", e))?;
 
         let store = SnapshotStore::new(session_id);
-        let tree = store
+        let mut tree = store
             .load_tree()
             .unwrap_or_else(|_| SnapshotTree::new(session_id));
+
+        // ── GC 触发点：本会话在本进程首次被打开时跑一次 ──
+        // 放在这里而不是"启动时扫全部会话"：GC 是按会话的，而会话数量没有上限。
+        // 三个阶段都是"按引用判定"（见 gc.rs），所以随时跑都安全，不会误删还有用的东西。
+        {
+            let gc = GarbageCollector::new(GcConfig::default());
+            let result = gc.collect(&mut tree, session_id);
+            let touched = result.removed_tree_snapshots
+                + result.removed_orphan_contents
+                + result.removed_branches
+                + result.removed_trash_entries;
+            if touched > 0 {
+                println!(
+                    "[GC] 会话 {} 回收：快照 {} / 孤儿内容 {} / 孤立分支 {} / 回收站条目 {}",
+                    session_id,
+                    result.removed_tree_snapshots,
+                    result.removed_orphan_contents,
+                    result.removed_branches,
+                    result.removed_trash_entries
+                );
+                if let Err(e) = store.save_tree(&tree) {
+                    eprintln!("[GC] 会话 {} 保存清理后的快照树失败: {}", session_id, e);
+                }
+            }
+        }
 
         let replay_engine = ReplayEngine::new(session_id);
 

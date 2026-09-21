@@ -2,9 +2,15 @@
 //!
 //! 清理过期快照、孤立分支和孤儿内容，释放存储空间。
 //!
-//! GC 分三个阶段：
+//! GC 分三个阶段（**同一套口径：按引用判定，不按时间拍脑袋**）：
 //! 1. 清理快照树中脱离分支链路且超期的快照节点
 //! 2. 清理 snapshot_content 表中未被任何 workspaceState 引用的孤儿内容
+//! 3. 清理回收站中未被任何快照引用的条目（`trash_path` 的引用关系）
+//!
+//! ## 触发时机
+//! 由 `SnapshotRegistry::get_or_create` 在**每个会话本进程首次被打开时**跑一次
+//! （见 `session_manager.rs`），会话被删除时则由 `session::delete_session` 整体清空。
+//! 之所以不放在"启动时扫全部会话"：会话数量没有上限，而 GC 是按会话的，扫全量不划算。
 
 use super::snapshot::SnapshotTree;
 use std::collections::HashSet;
@@ -50,6 +56,8 @@ pub struct GcResult {
     pub removed_orphan_contents: usize,
     /// 清理的孤立分支数
     pub removed_branches: usize,
+    /// 从回收站清理的"未被任何快照引用"的条目数
+    pub removed_trash_entries: usize,
 }
 
 /// 垃圾回收器
@@ -105,7 +113,34 @@ impl GarbageCollector {
         // ═══ 阶段 2：清理 snapshot_content 表中的孤儿内容 ═══
         result.removed_orphan_contents = self.cleanup_orphan_contents(session_id, tree);
 
+        // ═══ 阶段 3：清理回收站中未被任何快照引用的条目 ═══
+        result.removed_trash_entries = self.cleanup_orphan_trash(session_id, tree);
+
         result
+    }
+
+    /// 阶段 3：清理回收站里"没有任何快照引用"的条目。
+    ///
+    /// 回收站存在的唯一理由是给回滚提供本体（`Patch::DeleteFile.trash_path`），
+    /// 所以**引用关系就是它的存活判据**：tree 里所有 patch 的 `trash_path` 构成
+    /// "被引用集合"，回收站目录里不在该集合中的条目 = 已经不可能被任何回滚用到 → 可清。
+    ///
+    /// ⚠️ 不要改成"按时间/按大小清"：清早了会让回滚缺本体，而那种缺失事后无法补救
+    /// （只能靠回滚时的告警告知用户）。
+    fn cleanup_orphan_trash(&self, session_id: &str, tree: &SnapshotTree) -> usize {
+        let mut referenced: HashSet<String> = HashSet::new();
+        for snapshot in tree.nodes.values() {
+            for patch in &snapshot.patches {
+                if let super::patch::Patch::DeleteFile {
+                    trash_path: Some(path),
+                    ..
+                } = patch
+                {
+                    referenced.insert(path.clone());
+                }
+            }
+        }
+        super::trash::remove_unreferenced(session_id, &referenced)
     }
 
     /// 判断快照是否应被删除
@@ -184,6 +219,65 @@ impl GarbageCollector {
 }
 
 /// 从数据库删除单条快照记录
+
+/// 阶段 3 的专门测试：回收站里"没被任何快照引用"的条目该被清掉，被引用的必须留下。
+///
+/// 这条锁的是"删早了会让回滚缺本体"的风险 —— 判据只能是引用，不能是时间/大小。
+#[cfg(test)]
+mod trash_gc_tests {
+    use super::*;
+    use super::super::patch::Patch;
+    use super::super::snapshot::Snapshot;
+
+    #[test]
+    fn gc_removes_only_unreferenced_trash_entries() {
+        let _ = crate::AGENT_HOME_DIR.set(std::env::temp_dir().join("jarvisagent-gc-trash-test"));
+        let session = "gc-trash-session";
+        let root = super::super::trash::trash_root(session);
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        // 回收站里两条：一条被快照引用（回滚要用），一条没有任何引用
+        let kept = root.join("111_kept.bin");
+        let stale = root.join("222_stale.bin");
+        std::fs::write(&kept, "x").unwrap();
+        std::fs::write(&stale, "y").unwrap();
+
+        let mut tree = SnapshotTree::new(session);
+        let mut snap = Snapshot {
+            id: "s1".to_string(),
+            parent_id: None,
+            branch_name: "main".to_string(),
+            patches: vec![Patch::DeleteFile {
+                path: "C:/ws/kept.bin".to_string(),
+                content_hash: None,
+                trash_path: Some(kept.to_string_lossy().to_string()),
+            }],
+            message: None,
+            is_checkpoint: false,
+            workspace_state: None,
+            agent_id: None,
+            workspace_id: None,
+            created_at: current_timestamp(),
+            metadata: Default::default(),
+        };
+        snap.patches.push(Patch::DeleteFile {
+            path: "C:/ws/other.txt".to_string(),
+            content_hash: Some("deadbeef".to_string()),
+            // 有内容（文本文件）→ 不走回收站通道，trash_path 为空
+            trash_path: None,
+        });
+        tree.nodes.insert("s1".to_string(), snap);
+
+        let gc = GarbageCollector::new(GcConfig::default());
+        let result = gc.collect(&mut tree, session);
+
+        assert!(kept.exists(), "被快照引用的回收站条目必须留下，否则回滚会缺本体");
+        assert!(!stale.exists(), "没有被引用的回收站条目应被清掉");
+        assert_eq!(result.removed_trash_entries, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
 
 /// 当前时间戳（**毫秒**，Unix epoch）——全项目 DB 时间戳统一毫秒口径（v16 起）。
 fn current_timestamp() -> u64 {

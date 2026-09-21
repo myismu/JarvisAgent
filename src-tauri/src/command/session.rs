@@ -193,7 +193,16 @@ pub async fn list_projects() -> Result<Vec<session::ProjectMeta>, String> {
 
 #[tauri::command]
 pub async fn delete_project(id: String) -> Result<(), String> {
-    crate::core::session::repository::delete_project(&id)
+    use crate::core::session::repository;
+    // 删项目会连带删掉它名下的所有会话（repository 里那条 DELETE FROM sessions），
+    // 所以要**先**把会话 id 抓出来，删完就查不到了；再逐个清回滚侧产物
+    // （快照表没有 FK 级联，不清就是永久孤儿）。
+    let session_ids = repository::list_session_ids_of_project(&id).unwrap_or_default();
+    repository::delete_project(&id)?;
+    for sid in session_ids {
+        crate::core::session::purge_rollback_artifacts(&sid);
+    }
+    Ok(())
 }
 
 #[tauri::command]
