@@ -186,7 +186,12 @@ pub async fn get_assembled_system_prompt(
         }
         // 动态上下文：按 ACTION（项目操作）场景拼装最全形态；模式规则随所选模式变
         "dynamic" => {
-            let caps = crate::core::tools::framework::capabilities::Capabilities::for_work_mode(mode);
+            // 预览路径没有会话上下文，用 allow_all：这里展示的是"提示词模板长什么样"，
+            // 不是某个会话的实际生效形态（真实会话走 pipeline，那里传的是会话快照）。
+            let caps = crate::core::tools::framework::capabilities::Capabilities::for_work_mode(
+                mode,
+                &crate::core::tools::framework::registry::ToolFilter::allow_all(),
+            );
             Ok(crate::core::agent::build_dynamic_context(
                 "ACTION",
                 &ws_buf,

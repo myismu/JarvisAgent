@@ -38,16 +38,19 @@ use crate::core::tools::framework;
 
 /// GetToolCatalog 处理函数：从 ToolRegistry 获取延迟工具列表 + 从 skills 目录获取技能列表
 pub async fn get_tool_catalog(
-    _app: &tauri::AppHandle,
+    app: &tauri::AppHandle,
     _input: &serde_json::Value,
-    _session_id: &str,
+    session_id: &str,
     intent: &str,
     work_mode: &str,
 ) -> framework::ToolCallResult {
+    // 用户关掉的工具不能出现在目录里：否则"关掉"只是让它多走一步才被拒，
+    // 而模型的发现流程已经烧掉了 token 和时间 —— 本模块开头那段注释讲的正是这个。
+    let filter = crate::core::tools::tool_filter_for(app, session_id).await;
     let mut out = String::new();
 
     // 能力边界先行：一次调用就给出确定结论，避免模型反复搜索被禁用的能力
-    let caps = framework::capabilities::Capabilities::for_work_mode(work_mode);
+    let caps = framework::capabilities::Capabilities::for_work_mode(work_mode, &filter);
     out.push_str("【本会话能力边界 · 系统强制】\n");
     out.push_str(&format!("- {}\n", caps.summary_line()));
     if !caps.write {
@@ -56,7 +59,7 @@ pub async fn get_tool_catalog(
     out.push('\n');
 
     // 延迟工具列表
-    let groups = ToolRegistry::global().get_deferred_by_category(intent, work_mode);
+    let groups = ToolRegistry::global().get_deferred_by_category(intent, work_mode, &filter);
     if !groups.is_empty() {
         out.push_str("【延迟工具】（需通过 ExecuteTool 执行）:\n");
         for (category, names) in &groups {

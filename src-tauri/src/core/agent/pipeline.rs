@@ -110,6 +110,12 @@ struct PipelineState {
     detected_intent: String,
     /// 本轮能力清单（由工作模式推导，注入动态上下文 / 目录输出 / 执行期校验共用）
     capabilities: crate::core::tools::framework::capabilities::Capabilities,
+    /// 本会话的工具开关快照（setup 时从 `SessionContext` 取，整轮复用）。
+    ///
+    /// 存一份而不是每轮现取：`current_tools()` 是同步函数、快照获取是异步的；
+    /// 更重要的是本轮所有"可见性判断"必须用**同一份** —— 否则又会出现
+    /// "目录里看不见、调用时却放行"的两套真相。
+    tool_filter: crate::core::tools::framework::registry::ToolFilter,
     dynamic_context_str: String,
     user_msg_preview: String,
     initial_msg_index: usize,
@@ -797,6 +803,14 @@ impl PipelineState {
             cache.clone().expect("just populated")
         };
 
+        // 步骤 6.4：取本会话的工具开关快照
+        //
+        // 在这里取（而不是每轮现取）有两层用意：
+        // 1. `ctx.tool_filter()` 会按需从配置固化一份快照，此后本会话复用 —— 于是
+        //    `current_tools()` 每轮拿到的 tools 参数字节恒定，prompt cache 照常命中；
+        // 2. 它是异步的，而 `current_tools()` 是同步的，只能在这里取好存进 PipelineState。
+        let tool_filter = ctx.tool_filter().await;
+
         // 步骤 6.5：能力清单
         //
         // 只用于注入"能力边界声明"（动态上下文 + 工具目录结论），让模型第一轮就知道
@@ -805,6 +819,7 @@ impl PipelineState {
         // 这样用户少一次往返（不必先回一句"先给方案"）。
         let capabilities = crate::core::tools::framework::capabilities::Capabilities::for_work_mode(
             &current_work_mode,
+            &tool_filter,
         );
 
         // 步骤 7：判断是否携带图片 —— 意图分类时提示 LLM 结合截图理解
@@ -965,6 +980,7 @@ impl PipelineState {
             session_think_mode,
             detected_intent: detected_intent.clone(),
             capabilities,
+            tool_filter,
             // 以下字段在后续阶段填充
             dynamic_context_str: String::new(),
                         user_msg_preview: String::new(),
@@ -1043,9 +1059,11 @@ impl PipelineState {
             session.snapshot_seq = session.snapshot_seq.saturating_add(1);
             session.snapshot_seq
         };
-        // 能力清单位于快照内，必须与当前 work_mode 保持一致（审批通过/首轮强制切 plan 后亦然）
+        // 能力清单位于快照内，必须与当前 work_mode 保持一致（审批通过/首轮强制切 plan 后亦然）；
+        // 工具开关则用 setup 时取好的会话快照，保证与 current_tools() 的可见性口径一致
         self.capabilities = crate::core::tools::framework::capabilities::Capabilities::for_work_mode(
             &current_mode,
+            &self.tool_filter,
         );
         self.dynamic_context_str = build_dynamic_context(
             &self.detected_intent,
@@ -3090,9 +3108,12 @@ impl PipelineState {
         }
     }
 
-    /// 获取当前会话可用的工具定义（固定核心工具集，参数不变以命中 prompt cache）
+    /// 获取当前会话可用的工具定义（核心工具集，再按本会话的工具开关过滤）。
+    ///
+    /// 用 `self.tool_filter`（setup 时取好的会话快照）而非现读配置：
+    /// 这样整个会话内 `tools` 参数保持字节恒定，prompt cache 照常命中。
     fn current_tools(&self) -> Vec<serde_json::Value> {
-        get_tools_definition()
+        get_tools_definition(&self.tool_filter)
     }
 
     /// 从完整消息列表生成“发给 LLM 的历史快照”（只读处理，不改原历史）：
@@ -3992,7 +4013,10 @@ impl PipelineState {
             session.snapshot_seq
         };
 
-        let capabilities = crate::core::tools::framework::capabilities::Capabilities::for_work_mode(mode);
+        let capabilities = crate::core::tools::framework::capabilities::Capabilities::for_work_mode(
+            mode,
+            &self.tool_filter,
+        );
         let snapshot = build_dynamic_context(
             &self.detected_intent,
             &self.request_workspace,

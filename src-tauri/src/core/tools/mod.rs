@@ -41,6 +41,8 @@ use std::path::Path;
 
 use crate::infra::types::models::Skill;
 use crate::get_agent_home;
+// `try_state` 是 Manager trait 的方法，不 import 就用不了（tool_filter_for 里要用）
+use tauri::Manager;
 
 // Re-export 供外部使用的公开接口
 pub use agent_tools::run_subagent;
@@ -123,10 +125,30 @@ pub fn parse_skill(text: &str, path: &Path) -> Option<Skill> {
     None
 }
 
-// 获取工具定义（始终返回固定核心工具集，保证 prompt cache 命中）
-// 意图+工作模式过滤仅通过上下文注入 + ExecuteTool 运行时校验实现
-pub fn get_tools_definition() -> Vec<serde_json::Value> {
-    get_core_tool_definitions()
+// 获取工具定义（核心工具集，再按本会话的用户开关过滤）
+//
+// 注：这里**不是**"永远恒定"，而是"**会话内**恒定" —— 用户开关的快照在会话开始时
+// 固化一次，此后所有 turn 复用，`tools` 参数因此保持字节恒定、prompt cache 照常命中。
+// 用户改开关只会影响新会话（或显式点"应用到当前会话"）。
+pub fn get_tools_definition(filter: &framework::registry::ToolFilter) -> Vec<serde_json::Value> {
+    get_core_tool_definitions(filter)
+}
+
+/// 取本会话的工具开关快照（尚未快照时从配置读一次并固化，此后复用）。
+///
+/// 收口在这里：调用方只需 app + session_id，不必自己摸 SessionManager、
+/// 也不必知道快照存在哪。**目录过滤与运行时校验必须走同一份** ——
+/// 本函数就是它们的共同来源。
+pub async fn tool_filter_for(
+    app: &tauri::AppHandle,
+    session_id: &str,
+) -> framework::registry::ToolFilter {
+    match app.try_state::<crate::infra::state::state::SessionManager>() {
+        Some(manager) => manager.get_or_create(session_id).await.tool_filter().await,
+        // 没有 SessionManager（测试 / 启动极早期）：全部启用 ——
+        // 开关是"少给几个工具"的偏好，不该在拿不到会话时把功能整个锁死。
+        None => framework::registry::ToolFilter::allow_all(),
+    }
 }
 
 /// 工具调用路由：根据工具名分发到对应模块
@@ -142,8 +164,9 @@ pub async fn handle_tool_call(
     // 绕开 dispatch）。该分支已退役——它现在是普通延迟工具，与其他所有工具走同一条路：
     // ExecuteTool → dispatch_tool_call。退役理由见 dispatch_tool_call 里该工具分支的注释。
     if name == "ExecuteTool" {
+        let filter = tool_filter_for(app, session_id).await;
         let result = framework::tool_search::handle_execute_tool(
-            app, input, session_id, "main", intent, work_mode,
+            app, input, session_id, "main", intent, work_mode, &filter,
         ).await;
         // handle_execute_tool 内部已通过 log_deferred_call 记录了完整的审计日志
         // （含工具名、错误类型、纠正追踪）。此处不再重复记录，避免同一次调用产生
@@ -164,12 +187,18 @@ pub async fn handle_tool_call(
         // 到 ExecuteTool 里再吃一次拒绝，白烧一个来回。
         if let Some(tool_def) = framework::registry::ToolRegistry::global().get(name) {
             if tool_def.should_defer {
-                if !framework::registry::ToolRegistry::is_available(tool_def, intent, work_mode) {
+                let filter = tool_filter_for(app, session_id).await;
+                if !framework::registry::ToolRegistry::is_available(
+                    tool_def,
+                    intent,
+                    work_mode,
+                    &filter,
+                ) {
                     if let Some(message) = mode_block_message(name, intent, work_mode) {
                         return (message, 0, 0);
                     }
                 }
-                let available = get_deferred_tool_list(intent, work_mode);
+                let available = get_deferred_tool_list(intent, work_mode, &filter);
                 let names: Vec<String> = available.iter().map(|(n, _)| n.clone()).collect();
                 return (
                     format!(
@@ -427,9 +456,12 @@ pub async fn dispatch_core_tool(
 
         // 工具搜索（纯搜索，始终成功）
         "DiscoverTools" => {
+            let filter = tool_filter_for(app, session_id).await;
             return framework::ToolCallResult::ok(
-                framework::tool_search::handle_search_tools(input, intent, session_id, work_mode)
-                    .await,
+                framework::tool_search::handle_search_tools(
+                    input, intent, session_id, work_mode, &filter,
+                )
+                .await,
             );
         }
 
@@ -546,6 +578,9 @@ pub fn is_write_tool(name: &str) -> bool {
 #[cfg(test)]
 mod write_guard_tests {
     use super::*;
+    // ToolFilter 是给可见性判断加的"会话维度"参数；这些用例验证的是模式/意图过滤，
+    // 与用户开关无关，统一传 allow_all()
+    use crate::core::tools::framework::registry::ToolFilter;
 
     #[test]
     fn plan_mode_blocks_write_tools() {
@@ -629,7 +664,7 @@ mod write_guard_tests {
         );
         // 先绑定到变量：get_core_definitions() 返回 owned Vec，
         // 直接 .iter() 链式会借用临时值，语句结束即释放（E0716）。
-        let core_defs = registry.get_core_definitions();
+        let core_defs = registry.get_core_definitions(&ToolFilter::allow_all());
         let core_names: Vec<&str> = core_defs
             .iter()
             .filter_map(|d| d["name"].as_str())
@@ -652,20 +687,20 @@ mod write_guard_tests {
             .expect("RunSubagent 必须已注册");
 
         assert!(
-            !framework::registry::ToolRegistry::is_available(def, "PROJECT_ACTION", "plan"),
+            !framework::registry::ToolRegistry::is_available(def, "PROJECT_ACTION", "plan", &ToolFilter::allow_all()),
             "规划模式下 RunSubagent 必须不可用（否则子代理内层 edit 模式=写保护旁路）"
         );
         assert!(
-            framework::registry::ToolRegistry::is_available(def, "PROJECT_ACTION", "edit"),
+            framework::registry::ToolRegistry::is_available(def, "PROJECT_ACTION", "edit", &ToolFilter::allow_all()),
             "编辑模式下必须可用，否则这个工具等于被删了"
         );
 
-        let plan_list = framework::tool_search::get_deferred_tool_list("PROJECT_ACTION", "plan");
+        let plan_list = framework::tool_search::get_deferred_tool_list("PROJECT_ACTION", "plan", &ToolFilter::allow_all());
         assert!(
             !plan_list.iter().any(|(n, _)| n == "RunSubagent"),
             "规划模式的延迟工具目录里不得出现 RunSubagent"
         );
-        let edit_list = framework::tool_search::get_deferred_tool_list("PROJECT_ACTION", "edit");
+        let edit_list = framework::tool_search::get_deferred_tool_list("PROJECT_ACTION", "edit", &ToolFilter::allow_all());
         assert!(
             edit_list.iter().any(|(n, _)| n == "RunSubagent"),
             "编辑模式的延迟工具目录里必须有 RunSubagent，否则模型永远发现不了它"

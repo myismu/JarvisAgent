@@ -14,8 +14,8 @@
 //! - 写操作工具（WriteFile, EditFile）设为延迟工具，防止聊天模式下误操作
 //! - 只读保护模式（work_mode = chat）下按元数据过滤工具目录：只放行只读工具 + 会话管理工具
 
-use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, OnceLock};
 
 /// 工具定义：包含元数据和完整 JSON Schema
 ///
@@ -68,6 +68,66 @@ pub struct ToolDef {
     pub is_concurrency_safe: bool,
     /// 运行时是否启用
     pub is_enabled: bool,
+}
+
+/// 本会话启用的工具集合 —— 用户「工具开关」的**会话级快照**。
+///
+/// ## 为什么要快照，而不是每次直接读配置
+///
+/// 核心工具的 schema 会进请求体的 `tools` 参数，而它**必须会话内字节恒定**：
+/// `tools` 排在 messages 之前，动一下后面全部历史缓存雪崩（OpenAI 那边还要求
+/// 同一 thread 内 `tools` 绝对静态）。所以开关改完只对**新会话**生效 ——
+/// 与 `system_prompt_cache` 是同一个道理、同一套约束。
+///
+/// ## 为什么它必须显式传进每个可见性判断
+///
+/// 现有的可见性判断是纯函数（意图 × 工作模式），加上开关后就多了第三个维度（会话）。
+/// 项目有一条硬规约：**工具目录过滤与运行期校验必须走同一个 `is_available`**，
+/// 否则会出现"目录里看不见、调用时又放行"的两套真相。所以 filter 不能藏在全局状态里
+/// 让某些调用点绕过 —— 它必须作为参数出现在每个判断点上，**漏传会直接编译不过**，
+/// 这正是我们要的：编译器替我们守着"没有第二套真相"。
+#[derive(Debug, Clone, Default)]
+pub struct ToolFilter {
+    /// 被**禁用**的工具名。空集 = 全部启用，这是没有开关配置时的常态。
+    ///
+    /// 用 `Arc` 是为了让挂在 `SessionContext` 上的快照能被廉价克隆 ——
+    /// 每轮构建请求都要用它，逐轮深拷贝一份 HashSet 不值得。
+    disabled: Arc<HashSet<String>>,
+}
+
+impl ToolFilter {
+    /// 从「工具名 → 是否启用」的配置构造。
+    ///
+    /// 只收集**被显式关掉的**名字 —— 未出现的默认为启用，这样将来新增工具
+    /// 不必回头改配置文件（与技能开关同构）。
+    pub fn from_states(states: &HashMap<String, bool>) -> Self {
+        Self {
+            disabled: Arc::new(
+                states
+                    .iter()
+                    .filter(|(_, enabled)| !**enabled)
+                    .map(|(name, _)| name.clone())
+                    .collect(),
+            ),
+        }
+    }
+
+    /// 全部启用。
+    ///
+    /// 给两类路径用：测试；以及确实没有会话上下文的场合（如设置页的提示词预览）。
+    /// ⚠️ 生产路径不要图省事用它 —— 那等于静默绕过用户的开关。
+    pub fn allow_all() -> Self {
+        Self::default()
+    }
+
+    pub fn is_enabled(&self, tool_name: &str) -> bool {
+        !self.disabled.contains(tool_name)
+    }
+
+    /// 被禁用的工具名（供设置页回显与测试断言）。
+    pub fn disabled_names(&self) -> Vec<&str> {
+        self.disabled.iter().map(|name| name.as_str()).collect()
+    }
 }
 
 /// 全局工具注册表（懒初始化）
@@ -125,12 +185,16 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// 获取核心工具定义（should_defer == false && is_enabled）
-    pub fn get_core_definitions(&self) -> Vec<serde_json::Value> {
+    /// 获取核心工具定义（should_defer == false && is_enabled && 用户开关放行）。
+    ///
+    /// 这是**模型能看到哪些核心工具的唯一出口** —— 它直接决定请求体的 `tools` 参数。
+    /// filter 漏在这里的后果最严重：关掉的工具照样常驻 schema，而且因为 schema 恒定，
+    /// 它会一直躺着直到用户重启——用户会以为开关坏了。
+    pub fn get_core_definitions(&self, filter: &ToolFilter) -> Vec<serde_json::Value> {
         self.insertion_order
             .iter()
             .filter_map(|name| self.tools.get(name))
-            .filter(|t| !t.should_defer && t.is_enabled)
+            .filter(|t| !t.should_defer && t.is_enabled && filter.is_enabled(t.name))
             .map(|t| t.schema.clone())
             .collect()
     }
@@ -140,12 +204,13 @@ impl ToolRegistry {
         &self,
         intent: &str,
         work_mode: &str,
+        filter: &ToolFilter,
     ) -> Vec<(&'static str, &'static str)> {
         self.insertion_order
             .iter()
             .filter_map(|name| self.tools.get(name))
             .filter(|t| t.should_defer && t.is_enabled)
-            .filter(|t| Self::is_available(t, intent, work_mode))
+            .filter(|t| Self::is_available(t, intent, work_mode, filter))
             .map(|t| (t.name, t.description))
             .collect()
     }
@@ -155,31 +220,44 @@ impl ToolRegistry {
         &self,
         intent: &str,
         work_mode: &str,
+        filter: &ToolFilter,
     ) -> Vec<(&'static str, &'static str, &'static str)> {
         self.insertion_order
             .iter()
             .filter_map(|name| self.tools.get(name))
             .filter(|t| t.should_defer && t.is_enabled)
-            .filter(|t| Self::is_available(t, intent, work_mode))
+            .filter(|t| Self::is_available(t, intent, work_mode, filter))
             .map(|t| (t.name, t.description, t.search_hint))
             .collect()
     }
 
-    /// 获取延迟工具的完整 Schema
-    pub fn get_deferred_full_schema(&self, name: &str) -> Option<serde_json::Value> {
+    /// 获取延迟工具的完整 Schema。
+    ///
+    /// 也必须过 filter：DiscoverTools 支持按名字精确取 schema，这里不拦的话，
+    /// 模型凭记忆直接 `select:那个被关掉的工具` 就能把它的完整定义捞出来。
+    pub fn get_deferred_full_schema(
+        &self,
+        name: &str,
+        filter: &ToolFilter,
+    ) -> Option<serde_json::Value> {
         self.tools
             .get(name)
-            .filter(|t| t.should_defer && t.is_enabled)
+            .filter(|t| t.should_defer && t.is_enabled && filter.is_enabled(t.name))
             .map(|t| t.schema.clone())
     }
 
     /// 获取所有延迟工具的名称列表（用于 search 时的全量展示）
-    pub fn get_all_deferred_names(&self, intent: &str, work_mode: &str) -> Vec<&'static str> {
+    pub fn get_all_deferred_names(
+        &self,
+        intent: &str,
+        work_mode: &str,
+        filter: &ToolFilter,
+    ) -> Vec<&'static str> {
         self.insertion_order
             .iter()
             .filter_map(|name| self.tools.get(name))
             .filter(|t| t.should_defer && t.is_enabled)
-            .filter(|t| Self::is_available(t, intent, work_mode))
+            .filter(|t| Self::is_available(t, intent, work_mode, filter))
             .map(|t| t.name)
             .collect()
     }
@@ -189,11 +267,15 @@ impl ToolRegistry {
         &self,
         intent: &str,
         work_mode: &str,
+        filter: &ToolFilter,
     ) -> Vec<(&'static str, Vec<&'static str>)> {
         let mut groups: Vec<(&'static str, Vec<&'static str>)> = Vec::new();
         for name in &self.insertion_order {
             if let Some(t) = self.tools.get(name) {
-                if t.should_defer && t.is_enabled && Self::is_available(t, intent, work_mode) {
+                if t.should_defer
+                    && t.is_enabled
+                    && Self::is_available(t, intent, work_mode, filter)
+                {
                     let cat = if t.category.is_empty() { "其他" } else { t.category };
                     if let Some((_, names)) = groups.iter_mut().find(|(c, _)| *c == cat) {
                         names.push(t.name);
@@ -308,7 +390,20 @@ impl ToolRegistry {
     ///
     /// 这是工具目录过滤与运行时校验的**唯一口径**：
     /// 目录里看不见的工具，调用时也一定被拦下。
-    pub fn is_available(tool: &ToolDef, intent: &str, work_mode: &str) -> bool {
+    ///
+    /// 判据有三层，顺序即优先级：
+    /// 1. **用户开关**（`filter`）—— 最硬的一层，关掉就是彻底不可见；
+    /// 2. 意图（CHAT 全禁 / QUESTION 只放行只读）；
+    /// 3. 工作模式（规划模式下拦写工具与派子代理）。
+    pub fn is_available(
+        tool: &ToolDef,
+        intent: &str,
+        work_mode: &str,
+        filter: &ToolFilter,
+    ) -> bool {
+        if !filter.is_enabled(tool.name) {
+            return false;
+        }
         if !Self::is_available_for_intent(tool, intent) {
             return false;
         }

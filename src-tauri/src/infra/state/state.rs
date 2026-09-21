@@ -186,6 +186,16 @@ pub struct SessionContext {
     /// 下一个 turn 会重组 system → 缓存前缀整体失效（约 1.5k token 全量重算）。
     /// 有了它，"改动只对新会话生效"从文档约定升级为代码保证。
     pub system_prompt_cache: Mutex<Option<String>>,
+    /// 本会话的**工具开关快照**（用户在设置里启停工具的结果）。
+    ///
+    /// `None` = 尚未快照；首次要用时从 `app-config.json` 读一次并固化，
+    /// 此后本会话所有 turn 一律复用。没有它，用户改完开关后同一会话的下一轮
+    /// `tools` 参数就会变 → prompt cache 前缀整体失效（与 `system_prompt_cache` 同理，
+    /// 两者守的是同一条约束：请求体前缀必须会话内字节恒定）。
+    ///
+    /// 清空它 = 让当前会话**立刻**用上最新开关，代价是掉一次 cache ——
+    /// 由用户显式点"应用到当前会话"触发，所以那个代价是知情的、可接受的。
+    pub tool_filter: Mutex<Option<crate::core::tools::framework::registry::ToolFilter>>,
 }
 
 impl SessionContext {
@@ -214,7 +224,32 @@ impl SessionContext {
             session_allowances: Mutex::new(Vec::new()),
             agent_read_only: Mutex::new(false),
             system_prompt_cache: Mutex::new(None),
+            tool_filter: Mutex::new(None),
         }
+    }
+
+    /// 取本会话的工具开关快照；尚未快照时从配置读一次并固化。
+    ///
+    /// 首次调用通常发生在"本会话第一次准备发消息"那一刻，正好是要的时机：
+    /// 此后整个会话复用同一份，`tools` 参数保持字节恒定。
+    pub async fn tool_filter(&self) -> crate::core::tools::framework::registry::ToolFilter {
+        let mut guard = self.tool_filter.lock().await;
+        if let Some(filter) = guard.as_ref() {
+            return filter.clone();
+        }
+        let filter = crate::core::tools::framework::registry::ToolFilter::from_states(
+            &crate::command::app_config::get_all_tool_states(),
+        );
+        *guard = Some(filter.clone());
+        filter
+    }
+
+    /// 丢弃快照 —— 下一次构建请求时会重新从配置读。
+    ///
+    /// 这是「应用到当前会话」的实现。**只应由用户显式操作触发**：
+    /// 它会改变 `tools` 参数、掉一次 prompt cache；日常轮次绝不能顺手调用。
+    pub async fn reset_tool_filter(&self) {
+        *self.tool_filter.lock().await = None;
     }
 
     /// 只读保护是否开启。

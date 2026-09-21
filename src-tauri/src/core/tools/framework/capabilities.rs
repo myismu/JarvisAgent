@@ -15,7 +15,7 @@
 //! 约束：`Capabilities::for_work_mode()` 的每个布尔值都必须通过 `is_available` 探测得出，
 //! 任何"手写的能力表"都会与目录/拦截产生第二套真相。
 
-use super::registry::ToolRegistry;
+use super::registry::{ToolFilter, ToolRegistry};
 
 /// 会话能力清单。字段名即能力名，探测用的代表工具写在 `for_work_mode()` 里。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,15 +44,19 @@ pub struct Capabilities {
 }
 
 impl Capabilities {
-    /// 按工作模式计算能力清单。
+    /// 按工作模式 + 本会话的用户工具开关计算能力清单。
     ///
-    /// 每个能力都通过 `ToolRegistry::is_available(代表工具, PROJECT_ACTION, 模式)` 探测：
-    /// 能力清单是工具目录的**投影**，不可能与目录/拦截不一致。
-    pub fn for_work_mode(work_mode: &str) -> Self {
+    /// 每个能力都通过 `ToolRegistry::is_available(代表工具, PROJECT_ACTION, 模式, filter)`
+    /// 探测：能力清单是工具目录的**投影**，不可能与目录/拦截不一致。
+    ///
+    /// `filter` 必须传真实的会话快照，别图省事用 `ToolFilter::allow_all()` ——
+    /// 那会让"能力边界"这段文本对用户关掉的能力说谎：明明关了，却告诉模型可用，
+    /// 于是模型反复尝试一个它注定看不见的工具。
+    pub fn for_work_mode(work_mode: &str, filter: &ToolFilter) -> Self {
         let allowed = |tool: &str| {
             ToolRegistry::global()
                 .get(tool)
-                .map(|def| ToolRegistry::is_available(def, "PROJECT_ACTION", work_mode))
+                .map(|def| ToolRegistry::is_available(def, "PROJECT_ACTION", work_mode, filter))
                 .unwrap_or(false)
         };
         Self {
@@ -122,18 +126,20 @@ impl Capabilities {
 
 #[cfg(test)]
 mod tests {
-    use super::Capabilities;
+    // ToolFilter 是 2026-09-21 给可见性判断加的"会话维度"参数；
+    // 这些用例验证的是模式/意图过滤，与用户开关无关，统一传 allow_all()
+    use super::{Capabilities, ToolFilter};
 
     #[test]
     fn edit_mode_has_full_capabilities() {
-        let caps = Capabilities::for_work_mode("edit");
+        let caps = Capabilities::for_work_mode("edit", &ToolFilter::allow_all());
         assert!(caps.read && caps.write && caps.run_commands);
         assert!(caps.orchestrate && caps.delegate && caps.plan && caps.switch_mode);
     }
 
     #[test]
     fn plan_mode_explores_but_does_not_write() {
-        let caps = Capabilities::for_work_mode("plan");
+        let caps = Capabilities::for_work_mode("plan", &ToolFilter::allow_all());
         assert!(caps.read);
         assert!(!caps.write, "规划模式不能直接改文件");
         assert!(!caps.run_commands, "规划模式不能执行写命令");
@@ -149,7 +155,7 @@ mod tests {
     #[test]
     fn context_block_states_unavailable_capabilities_explicitly() {
         // 规划模式：写操作不可用，提示词必须明确写出来
-        let block = Capabilities::for_work_mode("plan").context_block();
+        let block = Capabilities::for_work_mode("plan", &ToolFilter::allow_all()).context_block();
         assert!(block.contains("不可用（本会话不存在对应工具）"));
         assert!(block.contains("不要调用 GetToolCatalog"));
         assert!(block.contains("修改文件（写入/编辑/删除/重命名）：不可用"));
@@ -163,7 +169,7 @@ mod tests {
     /// 考虑这件事，所以正确做法是**不提**。
     #[test]
     fn plan_mode_never_mentions_subagent_at_all() {
-        let caps = Capabilities::for_work_mode("plan");
+        let caps = Capabilities::for_work_mode("plan", &ToolFilter::allow_all());
         let block = caps.context_block();
         assert!(!block.contains("派子代理"), "规划模式能力块不得出现「派子代理」");
         assert!(!block.contains("RunSubagent"), "规划模式能力块不得出现子代理工具名");
@@ -174,7 +180,7 @@ mod tests {
     /// 反向锁：edit 模式下子代理确实可用，能力块应当照常列出（别把整项删没了）。
     #[test]
     fn edit_mode_still_lists_subagent_when_available() {
-        let caps = Capabilities::for_work_mode("edit");
+        let caps = Capabilities::for_work_mode("edit", &ToolFilter::allow_all());
         assert!(caps.delegate);
         assert!(caps.context_block().contains("派子代理"));
         assert!(caps.summary_line().contains("派子代理 可用"));
