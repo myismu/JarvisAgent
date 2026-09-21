@@ -324,6 +324,15 @@ pub fn is_exit_code_error(cmd: &str, exit_code: i32) -> bool {
     semantics == "错误" || semantics == "失败" || semantics == "构建失败"
 }
 
+/// `dir` 参数的描述（RunCommand 与 StartBackgroundCommand 共用）。
+///
+/// 为什么共用而不是各写一份：两个工具的 `dir` 是同一套语义与取值规则
+/// （尤其"要指向 package.json 所在子目录"那条），各写一份必然漂移 ——
+/// 而漂移之后模型会拿到两套说法，正是这次下沉重构要消掉的东西。
+pub fn dir_param_description() -> &'static str {
+    "命令执行的工作目录（绝对路径，或相对工作区根目录的路径）。沙箱会话下必须落在工作区内；省略则在（沙箱）根目录执行。npm install / npm run 类命令，dir 必须指向 package.json 所在的子目录，不要用沙箱根目录。"
+}
+
 /// 获取 run_shell 工具的平台适配描述
 pub fn shell_tool_description() -> &'static str {
     // 末尾那句"不支持文件写入"从提示词搬来（2026-09-21）：执行层本来就会拦

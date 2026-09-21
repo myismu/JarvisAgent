@@ -81,8 +81,8 @@ Plan → Task → SubAgent，主 Agent 负责编排。
 
 ---
 
-- RunSubagent: 子 Agent 执行实际工作。写文件/执行命令必须设 read_only: false
-- 无依赖任务不设 blocked_by（调度器自动并行），有依赖任务用 add_blocked_by 标注
+- RunSubagent: 子 Agent 执行实际工作
+- 有依赖任务用 add_blocked_by 标注
 - 子 Agent 达轮数上限时拆成更小子任务重新委派
 - ⚠️ RunSubagentsSequentially 返回后，你必须读取调度报告，用中文向用户简短汇报执行结果
 

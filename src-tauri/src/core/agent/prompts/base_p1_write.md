@@ -4,7 +4,6 @@
 - 绝对禁止用 RunCommand 的同步模式启动服务！它是阻塞的，会导致整个对话卡死
 - 启动服务后告知用户服务地址即可
 - ⚠️ StartBackgroundCommand 和 RunCommand 都有 dir 参数指定工作目录！沙箱禁止 cd，必须用 dir 参数，例如 command=npm install, dir=/path/to/backend
-- npm install / npm run 类命令，dir 必须指向 package.json 所在的子目录，不要用沙箱根目录
 
 #### 工具选择指南 — 写操作与命令执行
 

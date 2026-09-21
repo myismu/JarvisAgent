@@ -24,7 +24,7 @@ pub use execution::run_shell;
 
 use crate::core::tools::framework::registry::ToolDef;
 use serde_json::json;
-use utils::shell_tool_description;
+use utils::{dir_param_description, shell_tool_description};
 
 // --- 工具注册 ---
 crate::define_tools! {
@@ -46,7 +46,7 @@ crate::define_tools! {
                         // 实现却一直没读（命令恒在工作区根目录跑）；而沙箱禁止 cd、
                         // 子代理又没有 StartBackgroundCommand 权限，导致"在子目录跑 npm install"
                         // 根本做不到。现按 StartBackgroundCommand 的同款口径实现。
-                        "dir": {"type": "string", "description": "命令执行的工作目录（绝对路径，或相对工作区根目录的路径）。沙箱会话下必须落在工作区内。省略则在（沙箱）根目录执行。"},
+                        "dir": {"type": "string", "description": dir_param_description()},
                         "timeout": {"type": "integer", "description": "超时秒数，默认 120，范围 5-600"},
                         "run_in_background": {"type": "boolean", "description": "是否后台执行。长周期任务（如开发服务器）必须设为 true。"}
                     },
@@ -75,7 +75,7 @@ crate::define_tools! {
                     "type": "object",
                     "properties": {
                         "command": {"type": "string", "description": "要执行的具体命令（如 npm run dev）"},
-                        "dir": {"type": "string", "description": "命令执行的工作目录的绝对路径"}
+                        "dir": {"type": "string", "description": dir_param_description()}
                     },
                     "required": ["command", "dir"]
                 }

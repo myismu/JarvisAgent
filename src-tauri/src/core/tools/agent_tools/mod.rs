@@ -208,7 +208,10 @@ crate::define_tools! {
                 model: string => "Optional model id override for this subagent. If omitted, inherits the active main model or the agent definition default.",
                 task_id: integer => "Optional persistent task id for scheduler/board integration.",
                 label: string => "Deprecated alias for description; prefer description.",
-                read_only: boolean => "Optional permission override. If omitted, the selected subagent_type default is used. true filters out every tool whose registry metadata is not read-only; false still respects the selected agent allowlist/denylist.",
+                // 末句从提示词搬来（2026-09-21）：general 的 read_only_default 是 true，
+                // 所以直调的通用子代理默认拿不到写工具 —— 想让它写文件/跑命令必须显式放权。
+                // 这条不说清楚，模型会派一个"只读"子代理去改代码，然后困惑于它什么都改不了。
+                read_only: boolean => "Optional permission override. If omitted, the selected subagent_type default is used. true filters out every tool whose registry metadata is not read-only; false still respects the selected agent allowlist/denylist. NOTE: the general profile defaults to read-only — if the subagent needs to write files or run commands, you must pass read_only: false explicitly.",
                 skills: array items {"type": "string"} => "Optional list of skill names to make available to this subagent. Only specified skills will be injected into the subagent's context. If omitted, no skills are injected. Use GetToolCatalog to discover available skill names.",
             },
             required: ["prompt"],
