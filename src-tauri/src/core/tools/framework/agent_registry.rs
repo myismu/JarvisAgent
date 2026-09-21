@@ -27,6 +27,19 @@ const GENERAL_TOOLS: &[&str] = &[
     "WriteFile",
     "EditFile",
     "EditNotebook",
+    // 删除 / 改名 / 打补丁此前不在名额里，但 `subagent.md` 的 P0 硬规则**点名要求**用它们
+    // （"写/改/删/改名用 WriteFile / EditFile / ApplyPatch / DeleteFile / RenameFile"）。
+    // 后果（2026-09-21 实测）：子代理被告知"删除用 DeleteFile"却拿不到该工具，只能退回
+    // RunCommand 去删，被 shell 安全检查直接拒绝；失败回传主 Agent 后再交代一遍仍是同样结果，
+    // 最后只能主 Agent 自己动手删。
+    //
+    // 安全性已核实：三者都记录补丁进快照（file_tools/{patch,delete,rename}.rs →
+    // record_patch_to_snapshot），删除另有 `.jarvis_trash` 软删除兜底；
+    // 权限侧 DeleteFile 归 Delete 类，**两档都要人工弹卡**；只读子代理会被
+    // resolve_tools 的 read_only 过滤挡掉。
+    "ApplyPatch",
+    "DeleteFile",
+    "RenameFile",
     "RunCommand",
     // StartBackgroundCommand 不给子代理：后台服务由主 Agent 统一管理（registry.rs 意图过滤同口径），
     // CheckBackgroundCommand 保留——只读探测后台输出，不违反"统一管理启动"
@@ -288,5 +301,68 @@ mod tests {
         assert!(properties["subagent_type"].is_object());
         assert!(properties["model"].is_object());
         assert!(properties["read_only"].is_object());
+    }
+
+    /// 子代理提示词里**故意点名禁止**的工具（写法是"无权/不可用"，不是"要用"）。
+    ///
+    /// 除这些之外，提示词里出现的任何已注册工具名都必须真的授权给它。
+    const PROMPT_NAMED_BUT_DENIED: &[&str] = &["StartBackgroundCommand"];
+
+    /// 提示词与工具名单的一致性护栏（2026-09-21 事故的正面锁）。
+    ///
+    /// 事故：`subagent.md` 的 P0 硬规则点名"写/改/删/改名用 WriteFile / EditFile /
+    /// ApplyPatch / DeleteFile / RenameFile"，但这三个里的 `ApplyPatch` / `DeleteFile` /
+    /// `RenameFile` **不在** `GENERAL_TOOLS` 里 —— 子代理被告知"删除用 DeleteFile"却拿不到
+    /// 这个工具，只能退回 RunCommand 去删、被 shell 安全检查直接拒绝；失败回传主 Agent 后
+    /// 再交代一遍仍是同样结果，最后只能主 Agent 自己删。
+    ///
+    /// 这条测试把"提示词点名了工具、名单却没给"拦在 `cargo test` 阶段：
+    /// 以后往提示词里加工具名，要么同时授权，要么显式进 `PROMPT_NAMED_BUT_DENIED`。
+    /// 顺带覆盖另一种错：提示词里写了个**根本没注册**的工具名（改名/退役后忘了同步）——
+    /// 那种名字不会出现在 `all_tool_names()` 里，因此不会被本测试看到，需要在评审时留意。
+    #[test]
+    fn every_tool_named_in_subagent_prompt_is_granted_or_explicitly_denied() {
+        const DOC: &str = include_str!("../../agent/prompts/subagent.md");
+        let granted = AgentRegistry::global().default_agent().tools;
+
+        for name in ToolRegistry::global().all_tool_names() {
+            if !DOC.contains(name) {
+                continue;
+            }
+            assert!(
+                granted.contains(&name) || PROMPT_NAMED_BUT_DENIED.contains(&name),
+                "subagent.md 点名了 {name}，但它既不在授权名单（GENERAL_TOOLS）里，\
+                 也没进 PROMPT_NAMED_BUT_DENIED —— 提示词与工具名单不一致"
+            );
+        }
+
+        // 反向锁：标为"故意禁止"的必须真的没授权，防止这张名单腐烂成摆设
+        for name in PROMPT_NAMED_BUT_DENIED {
+            assert!(
+                !granted.contains(name),
+                "{name} 被标为「故意禁止」，却出现在授权名单里"
+            );
+        }
+    }
+
+    /// 反向锁：只读研究类角色不得被顺手放宽到能改文件（本次只动了 `GENERAL_TOOLS`）。
+    #[test]
+    fn read_only_roles_stay_free_of_mutating_tools() {
+        for role in ["explore", "review", "verification"] {
+            let agent = AgentRegistry::global().get(role).unwrap();
+            for tool in [
+                "WriteFile",
+                "EditFile",
+                "EditNotebook",
+                "ApplyPatch",
+                "DeleteFile",
+                "RenameFile",
+            ] {
+                assert!(
+                    !agent.tools.contains(&tool),
+                    "{role} 是只读角色，不该拿到 {tool}"
+                );
+            }
+        }
     }
 }
