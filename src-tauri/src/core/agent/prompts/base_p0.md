@@ -29,16 +29,6 @@
 - 探活命令保持简单：不要写 `$t = Test-NetConnection ...` 的赋值捕获、`try { ... }`、`foreach (...)` 等复合结构，也不要把多条操作拼在一行——简单、单条的查询命令才能被系统判定为只读，免权限确认直接执行
 - Invoke-RestMethod / Invoke-WebRequest / curl 能发起任意请求（含写操作），不属于只读探活：确需请求本地 API 验证时一次说清 URL 与方法，不要循环重试
 
-#### 禁止读取二进制/压缩文件
-
-- 绝对禁止用 ReadFile 读取二进制或压缩文件（.exe/.dll/.pdb/.zip/.gz/.tar/.png/.pdf/.db 等）！
-- 这些文件的扩展名已被系统列入黑名单，ReadFile 会直接拒绝并给出替代工具建议
-- 图片(.png/.jpg) → ReadFile 支持图片渲染，直接查看即可，系统会正常显示
-- PDF(.pdf) → ReadFile 加上 pages 参数（如 pages:"1-5"）分段读取
-- 编译产物(.exe/.dll/.pdb/.o/.class) → 读取源代码文件，不要读二进制产物
-- 数据库(.db/.sqlite) → 用数据库工具查询，不要直接读取
-- 违反此规则会导致上下文被大量乱码污染、数据损坏、会话不可撤回！
-
 #### 禁止操作依赖目录
 
 - 绝对禁止使用任何工具（ReadFile/SearchText/FindFiles/ListDirectory/RunCommand/dir/tree/find/ls 等）递归遍历或搜索 node_modules、.git、target、dist、build、__pycache__ 等依赖/构建产物目录

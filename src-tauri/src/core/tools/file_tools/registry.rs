@@ -31,7 +31,12 @@ crate::define_tools! {
             category: "文件操作",
             schema: json!({
                 "name": "ReadFile",
-                "description": "读取文件内容。支持语义化点读技术，可通过 start_line 和 end_line 获取特定代码块，避免 Context 过长。",
+                // 二进制黑名单与各类文件的处理建议从提示词搬来（2026-09-21）：
+                // 这段原在 base_p0.md 的「禁止读取二进制/压缩文件」整节，属 ReadFile 单工具的
+                // 用法边界，放这里才对（ReadFile 是核心工具，schema 常驻，模型随时看得到）。
+                // 搬来时修掉了三条描述不存在能力的说法：图片渲染、pages 参数、数据库工具
+                // —— 详见 common.rs 里 binary_file_read_error 的报错文案注释。
+                "description": "读取文件内容。支持语义化点读技术，可通过 start_line 和 end_line 获取特定代码块，避免 Context 过长。\n\n绝对禁止读取二进制/压缩文件（.exe/.dll/.pdb/.zip/.gz/.tar/.png/.pdf/.db 等）：这些扩展名已被系统列入黑名单，调用会直接失败并给出替代建议；违规读取会污染上下文、损坏会话。按类型处理：压缩包用 RunCommand 解压、编译产物改读对应源码、图片把文件直接发送到对话里；PDF 与数据库文件不支持按文本读取。",
                 "input_schema": {
                     "type": "object",
                     "properties": {

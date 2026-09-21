@@ -326,9 +326,12 @@ pub fn is_exit_code_error(cmd: &str, exit_code: i32) -> bool {
 
 /// 获取 run_shell 工具的平台适配描述
 pub fn shell_tool_description() -> &'static str {
+    // 末尾那句"不支持文件写入"从提示词搬来（2026-09-21）：执行层本来就会拦
+    // （见 execution.rs 的 is_file_mutation_command），但事前告知能省一次失败调用。
+    // 搬来后提示词里 base_p0_write.md 与 subagent.md 的两处同款说明即删除。
     if cfg!(target_os = "windows") {
-        "执行 Windows PowerShell 命令。支持管道、脚本。可通过 run_in_background 启动长周期任务（如 npm run dev）。只读命令（dir/type/git status 等）自动放行无需确认。输出超过 50000 字符自动截断。exit code 含义自动解读（findstr:1=无匹配, robocopy:0-7=成功）。"
+        "执行 Windows PowerShell 命令。支持管道、脚本。可通过 run_in_background 启动长周期任务（如 npm run dev）。只读命令（dir/type/git status 等）自动放行无需确认。输出超过 50000 字符自动截断。exit code 含义自动解读（findstr:1=无匹配, robocopy:0-7=成功）。不支持文件写入/删除/重命名：用 [System.IO.File] 方法、Set-Content/Out-File/Add-Content/New-Item 或 shell 重定向 > 落盘都会被拦下，请改用 WriteFile/EditFile/DeleteFile/RenameFile 等专用工具（只有它们有沙箱边界检查、改动快照与回滚）。"
     } else {
-        "执行 Unix bash 命令。支持管道、脚本。可通过 run_in_background 启动长周期任务（如 npm run dev）。只读命令（ls/cat/git status 等）自动放行无需确认。输出超过 50000 字符自动截断。exit code 含义自动解读（grep:1=无匹配, diff:1=不同）。"
+        "执行 Unix bash 命令。支持管道、脚本。可通过 run_in_background 启动长周期任务（如 npm run dev）。只读命令（ls/cat/git status 等）自动放行无需确认。输出超过 50000 字符自动截断。exit code 含义自动解读（grep:1=无匹配, diff:1=不同）。不支持文件写入/删除/重命名（echo >、tee、sed -i 等都会被拦下），请改用 WriteFile/EditFile/DeleteFile/RenameFile 等专用工具（只有它们有沙箱边界检查、改动快照与回滚）。"
     }
 }

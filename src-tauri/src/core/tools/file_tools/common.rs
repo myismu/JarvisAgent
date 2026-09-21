@@ -401,11 +401,18 @@ pub fn binary_file_read_error(path: &std::path::Path) -> Option<String> {
         "zip" | "gz" | "tar" | "bz2" | "xz" | "7z" | "zst" | "lz4" | "rar" | "tgz" | "tbz2" | "txz" => {
             "这是压缩文件，请使用 RunCommand 执行解压命令（如 Expand-Archive / tar -xzf）查看内容，不要用 ReadFile 直接读取。"
         }
+        // 这两条建议原先都在描述**不存在的能力**，2026-09-21 修正：
+        // - 图片：原文写"请直接使用 ReadFile 查看图片（系统支持图片渲染）"，但图片本就在
+        //   黑名单里 —— 这条建议自己被触发就证明文件已被拦下，模型照做只会再被拦一次。
+        //   读取图片的能力从未实现（read_file() 只走文本解码，无任何图片分支）。
+        // - PDF：原文让模型"指定 pages 参数"，而 ReadFile 的 schema 里根本没有这个参数
+        //   （只有 path/start_line/end_line），提示词那侧还写着同一句 ——
+        //   两处互相印证一个假参数，模型试错后也无从纠正。
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "icns" | "tiff" | "tif" => {
-            "这是图片文件，ReadFile 会读取无意义的二进制数据。请直接使用 ReadFile 查看图片（系统支持图片渲染）。"
+            "这是图片文件，无法按文本读取。如需看图，请把图片直接发送到对话里。"
         }
         "pdf" => {
-            "这是 PDF 文件，请使用 ReadFile 并指定 pages 参数读取（如 pages: \"1-5\"），不要全文读取。"
+            "这是 PDF 文件，无法按文本读取。"
         }
         "docx" | "xlsx" | "pptx" | "doc" | "xls" | "ppt" | "odt" | "ods" | "odp" => {
             "这是 Office 文档格式，无法直接按文本读取。如需查看内容，请使用对应的办公软件打开。"

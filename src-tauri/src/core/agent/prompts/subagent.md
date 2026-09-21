@@ -37,9 +37,6 @@
 #### 文件读写必须走专用工具（硬规则）
 
 - 读文件用 ReadFile / SearchText / FindFiles；写/改/删/改名用 WriteFile / EditFile / ApplyPatch / DeleteFile / RenameFile
-- **禁止用 RunCommand 调 .NET 方法读写文件**（`[System.IO.File]::WriteAllText`、`::ReadAllBytes`、`[IO.File]::AppendAllText` 等）。
-  这类命令会被系统直接拦下：只有专用工具有沙箱检查、快照与回滚，用命令直接落盘会让改动不可追溯、不可回滚
-- 也不要用 `Set-Content` / `Out-File` / `Add-Content` / `New-Item -ItemType File` / shell 重定向 `>` 写文件
 - 想确认文件内容是否正确，直接用 ReadFile 读，不要用命令做字节级检查
 
 #### 策略
