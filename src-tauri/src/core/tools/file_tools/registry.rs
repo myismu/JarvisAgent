@@ -304,16 +304,20 @@ crate::define_tools! {
         },
         ToolDef {
             name: "DeleteFile",
-            description: "删除指定文件",
-            search_hint: "delete file remove rm",
+            description: "删除指定文件或目录（目录整棵一起）",
+            search_hint: "delete file remove rm directory folder 目录 文件夹",
             category: "文件操作",
             schema: json!({
                 "name": "DeleteFile",
-                "description": "删除指定文件。删除前会自动备份文件内容用于快照回滚。",
+                // 「可删目录」必须写在描述里：模型会望文生义把 DeleteFile 当"只能删文件"，
+                // 然后一个文件一个文件地掏空目录、再去用 Remove-Item 删目录壳，被安全策略拦下，
+                // 白白空转（2026-09-21 实测，长任务会话 59293891 #632/#643-652）。
+                // 实现是"整个对象 rename 进回收站"，目录、非空目录都是一次搬走。
+                "description": "删除指定的**文件或目录**。删目录时是**整棵一起删**（含非空目录与其中全部内容），不需要先逐个清空再删壳。删除前会自动记录快照用于回滚，实体则移入回收站，因此可恢复。注意：不要用 RunCommand 的 Remove-Item / del / rmdir 删除——shell 删除会被安全策略直接拒绝。",
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "要删除的文件路径"}
+                        "path": {"type": "string", "description": "要删除的文件或目录路径"}
                     },
                     "required": ["path"]
                 }
