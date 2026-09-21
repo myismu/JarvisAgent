@@ -78,7 +78,9 @@ crate::define_tools! {
             category: "文件操作",
             schema: json!({
                 "name": "WriteFile",
-                "description": "写入普通文本文件内容。优先用于创建新文件；修改已有文件时应优先使用 EditFile，除非用户明确要求重写整个文件，或文件很小且已经完整读取过。大量修改应使用 ApplyPatch。不要用于 .ipynb/Jupyter Notebook 或 notebook-shaped JSON；Notebook 必须使用 notebook_edit 进行 cell 级 replace/insert/delete。",
+                // 判据取并集（2026-09-21）：schema 原先只按"用户明确要求 / 文件很小且读过"，
+                // 提示词按"改动约占七成以上"——两者是不同的判据，模型看两处会犯迷糊。现在都列。
+                "description": "写入普通文本文件内容。优先用于创建新文件；修改已有文件时应优先使用 EditFile，除非用户明确要求重写整个文件、或文件很小且已经完整读取过、或文件绝大部分内容（约七成以上）确实要重写。只改几处就把整个文件重写一遍是违规（费 token、慢、容易顺手改动无关内容）。大量修改应使用 ApplyPatch。不要用于 .ipynb/Jupyter Notebook 或 notebook-shaped JSON；Notebook 必须使用 notebook_edit 进行 cell 级 replace/insert/delete。",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -100,7 +102,9 @@ crate::define_tools! {
             category: "文件操作",
             schema: json!({
                 "name": "EditFile",
-                "description": "基于搜索与替换修改文件中的文本片段。支持两种模式：单条编辑（old_text+new_text）和批量编辑（edits 数组）。每段 old_text 必须在文件中唯一匹配（3~5 行上下文），否则返回所有匹配位置。同一文件多处修改优先用 edits 数组批量提交，不要逐个调用。小范围单点可继续用 old_text+new_text。跨文件修改用 ApplyPatch。",
+                // 补上"匹配失败之后怎么办"（2026-09-21 从提示词搬来）：原先只写了失败的
+                // 表现（返回所有匹配位置），没说补救路径，模型容易误以为该改用 WriteFile 整写。
+                "description": "基于搜索与替换修改文件中的文本片段。支持两种模式：单条编辑（old_text+new_text）和批量编辑（edits 数组）。每段 old_text 必须在文件中唯一匹配（3~5 行上下文），否则返回所有匹配位置。匹配失败 ≠ 该改用 WriteFile：失败只说明 old_text 与当前文件内容对不上，重新 ReadFile 拿准确内容再改即可，不要因匹配失败改用整文件覆盖。同一文件多处修改优先用 edits 数组批量提交，不要逐个调用。小范围单点可继续用 old_text+new_text。跨文件修改用 ApplyPatch。",
                 "input_schema": {
                     "type": "object",
                     "properties": {
