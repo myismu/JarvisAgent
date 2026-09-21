@@ -348,6 +348,7 @@
     "currentTool": "Current tool",
     "readOnly": "Read-only",
     "toolTimeline": "Tool call timeline",
+    "toolCalls": "{count} calls",
     "noToolEvents": "No tool events yet",
     "errorDetail": "Error details",
     "taskPrompt": "Task prompt",

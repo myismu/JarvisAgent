@@ -349,6 +349,7 @@
     "currentTool": "当前工具",
     "readOnly": "只读",
     "toolTimeline": "工具调用时间线",
+    "toolCalls": "{count} 次工具",
     "noToolEvents": "暂无工具事件",
     "errorDetail": "错误详情",
     "taskPrompt": "任务描述",

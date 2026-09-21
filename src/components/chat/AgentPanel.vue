@@ -200,6 +200,15 @@ const getToolTimeline = (runId: string): SubAgentEvent[] => {
     .filter((ev) => ev.eventType === 'tool_call' || ev.eventType === 'tool_result');
 };
 
+/**
+ * 收起行上的「工具调用次数」。
+ *
+ * 只数 `tool_call`：一次调用会产生 `tool_call` + `tool_result` 两条事件，
+ * 直接取时间线长度会把次数翻倍。数据来自内存中的子代理事件（与展开后的时间线同源）。
+ */
+const toolCallCount = (runId: string): number =>
+  agent.getSubAgentEvents(runId).filter((ev) => ev.eventType === 'tool_call').length;
+
 const copiedTimeline = ref<string | null>(null);
 
 const copyTimeline = async (runId: string) => {
@@ -444,6 +453,11 @@ const backgroundStatusLabel = (status: string): string => {
                   <span v-if="run.status === 'running'" class="phase-badge" :class="phaseClass(run.phase)">{{ phaseLabel(run.phase) }}</span>
                   <span class="status-label">{{ subAgentStatusLabel(run.status) }}</span>
                   <span class="loop-badge">{{ run.loopCount }}/{{ run.maxLoops }}</span>
+                  <span
+                    v-if="toolCallCount(run.runId)"
+                    class="tool-count-badge"
+                    :title="t('monitor.toolTimeline')"
+                  >{{ t('monitor.toolCalls', { count: toolCallCount(run.runId) }) }}</span>
                   <span v-if="run.status === 'running'" class="countdown-badge">&#9201; {{ formatCountdown(run) }}</span>
                   <span class="expand-arrow">{{ expandedSubAgents.has(run.runId) ? '▾' : '▸' }}</span>
                 </div>
@@ -1201,6 +1215,14 @@ const backgroundStatusLabel = (status: string): string => {
   font-size: 0.72rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+}
+
+/* 收起行上的工具调用计数：与 loop-badge 同族 —— 都是元信息，不带状态语义 */
+.tool-count-badge {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
 }
 
 .countdown-badge {

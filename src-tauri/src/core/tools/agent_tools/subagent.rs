@@ -856,10 +856,18 @@ pub async fn run_subagent(
                             );
                         }
 
+                        // 带上"这个工具在操作什么"的规则化摘要（复用子代理上下文用的同一个函数），
+                        // 让用户在聊天区就能看出子代理在干什么，而不是只看到一个工具名。
+                        // 摘要里若含换行会破坏 `> ` 引用块的逐行前缀，这里统一压成单行。
+                        let call_detail =
+                            summarize_tool_input(name, input).replace(['\n', '\r'], " ");
                         let _ = app.emit(
                             "chat-stream",
                             json!({
-                                "content": format!("\n>   - 子代理使用工具: `{}`\n", name),
+                                "content": format!(
+                                    "\n>   - 子代理使用工具: `{}` {}\n",
+                                    name, call_detail
+                                ),
                                 "sessionId": session_id.clone(),
                                 "isSubAgent": true
                             }),
