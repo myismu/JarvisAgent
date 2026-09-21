@@ -12,7 +12,8 @@
 //!
 //! ## 关键导出
 //! - `build_dynamic_context()`: 根据意图类型组装动态上下文字符串
-//! - `inject_user_message()`: 将用户消息（含动态上下文块、图片）写入会话历史，返回消息索引
+//! - `inject_user_message()`: 将用户消息（含动态上下文块、图片）写入会话历史，
+//!   返回 `(消息索引, 落库分配的 message_id)`
 //! - `restore_image_data()`: 恢复历史消息中的图片数据（本轮保留 base64，往轮折叠为摘要）
 //!
 //! ## 依赖
@@ -95,13 +96,18 @@ pub fn build_dynamic_context(
     ctx
 }
 
+/// 注入结果：`(本轮用户消息在历史中的下标, 落库时分配的 message_id)`。
+///
+/// 为什么必须把 message_id 带出来：前端发消息时先在本地插一条用户消息占位
+/// （那一刻后端还没生成 ID），要拿真实 ID 把它补上，撤回按钮才会立刻出现 ——
+/// 否则得等刷新、从数据库重读才渲染得出来（实测 bug）。
 pub fn inject_user_message(
     session: &mut SessionMemory,
     msg: &str,
     image_base64_list: &Option<Vec<String>>,
     dynamic_context: &str,
     active_session_id: &mut Option<String>,
-) -> usize {
+) -> (usize, String) {
     let initial_msg_index = session.messages.len();
 
     let mut blocks: Vec<ContentBlock> = Vec::new();
@@ -155,9 +161,9 @@ pub fn inject_user_message(
         _ => Content::Multiple(blocks),
     };
 
-    append_message(session, Message::User { content }, "chat");
+    let message_id = append_message(session, Message::User { content }, "chat");
 
-    initial_msg_index
+    (initial_msg_index, message_id)
 }
 
 /// 折叠/恢复历史快照里的图片。
@@ -225,8 +231,12 @@ mod tests {
         let images: Option<Vec<String>> = None;
         let mut sid = Some("test-session".to_string());
 
-        let idx = inject_user_message(&mut session, msg, &images, "", &mut sid);
+        let (idx, message_id) = inject_user_message(&mut session, msg, &images, "", &mut sid);
         assert_eq!(idx, 0);
+        assert!(
+            !message_id.is_empty(),
+            "落库应同时分配一个非空 message_id（前端据此关联撤回按钮）"
+        );
         assert_eq!(session.messages.len(), 1);
         match &session.messages[0] {
             Message::User { content } => match content {

@@ -113,6 +113,12 @@ struct PipelineState {
     dynamic_context_str: String,
     user_msg_preview: String,
     initial_msg_index: usize,
+    /// 本轮用户消息落库时分配的 message_id，随 `JarvisResult` 下发前端。
+    ///
+    /// 为什么需要它：前端发消息时先在本地插一条用户消息占位（那一刻后端还没生成
+    /// ID），拿到这个值才能把真实 ID 补回去、撤回按钮立即出现 ——
+    /// 否则要等刷新从数据库重读才渲染得出来（实测 bug）。
+    user_message_id: Option<String>,
     should_think: bool,
     run_id: String,
     /// 循环状态
@@ -963,6 +969,7 @@ impl PipelineState {
             dynamic_context_str: String::new(),
                         user_msg_preview: String::new(),
             initial_msg_index: 0,
+            user_message_id: None,
             should_think: false,
             turn_think: false,
             turn_thinking_decision: crate::core::session::thinking::ThinkingDecision::default(),
@@ -1102,13 +1109,15 @@ impl PipelineState {
             }
             // 3b. 把用户消息（含图片）注入历史，记录起始位置 initial_msg_index
             let mut active_sid = Some(self.sid.clone());
-            self.initial_msg_index = inject_user_message(
+            let (initial_msg_index, user_message_id) = inject_user_message(
                 &mut session,
                 self.display_msg.as_deref().unwrap_or(&self.msg),
                 &self.image_base64_list,
                 &self.dynamic_context_str,
                 &mut active_sid,
             );
+            self.initial_msg_index = initial_msg_index;
+            self.user_message_id = Some(user_message_id);
             session.clone()
         };
         // 步骤 4：注入后立即落库（防止崩溃丢消息）
@@ -2357,7 +2366,7 @@ impl PipelineState {
             session_output_tokens,
             session_cache_hit_tokens,
             session_cache_miss_tokens,
-            user_message_id: None,
+            user_message_id: self.user_message_id.clone(),
             tool_execution_summary: self.tool_execution_summary,
             notice: self.notice,
             thinking_enabled: Some(self.turn_thinking_decision.enabled),

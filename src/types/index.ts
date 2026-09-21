@@ -55,6 +55,13 @@ export interface JarvisResult {
   /** 会话累计缓存命中 / 未命中 token。两者都为 0 表示该会话从未上报过缓存字段 */
   session_cache_hit_tokens: number;
   session_cache_miss_tokens: number;
+  /**
+   * 后端为本轮用户消息分配的 UUID。
+   *
+   * 前端发消息时先在本地插一条用户消息占位（那一刻后端还没生成 ID），
+   * 靠它把真实 ID 补回去，撤回按钮才会立即出现 —— 否则要等刷新从数据库重读。
+   * 续跑（`resume_jarvis`）不注入用户消息，故那条路径上恒为空。
+   */
   user_message_id?: string | null;
   /** 本轮最终采用的深度思考状态（后端裁决层给出，前端不自行判断） */
   thinking_enabled?: boolean | null;
