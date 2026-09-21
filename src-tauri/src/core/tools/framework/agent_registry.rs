@@ -365,4 +365,101 @@ mod tests {
             }
         }
     }
+
+    // ────────────────────────────────────────────────────────────────
+    //  第二道护栏：提示词里的**工具名**是否都存在
+    // ────────────────────────────────────────────────────────────────
+
+    /// 提示词里合法出现的**非工具** PascalCase 词。
+    ///
+    /// ⚠️ 往这里加东西之前先自问：这个词是不是本该是个工具名？如果是，那它就该被注册，
+    /// 而不是塞进白名单把测试糊过去 —— 白名单是给"平台名 / 语言名 / 概念词 / 示例代码里
+    /// 的类型名"这类词准备的，不是给漏注册的工具兜底的。
+    const NON_TOOL_PASCAL_WORDS: &[&str] = &[
+        "PowerShell",   // 平台名：os/windows.md 通篇在讲 PowerShell 5.1 语法
+        "TypeScript",   // 语言名：mode/edit.md 讲编译检查
+        "SubAgent",     // 概念词，即中文的"子 Agent"（mode/edit.md）
+        "TaskPriority", // 示例代码里的类型名：mode/plan.md 的委派 prompt 示例
+    ];
+
+    /// 全部提示词文件。路径只用于报错时定位。
+    const PROMPT_SOURCES: &[(&str, &str)] = &[
+        ("base_p0.md", include_str!("../../agent/prompts/base_p0.md")),
+        (
+            "base_p0_write.md",
+            include_str!("../../agent/prompts/base_p0_write.md"),
+        ),
+        ("base_p1.md", include_str!("../../agent/prompts/base_p1.md")),
+        (
+            "base_p1_write.md",
+            include_str!("../../agent/prompts/base_p1_write.md"),
+        ),
+        ("base_p2.md", include_str!("../../agent/prompts/base_p2.md")),
+        (
+            "audience/user.md",
+            include_str!("../../agent/prompts/audience/user.md"),
+        ),
+        (
+            "audience/developer.md",
+            include_str!("../../agent/prompts/audience/developer.md"),
+        ),
+        ("mode/edit.md", include_str!("../../agent/prompts/mode/edit.md")),
+        ("mode/plan.md", include_str!("../../agent/prompts/mode/plan.md")),
+        ("os/windows.md", include_str!("../../agent/prompts/os/windows.md")),
+        ("os/macos.md", include_str!("../../agent/prompts/os/macos.md")),
+        ("os/linux.md", include_str!("../../agent/prompts/os/linux.md")),
+        ("subagent.md", include_str!("../../agent/prompts/subagent.md")),
+    ];
+
+    /// 扫出"长得像工具名"的词：PascalCase（至少两段），且**前面不是连字符或单词字符**。
+    ///
+    /// 后半个条件是为了跳过 `Get-ChildItem` / `Invoke-RestMethod` 这类 PowerShell cmdlet ——
+    /// 它们的后半段也符合 PascalCase 形态，但前面挂着连字符，不该被当成工具名。
+    fn tool_like_words(text: &str) -> Vec<String> {
+        let re = regex::Regex::new(r"(?:^|[^A-Za-z0-9_-])([A-Z][a-z]+(?:[A-Z][a-z]+)+)")
+            .expect("正则写死在源码里，不该编译失败");
+        re.captures_iter(text)
+            .map(|cap| cap[1].to_string())
+            .collect()
+    }
+
+    /// 提示词里出现的每个"像工具名"的词，都必须真的注册过。
+    ///
+    /// 补的是上一道护栏（`every_tool_named_in_subagent_prompt_is_granted_or_explicitly_denied`）
+    /// 写在注释里的盲区：**提示词写了个根本没注册的工具名**（工具改名/退役后忘了同步）。
+    /// 那种名字不在 `all_tool_names()` 里，只能反过来扫文本才看得见。
+    ///
+    /// 为什么值得单开一道：2026-09-21 那次盘点撞出的 5 条「文档与实现不符」里，
+    /// "用数据库工具查询"就属这一类 —— 模型会照着一个**调不通的名字**去试，
+    /// 而且因为提示词里就这么写着，它试错后也无从纠正。
+    ///
+    /// ⚠️ 它能保证的只有**名字存在**。参数级的错误描述（"RunCommand 有 dir 参数"而实现
+    /// 没读、"PDF 用 pages 参数"而该参数不存在）机器判不了，仍需人工评审 ——
+    /// 这两条本次都已单独修掉，见 `common.rs` 与 `shell_tools` 的改动。
+    #[test]
+    fn every_tool_like_word_in_prompts_is_registered() {
+        let registered = ToolRegistry::global().all_tool_names();
+        let mut offenders: Vec<String> = Vec::new();
+
+        for (file, doc) in PROMPT_SOURCES {
+            for word in tool_like_words(doc) {
+                if registered.contains(&word.as_str())
+                    || NON_TOOL_PASCAL_WORDS.contains(&word.as_str())
+                {
+                    continue;
+                }
+                offenders.push(format!("{file}: {word}"));
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "以下词长得像工具名，却不在注册表里：\n  {}\n\n\
+             两种可能：\n\
+             ① 工具已改名或退役，提示词忘了同步 —— 模型会照着一个调不通的名字去做；\n\
+             ② 它本就不是工具（平台名 / 语言名 / 概念词 / 示例代码里的类型名），\n\
+                那就加进 NON_TOOL_PASCAL_WORDS，并在注释里写清它是什么。",
+            offenders.join("\n  ")
+        );
+    }
 }
