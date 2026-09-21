@@ -311,7 +311,6 @@ export interface AgentCurrentTurn {
   thinkingBlocks: AgentThinkingBlock[];
   toolCalls: AgentToolCallView[];
   logs: AgentExecutionLog[];
-  tokens?: AgentTurnTokens;
   /**
    * 本轮的状态标注（气泡下方小字）：等待提示、中断/取消说明等。
    *
@@ -323,13 +322,6 @@ export interface AgentCurrentTurn {
   startedAt: number | null;
 }
 
-export interface AgentTurnTokens {
-  input: number;
-  output: number;
-  sessionInput?: number;
-  sessionOutput?: number;
-}
-
 export interface AgentTurnSnapshot {
   version: 1;
   status: string;
@@ -337,7 +329,6 @@ export interface AgentTurnSnapshot {
   thinkingBlocks: AgentThinkingBlock[];
   toolCalls: AgentToolCallView[];
   logs: AgentExecutionLog[];
-  tokens?: AgentTurnTokens;
   finalContent?: string;
   notice?: string;
   createdAt: number;

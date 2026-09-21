@@ -267,6 +267,22 @@ body.dragging-active .editor-container {
   --agent-message-opacity: 0;
   --user-message-opacity: 0;
 }
+
+/* assistant 消息框内「内容块」的底色（思考块 / 工具块 / 参数输出 / 日志终端）。
+   浓度由「消息背景透明度」统一控制：该值为 0 时它们与气泡一起消失，只剩纯文字；
+   调高则按各自档位浮现。
+   浅色用**淡黑**叠加、深色用**淡白**叠加 —— 这样两种主题下都与气泡底色形成对比。
+   （不能用 --surface-strong 这类面板色：浅色下它与白气泡同色，叠了等于没叠。）
+   - `--msg-block-tint`：外层容器（思考块 / 工具块 / 日志块）
+   - `--msg-block-tint-strong`：容器内的内容块（参数 / 输出 / 日志标题栏） */
+:root {
+  --msg-block-tint: rgba(15, 23, 42, calc(var(--agent-message-opacity) / 100 * 0.045));
+  --msg-block-tint-strong: rgba(15, 23, 42, calc(var(--agent-message-opacity) / 100 * 0.08));
+}
+body.dark-mode {
+  --msg-block-tint: rgba(255, 255, 255, calc(var(--agent-message-opacity) / 100 * 0.05));
+  --msg-block-tint-strong: rgba(255, 255, 255, calc(var(--agent-message-opacity) / 100 * 0.09));
+}
 .chat-message.agent-message .message-content {
   background: rgba(var(--msg-bg-rgb), calc(var(--agent-message-opacity) / 100));
 }
@@ -351,6 +367,7 @@ body.dragging-active .editor-container {
   margin-top: 8px;
   padding: 10px 14px;
   border-left: 2px solid var(--glass-border-subtle);
+  background: var(--msg-block-tint);
   font-size: 0.82rem;
   color: var(--text-muted);
   line-height: 1.6;
@@ -367,8 +384,11 @@ body.dragging-active .editor-container {
   max-width: 100%;
   overflow: hidden;
 }
+/* ⚠️ 本文件与 AgentTurn.vue 的 scoped 样式里各有一份同名的 `.dev-*` 定义副本。
+   scoped 的 specificity 更高、会盖住这里，但一旦 scoped 里删掉某条声明，
+   这里的旧值就会顶上来 —— 所以改一处必须同时改另一处。 */
 .dev-tool[open] {
-  background: color-mix(in srgb, var(--surface-strong) calc(30 * var(--agent-message-opacity) / 100), transparent);
+  background: var(--msg-block-tint);
 }
 .dev-tool-summary {
   display: flex;
@@ -456,7 +476,7 @@ body.dragging-active .editor-container {
 
 /* 执行日志终端 */
 .dev-log {
-  background: var(--glass-bg-light);
+  background: var(--msg-block-tint);
   border-radius: 8px;
   border: 1px solid var(--glass-border-subtle);
   overflow: hidden;
@@ -464,7 +484,7 @@ body.dragging-active .editor-container {
   max-width: 100%;
 }
 .dev-log-header {
-  background: color-mix(in srgb, var(--surface-strong) 18%, transparent);
+  background: var(--msg-block-tint-strong);
   padding: 6px 10px;
   display: flex;
   align-items: center;

@@ -315,7 +315,6 @@ export const useChatStore = defineStore("chat", () => {
             requestView.currentTurn,
             resumeContent,
             "",
-            undefined,
             res.status,
             resumeNotice,
           );
@@ -560,7 +559,6 @@ export const useChatStore = defineStore("chat", () => {
           view.currentTurn,
           `**执行出错：${errMsg}**`,
           "",
-          undefined,
           "ERROR",
         ),
       });
@@ -692,7 +690,6 @@ export const useChatStore = defineStore("chat", () => {
               requestView.currentTurn,
               finalContent || cleanedFallback,
               finalToolBuffer,
-              undefined,
               "CANCELLED",
               "用户已取消执行，以上为部分结果",
             );
@@ -724,12 +721,6 @@ export const useChatStore = defineStore("chat", () => {
           requestView.currentTurn,
           stripPseudoToolCalls(res.content || ""),
           "",
-          {
-            input: res.input_tokens || 0,
-            output: res.output_tokens || 0,
-            sessionInput: res.session_input_tokens || 0,
-            sessionOutput: res.session_output_tokens || 0,
-          },
           res.status,
         );
         requestView.latestCheckpoint = null;
@@ -756,28 +747,17 @@ export const useChatStore = defineStore("chat", () => {
       const interruptedNotice = res.notice ?? undefined;
       // break_loop 时后端通过 tool_execution_summary 传递工具结果，补充到 toolBuffer
       const finalToolBuffer = streamedToolBuffer || (res as any).toolExecutionSummary || "";
-      const inputTokens = res.input_tokens ?? (res as any).inputTokens ?? 0;
-      const outputTokens = res.output_tokens ?? (res as any).outputTokens ?? 0;
       const sessionInputTokens = res.session_input_tokens ?? (res as any).sessionInputTokens ?? 0;
       const sessionOutputTokens = res.session_output_tokens ?? (res as any).sessionOutputTokens ?? 0;
       // 会话累计缓存命中 / 未命中：后端从 sessions 表读回，0 表示该会话从未上报过缓存字段
       const sessionCacheHitTokens = res.session_cache_hit_tokens ?? (res as any).sessionCacheHitTokens ?? 0;
       const sessionCacheMissTokens = res.session_cache_miss_tokens ?? (res as any).sessionCacheMissTokens ?? 0;
       
-      // 更新当前 turn 的 tokens 状态，供 Live 组件渲染
-      requestView.currentTurn.tokens = {
-        input: inputTokens,
-        output: outputTokens,
-        sessionInput: sessionInputTokens,
-        sessionOutput: sessionOutputTokens,
-      };
-
       // 先拍快照（保留执行过程），再清空 live 缓冲区
       const snapshot = buildAgentTurnSnapshot(
         requestView.currentTurn,
         finalContent,
         finalToolBuffer,
-        undefined,
         res.status,
         interruptedNotice,
       );
@@ -828,7 +808,6 @@ export const useChatStore = defineStore("chat", () => {
         requestView.currentTurn,
         `**执行出错：${errMsg}**`,
         "",
-        undefined,
         "ERROR",
       );
       session.appendSessionMessage(sessionIdAtStart, {

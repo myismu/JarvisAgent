@@ -8,6 +8,7 @@ import { usePreferences } from '../../composables/usePreferences';
 import { invoke } from '@tauri-apps/api/core';
 import ConfirmModal from '../common/ConfirmModal.vue';
 import AgentTurn from './AgentTurn.vue';
+import AgentTurnNotice from './AgentTurnNotice.vue';
 import ThinkingStatus from './ThinkingStatus.vue';
 import SessionTaskBoard from './SessionTaskBoard.vue';
 import TodoPanel from './TodoPanel.vue';
@@ -67,6 +68,27 @@ const hasCurrentTurnContent = computed(() => {
       (turn.notice || "").trim()
   );
 });
+
+/**
+ * 气泡里是否有**真内容**（不含 notice）。
+ *
+ * 与 `hasCurrentTurnContent` 的区别：后者把 notice 也算作内容，那是"整轮要不要渲染"的判断；
+ * 而 notice 现在渲染在气泡**外面**，所以决定"气泡要不要出现"必须用这个 ——
+ * 否则"只有提示没有正文"的轮次会渲染出一个空 padding 盒子（空气泡）。
+ * 历史快照同理：后端 `AgentTurnSnapshot::is_empty()` 特意保留了只有 notice 的轮次。
+ */
+function hasBubblePayload(
+  turn: Pick<AgentCurrentTurn, "textBlocks" | "thinkingBlocks" | "toolCalls" | "logs">,
+): boolean {
+  return Boolean(
+    turn.textBlocks.some((block) => block.content.trim()) ||
+      turn.thinkingBlocks.some((block) => block.content.trim()) ||
+      turn.toolCalls.length > 0 ||
+      turn.logs.some((log) => log.content.trim())
+  );
+}
+
+const hasBubbleContent = computed(() => hasBubblePayload(currentTurn.value));
 const isWaitingForUser = computed(() => {
   return Boolean(perm.planProposal || perm.permissionRequest);
 });
@@ -136,7 +158,6 @@ function convertSnapshotToTurn(snapshot: AgentTurnSnapshot): AgentCurrentTurn {
     thinkingBlocks: snapshot.thinkingBlocks,
     toolCalls: snapshot.toolCalls,
     logs: snapshot.logs,
-    tokens: snapshot.tokens,
     // 状态标注（气泡下方小字）：中断/取消/等待说明
     notice: snapshot.notice,
     startedAt: snapshot.createdAt,
@@ -859,7 +880,8 @@ onMounted(() => {
         </div>
         <!-- Agent 消息 -->
         <div v-else-if="message.role === 'agent' && message.snapshot" class="chat-message agent-message" :data-msg-id="message.id">
-          <div class="message-content current-turn-content">
+          <!-- 只有状态标注、没有正文的轮次不渲染气泡：notice 在气泡外，气泡会是个空盒子 -->
+          <div v-if="hasBubblePayload(message.snapshot)" class="message-content current-turn-content">
             <AgentTurn
               :turn="convertSnapshotToTurn(message.snapshot)"
               :display-mode="prefs.agentAudience.value"
@@ -868,14 +890,20 @@ onMounted(() => {
               :paused="false"
             />
           </div>
+          <!-- 状态标注刻意放在气泡**外面**：它是这一轮的运行状态，不是模型说的话。
+               放气泡内会跟着 padding 缩进，看起来像模型正文的一部分。 -->
+          <AgentTurnNotice :notice="message.snapshot.notice" />
         </div>
       </template>
 
       <!-- Live 当前 Turn -->
       <div v-if="showAgentTurn" class="chat-message agent-message current-turn-message">
+        <!-- 气泡只在"有正文"或"运行中要占位"时渲染；
+             只有 notice（如上游静默零产出）时不渲染气泡，让它单独出现在外面 -->
         <div
+          v-if="hasBubbleContent || showInlineStatus"
           class="message-content current-turn-content"
-          :class="{ 'waiting-only': !hasCurrentTurnContent && showInlineStatus }"
+          :class="{ 'waiting-only': !hasBubbleContent }"
         >
           <AgentTurn
             :turn="currentTurn"
@@ -885,6 +913,8 @@ onMounted(() => {
             :paused="isWaitingForUser"
           />
         </div>
+        <!-- running：当前轮才可能为 true，用来区分"还在进行中"的过程态 -->
+        <AgentTurnNotice :notice="currentTurn.notice" :running="currentTurn.isRunning" />
       </div>
       <Transition name="notice-fade">
         <div v-if="chat.memoryNotice" class="memory-notice" @click="chat.memoryNotice = null">
@@ -1016,6 +1046,14 @@ onMounted(() => {
 
 :deep(.agent-message) {
   justify-content: flex-start;
+  /* 纵向排列：气泡在上，状态标注（AgentTurnNotice）在下。
+     加这两条是为了让 notice **脱离气泡**渲染 —— 它有独立的宽度与左边界，
+     不再跟着气泡的 padding: 14px 22px 一起缩进。
+     align-items: flex-start 让每个子元素宽度各自 fit-content：
+     长文本下 fit-content 会撑到容器宽度再换行，与原先 flex row 下
+     "气泡宽度由内容决定（上限 85%）"的行为一致。 */
+  flex-direction: column;
+  align-items: flex-start;
 }
 
 :deep(.message-content) {

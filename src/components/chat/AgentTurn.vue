@@ -3,6 +3,9 @@
 
 渲染一轮对话中的思考块、工具调用、执行日志，支持用户视图与开发者视图两种模式。
 
+注意：**状态标注（notice）不在这里渲染** —— 它已移到 `AgentTurnNotice.vue`，由 `ChatArea`
+放在回复气泡**外面**。放气泡内会跟着气泡的 padding 一起缩进，看起来像模型自己说的话。
+
 ## Dependencies
 - Internal: `../../types`（AgentCurrentTurn / AgentDisplayMode）
 
@@ -52,9 +55,6 @@ const rawAssistantText = computed(() =>
 /** 正文原样渲染：不再做任何标记剥离 */
 const assistantText = rawAssistantText;
 
-/** 气泡下方的状态标注：**只**取后端结构化字段 */
-const turnNotice = computed(() => props.turn.notice);
-
 const hasAssistantText = computed(() => assistantText.value.trim().length > 0);
 const hasExecution = computed(() => {
   return Boolean(
@@ -63,8 +63,6 @@ const hasExecution = computed(() => {
       props.turn.logs.some((log) => log.content.trim()),
   );
 });
-
-const hasTurnTokens = computed(() => !!props.turn.tokens);
 
 const isDeveloperMode = computed(() => props.displayMode === "developer");
 
@@ -172,17 +170,6 @@ function toolStatusLabel(status: string): string {
       />
       <StreamingMarkdown v-if="hasAssistantText" class="agent-turn-answer" :content="assistantText" />
     </template>
-
-    <div v-if="turnNotice" class="agent-turn-notice">
-      {{ turnNotice }}
-    </div>
-
-    <div v-if="hasTurnTokens && turn.tokens" class="agent-turn-tokens">
-      输入 {{ turn.tokens.input }} / 输出 {{ turn.tokens.output }} Token
-      <template v-if="turn.tokens.sessionInput">
-        &nbsp;|&nbsp;会话累计: 输入 {{ turn.tokens.sessionInput }} / 输出 {{ turn.tokens.sessionOutput }} Token
-      </template>
-    </div>
   </div>
 </template>
 
@@ -190,26 +177,6 @@ function toolStatusLabel(status: string): string {
 .agent-turn {
   position: relative;
   width: 100%;
-}
-
-.agent-turn-tokens {
-  margin-top: 16px;
-  width: 100%;
-  font-size: 0.75rem;
-  color: var(--text-muted);
-}
-
-/* 状态标注（等待提示 / 中断说明）：气泡下方的小字，与 token 统计同款视觉 */
-.agent-turn-notice {
-  margin-top: 10px;
-  width: 100%;
-  font-size: 0.75rem;
-  line-height: 1.5;
-  color: var(--text-muted);
-}
-
-.agent-turn-notice + .agent-turn-tokens {
-  margin-top: 6px;
 }
 
 .agent-turn.waiting-only {
@@ -264,7 +231,7 @@ function toolStatusLabel(status: string): string {
 }
 .dev-status-dot.running {
   background: var(--text-muted);
-  animation: dev-pulse 1.5s ease-in-out infinite;
+  animation: agent-pulse 1.5s ease-in-out infinite;
 }
 .dev-status-dot.error {
   background: var(--text-muted);
@@ -295,18 +262,21 @@ function toolStatusLabel(status: string): string {
   margin-top: 8px;
   padding: 10px 14px;
   border-left: 2px solid var(--glass-border-subtle);
+  background: var(--msg-block-tint);
   font-size: 0.82rem;
   color: var(--text-muted);
   line-height: 1.6;
 }
 
 /* 工具调用 */
+/* 工具块：展开态给一层淡底，走「消息背景透明度」统一控制（调到 0 即消失）。
+   hover 的浅底是"可折叠"的交互提示而非静态配色，故不跟这个变量走。 */
 .dev-tool {
   border-radius: 6px;
   transition: background 0.15s;
 }
 .dev-tool[open] {
-  background: color-mix(in srgb, var(--surface-strong) calc(30 * var(--agent-message-opacity) / 100), transparent);
+  background: var(--msg-block-tint);
 }
 .dev-tool-summary {
   display: flex;
@@ -369,11 +339,12 @@ function toolStatusLabel(status: string): string {
 .dev-tool-section {
   margin-top: 8px;
 }
+/* 参数 / 输出：容器内的内容块，比外层再深一档（tint-strong），同样受透明度控制 */
 .dev-tool-section :deep(.streaming-markdown) {
   font-family: var(--font-mono);
   font-size: 0.78rem;
   line-height: 1.5;
-  background: color-mix(in srgb, var(--surface-strong) calc(50 * var(--agent-message-opacity) / 100), transparent);
+  background: var(--msg-block-tint-strong);
   border: 1px solid var(--glass-border-subtle);
   border-radius: 4px;
   padding: 8px 10px;
@@ -397,10 +368,9 @@ function toolStatusLabel(status: string): string {
   word-break: break-all;
   overflow-wrap: break-word;
 }
-.dev-tool-section.error :deep(.streaming-markdown) {
-  border-color: var(--glass-border-subtle);
-  background: color-mix(in srgb, var(--text-muted) calc(5 * var(--agent-message-opacity) / 100), transparent);
-}
+/* 注：这里原有一条 5% 底色的"错误态"规则，已删除 —— 它的 calc 缺百分比单位，
+   在 color-mix 里无效、从未生效过；且工具失败本就靠中性灰而非底色区分
+   （见文件头 Constraints：工具失败为常规事件，红只留给致命错误）。 */
 .dev-tool-section-label {
   font-size: 0.7rem;
   font-weight: 600;
@@ -415,14 +385,14 @@ function toolStatusLabel(status: string): string {
 
 /* 执行日志终端 */
 .dev-log {
-  background: var(--glass-bg-light);
+  background: var(--msg-block-tint);
   border-radius: 8px;
   border: 1px solid var(--glass-border-subtle);
   overflow: hidden;
   margin: 8px 0;
 }
 .dev-log-header {
-  background: color-mix(in srgb, var(--surface-strong) 18%, transparent);
+  background: var(--msg-block-tint-strong);
   padding: 6px 10px;
   display: flex;
   align-items: center;
@@ -459,7 +429,10 @@ function toolStatusLabel(status: string): string {
   line-height: 1.75;
 }
 
-@keyframes dev-pulse {
+/* 执行中状态的脉冲节拍：开发者模式的状态点与状态标注的过程态共用。
+   原名 dev-pulse —— 现在两处语义不同（一处是开发者视图，一处是普通视图），
+   故取中性名，避免后来者以为它只服务于开发者模式而另建一个同款。 */
+@keyframes agent-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
