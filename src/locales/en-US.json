@@ -332,11 +332,8 @@
     "clearDoneTasks": "Clear finished tasks",
     "noPlans": "No plans",
     "subAgentType": {
-      "general": "General",
-      "explore": "Explore Code",
-      "review": "Review Code",
-      "verification": "Verify Result",
-      "implementation": "Write Code"
+      "implementation": "Write Code",
+      "verification": "Verify Result"
     },
     "subAgentStatus": {
       "running": "Running",

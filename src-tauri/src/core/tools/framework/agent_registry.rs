@@ -9,8 +9,14 @@ use std::sync::OnceLock;
 
 use super::registry::ToolRegistry;
 
-pub const DEFAULT_AGENT_ROLE: &str = "general";
 pub const IMPLEMENTATION_AGENT_ROLE: &str = "implementation";
+
+/// 省略 `subagent_type` 时的缺省角色。
+///
+/// 角色收敛后只剩两个，缺省即执行角色 —— 但它**默认只读**（`read_only_default = true`），
+/// 要写必须由 caller 显式传 `read_only: false`。所以"省略一切"拿到的仍是只读子代理，
+/// 与收敛前的 `general` 行为一致。
+pub const DEFAULT_AGENT_ROLE: &str = IMPLEMENTATION_AGENT_ROLE;
 
 const GENERAL_TOOLS: &[&str] = &[
     "LoadSkill",
@@ -43,21 +49,6 @@ const GENERAL_TOOLS: &[&str] = &[
     "RunCommand",
     // StartBackgroundCommand 不给子代理：后台服务由主 Agent 统一管理（registry.rs 意图过滤同口径），
     // CheckBackgroundCommand 保留——只读探测后台输出，不违反"统一管理启动"
-    "CheckBackgroundCommand",
-];
-
-const READ_ONLY_RESEARCH_TOOLS: &[&str] = &[
-    "LoadSkill",
-    "ListDirectory",
-    "FindFiles",
-    "SearchText",
-    "SearchRepo",
-    "ReadFile",
-    "ReadFileSkeleton",
-    "FindSymbol",
-    "ReadSymbol",
-    "FindReferences",
-    "CodeSearch",
     "CheckBackgroundCommand",
 ];
 
@@ -121,39 +112,23 @@ impl AgentRegistry {
                 insertion_order: Vec::new(),
             };
 
-            registry.register(AgentDefinition {
-                agent_role: DEFAULT_AGENT_ROLE,
-                when_to_use: "General delegated work. Defaults to read-only unless the caller explicitly allows writes.",
-                system_prompt: "You are a general-purpose subagent. Complete the delegated task directly and report only the useful result.",
-                tools: GENERAL_TOOLS,
-                disallowed_tools: &[],
-                model: None,
-                read_only_default: true,
-                max_turns: Some(30),
-            });
-
-            registry.register(AgentDefinition {
-                agent_role: "explore",
-                when_to_use: "Read-only codebase exploration, file discovery, and focused research.",
-                system_prompt: "You are an exploration subagent. Inspect the codebase, gather evidence, and return concise findings with file paths. Do not modify files.",
-                tools: READ_ONLY_RESEARCH_TOOLS,
-                disallowed_tools: &[],
-                model: None,
-                read_only_default: true,
-                max_turns: Some(20),
-            });
-
-            registry.register(AgentDefinition {
-                agent_role: "review",
-                when_to_use: "Independent read-only code review focused on bugs, risks, regressions, and missing tests.",
-                system_prompt: "You are a code review subagent. Prioritize concrete defects with file references. Do not modify files.",
-                tools: READ_ONLY_RESEARCH_TOOLS,
-                disallowed_tools: &[],
-                model: None,
-                read_only_default: true,
-                max_turns: Some(15),
-            });
-
+            // 角色从 5 个收敛到 2 个（2026-09-21）。被删的三个与保留的两个是什么关系：
+            //
+            // - `general` / `explore` / `review` 的工具集**逐字节相同**（都是只读那 12 个）：
+            //   GENERAL_TOOLS 的只读子集恰好就是 READ_ONLY_RESEARCH_TOOLS，
+            //   所以「general 缺省只读」时三者实得工具完全一致，差别只剩提示词里一句话
+            //   和 max_turns。实测分布也印证：180 次运行里 review 0 次、explore 0.6%、
+            //   general 1.1%（而占 92.8% 的 implementation 基本是调度器兜底、不是模型选的）。
+            //   review 更是自 2026-05-20 起就被反思审查机制架空 ——
+            //   `execute_review()` 自己构造 messages，压根不走 AgentRegistry。
+            //
+            // - 它们的场景现在由 **implementation + read_only: true** 表达：
+            //   implementation 的缺省就是只读，所以"省略一切"拿到的仍是只读子代理，
+            //   工具集与原来的 general/explore/review 逐字节相同。
+            //
+            // - `verification` **保留**：它那个"能跑测试命令、但改不了文件"的档位
+            //   无法用 read_only 布尔表达 —— true 会连 RunCommand 一起滤掉，
+            //   false 又放开了写文件，而验证的独立性正依赖这个中间档。
             registry.register(AgentDefinition {
                 agent_role: "verification",
                 when_to_use: "Verify behavior after changes by inspecting code and running targeted checks or tests.",
@@ -171,12 +146,16 @@ impl AgentRegistry {
 
             registry.register(AgentDefinition {
                 agent_role: IMPLEMENTATION_AGENT_ROLE,
-                when_to_use: "Concrete implementation work that may edit files or run commands.",
-                system_prompt: "You are an implementation subagent. Make the requested changes, keep scope tight, and verify the result when practical.",
+                // 吸收了原 `general` 的语义：缺省只读，要写必须由 caller 显式放权。
+                // 这样"省略 subagent_type + 省略 read_only"拿到的仍是只读子代理 ——
+                // 安全默认没有因为删掉 general 而丢失（这一点在 auto_approve 档位下尤其要紧，
+                // 那种配置下权限弹卡不拦，只读默认是最后一道软防护）。
+                when_to_use: "General delegated work and concrete implementation. Defaults to read-only unless the caller explicitly allows writes.",
+                system_prompt: "You are an implementation subagent. Complete the delegated task directly, make the requested changes, keep scope tight, and verify the result when practical.",
                 tools: GENERAL_TOOLS,
                 disallowed_tools: &[],
                 model: None,
-                read_only_default: false,
+                read_only_default: true,
                 max_turns: Some(50),
             });
 
@@ -262,16 +241,39 @@ mod tests {
         assert!(registry.available_types().contains(&"implementation"));
     }
 
+    /// 角色收敛后的不变量：只剩两个。
+    ///
+    /// 加角色之前先想清楚它是不是"用 read_only 布尔就能表达"——
+    /// 被删掉的 general / explore / review 就是因为工具集逐字节相同（都是只读那 12 个），
+    /// 三个名字在描述同一件事。
     #[test]
-    fn explore_agent_resolves_read_only_tools() {
+    fn only_two_roles_remain_after_convergence() {
         let registry = AgentRegistry::global();
-        let agent = registry.get("explore").unwrap();
+        let mut types = registry.available_types();
+        types.sort_unstable();
+        assert_eq!(types, vec!["implementation", "verification"]);
+    }
+
+    /// **安全默认**：省略一切时（不传 `subagent_type`、不传 `read_only`）拿到的是只读子代理。
+    ///
+    /// 这条是删掉 general 之后刻意保住的语义 —— implementation 的 `read_only_default`
+    /// 从 false 改成了 true。在 auto_approve 档位下权限弹卡不拦，只读默认是最后一道软防护。
+    #[test]
+    fn omitted_read_only_yields_read_only_subagent() {
+        let registry = AgentRegistry::global();
+        let agent = registry.default_agent();
+        assert_eq!(agent.agent_role, IMPLEMENTATION_AGENT_ROLE);
+        assert!(
+            agent.read_only_default,
+            "缺省角色必须默认只读：模型忘传参数时不该拿到能改文件的子代理"
+        );
+
         let tools = registry.resolve_tools(agent, agent.read_only_default);
         let names: Vec<&str> = tools
             .iter()
             .filter_map(|tool| tool["name"].as_str())
             .collect();
-
+        // 工具集应与收敛前的 general / explore / review 逐字节相同
         assert!(names.contains(&"ReadFile"));
         assert!(names.contains(&"SearchText"));
         assert!(!names.contains(&"EditFile"));
@@ -366,24 +368,26 @@ mod tests {
         }
     }
 
-    /// 反向锁：只读研究类角色不得被顺手放宽到能改文件（本次只动了 `GENERAL_TOOLS`）。
+    /// 反向锁：不该能改文件的角色，白名单里就不能有写工具。
+    ///
+    /// `verification` 是唯一需要这条锁的角色 —— 它 `read_only_default = false`（要跑命令），
+    /// 所以"拿不到写工具"**完全靠白名单**，白名单一旦被顺手放宽就没别的拦阻了。
     #[test]
-    fn read_only_roles_stay_free_of_mutating_tools() {
-        for role in ["explore", "review", "verification"] {
-            let agent = AgentRegistry::global().get(role).unwrap();
-            for tool in [
-                "WriteFile",
-                "EditFile",
-                "EditNotebook",
-                "ApplyPatch",
-                "DeleteFile",
-                "RenameFile",
-            ] {
-                assert!(
-                    !agent.tools.contains(&tool),
-                    "{role} 是只读角色，不该拿到 {tool}"
-                );
-            }
+    fn verification_allowlist_stays_free_of_mutating_tools() {
+        let agent = AgentRegistry::global().get("verification").unwrap();
+        for tool in [
+            "WriteFile",
+            "EditFile",
+            "EditNotebook",
+            "ApplyPatch",
+            "DeleteFile",
+            "RenameFile",
+            "StartBackgroundCommand",
+        ] {
+            assert!(
+                !agent.tools.contains(&tool),
+                "verification 不该拿到 {tool}：它 read_only_default=false，白名单是唯一的拦阻"
+            );
         }
     }
 
