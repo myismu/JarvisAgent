@@ -318,14 +318,19 @@ pub fn set_loop_event_interrupted(
 
 /// 按 `loop_index` 顺序取出某 run 的全部轮次（崩溃重建的唯一数据源）。
 ///
+/// `AgentRunLoopEvent` 的 SELECT 列清单（本表查询共用一份；与 `loop_event_from_row` 读的列名对应）。
+const LOOP_EVENT_COLUMNS: &str = "event_id, run_id, session_id, loop_index, resp_blocks, \
+     tool_results, status, error, input_tokens, output_tokens, model, started_at, updated_at";
+
 /// ⚠️ `ORDER BY loop_index` 必须显式写：不依赖 SQLite 的插入顺序。
 pub fn load_loop_events(run_id: &str) -> Result<Vec<AgentRunLoopEvent>, String> {
     crate::infra::db::with_connection(|conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT event_id, run_id, session_id, loop_index, resp_blocks, tool_results,
-                        status, error, input_tokens, output_tokens, model, started_at, updated_at
-                 FROM agent_run_events WHERE run_id = ?1 ORDER BY loop_index",
+                &format!(
+                    "SELECT {} FROM agent_run_events WHERE run_id = ?1 ORDER BY loop_index",
+                    LOOP_EVENT_COLUMNS
+                ),
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
@@ -337,24 +342,29 @@ pub fn load_loop_events(run_id: &str) -> Result<Vec<AgentRunLoopEvent>, String> 
     })
 }
 
+/// 从 `agent_runs` 的一行还原运行记录。
+///
+/// **按列名取值**（2026-09-21 起，与 `stored_session_message_from_row` 同一口径）：
+/// 以前靠"下标与 `RUN_COLUMNS` 严格对应"来维持，v19 删列时还得人工把下标整体前移 ——
+/// 那种改法一旦漏了某条 SELECT 就是运行期 `Invalid column index`。
+/// 现在列序无关，缺列会直接报 `Invalid column name: xxx`。
 fn run_from_row(row: &Row<'_>) -> rusqlite::Result<AgentRun> {
-    // ⚠️ 下标与 `RUN_COLUMNS` 严格对应（v19 删掉 user_message_preview / error 后整体前移）
     Ok(AgentRun {
-        run_id: row.get(0)?,
-        session_id: row.get(1)?,
-        status: status_from_str(row.get::<_, String>(2)?.as_str()),
-        message_id: row.get(3)?,
-        loop_count: row.get::<_, i64>(4)? as usize,
-        input_tokens: row.get::<_, i64>(5)? as u64,
-        output_tokens: row.get::<_, i64>(6)? as u64,
-        started_at: row.get::<_, i64>(7)? as u64,
-        updated_at: row.get::<_, i64>(8)? as u64,
-        finished_at: row.get::<_, Option<i64>>(9)?.map(|value| value as u64),
-        last_safe_point: row.get(10)?,
-        summary: row.get(11)?,
-        resumable: row.get::<_, i64>(12)? != 0,
-        resumed_from_run_id: row.get(13)?,
-        interrupt_kind: row.get(14)?,
+        run_id: row.get("run_id")?,
+        session_id: row.get("session_id")?,
+        status: status_from_str(row.get::<_, String>("status")?.as_str()),
+        message_id: row.get("message_id")?,
+        loop_count: row.get::<_, i64>("loop_count")? as usize,
+        input_tokens: row.get::<_, i64>("input_tokens")? as u64,
+        output_tokens: row.get::<_, i64>("output_tokens")? as u64,
+        started_at: row.get::<_, i64>("started_at")? as u64,
+        updated_at: row.get::<_, i64>("updated_at")? as u64,
+        finished_at: row.get::<_, Option<i64>>("finished_at")?.map(|value| value as u64),
+        last_safe_point: row.get("last_safe_point")?,
+        summary: row.get("summary")?,
+        resumable: row.get::<_, i64>("resumable")? != 0,
+        resumed_from_run_id: row.get("resumed_from_run_id")?,
+        interrupt_kind: row.get("interrupt_kind")?,
     })
 }
 
@@ -377,24 +387,25 @@ fn parse_blocks(raw: &str) -> Vec<crate::infra::types::models::ContentBlock> {
     }
 }
 
+/// 从 `agent_run_events` 的一行还原单轮事件（**按列名取值**，口径同 `run_from_row`）。
 fn loop_event_from_row(row: &Row<'_>) -> rusqlite::Result<AgentRunLoopEvent> {
-    let resp_raw: String = row.get(4)?;
-    let tool_raw: String = row.get(5)?;
+    let resp_raw: String = row.get("resp_blocks")?;
+    let tool_raw: String = row.get("tool_results")?;
     Ok(AgentRunLoopEvent {
-        event_id: row.get(0)?,
-        run_id: row.get(1)?,
-        session_id: row.get(2)?,
-        loop_index: row.get::<_, i64>(3)? as usize,
+        event_id: row.get("event_id")?,
+        run_id: row.get("run_id")?,
+        session_id: row.get("session_id")?,
+        loop_index: row.get::<_, i64>("loop_index")? as usize,
         resp_blocks: parse_blocks(&resp_raw),
         // 工具结果是结构化 JSON 数组；解析失败（半截）时退化为空，不误当正文
         tool_results: serde_json::from_str(&tool_raw).unwrap_or_default(),
-        status: row.get(6)?,
-        error: row.get(7)?,
-        input_tokens: row.get::<_, i64>(8)? as u64,
-        output_tokens: row.get::<_, i64>(9)? as u64,
-        model: row.get(10)?,
-        started_at: row.get::<_, i64>(11)? as u64,
-        updated_at: row.get::<_, i64>(12)? as u64,
+        status: row.get("status")?,
+        error: row.get("error")?,
+        input_tokens: row.get::<_, i64>("input_tokens")? as u64,
+        output_tokens: row.get::<_, i64>("output_tokens")? as u64,
+        model: row.get("model")?,
+        started_at: row.get::<_, i64>("started_at")? as u64,
+        updated_at: row.get::<_, i64>("updated_at")? as u64,
     })
 }
 
@@ -456,4 +467,98 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod run_columns_tests {
+    //! `agent_runs` / `agent_run_events` 的列一致性护栏（与 `session/repository.rs` 的两套同口径）。
+    //!
+    //! 这两张表此前是"下标与列清单严格对应"的写法：v19 删列时靠人工把下标整体前移，
+    //! 当时没出错，但没有任何测试会拦住下次出错。2026-09-21 起映射器改为按列名取值，
+    //! 护栏随之改成两件事：名字覆盖 + 清单能在真实表结构上准备。
+
+    use super::*;
+    use rusqlite::Connection;
+
+    fn column_names(list: &str) -> Vec<&str> {
+        list.split(',').map(|c| c.trim()).filter(|c| !c.is_empty()).collect()
+    }
+
+    #[test]
+    fn run_columns_cover_every_name_the_mapper_reads() {
+        let columns = column_names(RUN_COLUMNS);
+        for name in [
+            "run_id",
+            "session_id",
+            "status",
+            "message_id",
+            "loop_count",
+            "input_tokens",
+            "output_tokens",
+            "started_at",
+            "updated_at",
+            "finished_at",
+            "last_safe_point",
+            "summary",
+            "resumable",
+            "resumed_from_run_id",
+            "interrupt_kind",
+        ] {
+            assert!(columns.contains(&name), "RUN_COLUMNS 缺少 {name}：{columns:?}");
+        }
+        assert_eq!(
+            columns.len(),
+            15,
+            "列数应为 15，实际 {}：{columns:?}",
+            columns.len()
+        );
+    }
+
+    #[test]
+    fn loop_event_columns_cover_every_name_the_mapper_reads() {
+        let columns = column_names(LOOP_EVENT_COLUMNS);
+        for name in [
+            "event_id",
+            "run_id",
+            "session_id",
+            "loop_index",
+            "resp_blocks",
+            "tool_results",
+            "status",
+            "error",
+            "input_tokens",
+            "output_tokens",
+            "model",
+            "started_at",
+            "updated_at",
+        ] {
+            assert!(
+                columns.contains(&name),
+                "LOOP_EVENT_COLUMNS 缺少 {name}：{columns:?}"
+            );
+        }
+        assert_eq!(
+            columns.len(),
+            13,
+            "列数应为 13，实际 {}：{columns:?}",
+            columns.len()
+        );
+    }
+
+    /// 清单里的每一列都必须在真实表结构上存在（迁移删列没跟上时在这里暴露）。
+    #[test]
+    fn both_column_lists_prepare_against_the_real_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::infra::db::schema::init_schema(&conn).expect("建表");
+        for (label, sql) in [
+            ("RUN_COLUMNS", format!("SELECT {} FROM agent_runs", RUN_COLUMNS)),
+            (
+                "LOOP_EVENT_COLUMNS",
+                format!("SELECT {} FROM agent_run_events", LOOP_EVENT_COLUMNS),
+            ),
+        ] {
+            conn.prepare(&sql)
+                .unwrap_or_else(|e| panic!("{label} 无法在真实表结构上准备：{e}"));
+        }
+    }
 }

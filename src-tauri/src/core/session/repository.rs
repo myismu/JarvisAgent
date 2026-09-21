@@ -290,19 +290,31 @@ pub fn append_or_upsert_session_messages(
     })
 }
 
+/// `session_messages` 的 SELECT 列清单（**本表所有 SELECT 共用这一份，不许各自抄一份**）。
+///
+/// 由来与 `SESSION_META_COLUMNS` 相同，但这是**同一个坑第二次被踩**：
+/// v17 给本表加 `interrupt_kind` 时，三处 SELECT 改了两处，漏掉
+/// `find_session_message_by_id` —— 而撤回是唯一走那条查询的路径，于是撤回直接抛
+/// `Invalid column index: 10`（撤回逻辑本身没有任何问题）。
+/// v11 在 sessions 表上犯过一模一样的错，见 `meta_columns_tests` 的说明。
+///
+/// 抽成常量后"加列只改这一行"；再配合 `stored_session_message_from_row` 的
+/// **按列名取值**，列序与列数都不再是隐式约定，这类错位在结构上不可能发生。
+const SESSION_MESSAGE_COLUMNS: &str = "message_id, seq, role, content_json, created_at, \
+     updated_at, recalled_at, hidden_at, source, turn_id, interrupt_kind";
+
 pub fn list_visible_session_messages(session_id: &str) -> Result<Vec<StoredSessionMessage>, String> {
     crate::infra::db::with_connection(|conn| {
         let mut stmt = conn
-            .prepare(
-                "SELECT message_id, seq, role, content_json, created_at, updated_at, recalled_at,
-                        hidden_at, source, turn_id, interrupt_kind
-                 FROM session_messages
+            .prepare(&format!(
+                "SELECT {} FROM session_messages
                  WHERE session_id = ?1
                    AND hidden_at IS NULL
                    AND recalled_at IS NULL
                    AND source != 'compact'
                  ORDER BY seq ASC",
-            )
+                SESSION_MESSAGE_COLUMNS
+            ))
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([session_id], stored_session_message_from_row)
@@ -328,10 +340,8 @@ pub fn list_visible_session_messages_paged(
 ) -> Result<Vec<StoredSessionMessage>, String> {
     crate::infra::db::with_connection(|conn| {
         let mut stmt = conn
-            .prepare(
-                "SELECT message_id, seq, role, content_json, created_at, updated_at, recalled_at,
-                        hidden_at, source, turn_id, interrupt_kind
-                 FROM session_messages
+            .prepare(&format!(
+                "SELECT {} FROM session_messages
                  WHERE session_id = ?1
                    AND hidden_at IS NULL
                    AND recalled_at IS NULL
@@ -339,7 +349,8 @@ pub fn list_visible_session_messages_paged(
                    AND (?2 IS NULL OR seq < ?2)
                  ORDER BY seq DESC
                  LIMIT ?3",
-            )
+                SESSION_MESSAGE_COLUMNS
+            ))
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(
@@ -490,19 +501,34 @@ pub fn find_session_message_by_id(
     message_id: &str,
 ) -> Result<Option<StoredSessionMessage>, String> {
     crate::infra::db::with_connection(|conn| {
-        conn.query_row(
-            "SELECT message_id, seq, role, content_json, created_at, updated_at, recalled_at,
-                    hidden_at, source, turn_id
-             FROM session_messages
+        find_session_message_by_id_in(conn, session_id, message_id)
+    })
+}
+
+/// [`find_session_message_by_id`] 的 connection 版。
+///
+/// 抽出来是为了能在测试里**跑真实 SQL**（不必依赖全局 DB 单例）—— 见
+/// `message_columns_tests::find_message_by_id_round_trips_interrupt_kind`。
+/// 撤回（`command/session.rs` / `command/checkpoint.rs`）是这条查询的唯一调用方，
+/// 2026-09-21 正是因为它的 SELECT 漏列而整体失败。
+fn find_session_message_by_id_in(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    message_id: &str,
+) -> Result<Option<StoredSessionMessage>, String> {
+    conn.query_row(
+        &format!(
+            "SELECT {} FROM session_messages
              WHERE session_id = ?1 AND message_id = ?2
                AND hidden_at IS NULL
                AND recalled_at IS NULL",
-            params![session_id, message_id],
-            stored_session_message_from_row,
-        )
-        .optional()
-        .map_err(|e| e.to_string())
-    })
+            SESSION_MESSAGE_COLUMNS
+        ),
+        params![session_id, message_id],
+        stored_session_message_from_row,
+    )
+    .optional()
+    .map_err(|e| e.to_string())
 }
 
 pub fn hide_session_messages_from_seq(
@@ -617,29 +643,44 @@ pub fn session_messages_count(session_id: &str) -> Result<usize, String> {
     })
 }
 
+/// 从 `session_messages` 的一行还原消息。
+///
+/// **一律按列名取值，不用列序号**。列序号方案要求"每一条 SELECT 的列清单与顺序都和这里的
+/// 下标严格对应"，而这个约定只能靠注释提醒 —— 2026-09-21 的撤回故障正是这么来的：
+/// `find_session_message_by_id` 漏了 v17 新增的 `interrupt_kind`，映射器读第 11 列时直接抛
+/// `Invalid column index: 10`（撤回逻辑本身毫无问题）。
+/// 按列名之后：列序无关；万一某条 SELECT 漏了列，报的是
+/// `Invalid column name: interrupt_kind`（直接指出缺哪个），而不是一个难定位的下标越界。
+///
+/// 列名集合必须与 [`SESSION_MESSAGE_COLUMNS`] 一致，
+/// 由测试 `message_columns_cover_every_name_the_mapper_reads` 钉住。
 fn stored_session_message_from_row(row: &Row<'_>) -> rusqlite::Result<StoredSessionMessage> {
-    let seq: i64 = row.get(1)?;
-    let content_json: String = row.get(3)?;
-    let created_at: i64 = row.get(4)?;
-    let updated_at: Option<i64> = row.get(5)?;
-    let recalled_at: Option<i64> = row.get(6)?;
-    let hidden_at: Option<i64> = row.get(7)?;
+    let seq: i64 = row.get("seq")?;
+    let content_json: String = row.get("content_json")?;
+    let created_at: i64 = row.get("created_at")?;
+    let updated_at: Option<i64> = row.get("updated_at")?;
+    let recalled_at: Option<i64> = row.get("recalled_at")?;
+    let hidden_at: Option<i64> = row.get("hidden_at")?;
     let content = serde_json::from_str(&content_json).map_err(|err| {
-        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(err))
+        // 错误上下文里的列号现查一次：取值本身已不依赖列序，这里只是让报错指向正确的列
+        rusqlite::Error::FromSqlConversionFailure(
+            row.as_ref().column_index("content_json").unwrap_or(0),
+            rusqlite::types::Type::Text,
+            Box::new(err),
+        )
     })?;
     Ok(StoredSessionMessage {
-        message_id: row.get(0)?,
+        message_id: row.get("message_id")?,
         seq: seq.max(0) as usize,
-        role: row.get(2)?,
+        role: row.get("role")?,
         content,
         created_at: created_at.max(0) as u64,
         updated_at: updated_at.map(|value| value.max(0) as u64),
         recalled_at: recalled_at.map(|value| value.max(0) as u64),
         hidden_at: hidden_at.map(|value| value.max(0) as u64),
-        source: row.get(8)?,
-        turn_id: row.get(9)?,
-        // 第 11 列（列序见各处 SELECT：… hidden_at, source, turn_id, interrupt_kind）
-        interrupt_kind: row.get(10)?,
+        source: row.get("source")?,
+        turn_id: row.get("turn_id")?,
+        interrupt_kind: row.get("interrupt_kind")?,
     })
 }
 
@@ -1075,27 +1116,38 @@ pub fn clear_last_active_session_id() -> Result<(), String> {
     })
 }
 
+/// 从 `sessions`（LEFT JOIN `projects`）的一行还原会话元数据。
+///
+/// **按列名取值**（与 `stored_session_message_from_row` 同一口径，理由见那里的说明）。
+/// 注意 `working_directory` 取自 `p.path` —— 这是按列名之后才显式化的隐式约定，
+/// 别"顺手"改成 `s` 的列。
 fn session_meta_from_row(row: &Row<'_>) -> rusqlite::Result<SessionMeta> {
     Ok(SessionMeta {
-        id: row.get(0)?,
-        title: row.get(1)?,
-        created_at: row.get::<_, i64>(2)? as u64,
-        updated_at: row.get::<_, i64>(3)? as u64,
-        message_count: row.get::<_, i64>(4)? as usize,
-        is_smart_named: row.get::<_, i64>(5)? != 0,
-        profile_id: row.get(6)?,
-        total_input_tokens: row.get::<_, i64>(7)? as u64,
-        total_output_tokens: row.get::<_, i64>(8)? as u64,
-        title_source: row.get(9)?,
-        project_id: row.get(10)?,
-        working_directory: row.get(11)?,
-        thinking_mode: row.get::<_, i64>(12)? != 0,
-        total_cache_hit_tokens: row.get::<_, i64>(13)? as u64,
-        total_cache_miss_tokens: row.get::<_, i64>(14)? as u64,
+        id: row.get("id")?,
+        title: row.get("title")?,
+        created_at: row.get::<_, i64>("created_at")? as u64,
+        updated_at: row.get::<_, i64>("updated_at")? as u64,
+        message_count: row.get::<_, i64>("message_count")? as usize,
+        is_smart_named: row.get::<_, i64>("is_smart_named")? != 0,
+        profile_id: row.get("profile_id")?,
+        total_input_tokens: row.get::<_, i64>("total_input_tokens")? as u64,
+        total_output_tokens: row.get::<_, i64>("total_output_tokens")? as u64,
+        title_source: row.get("title_source")?,
+        project_id: row.get("project_id")?,
+        working_directory: row.get("path")?,
+        thinking_mode: row.get::<_, i64>("thinking_mode")? != 0,
+        total_cache_hit_tokens: row.get::<_, i64>("total_cache_hit_tokens")? as u64,
+        total_cache_miss_tokens: row.get::<_, i64>("total_cache_miss_tokens")? as u64,
     })
 }
 
 // ── Project operations ──
+
+/// `ProjectMeta` 的 SELECT 列清单（两处查询共用一份；与 `project_meta_from_row` 读的列名对应）。
+///
+/// 与 `SESSION_MESSAGE_COLUMNS` / `SESSION_META_COLUMNS` 同一套做法。
+const PROJECT_META_COLUMNS: &str = "p.id, p.name, p.path, p.created_at, p.updated_at, \
+     (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id AND s.deleted_at IS NULL) as session_count";
 
 pub fn get_project_path(project_id: &str) -> Result<Option<String>, String> {
     crate::infra::db::with_connection(|conn| {
@@ -1112,9 +1164,7 @@ pub fn get_project_path(project_id: &str) -> Result<Option<String>, String> {
 pub fn get_project_by_path(path: &str) -> Result<Option<crate::core::session::ProjectMeta>, String> {
     crate::infra::db::with_connection(|conn| {
         conn.query_row(
-            "SELECT p.id, p.name, p.path, p.created_at, p.updated_at,
-                    (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id AND s.deleted_at IS NULL) as session_count
-             FROM projects p WHERE p.path = ?1",
+            &format!("SELECT {} FROM projects p WHERE p.path = ?1", PROJECT_META_COLUMNS),
             [path],
             project_meta_from_row,
         )
@@ -1149,12 +1199,11 @@ pub fn create_project(name: &str, path: &str) -> Result<crate::core::session::Pr
 pub fn list_projects() -> Result<Vec<crate::core::session::ProjectMeta>, String> {
     crate::infra::db::with_connection(|conn| {
         let mut stmt = conn
-            .prepare(
-                "SELECT p.id, p.name, p.path, p.created_at, p.updated_at,
-                        (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id AND s.deleted_at IS NULL) as session_count
-                 FROM projects p
+            .prepare(&format!(
+                "SELECT {} FROM projects p
                  ORDER BY p.updated_at DESC",
-            )
+                PROJECT_META_COLUMNS
+            ))
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], project_meta_from_row)
@@ -1177,14 +1226,15 @@ pub fn delete_project(id: &str) -> Result<(), String> {
     })
 }
 
+/// 从 `projects` 的一行还原项目元数据（**按列名取值**，口径同上）。
 fn project_meta_from_row(row: &Row<'_>) -> rusqlite::Result<crate::core::session::ProjectMeta> {
     Ok(crate::core::session::ProjectMeta {
-        id: row.get(0)?,
-        name: row.get(1)?,
-        path: row.get(2)?,
-        created_at: row.get::<_, i64>(3)? as u64,
-        updated_at: row.get::<_, i64>(4)? as u64,
-        session_count: row.get::<_, i64>(5)? as usize,
+        id: row.get("id")?,
+        name: row.get("name")?,
+        path: row.get("path")?,
+        created_at: row.get::<_, i64>("created_at")? as u64,
+        updated_at: row.get::<_, i64>("updated_at")? as u64,
+        session_count: row.get::<_, i64>("session_count")? as usize,
     })
 }
 
@@ -1267,34 +1317,237 @@ fn matches_filter(
 
 #[cfg(test)]
 mod meta_columns_tests {
-    use super::*;
+    //! `sessions` / `projects` 两张表的列一致性护栏。
+    //!
+    //! 由来：v11 引入 `thinking_mode` 时漏改了一条 SELECT，运行期直接抛
+    //! `Invalid column index: 12`，导致"切换会话"整体失败。当时护栏是"数一数列数"。
+    //!
+    //! 2026-09-21 起映射器改为**按列名取值**，护栏口径随之改变：数不数列数已不重要，
+    //! 要锁的是"映射器读的每个列名，在结果集里真的存在"。
+    //!
+    //! 这里刻意**不解析列清单文本**，而是把清单拼进 SELECT 交给 SQLite 报结果列名：
+    //! 这两张表的清单里有表前缀（`s.id` / `p.path`）和子查询（`… as session_count`），
+    //! 手写解析既容易错，也测不出"清单里的列在真实表结构上到底有没有"。
+    //! 顺带：`prepare` 失败就等于清单里有不存在的列（迁移删列没跟上时会在这里红）。
 
-    /// 列数一致性护栏：`SESSION_META_COLUMNS` 的列数必须与 `session_meta_from_row`
-    /// 的读取索引一致（当前读 `row.get(0..=14)`，即 15 列）。
-    ///
-    /// 背景：v11 引入 `thinking_mode` 时漏改了一条 SELECT，运行期直接抛
-    /// `Invalid column index: 12`，导致"切换会话"整体失败。这个测试让同类漏改
-    /// 在 `cargo test` 阶段就暴露，而不是等到用户点会话。
+    use super::*;
+    use rusqlite::Connection;
+
+    fn init_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::infra::db::schema::init_schema(&conn).expect("建表");
+        conn
+    }
+
+    /// 让 SQLite 报出这条 SELECT 的结果集列名 —— 它就是映射器 `row.get("…")` 用的名字
+    /// （SQLite 用引用名的最后一段作为结果列名，所以 `s.id` 的结果列名是 `id`）。
+    fn result_column_names(conn: &Connection, sql: &str) -> Vec<String> {
+        let stmt = conn
+            .prepare(sql)
+            .unwrap_or_else(|e| panic!("列清单无法在真实表结构上准备：{e}\nSQL: {sql}"));
+        stmt.column_names().iter().map(|s| s.to_string()).collect()
+    }
+
+    /// 共享清单必须覆盖 `session_meta_from_row` 读的每一个列名。
     #[test]
-    fn session_meta_columns_match_row_reader_arity() {
-        let columns: Vec<&str> = SESSION_META_COLUMNS
+    fn session_meta_columns_cover_every_name_the_mapper_reads() {
+        let conn = init_conn();
+        let names = result_column_names(
+            &conn,
+            &format!(
+                "SELECT {} FROM sessions s LEFT JOIN projects p ON s.project_id = p.id",
+                SESSION_META_COLUMNS
+            ),
+        );
+        for name in [
+            "id",
+            "title",
+            "created_at",
+            "updated_at",
+            "message_count",
+            "is_smart_named",
+            "profile_id",
+            "total_input_tokens",
+            "total_output_tokens",
+            "title_source",
+            "project_id",
+            // working_directory 取自 p.path —— 结果列名叫 "path"
+            "path",
+            "thinking_mode",
+            "total_cache_hit_tokens",
+            "total_cache_miss_tokens",
+        ] {
+            assert!(
+                names.iter().any(|n| n == name),
+                "SESSION_META_COLUMNS 的结果集里没有 {name}：{names:?}"
+            );
+        }
+        assert_eq!(
+            names.len(),
+            15,
+            "列数应为 15，实际 {}：{names:?}",
+            names.len()
+        );
+    }
+
+    /// 共享清单必须覆盖 `project_meta_from_row` 读的每一个列名。
+    #[test]
+    fn project_meta_columns_cover_every_name_the_mapper_reads() {
+        let conn = init_conn();
+        let names = result_column_names(
+            &conn,
+            &format!("SELECT {} FROM projects p", PROJECT_META_COLUMNS),
+        );
+        for name in [
+            "id",
+            "name",
+            "path",
+            "created_at",
+            "updated_at",
+            "session_count",
+        ] {
+            assert!(
+                names.iter().any(|n| n == name),
+                "PROJECT_META_COLUMNS 的结果集里没有 {name}：{names:?}"
+            );
+        }
+        assert_eq!(names.len(), 6, "列数应为 6，实际 {}：{names:?}", names.len());
+    }
+}
+
+#[cfg(test)]
+mod message_columns_tests {
+    //! `session_messages` 的列一致性护栏（2026-09-21 撤回故障的正面锁）。
+    //!
+    //! 背景：v17 加 `interrupt_kind` 时三处 SELECT 改了两处，漏掉
+    //! `find_session_message_by_id`，而撤回是唯一走那条查询的路径 —— 于是撤回直接抛
+    //! `Invalid column index: 10`。同一类错误 v11 在 sessions 表上已经发生过一次
+    //! （见 `meta_columns_tests`），本模块把它在 `session_messages` 上也钉住。
+
+    use super::*;
+    use crate::infra::types::models::Content;
+    use rusqlite::Connection;
+
+    /// 共享列清单必须覆盖映射器读的每一个列名，且不多不少。
+    #[test]
+    fn message_columns_cover_every_name_the_mapper_reads() {
+        let columns: Vec<&str> = SESSION_MESSAGE_COLUMNS
             .split(',')
             .map(|c| c.trim())
             .filter(|c| !c.is_empty())
             .collect();
+        for name in [
+            "message_id",
+            "seq",
+            "role",
+            "content_json",
+            "created_at",
+            "updated_at",
+            "recalled_at",
+            "hidden_at",
+            "source",
+            "turn_id",
+            "interrupt_kind",
+        ] {
+            assert!(columns.contains(&name), "共享列清单缺少 {name}：{columns:?}");
+        }
         assert_eq!(
             columns.len(),
-            15,
-            "SESSION_META_COLUMNS 应为 15 列（与 session_meta_from_row 的 0..=14 对应），实际 {}: {:?}",
-            columns.len(),
-            columns
+            11,
+            "列数应为 11，实际 {}：{columns:?}",
+            columns.len()
         );
-        assert_eq!(columns[0], "s.id");
-        assert_eq!(columns[10], "s.project_id");
-        assert_eq!(columns[11], "p.path");
-        // 12 起是尾部追加的列：session_meta_from_row 按 12/13/14 读它们
-        assert_eq!(columns[12], "s.thinking_mode");
-        assert_eq!(columns[13], "s.total_cache_hit_tokens");
-        assert_eq!(columns[14], "s.total_cache_miss_tokens");
+    }
+
+    /// 一行样本消息的 JSON（用 serde 产出，保证形状一定合法）。
+    fn sample_content_json() -> String {
+        serde_json::to_string(&Message::User {
+            content: Content::Single("hi".to_string()),
+        })
+        .unwrap()
+    }
+
+    /// 列序被打乱也能正确读回 —— 这是"按列名取值"的核心价值（列序不再有约束力）。
+    #[test]
+    fn mapper_is_order_independent() {
+        let conn = Connection::open_in_memory().unwrap();
+        let json = sample_content_json();
+        // 故意把 interrupt_kind 挪到第一列，与 SESSION_MESSAGE_COLUMNS 的顺序不同
+        let mut stmt = conn
+            .prepare(
+                "SELECT ?1 AS interrupt_kind, ?2 AS message_id, 7 AS seq, 'user' AS role, \
+                        ?3 AS content_json, 1 AS created_at, 2 AS updated_at, 3 AS recalled_at, \
+                        4 AS hidden_at, 'chat' AS source, 't1' AS turn_id",
+            )
+            .unwrap();
+        let stored = stmt
+            .query_row(params!["ix", "m1", json], stored_session_message_from_row)
+            .unwrap();
+        assert_eq!(stored.message_id, "m1");
+        assert_eq!(stored.seq, 7);
+        assert_eq!(stored.role, "user");
+        assert_eq!(stored.source, "chat");
+        assert_eq!(stored.turn_id.as_deref(), Some("t1"));
+        assert_eq!(stored.updated_at, Some(2));
+        assert_eq!(stored.interrupt_kind.as_deref(), Some("ix"));
+    }
+
+    /// 缺列时的报错必须**指向列名**，而不是下标越界 —— 这把"不许改回下标取值"钉死。
+    #[test]
+    fn missing_column_reports_the_name_not_an_index() {
+        let conn = Connection::open_in_memory().unwrap();
+        let json = sample_content_json();
+        // 少 interrupt_kind 一列：复现 v17 漏改的那条 SELECT
+        let mut stmt = conn
+            .prepare(
+                "SELECT ?1 AS message_id, 0 AS seq, 'user' AS role, ?2 AS content_json, \
+                        0 AS created_at, 0 AS updated_at, 0 AS recalled_at, 0 AS hidden_at, \
+                        'chat' AS source, 't1' AS turn_id",
+            )
+            .unwrap();
+        let err = stmt
+            .query_row(params!["m1", json], stored_session_message_from_row)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("interrupt_kind"),
+            "报错应指出缺失的列名，实际：{msg}"
+        );
+        assert!(
+            !msg.contains("column index"),
+            "不应再是下标越界，实际：{msg}"
+        );
+    }
+
+    /// 端到端：在**真实 schema** 上写入一条带 `interrupt_kind` 的消息，再按 id 查回。
+    ///
+    /// 这条锁的就是 v17 事故本身（撤回是 `find_session_message_by_id` 的唯一调用方）。
+    /// 用 `init_schema` 建真实表结构而不是手写建表，是为了让"迁移加了列、某条查询没跟上"
+    /// 这类问题在 `cargo test` 阶段就暴露。
+    #[test]
+    fn find_message_by_id_round_trips_interrupt_kind() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::infra::db::schema::init_schema(&conn).expect("建表");
+        conn.execute(
+            "INSERT INTO sessions(id, title, created_at, updated_at, message_count)
+             VALUES('s-repo-test', 't', 0, 0, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_messages(session_id, message_id, seq, role, content_json,
+                                          created_at, source, turn_id, interrupt_kind)
+             VALUES('s-repo-test', 'm-repo-test', 0, 'user', ?1, 0, 'chat', 't1', 'stream_timeout')",
+            params![sample_content_json()],
+        )
+        .unwrap();
+
+        let found = find_session_message_by_id_in(&conn, "s-repo-test", "m-repo-test")
+            .expect("查询不应报错")
+            .expect("应能按 id 找到这条消息");
+        assert_eq!(found.message_id, "m-repo-test");
+        assert_eq!(found.role, "user");
+        assert_eq!(found.turn_id.as_deref(), Some("t1"));
+        assert_eq!(found.interrupt_kind.as_deref(), Some("stream_timeout"));
     }
 }

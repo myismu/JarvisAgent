@@ -140,13 +140,12 @@ pub fn list_agent_run_patches(
         let mut patches = Vec::new();
         if let Some(run_id) = run_id {
             let mut stmt = conn
-                .prepare(
-                    "SELECT run_id, seq, patch_json, message, trigger_user_memory_index,
-                            trigger_user_message_id, created_at
-                     FROM agent_run_patches
+                .prepare(&format!(
+                    "SELECT {} FROM agent_run_patches
                      WHERE session_id = ?1 AND run_id = ?2
                      ORDER BY seq",
-                )
+                    PATCH_COLUMNS
+                ))
                 .map_err(|e| e.to_string())?;
             let rows = stmt
                 .query_map(params![session_id, run_id], agent_run_patch_from_row)
@@ -156,13 +155,12 @@ pub fn list_agent_run_patches(
             }
         } else {
             let mut stmt = conn
-                .prepare(
-                    "SELECT run_id, seq, patch_json, message, trigger_user_memory_index,
-                            trigger_user_message_id, created_at
-                     FROM agent_run_patches
+                .prepare(&format!(
+                    "SELECT {} FROM agent_run_patches
                      WHERE session_id = ?1
                      ORDER BY created_at, seq",
-                )
+                    PATCH_COLUMNS
+                ))
                 .map_err(|e| e.to_string())?;
             let rows = stmt
                 .query_map([session_id], agent_run_patch_from_row)
@@ -175,22 +173,36 @@ pub fn list_agent_run_patches(
     })
 }
 
+/// `agent_run_patches` 的 SELECT 列清单（两处查询共用一份；与 `agent_run_patch_from_row` 读的列名对应）。
+const PATCH_COLUMNS: &str = "run_id, seq, patch_json, message, trigger_user_memory_index, \
+     trigger_user_message_id, created_at";
+
+/// 从 `agent_run_patches` 的一行还原变更补丁记录。
+///
+/// **按列名取值**（2026-09-21 起，与 `session/repository.rs` 的几个映射器同一口径）：
+/// 以前是下标硬编码，"某条 SELECT 的列清单没跟上"就是运行期 `Invalid column index`
+/// —— 撤回功能 2026-09-21 正是这么挂的（`find_session_message_by_id` 漏列）。
 fn agent_run_patch_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<PendingSnapshotPatchRecord> {
-    let seq: i64 = row.get(1)?;
-    let patch_json: String = row.get(2)?;
-    let trigger_index: Option<i64> = row.get(4)?;
-    let trigger_user_message_id: Option<String> = row.get(5)?;
-    let created_at: i64 = row.get(6)?;
+    let seq: i64 = row.get("seq")?;
+    let patch_json: String = row.get("patch_json")?;
+    let trigger_index: Option<i64> = row.get("trigger_user_memory_index")?;
+    let trigger_user_message_id: Option<String> = row.get("trigger_user_message_id")?;
+    let created_at: i64 = row.get("created_at")?;
     let patch = serde_json::from_str(&patch_json).map_err(|err| {
-        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(err))
+        // 错误上下文里的列号现查一次；取值本身已不依赖列序
+        rusqlite::Error::FromSqlConversionFailure(
+            row.as_ref().column_index("patch_json").unwrap_or(0),
+            rusqlite::types::Type::Text,
+            Box::new(err),
+        )
     })?;
     Ok(PendingSnapshotPatchRecord {
-        run_id: row.get(0)?,
+        run_id: row.get("run_id")?,
         seq: seq.max(0) as usize,
         patch,
-        message: row.get(3)?,
+        message: row.get("message")?,
         trigger_user_memory_index: trigger_index.map(|value| value.max(0) as usize),
         trigger_user_message_id,
         created_at: created_at.max(0) as u64,
@@ -392,4 +404,52 @@ fn configure_connection(conn: &Connection) -> Result<(), String> {
     conn.busy_timeout(std::time::Duration::from_millis(5000))
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod patch_columns_tests {
+    //! `agent_run_patches` 的列一致性护栏（与 `session/repository.rs` 的两套同口径）。
+
+    use super::*;
+
+    fn column_names(list: &str) -> Vec<&str> {
+        list.split(',').map(|c| c.trim()).filter(|c| !c.is_empty()).collect()
+    }
+
+    #[test]
+    fn patch_columns_cover_every_name_the_mapper_reads() {
+        let columns = column_names(PATCH_COLUMNS);
+        for name in [
+            "run_id",
+            "seq",
+            "patch_json",
+            "message",
+            "trigger_user_memory_index",
+            "trigger_user_message_id",
+            "created_at",
+        ] {
+            assert!(
+                columns.contains(&name),
+                "PATCH_COLUMNS 缺少 {name}：{columns:?}"
+            );
+        }
+        assert_eq!(
+            columns.len(),
+            7,
+            "列数应为 7，实际 {}：{columns:?}",
+            columns.len()
+        );
+    }
+
+    /// 清单里的每一列都必须在真实表结构上存在（迁移删列没跟上时在这里暴露）。
+    #[test]
+    fn patch_columns_prepare_against_the_real_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::infra::db::schema::init_schema(&conn).expect("建表");
+        conn.prepare(&format!(
+            "SELECT {} FROM agent_run_patches",
+            PATCH_COLUMNS
+        ))
+        .unwrap_or_else(|e| panic!("PATCH_COLUMNS 无法在真实表结构上准备：{e}"));
+    }
 }
