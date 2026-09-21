@@ -25,13 +25,12 @@ import { dismissToast, toasts } from '../../composables/useToast';
 <template>
   <Teleport to="body">
     <TransitionGroup name="toast" tag="div" class="toast-host">
-      <!-- 失败用 alert（读屏立刻打断播报），普通反馈用 status；这行不影响外观 -->
       <div
         v-for="item in toasts"
         :key="item.id"
         class="toast-item"
         :class="item.kind"
-        :role="item.kind === 'error' ? 'alert' : 'status'"
+        role="status"
         :title="item.message"
         @click="dismissToast(item.id)"
       >
