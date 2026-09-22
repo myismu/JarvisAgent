@@ -212,10 +212,11 @@ onMounted(load);
           <span class="group-hint">{{ group.hint }}</span>
           <span class="group-count">{{ group.items.length }}</span>
         </div>
-        <!-- 卡片网格：借技能卡片（SkillCard）的呈现 —— 描述放开到 2 行直接可见，
-             取代旧的"单行 + hover 看全"压缩排版。代价是滚动长度约变 1.8 倍，换来
-             不用 hover 就能扫读；快速定位仍靠上面的搜索框。网格 align-items: start
-             让展开 schema 的卡片只长自己，不把同行邻居拉伸到同高。
+        <!-- 卡片网格：借技能卡片（SkillCard）的呈现，取代旧的"单行 + hover 看全"压缩排版。
+             描述完整显示、不截断 —— 这是这次调整的出发点：不用 hover 就能读到详细的
+             description（4af13c8 压成单行时丢掉的能力）。代价是长描述会把卡片撑高、
+             滚动长度变长，快速定位仍靠上面的搜索框。网格 align-items: start 让各卡片
+             独立高度（展开 schema 的卡片也只长自己，不把同行邻居拉伸到同高）。
              刻意不照抄技能卡片的部分：图标位（40 张卡每张一个图标只是噪音）、
              点整卡弹详情面板（对照多个工具时模态太重）、hover 上浮动画（滚动时闪）。 -->
         <div class="tool-grid">
@@ -239,7 +240,7 @@ onMounted(load);
                 <span class="knob" />
               </button>
             </div>
-            <p class="tool-desc" :title="tool.description">{{ tool.description }}</p>
+            <p class="tool-desc">{{ tool.description }}</p>
             <button type="button" class="schema-toggle" @click="toggleSchema(tool.name)">
               {{ expanded.has(tool.name) ? t('settings.tools.hideSchema') : t('settings.tools.showSchema') }}
             </button>
@@ -398,17 +399,13 @@ onMounted(load);
   color: var(--text-muted);
   font-size: 0.7rem;
 }
-/* 描述 2 行截断（-webkit-line-clamp）：需要看全就 hover（title 属性）。
-   与技能卡片同款 —— 不再"挤"的关键：信息从 hover 才可见变成直接可见。 */
+/* 描述完整显示、不截断：卡片化的意义就在于不用 hover —— 详细的 description
+   直接可读。长描述会把卡片撑高，同行卡片各自独立高度（网格 align-items: start）。 */
 .tool-desc {
   margin: 0;
   color: var(--text-muted);
   font-size: 0.75rem;
   line-height: 1.55;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
   word-break: break-word;
 }
 .schema-toggle {
