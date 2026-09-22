@@ -713,21 +713,3 @@ body.dark-mode {
   font-size: var(--code-font-size);
 }
 
-/* --- 紧凑模式 --- */
-.compact-mode .response-text :deep(.chat-message) {
-  margin-bottom: 8px;
-}
-.compact-mode .response-text :deep(.message-content) {
-  padding: 8px 14px;
-}
-.compact-mode .response-area {
-  padding-top: 8px;
-}
-.compact-mode .response-text :deep(p) {
-  margin-bottom: 0.35em;
-}
-.compact-mode .response-text :deep(pre) {
-  padding: 8px;
-  margin-bottom: 0.35em;
-}
-

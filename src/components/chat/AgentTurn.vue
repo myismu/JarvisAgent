@@ -22,6 +22,7 @@ import {
 } from "../../utils/agentTurnRender";
 import { toolActionLabel, unwrapDeferredTool } from "../../utils/toolDisplay";
 import type { AgentToolCallView } from "../../types";
+import { usePreferences } from "../../composables/usePreferences";
 
 const toolDisplayName = (tool: AgentToolCallView) => unwrapDeferredTool(tool).displayName;
 import ExecutionPanel from "./ExecutionPanel.vue";
@@ -34,6 +35,11 @@ const props = defineProps<{
   elapsed: number;
   paused: boolean;
 }>();
+
+// 「默认展开思考过程」偏好：思考块与「执行过程」面板的展开初值，两种显示模式都生效。
+// 必须在 computed 求值时经偏好对象访问（getter），解构成变量会退化成一次性快照。
+const uiPrefs = usePreferences();
+const expandThinkingDefault = computed(() => uiPrefs.defaultExpandThinking);
 
 // 这里原有「从正文剥离中断标记」的正则与 splitInterruptMarker，2026-09-21 删除。
 // 理由（别再把它加回来）：
@@ -118,13 +124,13 @@ function toolStatusLabel(status: string): string {
   >
     <!-- 开发者模式 -->
     <div v-if="isDeveloperMode && hasDeveloperSegments">
-      <!-- 执行过程折叠面板放上面 -->
-      <details v-if="timelineSplit.execItems.length > 0" class="dev-execution-fold" :open="props.turn.isRunning">
+      <!-- 执行过程折叠面板放上面：思考块在其内部，偏好要求展开思考时面板必须随之展开，否则看不见 -->
+      <details v-if="timelineSplit.execItems.length > 0" class="dev-execution-fold" :open="props.turn.isRunning || expandThinkingDefault">
         <summary class="dev-execution-summary">执行过程（{{ timelineSplit.execItems.length }} 步）</summary>
         <div class="dev-layout">
           <template v-for="(item, i) in timelineSplit.execItems" :key="`exec-${item.type}-${item.timestamp}-${i}`">
             <StreamingMarkdown v-if="item.type === 'text'" :content="item.content" />
-            <details v-else-if="item.type === 'thinking'" class="dev-thinking" :class="{ streaming: item.streaming }" :open="item.streaming">
+            <details v-else-if="item.type === 'thinking'" class="dev-thinking" :class="{ streaming: item.streaming }" :open="item.streaming || expandThinkingDefault">
               <summary class="dev-thinking-summary"><span class="dev-status-dot" :class="{ running: item.streaming }"></span><span class="dev-thinking-label">{{ describeThinkingStatic(item.content) }}</span></summary>
               <div class="dev-thinking-body"><StreamingMarkdown :content="item.content" /></div>
             </details>
@@ -143,7 +149,7 @@ function toolStatusLabel(status: string): string {
       <!-- 最后回答放下面 -->
       <template v-for="(item, i) in timelineSplit.finalItems" :key="`final-${item.type}-${item.timestamp}-${i}`">
         <StreamingMarkdown v-if="item.type === 'text'" :content="item.content" />
-        <details v-else-if="item.type === 'thinking'" class="dev-thinking" :class="{ streaming: item.streaming }" :open="item.streaming">
+        <details v-else-if="item.type === 'thinking'" class="dev-thinking" :class="{ streaming: item.streaming }" :open="item.streaming || expandThinkingDefault">
           <summary class="dev-thinking-summary"><span class="dev-status-dot" :class="{ running: item.streaming }"></span><span class="dev-thinking-label">{{ describeThinkingStatic(item.content) }}</span></summary>
           <div class="dev-thinking-body"><StreamingMarkdown :content="item.content" /></div>
         </details>

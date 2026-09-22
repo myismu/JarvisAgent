@@ -54,7 +54,17 @@ const chat = useChatStore();
 const perm = usePermissionStore();
 const prefs = usePreferences();
 const responseAreaRef = ref<HTMLElement | null>(null);
-const shouldFollowStream = ref(prefs.autoScroll);
+/** 视口是否贴底：滚动事件与程序化落底共同维护的统一事实源。 */
+const atBottom = ref(true);
+/**
+ * 流式跟随开关 = 「自动跟随滚动」偏好开 且 视口贴底。
+ *
+ * 偏好是总闸：关闭时流式过程不做程序化吸底（renderTick / store 流式回调路径全部拦下），
+ * 只保留手动「滚动到底」按钮；开跑瞬间与切会话的定位（force 路径）是导航行为，不受此约束。
+ * 之前这里只是挂载时读了一次偏好的 ref，随后被滚动事件覆写、被开跑强制落底无条件置回 true，
+ * 设置开关形同虚设——根因是「跟随」与「定位」两个概念混在同一个变量里。
+ */
+const shouldFollowStream = computed(() => prefs.autoScroll && atBottom.value);
 const currentTurn = computed(() => session.currentSessionView.currentTurn);
 const hasCurrentTurnContent = computed(() => {
   const turn = currentTurn.value;
@@ -292,7 +302,9 @@ const setResponseScrollToBottom = () => {
 };
 
 const forceScrollToBottomAfterRender = async () => {
-  shouldFollowStream.value = true;
+  // 只恢复「贴底」事实，不越过跟随总闸：之后是否持续跟随由 shouldFollowStream
+  // （偏好 且 贴底）决定。这里始终要落底——它承担开跑定位与切会话锚定，属导航行为。
+  atBottom.value = true;
 
   await nextTick();
   setResponseScrollToBottom();
@@ -324,7 +336,10 @@ const scrollToBottom = async (force = false) => {
     return;
   }
 
-  const shouldScroll = force || shouldFollowStream.value || isResponseAtBottom();
+  // 跟随判定收口在 shouldFollowStream（偏好 且 贴底）：
+  // 偏好关闭时，流式回调 / renderTick 到这里都会被拦下，不再"贴底就吸"。
+  // force（点按钮 / 开跑 / 切会话）是显式定位，不受总闸约束。
+  const shouldScroll = force || shouldFollowStream.value;
 
   await nextTick();
   if (responseAreaRef.value && shouldScroll) {
@@ -333,7 +348,7 @@ const scrollToBottom = async (force = false) => {
 };
 
 const handleResponseScroll = () => {
-  shouldFollowStream.value = Boolean(isResponseAtBottom());
+  atBottom.value = isResponseAtBottom();
   // 懒加载：滚动接近顶部（<60px）时加载更早的历史；防重入与 hasMore 由 store 状态保证
   void maybeLoadOlderMessages();
 };
@@ -372,7 +387,8 @@ const maybeLoadOlderMessages = async () => {
 };
 
 const showScrollToBottom = computed(() => {
-  return !shouldFollowStream.value && (chat.messages.length > 0 || hasCurrentTurnContent.value);
+  // 用贴底事实（atBottom）而非跟随开关判断：跟随关闭（偏好关）但视口仍贴底时，不该显示按钮
+  return !atBottom.value && (chat.messages.length > 0 || hasCurrentTurnContent.value);
 });
 
 /** 懒加载提示条三态：加载中（转圈）/ 上滑提示 / 已加载全部（翻到最老后常驻小字） */
@@ -430,7 +446,12 @@ watch(
 watch(() => [chat.renderTick, currentTurn.value.revision], () => {
   if (shouldFollowStream.value) {
     scrollToBottom();
+    return;
   }
+  // 未在跟随（偏好关或已上滑）时：内容增长只把视口"顶离"底部、不产生 scroll 事件，
+  // 贴底状态必须在这里重算，否则视口漂离后「滚动到底」按钮永远不会出现。
+  // 顺序不能反：先重算再判断会把"即将跟随"的一帧误判成已离底，跟随会被自己掐断。
+  atBottom.value = isResponseAtBottom();
 });
 
 const handleContextMenu = (e: MouseEvent) => {
@@ -1405,6 +1426,27 @@ onMounted(() => {
 
 .response-text :deep(li) {
   margin-bottom: 0.25em;
+}
+
+/* ── 紧凑模式（类挂在 <html> 上，由「常规设置 → 紧凑模式」驱动）──
+   必须放在组件 scoped 样式里：:deep() 是 Vue 的编译期指令，写进全局样式表会被
+   浏览器当非法选择器整条丢弃（这些规则曾放在 global.css 导致开关完全无效）；
+   放回组件内，多一层 .compact-mode 的特异性也稳定压过本文件的基础规则。 */
+.compact-mode .response-text :deep(.chat-message) {
+  margin-bottom: 8px;
+}
+.compact-mode .response-text :deep(.message-content) {
+  padding: 8px 14px;
+}
+.compact-mode .response-area {
+  padding-top: 8px;
+}
+.compact-mode .response-text :deep(p) {
+  margin-bottom: 0.35em;
+}
+.compact-mode .response-text :deep(pre) {
+  padding: 8px;
+  margin-bottom: 0.35em;
 }
 
 .rollback-menu {

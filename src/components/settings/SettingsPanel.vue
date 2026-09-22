@@ -121,7 +121,13 @@
           <div class="settings-body" :class="{ 'no-scroll': activeTab === 'prompts' }">
             <!-- 常规设置页 -->
             <div v-if="activeTab === 'general'" class="tab-content">
+              <!--
+                分区原则：卡片顺序 = 使用频率（外观最常动 → 窗口低频兜底）；
+                每张卡回答用户找设置时的一个心理提问：
+                「界面长什么样 / Agent 怎么干活 / 消息怎么处理 / 数据安不安全 / 窗口怎么摆」。
+              -->
               <div class="setting-card">
+                <!-- 外观：颜色、语言、字体、密度、消息气泡观感 -->
                 <div class="card-header">
                   <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12,18V6L5,12L12,18M11,14.14L11,9.86L8.5,12L11,14.14M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20Z"/></svg>
                   <h4>{{ t('settings.general.appearance') }}</h4>
@@ -145,6 +151,25 @@
                     </svg>
                     <span>{{ isDark ? t('settings.general.darkMode') : t('settings.general.lightMode') }}</span>
                   </button>
+                </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.general.language') }}</label>
+                  <div class="custom-select" :class="{ open: langMenuOpen }">
+                    <button class="custom-select-trigger" @click="langMenuOpen = !langMenuOpen">
+                      <span>{{ localeOptions[appLocale] }}</span>
+                      <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                    </button>
+                    <div v-if="langMenuOpen" class="custom-select-menu">
+                      <div
+                        v-for="(label, value) in localeOptions"
+                        :key="value"
+                        class="custom-select-option"
+                        :class="{ active: appLocale === value }"
+                        @click="setAppLocale(value); langMenuOpen = false"
+                      >{{ label }}</div>
+                    </div>
+                  </div>
+                  <div class="setting-desc">{{ t('settings.general.languageDesc') }}</div>
                 </div>
                 <div class="setting-item">
                   <label>{{ t('settings.general.fontSize') }}</label>
@@ -173,23 +198,42 @@
                   <div class="setting-desc">{{ t('settings.general.codeFontSizeDesc') }}</div>
                 </div>
                 <div class="setting-item">
-                  <label>{{ t('settings.general.language') }}</label>
-                  <div class="custom-select" :class="{ open: langMenuOpen }">
-                    <button class="custom-select-trigger" @click="langMenuOpen = !langMenuOpen">
-                      <span>{{ localeOptions[appLocale] }}</span>
-                      <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
-                    </button>
-                    <div v-if="langMenuOpen" class="custom-select-menu">
-                      <div
-                        v-for="(label, value) in localeOptions"
-                        :key="value"
-                        class="custom-select-option"
-                        :class="{ active: appLocale === value }"
-                        @click="setAppLocale(value); langMenuOpen = false"
-                      >{{ label }}</div>
+                  <label>{{ t('settings.general.compactMode') }}</label>
+                  <label class="toggle-switch">
+                    <input type="checkbox" :checked="compactMode" @change="setCompactMode(($event.target as HTMLInputElement).checked)" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                  <div class="setting-desc">{{ t('settings.general.compactModeDesc') }}</div>
+                </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.general.agentMessageOpacity') }}</label>
+                  <div class="font-size-control">
+                    <div class="slider-track-wrap">
+                      <input type="range" min="0" max="100" :value="agentMessageOpacity" class="font-size-slider"
+                        :style="{ '--fill-pct': agentMessageOpacity + '%' }"
+                        @input="setAgentMessageOpacity(Number(($event.target as HTMLInputElement).value))" />
                     </div>
+                    <span class="font-size-value">{{ agentMessageOpacity }}%</span>
                   </div>
-                  <div class="setting-desc">{{ t('settings.general.languageDesc') }}</div>
+                </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.general.userMessageOpacity') }}</label>
+                  <div class="font-size-control">
+                    <div class="slider-track-wrap">
+                      <input type="range" min="0" max="100" :value="userMessageOpacity" class="font-size-slider"
+                        :style="{ '--fill-pct': userMessageOpacity + '%' }"
+                        @input="setUserMessageOpacity(Number(($event.target as HTMLInputElement).value))" />
+                    </div>
+                    <span class="font-size-value">{{ userMessageOpacity }}%</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="setting-card">
+                <!-- Agent 交互：视图模式、工作模式、审批、思考、反思——Agent 怎么干活、怎么呈现过程 -->
+                <div class="card-header">
+                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4M12,17A5,5 0 0,1 7,12A5,5 0 0,1 12,7A5,5 0 0,1 17,12A5,5 0 0,1 12,17Z"/></svg>
+                  <h4>{{ t('settings.general.agentInteraction') }}</h4>
                 </div>
                 <div class="setting-item">
                   <label>{{ t('settings.general.audience') }}</label>
@@ -208,22 +252,6 @@
                   <div class="setting-desc">{{ t('settings.general.audienceDesc') }}</div>
                 </div>
                 <div class="setting-item">
-                  <label>{{ t('settings.general.approvalMode') }}</label>
-                  <div class="display-mode-toggle">
-                    <button
-                      class="display-mode-btn"
-                      :class="{ active: agentApprovalMode === 'request_approval' }"
-                      @click="setAgentApprovalMode('request_approval')"
-                    >{{ t('settings.general.request_approval') }}</button>
-                    <button
-                      class="display-mode-btn"
-                      :class="{ active: agentApprovalMode === 'auto_approve' }"
-                      @click="setAgentApprovalMode('auto_approve')"
-                    >{{ t('settings.general.auto_approve') }}</button>
-                  </div>
-                  <div class="setting-desc">{{ t('settings.general.approvalModeDesc') }}</div>
-                </div>
-                <div class="setting-item">
                   <label>{{ t('settings.general.workMode') }}</label>
                   <div class="display-mode-toggle">
                     <button
@@ -238,6 +266,22 @@
                     >{{ t('settings.general.plan') }}</button>
                   </div>
                   <div class="setting-desc">{{ t('settings.general.workModeDesc') }}</div>
+                </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.general.approvalMode') }}</label>
+                  <div class="display-mode-toggle">
+                    <button
+                      class="display-mode-btn"
+                      :class="{ active: agentApprovalMode === 'request_approval' }"
+                      @click="setAgentApprovalMode('request_approval')"
+                    >{{ t('settings.general.request_approval') }}</button>
+                    <button
+                      class="display-mode-btn"
+                      :class="{ active: agentApprovalMode === 'auto_approve' }"
+                      @click="setAgentApprovalMode('auto_approve')"
+                    >{{ t('settings.general.auto_approve') }}</button>
+                  </div>
+                  <div class="setting-desc">{{ t('settings.general.approvalModeDesc') }}</div>
                 </div>
                 <!--
                   深度思考默认档位：与工作模式/权限档位并列的**设置默认值**（UiPreferences）。
@@ -264,54 +308,6 @@
                     >{{ t('settings.general.thinkingOff') }}</button>
                   </div>
                   <div class="setting-desc">{{ t('settings.general.thinkingDefaultDesc') }}</div>
-                </div>
-                <div class="setting-item">
-                  <label>{{ t('settings.general.compactMode') }}</label>
-                  <label class="toggle-switch">
-                    <input type="checkbox" :checked="compactMode" @change="setCompactMode(($event.target as HTMLInputElement).checked)" />
-                    <span class="toggle-slider"></span>
-                  </label>
-                  <div class="setting-desc">{{ t('settings.general.compactModeDesc') }}</div>
-                </div>
-                <!--
-                  图片压缩档位：全局偏好（UiPreferences），**所有预设共用**、不随预设切换而变。
-                  因此放在常规设置里，而不是模型预设页；改档位立刻生效，无需点保存。
-                -->
-                <div class="setting-item">
-                  <label>{{ t('settings.general.imageCompressTier') }}</label>
-                  <div class="display-mode-toggle">
-                    <button
-                      v-for="tier in imageCompressTiers"
-                      :key="tier.value"
-                      class="display-mode-btn"
-                      :class="{ active: imageCompressTier === tier.value }"
-                      :title="t(tier.tooltip)"
-                      @click="setImageCompressTier(tier.value)"
-                    >{{ t(tier.label) }}</button>
-                  </div>
-                  <div class="setting-desc">{{ t(`settings.general.imageCompressTier${imageCompressTier === 'eco' ? 'Eco' : imageCompressTier === 'hd' ? 'Hd' : 'Standard'}Desc`) }}</div>
-                </div>
-                <div class="setting-item">
-                  <label>{{ t('settings.general.agentMessageOpacity') }}</label>
-                  <div class="font-size-control">
-                    <div class="slider-track-wrap">
-                      <input type="range" min="0" max="100" :value="agentMessageOpacity" class="font-size-slider"
-                        :style="{ '--fill-pct': agentMessageOpacity + '%' }"
-                        @input="setAgentMessageOpacity(Number(($event.target as HTMLInputElement).value))" />
-                    </div>
-                    <span class="font-size-value">{{ agentMessageOpacity }}%</span>
-                  </div>
-                </div>
-                <div class="setting-item">
-                  <label>{{ t('settings.general.userMessageOpacity') }}</label>
-                  <div class="font-size-control">
-                    <div class="slider-track-wrap">
-                      <input type="range" min="0" max="100" :value="userMessageOpacity" class="font-size-slider"
-                        :style="{ '--fill-pct': userMessageOpacity + '%' }"
-                        @input="setUserMessageOpacity(Number(($event.target as HTMLInputElement).value))" />
-                    </div>
-                    <span class="font-size-value">{{ userMessageOpacity }}%</span>
-                  </div>
                 </div>
                 <div class="setting-item">
                   <label>{{ t('settings.general.reflectionMode') }}</label>
@@ -344,12 +340,21 @@
                   </div>
                   <div class="setting-desc">{{ t(`settings.general.reflection${reflectionMode === 'always' ? 'Always' : reflectionMode === 'off' ? 'Off' : 'Smart'}Desc`) }}</div>
                 </div>
+                <div class="setting-item">
+                  <label>{{ t('settings.general.defaultExpandThinking') }}</label>
+                  <label class="toggle-switch">
+                    <input type="checkbox" :checked="defaultExpandThinking" @change="setDefaultExpandThinking(($event.target as HTMLInputElement).checked)" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                  <div class="setting-desc">{{ t('settings.general.defaultExpandThinkingDesc') }}</div>
+                </div>
               </div>
 
               <div class="setting-card">
+                <!-- 对话与消息：消息流的表现方式与发消息时的处理 -->
                 <div class="card-header">
-                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4M12,17A5,5 0 0,1 7,12A5,5 0 0,1 12,7A5,5 0 0,1 17,12A5,5 0 0,1 12,17Z"/></svg>
-                  <h4>{{ t('settings.general.behavior') }}</h4>
+                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M20,2H4A2,2 0 0,0 2,4V22L6,18H20A2,2 0 0,0 22,16V4A2,2 0 0,0 20,2Z"/></svg>
+                  <h4>{{ t('settings.general.conversation') }}</h4>
                 </div>
                 <div class="setting-item">
                   <label>{{ t('settings.general.autoScroll') }}</label>
@@ -359,13 +364,31 @@
                   </label>
                   <div class="setting-desc">{{ t('settings.general.autoScrollDesc') }}</div>
                 </div>
+                <!--
+                  图片压缩档位：全局偏好（UiPreferences），**所有预设共用**、不随预设切换而变。
+                  因此放在常规设置里，而不是模型预设页；改档位立刻生效，无需点保存。
+                -->
                 <div class="setting-item">
-                  <label>{{ t('settings.general.defaultExpandThinking') }}</label>
-                  <label class="toggle-switch">
-                    <input type="checkbox" :checked="defaultExpandThinking" @change="setDefaultExpandThinking(($event.target as HTMLInputElement).checked)" />
-                    <span class="toggle-slider"></span>
-                  </label>
-                  <div class="setting-desc">{{ t('settings.general.defaultExpandThinkingDesc') }}</div>
+                  <label>{{ t('settings.general.imageCompressTier') }}</label>
+                  <div class="display-mode-toggle">
+                    <button
+                      v-for="tier in imageCompressTiers"
+                      :key="tier.value"
+                      class="display-mode-btn"
+                      :class="{ active: imageCompressTier === tier.value }"
+                      :title="t(tier.tooltip)"
+                      @click="setImageCompressTier(tier.value)"
+                    >{{ t(tier.label) }}</button>
+                  </div>
+                  <div class="setting-desc">{{ t(`settings.general.imageCompressTier${imageCompressTier === 'eco' ? 'Eco' : imageCompressTier === 'hd' ? 'Hd' : 'Standard'}Desc`) }}</div>
+                </div>
+              </div>
+
+              <div class="setting-card">
+                <!-- 可靠性与数据：崩溃/断电场景下的会话数据保全 -->
+                <div class="card-header">
+                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12,2L4,5V11C4,16.25 7.4,21.15 12,22C16.6,21.15 20,16.25 20,11V5L12,2Z"/></svg>
+                  <h4>{{ t('settings.general.reliability') }}</h4>
                 </div>
                 <div class="setting-item">
                   <label>{{ t('settings.general.crashProtection') }}</label>
@@ -374,6 +397,14 @@
                     <span class="toggle-slider"></span>
                   </label>
                   <div class="setting-desc">{{ t('settings.general.crashProtectionDesc') }}</div>
+                </div>
+              </div>
+
+              <div class="setting-card">
+                <!-- 窗口与布局：监控窗口摆放与布局兜底 -->
+                <div class="card-header">
+                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M21,16.5C21,16.88 20.79,17.21 20.47,17.38L12.57,21.82C12.41,21.94 12.21,22 12,22C11.79,22 11.59,21.94 11.43,21.82L3.53,17.38C3.21,17.21 3,16.88 3,16.5V7.5C3,7.12 3.21,6.79 3.53,6.62L11.43,2.18C11.59,2.06 11.79,2 12,2C12.21,2 12.41,2.06 12.57,2.18L20.47,6.62C20.79,6.79 21,7.12 21,7.5V16.5Z"/></svg>
+                  <h4>{{ t('settings.general.windowLayout') }}</h4>
                 </div>
                 <div class="setting-item">
                   <label>{{ t('settings.general.agentPanelPosition') }}</label>
@@ -391,20 +422,13 @@
                   </div>
                   <div class="setting-desc">{{ t('settings.general.agentPanelPositionDesc') }}</div>
                 </div>
-              </div>
-
-              <div class="setting-card">
-                <div class="card-header">
-                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M21,16.5C21,16.88 20.79,17.21 20.47,17.38L12.57,21.82C12.41,21.94 12.21,22 12,22C11.79,22 11.59,21.94 11.43,21.82L3.53,17.38C3.21,17.21 3,16.88 3,16.5V7.5C3,7.12 3.21,6.79 3.53,6.62L11.43,2.18C11.59,2.06 11.79,2 12,2C12.21,2 12.41,2.06 12.57,2.18L20.47,6.62C20.79,6.79 21,7.12 21,7.5V16.5Z"/></svg>
-                  <h4>{{ t('settings.general.windowStatus') }}</h4>
-                </div>
                 <div class="setting-item">
                   <label>{{ t('settings.general.layoutManagement') }}</label>
                   <button class="window-reset-btn" :disabled="actionLoading" @click="resetDefaultWindows">
                     {{ t('settings.general.restoreLayout') }}
                   </button>
+                  <div class="setting-desc">{{ t('settings.general.restoreLayoutDesc') }}</div>
                 </div>
-                <div class="setting-desc">{{ t('settings.general.restoreLayoutDesc') }}</div>
               </div>
             </div>
 

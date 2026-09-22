@@ -797,7 +797,8 @@ onUnmounted(() => {
         <ul v-if="showDeleted" class="session-list">
           <li v-for="s in deletedSessions" :key="s.id" class="session-item deleted-item">
             <div class="session-main-row">
-              <span class="session-title">{{ s.title || t('sidebar.newSession') }}</span>
+              <!-- title 提示：标题超宽被省略号截断后，悬停仍能看到完整文本 -->
+              <span class="session-title" :title="s.title || t('sidebar.newSession')">{{ s.title || t('sidebar.newSession') }}</span>
               <button
                 type="button"
                 class="restore-btn"

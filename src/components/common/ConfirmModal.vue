@@ -7,11 +7,12 @@
 - 危险确认按钮用红，警告说明区为中性灰
 -->
 <script setup lang="ts">
+import { nextTick, ref, watch, onBeforeUnmount } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 const { t } = useI18n();
 
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   open: boolean
   title: string
   message: string
@@ -32,6 +33,42 @@ const emit = defineEmits<{
   (e: 'confirm'): void
   (e: 'cancel'): void
 }>()
+
+const confirmBtnRef = ref<HTMLButtonElement | null>(null);
+
+// 键盘支持：Enter 确认 / ESC 取消。监听必须挂在 window 上——用户可能点过正文文本，
+// 焦点不在弹窗容器里，监听容器 keydown 会漏。open 关闭时同步摘除，组件卸载时兜底。
+function onKeydown(e: KeyboardEvent) {
+  if (props.loading || e.repeat) return;
+  const tag = (document.activeElement as HTMLElement | null)?.tagName;
+  if (e.key === 'Enter' && tag === 'BUTTON') return; // 焦点已在某个按钮上：交给浏览器原生行为（原生 Enter 触发的是所聚焦的那个按钮，全局拦截会把"聚焦在取消上按 Enter"错变成确认）
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return; // 文本输入场景不劫持按键（为弹窗内将来可能的输入框留余地）
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    emit('confirm');
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    emit('cancel');
+  }
+}
+
+watch(() => props.open, (open) => {
+  if (open) {
+    window.addEventListener('keydown', onKeydown);
+    // 焦点管理：把焦点拉进弹窗、落在确认按钮上。否则焦点仍停留在「打开弹窗的那个按钮」
+    // （鼠标点击会聚焦它），onKeydown 里"焦点在按钮上放行"的规则会让 Enter 原生触发
+    // **背后那个按钮**——表现为把弹窗又打开一次，看起来就是"Enter 没反应"。
+    // 聚焦确认按钮后：Enter 走原生 click 即确认（带焦点环提示），Tab 可切到取消，
+    // 焦点漂走（点过正文）时仍由全局监听兜底。
+    nextTick(() => confirmBtnRef.value?.focus());
+  } else {
+    window.removeEventListener('keydown', onKeydown);
+  }
+}, { immediate: true });
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown);
+});
 </script>
 
 <template>
@@ -46,6 +83,7 @@ const emit = defineEmits<{
         <div class="modal-actions">
           <button class="cancel-btn" :disabled="loading" @click="emit('cancel')">{{ cancelText || t('common.cancel') }}</button>
           <button
+            ref="confirmBtnRef"
             class="confirm-btn"
             :class="confirmKind === 'danger' ? 'danger' : 'primary'"
             :disabled="loading"

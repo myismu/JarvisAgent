@@ -37,8 +37,10 @@ const hasExecution = computed(
   () => thinkingItems.value.length > 0 || props.toolCalls.length > 0 || logItems.value.length > 0,
 );
 const isDeveloperMode = computed(() => props.mode === "developer");
-const { defaultExpandThinking } = usePreferences();
-const shouldExpand = computed(() => isDeveloperMode.value || defaultExpandThinking);
+// 偏好对象是 getter（访问器）集合：必须在 computed 求值时经它访问才是响应式。
+// 解构成局部变量会把 getter 读成挂载时的一次性快照，开关变化后已挂载的面板不再响应。
+const uiPrefs = usePreferences();
+const shouldExpand = computed(() => isDeveloperMode.value || uiPrefs.defaultExpandThinking);
 
 const summaryText = computed(() => {
   const state = props.running ? t('execution.running') : t('execution.completed');
