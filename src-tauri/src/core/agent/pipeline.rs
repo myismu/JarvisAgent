@@ -2185,8 +2185,11 @@ impl PipelineState {
             }
         }
 
-        // 创建检查点快照（仅在有文件编辑时创建实快照，纯聊天轮次不创建）
-        {
+        // 创建检查点快照（仅在有文件编辑时创建实快照，纯聊天轮次不创建）。
+        // 改为块表达式把 (checkpoint_id, has_patches) 带出块外：发消息那一刻检查点
+        // 尚不存在（收尾才创建），随 JarvisResult 下发后前端可实时回填
+        // 「会话和代码撤回」菜单，不必等刷新走 get_session_messages 重查库。
+        let (checkpoint_id, checkpoint_has_patches) = {
             let has_patches =
                 crate::core::tools::file_tools::has_pending_patches(&self.app, &self.sid).await;
 
@@ -2217,7 +2220,8 @@ impl PipelineState {
                     "message": self.user_msg_preview
                 }),
             );
-        }
+            (checkpoint_id, has_patches)
+        };
 
         // 3. 保存会话到 SQLite；纯聊天且被取消时不落空会话
         //
@@ -2385,6 +2389,11 @@ impl PipelineState {
             session_cache_hit_tokens,
             session_cache_miss_tokens,
             user_message_id: self.user_message_id.clone(),
+            // 本轮检查点信息随结果下发（字段缺省时 serde 不序列化，旧前端不受影响）：
+            // - checkpoint_id：本轮快照 id，快照创建失败则为 None
+            // - checkpoint_has_patches：本轮是否有文件补丁，决定前端回填 both 模式
+            checkpoint_id,
+            checkpoint_has_patches: Some(checkpoint_has_patches),
             tool_execution_summary: self.tool_execution_summary,
             notice: self.notice,
             thinking_enabled: Some(self.turn_thinking_decision.enabled),

@@ -63,6 +63,20 @@ export interface JarvisResult {
    * 续跑（`resume_jarvis`）不注入用户消息，故那条路径上恒为空。
    */
   user_message_id?: string | null;
+  /**
+   * 本轮创建的文件检查点 id（有文件编辑的轮次由后端收尾时才创建 Git 快照）。
+   *
+   * 与 `user_message_id` 同一设计动机：发消息那一刻检查点尚不存在，
+   * 靠返回值让前端实时回填用户消息的撤回信息，「会话和代码撤回」立即出现，
+   * 不必等刷新走 `get_session_messages` 重查库。纯聊天轮次为空。
+   */
+  checkpoint_id?: string | null;
+  /**
+   * 本轮是否有文件编辑补丁（与刷新路径的 `rollback_info.has_file_edits` 同口径；
+   * 快照创建失败但它仍为 true，此时回填的撤回模式是 both 而 id 为空）。
+   * 仅在 `=== true` 时前端才回填 both 模式，缺省 / 纯聊天轮次不回填。
+   */
+  checkpoint_has_patches?: boolean | null;
   /** 本轮最终采用的深度思考状态（后端裁决层给出，前端不自行判断） */
   thinking_enabled?: boolean | null;
   /** 裁决原因（如 `ClampedByForced` / `SessionNever` / `ProfileDefault`） */

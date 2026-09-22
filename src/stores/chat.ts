@@ -656,12 +656,23 @@ export const useChatStore = defineStore("chat", () => {
             displayMsg: uiDisplayMsg ?? null,
           });
 
-      // 用后端返回的 user_message_id 更新前端用户消息，使撤回按钮立即可见
-      if (res.user_message_id && !resumeOnly) {
+      // 用后端返回值回填前端用户消息，使撤回按钮立即可见：
+      // - messageId：后端为本轮用户消息分配的 UUID（发消息时前端只有本地占位 id）
+      // - 回滚模式 / 检查点 id：Git 快照在收尾时才创建，发消息那一刻还不存在，
+      //   靠返回值实时补上，「会话和代码撤回」立即出现（旧行为要等刷新
+      //   走 get_session_messages 重查库才同步）。字段口径与刷新路径一致。
+      // 续跑（resumeOnly）不注入用户消息，无需回填。
+      if (!resumeOnly) {
         const msgs = requestView.messages;
         for (let i = msgs.length - 1; i >= 0; i--) {
           if (msgs[i].role === "user" && !msgs[i].messageId) {
-            msgs[i].messageId = res.user_message_id;
+            if (res.user_message_id) msgs[i].messageId = res.user_message_id;
+            // 与刷新路径同口径：本轮有文件补丁 → both（会话和代码撤回）；
+            // 快照创建失败时 id 允许为空串（刷新路径同样会下发「both 但无 id」）
+            if (res.checkpoint_has_patches === true) {
+              msgs[i].rollbackMode = "both";
+              msgs[i].rollbackCheckpointId = res.checkpoint_id ?? "";
+            }
             break;
           }
         }

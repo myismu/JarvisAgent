@@ -38,6 +38,17 @@ pub struct JarvisResult {
     /// 后端为用户消息分配的 UUID，前端用于关联撤回按钮
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_message_id: Option<String>,
+    /// 本轮创建的文件检查点 id（有文件编辑的轮次由 finalize 收尾时创建）。
+    ///
+    /// 与 `user_message_id` 同一设计动机：发消息那一刻检查点尚不存在，
+    /// 靠返回值让前端实时回填撤回信息（「会话和代码撤回」立即出现），
+    /// 不必等刷新走 `get_session_messages` 重查库。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_id: Option<String>,
+    /// 本轮是否有文件编辑补丁（与刷新路径 `rollback_info.has_file_edits` 同口径；
+    /// 检查点创建失败时它仍为 true，前端据此展示 both 菜单）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_has_patches: Option<bool>,
     /// break_loop 时的工具执行结果摘要（前端用于 toolBuffer，避免丢失工具执行日志）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_execution_summary: Option<String>,
