@@ -9,7 +9,7 @@ use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{
     is_ignored_entry_name, is_locked_file_error, is_search_skipped_extension,
-    read_text_preserve_encoding,
+    read_text_preserve_encoding, record_file_read,
 };
 use super::workspace::{get_workspace, resolve_exec_path, sandbox_missing_hint};
 
@@ -773,6 +773,10 @@ pub async fn read_symbol(
     for (idx, line) in lines.iter().enumerate().take(end_idx + 1).skip(start_idx) {
         result.push_str(&format!("{:4} | {}\n", idx + 1, line));
     }
+    // 先读后改：ReadSymbol 返回的是未经修改的原文片段（真实认知），计入已读。
+    // 指纹同样算在全量内容上（decoded.content），与 EditFile 校验口径一致。
+    // 注意：ReadFileSkeleton 只返回加工后的签名摘要、不算"看过"，刻意不在此列。
+    record_file_read(app, session_id, &exec_path, &decoded.content).await;
     framework::ToolCallResult::ok(result)
 }
 

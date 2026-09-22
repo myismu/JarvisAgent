@@ -16,8 +16,9 @@ use crate::core::tools::framework;
 use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{
-    encode_text_preserve_encoding, is_locked_file_error, normalize_line_endings,
-    read_text_preserve_encoding, resolve_path, TextEncoding,
+    encode_text_preserve_encoding, ensure_fresh_read, is_locked_file_error,
+    normalize_line_endings, read_text_preserve_encoding, record_file_read, resolve_path,
+    TextEncoding,
 };
 use super::diff::compute_diff;
 use crate::core::tools::notebook_tools::notebook_guard::{
@@ -71,6 +72,15 @@ pub async fn write_file(
         .map(|decoded| decoded.encoding)
         .unwrap_or(TextEncoding::Utf8);
 
+    // 先读后改闸门：覆盖**已存在**文件前，要求本会话读过且版本未过时；
+    // 新建文件（file_exists == false）没有"过时"可言，直接放行。
+    // 覆盖没读过的文件 = 凭空抹掉别人的内容，与盲改同罪（见 common::ensure_fresh_read）。
+    if let Some(old) = old_content.as_deref() {
+        if let Err(e) = ensure_fresh_read(app, session_id, &path, old).await {
+            return framework::ToolCallResult::error(e);
+        }
+    }
+
     // TOCTOU 防护：记录读取时的 mtime
     let read_mtime = if file_exists {
         std::fs::metadata(&path).ok().and_then(|m| m.modified().ok())
@@ -113,6 +123,9 @@ pub async fn write_file(
             let action = if file_exists { "写入" } else { "创建" };
             let msg = Some(format!("{} {}", action, path));
             record_patch_to_snapshot(app, session_id, patch, msg).await;
+            // 写入成功 → 记录认知为写入后的新版本（创建/覆盖都算"看过"），
+            // 后续 EditFile 不会因这条写入被误判为外部修改
+            record_file_read(app, session_id, &path, &content).await;
 
             framework::ToolCallResult::ok(format!("成功{} {}", action, path))
         }

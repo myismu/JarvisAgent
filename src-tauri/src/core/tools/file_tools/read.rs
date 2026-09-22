@@ -14,8 +14,8 @@ use crate::core::tools::framework::permission::ensure_path_permission;
 use tauri::Manager;
 
 use super::common::{
-    binary_file_read_error, is_locked_file_error, read_text_preserve_encoding, resolve_path,
-    MAX_FILE_SIZE_BYTES, MAX_LINES_DEFAULT,
+    binary_file_read_error, is_locked_file_error, read_text_preserve_encoding, record_file_read,
+    resolve_path, MAX_FILE_SIZE_BYTES, MAX_LINES_DEFAULT,
 };
 use super::workspace::{get_workspace, resolve_exec_path, sandbox_missing_hint};
 
@@ -305,6 +305,11 @@ pub async fn read_file(
                     }
                 }
             }
+
+            // 先读后改：记录"模型看到了这个版本"。即使本次是范围/截断读，
+            // 指纹也算在**全量内容**上（decoded.content 是完整文件）——
+            // EditFile 校验时比对的同样是全文指纹，两侧口径一致。
+            record_file_read(app, session_id, &path, &content).await;
 
             framework::ToolCallResult::ok(result)
         }

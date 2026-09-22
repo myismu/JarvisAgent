@@ -16,6 +16,8 @@ use std::io;
 use std::path::Path;
 
 use encoding_rs::{GBK, UTF_16BE, UTF_16LE};
+use sha2::{Digest, Sha256};
+use tauri::Manager;
 
 /// 文件大小限制：超过此大小拒绝读取（256KB）
 pub(super) const MAX_FILE_SIZE_BYTES: u64 = 256 * 1024;
@@ -457,6 +459,116 @@ pub(super) fn unc_path_rejection(tool: &str, path: &str) -> String {
     )
 }
 
+// ---------------------------------------------------------------------------
+// 「先读后改」闸门（read-before-write）
+//
+// 解决的问题：模型凭陈旧认知盲改文件。两种失败形态：
+// 1. 没读过就改 —— old_text 靠猜，匹配失败烧轮次，碰巧匹配上则改在错误前提上；
+// 2. 读过但文件随后被外部改了（其他 agent / 用户 / git）—— 编辑按旧认知落盘，
+//    静默覆盖别人的修改。这是最坏的失败形态：无声、且发现时已隔着多轮。
+//
+// 机制：会话内存表「路径 → 内容指纹」（SessionContext::read_file_fingerprints）。
+// 读类工具成功后记录"模型看到的版本"；写改类工具落盘前比对当前内容指纹，
+// 不一致或无记录即拦截。mtime 不参与跨轮判定（时钟精度依赖文件系统，
+// FAT32 秒级刻度会漏检同刻修改），指纹对内容取 SHA-256，改 1 字节必变。
+//
+// 唯一口径：校验逻辑只有本文件的 `ensure_fresh_read`，三个写改工具各插一行调用；
+// 记录逻辑只有 `record_file_read`，五个接入点（两个读 + 三个写）共用。
+// ---------------------------------------------------------------------------
+
+/// 对解码后的文本内容取 SHA-256 指纹（hex 字符串）。
+///
+/// 对**解码后**的内容而非原始字节计算：同一段内容以 GBK 或 UTF-8 存放，
+/// 模型看到的文本一致即视为"认知未过时"——编码层转存不算文件变更。
+pub(super) fn content_fingerprint(content: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// 纯判定（供单测与 `_on_ctx` 复用）：
+/// - 无记录 → 要求先读；
+/// - 记录与当前指纹不一致 → 文件在读取后被外部修改，要求重读；
+/// - 一致 → 放行。
+fn freshness_error(recorded: Option<&str>, current_fingerprint: &str) -> Option<String> {
+    match recorded {
+        None => Some(
+            "修改中止: 文件在本次会话中尚未被读取过。请先用 ReadFile 读取该文件了解当前内容，再执行修改。"
+                .to_string(),
+        ),
+        Some(recorded) if recorded != current_fingerprint => Some(
+            "修改中止: 文件自上次读取后被外部修改过（可能是其他程序、其他智能体或 git 操作）。请重新 ReadFile 获取当前内容后再修改。"
+                .to_string(),
+        ),
+        Some(_) => None,
+    }
+}
+
+/// 记录一次「模型看到了这个文件的这个版本」。
+///
+/// 写入点：ReadFile / ReadSymbol 成功返回前；三个写改工具成功落盘后
+/// （此时传**写入后的新内容**，刷新认知，连续编辑不会误报）。
+pub(super) async fn record_file_read(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    path: &str,
+    content: &str,
+) {
+    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
+        let ctx = manager.get_or_create(session_id).await;
+        record_file_read_on_ctx(&ctx, path, content).await;
+    }
+}
+
+/// 「先读后改」校验 —— 写改类工具落盘前的统一闸门。
+///
+/// `path` 必须是 `resolve_exec_path` 之后的路径（与记录侧同一 key 形式）；
+/// `current_content` 是本次工具执行中已经读到的**当前**文件内容
+/// （EditFile / WriteFile / ApplyPatch 落盘前本来就持有，指纹计算零额外 I/O）。
+///
+/// 语义边界：目标文件不存在的分支由调用方处理（EditFile 读不到文件早在
+/// 上游报错；WriteFile / ApplyPatch 的新建文件无需"读过"，直接放行）。
+/// 没有 SessionManager（单测 / 启动极早期）时放行 —— 与 `tool_filter_for`
+/// 同一先例：开关类守卫在拿不到会话时不锁死功能，生产路径必有 SessionManager。
+pub(super) async fn ensure_fresh_read(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    path: &str,
+    current_content: &str,
+) -> Result<(), String> {
+    let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() else {
+        return Ok(());
+    };
+    let ctx = manager.get_or_create(session_id).await;
+    ensure_fresh_read_on_ctx(&ctx, path, current_content).await
+}
+
+/// `record_file_read` 的核心（不依赖 AppHandle，供单测构造全链路场景）。
+async fn record_file_read_on_ctx(
+    ctx: &crate::infra::state::state::SessionContext,
+    path: &str,
+    content: &str,
+) {
+    let fingerprint = content_fingerprint(content);
+    ctx.read_file_fingerprints
+        .lock()
+        .await
+        .insert(path.to_string(), fingerprint);
+}
+
+/// `ensure_fresh_read` 的核心（不依赖 AppHandle，供单测构造全链路场景）。
+async fn ensure_fresh_read_on_ctx(
+    ctx: &crate::infra::state::state::SessionContext,
+    path: &str,
+    current_content: &str,
+) -> Result<(), String> {
+    let recorded = ctx.read_file_fingerprints.lock().await.get(path).cloned();
+    match freshness_error(recorded.as_deref(), &content_fingerprint(current_content)) {
+        Some(err) => Err(format!("{} (文件: {})", err, path)),
+        None => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,5 +724,52 @@ mod tests {
         assert!(!is_unc_path("C:\\Users\\test\\file.txt"));
         assert!(!is_unc_path("/home/user/file.txt"));
         assert!(!is_unc_path("./relative/path.txt"));
+    }
+
+    #[test]
+    fn fingerprint_is_stable_and_sensitive() {
+        let a = content_fingerprint("hello\nworld\n");
+        // 同内容同指纹
+        assert_eq!(a, content_fingerprint("hello\nworld\n"));
+        // 任何字节差异（空格、行尾）都算变更
+        assert_ne!(a, content_fingerprint("hello\nworld \n"));
+        assert_ne!(a, content_fingerprint("hello\nworld"));
+    }
+
+    #[test]
+    fn freshness_blocks_never_read_and_stale_versions() {
+        let fp = content_fingerprint("v1");
+        // 从未读过 → 拦
+        assert!(freshness_error(None, &fp).is_some());
+        // 读过且当前内容未变 → 放行
+        assert!(freshness_error(Some(&fp), &fp).is_none());
+        // 读过但内容已变 → 拦
+        assert!(freshness_error(Some(&fp), &content_fingerprint("v2")).is_some());
+    }
+
+    /// 全链路场景（不依赖 AppHandle）：没读拦 → 读后放 → 外部变更拦 →
+    /// 重读放 → 写后刷新不误报。
+    #[tokio::test]
+    async fn read_then_edit_cycle_with_external_change() {
+        let ctx = crate::infra::state::state::SessionContext::new("test-session".into());
+        let path = "E:\\proj\\main.rs";
+
+        // 没读过就改 → 拦
+        assert!(ensure_fresh_read_on_ctx(&ctx, path, "v1").await.is_err());
+
+        // ReadFile 记录 v1 → 同版本修改放行
+        record_file_read_on_ctx(&ctx, path, "v1").await;
+        assert!(ensure_fresh_read_on_ctx(&ctx, path, "v1").await.is_ok());
+
+        // 外部把文件改成 v2 → 拦（防止按旧认知盲改、覆盖别人的修改）
+        assert!(ensure_fresh_read_on_ctx(&ctx, path, "v2").await.is_err());
+
+        // 模型重读 v2 → 再改放行
+        record_file_read_on_ctx(&ctx, path, "v2").await;
+        assert!(ensure_fresh_read_on_ctx(&ctx, path, "v2").await.is_ok());
+
+        // 写改工具成功落盘后刷新为新版本 v3 → 紧接着的下一条编辑不误报
+        record_file_read_on_ctx(&ctx, path, "v3").await;
+        assert!(ensure_fresh_read_on_ctx(&ctx, path, "v3").await.is_ok());
     }
 }

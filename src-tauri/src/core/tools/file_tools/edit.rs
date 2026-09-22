@@ -18,9 +18,9 @@ use crate::core::tools::framework;
 use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{
-    encode_text_preserve_encoding, is_locked_file_error, is_unc_path, normalize_line_endings,
-    normalize_quotes, read_text_preserve_encoding, resolve_path, unc_path_rejection,
-    MAX_FILE_SIZE_BYTES,
+    encode_text_preserve_encoding, ensure_fresh_read, is_locked_file_error, is_unc_path,
+    normalize_line_endings, normalize_quotes, read_text_preserve_encoding, record_file_read,
+    resolve_path, unc_path_rejection, MAX_FILE_SIZE_BYTES,
 };
 use super::diff::compute_diff;
 use crate::core::tools::notebook_tools::notebook_guard::{
@@ -211,6 +211,13 @@ pub async fn edit_file(
                 return framework::ToolCallResult::error(notebook_text_edit_rejection(&path));
             }
 
+            // 先读后改闸门：会话内没读过、或读后被外部改过 → 拦。
+            // 放在匹配校验**之前**：blind edit 的报错应该是"请先读文件"，
+            // 而不是一条误导性的匹配失败（见 common::ensure_fresh_read 的模块注释）。
+            if let Err(e) = ensure_fresh_read(app, session_id, &path, &content).await {
+                return framework::ToolCallResult::error(e);
+            }
+
             // 逐条校验
             let mut total_replacements = 0usize;
             for (i, edit) in edits.iter().enumerate() {
@@ -262,6 +269,8 @@ pub async fn edit_file(
                         Some(format!("编辑 {}", path))
                     };
                     record_patch_to_snapshot(app, session_id, patch, msg).await;
+                    // 写入成功 → 刷新认知为编辑后的新版本，连续编辑不会被误判为"外部修改"
+                    record_file_read(app, session_id, &path, &updated_content).await;
 
                     if is_batch {
                         framework::ToolCallResult::ok(format!("成功: 在 {} 中批量替换了 {} 处（{} 条编辑）", path, total_replacements, edits.len()))

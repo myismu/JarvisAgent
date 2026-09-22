@@ -493,9 +493,11 @@ mod tests {
     #[test]
     fn edit_prompt_keeps_write_and_orchestration_rules() {
         let edit = developer_edit_prompt();
+        // 「压缩文件处理」不在断言清单里：2026-09-21 该节作为 ReadFile 单工具的
+        // 用法边界，从 base_p0.md 下沉进了 ReadFile 的 schema description
+        // （见 file_tools/registry.rs 的 ToolDef 注释），提示词里不再有这段。
         for needle in [
             "编辑纪律",
-            "压缩文件处理",
             "工具选择指南 — 写操作与命令执行",
             "SwitchWorkMode",
             "UpdateTodos",

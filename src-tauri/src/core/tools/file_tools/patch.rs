@@ -10,8 +10,8 @@ use crate::core::tools::framework;
 use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{
-    encode_text_preserve_encoding, is_locked_file_error, normalize_line_endings,
-    read_text_preserve_encoding, TextEncoding,
+    encode_text_preserve_encoding, ensure_fresh_read, is_locked_file_error,
+    normalize_line_endings, read_text_preserve_encoding, record_file_read, TextEncoding,
 };
 use super::diff::compute_diff;
 use crate::core::tools::notebook_tools::notebook_guard::{
@@ -613,6 +613,22 @@ pub async fn apply_patch(
         return framework::ToolCallResult::ok(format_preview(&previews, true));
     }
 
+    // 先读后改闸门，事务性：补丁触及的**任何一个**已存在文件没读过或已过时，
+    // 整个 patch 拒绝（与 plan 阶段的全量预检一致，不允许改一半）。
+    // dry-run 是只读预览，不做此校验 —— 模型可以用 dry-run 探路。
+    // 新建文件（existed == false）没有"过时"可言，放行。
+    for plan in &planned {
+        if plan.loaded.existed {
+            let resolved = resolve_patch_path(&plan.loaded.path, ws.as_deref());
+            if let Err(e) =
+                ensure_fresh_read(app, session_id, &resolved.to_string_lossy(), &plan.loaded.old_content)
+                    .await
+            {
+                return framework::ToolCallResult::error(format!("ApplyPatch 中止: {}", e));
+            }
+        }
+    }
+
     for plan in &planned {
         if let Err(e) = check_toctou(plan, ws.as_deref()) {
             return framework::ToolCallResult::error(e);
@@ -626,6 +642,10 @@ pub async fn apply_patch(
     }
 
     for plan in planned {
+        let resolved = resolve_patch_path(&plan.loaded.path, ws.as_deref());
+        // 写入成功 → 刷新认知为补丁后的新版本（新建文件同样记录），
+        // 后续 EditFile / 再打补丁不会因这次写入被误判为外部修改
+        record_file_read(app, session_id, &resolved.to_string_lossy(), &plan.new_content).await;
         let patch = if plan.loaded.existed {
             Patch::update_file_patch(
                 session_id,

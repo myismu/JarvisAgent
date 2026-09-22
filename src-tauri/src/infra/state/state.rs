@@ -156,6 +156,21 @@ pub struct SessionContext {
     pub scheduler_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::core::orchestration::scheduler::SchedulerEvent>>>,
     /// ReadFile 探索拦截：记录本会话已读取的文件路径，用于检测逐文件遍历模式
     pub read_file_paths: Mutex<Vec<String>>,
+    /// 「先读后改」记录：本会话内模型已看到过的文件版本（路径 → 内容指纹）。
+    ///
+    /// - key = `resolve_exec_path` 之后的路径字符串（与读写工具执行时用的同一种形式）；
+    ///   模型对同一文件给出不同写法的绝对路径（正/反斜杠）会被当成两个 key，
+    ///   误报方向是"要求重读"，安全，不做路径归一化。
+    /// - value = 解码后文本内容的 SHA-256 指纹（`file_tools::common::content_fingerprint`）。
+    /// - 写入方：ReadFile / ReadSymbol 成功返回前；EditFile / WriteFile / ApplyPatch
+    ///   成功落盘后（刷新为写入后的新版本）。
+    /// - 校验方：EditFile / WriteFile / ApplyPatch 落盘前，唯一实现在
+    ///   `file_tools::common::ensure_fresh_read`，勿在别处另建第二套判据。
+    ///
+    /// 刻意**纯内存态**（与 `session_allowances` 同理）：语义是"模型的认知"，
+    /// 认知随会话终结而失效。恢复历史会话后此表为空，第一次修改会被要求重读——
+    /// 这是安全方向的代价，换来"每次修改依据的都是本会话内建立的认知"这条不变量。
+    pub read_file_fingerprints: Mutex<HashMap<String, String>>,
     /// 循环上限续跑标记：超时后用户仍可点"允许"来 resume
     pub loop_continuation_pending: Mutex<bool>,
     /// 工具调用的结构化标志 (break_loop, is_error)，按工具名索引
@@ -217,6 +232,7 @@ impl SessionContext {
             turn_think: Mutex::new(None),
             scheduler_rx: Mutex::new(None),
             read_file_paths: Mutex::new(Vec::new()),
+            read_file_fingerprints: Mutex::new(HashMap::new()),
             loop_continuation_pending: Mutex::new(false),
             tool_result_flags: Mutex::new(HashMap::new()),
             permission_turn: Mutex::new(Default::default()),
