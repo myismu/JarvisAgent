@@ -6,6 +6,7 @@
 //! - stdout/stderr 实时捕获与缓冲
 //! - 任务状态追踪与通知队列
 
+use crate::infra::shell_command::NoWindow;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -21,6 +22,7 @@ fn kill_process_tree(pid: u32) {
     }
     if cfg!(target_os = "windows") {
         let _ = std::process::Command::new("taskkill")
+            .no_window()
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -44,6 +46,7 @@ fn find_descendant_pids(parent_pid: u32) -> Vec<u32> {
         let current = std::mem::take(&mut queue);
         for pid in &current {
             if let Ok(out) = std::process::Command::new("powershell")
+                .no_window()
                 .args([
                     "-NoProfile",
                     "-Command",
@@ -340,7 +343,7 @@ impl BackgroundManager {
         };
 
         let mut cmd = tokio::process::Command::new(&shell);
-        cmd.current_dir(&target_dir).args(&shell_args);
+        cmd.no_window().current_dir(&target_dir).args(&shell_args);
 
         let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
             Ok(c) => c,

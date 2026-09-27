@@ -3,13 +3,13 @@
 //! 提供长周期 Shell 任务的后台执行和状态检查功能。
 //!
 //! ## Key Exports
-//! - ackground_run_internal(): 内部调用后台运行逻辑
-//! - ackground_run(): 工具入口：后台执行长时间运行的命令
+//! - background_run_internal(): 内部调用后台运行逻辑
+//! - background_run(): 工具入口：后台执行长时间运行的命令
 //! - check_background(): 工具入口：检查后台任务状态
 //!
 //! ## Dependencies
 //! - Internal: crate::infra::background::BackgroundManager, crate::core::tools::framework::permission
-//! - External: serde_json, 	auri
+//! - External: serde_json, tauri
 
 use super::super::framework;
 use super::super::framework::permission::is_within_workspace;

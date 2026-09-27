@@ -7,7 +7,7 @@
 //!
 //! ## Dependencies
 //! - Internal: super::security, super::utils, crate::core::tools::framework::permission
-//! - External: serde_json, 	auri, 	okio
+//! - External: serde_json, tauri, tokio
 //!
 //! ## Constraints
 //! - 执行时间受限于 DEFAULT_TIMEOUT_SECS 除非转为后台模式
@@ -17,6 +17,7 @@ use super::super::framework::permission::{
     is_within_workspace, request_permission_with_origin, PermissionDecision, PermissionKind,
 };
 use crate::core::tools::file_tools::workspace::resolve_exec_path;
+use crate::infra::shell_command::NoWindow;
 use super::background::background_run_internal;
 use super::readonly::is_readonly_command;
 use super::security::*;
@@ -140,6 +141,7 @@ async fn run_shell_async(cmd: &str, exec_dir: &std::path::Path) -> (String, Stri
     };
 
     match tokio::process::Command::new(&shell)
+        .no_window()
         .current_dir(exec_dir)
         .args(&args)
         .stdout(Stdio::piped())

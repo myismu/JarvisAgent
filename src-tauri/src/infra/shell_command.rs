@@ -1,15 +1,18 @@
-//! # infra/shell_command.rs — Windows shell 命令构造公共层
+//! # infra/shell_command.rs — Windows shell 命令构造与子进程创建公共层
 //!
 //! 前台（`core/tools/shell_tools/execution.rs`）与后台（`infra/background.rs`）
 //! 在 Windows 上都通过 `powershell -NoProfile -Command` 执行命令，此前各自拼接
 //! 命令串，且原样透传 `&&` —— 本机 Windows PowerShell **5.1** 不支持 `&&`
 //! （`&&` 是 PowerShell 7+ 语法），链式命令直接 ParserError。
 //!
-//! 本模块提供两件事：
+//! 本模块收敛两类 Windows 平台差异：
 //! 1. [`split_on_double_ampersand`]：引号感知，只按 `&&` 切段（`;`、`|`、`||`
 //!    留在段内——PS 5.1 原生支持它们，语义不改变）；
 //! 2. [`build_windows_ps_command`]：把命令展开成"逐段执行 + 前段失败即停"的
-//!    PowerShell 脚本，在程序层面实现 `&&` 语义，不依赖 shell 版本。
+//!    PowerShell 脚本，在程序层面实现 `&&` 语义，不依赖 shell 版本；
+//! 3. [`NoWindow`]：子进程创建标志——打包后主进程是 GUI 子系统、自身没有控制台，
+//!    此时启动 powershell / taskkill 这类控制台程序，系统会新建一个空白终端窗口；
+//!    全部进程创建点统一挂该标志，消除这个窗口，也让 dev 与 release 行为一致。
 //!
 //! ## 语义说明
 //! - `&&`（bash / PowerShell 7）= 前一个命令**成功**才执行下一个；
@@ -30,6 +33,16 @@ const PS_UTF8_PREFIX: &str = "[Console]::OutputEncoding = [System.Text.Encoding]
 /// `$LASTEXITCODE` 只在**原生命令**（npm/cargo/git…）执行后才有值；
 /// 为 `null`（纯 cmdlet 失败）时兜底 `exit 1`，避免把失败伪装成成功。
 const PS_FAIL_GUARD: &str = "if (-not $?) { if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }; exit 1 }";
+
+/// Windows 进程创建标志：不为子进程分配控制台窗口。
+///
+/// 打包后主进程是 GUI 子系统（`main.rs` 的 `windows_subsystem = "windows"`），
+/// 自身没有控制台。Windows 的规则是：控制台子系统程序（powershell.exe、
+/// taskkill.exe）由没有控制台的父进程启动时，系统必须给它一个控制台，
+/// 只能新建一个窗口——这就是那个空白终端。子进程输出已重定向进管道，
+/// 所以窗口里没有任何内容。设此标志后系统不分配控制台，输出照旧走管道。
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// 引号感知，只按 `&&` 切段；`;`、`|`、`||` 与单个 `&` 一律保留在段内。
 ///
@@ -94,6 +107,42 @@ pub fn build_windows_ps_command(command: &str) -> String {
         }
     }
     format!("{}{}", PS_UTF8_PREFIX, parts.join("; "))
+}
+
+/// 子进程创建口径：统一不弹控制台窗口。
+///
+/// 全项目 4 处进程创建点（前台 `execution.rs`、后台 `background.rs` 的
+/// 命令执行 / taskkill / WMI 查询）都挂它，避免"release 下弹黑框、
+/// dev 下不弹"的形态差异——dev 之所以不弹，只是因为主进程从终端继承了
+/// 控制台、子进程附着了上去，并非行为正确。
+///
+/// 非 Windows 平台是空实现，调用点无需写 `cfg`，两边代码同形。
+pub trait NoWindow {
+    /// 标记该子进程不要控制台窗口（Windows）；其他平台无操作。
+    fn no_window(&mut self) -> &mut Self;
+}
+
+impl NoWindow for tokio::process::Command {
+    fn no_window(&mut self) -> &mut Self {
+        // tokio 在 Windows 上原生提供 creation_flags，无需引入 std 的 CommandExt
+        #[cfg(windows)]
+        {
+            self.creation_flags(CREATE_NO_WINDOW);
+        }
+        self
+    }
+}
+
+impl NoWindow for std::process::Command {
+    fn no_window(&mut self) -> &mut Self {
+        #[cfg(windows)]
+        {
+            // std 侧经 CommandExt trait 暴露同一个 API
+            use std::os::windows::process::CommandExt;
+            self.creation_flags(CREATE_NO_WINDOW);
+        }
+        self
+    }
 }
 
 #[cfg(test)]
@@ -193,5 +242,40 @@ mod tests {
         let out = build_windows_ps_command(r#"echo "a && b""#);
         assert!(out.ends_with(r#"echo "a && b""#));
         assert!(!out.contains(PS_FAIL_GUARD));
+    }
+
+    /// 测试用：构造一条输出 `ok` 的跨平台命令
+    fn echo_ok_program() -> (&'static str, &'static [&'static str]) {
+        if cfg!(windows) {
+            ("cmd", &["/C", "echo ok"])
+        } else {
+            ("echo", &["ok"])
+        }
+    }
+
+    #[tokio::test]
+    async fn no_window_keeps_command_runnable() {
+        // 挂了 no_window() 后，两个 impl（std / tokio）都必须仍能正常启动并取到输出。
+        // 本用例守的是"执行链路没被破坏"；"窗口是否真的不再弹出"只能在 release
+        // 安装包上人工验证——cargo test 时父进程自带控制台，子进程本来就附着
+        // 父控制台，这个场景下看不到弹窗。
+        let (program, args) = echo_ok_program();
+
+        // std 侧：background.rs 的 taskkill 与 WMI 查询走这条
+        let out = std::process::Command::new(program)
+            .no_window()
+            .args(args)
+            .output()
+            .expect("std 侧启动失败");
+        assert!(String::from_utf8_lossy(&out.stdout).contains("ok"));
+
+        // tokio 侧：前台命令与后台长任务走这条
+        let out = tokio::process::Command::new(program)
+            .no_window()
+            .args(args)
+            .output()
+            .await
+            .expect("tokio 侧启动失败");
+        assert!(String::from_utf8_lossy(&out.stdout).contains("ok"));
     }
 }

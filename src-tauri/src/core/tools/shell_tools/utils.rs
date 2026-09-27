@@ -5,11 +5,11 @@
 //! ## Key Exports
 //! - get_workspace(): 获取会话对应的工作区路径
 //! - interpret_exit_code(): 转换 exit_code 为具有语义的描述
-//! - ormat_shell_output(): 标准化并截断过长的 Shell 输出
+//! - format_shell_output(): 标准化并截断过长的 Shell 输出
 //!
 //! ## Dependencies
 //! - Internal: crate::core::tools::framework::permission::is_within_workspace
-//! - External: 	auri::Manager
+//! - External: tauri::Manager
 
 use super::super::framework::permission::is_within_workspace;
 use tauri::Manager;
