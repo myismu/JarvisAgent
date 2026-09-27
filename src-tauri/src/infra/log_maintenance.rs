@@ -1,6 +1,7 @@
 //! # log_maintenance.rs — 日志分片、归档与保留期清理
 //!
-//! `data/logs/` 下的三类审计日志（`agent_loop` / `tool_calls` / `rollbacks`）都是
+//! `data/logs/` 下的四类审计日志（`agent_loop` / `tool_calls` / `rollbacks` /
+//! `permission_decisions`）都是
 //! append-only JSONL，文件名规则统一为 `<日期>_<session_id>.jsonl`。长期使用会遇到两个问题：
 //!
 //! 1. **单个文件无限增长**：一个长会话（或多 loop 回合）能把单文件撑到几十 MB，
@@ -53,7 +54,12 @@ pub const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(24 * 3600);
 /// 分片数量上限（防御：正常情况下不可能到）
 const MAX_PARTS: usize = 1000;
 /// 受管理的日志子目录
-const LOG_SUBDIRS: [&str; 3] = ["agent_loop", "tool_calls", "rollbacks"];
+///
+/// 必须覆盖 `data/logs/` 下**全部** append-only 日志目录：漏一个，那类日志就既不
+/// 分片也不归档、无限增长。`permission_decisions` 曾长期不在名单里，而它恰好是
+/// `auto_approve` 档唯一的事后追溯手段（档位策略静默放行、用户从未逐条表态），
+/// 也是授权落盘的素材来源——丢了就彻底无痕。
+const LOG_SUBDIRS: [&str; 4] = ["agent_loop", "tool_calls", "rollbacks", "permission_decisions"];
 /// 归档目录名
 const ARCHIVE_DIR: &str = "archive";
 
@@ -344,6 +350,33 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let mut file = File::create(path).unwrap();
         file.write_all(content.as_bytes()).unwrap();
+    }
+
+    /// 护栏：维护名单必须覆盖全部日志目录。
+    ///
+    /// 由来：`permission_decisions` 曾长期不在 `LOG_SUBDIRS` 里，于是它既不参与分片、
+    /// 也不参与归档与保留期清理，无限增长。而它恰好是 `auto_approve` 档唯一的事后
+    /// 追溯手段，丢了就彻底无痕。
+    ///
+    /// 这里是**手工维护的清单**——新增一个写日志的模块时，要在两边同时加名字。
+    /// 之所以不动态扫描：日志目录名是各 logger 里 `logs_dir().join("...")` 的字面量，
+    /// 运行期没有可枚举的注册点。改不动这一点，就让清单本身有个断言守着。
+    #[test]
+    fn log_subdirs_covers_every_logger_directory() {
+        // 与各 logger 中的 `logs_dir().join("<名>")` 一一对应：
+        //   agent_loop           → infra/debug_logger.rs
+        //   tool_calls           → core/tools/framework/tool_call_logger.rs
+        //   rollbacks            → core/rollback/rollback_logger.rs
+        //   permission_decisions → core/tools/framework/permission_audit_logger.rs
+        let every_logger_dir = ["agent_loop", "tool_calls", "rollbacks", "permission_decisions"];
+
+        for dir in every_logger_dir {
+            assert!(
+                LOG_SUBDIRS.contains(&dir),
+                "日志目录 `{}` 不在 LOG_SUBDIRS 里：它将不分片、不归档、无限增长",
+                dir
+            );
+        }
     }
 
     #[test]
