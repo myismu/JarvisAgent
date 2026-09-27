@@ -1290,7 +1290,7 @@ impl PipelineState {
             // 这样也消除了 background 注入对（User+Assistant 两条）破坏
             // 消息级 user/assistant 交替的问题。
 
-            // 步骤 3：上下文压缩检查（超上限 70% 时自动摘要旧历史）
+            // 步骤 3：上下文压缩检查（超可用窗口 COMPACT_TRIGGER_PERCENT（85%）时自动摘要旧历史）
             // Token 压缩
             self.compact_if_needed().await;
 
@@ -2920,7 +2920,7 @@ impl PipelineState {
     /// initial_msg_index
     ///
     /// 判据算法统一在 `infra::llm::context_budget`（与子代理共用，见该模块文档）：
-    /// - 阈值 =（模型窗口 − 输出预算）× 70%
+    /// - 阈值 =（模型窗口 − 输出预算）× `COMPACT_TRIGGER_PERCENT`（当前 85%）
     /// - 占用 = 本地估算 ×（上一轮实测 ÷ 上一轮估算）
     async fn compact_if_needed(&mut self) {
         // 1. 估算当前上下文 token（消息 + 工具 schema）

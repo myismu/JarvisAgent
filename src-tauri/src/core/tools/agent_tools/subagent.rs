@@ -1120,7 +1120,8 @@ pub async fn run_subagent(
                 content: Content::Multiple(tool_results),
             });
             // 超阈值时触发 LLM 摘要压缩。判据与主 Agent 共用
-            // （`infra::llm::context_budget`）：阈值 =（模型窗口 − 输出预算）× 70%，
+            // （`infra::llm::context_budget`）：阈值 =（模型窗口 − 输出预算）×
+            // `COMPACT_TRIGGER_PERCENT`（当前 85%），
             // 占用 = 本地估算 ×（本轮实测 ÷ 本轮估算）。
             let window = crate::infra::llm::context_budget::resolve_context_window(&model_id);
             let output_budget =
