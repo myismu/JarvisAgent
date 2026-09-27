@@ -16,7 +16,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::Mutex;
 
 fn kill_process_tree(pid: u32) {
-    if pid == 0 { return; }
+    if pid == 0 {
+        return;
+    }
     if cfg!(target_os = "windows") {
         let _ = std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
@@ -36,13 +38,20 @@ fn find_descendant_pids(parent_pid: u32) -> Vec<u32> {
     let mut queue = vec![parent_pid];
     // 限制递归深度防止无限循环
     for _ in 0..10 {
-        if queue.is_empty() { break; }
+        if queue.is_empty() {
+            break;
+        }
         let current = std::mem::take(&mut queue);
         for pid in &current {
             if let Ok(out) = std::process::Command::new("powershell")
-                .args(["-NoProfile", "-Command", &format!(
-                    "(Get-CimInstance Win32_Process -Filter \"ParentProcessId={}\").ProcessId", pid
-                )])
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    &format!(
+                        "(Get-CimInstance Win32_Process -Filter \"ParentProcessId={}\").ProcessId",
+                        pid
+                    ),
+                ])
                 .output()
             {
                 let text = String::from_utf8_lossy(&out.stdout);
@@ -144,7 +153,10 @@ impl BackgroundManager {
                 task.status = "killed".to_string();
             }
         }
-        println!("[BACKGROUND] Killed task {} (pids: {:?})", task_id, all_targets);
+        println!(
+            "[BACKGROUND] Killed task {} (pids: {:?})",
+            task_id, all_targets
+        );
     }
 
     /// 终止所有运行中的后台任务进程（撤回前调用，释放文件锁）
@@ -226,7 +238,10 @@ impl BackgroundManager {
             Some(3000)
         } else if lower.contains("npm run dev") || lower.contains("npm start") {
             // 根据目录推断端口：backend 通常是 3000/8000，frontend 通常是 5173
-            if dir_lower.contains("backend") || dir_lower.contains("server") || dir_lower.contains("api") {
+            if dir_lower.contains("backend")
+                || dir_lower.contains("server")
+                || dir_lower.contains("api")
+            {
                 Some(3000)
             } else {
                 Some(5173)
@@ -247,7 +262,12 @@ impl BackgroundManager {
     /// 启动后台任务
     ///
     /// 通过 PowerShell 执行命令，异步捕获输出，任务完成后推送通知
-    pub async fn run(app: tauri::AppHandle, command: String, dir: Option<String>, session_id: Option<String>) -> String {
+    pub async fn run(
+        app: tauri::AppHandle,
+        command: String,
+        dir: Option<String>,
+        session_id: Option<String>,
+    ) -> String {
         let task_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
 
         let mut short_cmd = command.clone();
@@ -262,7 +282,10 @@ impl BackgroundManager {
             Some(s) => s,
             // 无全局状态（理论不发生）：诚实返回失败，而不是假"started"
             None => {
-                return format!("Background task {} failed: background state unavailable", task_id);
+                return format!(
+                    "Background task {} failed: background state unavailable",
+                    task_id
+                );
             }
         };
         let state_clone = state.0.clone();
@@ -305,16 +328,21 @@ impl BackgroundManager {
             // 与前台 run_shell_async 同一构造口径：PS 5.1 不支持 `&&`，
             // 公共层把链式命令展开成"逐段执行 + 前段失败即停"。
             let ps_cmd = crate::infra::shell_command::build_windows_ps_command(&cmd_async);
-            ("powershell".to_string(), vec!["-NoProfile".to_string(), "-Command".to_string(), ps_cmd])
+            (
+                "powershell".to_string(),
+                vec!["-NoProfile".to_string(), "-Command".to_string(), ps_cmd],
+            )
         } else {
-            ("bash".to_string(), vec!["-c".to_string(), cmd_async.clone()])
+            (
+                "bash".to_string(),
+                vec!["-c".to_string(), cmd_async.clone()],
+            )
         };
 
         let mut cmd = tokio::process::Command::new(&shell);
         cmd.current_dir(&target_dir).args(&shell_args);
 
-        let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
-        {
+        let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
             Ok(c) => c,
             Err(e) => {
                 // spawn 失败：标记 error；错误经返回值直接进 tool_result
@@ -396,7 +424,8 @@ impl BackgroundManager {
         let child_arc = Arc::new(tokio::sync::Mutex::new(Some(child)));
         {
             let mut bg = state_clone.lock().await;
-            bg.child_processes.insert(task_id.clone(), child_arc.clone());
+            bg.child_processes
+                .insert(task_id.clone(), child_arc.clone());
             if let (Some(pid), Some(task)) = (child_pid, bg.tasks.get_mut(&task_id)) {
                 // 先存 PowerShell PID 作为 root，稍后延迟捕获完整进程树
                 task.pid = Some(pid);
@@ -442,105 +471,105 @@ impl BackgroundManager {
         }
 
         tokio::spawn(async move {
-                // 延迟等待子进程树完全展开（npm/node 等需要时间启动），再递归捕获全部 PID
-                // 此时 stdout/stderr 已在后台读取，不会阻塞进程
-                tokio::time::sleep(Duration::from_millis(1500)).await;
-                if let Some(root_pid) = child_pid {
-                    let descendants = find_descendant_pids(root_pid);
-                    let mut all_pids = vec![root_pid];
-                    all_pids.extend(descendants);
-                    let mut bg = state_clone.lock().await;
-                    if let Some(task) = bg.tasks.get_mut(&task_id_async) {
-                        task.pids = all_pids.clone();
+            // 延迟等待子进程树完全展开（npm/node 等需要时间启动），再递归捕获全部 PID
+            // 此时 stdout/stderr 已在后台读取，不会阻塞进程
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            if let Some(root_pid) = child_pid {
+                let descendants = find_descendant_pids(root_pid);
+                let mut all_pids = vec![root_pid];
+                all_pids.extend(descendants);
+                let mut bg = state_clone.lock().await;
+                if let Some(task) = bg.tasks.get_mut(&task_id_async) {
+                    task.pids = all_pids.clone();
+                }
+            }
+
+            // 取出 child 进行 wait
+            let mut child_owned = {
+                let mut guard = child_arc.lock().await;
+                match guard.take() {
+                    Some(c) => c,
+                    None => {
+                        // child 已被 kill_task 取走，直接退出
+                        return;
                     }
                 }
+            };
 
-                // 取出 child 进行 wait
-                let mut child_owned = {
-                    let mut guard = child_arc.lock().await;
-                    match guard.take() {
-                        Some(c) => c,
-                        None => {
-                            // child 已被 kill_task 取走，直接退出
-                            return;
-                        }
-                    }
-                };
-
-                let status = match child_owned.wait().await {
-                    Ok(s) => {
-                        if s.success() {
-                            "completed"
-                        } else {
-                            "error"
-                        }
-                    }
-                    Err(_) => "error",
-                };
-
-                // 等待一小段时间让 stdout/stderr 任务完成写入
-                tokio::time::sleep(Duration::from_millis(50)).await;
-
-                let final_output = {
-                    let buf = output_buffer.lock().await;
-                    if buf.is_empty() {
-                        "(process finished)".to_string()
+            let status = match child_owned.wait().await {
+                Ok(s) => {
+                    if s.success() {
+                        "completed"
                     } else {
-                        buf.clone()
+                        "error"
                     }
-                };
-
-                let notif = Notification {
-                    task_id: task_id_async.clone(),
-                    session_id: session_id_clone.clone(),
-                    status: status.to_string(),
-                    command: cmd_async.clone(),
-                    result: final_output,
-                    port: port_async,
-                    task_type: type_async,
-                };
-
-                // Tauri 事件推送（实时通知前端，替代轮询）
-                let _ = app_handle.emit("bg-task-done", &notif);
-
-                let mut was_killed = false;
-                if let Some(st) = app_handle.try_state::<BackgroundState>() {
-                    let mut bg = st.0.lock().await;
-                    if let Some(task) = bg.tasks.get_mut(&task_id_async) {
-                        task.status = status.to_string();
-                        task.result = Some(notif.result.clone());
-                        // 用户主动 kill 的任务不算失败（他自己停的），不发失败提醒
-                        was_killed = task.status == "killed";
-                    }
-                    // 不删 child_processes：服务类后台任务（npm run dev 等）的
-                    // 子进程（node/nodemon）会随 PowerShell 退出而 orphan，
-                    // handle 是最后能杀进程树的手段，保留待用户主动 dismiss/kill
                 }
+                Err(_) => "error",
+            };
 
-                // 失败小字提醒：任务以 error 结束（且不是用户主动 kill）时，
-                // 发结构化事件让前端在聊天流里显示 notice 小字。用户看到后
-                // 自行决定是否让 Agent 排查。
-                // 秒挂场景不走这里：错误已经在启动时的 tool_result 里带回。
-                if status == "error" && !was_killed {
-                    // 错误详情接入提醒（截断到合理长度，完整输出仍在任务面板）
-                    let mut summary = notif.result.trim().to_string();
-                    if summary.chars().count() > 400 {
-                        summary = summary.chars().take(400).collect::<String>() + "…";
-                    }
-                    // 字段全部从 notif 取：notif 构造时已 move 掉原变量，这里不能再借用
-                    let _ = app_handle.emit(
-                        "background-failed",
-                        serde_json::json!({
-                            "sessionId": notif.session_id,
-                            "taskId": notif.task_id,
-                            "command": notif.command,
-                            "result": summary,
-                            "port": notif.port,
-                            "taskType": notif.task_type,
-                        }),
-                    );
+            // 等待一小段时间让 stdout/stderr 任务完成写入
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            let final_output = {
+                let buf = output_buffer.lock().await;
+                if buf.is_empty() {
+                    "(process finished)".to_string()
+                } else {
+                    buf.clone()
                 }
-            });
+            };
+
+            let notif = Notification {
+                task_id: task_id_async.clone(),
+                session_id: session_id_clone.clone(),
+                status: status.to_string(),
+                command: cmd_async.clone(),
+                result: final_output,
+                port: port_async,
+                task_type: type_async,
+            };
+
+            // Tauri 事件推送（实时通知前端，替代轮询）
+            let _ = app_handle.emit("bg-task-done", &notif);
+
+            let mut was_killed = false;
+            if let Some(st) = app_handle.try_state::<BackgroundState>() {
+                let mut bg = st.0.lock().await;
+                if let Some(task) = bg.tasks.get_mut(&task_id_async) {
+                    task.status = status.to_string();
+                    task.result = Some(notif.result.clone());
+                    // 用户主动 kill 的任务不算失败（他自己停的），不发失败提醒
+                    was_killed = task.status == "killed";
+                }
+                // 不删 child_processes：服务类后台任务（npm run dev 等）的
+                // 子进程（node/nodemon）会随 PowerShell 退出而 orphan，
+                // handle 是最后能杀进程树的手段，保留待用户主动 dismiss/kill
+            }
+
+            // 失败小字提醒：任务以 error 结束（且不是用户主动 kill）时，
+            // 发结构化事件让前端在聊天流里显示 notice 小字。用户看到后
+            // 自行决定是否让 Agent 排查。
+            // 秒挂场景不走这里：错误已经在启动时的 tool_result 里带回。
+            if status == "error" && !was_killed {
+                // 错误详情接入提醒（截断到合理长度，完整输出仍在任务面板）
+                let mut summary = notif.result.trim().to_string();
+                if summary.chars().count() > 400 {
+                    summary = summary.chars().take(400).collect::<String>() + "…";
+                }
+                // 字段全部从 notif 取：notif 构造时已 move 掉原变量，这里不能再借用
+                let _ = app_handle.emit(
+                    "background-failed",
+                    serde_json::json!({
+                        "sessionId": notif.session_id,
+                        "taskId": notif.task_id,
+                        "command": notif.command,
+                        "result": summary,
+                        "port": notif.port,
+                        "taskType": notif.task_type,
+                    }),
+                );
+            }
+        });
 
         let type_info = task_type
             .as_ref()
@@ -572,9 +601,7 @@ impl BackgroundManager {
         let ids: Vec<String> = self
             .tasks
             .iter()
-            .filter(|(_, t)| {
-                t.session_id.as_deref() == Some(session_id) && t.status != "running"
-            })
+            .filter(|(_, t)| t.session_id.as_deref() == Some(session_id) && t.status != "running")
             .map(|(id, _)| id.clone())
             .collect();
         for id in &ids {
@@ -592,9 +619,8 @@ impl BackgroundManager {
     fn cleanup_expired(&mut self) {
         // 清理那些已经不在 child_processes 中的非 running 任务
         // child_processes 在任务完成时会被移除 (task 完成逻辑中 child_processes.remove)
-        self.tasks.retain(|id, task| {
-            task.status == "running" || self.child_processes.contains_key(id)
-        });
+        self.tasks
+            .retain(|id, task| task.status == "running" || self.child_processes.contains_key(id));
     }
 
     /// 查询任务状态
@@ -663,12 +689,16 @@ impl BackgroundManager {
     /// 同步杀所有运行中任务的进程树（用于退出时清理，不依赖 tokio runtime）
     pub fn kill_all_process_tree(&mut self) {
         for (task_id, task) in &self.tasks {
-            if task.status != "running" { continue; }
+            if task.status != "running" {
+                continue;
+            }
             // 通过存储的完整 PID 列表终止
             let mut all_targets: Vec<u32> = task.pids.clone();
             for pid in &task.pids {
                 for d in find_descendant_pids(*pid) {
-                    if !all_targets.contains(&d) { all_targets.push(d); }
+                    if !all_targets.contains(&d) {
+                        all_targets.push(d);
+                    }
                 }
             }
             for pid in &all_targets {
@@ -698,7 +728,9 @@ impl BackgroundManager {
                 all_targets.extend(&task.pids);
                 for pid in &task.pids {
                     for d in find_descendant_pids(*pid) {
-                        if !all_targets.contains(&d) { all_targets.push(d); }
+                        if !all_targets.contains(&d) {
+                            all_targets.push(d);
+                        }
                     }
                 }
             }
@@ -719,7 +751,10 @@ impl BackgroundManager {
 
             let killed = !all_targets.is_empty();
             bg.remove_task(task_id);
-            println!("[BACKGROUND] Killed task {} (pids: {:?}, effective: {})", task_id, all_targets, killed);
+            println!(
+                "[BACKGROUND] Killed task {} (pids: {:?}, effective: {})",
+                task_id, all_targets, killed
+            );
             killed
         } else {
             false
@@ -764,7 +799,10 @@ impl CompactingState {
 
     pub fn set_compacting(&self, session_id: &str, active: bool) {
         let mut set = self.0.lock().unwrap();
-        if active { set.insert(session_id.to_string()); }
-        else { set.remove(session_id); }
+        if active {
+            set.insert(session_id.to_string());
+        } else {
+            set.remove(session_id);
+        }
     }
 }
