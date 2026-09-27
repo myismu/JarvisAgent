@@ -11,9 +11,11 @@
 //! - `is_static_asset_extension()`: 判断静态资源扩展名
 //! - `is_search_skipped_extension()`: 判断搜索时应跳过的扩展名
 //! - `is_locked_file_error()`: 识别文件锁或访问拒绝错误
+//! - `passes_file_filters()`: 文件过滤唯一入口（类型 + include + exclude）
+//! - `input_usize()` / `input_string_list()` / `input_patterns()`: 工具入参解析
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use encoding_rs::{GBK, UTF_16BE, UTF_16LE};
 use sha2::{Digest, Sha256};
@@ -357,6 +359,225 @@ pub(super) fn is_static_asset_extension(ext: &str) -> bool {
 
 pub(super) fn is_search_skipped_extension(ext: &str) -> bool {
     is_static_asset_extension(ext) || matches!(ext.to_lowercase().as_str(), "pdf" | "zip")
+}
+
+// ===================== 工具入参解析 =====================
+
+/// 从工具入参读取 usize 计数，兼容数字与字符串两种写法。
+pub(super) fn input_usize(input: &serde_json::Value, key: &str) -> Option<usize> {
+    let value = input.get(key)?;
+    if let Some(value) = value.as_u64() {
+        return Some(value as usize);
+    }
+    value.as_str().and_then(|value| value.trim().parse().ok())
+}
+
+/// 从工具入参读取字符串列表，兼容 `"a,b"` 字符串与 `["a","b"]` 数组两种写法。
+pub(super) fn input_string_list(input: &serde_json::Value, key: &str) -> Vec<String> {
+    if let Some(raw) = input[key].as_str() {
+        return raw
+            .split(|ch| ch == ',' || ch == ' ')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+
+    input[key]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 按逗号/空格把一个 glob 串切成多条规则（`"**/*.rs, **/*.ts"`）。
+pub(super) fn split_glob_patterns(glob: &str) -> Vec<String> {
+    glob.split(|ch| ch == ',' || ch == ' ')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// 从工具入参读取 glob 规则列表（仅字符串写法，多条以逗号/空格分隔）。
+pub(super) fn input_patterns(input: &serde_json::Value, key: &str) -> Vec<String> {
+    input[key]
+        .as_str()
+        .map(split_glob_patterns)
+        .unwrap_or_default()
+}
+
+// ===================== 路径显示与排序 =====================
+
+/// 转成相对进程当前目录、正斜杠分隔的展示路径；不在当前目录下则原样输出。
+pub(super) fn display_path(path: &Path) -> String {
+    let display = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| path.strip_prefix(cwd).ok().map(PathBuf::from))
+        .unwrap_or_else(|| path.to_path_buf());
+
+    display.to_string_lossy().replace('\\', "/")
+}
+
+/// 路径中是否含有某个目录分量（如 `src`）。
+pub(super) fn path_contains_component(path: &Path, component: &str) -> bool {
+    path.components().any(|part| part.as_os_str() == component)
+}
+
+/// 是否常见代码文件（结果排序用：代码文件优先）。
+pub(super) fn is_code_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            matches!(
+                ext.to_lowercase().as_str(),
+                "rs" | "ts" | "tsx" | "js" | "jsx" | "vue" | "py" | "go" | "java" | "c" | "h"
+                    | "cpp" | "hpp" | "cs" | "php" | "rb" | "html" | "css" | "scss"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// 搜索结果排序键：`src/` 下的代码文件优先，其余按展示路径字典序。
+pub(super) fn search_path_rank(path: &Path) -> (usize, usize, String) {
+    (
+        if path_contains_component(path, "src") { 0 } else { 1 },
+        if is_code_file(path) { 0 } else { 1 },
+        display_path(path),
+    )
+}
+
+// ===================== glob 过滤（include / exclude 语义分离）=====================
+//
+// 这里是四个搜索类工具曾集体失效的地方，改动前请先读完这段说明。
+//
+// 旧实现只有一个 `matches_any_glob(path, base, patterns)`，语义是"规则为空时
+// 返回 true"（无规则 = 全通过）。用在 include 上是对的，但调用方写成
+// `!matches_any_glob(..., exclude_patterns)` —— 于是"没有排除规则"被算成
+// `!true = false`，**每个文件都被判定为被排除**，文件列表被清空，
+// FindSymbol / FindReferences / CodeSearch / SearchRepo 一律返回"未找到"。
+//
+// 该 bug 自 2026-05-05 起存在，且因为 symbol.rs 与 search.rs 各抄了一份，
+// 只修一份也治不好。现在只此一处实现，并把两个方向拆成名字自明的函数：
+//   - `passes_include_globs`：空 = 不限制
+//   - `hits_exclude_globs`  ：空 = 无命中
+// 取反写在 `passes_file_filters` 里，且取反的对象是"是否命中排除规则"，
+// 不再是"是否全通过"。
+
+/// glob 通配符转正则：`*` 任意多字符、`?` 单字符，其余正则元字符转义。
+fn glob_to_regex(pattern: &str) -> Option<regex::Regex> {
+    let mut out = String::from("^");
+    for ch in pattern.replace('\\', "/").chars() {
+        match ch {
+            '*' => out.push_str(".*"),
+            '?' => out.push('.'),
+            '/' => out.push('/'),
+            ch if ".+()^$|[]{}\\".contains(ch) => {
+                out.push('\\');
+                out.push(ch);
+            }
+            ch => out.push(ch),
+        }
+    }
+    out.push('$');
+    regex::Regex::new(&out).ok()
+}
+
+/// 单条 glob 是否匹配路径。不含 `/` 的规则额外按文件名匹配（`*.rs` 命中任意层级）。
+fn glob_matches(pattern: &str, path: &Path) -> bool {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    glob_to_regex(pattern)
+        .map(|re| re.is_match(&normalized) || (!pattern.contains('/') && re.is_match(&file_name)))
+        .unwrap_or(false)
+}
+
+/// 相对基准目录的路径；不在基准下则用原路径。
+fn relative_to<'a>(path: &'a Path, base: &Path) -> &'a Path {
+    path.strip_prefix(base).unwrap_or(path)
+}
+
+/// include 规则：**没有规则 = 不限制**，任何文件都通过。
+pub(super) fn passes_include_globs(path: &Path, base: &Path, patterns: &[String]) -> bool {
+    if patterns.is_empty() {
+        return true;
+    }
+    let relative = relative_to(path, base);
+    patterns.iter().any(|pattern| glob_matches(pattern, relative))
+}
+
+/// exclude 规则：**没有规则 = 不排除**，无人命中。
+pub(super) fn hits_exclude_globs(path: &Path, base: &Path, patterns: &[String]) -> bool {
+    let relative = relative_to(path, base);
+    patterns.iter().any(|pattern| glob_matches(pattern, relative))
+}
+
+// ===================== 文件类型过滤 =====================
+
+/// 类型别名到扩展名集合；未收录的类型按"扩展名等于类型名"处理。
+pub(super) fn type_extensions(file_type: &str) -> Vec<&'static str> {
+    match file_type.to_lowercase().as_str() {
+        "ts" | "typescript" => vec!["ts", "tsx"],
+        "js" | "javascript" => vec!["js", "jsx", "mjs", "cjs"],
+        "rs" | "rust" => vec!["rs"],
+        "vue" => vec!["vue"],
+        "py" | "python" => vec!["py"],
+        "md" | "markdown" => vec!["md", "mdx"],
+        "json" => vec!["json"],
+        _ => Vec::new(),
+    }
+}
+
+/// 文件类型是否匹配；未指定类型时一律通过。
+pub(super) fn matches_file_type(path: &Path, file_type: Option<&str>) -> bool {
+    let Some(file_type) = file_type else {
+        return true;
+    };
+    let extensions = type_extensions(file_type);
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            let ext = ext.to_lowercase();
+            if extensions.is_empty() {
+                ext == file_type.to_lowercase()
+            } else {
+                extensions.iter().any(|candidate| *candidate == ext)
+            }
+        })
+        .unwrap_or(false)
+}
+
+// ===================== 文件过滤唯一入口 =====================
+
+/// 文件是否通过过滤：类型 + include + exclude。
+///
+/// 全 file_tools 只有这一处实现（symbol.rs 与 search.rs 曾各有一份拷贝，
+/// 两处都写错了 exclude 的空集合语义，见上方说明）。
+pub(super) fn passes_file_filters(
+    path: &Path,
+    base: &Path,
+    include_patterns: &[String],
+    exclude_patterns: &[String],
+    file_type: Option<&str>,
+) -> bool {
+    matches_file_type(path, file_type)
+        && passes_include_globs(path, base, include_patterns)
+        && !hits_exclude_globs(path, base, exclude_patterns)
+}
+
+/// 目录遍历时是否跳过该目录名（内置忽略名单 + 调用方自带名单）。
+pub(super) fn is_skippable_dir_name(name: &str, ignore_dirs: &[String]) -> bool {
+    is_ignored_entry_name(name) || ignore_dirs.iter().any(|ignored| ignored == name)
 }
 
 /// 检查扩展名是否属于二进制/压缩文件（不应作文本读取）
@@ -771,5 +992,79 @@ mod tests {
         // 写改工具成功落盘后刷新为新版本 v3 → 紧接着的下一条编辑不误报
         record_file_read_on_ctx(&ctx, path, "v3").await;
         assert!(ensure_fresh_read_on_ctx(&ctx, path, "v3").await.is_ok());
+    }
+
+    // ============ 搜索过滤：空规则语义（回归护栏）============
+    //
+    // 背景：`!matches_any_glob(空)` 曾把"没有排除规则"算成"排除所有文件"，
+    // 导致 FindSymbol / FindReferences / CodeSearch / SearchRepo 四个工具
+    // 在不传 exclude 时一律返回"未找到"（自 2026-05-05 起，持续四个半月）。
+
+    fn path_of(s: &str) -> PathBuf {
+        PathBuf::from(s)
+    }
+
+    #[test]
+    fn include_globs_empty_means_no_restriction() {
+        assert!(passes_include_globs(
+            &path_of("proj/src/a.rs"),
+            &path_of("proj"),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn exclude_globs_empty_means_nothing_excluded() {
+        // 空 exclude 必须返回"未命中"；否则取反后会把所有文件排除掉
+        assert!(!hits_exclude_globs(
+            &path_of("proj/src/a.rs"),
+            &path_of("proj"),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn file_filters_pass_without_any_patterns() {
+        // 三个搜索类工具的默认调用形态：只给目录，不给 include / exclude / type
+        let base = path_of("proj");
+        for file in [
+            "proj/src/a.rs",
+            "proj/src/a.ts",
+            "proj/src/a.vue",
+            "proj/README.md",
+        ] {
+            assert!(
+                passes_file_filters(&path_of(file), &base, &[], &[], None),
+                "{} 应在无任何规则时通过过滤",
+                file
+            );
+        }
+    }
+
+    #[test]
+    fn file_filters_still_apply_real_rules() {
+        let base = path_of("proj");
+        let rs_only = vec!["**/*.rs".to_string()];
+
+        // include 有规则时照常生效
+        assert!(passes_file_filters(&path_of("proj/src/a.rs"), &base, &rs_only, &[], None));
+        assert!(!passes_file_filters(&path_of("proj/src/a.ts"), &base, &rs_only, &[], None));
+
+        // exclude 有规则时照常生效
+        assert!(!passes_file_filters(&path_of("proj/src/a.rs"), &base, &[], &rs_only, None));
+        assert!(passes_file_filters(&path_of("proj/src/a.ts"), &base, &[], &rs_only, None));
+
+        // type 过滤照常生效
+        assert!(passes_file_filters(&path_of("proj/src/a.rs"), &base, &[], &[], Some("rust")));
+        assert!(!passes_file_filters(&path_of("proj/src/a.ts"), &base, &[], &[], Some("rust")));
+    }
+
+    #[test]
+    fn skippable_dir_covers_builtin_and_custom() {
+        let custom = vec!["vendor".to_string()];
+        assert!(is_skippable_dir_name("node_modules", &custom));
+        assert!(is_skippable_dir_name("target", &custom));
+        assert!(is_skippable_dir_name("vendor", &custom));
+        assert!(!is_skippable_dir_name("src", &custom));
     }
 }

@@ -8,8 +8,9 @@ use crate::core::tools::framework;
 use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{
-    is_ignored_entry_name, is_locked_file_error, is_search_skipped_extension,
-    read_text_preserve_encoding, record_file_read,
+    display_path, input_patterns, input_string_list, input_usize, is_locked_file_error,
+    is_search_skipped_extension, is_skippable_dir_name, passes_file_filters,
+    read_text_preserve_encoding, record_file_read, search_path_rank,
 };
 use super::workspace::{get_workspace, resolve_exec_path, sandbox_missing_hint};
 
@@ -61,53 +62,6 @@ struct ReferenceCandidate {
 }
 
 
-fn input_usize(input: &serde_json::Value, key: &str) -> Option<usize> {
-    let value = input.get(key)?;
-    if let Some(value) = value.as_u64() {
-        return Some(value as usize);
-    }
-    value.as_str().and_then(|value| value.trim().parse().ok())
-}
-
-fn input_string_list(input: &serde_json::Value, key: &str) -> Vec<String> {
-    if let Some(raw) = input[key].as_str() {
-        return raw
-            .split(|ch| ch == ',' || ch == ' ')
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
-            .map(str::to_string)
-            .collect();
-    }
-
-    input[key]
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.as_str())
-                .map(str::trim)
-                .filter(|part| !part.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn split_glob_patterns(glob: &str) -> Vec<String> {
-    glob.split(|ch| ch == ',' || ch == ' ')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-fn input_patterns(input: &serde_json::Value, key: &str) -> Vec<String> {
-    input[key]
-        .as_str()
-        .map(split_glob_patterns)
-        .unwrap_or_default()
-}
-
 fn parse_kind(kind: Option<&str>) -> SymbolKind {
     match kind.unwrap_or("any").to_lowercase().as_str() {
         "function" => SymbolKind::Function,
@@ -132,15 +86,6 @@ fn kind_label(kind: SymbolKind) -> &'static str {
 
 fn kind_matches(actual: SymbolKind, expected: SymbolKind) -> bool {
     expected == SymbolKind::Any || actual == expected
-}
-
-fn display_path(path: &Path) -> String {
-    let display = std::env::current_dir()
-        .ok()
-        .and_then(|cwd| path.strip_prefix(cwd).ok().map(PathBuf::from))
-        .unwrap_or_else(|| path.to_path_buf());
-
-    display.to_string_lossy().replace('\\', "/")
 }
 
 fn resolve_dir(dir: &str, workspace: Option<&Path>) -> PathBuf {
@@ -230,7 +175,7 @@ fn collect_files_with_options(dir: &Path, ignore_dirs: &[String], files: &mut Ve
     for entry in entries.flatten() {
         let path = entry.path();
         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
-        if is_ignored_entry_name(&file_name) || ignore_dirs.iter().any(|ignored| ignored == file_name.as_ref()) {
+        if is_skippable_dir_name(&file_name, ignore_dirs) {
             continue;
         }
 
@@ -247,99 +192,6 @@ fn collect_files_with_options(dir: &Path, ignore_dirs: &[String], files: &mut Ve
     }
 }
 
-fn glob_to_regex(pattern: &str) -> Option<regex::Regex> {
-    let mut out = String::from("^");
-    for ch in pattern.replace('\\', "/").chars() {
-        match ch {
-            '*' => out.push_str(".*"),
-            '?' => out.push('.'),
-            '/' => out.push('/'),
-            ch if ".+()^$|[]{}\\".contains(ch) => {
-                out.push('\\');
-                out.push(ch);
-            }
-            ch => out.push(ch),
-        }
-    }
-    out.push('$');
-    regex::Regex::new(&out).ok()
-}
-
-fn glob_matches(pattern: &str, path: &Path) -> bool {
-    let normalized = path.to_string_lossy().replace('\\', "/");
-    let file_name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_default();
-    glob_to_regex(pattern)
-        .map(|re| re.is_match(&normalized) || (!pattern.contains('/') && re.is_match(&file_name)))
-        .unwrap_or(false)
-}
-
-fn matches_any_glob(path: &Path, base: &Path, patterns: &[String]) -> bool {
-    if patterns.is_empty() {
-        return true;
-    }
-    let relative = path.strip_prefix(base).unwrap_or(path);
-    patterns.iter().any(|pattern| glob_matches(pattern, relative))
-}
-
-fn type_extensions(file_type: &str) -> Vec<&'static str> {
-    match file_type.to_lowercase().as_str() {
-        "ts" | "typescript" => vec!["ts", "tsx"],
-        "js" | "javascript" => vec!["js", "jsx", "mjs", "cjs"],
-        "rs" | "rust" => vec!["rs"],
-        "vue" => vec!["vue"],
-        "py" | "python" => vec!["py"],
-        "md" | "markdown" => vec!["md", "mdx"],
-        "json" => vec!["json"],
-        _ => Vec::new(),
-    }
-}
-
-fn matches_file_type(path: &Path, file_type: Option<&str>) -> bool {
-    let Some(file_type) = file_type else {
-        return true;
-    };
-    let extensions = type_extensions(file_type);
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| {
-            let ext = ext.to_lowercase();
-            if extensions.is_empty() {
-                ext == file_type.to_lowercase()
-            } else {
-                extensions.iter().any(|candidate| *candidate == ext)
-            }
-        })
-        .unwrap_or(false)
-}
-
-fn path_contains_component(path: &Path, component: &str) -> bool {
-    path.components().any(|part| part.as_os_str() == component)
-}
-
-fn is_code_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| {
-            matches!(
-                ext.to_lowercase().as_str(),
-                "rs" | "ts" | "tsx" | "js" | "jsx" | "vue" | "py" | "go" | "java" | "c" | "h"
-                    | "cpp" | "hpp" | "cs" | "php" | "rb" | "html" | "css" | "scss"
-            )
-        })
-        .unwrap_or(false)
-}
-
-fn symbol_path_rank(path: &Path) -> (usize, usize, String) {
-    (
-        if path_contains_component(path, "src") { 0 } else { 1 },
-        if is_code_file(path) { 0 } else { 1 },
-        display_path(path),
-    )
-}
-
 struct SymbolSearchOptions<'a> {
     include_patterns: &'a [String],
     exclude_patterns: &'a [String],
@@ -347,10 +199,15 @@ struct SymbolSearchOptions<'a> {
     file_type: Option<&'a str>,
 }
 
-fn matches_symbol_filters(path: &Path, base: &Path, options: &SymbolSearchOptions<'_>) -> bool {
-    matches_file_type(path, options.file_type)
-        && matches_any_glob(path, base, options.include_patterns)
-        && !matches_any_glob(path, base, options.exclude_patterns)
+/// 把工具选项摊平成 common 的过滤入口（include / exclude 的空集合语义见 common.rs）。
+fn passes_options(path: &Path, base: &Path, options: &SymbolSearchOptions<'_>) -> bool {
+    passes_file_filters(
+        path,
+        base,
+        options.include_patterns,
+        options.exclude_patterns,
+        options.file_type,
+    )
 }
 
 fn classify_reference(path: &Path, line: &str, symbol: &str) -> Option<ReferenceKind> {
@@ -392,8 +249,8 @@ fn find_reference_candidates(
     } else {
         collect_files_with_options(dir, options.ignore_dirs, &mut files);
     }
-    files.retain(|path| matches_symbol_filters(path, dir, options));
-    files.sort_by_key(|path| symbol_path_rank(path));
+    files.retain(|path| passes_options(path, dir, options));
+    files.sort_by_key(|path| search_path_rank(path));
 
     let mut candidates = Vec::new();
     for path in files {
@@ -435,8 +292,8 @@ fn find_symbol_candidates(
     } else {
         collect_files_with_options(dir, options.ignore_dirs, &mut files);
     }
-    files.retain(|path| matches_symbol_filters(path, dir, options));
-    files.sort_by_key(|path| symbol_path_rank(path));
+    files.retain(|path| passes_options(path, dir, options));
+    files.sort_by_key(|path| search_path_rank(path));
 
     let mut candidates = Vec::new();
     for path in files {
@@ -532,6 +389,13 @@ pub async fn find_references(
     }
 
     let search_dir = resolve_dir(dir, ws.as_deref());
+    // 目录不存在就明确报错：静默返回"未找到"会把"路径写错"伪装成"符号不存在"
+    if !search_dir.exists() {
+        return framework::ToolCallResult::error(format!(
+            "FindReferences 错误: 搜索目录不存在 —— {}",
+            search_dir.display()
+        ));
+    }
     let include_patterns = input_patterns(input, "include");
     let exclude_patterns = input_patterns(input, "exclude");
     let ignore_dirs = input_string_list(input, "ignore_dirs");
@@ -581,6 +445,13 @@ pub async fn find_symbol(
     }
 
     let search_dir = resolve_dir(dir, ws.as_deref());
+    // 同上：目录不存在时显式报错，避免与"符号确实不存在"混淆
+    if !search_dir.exists() {
+        return framework::ToolCallResult::error(format!(
+            "FindSymbol 错误: 搜索目录不存在 —— {}",
+            search_dir.display()
+        ));
+    }
     let include_patterns = input_patterns(input, "include");
     let exclude_patterns = input_patterns(input, "exclude");
     let ignore_dirs = input_string_list(input, "ignore_dirs");
@@ -628,6 +499,13 @@ pub async fn code_search(
     }
 
     let search_dir = resolve_dir(dir, ws.as_deref());
+    // 同上：目录不存在时显式报错，避免与"确实没有匹配代码"混淆
+    if !search_dir.exists() {
+        return framework::ToolCallResult::error(format!(
+            "CodeSearch 错误: 搜索目录不存在 —— {}",
+            search_dir.display()
+        ));
+    }
     let mut include_patterns = input_patterns(input, "include");
     let exclude_patterns = input_patterns(input, "exclude");
     let ignore_dirs = input_string_list(input, "ignore_dirs");
@@ -648,8 +526,8 @@ pub async fn code_search(
     } else {
         collect_files_with_options(&search_dir, options.ignore_dirs, &mut files);
     }
-    files.retain(|path| matches_symbol_filters(path, &search_dir, &options));
-    files.sort_by_key(|path| symbol_path_rank(path));
+    files.retain(|path| passes_options(path, &search_dir, &options));
+    files.sort_by_key(|path| search_path_rank(path));
 
     let symbol_candidates = find_symbol_candidates(
         &search_dir,
@@ -813,5 +691,66 @@ mod tests {
             classify_reference(path, "import { loadSession } from './session'", "loadSession"),
             Some(ReferenceKind::ImportExport)
         );
+    }
+
+    /// 端到端回归护栏：不打 include / exclude 规则时，必须能在真实目录里找到符号定义。
+    ///
+    /// 旧实现把"空 exclude"算成"排除所有文件"，文件列表被清空，
+    /// 于是这个最普通的调用形态必然返回空——FindSymbol 等四个工具就是这样集体失效的。
+    #[test]
+    fn finds_symbol_without_any_patterns() {
+        let dir = std::env::temp_dir().join(format!("jarvis_symbol_it_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("src").join("search.rs"),
+            "pub fn search_in_dir(dir: &Path) -> String {\n    String::new()\n}\n",
+        )
+        .unwrap();
+
+        let options = SymbolSearchOptions {
+            include_patterns: &[],
+            exclude_patterns: &[],
+            ignore_dirs: &[],
+            file_type: None,
+        };
+        let candidates =
+            find_symbol_candidates(&dir, "search_in_dir", SymbolKind::Any, 50, &options);
+
+        assert!(
+            !candidates.is_empty(),
+            "无 include/exclude 时应能找到 search_in_dir，实际返回空（空规则语义回归）"
+        );
+        assert!(candidates[0].path.ends_with("search.rs"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 同一场景下的引用查找：定义与调用两处都应被找到。
+    #[test]
+    fn finds_references_without_any_patterns() {
+        let dir = std::env::temp_dir().join(format!("jarvis_ref_it_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("src").join("caller.rs"),
+            "use crate::search_in_dir;\n\npub fn run() {\n    let _ = search_in_dir();\n}\n",
+        )
+        .unwrap();
+
+        let options = SymbolSearchOptions {
+            include_patterns: &[],
+            exclude_patterns: &[],
+            ignore_dirs: &[],
+            file_type: None,
+        };
+        let candidates = find_reference_candidates(&dir, "search_in_dir", 50, &options);
+
+        assert!(
+            !candidates.is_empty(),
+            "无 include/exclude 时应能找到 search_in_dir 的引用，实际返回空"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

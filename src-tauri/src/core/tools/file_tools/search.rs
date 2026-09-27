@@ -16,7 +16,8 @@ use crate::core::tools::framework;
 use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{
-    is_ignored_entry_name, is_search_skipped_extension, read_text_preserve_encoding,
+    display_path, input_patterns, input_string_list, input_usize, is_search_skipped_extension,
+    is_skippable_dir_name, passes_file_filters, read_text_preserve_encoding, search_path_rank,
 };
 use super::workspace::get_workspace;
 
@@ -24,172 +25,11 @@ const SEARCH_DEFAULT_LIMIT: usize = 50;
 const SEARCH_MAX_LIMIT: usize = 500;
 const SEARCH_MAX_CONTEXT_LINES: usize = 10;
 
-fn input_usize(input: &serde_json::Value, key: &str) -> Option<usize> {
-    let value = input.get(key)?;
-    if let Some(value) = value.as_u64() {
-        return Some(value as usize);
-    }
-    value.as_str().and_then(|value| value.trim().parse().ok())
-}
-
-fn input_string_list(input: &serde_json::Value, key: &str) -> Vec<String> {
-    if let Some(raw) = input[key].as_str() {
-        return raw
-            .split(|ch| ch == ',' || ch == ' ')
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
-            .map(str::to_string)
-            .collect();
-    }
-
-    input[key]
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.as_str())
-                .map(str::trim)
-                .filter(|part| !part.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn split_glob_patterns(glob: &str) -> Vec<String> {
-    glob.split(|ch| ch == ',' || ch == ' ')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-fn input_patterns(input: &serde_json::Value, key: &str) -> Vec<String> {
-    input[key]
-        .as_str()
-        .map(split_glob_patterns)
-        .unwrap_or_default()
-}
-
-fn display_path(path: &Path) -> String {
-    let display = std::env::current_dir()
-        .ok()
-        .and_then(|cwd| path.strip_prefix(cwd).ok().map(PathBuf::from))
-        .unwrap_or_else(|| path.to_path_buf());
-
-    display.to_string_lossy().replace('\\', "/")
-}
-
-fn path_contains_component(path: &Path, component: &str) -> bool {
-    path.components().any(|part| part.as_os_str() == component)
-}
-
-fn is_code_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| {
-            matches!(
-                ext.to_lowercase().as_str(),
-                "rs" | "ts" | "tsx" | "js" | "jsx" | "vue" | "py" | "go" | "java" | "c" | "h"
-                    | "cpp" | "hpp" | "cs" | "php" | "rb" | "html" | "css" | "scss"
-            )
-        })
-        .unwrap_or(false)
-}
-
-fn code_search_rank(path: &Path) -> (usize, usize, String) {
-    (
-        if path_contains_component(path, "src") { 0 } else { 1 },
-        if is_code_file(path) { 0 } else { 1 },
-        display_path(path),
-    )
-}
-
 fn should_skip_dir(path: &Path, ignore_dirs: &[String]) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .map(|name| is_ignored_entry_name(name) || ignore_dirs.iter().any(|ignored| ignored == name))
+        .map(|name| is_skippable_dir_name(name, ignore_dirs))
         .unwrap_or(false)
-}
-
-fn glob_to_regex(pattern: &str) -> Option<regex::Regex> {
-    let mut out = String::from("^");
-    for ch in pattern.replace('\\', "/").chars() {
-        match ch {
-            '*' => out.push_str(".*"),
-            '?' => out.push('.'),
-            '/' => out.push('/'),
-            ch if ".+()^$|[]{}\\".contains(ch) => {
-                out.push('\\');
-                out.push(ch);
-            }
-            ch => out.push(ch),
-        }
-    }
-    out.push('$');
-    regex::Regex::new(&out).ok()
-}
-
-fn glob_matches(pattern: &str, path: &Path) -> bool {
-    let normalized = path.to_string_lossy().replace('\\', "/");
-    let file_name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_default();
-    glob_to_regex(pattern)
-        .map(|re| re.is_match(&normalized) || (!pattern.contains('/') && re.is_match(&file_name)))
-        .unwrap_or(false)
-}
-
-fn matches_any_glob(path: &Path, base: &Path, patterns: &[String]) -> bool {
-    if patterns.is_empty() {
-        return true;
-    }
-    let relative = path.strip_prefix(base).unwrap_or(path);
-    patterns.iter().any(|pattern| glob_matches(pattern, relative))
-}
-
-fn type_extensions(file_type: &str) -> Vec<&'static str> {
-    match file_type.to_lowercase().as_str() {
-        "ts" | "typescript" => vec!["ts", "tsx"],
-        "js" | "javascript" => vec!["js", "jsx", "mjs", "cjs"],
-        "rs" | "rust" => vec!["rs"],
-        "vue" => vec!["vue"],
-        "py" | "python" => vec!["py"],
-        "md" | "markdown" => vec!["md", "mdx"],
-        "json" => vec!["json"],
-        _ => Vec::new(),
-    }
-}
-
-fn matches_file_type(path: &Path, file_type: Option<&str>) -> bool {
-    let Some(file_type) = file_type else {
-        return true;
-    };
-    let extensions = type_extensions(file_type);
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| {
-            let ext = ext.to_lowercase();
-            if extensions.is_empty() {
-                ext == file_type.to_lowercase()
-            } else {
-                extensions.iter().any(|candidate| *candidate == ext)
-            }
-        })
-        .unwrap_or(false)
-}
-
-fn matches_filters(
-    path: &Path,
-    base: &Path,
-    include_patterns: &[String],
-    exclude_patterns: &[String],
-    file_type: Option<&str>,
-) -> bool {
-    matches_file_type(path, file_type)
-        && matches_any_glob(path, base, include_patterns)
-        && !matches_any_glob(path, base, exclude_patterns)
 }
 
 fn line_matches(
@@ -271,6 +111,13 @@ pub async fn search_repo(
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
             .join(path)
     };
+    // 目录不存在就明确报错：静默返回"未找到"会把"路径写错"伪装成"内容不存在"
+    if !search_dir.exists() {
+        return framework::ToolCallResult::error(format!(
+            "SearchRepo 错误: 搜索目录不存在 —— {}",
+            search_dir.display()
+        ));
+    }
 
     let limit = input_usize(input, "limit")
         .unwrap_or(SEARCH_DEFAULT_LIMIT)
@@ -340,7 +187,7 @@ pub fn search_in_dir(
     };
 
     let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
-    paths.sort_by_key(|path| code_search_rank(path));
+    paths.sort_by_key(|path| search_path_rank(path));
 
     for path in paths {
         if path.is_dir() {
@@ -355,7 +202,7 @@ pub fn search_in_dir(
                 }
             }
             let base = dir;
-            if !matches_filters(
+            if !passes_file_filters(
                 &path,
                 base,
                 options.include_patterns,
