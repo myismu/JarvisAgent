@@ -36,4 +36,3 @@ pub use types::{
     traits,
 };
 pub use config::data_paths;
-pub use state::events;

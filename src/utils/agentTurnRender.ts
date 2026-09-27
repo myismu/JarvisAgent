@@ -6,8 +6,10 @@ import type { AgentExecutionLog, AgentToolCallView } from "../types";
  * 这里**只保留活的那一半**：流式与历史两条路径现在都由 Vue 组件渲染
  * （`components/chat/AgentTurn.vue` 消费 `buildDeveloperTimeline`），
  * 曾经的「HTML 字符串渲染」实现（`renderAgentTurnSnapshot` / `renderExecutionPanel` /
- * `extractInterruptNotice` 等一整套，由 `utils/historyRender.ts::renderStoredHistory` 调用）
- * 已随死代码清理删除——它没有调用方，历史消息早已改走组件路径。
+ * `extractInterruptNotice` 等一整套，由当时的 `utils/historyRender.ts::renderStoredHistory`
+ * 调用）已随死代码清理删除——它没有调用方，历史消息早已改走组件路径。
+ * 注意：`utils/historyRender.ts` 这个文件**本身也已不存在**，此处提及仅为记录来龙去脉，
+ * 不要再去按这个路径找代码。
  */
 
 export const PSEUDO_TOOL_CALL_RE = /(?:<tool_call>\s*)?<function=[\s\S]*$/;
