@@ -9,7 +9,7 @@
 //!
 //! | 阶段 | 函数 | 职责 |
 //! |---|---|---|
-//! | 1 初始化 | `setup()` | 校验会话占用、加载配置、创建取消令牌、意图分类、组装 PipelineState |
+//! | 1 初始化 | `setup()` | 校验会话占用与沙箱目录、加载配置、创建取消令牌、复杂任务判定、组装 PipelineState |
 //! | 2 循环前准备 | `pre_loop()` | 崩溃恢复、注入用户消息、创建 run 记录、决定是否深度思考 |
 //! | 3 主循环 | `run_main_loop()` | 调 LLM → 流式解析 → 执行工具 → 结果回写，直到 LLM 不再调工具 |
 //! | 4 收尾 | `finalize()` | 检查点快照、保存会话、自动起名、记忆超预算时后台整理、组装 JarvisResult |
@@ -18,14 +18,20 @@
 //!
 //! 这里曾规划过一个独立的第 2 阶段 `validate()`（DANGEROUS 弹权限确认 / UNCLEAR 返回澄清），
 //! 它**从未落地**——`run_pipeline_inner()` 是从阶段 1 直接进阶段 2 的。后续演化为：
-//! - 意图分类留在 `setup()` 内（见其文档注释第 4 步）；
+//! - 意图分类**整体取消**（含曾短暂存在的"规则 → 上下文 → LLM 兜底"三层分类），
+//!   `setup()` 内只剩复杂任务布尔检测；
 //! - 权限确认**下移到工具执行期逐次审批**：`request_permission()` 由主循环的工具调用处
 //!   与 `shell_tools::execution` 直接调用，受 `approval_mode`（`request_approval` /
 //!   `auto_approve`）控制，不再有"跑之前先整体预检一遍"的环节。
 //!
 //! ### 阶段 3 主循环每轮内部子步骤
-//! 取消检查 → 循环次数确认 → 后台通知注入 → 上下文压缩 → 历史快照 → 构建请求
+//! 取消检查 → 循环次数确认 → 上下文压缩 → 历史快照 → 构建请求
 //! → API 调用（含调度器事件 select）→ 流式处理 → 工具执行 → 反思审查 → 回写历史 → 下一轮
+//!
+//! 注：这里**没有**「后台通知注入」——后台任务结果不再进会话上下文，
+//! 改走前端 `bg-task-done` / `background-failed` 事件提醒，模型需要时用
+//! `CheckBackgroundCommand` 自查。这样也消除了 background 注入对
+//! 「消息级 user/assistant 交替」的破坏。
 //!
 //! ### 配套辅助函数（各阶段共用）
 //! - 历史准备：`prepare_history_snapshot()` / `prepare_history_snapshot_from_messages()` / `fix_broken_tool_call_pairs()`
@@ -683,16 +689,18 @@ impl PipelineState {
         );
     }
 
-    /// 阶段 1：初始化 — 会话与配置准备 + 意图分类
+    /// 阶段 1：初始化 — 会话与配置准备 + 复杂任务判定
     ///
     /// 相当于“启动前检查 + 路由决策”，产出可执行的 PipelineState。核心逻辑：
     /// 1. 校验：会话是否正忙（已有任务在跑则拒绝）、是否配置了 API Key
-    /// 2. 创建本次执行的取消令牌（用户随时可停止），并记录请求工作区
-    /// 3. 读取双轴配置：受众（developer/user）× 工作模式（chat/plan/edit），据此生成系统提示词
-    /// 4. 意图分类：非 chat 模式走规则快速判定（复杂任务 → TASK_PLAN 强制切 Plan 模式）；
-    ///    chat 模式走三层分类（规则 → 上下文 → LLM 兜底）
+    /// 2. 创建本次执行的取消令牌（用户随时可停止），并记录请求工作区；校验沙箱目录仍存在
+    /// 3. 读取会话级双轴配置：受众（developer/user）× 工作模式（edit/plan），
+    ///    据此组装系统提示词并**按会话缓存**（会话内字节恒定，保证 prompt cache 命中）；
+    ///    同时固化本会话的工具开关快照与能力清单
+    /// 4. 复杂任务判定（已无意图分类，仅此一项布尔检测）：`is_complex_task` 正则命中
+    ///    → 产出 TASK_PLAN，首轮强制切 Plan 并广播 agent-work-mode-changed；
+    ///    未命中 → 直接进入项目操作流程
     /// 5. 输入框自然语言审批：短消息 + 上轮刚提交方案 → 直接更新方案状态（同意/驳回）
-    /// 6. TASK_PLAN 首轮强制切换到 plan 模式并向前端广播 agent-work-mode-changed
     async fn setup(
         session_id: String,
         msg: String,
@@ -822,25 +830,19 @@ impl PipelineState {
             &tool_filter,
         );
 
-        // 步骤 7：判断是否携带图片 —— 意图分类时提示 LLM 结合截图理解
-        let has_images = image_base64_list
-            .as_ref()
-            .map(|l| !l.is_empty())
-            .unwrap_or(false);
-        let msg_for_intent = if has_images {
-            format!(
-                "{}\n\n[用户同时附带了图片/截图；截图可能是报错、UI 异常、终端输出、运行结果或代码问题反馈，请结合文本判断是否属于项目操作，不要仅因有图判为 CHAT。]",
-                msg
-            )
-        } else {
-            msg.clone()
-        };
+        // 步骤 7：复杂任务判定，一律直接对用户原文做正则直判。
+        //
+        // 此处原有一段 `has_images` / `msg_for_intent`：带图片时给输入拼一句
+        // "不要仅因有图判为 CHAT"的说明。那句是给**已取消的意图分类**用的，取消后
+        // 拼接结果只喂给下面的正则与前缀判断，而追加文字命中不了 COMPLEX_TASK_KEYWORDS
+        // 的任何一条，属惰性代码，已随死代码清理删除。
+        //
         // "用户已同意方案/要求修改方案"是审批续跑，不算复杂任务
-        let is_approval_continuation = msg_for_intent.starts_with("用户已同意方案")
-            || msg_for_intent.starts_with("用户要求修改方案");
+        let is_approval_continuation = msg.starts_with("用户已同意方案")
+            || msg.starts_with("用户要求修改方案");
         // 复杂任务判定：正则直判（命中 → 走方案审批）；"用户已同意方案/要求修改"属于审批续跑
         let detected_intent = {
-            let is_complex = crate::core::complex_task::is_complex_task(&msg_for_intent);
+            let is_complex = crate::core::complex_task::is_complex_task(&msg);
             if is_complex && !is_approval_continuation {
                 println!("[JARVIS] {} 模式：规则检测到复杂任务，首轮直接进入方案审批流程", current_work_mode);
                 "TASK_PLAN".to_string()
@@ -889,7 +891,7 @@ impl PipelineState {
                         .collect();
 
                     if !pending_plans.is_empty() {
-                        // 区分同意/拒绝：意图分类器对两类都返回 ACTION，需靠消息文本判断
+                        // 区分同意/拒绝：短回复没有稳定的结构特征，只能靠文本里的否定词判断
                         let msg_trim = msg.trim();
                         let is_reject = msg_trim.starts_with("不")
                             || msg_trim == "拒绝"
@@ -1033,7 +1035,7 @@ impl PipelineState {
                     "sessionId": state.sid,
                     "from": current_work_mode,
                     "to": "plan",
-                    "reason": "意图分类检测到复杂任务，自动切换到计划模式",
+                    "reason": "检测到复杂任务，自动切换到计划模式",
                 }),
             );
         }
@@ -1239,7 +1241,7 @@ impl PipelineState {
     /// 阶段 3：主循环 — Agent Loop 心脏（调 LLM → 流式解析 → 工具执行 → 循环）
     ///
     /// 每轮循环的执行顺序：
-    /// 1. 取消检查 / 循环次数确认（满 30 轮弹窗询问）/ 后台通知注入 / 上下文压缩检查
+    /// 1. 取消检查 / 循环次数确认（满 30 轮弹窗询问）/ 上下文压缩检查
     /// 2. 准备历史快照（过滤内部消息、修复残缺工具配对、恢复图片、注入动态上下文）
     /// 3. build_llm_request 按模型格式构建请求（OpenAI 出口时翻译协议）
     /// 4. 调 API：有活跃调度器时与调度器事件做 select（异步并行），否则直接等待（120s 超时 + 重试）
@@ -4168,7 +4170,7 @@ async fn run_pipeline_inner(
     session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
     config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
 ) -> Result<JarvisResult, AgentError> {
-    // ── 阶段 1：初始化（会话与配置准备 + 意图分类）──
+    // ── 阶段 1：初始化（会话与配置准备 + 复杂任务判定）──
     let mut state = PipelineState::setup(
         session_id,
         msg,

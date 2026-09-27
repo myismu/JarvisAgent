@@ -33,7 +33,7 @@ uuid = { version = "1.23.1", features = ["v4"] }
 base64 = "0.22"
 chrono = "0.4.44"
 tokio-util = "0.7"                               # 提供 CancellationToken 用于取消机制
-regex = "1"                                         # 用于意图分类规则匹配
+regex = "1"                                         # 用于复杂任务检测与 Shell 安全检查的规则匹配
 thiserror = "1"                                     # 用于派生 Error trait
 async-trait = "0.1"                                   # 用于 async trait 抽象
 similar = "2"                                          # 用于生成文本 diff

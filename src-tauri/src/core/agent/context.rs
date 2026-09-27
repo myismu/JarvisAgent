@@ -11,7 +11,8 @@
 //! 因为 system 每轮必发且是缓存前缀，放那里既权威，又不会在每条用户消息里重复一遍。
 //!
 //! ## 关键导出
-//! - `build_dynamic_context()`: 根据意图类型组装动态上下文字符串
+//! - `build_dynamic_context()`: 组装动态上下文字符串（模式规则 + 意图标签 + 能力边界
+//!   + 项目结构 + 用户画像）
 //! - `inject_user_message()`: 将用户消息（含动态上下文块、图片）写入会话历史，
 //!   返回 `(消息索引, 落库分配的 message_id)`
 //! - `restore_image_data()`: 恢复历史消息中的图片数据（本轮保留 base64，往轮折叠为摘要）
@@ -48,11 +49,6 @@ pub fn build_dynamic_context(
     work_mode: &str,
     snapshot_seq: u64,
 ) -> String {
-    // 闲聊：不需要任何运行时上下文
-    if intent == "CHAT" {
-        return String::new();
-    }
-
     let mode = if work_mode == "plan" { "plan" } else { "edit" };
     let mut ctx = format!(
         "<context_snapshot seq=\"{}\" mode=\"{}\" />\n本回合工作模式：{}\n",
@@ -67,15 +63,13 @@ pub fn build_dynamic_context(
     ctx.push_str(&capabilities.context_block());
     ctx.push('\n');
 
-    // 项目结构：只有真正绑定了工作区才生成；QUESTION 保持轻量，不生成
-    if intent != "QUESTION" {
-        if let Some(ref ws_path) = workspace {
-            let repo_map = generate_repo_map(ws_path, "", 0, 2);
-            if !repo_map.trim().is_empty() {
-                ctx.push_str("<project_index>\n");
-                ctx.push_str(&repo_map);
-                ctx.push_str("\n</project_index>\n");
-            }
+    // 项目结构：只有真正绑定了工作区才生成
+    if let Some(ref ws_path) = workspace {
+        let repo_map = generate_repo_map(ws_path, "", 0, 2);
+        if !repo_map.trim().is_empty() {
+            ctx.push_str("<project_index>\n");
+            ctx.push_str(&repo_map);
+            ctx.push_str("\n</project_index>\n");
         }
     }
 
@@ -301,7 +295,9 @@ mod tests {
         let images: Option<Vec<String>> = None;
         let mut sid = Some("test-session".to_string());
 
-        // CHAT 意图下 ctx 为空串：不应产生 Context 块，保持单文本形态
+        // 空 ctx 不应产生 Context 块，保持单文本形态。
+        // 防御性用例：`build_dynamic_context` 现在恒返回非空（至少含快照与模式规则），
+        // 但本函数的契约不依赖调用方一定传非空。
         inject_user_message(&mut session, "你好", &images, "", &mut sid);
         match &session.messages[0] {
             Message::User { content } => match content {
