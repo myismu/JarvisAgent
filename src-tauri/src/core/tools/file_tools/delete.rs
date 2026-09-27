@@ -31,7 +31,16 @@ use super::workspace::{get_workspace, record_patch_to_snapshot, resolve_exec_pat
 ///
 /// 时间戳前缀是为了同一个名字被多次删除时不互相覆盖。
 fn trash_dest(session_id: &str, filename: &str, ts: u64) -> PathBuf {
-    trash::trash_root(session_id).join(format!("{}_{}", ts, filename))
+    trash_dest_in(&trash::trash_root(session_id), filename, ts)
+}
+
+/// 回收站内目标路径的参数化版本：根目录由调用方给出。
+///
+/// 拆出来是为了让"时间戳前缀怎么拼"这条纯逻辑能独立测试 —— `trash_dest`
+/// 要经 `trash_root` 读全局数据目录单例，测试直接调它会 panic（未初始化）
+/// 或依赖别处先 `set` 全局（详见 `trash::trash_root_in` 的说明）。
+fn trash_dest_in(trash_root: &Path, filename: &str, ts: u64) -> PathBuf {
+    trash_root.join(format!("{}_{}", ts, filename))
 }
 
 /// 把底层 IO 错误翻译成模型能用的话。
@@ -163,14 +172,12 @@ mod tests {
         assert!(!msg.contains("立即停止重试"), "占用类不该一律叫停：{msg}");
     }
 
-    /// 回收站目标路径的形态：带时间戳前缀、落在应用数据目录下。
+    /// 回收站目标路径的形态：落在给定回收站根之下、文件名带时间戳前缀。
     #[test]
-    fn trash_dest_carries_timestamp_and_lives_under_the_trash_root() {
-        let dest = trash_dest("sess-1", "a.txt", 1789944415);
-        assert!(dest.starts_with(trash::trash_root("sess-1")));
-        assert_eq!(
-            dest.file_name().unwrap().to_string_lossy(),
-            "1789944415_a.txt"
-        );
+    fn trash_dest_carries_timestamp_under_the_given_root() {
+        // 参数化：不读全局数据目录，本测试独立可跑
+        let root = Path::new("C:/data/trash/sess-1");
+        let dest = trash_dest_in(root, "a.txt", 1789944415);
+        assert_eq!(dest, root.join("1789944415_a.txt"));
     }
 }

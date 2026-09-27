@@ -32,7 +32,17 @@ use std::path::{Path, PathBuf};
 ///
 /// 放到应用数据目录后，目标与回收站永不互相嵌套，上述两个问题一起消失。
 pub fn trash_root(session_id: &str) -> PathBuf {
-    crate::get_agent_home().join("trash").join(session_id)
+    trash_root_in(crate::get_agent_home(), session_id)
+}
+
+/// 回收站根目录的参数化版本：给定数据根，拼出 `trash/<会话 id>/`。
+///
+/// 拆出来是因为 `trash_root` 依赖全局数据目录单例（`AGENT_HOME_DIR`）：
+/// 测试直接调它会 panic（未初始化），或迫使测试先 `set` 全局，模块之间
+/// 因此形成"谁先跑谁负责初始化"的隐式依赖（单独跑本模块测试必挂）。
+/// 路径拼接本身是纯逻辑，参数化后可以独立验证。
+fn trash_root_in(data_root: &Path, session_id: &str) -> PathBuf {
+    data_root.join("trash").join(session_id)
 }
 
 /// 把对象移到指定位置。
@@ -71,8 +81,15 @@ pub fn remove_unreferenced(
     session_id: &str,
     referenced: &std::collections::HashSet<String>,
 ) -> usize {
-    let root = trash_root(session_id);
-    let Ok(entries) = std::fs::read_dir(&root) else {
+    remove_unreferenced_in(&trash_root(session_id), referenced)
+}
+
+/// 按引用清理回收站（根目录由调用方给出）。
+///
+/// 与 `remove_unreferenced` 的分工同 [`trash_root_in`]：把"根目录从哪来"
+/// （依赖全局）与"怎么清"（纯逻辑）分开，后者可以直接对着临时目录测。
+fn remove_unreferenced_in(root: &Path, referenced: &std::collections::HashSet<String>) -> usize {
+    let Ok(entries) = std::fs::read_dir(root) else {
         return 0; // 回收站目录不存在 = 没有可清的
     };
     let referenced_names: std::collections::HashSet<&str> = referenced
@@ -171,7 +188,8 @@ mod tests {
     /// 这里是"删早了会让回滚缺本体"的那条判据，必须锁住。
     #[test]
     fn remove_unreferenced_keeps_referenced_entries_only() {
-        let root = trash_root("sess-gc");
+        // 参数化：用临时目录而不是全局数据目录，本测试不再依赖别处的初始化
+        let root = std::env::temp_dir().join(format!("jarvis_trash_gc_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
 
@@ -184,7 +202,7 @@ mod tests {
 
         let referenced: std::collections::HashSet<String> =
             [kept.to_string_lossy().to_string()].into_iter().collect();
-        let removed = remove_unreferenced("sess-gc", &referenced);
+        let removed = remove_unreferenced_in(&root, &referenced);
 
         assert!(kept.exists(), "被引用的条目必须留下（回滚要用）");
         assert!(!stale_file.exists() && !stale_dir.exists(), "没被引用的条目应被清掉");
@@ -195,10 +213,10 @@ mod tests {
     /// 回收站目录不存在时不能报错（没删过东西是常态）
     #[test]
     fn remove_unreferenced_is_noop_without_a_trash_dir() {
-        let removed = remove_unreferenced(
-            "sess-never-deleted-anything",
-            &std::collections::HashSet::new(),
-        );
+        let missing =
+            std::env::temp_dir().join(format!("jarvis_trash_missing_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&missing);
+        let removed = remove_unreferenced_in(&missing, &std::collections::HashSet::new());
         assert_eq!(removed, 0);
     }
 
