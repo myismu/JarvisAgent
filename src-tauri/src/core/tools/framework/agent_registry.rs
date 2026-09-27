@@ -267,6 +267,93 @@ mod tests {
         assert_eq!(types, vec!["implementation", "verification"]);
     }
 
+    /// 护栏：`subagent_type` 的 schema 候选名必须与注册表角色一致。
+    ///
+    /// 由来：角色从 5 个收敛到 2 个之后，`CreateTask` / `UpdateTask` 的 schema 文案
+    /// 仍列着 `general` / `explore` / `review` 三个已删除的名字。而
+    /// `normalize_agent_role()` 只做 trim + 取缺省、**没有旧名映射** —— 模型照 schema
+    /// 填写就会拿到 `Unknown subagent_type`。
+    ///
+    /// 这类错误编译通过、测试通过、程序不崩，只表现为模型侧"调用失败后换个写法重试"，
+    /// 与 `pages` 假参数属同一类缺陷。让机器守着，别靠人记得。
+    #[test]
+    fn subagent_type_schema_lists_exactly_the_registered_roles() {
+        let mut expected = AgentRegistry::global().available_types();
+        expected.sort();
+
+        for tool in ["CreateTask", "UpdateTask"] {
+            let def = ToolRegistry::global()
+                .get(tool)
+                .unwrap_or_else(|| panic!("{} 必须已注册", tool));
+
+            let mut listed = Vec::new();
+            collect_subagent_type_lists(&def.schema, &mut listed);
+            listed.sort();
+            listed.dedup();
+
+            assert_eq!(
+                listed, expected,
+                "{} 的 subagent_type 文案列出的角色 {:?} 与注册表 {:?} 不一致",
+                tool, listed, expected
+            );
+        }
+    }
+
+    /// 从 schema 任意深度收集 `subagent_type` 描述里括号内的角色候选名单。
+    ///
+    /// `CreateTask` 有两处 `subagent_type`（顶层 + 批量项内），批量项那个不带候选名单，
+    /// 只有"省略=implementation"，由下面的 token 形态过滤排除。
+    fn collect_subagent_type_lists(node: &serde_json::Value, out: &mut Vec<String>) {
+        match node {
+            serde_json::Value::Object(map) => {
+                for (key, value) in map {
+                    if key == "subagent_type" {
+                        if let Some(desc) = value.get("description").and_then(|d| d.as_str()) {
+                            for group in parenthesized_groups(desc) {
+                                out.extend(
+                                    group
+                                        .split('/')
+                                        .map(str::trim)
+                                        // 只认"角色名"形态：全小写 ASCII 或下划线。
+                                        // 括号里还可能是"省略=implementation"这类说明，要排除。
+                                        .filter(|t| {
+                                            !t.is_empty()
+                                                && t.chars()
+                                                    .all(|c| c.is_ascii_lowercase() || c == '_')
+                                        })
+                                        .map(str::to_string),
+                                );
+                            }
+                        }
+                    }
+                    collect_subagent_type_lists(value, out);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    collect_subagent_type_lists(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 取出文本里所有中英文括号内的内容。
+    fn parenthesized_groups(text: &str) -> Vec<&str> {
+        let mut out = Vec::new();
+        let mut rest = text;
+        while let Some(start) = rest.find(['（', '(']) {
+            let open = rest[start..].chars().next().expect("find 给出的位置必有字符");
+            let after = &rest[start + open.len_utf8()..];
+            let Some(end) = after.find(['）', ')']) else {
+                break;
+            };
+            out.push(&after[..end]);
+            rest = &after[end..];
+        }
+        out
+    }
+
     /// **安全默认**：省略一切时（不传 `subagent_type`、不传 `read_only`）拿到的是只读子代理。
     ///
     /// 这条是删掉 general 之后刻意保住的语义 —— implementation 的 `read_only_default`

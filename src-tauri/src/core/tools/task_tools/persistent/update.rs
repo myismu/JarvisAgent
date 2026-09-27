@@ -28,7 +28,7 @@ pub(super) fn tool_def() -> ToolDef {
                     // 没说"没依赖时别填"—— 模型会给无依赖任务也标上依赖，白白压掉并行度。
                     "add_blocked_by": {"type": "array", "items": {"type": "integer"}, "description": "Prerequisite task IDs to add. Do not set this when the task has no dependencies — the scheduler runs independent tasks in parallel automatically."},
                     "add_blocks": {"type": "array", "items": {"type": "integer"}, "description": "Downstream task IDs to mark as blocked by this task."},
-                    "subagent_type": {"type": "string", "description": "Subagent profile that should execute this task (general/explore/review/verification/implementation). Omit = implementation."}
+                    "subagent_type": {"type": "string", "description": "Subagent profile that should execute this task (implementation/verification). Omit = implementation."}
                 },
                 "required": ["task_id"]
             }

@@ -21,7 +21,7 @@ pub(super) fn tool_def() -> ToolDef {
                     "activeForm": {"type": "string", "description": "进行时描述，如\"修复登录Bug中\"。"},
                     "metadata": {"type": "object", "description": "可选元数据。"},
                     "owner": {"type": "string", "description": "负责人名称。"},
-                    "subagent_type": {"type": "string", "description": "可选：执行该任务的子代理类型（general/explore/review/verification/implementation）。省略=implementation。RunSubagentsSequentially 调度时按此派子代理。"},
+                    "subagent_type": {"type": "string", "description": "可选：执行该任务的子代理类型（implementation/verification）。省略=implementation。RunSubagentsSequentially 调度时按此派子代理。"},
                     "tasks": {"type": "array", "items": {"type": "object", "properties": {
                         "subject": {"type": "string", "description": "任务标题（必填）。"},
                         "description": {"type": "string", "description": "任务详情，说明要做什么。"},
