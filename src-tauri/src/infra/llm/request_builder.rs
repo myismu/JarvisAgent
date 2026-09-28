@@ -71,37 +71,40 @@ pub fn build_request_body(input: LlmRequestInput) -> (Value, ApiFormat) {
     // 传了直接 400（改造前这个能力标志全仓没人读）。
     let sampling_ok = registry::supports_sampling_params(&input.model_id);
 
-    let mut request_body = AnthropicRequest {
-        model: input.model_id.clone(),
-        max_tokens: input.max_tokens,
-        system: input.system_prompt.clone(),
-        messages: input.messages,
-        tools: input.tools,
-        stream: true,
-        thinking: None,
-        temperature: if sampling_ok { input.temperature } else { None },
-        top_p: if sampling_ok { input.top_p } else { None },
-        top_k: if sampling_ok { input.top_k } else { None },
-        output_config: None,
-    };
-
     // 思考参数走注册表统一决策（`registry::plan_anthropic_thinking`）。原先这里
     // 写死 `{type: enabled|disabled, budget_tokens: 1024}`，而该形态在 Opus 4.7
     // 及之后已被移除（Fable 5 系连 disabled 都拒），直连必然 400。
     let thinking_plan = registry::plan_anthropic_thinking(&input.model_id, input.should_think, None);
     let thinking_active = thinking_plan.thinking_active();
-    request_body.thinking = thinking_plan.thinking;
-    request_body.output_config = thinking_plan.output_config;
 
+    // 输出预算兜底：思考模型需要思考空间，上限过小（≤1024）时抬到 4096。
+    //
     // 用计划里的实际状态判断，而不是 `input.should_think`：`adaptive_only` 类模型
     // 无法关闭，调用方传 false 时思考依然是开着的。
     //
-    // 注意：这里改的是 `request_body` 的字段，**不影响 `input.max_tokens`**。
-    // OpenAI 出口下面用的是 `input.max_tokens`（未被抬过的原值），与 Anthropic
-    // 出口的结果不一致。此差异为原有行为，本次重构原样保留，另案处理。
-    if thinking_active && request_body.max_tokens <= 1024 {
-        request_body.max_tokens = 4096;
-    }
+    // **提到变量、两条出口共用**。早先的写法是在 Anthropic 结构体上就地改字段
+    // （`request_body.max_tokens = 4096`），而 OpenAI 出口读的是那个从未被改过的
+    // 原值 —— 于是同一个模型、同一份配置，只因出口协议不同就发出不同的 max_tokens
+    // （Anthropic 拿 4096，OpenAI 拿原值）。兜底的理由与协议无关，两条分支应当同源。
+    let effective_max_tokens = if thinking_active && input.max_tokens <= 1024 {
+        4096
+    } else {
+        input.max_tokens
+    };
+
+    let mut request_body = AnthropicRequest {
+        model: input.model_id.clone(),
+        max_tokens: effective_max_tokens,
+        system: input.system_prompt.clone(),
+        messages: input.messages,
+        tools: input.tools,
+        stream: true,
+        thinking: thinking_plan.thinking,
+        output_config: thinking_plan.output_config,
+        temperature: if sampling_ok { input.temperature } else { None },
+        top_p: if sampling_ok { input.top_p } else { None },
+        top_k: if sampling_ok { input.top_k } else { None },
+    };
 
     // 出网前把内部 Context 块降级为普通 Text（协议不认 "context" 类型）
     adapters::materialize_context_blocks_for_wire(&mut request_body.messages);
@@ -122,7 +125,7 @@ pub fn build_request_body(input: LlmRequestInput) -> (Value, ApiFormat) {
         // OpenAI 出口：翻译消息/工具，并按模型注册表注入该模型的思考参数
         let mut openai_req = OpenAIRequest {
             model: input.model_id.clone(),
-            max_tokens: Some(input.max_tokens),
+            max_tokens: Some(effective_max_tokens),
             messages: openai_msgs,
             tools: if openai_tools.is_empty() {
                 None
@@ -255,5 +258,43 @@ mod tests {
         assert!(body.get("temperature").is_some(), "temperature 应保留");
         assert!(body.get("top_p").is_some(), "top_p 应保留");
         assert!(body.get("top_k").is_some(), "top_k 应保留");
+    }
+
+    /// 思考模型输出预算过小时，**两条出口都要**抬到 4096。
+    ///
+    /// 回归用例：早先的写法在 Anthropic 结构体上就地改字段（`request_body.max_tokens
+    /// = 4096`），而 OpenAI 出口读的是那个从未被改过的原值 —— 同一个模型、同一份配置，
+    /// 只因出口协议不同就发出不同的 `max_tokens`。
+    #[test]
+    fn thinking_models_get_the_output_floor_on_both_exports() {
+        // deepseek-v4-pro 在注册表里 `thinkingForced: true`，思考无法关闭
+        let mut input = input_with("deepseek-v4-pro", ApiFormat::Anthropic);
+        input.max_tokens = 512;
+
+        let (anthropic_body, _) = build_request_body(input.clone());
+        assert_eq!(
+            anthropic_body["max_tokens"],
+            serde_json::json!(4096),
+            "前提确认：思考开着且预算 ≤1024 时应抬到 4096"
+        );
+
+        input.api_format = ApiFormat::OpenAI;
+        let (openai_body, _) = build_request_body(input);
+        assert_eq!(
+            openai_body["max_tokens"],
+            serde_json::json!(4096),
+            "OpenAI 出口应与 Anthropic 同源，一并抬到 4096"
+        );
+    }
+
+    /// 预算充足时不抬 —— 兜底只在过小时生效。
+    #[test]
+    fn output_budget_is_untouched_when_large_enough() {
+        let mut input = input_with("deepseek-v4-pro", ApiFormat::Anthropic);
+        input.max_tokens = 8192;
+
+        let (body, _) = build_request_body(input);
+
+        assert_eq!(body["max_tokens"], serde_json::json!(8192));
     }
 }
