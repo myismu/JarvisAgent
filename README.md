@@ -149,9 +149,8 @@ JarvisAgent/
 │   │   │   │                         #   + adapters + registry（模型能力注册表）
 │   │   │   │                         #   + stream_parse（SSE 帧解析唯一实现）+ token_count
 │   │   │   │                         #   + context_budget（压缩判据）+ usage + usage_memory
-│   │   │   ├── providers/            #   anthropic.rs / openai.rs（双协议请求体构建）
 │   │   │   ├── state/                #   state.rs（SessionManager/WorkspaceState）
-│   │   │   ├── types/                #   models.rs + traits.rs（LlmProvider）+ error.rs + constants.rs
+│   │   │   ├── types/                #   models.rs（数据模型）+ error.rs + constants.rs
 │   │   │   ├── background.rs         #   后台任务管理 + Tauri 事件推送
 │   │   │   └── debug_logger.rs       #   调试日志
 │   │   ├── core/                     # ── 业务层：Agent / 工具 / 编排 / 回滚 / 会话 ──

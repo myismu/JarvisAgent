@@ -4,12 +4,11 @@
 //! 组织并重导出所有子模块和关键类型。
 //!
 //! ## 子模块
-//! - `types`: 数据模型、错误类型、trait 定义、常量
+//! - `types`: 数据模型、错误类型、常量
 //! - `config`: 配置管理、数据路径
-//! - `state`: 全局状态管理、事件常量
+//! - `state`: 全局状态管理
 //! - `db`: SQLite 数据库连接
 //! - `llm`: LLM 客户端、适配器、注册表
-//! - `providers`: LLM 提供商具体实现
 //!
 //! ## 关键重导出
 //! - `SessionManager`, `SessionContext`, `WorkspaceState`, `SnapshotRegistry`
@@ -21,7 +20,6 @@ pub mod config;
 pub mod state;
 pub mod db;
 pub mod llm;
-pub mod providers;
 
 pub mod background;
 pub mod debug_logger;
@@ -33,6 +31,5 @@ pub mod shell_command;
 pub use types::{
     constants, error,
     models::{self, Content, ContentBlock, Message, SessionMemory, Task, TaskStatus},
-    traits,
 };
 pub use config::data_paths;
