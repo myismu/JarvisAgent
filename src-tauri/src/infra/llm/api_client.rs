@@ -161,12 +161,16 @@ fn describe_network_error(err: &reqwest::Error) -> String {
     let joined = chain.join(" → ");
 
     // 连接建立阶段失败：原因通常是"对端未启动/不可达"，重试期间很常见
-    let lower = joined.to_ascii_lowercase();
-    if lower.contains("tcp connect error")
-        || lower.contains("connection refused")
-        || lower.contains("deadline has elapsed")
-    {
-        return format!("无法连接到服务（服务可能未启动或不可达）");
+    // 判定用 reqwest 自带的语义方法，**不匹配错误文案**：文案会随 reqwest 版本、
+    // 底层 IO 库、操作系统而变。实测踩过的坑——同样是一次连接超时，reqwest 自己的
+    // 定时器报 `deadline has elapsed`，操作系统报 `operation timed out`；只匹配前者
+    // 就会漏掉后者，退回原始文案（正是本函数要消灭的东西）。
+    //
+    // `is_connect()` 覆盖连接建立阶段的全部失败：连接被拒、TCP 建连失败、以及建连
+    // 超时（无论哪种措辞）。它不会误收读取阶段的超时——那时连接已经建立，说
+    // 「连不上服务」是错的。
+    if err.is_connect() {
+        return "无法连接到服务（服务可能未启动或不可达）".to_string();
     }
     format!("网络错误: {joined}")
 }
