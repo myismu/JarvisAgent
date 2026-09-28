@@ -9,12 +9,14 @@
 //! - `stream_parse`: SSE 帧协议解析（帧 → 统一 `ProtocolEvent` 事件，协议知识唯一住址）
 //! - `usage_memory`: 端点级 usage 能力自动记忆（`data/global/model_caps.json`）
 //! - `context_budget`: 上下文压缩判据（主 Agent 与子代理共用的唯一口径）
+//! - `request_builder`: 请求体构建（输入显式化为 `LlmRequestInput`，纯函数）
 
 pub mod adapters;
 pub mod api_client;
 pub mod api_format;
 pub mod context_budget;
 pub mod registry;
+pub mod request_builder;
 pub mod stream_parse;
 pub mod token_count;
 pub mod usage;

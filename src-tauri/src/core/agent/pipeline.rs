@@ -3671,128 +3671,41 @@ impl PipelineState {
 
     /// 构建 LLM API 请求体（内部统一按 Anthropic 结构建模）
     ///
-    /// - 总是流式请求（stream: true），写入系统提示词、工具 schema、思考配置、温度等
-    /// - OpenAI 格式模型：经 adapters 翻译消息/工具，并按模型注册表注入各家“思考参数”
-    /// - 返回值第二项 ApiFormat 交给 stream.rs 与 UsageObservation，协议差异在模型接入层内部消化
+    /// 本函数只负责**把 pipeline 状态组装成 `LlmRequestInput`**；协议适配逻辑在
+    /// `infra::llm::request_builder::build_request_body`——那属于基建层职责，
+    /// 留在编排层会让 core 知道协议细节。
+    ///
+    /// - 返回值第二项 ApiFormat 交给 stream.rs 与 UsageObservation
     fn build_llm_request(
         &self,
         history_snapshot: Vec<Message>,
     ) -> (serde_json::Value, crate::infra::llm::api_format::ApiFormat) {
-        // 1. 取系统提示词与工具定义，并更新上下文监控快照
-        // system 在 setup 阶段只组装一次并保持字节恒定，整个会话内不再随 work_mode 变化。
-        let system_prompt = self.system_prompt.clone();
+        // 1. 取工具定义，并更新上下文监控快照。
+        // 更新快照是有副作用的动作，刻意留在 pipeline、不进 `LlmRequestInput`：
+        // 构建函数不该有副作用。
         let tools = self.current_tools();
         self.update_context_snapshot(&history_snapshot, &tools);
 
-        let max_tokens = self.resolve_max_tokens();
-
-        // 采样参数：注册表声明不接受的模型一律剥离。Anthropic 自 Opus 4.7 起、
-        // 以及 Opus 5 / Sonnet 5 / Fable 5 全系已废弃 temperature/top_p/top_k，
-        // 传了直接 400（改造前这个能力标志全仓没人读）。
-        let sampling_ok = crate::infra::llm::registry::supports_sampling_params(&self.model_id);
-        let mut request_body = AnthropicRequest {
-            model: self.model_id.clone(),
-            max_tokens,
-            system: system_prompt.clone(),
+        // 2. 组装输入。这里只放「已经查明的事实」；模型相关的决策（采样参数是否
+        // 真正下发、思考参数怎么写、思考是否真的开着）由 request_builder 查注册表
+        // 自行完成，不在编排层预判。
+        // system 在 setup 阶段只组装一次并保持字节恒定，整个会话内不再随 work_mode 变化。
+        let input = crate::infra::llm::request_builder::LlmRequestInput {
+            model_id: self.model_id.clone(),
+            base_url: self.cfg.base_url.clone(),
+            api_format: self.api_format,
+            system_prompt: self.system_prompt.clone(),
             messages: history_snapshot,
             tools,
-            stream: true,
-            thinking: None,
-            temperature: if sampling_ok { self.cfg.temperature } else { None },
-            top_p: if sampling_ok { self.cfg.top_p } else { None },
-            top_k: if sampling_ok { self.cfg.top_k } else { None },
-            output_config: None,
+            max_tokens: self.resolve_max_tokens(),
+            should_think: self.should_think,
+            temperature: self.cfg.temperature,
+            top_p: self.cfg.top_p,
+            top_k: self.cfg.top_k,
         };
 
-        // 思考参数走注册表统一决策（`registry::plan_anthropic_thinking`）。原先这里
-        // 写死 `{type: enabled|disabled, budget_tokens: 1024}`，而该形态在 Opus 4.7
-        // 及之后已被移除（Fable 5 系连 disabled 都拒），直连必然 400。
-        let thinking_plan = crate::infra::llm::registry::plan_anthropic_thinking(
-            &self.model_id,
-            self.should_think,
-            None,
-        );
-        let thinking_active = thinking_plan.thinking_active();
-        request_body.thinking = thinking_plan.thinking;
-        request_body.output_config = thinking_plan.output_config;
-        // 用计划里的实际状态判断，而不是 `self.should_think`：`adaptive_only` 类模型
-        // 无法关闭，调用方传 false 时思考依然是开着的。
-        if thinking_active && request_body.max_tokens <= 1024 {
-            request_body.max_tokens = 4096;
-        }
-
-        // 出网前把内部 Context 块降级为普通 Text（协议不认 "context" 类型）
-        crate::infra::llm::adapters::materialize_context_blocks_for_wire(
-            &mut request_body.messages,
-        );
-
-        if self.api_format.is_openai() {
-            use crate::infra::llm::adapters::{
-                should_backfill_deepseek_reasoning_content,
-                translate_messages_to_openai_with_reasoning_backfill, translate_tools_to_openai,
-            };
-            let backfill_reasoning = should_backfill_deepseek_reasoning_content(
-                &self.model_id,
-                &self.cfg.base_url,
-                self.should_think,
-            );
-            let openai_msgs = translate_messages_to_openai_with_reasoning_backfill(
-                &request_body.system,
-                &request_body.messages,
-                backfill_reasoning,
-            );
-            let openai_tools = translate_tools_to_openai(&request_body.tools);
-            // 2. OpenAI 出口：翻译消息/工具，并按模型注册表注入该模型的思考参数
-            let mut openai_req = OpenAIRequest {
-                model: self.model_id.clone(),
-                max_tokens: Some(max_tokens),
-                messages: openai_msgs,
-                tools: if openai_tools.is_empty() {
-                    None
-                } else {
-                    Some(openai_tools)
-                },
-                stream: true,
-                stream_options: Some(StreamOptions {
-                    include_usage: true,
-                }),
-                reasoning_effort: None,
-                thinking: None,
-                thinking_budget: None,
-                enable_thinking: None,
-                extra_body: None,
-                parameters: None,
-                temperature: request_body.temperature,
-                top_p: request_body.top_p,
-            };
-
-            crate::infra::llm::registry::apply_thinking_for_model(
-                &mut openai_req, &self.model_id, self.should_think,
-            );
-            (serde_json::to_value(openai_req).unwrap(), crate::infra::llm::api_format::ApiFormat::OpenAI)
-        } else {
-            // Anthropic 出口的 thinking 块策略按服务商分两种：
-            // - 真 Anthropic：无 signature 的 thinking 回传会被判 400 → 必须剥掉；
-            // - DeepSeek 这类端点：思考模式下**要求**把 thinking 原样带回，剥掉会报
-            //   `content[].thinking in the thinking mode must be passed back to the API`
-            //   （与 OpenAI 出口的 reasoning_content 回填是同一件事的两面）。
-            if crate::infra::llm::adapters::should_strip_unsigned_thinking(
-                &self.model_id,
-                &self.cfg.base_url,
-                self.should_think,
-            ) {
-                let messages = crate::infra::llm::adapters::strip_unsigned_thinking_for_anthropic(
-                    &request_body.messages,
-                );
-                request_body.messages = messages;
-            } else {
-                println!(
-                    "[JARVIS] Anthropic 出口：保留无签名 thinking 块（{} 要求回传思考链）",
-                    self.model_id
-                );
-            }
-            (serde_json::to_value(request_body).unwrap(), crate::infra::llm::api_format::ApiFormat::Anthropic)
-        }
+        // 3. 交给基建层构建（纯函数，无 IO、不改状态）
+        crate::infra::llm::request_builder::build_request_body(input)
     }
 
     /// 调用 LLM API（含取消检查）
