@@ -137,7 +137,7 @@ Rust command / Agent pipeline
 | 修改权限逻辑 | `src-tauri/src/core/tools/framework/permission.rs` 与 `command/permission.rs` |
 | 新增 Tauri 命令 | `src-tauri/src/command/` + `src-tauri/src/lib.rs` |
 | 新增模型能力 | `src-tauri/model_registry.json` + `infra/llm/registry.rs` |
-| 新增 Provider/API 格式 | `infra/types/traits.rs`、`infra/llm/api_format.rs`、`infra/providers/` |
+| 新增 Provider/API 格式 | `infra/llm/api_format.rs`、`infra/llm/request_builder.rs`、`model_registry.json` |
 | 修改会话持久化 | `src-tauri/src/core/session/mod.rs` |
 | 修改前端事件处理 | `src/composables/useAgentEvents.ts` |
 | 修改会话 UI 状态 | `src/stores/session.ts`、`src/stores/chat.ts` |
@@ -152,7 +152,7 @@ Rust command / Agent pipeline
 - 新增错误类型优先使用 `thiserror`，避免裸字符串错误。
 - 新增前端事件类型时，应先在 `src/types/index.ts` 定义，再在 `useAgentEvents.ts` 处理。
 - 新增后端命令时，必须注册到 `src-tauri/src/lib.rs` 的 `invoke_handler`。
-- 新增 API 格式逻辑时，优先扩展 `LlmProvider` 抽象，不要在业务逻辑中添加零散格式判断。
+- 新增 API 格式逻辑时，优先扩展 `ApiFormat` 与 `infra/llm/request_builder.rs`，不要在业务逻辑中添加零散格式判断。
 - 前端状态应优先进入 Pinia store，组件只负责展示与轻量交互。
 - 涉及文件写入、Shell 执行、回滚、合并等能力时，应经过权限与安全检查。
 - 工具定义统一通过 `define_tools!` / `tool_def!` 宏注册到 `framework/registry.rs`，保持工具集稳定以利于 prompt cache。

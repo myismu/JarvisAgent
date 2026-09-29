@@ -67,19 +67,15 @@ infra/
 │   └── schema.rs                # 19 张表 schema 定义 + 增量迁移
 ├── llm/
 │   ├── api_format.rs            # ApiFormat 枚举（认证头、版本头）
-│   ├── api_client.rs            # HTTP 客户端、指数退避、429 Retry-After
+│   ├── api_client.rs            # HTTP 客户端、固定阶梯重试、429 Retry-After
+│   ├── request_builder.rs       # 双协议请求体构建（内部按 Anthropic 建模，OpenAI 出口翻译）
 │   ├── adapters.rs              # Anthropic ↔ OpenAI 消息格式转换
 │   ├── registry.rs              # 读取 model_registry.json 的模型能力与命令入口
 │   └── token_count.rs           # tiktoken BPE Token 计数
-├── providers/
-│   ├── anthropic.rs             # Anthropic Messages API 实现
-│   └── openai.rs                # OpenAI Chat Completions 兼容实现
 ├── state/
-│   ├── state.rs                 # SessionManager、SessionContext、WorkspaceState、SnapshotRegistry
-│   └── events.rs                # Tauri 事件名常量（domain:action 规范）
+│   └── state.rs                 # SessionManager、SessionContext、WorkspaceState、SnapshotRegistry
 ├── types/
 │   ├── models.rs                # 消息、工具、会话、计划文档等共享数据模型
-│   ├── traits.rs                # LlmProvider 等核心 trait 抽象
 │   ├── error.rs                 # AgentError、ApiError、DbError 等分层错误类型
 │   └── constants.rs             # 全局常量
 ├── background.rs                # 后台任务状态与输出管理（bg-task-done 事件推送）
@@ -148,26 +144,23 @@ command/
 1. 在 `src/command/` 的对应文件中实现 `#[tauri::command]` 函数。
 2. 在 `src/lib.rs` 的 `tauri::generate_handler![...]` 中注册。
 
-## LLM 抽象：`infra/llm/` 与 `infra/providers/`
+## LLM 抽象：`infra/llm/`
 
 ```text
 infra/llm/
 ├── api_format.rs                # ApiFormat：OpenAI / Anthropic 协议差异
 ├── api_client.rs                # HTTP 客户端、重试、流式请求
+├── request_builder.rs           # 双协议请求体构建（build_request_body）
 ├── adapters.rs                  # 消息格式转换适配器
 ├── registry.rs                  # 读取 model_registry.json，提供模型能力查询命令
 └── token_count.rs               # tiktoken BPE 精确 Token 计数
-
-infra/providers/
-├── anthropic.rs                 # Anthropic Messages API 实现
-└── openai.rs                    # OpenAI Chat Completions 兼容实现
 ```
 
 设计约束：
 
-- API 协议差异应沉到 `LlmProvider`（`infra/types/traits.rs`）、`ApiFormat` 和具体 `infra/providers/`，避免在业务流程里散落字符串判断。
+- API 协议差异应沉到 `ApiFormat` 与 `request_builder.rs`，避免在业务流程里散落字符串判断。
 - 新模型能力优先更新 `model_registry.json`，再检查 `infra/llm/registry.rs` 的读取逻辑。
-- 修改流式能力、thinking 参数、工具调用格式时先看 `infra/types/traits.rs`。
+- 修改流式能力、thinking 参数、工具调用格式时先看 `infra/llm/api_format.rs` 与 `request_builder.rs`。
 
 ## 工具系统：`core/tools/`
 
@@ -350,7 +343,7 @@ cargo clippy                     # Rust lint 检查
 | 文件读写/搜索/目录工具异常 | `core/tools/file_tools/` |
 | 权限弹窗或危险命令判断异常 | `core/tools/framework/permission.rs`、`core/tools/shell_tools/security.rs`、`command/permission.rs` |
 | 模型参数、thinking、vision 能力异常 | `model_registry.json`、`infra/llm/registry.rs`、`infra/llm/api_format.rs` |
-| OpenAI/Anthropic 协议兼容问题 | `infra/types/traits.rs`、`infra/providers/openai.rs`、`infra/providers/anthropic.rs` |
+| OpenAI/Anthropic 协议兼容问题 | `infra/llm/request_builder.rs`、`infra/llm/api_format.rs`、`infra/llm/adapters.rs` |
 | Token 计数不准确 | `infra/llm/token_count.rs` |
 | 会话、历史、工作区恢复异常 | `core/session/`、`command/session.rs`、`infra/config/data_paths.rs` |
 | 数据库 schema / 迁移异常 | `infra/db/schema.rs`、`infra/db/mod.rs` |
@@ -366,7 +359,7 @@ cargo clippy                     # Rust lint 检查
 
 - 不要删除已有中文注释。
 - 新增后端错误类型优先使用 `thiserror`，不要随意返回裸字符串错误。
-- 新 API 格式应扩展 `LlmProvider`/`ApiFormat`，不要在业务代码中新增零散格式判断。
+- 新 API 格式应扩展 `ApiFormat` 与 `infra/llm/request_builder.rs`，不要在业务代码中新增零散格式判断。
 - 新 Tauri 命令需要同时实现命令函数并在 `src/lib.rs` 注册。
 - 工具定义统一通过 `define_tools!` / `tool_def!` 宏注册，保证工具 schema 稳定以利于 prompt cache。
 - 修改工具、Shell、文件写入、回滚、合并等能力时，必须考虑权限审批、快照记录和用户数据安全。
