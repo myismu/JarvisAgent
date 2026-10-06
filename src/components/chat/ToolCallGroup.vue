@@ -152,7 +152,7 @@ const technicalOpen = (group: ToolCallGroup) => group.status === "error";
 
 .agent-tool-title {
   color: var(--text-main);
-  font-weight: 650;
+  font-weight: var(--fw-semibold);
 }
 
 .agent-tool-summary {

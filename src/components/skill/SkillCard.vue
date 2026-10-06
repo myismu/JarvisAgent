@@ -118,7 +118,7 @@ const handleToggle = async (event: Event) => {
 }
 
 .skill-name {
-  font-size: 14px;
+  font-size: 0.9333rem;
   font-weight: 600;
   color: var(--text-main);
   margin: 0 0 4px 0;
@@ -128,7 +128,7 @@ const handleToggle = async (event: Event) => {
 }
 
 .skill-description {
-  font-size: 12px;
+  font-size: 0.8rem;
   color: var(--text-muted);
   margin: 0;
   display: -webkit-box;
@@ -184,7 +184,7 @@ const handleToggle = async (event: Event) => {
 }
 
 .skill-size {
-  font-size: 11px;
+  font-size: 0.7333rem;
   color: var(--text-muted);
 }
 
@@ -192,7 +192,7 @@ const handleToggle = async (event: Event) => {
   background: transparent;
   border: 1px solid var(--glass-border);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 0.7333rem;
   padding: 4px 10px;
   border-radius: var(--radius-sm);
   cursor: pointer;

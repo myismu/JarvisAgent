@@ -94,6 +94,35 @@ interface UiPreferences {
   imageQuality: number;
 }
 
+/**
+ * 界面字号挡位（px）。**这里是唯一出处** —— 设置面板的按钮与 normalizePrefs 的吸附共用它。
+ *
+ * 基准 15 必须是「标准」档：`defaults.fontSize` 是 15，MessageRail 的缩放换算也写的是
+ * `fontSize / 15`（注释原文：基准 15px）。此前挡位写成 12/14/16/18，把真正的基准挤到了
+ * 缝里 —— 严格相等的高亮判定（`fontSize === p.value`）因此一个都不亮，而 setFontSize
+ * 只有这四个按钮一个入口，用户点过一次就再也回不到默认值。
+ */
+export const FONT_SIZE_PRESETS = [13, 15, 17, 19] as const;
+
+/**
+ * 代码字号挡位。**单位是「默认界面字号(15px)下的等效 px」，不是绝对 px** ——
+ * CSS 侧的 --code-font-size 会把它换算成相对 1rem 的量，于是代码块随界面字号等比缩放。
+ *
+ * 为什么不直接存比值：后端 `UiPreferences.code_font_size` 定型为 i32
+ * （src-tauri/src/command/app_config.rs）。改存 0.9 会让 serde 反序列化失败，
+ * get_ui_preferences 整个报错，loadFromBackend 落进 catch 后**用户全部偏好被重置**。
+ * 沿用整数挡位则老配置无需迁移：13 的含义不变，只是从绝对 px 变成相对量。
+ */
+export const CODE_FONT_SIZE_PRESETS = [11, 13, 15, 17] as const;
+
+/** 把任意数值吸附到最近的挡位。挡位是唯一写入口，但库里可能存着旧版本写的任意值。 */
+function snapToNearestPreset(value: number, presets: readonly number[]): number {
+  return presets.reduce(
+    (best, p) => (Math.abs(p - value) < Math.abs(best - value) ? p : best),
+    presets[0],
+  );
+}
+
 const defaults: UiPreferences = {
   fontSize: 15,
   codeFontSize: 13,
@@ -146,6 +175,15 @@ function normalizePrefs(
   result.agentPanelPosition = result.agentPanelPosition === "left" ? "left" : "right";
   result.locale = normalizeLocale(result.locale);
   normalizeImageCompress(result);
+  // 字号吸附：挡位是唯一写入口，但库里可能存着旧版本写的、不在任何挡位上的值。
+  // 不吸附就会出现「四个按钮一个都不高亮、也没有别的入口能改回来」的死角
+  // —— 旧版默认 15 落在旧挡位 12/14/16/18 之外，正是这个状态。
+  // 口径与 normalizeImageCompress 一致：以落库的数值为准，反推出最接近的挡位。
+  result.fontSize = snapToNearestPreset(Number(result.fontSize) || defaults.fontSize, FONT_SIZE_PRESETS);
+  result.codeFontSize = snapToNearestPreset(
+    Number(result.codeFontSize) || defaults.codeFontSize,
+    CODE_FONT_SIZE_PRESETS,
+  );
   return result;
 }
 
@@ -188,7 +226,9 @@ function applyFontSize(size: number) {
 }
 
 function applyCodeFontSize(size: number) {
-  document.documentElement.style.setProperty("--code-font-size", `${size}px`);
+  // 只写「挡位原始值」，px → 相对 1rem 的换算交给 CSS 的 --code-font-size。
+  // 这样界面字号变化时不需要 JS 重算，也避免两处各写一份换算逻辑。
+  document.documentElement.style.setProperty("--code-font-px", String(size));
 }
 
 function applyCompactMode(compact: boolean) {

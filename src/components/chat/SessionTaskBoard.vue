@@ -162,7 +162,7 @@ onBeforeUnmount(() => {
   color: var(--text-muted);
   cursor: pointer;
   font-size: 0.65rem;
-  font-weight: 850;
+  font-weight: var(--fw-heavy);
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }

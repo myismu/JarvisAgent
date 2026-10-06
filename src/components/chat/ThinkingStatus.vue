@@ -35,7 +35,7 @@ const formattedTime = computed(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: 0.8rem;
   color: var(--accent-blue);
   margin-top: 8px;
 }
@@ -48,7 +48,7 @@ const formattedTime = computed(() => {
   animation-play-state: paused;
 }
 .thinking-paused-label {
-  font-size: 11px;
+  font-size: 0.7333rem;
   opacity: 0.8;
 }
 .thinking-spinner {

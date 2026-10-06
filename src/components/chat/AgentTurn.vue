@@ -348,7 +348,11 @@ function toolStatusLabel(status: string): string {
 /* 参数 / 输出：容器内的内容块，比外层再深一档（tint-strong），同样受透明度控制 */
 .dev-tool-section :deep(.streaming-markdown) {
   font-family: var(--font-mono);
-  font-size: 0.78rem;
+  /* 跟「代码字体大小」而不是正文口径：工具参数/输出本质是代码与日志。
+     同时改写 --md-body-font-size —— 否则容器内的段落仍会走 StreamingMarkdown
+     的正文口径，出现「段落 14.25px + 裸文本 12.8px」两种字号混排。 */
+  font-size: var(--code-font-size);
+  --md-body-font-size: var(--code-font-size);
   line-height: 1.5;
   background: var(--msg-block-tint-strong);
   border: 1px solid var(--glass-border-subtle);
@@ -414,7 +418,10 @@ function toolStatusLabel(status: string): string {
 .dev-log-body {
   padding: 8px 12px;
   font-family: var(--font-mono);
-  font-size: 0.78rem;
+  /* 同 .dev-tool-section：执行日志跟代码字号，
+     并把 markdown 正文口径一起带过来，避免容器内字号混排 */
+  font-size: var(--code-font-size);
+  --md-body-font-size: var(--code-font-size);
   color: var(--text-main);
   max-height: 160px;
   overflow-y: auto;

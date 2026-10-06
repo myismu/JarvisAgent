@@ -521,7 +521,7 @@ const toggleMinimize = () => {
   margin: 0;
   color: var(--text-main);
   font-size: 1rem;
-  font-weight: 720;
+  font-weight: var(--fw-bold);
   line-height: 1.25;
 }
 
@@ -581,7 +581,7 @@ const toggleMinimize = () => {
   margin: 0;
   color: var(--text-main);
   font-size: 1.18rem;
-  font-weight: 760;
+  font-weight: var(--fw-bold);
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -843,7 +843,7 @@ const toggleMinimize = () => {
   margin-bottom: 8px;
   color: var(--text-main);
   font-size: 0.82rem;
-  font-weight: 760;
+  font-weight: var(--fw-bold);
 }
 
 .plan-revision-input {
@@ -899,16 +899,20 @@ const toggleMinimize = () => {
   padding-bottom: 10px;
   color: var(--text-main);
   font-size: 1.32rem;
-  font-weight: 760;
+  font-weight: var(--fw-bold);
   line-height: 1.32;
   border-bottom: 1px solid var(--glass-border-subtle);
 }
 
 .plan-markdown :deep(h2) {
   margin: 22px 0 10px;
-  color: var(--accent-blue);
+  /* 与 StreamingMarkdown 的 .md-h2 保持一致：正文标题不上彩色。
+     注意这里的 :deep() 特异性 (0,2,1) 高于 .md-h2 的 (0,2,0)，
+     计划预览面板实际以这份为准 —— 两边必须同时改，
+     否则会出现"回复里标题是黑的、计划预览里还是蓝的"。 */
+  color: var(--text-main);
   font-size: 1.06rem;
-  font-weight: 740;
+  font-weight: var(--fw-bold);
   line-height: 1.35;
 }
 
@@ -916,14 +920,14 @@ const toggleMinimize = () => {
   margin: 18px 0 8px;
   color: var(--text-main);
   font-size: 0.96rem;
-  font-weight: 720;
+  font-weight: var(--fw-bold);
   line-height: 1.4;
 }
 
 .plan-markdown :deep(p) {
   margin: 9px 0;
   color: var(--text-main);
-  font-size: 0.9rem;
+  font-size: var(--md-body-font-size);
   line-height: 1.72;
 }
 
@@ -936,11 +940,12 @@ const toggleMinimize = () => {
 .plan-markdown :deep(li) {
   margin: 5px 0;
   color: var(--text-main);
+  font-size: var(--md-body-font-size);
   line-height: 1.68;
 }
 
 .plan-markdown :deep(li::marker) {
-  color: var(--accent-blue);
+  color: var(--text-muted);
 }
 
 .plan-markdown :deep(a) {
@@ -983,14 +988,15 @@ const toggleMinimize = () => {
   margin: 12px 0;
   padding: 10px 14px;
   color: var(--text-muted);
-  border-left: 3px solid var(--accent-blue);
+  /* 引用块同样去蓝：与 StreamingMarkdown 的 .md-blockquote 统一成中性描边 + 底色 */
+  border-left: 3px solid var(--glass-border);
   border-radius: 0 var(--radius-md) var(--radius-md) 0;
-  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+  background: var(--glass-bg-light);
 }
 
 .plan-markdown :deep(strong) {
   color: var(--text-main);
-  font-weight: 760;
+  font-weight: var(--fw-bold);
 }
 
 .plan-markdown :deep(table) {
@@ -1009,10 +1015,11 @@ const toggleMinimize = () => {
   text-align: left;
   border-bottom: 1px solid var(--glass-border-subtle);
   color: var(--text-main);
+  font-size: var(--md-body-font-size);
 }
 
 .plan-markdown :deep(th) {
-  font-weight: 730;
+  font-weight: var(--fw-bold);
   background: color-mix(in srgb, var(--bg-panel) 50%, transparent);
 }
 

@@ -59,7 +59,7 @@ import { dismissToast, toasts } from '../../composables/useToast';
   max-width: min(420px, calc(100vw - 32px));
   padding: 8px 14px;
   border-radius: var(--radius-md);
-  font-size: 13px;
+  font-size: 0.8667rem;
   line-height: 1.45;
   color: var(--text-main);
   background: var(--glass-bg-heavy);

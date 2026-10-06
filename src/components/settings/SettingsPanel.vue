@@ -654,7 +654,13 @@ import { ref, watch, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { invoke } from '@tauri-apps/api/core'
 import { useTheme } from '../../composables/useTheme'
-import { usePreferences, type AgentPanelPosition, type ImageCompressTier } from '../../composables/usePreferences'
+import {
+  usePreferences,
+  FONT_SIZE_PRESETS,
+  CODE_FONT_SIZE_PRESETS,
+  type AgentPanelPosition,
+  type ImageCompressTier,
+} from '../../composables/usePreferences'
 import { useWindow } from '../../composables/useWindow'
 import type { AgentUserMode } from '../../types'
 import type { ThinkingDefault } from '../../utils/thinking'
@@ -696,18 +702,24 @@ const fontSize = computed(() => uiPrefs.fontSize)
 const setFontSize = (val: number) => uiPrefs.setFontSize(val)
 const codeFontSize = computed(() => uiPrefs.codeFontSize)
 const setCodeFontSize = (val: number) => uiPrefs.setCodeFontSize(val)
-// 字号是离散偏好而非连续量：四档预设替代滑杆；旧的自定义值不落在档位上时不高亮，点任一档即吸附
+// 字号是离散偏好而非连续量：四档预设替代滑杆。
+// 落库的值一律在 normalizePrefs 里吸附到最近挡位，所以不存在「一个都不高亮」的状态
+// —— 旧版默认 15 落在旧挡位 12/14/16/18 之外，曾长期卡在那个死角：
+// 首屏四档全不亮，而 setFontSize 只有这四个按钮一个入口，点过一次就回不到默认值。
+// 挡位数值一律取自 usePreferences 的唯一出处，这里只负责挂文案。
+// 不能就地另抄一份：按钮与 normalizePrefs 的吸附口径一旦漂移，
+// 就会出现「点了某个挡位、落库后被吸附到另一个挡位」的鬼故事。
 const fontSizePresets = [
-  { value: 12, label: 'settings.general.sizeS' },
-  { value: 14, label: 'settings.general.sizeM' },
-  { value: 16, label: 'settings.general.sizeL' },
-  { value: 18, label: 'settings.general.sizeXL' },
+  { value: FONT_SIZE_PRESETS[0], label: 'settings.general.sizeS' },
+  { value: FONT_SIZE_PRESETS[1], label: 'settings.general.sizeM' },
+  { value: FONT_SIZE_PRESETS[2], label: 'settings.general.sizeL' },
+  { value: FONT_SIZE_PRESETS[3], label: 'settings.general.sizeXL' },
 ]
 const codeFontSizePresets = [
-  { value: 11, label: 'settings.general.sizeS' },
-  { value: 13, label: 'settings.general.sizeM' },
-  { value: 15, label: 'settings.general.sizeL' },
-  { value: 17, label: 'settings.general.sizeXL' },
+  { value: CODE_FONT_SIZE_PRESETS[0], label: 'settings.general.sizeS' },
+  { value: CODE_FONT_SIZE_PRESETS[1], label: 'settings.general.sizeM' },
+  { value: CODE_FONT_SIZE_PRESETS[2], label: 'settings.general.sizeL' },
+  { value: CODE_FONT_SIZE_PRESETS[3], label: 'settings.general.sizeXL' },
 ]
 const defaultExpandThinking = computed(() => uiPrefs.defaultExpandThinking)
 const setDefaultExpandThinking = (val: boolean) => uiPrefs.setDefaultExpandThinking(val)
@@ -1549,7 +1561,7 @@ const save = async () => {
   padding: 10px 14px;
   border-radius: var(--radius-md);
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: 0.9333rem;
   font-weight: 500;
   cursor: pointer;
   transition: all var(--transition-fast);
@@ -1594,7 +1606,7 @@ const save = async () => {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 0.9333rem;
   transition: all var(--transition-fast);
 }
 
@@ -1620,7 +1632,7 @@ const save = async () => {
   gap: 8px;
   transition: all var(--transition-fast);
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 0.8667rem;
 }
 
 .profile-item:hover {
@@ -1754,7 +1766,7 @@ const save = async () => {
 
 .card-header h4 {
   margin: 0;
-  font-size: 15px;
+  font-size: 1rem;
   font-weight: 700;
 }
 
@@ -1768,7 +1780,7 @@ const save = async () => {
 .setting-item:last-child { margin-bottom: 0; }
 
 .setting-item label {
-  font-size: 13px;
+  font-size: 0.8667rem;
   font-weight: 600;
   color: var(--text-main);
 }
@@ -1781,7 +1793,7 @@ const save = async () => {
   border: 1px solid var(--glass-border);
   border-radius: 8px;
   color: var(--text-main);
-  font-size: 13px;
+  font-size: 0.8667rem;
   transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s;
 }
 
@@ -1857,7 +1869,7 @@ const save = async () => {
   border: 1px solid var(--glass-border);
   border-radius: 8px;
   color: var(--text-main);
-  font-size: 13px;
+  font-size: 0.8667rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1898,7 +1910,7 @@ const save = async () => {
   -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   border: 1px solid color-mix(in srgb, var(--text-muted) 20%, transparent);
   border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  box-shadow: 0 8px 24px rgba(10, 10, 10, 0.12);
   overflow: hidden;
   padding: 4px;
   white-space: nowrap;
@@ -1909,7 +1921,7 @@ const save = async () => {
   padding: 8px 12px;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 0.8667rem;
   color: var(--text-main);
   transition: background-color 0.15s;
 }
@@ -1940,7 +1952,7 @@ const save = async () => {
 }
 
 .setting-desc {
-  font-size: 12px;
+  font-size: 0.8rem;
   color: var(--text-muted);
   line-height: 1.5;
 }
@@ -2033,8 +2045,8 @@ const save = async () => {
 }
 
 .font-size-value {
-  font-size: 12px;
-  font-weight: 650;
+  font-size: 0.8rem;
+  font-weight: var(--fw-semibold);
   color: var(--text-main);
   background: var(--glass-bg);
   backdrop-filter: blur(8px);
@@ -2111,7 +2123,7 @@ const save = async () => {
   border: none;
   background: transparent;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 0.8667rem;
   font-weight: 600;
   color: var(--text-muted);
   cursor: pointer;
@@ -2134,7 +2146,7 @@ const save = async () => {
   border: 1px solid var(--glass-border);
   border-radius: 8px;
   color: var(--text-main);
-  font-size: 13px;
+  font-size: 0.8667rem;
   cursor: pointer;
 }
 
@@ -2145,7 +2157,7 @@ const save = async () => {
   border: 1px solid var(--glass-border);
   border-radius: 8px;
   color: var(--accent-red);
-  font-size: 13px;
+  font-size: 0.8667rem;
   font-weight: 600;
   cursor: pointer;
 }
@@ -2158,7 +2170,7 @@ const save = async () => {
   margin-top: 12px;
   padding: 10px 0;
   color: var(--text-main);
-  font-size: 13px;
+  font-size: 0.8667rem;
   font-weight: 600;
   cursor: pointer;
   border-top: 1px dashed var(--glass-border);
@@ -2193,7 +2205,7 @@ const save = async () => {
 }
 
 .sub-item label {
-  font-size: 11px;
+  font-size: 0.7333rem;
   color: var(--text-muted);
 }
 
@@ -2208,14 +2220,14 @@ const save = async () => {
 .badge {
   padding: 2px 8px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: 0.7333rem;
   font-weight: 600;
 }
 
 .badge-ok { background: color-mix(in srgb, var(--accent-green) 10%, transparent); color: var(--accent-green); }
 .badge-think { background: color-mix(in srgb, var(--text-muted) 12%, transparent); color: var(--text-soft); }
 .badge-info { background: color-mix(in srgb, var(--text-main) 10%, transparent); color: var(--text-main); }
-.badge-none { background: rgba(100, 116, 139, 0.1); color: var(--text-muted); }
+.badge-none { background: color-mix(in srgb, var(--text-muted) 10%, transparent); color: var(--text-muted); }
 
 /* ── 模型生命周期徽章 ──
    retired 用红色强调：它是唯一会阻断保存的状态。
@@ -2238,9 +2250,12 @@ const save = async () => {
 body.dark-mode .badge-deprecated { color: #fbbf24; }
 
 .badge-unverifiable {
-  background: rgba(100, 116, 139, 0.08);
+  /* 原为 rgba(100, 116, 139, …) —— 那是 slate-500 的 alpha 写法，带蓝味；
+     上一轮去蓝只搜了 rgba(15,23,42) 与十六进制，漏掉了这种形式。
+     这里改用与相邻徽章同源的 --text-muted（现已中性化），保持「同色系不同浓度」的层级。 */
+  background: color-mix(in srgb, var(--text-muted) 8%, transparent);
   color: var(--text-muted);
-  border: 1px dashed rgba(100, 116, 139, 0.35);
+  border: 1px dashed color-mix(in srgb, var(--text-muted) 35%, transparent);
 }
 
 /* 生命周期提示行：与徽章同色系但更弱，避免和"能力徽章"抢注意力 */
@@ -2260,7 +2275,7 @@ body.dark-mode .model-status-hint.hint-deprecated { color: #fbbf24; }
   background: color-mix(in srgb, var(--accent-red) 8%, transparent);
   border-top: 1px solid color-mix(in srgb, var(--accent-red) 25%, transparent);
   color: var(--accent-red);
-  font-size: 12px;
+  font-size: 0.8rem;
   line-height: 1.6;
 }
 .retired-block-line + .retired-block-line { margin-top: 4px; }
@@ -2291,7 +2306,7 @@ body.dark-mode .model-status-hint.hint-deprecated { color: #fbbf24; }
   border: none;
   padding: 10px 24px;
   border-radius: 8px;
-  font-size: 14px;
+  font-size: 0.9333rem;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;
@@ -2308,7 +2323,7 @@ body.dark-mode .model-status-hint.hint-deprecated { color: #fbbf24; }
 }
 
 .status-msg {
-  font-size: 13px;
+  font-size: 0.8667rem;
   font-weight: 500;
 }
 

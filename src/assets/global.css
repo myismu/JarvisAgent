@@ -9,11 +9,11 @@
   --bg-dark: #f7f7f8;
   --bg-panel: rgba(255, 255, 255, 0.85);
   --bg-sidebar: rgba(247, 247, 248, 0.85);
-  --border-color: rgba(15, 23, 42, 0.1);
+  --border-color: rgba(10, 10, 10, 0.1);
 
-  /* 文本颜色 */
-  --text-main: #0f172a;
-  --text-muted: #64748b;
+  /* 文本颜色（中性灰阶：去掉 slate 蓝味，与暗色主题的 zinc 同族） */
+  --text-main: #0a0a0a;
+  --text-muted: #636363;
   --text-inverse: #ffffff;
 
   /* 交互色 / 强调色：蓝=品牌交互，绿=成功，红=错误，黄=警告 */
@@ -21,7 +21,7 @@
   --accent-blue-hover: #2563eb;
   --accent-green: #10b981;
   --accent-red: #ef4444;
-  --text-soft: #475569;
+  --text-soft: #404040;
   --text-on-danger: #ffffff;
   --surface-strong: rgba(255, 255, 255, 0.94);
   --surface-danger: rgba(220, 38, 38, 0.96);
@@ -31,17 +31,50 @@
   --text-warning: #b45309;
   --border-warning: rgba(180, 83, 9, 0.4);
 
-  /* 字体系统 */
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
-  --code-font-size: 13px;
+  /* 字体系统
+     拉丁在前、中文在后：中文如果不显式声明，就交给 WebView2 的脚本兜底去猜，
+     同一份代码在不同机器上可能一个渲染成微软雅黑、一个渲染成宋体（宋体更细更淡）。
+     DSH 也是显式钉住这几个中文字体，这里与它对齐。
+     等宽栈刻意不抄 Codex 的 `ui-monospace` —— 它在 Windows 上映射到哪个字体不受我们
+     控制；这里用 DSH 那套在 Windows 上已验证的显式列表，实际仍落到 Consolas
+     （装了 JetBrains Mono / Fira Code 才会优先用），与改动前一致。 */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+               "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue",
+               Roboto, Arial, sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", "Fira Code", Consolas,
+               "Liberation Mono", Menlo, Courier, "PingFang SC",
+               "Microsoft YaHei", monospace;
+
+  /* 字重阶梯：只保留静态字体真正具备的档位。
+     全项目原有 130 余处 font-weight ≥600，其中 650 / 720 / 730 / 740 / 750 / 760 /
+     800 / 850 是可变字体（Inter 那类）才有的值。Segoe UI 是静态字重族，浏览器只能按
+     CSS 字重匹配规则就近取整，于是同一个视觉层级在不同元件间会落到不同档位 ——
+     层级塌陷。收敛成 3 档后意图明确，将来换可变字体也不用再动那几百处。 */
+  --fw-semibold: 600;
+  --fw-bold: 700;
+  --fw-heavy: 900;
+  /* 代码字号：挡位存的是「默认界面字号(15px)下的等效 px」，这里换算成相对 1rem 的量。
+     不能继续用绝对 px —— 界面字号改的是 root font-size，代码若写死 px 两个设置就会脱钩：
+     界面调到 19 时正文约 18px、代码还是 13px，代码相对越看越小，
+     而用户放大界面本来就是为了看清。 */
+  --code-font-px: 13;
+  --code-font-size: calc(var(--code-font-px) / 15 * 1rem);
+  /* markdown 正文口径：StreamingMarkdown 的段落/列表/引用/表格用它排版。
+     工具参数输出与执行日志的容器会把它改写成 --code-font-size，
+     让整块内容跟随「代码字体大小」而不是正文口径。 */
+  --md-body-font-size: var(--content-font-size);
+  /* 正文内容字号：markdown 的段落 / 列表 / 引用 / 表格统一用它。
+     此前段落与表格是 0.9rem(13.5px)、列表与引用是继承来的 0.95rem(14.25px)，
+     同一段回复里字号会跳。取 0.95rem 是因为它本来就是多数派，多数内容不受影响。
+     代码块不走这个变量，它归「常规设置 → 代码字体大小」(--code-font-size) 管。 */
+  --content-font-size: 0.95rem;
 
   /* 面板表面变量（近实心，保留轻微通透感） */
   --glass-bg: rgba(255, 255, 255, 0.8);
   --glass-bg-heavy: rgba(255, 255, 255, 0.92);
-  --glass-bg-light: rgba(15, 23, 42, 0.04);
-  --glass-border: rgba(15, 23, 42, 0.1);
-  --glass-border-subtle: rgba(15, 23, 42, 0.06);
+  --glass-bg-light: rgba(10, 10, 10, 0.04);
+  --glass-border: rgba(10, 10, 10, 0.1);
+  --glass-border-subtle: rgba(10, 10, 10, 0.06);
   --glass-blur: 12px;
   --glass-blur-heavy: 20px;
   --msg-bg-rgb: 255, 255, 255;
@@ -68,10 +101,10 @@
   --toggle-track-inactive: rgba(0, 0, 0, 0.18);
 
   /* 深度思考开关（中性色方案：不依赖色相，靠"文字对比度 + 描边/字重 + 面与边"三信号区分状态） */
-  --thinking-off-surface: rgba(15, 23, 42, 0.06);
+  --thinking-off-surface: rgba(10, 10, 10, 0.06);
   --thinking-on-surface: var(--glass-bg-heavy);
-  --thinking-off-fg: #475569;
-  --thinking-on-fg: #0f172a;
+  --thinking-off-fg: #404040;
+  --thinking-on-fg: #0a0a0a;
 }
 
 /* --- 2. 暗色模式变量 --- */
@@ -132,12 +165,20 @@ body.dark-mode {
 }
 
 
+html {
+  /* 界面字号的唯一入口：applyFontSize() 往 <html> 写内联 font-size，所有 rem 相对它换算。
+     这里**只给 html，不能连 body 一起写** —— 原先是 `html, body { font-size: 15px }`，
+     等于把 body 钉死在 15px：改挡位时只有走 rem 的元素缩放，
+     而「没有显式 font-size、靠 body 继承」的那批纹丝不动。
+     设置项自称「界面*全局*字体大小」却只覆盖一部分，根因就在这一行。 */
+  font-size: 15px;
+}
+
 html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
   font-family: var(--font-sans);
-  font-size: 15px;
   line-height: 1.6;
   color: var(--text-main);
   background-color: var(--bg-dark);
@@ -276,8 +317,8 @@ body.dragging-active .editor-container {
    - `--msg-block-tint`：外层容器（思考块 / 工具块 / 日志块）
    - `--msg-block-tint-strong`：容器内的内容块（参数 / 输出 / 日志标题栏） */
 :root {
-  --msg-block-tint: rgba(15, 23, 42, calc(var(--agent-message-opacity) / 100 * 0.045));
-  --msg-block-tint-strong: rgba(15, 23, 42, calc(var(--agent-message-opacity) / 100 * 0.08));
+  --msg-block-tint: rgba(10, 10, 10, calc(var(--agent-message-opacity) / 100 * 0.045));
+  --msg-block-tint-strong: rgba(10, 10, 10, calc(var(--agent-message-opacity) / 100 * 0.08));
 }
 body.dark-mode {
   --msg-block-tint: rgba(255, 255, 255, calc(var(--agent-message-opacity) / 100 * 0.05));
@@ -454,7 +495,8 @@ body.dark-mode {
 }
 .dev-tool-pre {
   font-family: var(--font-mono);
-  font-size: 0.78rem;
+  /* 跟「代码字体大小」：工具参数/输出块本质是代码与日志，不是正文 */
+  font-size: var(--code-font-size);
   line-height: 1.5;
   background: transparent;
   border: none;
@@ -500,7 +542,9 @@ body.dark-mode {
 .dev-log-body {
   padding: 8px 12px;
   font-family: var(--font-mono);
-  font-size: 0.78rem;
+  /* 同 AgentTurn.vue 里那份 .dev-log-body 副本：改一处必须改另一处 */
+  font-size: var(--code-font-size);
+  --md-body-font-size: var(--code-font-size);
   color: var(--text-main);
   max-height: 160px;
   overflow-y: auto;

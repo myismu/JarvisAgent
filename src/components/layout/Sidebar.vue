@@ -853,7 +853,7 @@ onUnmounted(() => {
   flex-shrink: 0;
   margin-left: auto;
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: 0.7333rem;
   border-radius: 4px;
   border: 1px solid var(--glass-border);
   background: var(--glass-bg);
@@ -1311,7 +1311,7 @@ body.dark-mode .project-header {
 .session-item.active {
   background: var(--glass-bg);
   border-color: var(--glass-border);
-  color: #0f172a;
+  color: var(--text-main);
   font-weight: 600;
   box-shadow: var(--shadow-sm);
 }

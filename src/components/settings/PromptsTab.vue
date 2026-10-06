@@ -296,7 +296,7 @@ const rePreview = async () => {
   width: 100%;
   margin-bottom: 8px;
   padding: 8px 12px;
-  font-size: 12.5px;
+  font-size: 0.8333rem;
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
   background: transparent;
@@ -318,7 +318,7 @@ const rePreview = async () => {
 }
 
 .group-title {
-  font-size: 11px;
+  font-size: 0.7333rem;
   color: var(--text-muted);
   padding: 10px 10px 4px;
 }
@@ -332,7 +332,7 @@ const rePreview = async () => {
   border-radius: var(--radius-md);
   cursor: pointer;
   transition: all var(--transition-fast);
-  font-size: 13px;
+  font-size: 0.8667rem;
   color: var(--text-main);
 }
 
@@ -358,7 +358,7 @@ const rePreview = async () => {
 }
 
 .badge {
-  font-size: 10px;
+  font-size: 0.6667rem;
   padding: 1px 6px;
   border-radius: 8px;
   white-space: nowrap;
@@ -390,7 +390,7 @@ const rePreview = async () => {
 
 .editor-title h4 {
   margin: 0;
-  font-size: 14px;
+  font-size: 0.9333rem;
   font-weight: 500;
   color: var(--text-main);
 }
@@ -399,7 +399,7 @@ const rePreview = async () => {
   display: flex;
   gap: 6px;
   align-items: center;
-  font-size: 12px;
+  font-size: 0.8rem;
   color: var(--text-muted);
   margin-top: 3px;
 }
@@ -419,7 +419,7 @@ const rePreview = async () => {
 }
 
 .btn {
-  font-size: 12px;
+  font-size: 0.8rem;
   padding: 6px 14px;
   border-radius: var(--radius-md);
   border: 1px solid var(--glass-border);
@@ -458,7 +458,7 @@ const rePreview = async () => {
   background: var(--glass-bg-light);
   color: var(--text-main);
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: 0.8333rem;
   line-height: 1.7;
   padding: 12px;
   outline: none;
@@ -471,7 +471,7 @@ const rePreview = async () => {
 .editor-footer {
   display: flex;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: 0.8rem;
   color: var(--text-muted);
 }
 
@@ -485,13 +485,13 @@ const rePreview = async () => {
   justify-content: center;
   height: 200px;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 0.8667rem;
 }
 
 .prompts-error {
   padding: 20px;
   color: #e5484d;
-  font-size: 12px;
+  font-size: 0.8rem;
   word-break: break-all;
 }
 
@@ -527,7 +527,7 @@ const rePreview = async () => {
 
 .preview-header h4 {
   margin: 0;
-  font-size: 14px;
+  font-size: 0.9333rem;
   font-weight: 500;
   color: var(--text-main);
 }
@@ -539,7 +539,7 @@ const rePreview = async () => {
 }
 
 .display-btn {
-  font-size: 12px;
+  font-size: 0.8rem;
   padding: 5px 12px;
   border-radius: var(--radius-md);
   border: 1px solid var(--glass-border);
@@ -558,7 +558,7 @@ const rePreview = async () => {
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 0.9333rem;
   padding: 4px 8px;
 }
 
@@ -571,7 +571,7 @@ const rePreview = async () => {
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 0.8rem;
   line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-word;
@@ -579,7 +579,7 @@ const rePreview = async () => {
 }
 
 .preview-footer {
-  font-size: 12px;
+  font-size: 0.8rem;
   color: var(--text-muted);
 }
 </style>

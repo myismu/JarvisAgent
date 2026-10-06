@@ -186,7 +186,7 @@ const renderMarkdown = (text: string): string => {
 }
 
 .header-title h3 {
-  font-size: 16px;
+  font-size: 1.0667rem;
   font-weight: 600;
   color: var(--text-main);
   margin: 0;
@@ -260,7 +260,7 @@ const renderMarkdown = (text: string): string => {
 .meta-item {
   display: flex;
   gap: 8px;
-  font-size: 13px;
+  font-size: 0.8667rem;
 }
 
 .meta-label {
@@ -275,7 +275,7 @@ const renderMarkdown = (text: string): string => {
 
 .path-value {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 0.8rem;
   word-break: break-all;
 }
 
@@ -287,7 +287,7 @@ const renderMarkdown = (text: string): string => {
 }
 
 .body-content {
-  font-size: 14px;
+  font-size: 0.9333rem;
   line-height: 1.6;
   color: var(--text-main);
 }
@@ -299,16 +299,16 @@ const renderMarkdown = (text: string): string => {
   font-weight: 600;
 }
 
-.body-content :deep(h1) { font-size: 20px; }
-.body-content :deep(h2) { font-size: 18px; }
-.body-content :deep(h3) { font-size: 16px; }
+.body-content :deep(h1) { font-size: 1.3333rem; }
+.body-content :deep(h2) { font-size: 1.2rem; }
+.body-content :deep(h3) { font-size: 1.0667rem; }
 
 .body-content :deep(code) {
   background: var(--glass-bg-light);
   padding: 2px 6px;
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 0.8667rem;
 }
 
 .body-content :deep(pre) {

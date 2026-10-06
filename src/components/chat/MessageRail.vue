@@ -355,7 +355,7 @@ onUnmounted(detach);
   background: var(--surface-strong);
   border: 1px solid var(--glass-border);
   box-shadow: var(--shadow-md);
-  font-size: 12px;
+  font-size: 0.8rem;
   line-height: 1.5;
   color: var(--text-soft);
   pointer-events: none;

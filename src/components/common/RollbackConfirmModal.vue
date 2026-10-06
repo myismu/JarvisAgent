@@ -65,7 +65,7 @@ const emit = defineEmits<{
 .modal-title {
   margin: 0 0 var(--space-md);
   color: var(--text-main);
-  font-size: 16px;
+  font-size: 1.0667rem;
 }
 .rollback-message {
   color: var(--text-muted);
@@ -82,13 +82,13 @@ const emit = defineEmits<{
 }
 .details-label {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 0.8rem;
   margin-bottom: var(--space-xs);
 }
 .rollback-details ul {
   margin: 0;
   padding-left: var(--space-md);
-  font-size: 13px;
+  font-size: 0.8667rem;
   color: var(--text-main);
 }
 .modal-actions {
@@ -103,7 +103,7 @@ const emit = defineEmits<{
   background: var(--glass-bg);
   color: var(--text-main);
   cursor: pointer;
-  font-size: 13px;
+  font-size: 0.8667rem;
   transition: all var(--transition-fast);
 }
 .cmd-button:hover:not(:disabled) {

@@ -73,14 +73,14 @@ const { t } = useI18n();
 }
 
 .market-title {
-  font-size: 24px;
+  font-size: 1.6rem;
   font-weight: 600;
   color: var(--text-main);
   margin: 0 0 12px 0;
 }
 
 .market-description {
-  font-size: 14px;
+  font-size: 0.9333rem;
   color: var(--text-muted);
   margin: 0 0 32px 0;
   line-height: 1.6;
@@ -98,7 +98,7 @@ const { t } = useI18n();
   align-items: center;
   gap: 8px;
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: 0.9333rem;
 }
 
 .feature-item svg {

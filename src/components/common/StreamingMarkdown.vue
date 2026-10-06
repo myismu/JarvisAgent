@@ -276,16 +276,18 @@ function renderTableCell(cell: any): string {
   padding-bottom: 10px;
   color: var(--text-main);
   font-size: 1.32rem;
-  font-weight: 760;
+  font-weight: var(--fw-bold);
   line-height: 1.32;
   border-bottom: 1px solid var(--glass-border-subtle);
 }
 
 .md-h2 {
   margin: 22px 0 10px;
-  color: var(--accent-blue);
+  /* 正文标题统一走主文字色：给标题上蓝色是「AI 模板感」最明显的来源之一，
+     Codex / DSH 的 markdown 标题也都只用字号+字重分层级，不上彩色 */
+  color: var(--text-main);
   font-size: 1.06rem;
-  font-weight: 740;
+  font-weight: var(--fw-bold);
   line-height: 1.35;
 }
 
@@ -293,7 +295,7 @@ function renderTableCell(cell: any): string {
   margin: 18px 0 8px;
   color: var(--text-main);
   font-size: 0.96rem;
-  font-weight: 720;
+  font-weight: var(--fw-bold);
   line-height: 1.4;
 }
 
@@ -306,10 +308,16 @@ function renderTableCell(cell: any): string {
   line-height: 1.4;
 }
 
+/* 显式给字号：此前 h4/h5/h6 没写 font-size，会落回浏览器默认的
+   1em / 0.83em / 0.67em —— 在 14.25px 正文下 h6 只有 ~9.5px，基本不可读。 */
+.md-h4 { font-size: 0.94rem; }
+.md-h5 { font-size: 0.92rem; }
+.md-h6 { font-size: 0.9rem; }
+
 .md-paragraph {
   margin: 9px 0;
   color: var(--text-main);
-  font-size: 0.9rem;
+  font-size: var(--md-body-font-size);
   line-height: 1.72;
 }
 
@@ -322,17 +330,20 @@ function renderTableCell(cell: any): string {
 .md-li {
   margin: 5px 0;
   color: var(--text-main);
+  /* 显式写死，不再靠从 .message-content 继承 —— 继承会让列表和段落差 0.75px */
+  font-size: var(--md-body-font-size);
   line-height: 1.68;
 }
 
 .md-li::marker {
-  color: var(--accent-blue);
+  color: var(--text-muted);
 }
 
 .md-blockquote {
   margin: 12px 0;
   padding: 10px 14px;
   color: var(--text-muted);
+  font-size: var(--md-body-font-size);
   border-left: 3px solid var(--glass-border);
   border-radius: var(--radius-md);
   background: var(--glass-bg-light);
@@ -367,10 +378,14 @@ function renderTableCell(cell: any): string {
   padding: 8px 12px;
   background: color-mix(in srgb, var(--surface-strong) 30%, transparent);
   border-bottom: 1px solid var(--glass-border-subtle);
+  /* 头部按代码字号排版，语言标签随之缩放（它用 em 相对这里）。
+     不这么做的话：界面字号 19 + 代码「小」时，标签 14px 会比代码 11px 还大。
+     ChatArea 里另有一条同值声明供聊天区使用（那边特异性更高）。 */
+  font-size: var(--code-font-size);
 }
 
 .md-code-lang {
-  font-size: 0.78rem;
+  font-size: 0.88em;
   font-weight: 600;
   color: var(--text-muted);
   font-family: var(--font-mono);
@@ -413,11 +428,11 @@ function renderTableCell(cell: any): string {
   text-align: left;
   border-bottom: 1px solid var(--glass-border-subtle);
   color: var(--text-main);
-  font-size: 0.9rem;
+  font-size: var(--md-body-font-size);
 }
 
 .md-table th {
-  font-weight: 730;
+  font-weight: var(--fw-bold);
   background: color-mix(in srgb, var(--bg-panel) 50%, transparent);
 }
 
@@ -451,7 +466,7 @@ function renderTableCell(cell: any): string {
 
 .streaming-markdown :deep(strong) {
   color: var(--text-main);
-  font-weight: 760;
+  font-weight: var(--fw-bold);
 }
 
 .streaming-markdown :deep(em) {

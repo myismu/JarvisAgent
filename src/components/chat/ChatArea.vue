@@ -1248,7 +1248,7 @@ onMounted(() => {
 
 .response-text :deep(strong) {
   color: var(--text-main);
-  font-weight: 760;
+  font-weight: var(--fw-bold);
 }
 
 .response-text :deep(em) {
@@ -1276,6 +1276,8 @@ onMounted(() => {
   box-shadow: var(--shadow-sm);
 }
 
+/* 代码块与表格的头部容器：几何与配色共用，但**字号不共用** ——
+   代码头部跟「代码字体大小」，表格头部是正文内容、跟正文口径。 */
 .response-text :deep(.markdown-code-header),
 .response-text :deep(.md-code-header),
 .response-text :deep(.markdown-table-header) {
@@ -1288,8 +1290,19 @@ onMounted(() => {
   border-bottom: 1px solid color-mix(in srgb, var(--text-muted) 14%, transparent);
   background: color-mix(in srgb, var(--glass-bg-heavy) 72%, transparent);
   color: var(--text-muted);
+  font-weight: var(--fw-semibold);
+}
+
+.response-text :deep(.markdown-table-header) {
   font-size: 0.76rem;
-  font-weight: 650;
+}
+
+/* 代码头部按代码字号排版：它内部的 .md-code-lang / .markdown-copy-btn 用 em 相对这里，
+   于是语言标签与复制按钮会随代码字号一起缩放。之前它们是固定 rem ——
+   界面字号 19 + 代码字号「小」时，标签(14px)会比代码本身(11px)还大。 */
+.response-text :deep(.markdown-code-header),
+.response-text :deep(.md-code-header) {
+  font-size: var(--code-font-size);
 }
 
 .response-text :deep(.markdown-code-language),
@@ -1302,8 +1315,9 @@ onMounted(() => {
 }
 
 .response-text :deep(.markdown-copy-btn) {
-  height: 24px;
-  min-width: 48px;
+  /* 盒子也按 em 走：只用固定 24px / 48px 的话，特大字号下文字会顶出按钮 */
+  height: 2.2em;
+  min-width: 4.4em;
   padding: 0 9px;
   display: inline-flex;
   align-items: center;
@@ -1313,8 +1327,8 @@ onMounted(() => {
   background: color-mix(in srgb, var(--surface-strong) 82%, transparent);
   color: var(--text-muted);
   font: inherit;
-  font-size: 0.74rem;
-  font-weight: 650;
+  font-size: 0.85em;
+  font-weight: var(--fw-semibold);
   cursor: pointer;
   transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
 }
@@ -1376,7 +1390,10 @@ onMounted(() => {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  font-size: 0.88rem;
+  /* 与单元格、段落、列表统一到同一个正文口径（原 0.88rem 会和单元格的
+     0.9rem 打架，表格内外差 0.3px）。这里用 --md-body-font-size 而不是直接写
+     --content-font-size：工具输出容器会把这个变量改写成代码字号。 */
+  font-size: var(--md-body-font-size);
 }
 
 .response-text :deep(th),
@@ -1406,7 +1423,9 @@ onMounted(() => {
 .response-text :deep(.md-table th) {
   color: var(--text-main);
   font-weight: 700;
-  background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
+  /* 表头去掉蓝底：这里与 StreamingMarkdown 的 .md-table th 是同名规则、
+     特异性也相同，谁后加载谁生效。两边写成同一个中性底色才没有隐性依赖 */
+  background: color-mix(in srgb, var(--bg-panel) 50%, transparent);
 }
 
 .response-text :deep(td code),

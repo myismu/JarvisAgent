@@ -91,7 +91,7 @@ const { t } = useI18n()
 
 .welcome-title {
   /* ① 字标：更小更疏，更贵气 */
-  font-size: 14px;
+  font-size: 0.9333rem;
   font-weight: 600;
   letter-spacing: 7px;
   color: var(--text-main);
@@ -106,7 +106,7 @@ const { t } = useI18n()
 
 .welcome-text {
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 0.8667rem;
   margin-top: 8px;
 }
 

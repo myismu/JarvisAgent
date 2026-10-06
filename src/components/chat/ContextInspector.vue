@@ -592,7 +592,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 .context-kicker {
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  font-weight: 800;
+  font-weight: var(--fw-heavy);
 }
 
 /* 数据来源标记：实测 / 本地估算。两者可信度差一个量级，必须长得不一样，
@@ -622,7 +622,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   margin-top: 4px;
   color: var(--text-main);
   font-size: 1.38rem;
-  font-weight: 850;
+  font-weight: var(--fw-heavy);
   font-variant-numeric: tabular-nums;
 }
 
@@ -687,7 +687,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   color: var(--accent-blue);
   background: color-mix(in srgb, var(--accent-blue) 16%, transparent);
   font-size: 0.66rem;
-  font-weight: 800;
+  font-weight: var(--fw-heavy);
   white-space: nowrap;
 }
 .tone-critical .compact-suggest-badge {
@@ -762,7 +762,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   color: var(--text-main);
   background: color-mix(in srgb, var(--accent-green) 18%, transparent);
   font-size: 0.72rem;
-  font-weight: 800;
+  font-weight: var(--fw-heavy);
 }
 
 .tone-warning .context-health {
@@ -798,7 +798,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   overflow: hidden;
   color: var(--text-main);
   font-size: 0.78rem;
-  font-weight: 800;
+  font-weight: var(--fw-heavy);
   text-overflow: ellipsis;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
@@ -1015,7 +1015,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   overflow: hidden;
   color: var(--text-main);
   font-size: 0.86rem;
-  font-weight: 850;
+  font-weight: var(--fw-heavy);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1053,7 +1053,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   overflow: hidden;
   color: var(--text-main);
   font-size: 0.78rem;
-  font-weight: 750;
+  font-weight: var(--fw-bold);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1090,7 +1090,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 .context-detail-label {
   color: var(--text-muted);
   font-size: 0.66rem;
-  font-weight: 850;
+  font-weight: var(--fw-heavy);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -1155,7 +1155,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   color: var(--text-muted);
   background: var(--glass-bg-light);
   font-size: 0.66rem;
-  font-weight: 750;
+  font-weight: var(--fw-bold);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1163,7 +1163,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   flex-shrink: 0;
   margin-left: auto;
   white-space: nowrap;
-  font-weight: 750;
+  font-weight: var(--fw-bold);
   font-variant-numeric: tabular-nums;
 }
 

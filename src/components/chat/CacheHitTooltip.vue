@@ -255,7 +255,7 @@ const sessionMissText = computed(() =>
 
 .cache-tip-percent {
   font-size: 0.85rem;
-  font-weight: 650;
+  font-weight: var(--fw-semibold);
   font-variant-numeric: tabular-nums;
   color: var(--text-muted);
 }

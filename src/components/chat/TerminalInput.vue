@@ -2148,7 +2148,7 @@ const handleRecallEdit = async () => {
 }
 
 .token-bar-total {
-  font-weight: 650;
+  font-weight: var(--fw-semibold);
 }
 
 /* ── 上下文进度环（取代原来铺在概览栏上的一长串读数）── */

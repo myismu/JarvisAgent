@@ -337,7 +337,7 @@ onMounted(load);
 .group-title {
   margin: 0;
   font-size: 0.8rem;
-  font-weight: 650;
+  font-weight: var(--fw-semibold);
   color: var(--text-main);
 }
 .group-hint {

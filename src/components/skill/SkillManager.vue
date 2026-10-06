@@ -190,7 +190,7 @@ const switchTab = (tab: TabType) => {
   background: transparent;
   border: none;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 0.8667rem;
   padding: 6px 14px;
   border-radius: var(--radius-sm);
   cursor: pointer;
@@ -216,7 +216,7 @@ const switchTab = (tab: TabType) => {
   background: transparent;
   border: 1px solid var(--glass-border);
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 0.8rem;
   padding: 6px 12px;
   border-radius: var(--radius-md);
   cursor: pointer;
@@ -230,20 +230,20 @@ const switchTab = (tab: TabType) => {
 }
 
 .skill-manager-title {
-  font-size: 18px;
+  font-size: 1.2rem;
   font-weight: 600;
   color: var(--text-main);
   margin: 0 0 4px 0;
 }
 
 .skill-manager-subtitle {
-  font-size: 12px;
+  font-size: 0.8rem;
   color: var(--text-muted);
   margin: 0;
 }
 
 .skill-count {
-  font-size: 12px;
+  font-size: 0.8rem;
   color: var(--text-muted);
   background: var(--glass-bg-light);
   padding: 4px 10px;

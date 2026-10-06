@@ -664,7 +664,7 @@ const backgroundStatusLabel = (status: string): string => {
   gap: 8px;
   color: var(--text-main);
   font-size: 0.82rem;
-  font-weight: 850;
+  font-weight: var(--fw-heavy);
 }
 
 .running-dot {
@@ -934,7 +934,7 @@ const backgroundStatusLabel = (status: string): string => {
 .monitor-kicker {
   color: var(--text-muted);
   font-size: 0.66rem;
-  font-weight: 850;
+  font-weight: var(--fw-heavy);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -942,7 +942,7 @@ const backgroundStatusLabel = (status: string): string => {
 .monitor-section-head strong {
   color: var(--text-main);
   font-size: 0.78rem;
-  font-weight: 850;
+  font-weight: var(--fw-heavy);
 }
 
 .monitor-pill {
@@ -951,7 +951,7 @@ const backgroundStatusLabel = (status: string): string => {
   color: var(--text-muted);
   background: var(--glass-bg-light);
   font-size: 0.72rem;
-  font-weight: 800;
+  font-weight: var(--fw-heavy);
   font-variant-numeric: tabular-nums;
 }
 
@@ -982,7 +982,7 @@ const backgroundStatusLabel = (status: string): string => {
   overflow: hidden;
   color: var(--text-main);
   font-size: 0.78rem;
-  font-weight: 800;
+  font-weight: var(--fw-heavy);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -991,7 +991,7 @@ const backgroundStatusLabel = (status: string): string => {
   flex-shrink: 0;
   color: var(--text-muted);
   font-size: 0.72rem;
-  font-weight: 750;
+  font-weight: var(--fw-bold);
 }
 
 /* 失败/出错状态用红字：只靠左侧那个小圆点区分度太弱，
@@ -1153,7 +1153,7 @@ const backgroundStatusLabel = (status: string): string => {
   overflow: hidden;
   color: var(--text-main);
   font-size: 0.78rem;
-  font-weight: 800;
+  font-weight: var(--fw-heavy);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1165,7 +1165,7 @@ const backgroundStatusLabel = (status: string): string => {
   background: var(--glass-bg-light);
   color: var(--text-muted);
   font-size: 0.66rem;
-  font-weight: 750;
+  font-weight: var(--fw-bold);
   text-transform: uppercase;
 }
 
@@ -1188,7 +1188,7 @@ const backgroundStatusLabel = (status: string): string => {
   padding: 1px 5px;
   border-radius: 4px;
   font-size: 0.66rem;
-  font-weight: 750;
+  font-weight: var(--fw-bold);
 }
 
 .phase-starting,
@@ -1265,8 +1265,8 @@ const backgroundStatusLabel = (status: string): string => {
 
 .ct-name {
   color: var(--text-main);
-  font-weight: 800;
-  font-family: ui-monospace, 'Cascadia Code', monospace;
+  font-weight: var(--fw-heavy);
+  font-family: var(--font-mono);
 }
 
 .ct-input {
@@ -1300,7 +1300,7 @@ const backgroundStatusLabel = (status: string): string => {
   justify-content: space-between;
   color: var(--text-muted);
   font-size: 0.66rem;
-  font-weight: 800;
+  font-weight: var(--fw-heavy);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   margin-bottom: 6px;
@@ -1335,7 +1335,7 @@ const backgroundStatusLabel = (status: string): string => {
   gap: 5px;
   padding: 2px 0;
   font-size: 0.72rem;
-  font-family: ui-monospace, 'Cascadia Code', monospace;
+  font-family: var(--font-mono);
 }
 
 .tl-loop {
@@ -1408,7 +1408,7 @@ const backgroundStatusLabel = (status: string): string => {
 .error-label {
   color: var(--accent-red);
   font-size: 0.72rem;
-  font-weight: 800;
+  font-weight: var(--fw-heavy);
   margin-bottom: 4px;
 }
 
@@ -1416,7 +1416,7 @@ const backgroundStatusLabel = (status: string): string => {
   margin: 0;
   color: var(--accent-red);
   font-size: 0.66rem;
-  font-family: ui-monospace, 'Cascadia Code', monospace;
+  font-family: var(--font-mono);
   white-space: pre-wrap;
   word-break: break-all;
 }
@@ -1430,7 +1430,7 @@ const backgroundStatusLabel = (status: string): string => {
 .prompt-label {
   color: var(--text-muted);
   font-size: 0.66rem;
-  font-weight: 800;
+  font-weight: var(--fw-heavy);
   margin-bottom: 2px;
 }
 
