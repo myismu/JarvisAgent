@@ -13,6 +13,7 @@
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { useI18n } from "vue-i18n";
 import { useSessionStore } from "../stores/session";
 import type { SessionViewState } from "../stores/session";
 import { useChatStore } from "../stores/chat";
@@ -80,6 +81,7 @@ declare global {
 }
 
 export function useAgentEvents() {
+  const { t } = useI18n();
   const session = useSessionStore();
   const chat = useChatStore();
   const agent = useAgentStore();
@@ -553,6 +555,9 @@ export function useAgentEvents() {
         cacheHit: usage.cacheHitTokens,
         cacheMiss: usage.cacheMissTokens,
       });
+      // 这一次请求到此结束：结算它的输出速度
+      // （概览栏的 tok/s 就是这一跳的读数，不是会话累计）
+      session.settleRequestThroughput(usage.sessionId, usage.outputTokens || 0, Date.now());
     });
 
     // chat turn start
@@ -568,7 +573,12 @@ export function useAgentEvents() {
       commitTempBuffer(view);
       commitThinkingBuffer(view);
       view.thinkingBuffer = "";
-      beginAgentLoop(view, payloadLoop(event.payload));
+      const startedLoop = payloadLoop(event.payload);
+      beginAgentLoop(view, startedLoop);
+      // 概览栏的「步」= 本轮 agent 跑到了第几次 loop 迭代：这里记下实时值。
+      // （不在 `currentTurn` 上读它：那个缓冲是 run-scoped，回合结束就被重置。
+      //   跨重启的持久化由 `agent_run_events` 承担，见 session.ts 的 loopStepCount 注释。）
+      if (startedLoop) session.noteLoopStep(sessionId, startedLoop);
       view.streamActive = true;
       view.hydrated = true;
       syncActiveSessionView(sessionId, true);
@@ -580,6 +590,8 @@ export function useAgentEvents() {
       if (!sessionId) return;
       const { content } = event.payload;
       if (!content) return;
+      // 主 Agent 正文片段 = 本次请求生成的开始（子代理的内容不算，那不是这一次请求）
+      if (!event.payload?.isSubAgent) session.markRequestFirstDelta(sessionId, Date.now());
       const view = session.getSessionView(sessionId);
       view.tempBuffer += content;
       appendAgentText(view, content, "assistant", payloadLoop(event.payload));
@@ -595,6 +607,9 @@ export function useAgentEvents() {
       if (!sessionId) return;
       const { content } = event.payload;
       if (!content) return;
+      // 思考片段同样是本次请求的输出，也要算起点：
+      // 推理模型常常先吐一长段思考再吐正文，只认正文会把这前半段排除在窗口外
+      session.markRequestFirstDelta(sessionId, Date.now());
       const view = session.getSessionView(sessionId);
       view.thinkingBuffer += content;
       appendAgentThinking(view, content, payloadLoop(event.payload));
@@ -686,6 +701,26 @@ export function useAgentEvents() {
       if (step.type === "waiting_hint" || step.type === "retry") {
         if (step.content) {
           view.currentTurn.notice = step.content;
+        }
+        view.streamActive = true;
+        view.hydrated = true;
+        syncActiveSessionView(sessionId, true);
+        return;
+      }
+      // 反思审查的判定：**只报「判为需要改进」**（not_ok）。
+      // 判 ok 是常态，每次都往这里写会把气泡下方那行字变成噪音；
+      // not_ok 才是用户真正需要知道的事件 —— Agent 即将自我纠正。
+      // 走 notice 而不进正文/工具卡：它是"过程性状态标注"，
+      // 与 waiting_hint / retry 同一类，由 AgentTurnNotice 渲染在气泡下方。
+      if (step.type === "reflection") {
+        if (step.judgment && step.judgment !== "ok") {
+          const detail = [step.reason, step.suggestion]
+            .map((part) => (part || "").trim())
+            .filter(Boolean)
+            .join(" — ");
+          view.currentTurn.notice = detail
+            ? `${t("input.reflectionFlagged")} — ${detail}`
+            : t("input.reflectionFlagged");
         }
         view.streamActive = true;
         view.hydrated = true;

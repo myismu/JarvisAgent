@@ -231,6 +231,8 @@ export type AgentStepType =
   | "subagent_end"
   | "task_scheduled"
   | "task_completed"
+  /** 反思审查 Agent 的判定（后端 pipeline 发出，带 judgment / reason / suggestion） */
+  | "reflection"
   | "retry"
   | "cancelled"
   | "interrupted"
@@ -248,6 +250,19 @@ export interface AgentStep {
   status?: string;
   attempt?: number;
   max?: number;
+  /**
+   * 产生该步骤的轮次（后端 `agent-step` 事件携带的 `loopCount`）。
+   *
+   * 类型里此前缺了它，但**运行时一直带着** —— `payloadLoop()` 读的就是它。
+   * 少数事件（`task_scheduled` / `task_completed`）不发这个字段，故为可选。
+   */
+  loopCount?: number;
+  /** 反思审查的判定，仅 `type === "reflection"` 时存在：`"ok"` / `"not_ok"` */
+  judgment?: string;
+  /** 反思审查给出的原因，仅 `judgment === "not_ok"` 时存在 */
+  reason?: string;
+  /** 反思审查给出的修正建议，仅 `judgment === "not_ok"` 时存在 */
+  suggestion?: string;
   timestamp: number;
 }
 

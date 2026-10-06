@@ -276,6 +276,99 @@ const barCacheUsage = computed(() => {
   return { label: `${t('input.cacheLabelSession')} ${text}%`, state: 'hit' as const };
 });
 
+/**
+ * 「轮」= 这是本会话的**第几轮对话**（第几条用户消息），累计、不随 run 重置。
+ *
+ * 数据源是**已持久化且已加载**的 `agent_runs`：一条用户消息 = 一个 run
+ * （后端 `start_run()` 落库后紧接着 `emit_run()` 推送；切会话 / 重启时由
+ * `loadAgentRunsFromBackend()` 整批拉回）—— 所以它天然满足"重启后还在"，无需新增存储。
+ *
+ * 为什么不数 `view.messages`：消息是**分页加载**的（每次 5 条），长会话会少算。
+ *
+ * `currentAgentRuns` 按 `startedAt` **降序**，所以序号 = 总数 − 下标；
+ * 没有正在运行的 run 时（回合已结束）取下标 0，即"刚跑完的那一轮"。
+ */
+/**
+ * 概览栏那两个读数所指的**同一个 run**。
+ *
+ * 取法：活跃 run 优先；**没有活跃 run 时退化到本会话最近的一个 run**
+ * （`currentAgentRuns` 按 `startedAt` 降序，所以 `[0]` 就是最近那个）。
+ *
+ * 为什么必须有这个退化 —— 这是实测踩到的坑：重启 App 后没有任何活跃 run，
+ * `activeRunId` 是 null。若「步」只认 `activeRunId` 去查 events，就永远查不到值，
+ * 界面上只剩「第 N 轮」而没有步数（重启后打开会话时就是这样）。
+ *
+ * 为什么两个读数共用同一个 run：否则它们可能指向不同的一轮 ——
+ * 比如「轮」取最近、而「步」取了某个更早的活跃 run，两个数字就对不上了。
+ */
+const currentTurnRun = computed(() => {
+  const runs = agent.currentAgentRuns;
+  const activeRunId = session.currentSessionView?.activeRunId;
+  if (activeRunId) {
+    const active = runs.find((run) => run.runId === activeRunId);
+    if (active) return active;
+  }
+  return runs[0] ?? null;
+});
+
+const conversationTurn = computed(() => {
+  const runs = agent.currentAgentRuns;
+  const run = currentTurnRun.value;
+  if (!runs.length || !run) return 0;
+  const index = runs.findIndex((item) => item.runId === run.runId);
+  return runs.length - (index < 0 ? 0 : index);
+});
+
+/**
+ * 「步」= 本轮 agent 跑到了第几次 loop 迭代（think → act → observe）。
+ *
+ * **纯聊天也至少是 1 步**：一条用户消息必然跑一个 loop —— 于是"轮"和"步"总是同时有值，
+ * 不会出现「只有轮、没有步」的割裂。（上一版把步定义成"工具调用数"，纯聊天时恒为 0，
+ * 那一格就退化成光秃秃的"第 1 轮"—— 问题出在定义，不是渲染。）
+ *
+ * 三个来源各覆盖一段窗口，取最大（任一窗口内它都单调不减，所以 max 是安全的）：
+ * 1. `currentTurn.loop` —— 运行中由事件驱动，最精确
+ * 2. `loopStepCount` —— 内存快照（`chat-turn-start` 写入），覆盖"回合刚结束、未重载"
+ * 3. `agent_run_events` 行数 —— **持久化事实源**（每 loop 一行），覆盖重启 / 切会话
+ *
+ * ⚠️ 不能读 `agent_runs.loop_count` —— 那是从未被维护的死字段，恒为 0。
+ */
+const turnStepCount = computed(() => {
+  const view = session.currentSessionView;
+  const live = view?.currentTurn?.loop || 0;
+  const snapshot = view?.loopStepCount || 0;
+  // ⚠️ 第 3 源**不能挂在 `activeRunId` 上**：重启后它必然是 null，那条源就永远取不到值
+  // （实测：重启后打开会话，轮数正常、步数消失）。必须落在「活跃 run ?? 最近的 run」上。
+  const runId = currentTurnRun.value?.runId;
+  const persisted = runId ? agent.getAgentRunEvents(runId).length : 0;
+  return Math.max(live, snapshot, persisted);
+});
+
+/**
+ * 概览栏的「第 N 轮 · 第 M 步」。
+ *
+ * 两者恒同时有值（轮 ≥ 1 由 run 记录决定，步 ≥ 1 由 loop 决定），所以不存在只有一半的中间态。
+ */
+const turnProgressLabel = computed(() => {
+  const turn = conversationTurn.value;
+  if (!turn) return null;
+  const step = turnStepCount.value;
+  const turnText = t('input.turnLabel', { loop: turn });
+  return step > 0 ? `${turnText} · ${t('input.stepLabel', { step })}` : turnText;
+});
+
+/**
+ * 最近一次请求的输出速度（token/秒）。
+ *
+ * 口径见 `session.settleRequestThroughput`：**只算最近一次请求**，不是会话累计。
+ * 未采样时返回 null —— 不显示占位符，宁可不占这一格。
+ */
+const throughputLabel = computed(() => {
+  const rate = session.currentSessionView?.lastRequestTokPerSec;
+  if (typeof rate !== 'number' || !Number.isFinite(rate) || rate <= 0) return null;
+  return `${rate.toFixed(1)} tok/s`;
+});
+
 // 缓存读数浮层：hover 时展示明细（命中率进度条 + token 明细）
 const showCacheTip = ref(false);
 
@@ -1388,6 +1481,16 @@ const handleRecallEdit = async () => {
             :session-cache-miss-tokens="session.totalCacheMissTokens"
           />
         </span>
+        <!-- 主 Agent 进度（第几轮 · 本轮第几次工具调用）+ 最近一次请求的吞吐。
+             与左侧上下文/缓存同一行、同一层级的遥测读数；不可点、无浮层，
+             所以只用 .token-bar-item 的基础排版，不套 .token-bar-usage
+             （那个类带 cursor:pointer，会让人以为能点）。 -->
+        <span v-if="turnProgressLabel || throughputLabel" class="token-bar-item token-bar-progress">
+          <span v-if="contextTokens > 0 || barCacheUsage" class="token-bar-sep">·</span>
+          <span v-if="turnProgressLabel">{{ turnProgressLabel }}</span>
+          <span v-if="turnProgressLabel && throughputLabel" class="token-bar-sep">·</span>
+          <span v-if="throughputLabel" class="token-bar-throughput">{{ throughputLabel }}</span>
+        </span>
         <span class="token-bar-spacer"></span>
         <span class="token-bar-item token-bar-model">{{ agentModel }}</span>
       </div>
@@ -2261,6 +2364,17 @@ const handleRecallEdit = async () => {
 
 .token-bar-cache.cache-unknown {
   opacity: 0.5;
+}
+
+/* 主 Agent 进度 + 本次请求吞吐：整组不可点、无浮层 */
+.token-bar-progress {
+  gap: 6px;
+  margin-left: 2px;
+}
+
+/* 吞吐数字用等宽数字：读数每轮跳一次，比例数字会让整条栏左右抖 */
+.token-bar-throughput {
+  font-variant-numeric: tabular-nums;
 }
 
 .token-bar-model {

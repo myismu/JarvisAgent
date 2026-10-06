@@ -42,6 +42,36 @@ export interface SessionViewState {
   sessionOutputTokens: number;
   sessionCacheHitTokens: number;
   sessionCacheMissTokens: number;
+  /**
+   * 本次请求的首个流式片段到达时刻（毫秒）。null = 当前没有进行中的吞吐采样。
+   *
+   * 起点取「首个片段」而不是 loop 开始：后端在**每次请求**拿到 usage 就推一次
+   * （不是回合收尾才推），工具执行发生在那之后 —— 从首个片段起算天然排除了
+   * 首字延迟与工具耗时，得到的才是这一跳的生成速度，而不是"本轮平均"。
+   */
+  requestFirstDeltaAt: number | null;
+  /** 上一次 usage 推送时的会话累计输出 token：与本次相减 = 「本次请求」的输出量 */
+  requestOutputTokensBase: number;
+  /** 最近一次请求的输出速度（token/秒）。null = 尚无有效采样 */
+  lastRequestTokPerSec: number | null;
+  /**
+   * 本轮 agent 已经跑到第几步 —— **步 = 一次 agent loop 迭代**（think → act → observe）。
+   *
+   * 为什么纯聊天也显示「第 1 步」：一条用户消息必然至少跑一个 loop，所以步数天然 ≥ 1，
+   * 不会出现"只有轮、没有步"的割裂。
+   *
+   * 本字段只是**内存覆盖层**，三个来源各覆盖一段窗口（组件里取最大）：
+   * - `currentTurn.loop`：运行中由事件驱动，最精确；但回合结束会被 `resetAgentCurrentTurn()` 清掉
+   * - 本字段：由 `chat-turn-start` 写入，覆盖"回合刚结束、还没重新加载"那段
+   * - `agent_run_events` 的行数：**持久化的唯一事实源**（「每轮一行」，UNIQUE(run_id, loop_index)），
+   *   覆盖"重启 App / 切走再切回"
+   *
+   * 所以"步"**不需要新增持久化** —— 它已经在 events 里了。
+   *
+   * ⚠️ 别读 `agent_runs.loop_count`：那是**从未被维护的死字段，恒为 0**
+   * （后端 `agent_runs.rs::prepare_resume` 的注释写明了这件事）。
+   */
+  loopStepCount: number;
 }
 
 /**
@@ -91,6 +121,10 @@ function createEmptySessionView(initialHistory = READY_TEXT, hydrated = false): 
     sessionOutputTokens: 0,
     sessionCacheHitTokens: 0,
     sessionCacheMissTokens: 0,
+    requestFirstDeltaAt: null,
+    requestOutputTokensBase: 0,
+    lastRequestTokPerSec: null,
+    loopStepCount: 0,
   };
 }
 
@@ -277,6 +311,60 @@ export const useSessionStore = defineStore("session", () => {
     view.sessionCacheMissTokens = usage.cacheMiss || 0;
   }
 
+  /**
+   * 记下「本次请求的首个流式片段到达时刻」。
+   *
+   * 只在还没有起点时写入 —— 一个请求会推来成百上千个片段，只有第一个是起点；
+   * 后续片段若覆盖它，算出来的速度会随片段密度虚高。
+   */
+  function markRequestFirstDelta(sessionId: string | null | undefined, at: number) {
+    const view = getSessionView(sessionId);
+    if (view.requestFirstDeltaAt === null) view.requestFirstDeltaAt = at;
+  }
+
+  /**
+   * 一次请求结束（usage 推送到达）时结算**本次请求**的吞吐。
+   *
+   * 口径是「最近一次请求」而不是会话累计 —— 累计值在长会话里会被历史稀释，
+   * 读数就不再反映"现在快不快"。
+   *
+   *   Δ输出 = 本次推送的累计输出 − 上次推送时的累计输出
+   *   Δ时间 = 本次推送时刻 − 本次请求首个片段时刻
+   *
+   * 输出增量 ≤ 0（厂商未上报、或该请求没有输出）时不写入：**保留上一次的可读值**，
+   * 比清成 null 更有用 —— 界面上那一格宁可显示一个稍旧的真值，也不要闪成空。
+   */
+  function settleRequestThroughput(
+    sessionId: string | null | undefined,
+    outputTotal: number,
+    at: number,
+  ) {
+    const view = getSessionView(sessionId);
+    const delta = outputTotal - view.requestOutputTokensBase;
+    const startedAt = view.requestFirstDeltaAt;
+    // 基线无条件推进：漏掉一次结算会让下一次的增量把两次请求算在一起
+    view.requestOutputTokensBase = outputTotal;
+    view.requestFirstDeltaAt = null;
+    if (delta <= 0 || startedAt === null) return;
+    const seconds = (at - startedAt) / 1000;
+    if (seconds <= 0) return;
+    view.lastRequestTokPerSec = delta / seconds;
+  }
+
+  /**
+   * 记下本轮 agent 跑到第几步（`chat-turn-start` 携带的 loop 序号）。
+   *
+   * 后端**每进入一个 loop 就发一次**这个事件，值是**本轮内**的 loop 序号（从 1 起），
+   * 所以这里直接覆盖：新一轮天然把上一轮的步数清掉，不需要额外的重置逻辑。
+   *
+   * 只写内存 —— 跨重启的持久化由 `agent_run_events` 承担（见 `loopStepCount` 注释），
+   * 不新增任何存储。
+   */
+  function noteLoopStep(sessionId: string | null | undefined, step: number) {
+    const view = getSessionView(sessionId);
+    view.loopStepCount = step;
+  }
+
   function isSessionRunning(sessionId: string): boolean {
     return sessionViews.value[sessionId]?.status === "RUNNING";
   }
@@ -327,6 +415,9 @@ export const useSessionStore = defineStore("session", () => {
     appendSessionHistory,
     removeTrailingUserMessageFromView,
     setSessionUsageTotals,
+    markRequestFirstDelta,
+    settleRequestThroughput,
+    noteLoopStep,
     isSessionRunning,
     currentSessionView,
     currentSessionStatus,
