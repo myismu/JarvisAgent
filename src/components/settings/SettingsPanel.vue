@@ -185,19 +185,6 @@
                   <div class="setting-desc">{{ t('settings.general.fontSizeDesc') }}</div>
                 </div>
                 <div class="setting-item">
-                  <label>{{ t('settings.general.codeFontSize') }}</label>
-                  <div class="display-mode-toggle">
-                    <button
-                      v-for="p in codeFontSizePresets"
-                      :key="p.value"
-                      class="display-mode-btn"
-                      :class="{ active: codeFontSize === p.value }"
-                      @click="setCodeFontSize(p.value)"
-                    >{{ t(p.label) }}</button>
-                  </div>
-                  <div class="setting-desc">{{ t('settings.general.codeFontSizeDesc') }}</div>
-                </div>
-                <div class="setting-item">
                   <label>{{ t('settings.general.compactMode') }}</label>
                   <label class="toggle-switch">
                     <input type="checkbox" :checked="compactMode" @change="setCompactMode(($event.target as HTMLInputElement).checked)" />
@@ -657,7 +644,6 @@ import { useTheme } from '../../composables/useTheme'
 import {
   usePreferences,
   FONT_SIZE_PRESETS,
-  CODE_FONT_SIZE_PRESETS,
   type AgentPanelPosition,
   type ImageCompressTier,
 } from '../../composables/usePreferences'
@@ -700,8 +686,6 @@ const setAgentApprovalMode = (val: "request_approval" | "auto_approve") => {
 }
 const fontSize = computed(() => uiPrefs.fontSize)
 const setFontSize = (val: number) => uiPrefs.setFontSize(val)
-const codeFontSize = computed(() => uiPrefs.codeFontSize)
-const setCodeFontSize = (val: number) => uiPrefs.setCodeFontSize(val)
 // 字号是离散偏好而非连续量：四档预设替代滑杆。
 // 落库的值一律在 normalizePrefs 里吸附到最近挡位，所以不存在「一个都不高亮」的状态
 // —— 旧版默认 15 落在旧挡位 12/14/16/18 之外，曾长期卡在那个死角：
@@ -714,12 +698,6 @@ const fontSizePresets = [
   { value: FONT_SIZE_PRESETS[1], label: 'settings.general.sizeM' },
   { value: FONT_SIZE_PRESETS[2], label: 'settings.general.sizeL' },
   { value: FONT_SIZE_PRESETS[3], label: 'settings.general.sizeXL' },
-]
-const codeFontSizePresets = [
-  { value: CODE_FONT_SIZE_PRESETS[0], label: 'settings.general.sizeS' },
-  { value: CODE_FONT_SIZE_PRESETS[1], label: 'settings.general.sizeM' },
-  { value: CODE_FONT_SIZE_PRESETS[2], label: 'settings.general.sizeL' },
-  { value: CODE_FONT_SIZE_PRESETS[3], label: 'settings.general.sizeXL' },
 ]
 const defaultExpandThinking = computed(() => uiPrefs.defaultExpandThinking)
 const setDefaultExpandThinking = (val: boolean) => uiPrefs.setDefaultExpandThinking(val)

@@ -176,7 +176,8 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
   overflow-y: auto;
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  /* 待批准的那条命令 —— 用户得读清楚才敢点，必须跟代码字号 */
+  font-size: var(--code-font-size);
   color: var(--text-soft);
   white-space: pre-wrap;
   word-break: break-all;

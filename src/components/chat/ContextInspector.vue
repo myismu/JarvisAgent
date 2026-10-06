@@ -1194,7 +1194,8 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   border-radius: 6px;
   background: color-mix(in srgb, var(--bg-dark) 78%, var(--surface-strong));
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  /* 这里显示的是被选中的那段上下文原文，属代码内容 */
+  font-size: var(--code-font-size);
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;

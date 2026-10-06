@@ -541,8 +541,6 @@
       "sizeL": "Large",
       "sizeXL": "XL",
       "fontSizeDesc": "Global UI font size: Small 13 / Standard 15 / Large 17 / XL 19.",
-      "codeFontSize": "Code font size",
-      "codeFontSizeDesc": "Font size for code, tool arguments/output and execution logs (scales with UI font size): Small 11 / Standard 13 / Large 15 / XL 17.",
       "compactMode": "Compact mode",
       "compactModeDesc": "Reduce message spacing and padding to fit more content on screen.",
       "agentMessageOpacity": "Agent message opacity",

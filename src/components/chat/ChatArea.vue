@@ -1277,7 +1277,7 @@ onMounted(() => {
 }
 
 /* 代码块与表格的头部容器：几何与配色共用，但**字号不共用** ——
-   代码头部跟「代码字体大小」，表格头部是正文内容、跟正文口径。 */
+   代码头部走代码口径（--code-font-size），表格头部是正文内容、跟正文口径。 */
 .response-text :deep(.markdown-code-header),
 .response-text :deep(.md-code-header),
 .response-text :deep(.markdown-table-header) {

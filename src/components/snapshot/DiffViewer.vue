@@ -222,7 +222,8 @@ const patchIconPaths = computed(() => getFileOpPaths(props.patch.type));
   max-height: 300px;
   overflow-y: auto;
   font-family: var(--font-mono, "Consolas", "Monaco", monospace);
-  font-size: 0.8rem;
+  /* diff 正文是代码内容，跟代码口径 */
+  font-size: var(--code-font-size);
   line-height: 1.5;
 }
 

@@ -458,7 +458,8 @@ const rePreview = async () => {
   background: var(--glass-bg-light);
   color: var(--text-main);
   font-family: var(--font-mono);
-  font-size: 0.8333rem;
+  /* prompt 正文（含 {{变量}} 占位符）按代码口径排版 */
+  font-size: var(--code-font-size);
   line-height: 1.7;
   padding: 12px;
   outline: none;

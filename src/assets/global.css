@@ -53,21 +53,28 @@
   --fw-semibold: 600;
   --fw-bold: 700;
   --fw-heavy: 900;
-  /* 代码字号：挡位存的是「默认界面字号(15px)下的等效 px」，这里换算成相对 1rem 的量。
-     不能继续用绝对 px —— 界面字号改的是 root font-size，代码若写死 px 两个设置就会脱钩：
-     界面调到 19 时正文约 18px、代码还是 13px，代码相对越看越小，
-     而用户放大界面本来就是为了看清。 */
-  --code-font-px: 13;
-  --code-font-size: calc(var(--code-font-px) / 15 * 1rem);
-  /* markdown 正文口径：StreamingMarkdown 的段落/列表/引用/表格用它排版。
-     工具参数输出与执行日志的容器会把它改写成 --code-font-size，
-     让整块内容跟随「代码字体大小」而不是正文口径。 */
-  --md-body-font-size: var(--content-font-size);
   /* 正文内容字号：markdown 的段落 / 列表 / 引用 / 表格统一用它。
      此前段落与表格是 0.9rem(13.5px)、列表与引用是继承来的 0.95rem(14.25px)，
-     同一段回复里字号会跳。取 0.95rem 是因为它本来就是多数派，多数内容不受影响。
-     代码块不走这个变量，它归「常规设置 → 代码字体大小」(--code-font-size) 管。 */
+     同一段回复里字号会跳。取 0.95rem 是因为它本来就是多数派，多数内容不受影响。 */
   --content-font-size: 0.95rem;
+  /* 代码字号 = 正文的固定倍率，**不再是独立设置**。
+     原先有一档「常规设置 → 代码字体大小」，撤掉有两个理由：
+       1. 它存绝对 px，而界面字号改的是 root font-size —— 两者脱钩：界面调大时代码相对越小；
+       2. 它只覆盖 9 条规则（markdown 代码块 / 工具参数输出 / 执行日志），
+          diff 视图、权限弹窗的命令预览、设置里的 JSON 查看器都不跟随，
+          「代码字体大小」这个名字所承诺的一致性，它并不兑现。
+     倍率取 0.9：等宽字体的 x-height 比正文大，视觉上略小一点反而更齐。
+     （改前默认档是 13px，现在是 0.9 × 14.25 ≈ 12.83px，差 0.17px。）
+     归属判据（免得再次变成"部分跟随"）：
+       · 算代码内容 → 用这个变量：markdown 代码块、工具参数/输出、执行日志、diff 正文、
+         权限弹窗里待批准的那条命令、技能正文里的 code、prompt 编辑器；
+       · 不算 → 保持各自字号：用等宽字排的 UI 标签与控件（工具名 / 参数名 / 枚举值 /
+         快捷键提示 kbd / 端口号输入框）。它们已有一套相对相邻元素的局部层级，
+         强行拉到代码字号会打乱那个节奏。 */
+  --code-font-size: calc(var(--content-font-size) * 0.9);
+  /* markdown 正文口径：StreamingMarkdown 的段落/列表/引用/表格用它排版。
+     工具参数输出与执行日志的容器会把它改写成 --code-font-size，让整块内容走代码口径。 */
+  --md-body-font-size: var(--content-font-size);
 
   /* 面板表面变量（近实心，保留轻微通透感） */
   --glass-bg: rgba(255, 255, 255, 0.8);
@@ -495,7 +502,7 @@ body.dark-mode {
 }
 .dev-tool-pre {
   font-family: var(--font-mono);
-  /* 跟「代码字体大小」：工具参数/输出块本质是代码与日志，不是正文 */
+  /* 跟代码口径：工具参数/输出块本质是代码与日志，不是正文 */
   font-size: var(--code-font-size);
   line-height: 1.5;
   background: transparent;

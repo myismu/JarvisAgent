@@ -400,7 +400,7 @@ function renderTableCell(cell: any): string {
 
 .md-code-block code {
   font-family: var(--font-mono);
-  /* 常规设置「代码字体大小」写在该变量上；0.85em 仅作变量缺失时的回退 */
+  /* --code-font-size 是正文的固定倍率（见 global.css）；0.85em 仅作变量缺失时的回退 */
   font-size: var(--code-font-size, 0.85em);
   line-height: 1.6;
   color: var(--text-main);

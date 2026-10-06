@@ -42,7 +42,6 @@ function applyImageTier(prefs: UiPreferences, tier: ImageCompressTier) {
 
 interface UiPreferences {
   fontSize: number;
-  codeFontSize: number;
   autoScroll: boolean;
   defaultExpandThinking: boolean;
   agentPanelPosition: AgentPanelPosition;
@@ -104,17 +103,13 @@ interface UiPreferences {
  */
 export const FONT_SIZE_PRESETS = [13, 15, 17, 19] as const;
 
-/**
- * 代码字号挡位。**单位是「默认界面字号(15px)下的等效 px」，不是绝对 px** ——
- * CSS 侧的 --code-font-size 会把它换算成相对 1rem 的量，于是代码块随界面字号等比缩放。
- *
- * 为什么不直接存比值：后端 `UiPreferences.code_font_size` 定型为 i32
- * （src-tauri/src/command/app_config.rs）。改存 0.9 会让 serde 反序列化失败，
- * get_ui_preferences 整个报错，loadFromBackend 落进 catch 后**用户全部偏好被重置**。
- * 沿用整数挡位则老配置无需迁移：13 的含义不变，只是从绝对 px 变成相对量。
- */
-export const CODE_FONT_SIZE_PRESETS = [11, 13, 15, 17] as const;
-
+// 曾经还有一档「代码字体大小」（CODE_FONT_SIZE_PRESETS = [11, 13, 15, 17]），已移除：
+// 它存绝对 px、与界面字号脱钩，而且只覆盖 9 条 CSS 规则 —— diff 视图、权限弹窗的命令
+// 预览、设置里的 JSON 查看器都不跟随，「代码字号」这个名字承诺的一致性它并不兑现。
+// 现在代码字号是正文的固定倍率，见 global.css 的 --code-font-size。
+//
+// 后端 `UiPreferences.code_font_size: i32` 字段**保留不动**：老配置照常能读，前端不再
+// 发送它，`#[serde(default = "default_code_font_size")]` 会兜住默认值。
 /** 把任意数值吸附到最近的挡位。挡位是唯一写入口，但库里可能存着旧版本写的任意值。 */
 function snapToNearestPreset(value: number, presets: readonly number[]): number {
   return presets.reduce(
@@ -125,7 +120,6 @@ function snapToNearestPreset(value: number, presets: readonly number[]): number 
 
 const defaults: UiPreferences = {
   fontSize: 15,
-  codeFontSize: 13,
   autoScroll: true,
   defaultExpandThinking: false,
   agentPanelPosition: "right",
@@ -180,10 +174,6 @@ function normalizePrefs(
   // —— 旧版默认 15 落在旧挡位 12/14/16/18 之外，正是这个状态。
   // 口径与 normalizeImageCompress 一致：以落库的数值为准，反推出最接近的挡位。
   result.fontSize = snapToNearestPreset(Number(result.fontSize) || defaults.fontSize, FONT_SIZE_PRESETS);
-  result.codeFontSize = snapToNearestPreset(
-    Number(result.codeFontSize) || defaults.codeFontSize,
-    CODE_FONT_SIZE_PRESETS,
-  );
   return result;
 }
 
@@ -225,12 +215,6 @@ function applyFontSize(size: number) {
   document.documentElement.style.fontSize = `${size}px`;
 }
 
-function applyCodeFontSize(size: number) {
-  // 只写「挡位原始值」，px → 相对 1rem 的换算交给 CSS 的 --code-font-size。
-  // 这样界面字号变化时不需要 JS 重算，也避免两处各写一份换算逻辑。
-  document.documentElement.style.setProperty("--code-font-px", String(size));
-}
-
 function applyCompactMode(compact: boolean) {
   document.documentElement.classList.toggle("compact-mode", compact);
 }
@@ -242,7 +226,6 @@ function applyMessageOpacity() {
 
 function applyAll(p: UiPreferences) {
   applyFontSize(p.fontSize);
-  applyCodeFontSize(p.codeFontSize);
   applyCompactMode(p.compactMode);
   applyMessageOpacity();
 }
@@ -278,7 +261,6 @@ function startWatchers() {
   watchersInitialized = true;
 
   watch(() => prefs.value.fontSize, (val) => { applyFontSize(val); scheduleSave(); });
-  watch(() => prefs.value.codeFontSize, (val) => { applyCodeFontSize(val); scheduleSave(); });
   watch(() => prefs.value.compactMode, (val) => { applyCompactMode(val); scheduleSave(); });
   watch(() => prefs.value.agentPanelPosition, () => scheduleSave());
   watch(() => prefs.value.sidebarCollapsed, () => scheduleSave());
@@ -383,8 +365,6 @@ export function usePreferences() {
     setAgentPanelVisible: (val: boolean) => { prefs.value.agentPanelVisible = val; },
     get fontSize() { return prefs.value.fontSize; },
     setFontSize: (val: number) => { prefs.value.fontSize = val; },
-    get codeFontSize() { return prefs.value.codeFontSize; },
-    setCodeFontSize: (val: number) => { prefs.value.codeFontSize = val; },
     agentAudience,
     setAgentAudience: (val: AgentAudience) => { prefs.value.agentAudience = val; },
     agentWorkMode,

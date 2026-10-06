@@ -542,8 +542,6 @@
       "sizeL": "大",
       "sizeXL": "特大",
       "fontSizeDesc": "界面全局字体大小：小 13 / 标准 15 / 大 17 / 特大 19。",
-      "codeFontSize": "代码字体大小",
-      "codeFontSizeDesc": "代码、工具参数/输出与执行日志的字号（随界面字号等比缩放）：小 11 / 标准 13 / 大 15 / 特大 17。",
       "compactMode": "紧凑模式",
       "compactModeDesc": "减少消息间距和内边距，在屏幕上显示更多内容。",
       "agentMessageOpacity": "Agent 回复透明度",

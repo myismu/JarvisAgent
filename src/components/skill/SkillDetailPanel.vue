@@ -275,7 +275,8 @@ const renderMarkdown = (text: string): string => {
 
 .path-value {
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  /* 文件路径按代码口径 */
+  font-size: var(--code-font-size);
   word-break: break-all;
 }
 
@@ -308,7 +309,7 @@ const renderMarkdown = (text: string): string => {
   padding: 2px 6px;
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
-  font-size: 0.8667rem;
+  font-size: var(--code-font-size);
 }
 
 .body-content :deep(pre) {
