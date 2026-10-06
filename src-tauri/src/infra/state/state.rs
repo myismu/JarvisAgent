@@ -152,8 +152,6 @@ pub struct SessionContext {
     /// `None` = 本会话尚未跑过主 Agent（尚无裁决），子 Agent 此时回落 audience 默认值。
     /// 每轮开始时被主 Agent 覆盖为 `Some(..)`。
     pub turn_think: Mutex<Option<bool>>,
-    /// 调度器事件接收端（异步模式）：RunSubagentsSequentially 存，pipeline 取
-    pub scheduler_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::core::orchestration::scheduler::SchedulerEvent>>>,
     /// ReadFile 探索拦截：记录本会话已读取的文件路径，用于检测逐文件遍历模式
     pub read_file_paths: Mutex<Vec<String>>,
     /// 「先读后改」记录：本会话内模型已看到过的文件版本（路径 → 内容指纹）。
@@ -230,7 +228,6 @@ impl SessionContext {
             agent_work_mode: Mutex::new("edit".to_string()),
             thinking_mode: Mutex::new(false),
             turn_think: Mutex::new(None),
-            scheduler_rx: Mutex::new(None),
             read_file_paths: Mutex::new(Vec::new()),
             read_file_fingerprints: Mutex::new(HashMap::new()),
             loop_continuation_pending: Mutex::new(false),

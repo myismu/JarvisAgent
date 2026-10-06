@@ -12,17 +12,6 @@ use crate::infra::types::models::TaskStatus;
 use crate::core::orchestration::tasks::{TaskManager, TaskUpdateParams};
 use crate::core::tools::{run_subagent, IMPLEMENTATION_AGENT_ROLE};
 
-/// 调度器 → 主 Agent 的实时事件
-#[derive(Debug, Clone)]
-pub enum SchedulerEvent {
-    /// 子任务完成（含 token 统计）
-    TaskCompleted { task_id: i32, subject: String, tokens: (u64, u64) },
-    /// 子任务失败/超时/取消
-    TaskFailed { task_id: i32, subject: String, reason: String, error_detail: String },
-    /// 全部任务结束（含汇总报告）
-    AllDone { completed: usize, failed: usize, report: String },
-}
-
 pub struct TaskScheduler;
 
 impl TaskScheduler {

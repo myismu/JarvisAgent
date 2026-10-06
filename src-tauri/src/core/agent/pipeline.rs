@@ -26,7 +26,7 @@
 //!
 //! ### 阶段 3 主循环每轮内部子步骤
 //! 取消检查 → 循环次数确认 → 上下文压缩 → 历史快照 → 构建请求
-//! → API 调用（含调度器事件 select）→ 流式处理 → 工具执行 → 反思审查 → 回写历史 → 下一轮
+//! → API 调用 → 流式处理 → 工具执行 → 反思审查 → 回写历史 → 下一轮
 //!
 //! 注：这里**没有**「后台通知注入」——后台任务结果不再进会话上下文，
 //! 改走前端 `bg-task-done` / `background-failed` 事件提醒，模型需要时用
@@ -37,7 +37,7 @@
 //! - 历史准备：`prepare_history_snapshot()` / `prepare_history_snapshot_from_messages()` / `fix_broken_tool_call_pairs()`
 //! - 上下文监控：`build_context_estimate()` / `update_context_snapshot()` / `update_provider_usage_snapshot()` / `resolve_max_tokens()`
 //! - 请求构建：`build_llm_request()` / `call_api_with_retry()` / `current_tools()`
-//! - 流程控制：`handle_sched_event()` / `request_loop_continuation()` / `compact_if_needed()`
+//! - 流程控制：`request_loop_continuation()` / `compact_if_needed()`
 //! - 异常收尾：`abort_after_error()` / `handle_cancellation()` / `store_assistant_response()`
 //!
 //! ## 依赖
@@ -1189,62 +1189,13 @@ impl PipelineState {
         *self.ctx.active_run_id.lock().await = Some(self.run_id.clone());
     }
 
-    /// 处理调度器事件（异步调度模式下，主循环与 LLM 请求做 select 时消费）。
-    /// 返回 (needs_llm, scheduler_done)：
-    /// - needs_llm: 有事件注入了对话，需要 LLM 处理
-    /// - scheduler_done: 调度器已结束（AllDone），调用方应退出等待
-    async fn handle_sched_event(&mut self, event: crate::core::orchestration::scheduler::SchedulerEvent) -> (bool, bool) {
-        use crate::core::orchestration::scheduler::SchedulerEvent;
-        match event {
-            SchedulerEvent::TaskCompleted { task_id, subject, tokens: _ } => {
-                println!("[JARVIS] 调度器: Task #{} ({}) 完成", task_id, subject);
-                let _ = self.app.emit("chat-stream", json!({
-                    "content": format!("\n> [OK] Task #{} 完成: {}\n", task_id, subject),
-                    "sessionId": self.sid,
-                }));
-                (false, false)
-            }
-            SchedulerEvent::TaskFailed { task_id, subject, reason, error_detail } => {
-                println!("[JARVIS] 调度器: Task #{} ({}) 失败: {}", task_id, subject, reason);
-                let _ = self.app.emit("chat-stream", json!({
-                    "content": format!("\n> [FAIL] Task #{} 失败({}): {}\n", task_id, reason, subject),
-                    "sessionId": self.sid,
-                }));
-                let mut session = self.ctx.memory.lock().await;
-                append_message(&mut session, Message::Assistant {
-                    content: Content::Single(format!(
-                        "调度器通知：Task #{}「{}」执行失败（原因：{}）。\n错误详情：\n{}\n\n请根据以上信息决策：重试该任务 / 将其拆分为更小子任务 / 跳过该任务继续执行其他任务。",
-                        task_id, subject, reason, error_detail
-                    )),
-                }, "internal");
-                (true, false)
-            }
-            SchedulerEvent::AllDone { completed, failed, report } => {
-                println!("[JARVIS] 调度器: 全部完成 {}成功 {}失败", completed, failed);
-                *self.ctx.scheduler_rx.lock().await = None;
-                let _ = self.app.emit("chat-stream", json!({
-                    "content": format!("\n> [调度报告] {}成功 {}失败\n\n{}\n", completed, failed, report),
-                    "sessionId": self.sid,
-                }));
-                let mut session = self.ctx.memory.lock().await;
-                append_message(&mut session, Message::Assistant {
-                    content: Content::Single(format!(
-                        "调度器报告：所有任务已执行完毕。\n{}",
-                        report
-                    )),
-                }, "internal");
-                (true, true)
-            }
-        }
-    }
-
     /// 阶段 3：主循环 — Agent Loop 心脏（调 LLM → 流式解析 → 工具执行 → 循环）
     ///
     /// 每轮循环的执行顺序：
     /// 1. 取消检查 / 循环次数确认（满 30 轮弹窗询问）/ 上下文压缩检查
     /// 2. 准备历史快照（过滤内部消息、修复残缺工具配对、恢复图片、注入动态上下文）
     /// 3. build_llm_request 按模型格式构建请求（OpenAI 出口时翻译协议）
-    /// 4. 调 API：有活跃调度器时与调度器事件做 select（异步并行），否则直接等待（120s 超时 + 重试）
+    /// 4. 调 API：直接等待（120s 超时 + 重试）
     /// 5. process_stream 流式解析：边收边推前端，累积工具参数分片
     /// 6. execute_tool_calls 并行执行工具，结果以 ToolResult 写回历史
     /// 7. 判断是否继续：有工具结果 → 下一轮；无工具结果 = 最终答案，结束循环
@@ -1322,166 +1273,50 @@ impl PipelineState {
                 continue;
             }
 
-            // 步骤 6：调用 LLM API —— 有活跃调度器时与其事件并行 select 等待
-            // 调度器 channel 接收端（异步 select! 用）
-            let sched_rx = self.ctx.scheduler_rx.lock().await.take();
-
+            // 步骤 6：调用 LLM API
             // 等待提示看门狗：从请求发出前一直存活到本轮流读取结束。
             // 由 SSE 帧到达续期，因此只在**真的没有数据**时才提示
             // （上游深度思考、网络迟滞、收到响应头后正文静默）。
-            // 仅无调度器的主路径启用；有调度器时事件本身频繁，无需提示。
-            let progress_watchdog = if sched_rx.is_none() {
-                Some(self.spawn_waiting_hint())
-            } else {
-                None
-            };
-            // API 调用 + 调度器事件 select!：spawn API 到后台 task，select! 等结果
-            let (response, sched_rx) = if let Some(mut rx) = sched_rx {
-                let req_json_clone = req_json.clone();
-                let client = self.client.clone();
-                let base_url = self.base_url.clone();
-                let api_key = self.api_key.clone();
-                let api_format = self.api_format;
-                let app = self.app.clone();
-                let sid = self.sid.clone();
-                let run_id_clone = self.run_id.clone();
-                let cancel_token = self.cancel_token.clone();
-                let ctx = self.ctx.clone();
-                let in_tokens = self.req_input_tokens;
-                let out_tokens = self.req_output_tokens;
-                let api_handle = tokio::spawn(async move {
-                    let api_request = api_client::api_call_with_retry(
-                        &client, &base_url, &req_json_clone, &api_key, api_format,
-                        api_client::MAX_API_RETRIES, &app, &sid,
-                    );
-                    let timeout_result = tokio::time::timeout(
-                        Duration::from_secs(
-                            crate::infra::types::constants::API_RESPONSE_HEADER_TIMEOUT_SECS,
-                        ),
-                        api_request,
-                    );
-                    tokio::select! {
-                        result = timeout_result => {
-                            match result {
-                                Ok(inner) => inner.map(|r| Some(r)),
-                                Err(_) => {
-                                    let error = ApiError::Network(format!(
-                                        "API 请求超过 {} 秒未返回响应头，已自动终止。",
-                                        crate::infra::types::constants::API_RESPONSE_HEADER_TIMEOUT_SECS
-                                    ));
-                                    let _ = agent_runs::fail_run(
-                                        &app,
-                                        &run_id_clone,
-                                        in_tokens,
-                                        out_tokens,
-                                    );
-                                    *ctx.cancel_token.lock().await = None;
-                                    Err(error.into())
-                                }
-                            }
-                        }
-                        _ = cancel_token.cancelled() => {
-                            Ok(None)
-                        }
-                    }
-                });
+            let progress_watchdog = self.spawn_waiting_hint();
 
-                tokio::select! {
-                    result = api_handle => {
-                        match result {
-                            Ok(Ok(Some(resp))) => (Some(resp), Some(rx)),
-                            Ok(Ok(None)) => { *self.ctx.scheduler_rx.lock().await = Some(rx); continue; },
-                            Ok(Err(e)) => {
-                                // API 调用失败 → 记录诊断日志后返回 Err
-                                println!("[JARVIS] API 调用失败，终止主循环: {}", e);
-                                let messages_json = {
-                                    let session = self.ctx.memory.lock().await;
-                                    serde_json::to_string_pretty(&session.messages).unwrap_or_default()
-                                };
-                                crate::infra::debug_logger::debug_logger().log_api_error(
-                                    &self.sid, "MAIN", self.total_loop_count + 1,
-                                    &e.to_string(), &messages_json,
-                                );
-                                *self.ctx.scheduler_rx.lock().await = Some(rx);
-                                return Err(e.into());
-                            }
-                            Err(_) => { *self.ctx.scheduler_rx.lock().await = Some(rx); continue; },
-                        }
-                    }
-                    event = rx.recv() => {
-                        if let Some(ev) = event {
-                            let (_needs_llm, scheduler_done) = self.handle_sched_event(ev).await;
-                            if !scheduler_done {
-                                // 调度器未结束，放回 receiver 继续等
-                                *self.ctx.scheduler_rx.lock().await = Some(rx);
-                            }
-                            // scheduler_done 时 handle_sched_event 已清除 rx，不放回
-                        } else {
-                            // channel 关闭（调度器异常退出），不放回
-                        }
-                        self.loop_count += 1;
-                        self.total_loop_count += 1;
-                        continue;
-                    }
-                    _ = self.cancel_token.cancelled() => {
-                        *self.ctx.scheduler_rx.lock().await = Some(rx);
-                        continue;
-                    }
+            // 看门狗已在上面启动，这里只负责发请求并把它传给流阶段。
+            let api_outcome = self.call_api_with_retry(&req_json).await;
+            // 不在此 abort：看门狗要跨到流读取阶段才有效。
+            // 响应头很快返回，真正的静默几乎都发生在正文阶段。
+            let response = match api_outcome {
+                Ok(Some(r)) => {
+                    progress_watchdog.touch();
+                    Some(r)
                 }
-            } else {
-                // 无活跃调度器，正常阻塞等待 LLM。
-                // 看门狗已在分支外启动，这里只负责发请求并把它传给流阶段。
-                let api_outcome = self.call_api_with_retry(&req_json).await;
-                // 不在此 abort：看门狗要跨到流读取阶段才有效。
-                // 响应头很快返回，真正的静默几乎都发生在正文阶段。
-                let resp = match api_outcome {
-                    Ok(Some(r)) => {
-                        if let Some(wd) = &progress_watchdog {
-                            wd.touch();
-                        }
-                        r
-                    }
-                    // 提前退出前必须停掉看门狗（统一在块外 finish），否则会残留并事后补发提示
-                    Ok(None) => {
-                        *self.ctx.scheduler_rx.lock().await = None;
-                        if let Some(wd) = &progress_watchdog {
-                            wd.finish();
-                        }
-                        continue;
-                    }
-                    Err(e) => {
-                        if let Some(wd) = &progress_watchdog {
-                            wd.finish();
-                        }
-                        // API 调用失败 → 记录诊断日志后返回 Err
-                        println!("[JARVIS] API 调用失败，终止主循环: {}", e);
-                        let messages_json = {
-                            let session = self.ctx.memory.lock().await;
-                            serde_json::to_string_pretty(&session.messages).unwrap_or_default()
-                        };
-                        crate::infra::debug_logger::debug_logger().log_api_error(
-                            &self.sid, "MAIN", self.total_loop_count + 1,
-                            &e.to_string(), &messages_json,
-                        );
-                        return Err(e.into());
-                    }
-                };
-                (Some(resp), None)
+                // 提前退出（取消）：统一交给下面的 `let Some(...) else` 分支停看门狗并 continue
+                Ok(None) => None,
+                Err(e) => {
+                    progress_watchdog.finish();
+                    // API 调用失败 → 记录诊断日志后返回 Err
+                    println!("[JARVIS] API 调用失败，终止主循环: {}", e);
+                    let messages_json = {
+                        let session = self.ctx.memory.lock().await;
+                        serde_json::to_string_pretty(&session.messages).unwrap_or_default()
+                    };
+                    crate::infra::debug_logger::debug_logger().log_api_error(
+                        &self.sid, "MAIN", self.total_loop_count + 1,
+                        &e.to_string(), &messages_json,
+                    );
+                    return Err(e.into());
+                }
             };
 
             // 流读取期间到达的帧会通过 on_frame 续期，真正空闲才提示。
             // 本轮结束（无论哪条路径）都必须 finish，否则会残留任务。
-            let frame_tick = progress_watchdog.as_ref().map(|wd| {
-                let tick = wd.last_tick_ms.clone();
+            let frame_tick = Some({
+                let tick = progress_watchdog.last_tick_ms.clone();
                 std::sync::Arc::new(move || {
                     tick.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
                 }) as std::sync::Arc<dyn Fn() + Send + Sync>
             });
 
             let Some(response) = response else {
-                if let Some(wd) = &progress_watchdog {
-                    wd.finish();
-                }
+                progress_watchdog.finish();
                 continue;
             };
             // 步骤 7：SSE 流式解析 —— 边收边推前端、累积工具参数分片
@@ -1574,9 +1409,7 @@ impl PipelineState {
 
             // 本轮流读取已结束：停掉等待提示看门狗（含重试流）。
             // 后面还有工具执行/下一轮循环，此处收尾最贴合"不再等上游数据"的语义。
-            if let Some(wd) = &progress_watchdog {
-                wd.finish();
-            }
+            progress_watchdog.finish();
 
             // 上游失联 → 保留现场并结束本轮，把决策权交还用户
             // （服务恢复后一句"继续"即可接上）。
@@ -1767,14 +1600,6 @@ impl PipelineState {
                 }),
             );
 
-            // 调度器 receiver 放回 ctx，下一轮 select! 继续用
-            if let Some(rx) = sched_rx {
-                let mut slot = self.ctx.scheduler_rx.lock().await;
-                if slot.is_none() {
-                    *slot = Some(rx);
-                }
-            }
-
             // 取消检查移到这里之前只做「下一轮是否继续」的判断。
             let was_cancelled_this_loop = self.cancel_token.is_cancelled();
             if was_cancelled_this_loop {
@@ -1957,38 +1782,6 @@ impl PipelineState {
                     &mut current_thinking_this_turn,
                 );
                 self.record_loop_event(&resp_for_event, &[]).await;
-
-                // 调度器仍在运行时，不退出循环——等待调度器事件
-                if self.ctx.scheduler_rx.lock().await.is_some() {
-                    println!("[JARVIS] 主循环: LLM 无工具调用但调度器仍在运行，等待调度器事件");
-                    // 取出 receiver，释放锁后再 await
-                    let rx_opt = self.ctx.scheduler_rx.lock().await.take();
-                    if let Some(mut rx) = rx_opt {
-                        tokio::select! {
-                            event = rx.recv() => {
-                                if let Some(ev) = event {
-                                    let (_needs_llm, scheduler_done) = self.handle_sched_event(ev).await;
-                                    if !scheduler_done {
-                                        // 调度器未结束，放回 receiver 继续等
-                                        *self.ctx.scheduler_rx.lock().await = Some(rx);
-                                    }
-                                    // scheduler_done=true 时 handle_sched_event 已清除 rx，不放回
-                                } else {
-                                    // channel 关闭 = 调度器异常退出，不放回
-                                }
-                            }
-                            _ = self.cancel_token.cancelled() => {
-                                *self.ctx.scheduler_rx.lock().await = Some(rx);
-                            }
-                        }
-                    }
-                    // rx 已被取走（AllDone/异常/取消），回到循环顶部
-                    // 如果 rx 被放回 → 下一轮继续等待
-                    // 如果 rx 未放回 → 下一轮 scheduler_rx.is_some()=false → break
-                    self.loop_count += 1;
-                    self.total_loop_count += 1;
-                    continue;
-                }
 
                 break;
             } else {
