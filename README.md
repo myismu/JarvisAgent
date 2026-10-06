@@ -6,6 +6,10 @@
 
 基于 Tauri 2 + Vue 3 + Rust 构建，完整 Agent 自主循环，支持 12 家厂商共 93 个模型（其中 67 个在售，其余维护生命周期状态），具备快照版本控制、多 Agent 沙箱、方案审批、双轴模式系统等企业级能力
 
+<a href="SCREENSHOTS.md"><img src="screenshots/01-main-chat.png" alt="JarvisAgent 主界面" width="820"></a>
+
+<sub>点击图片查看更多界面截图</sub>
+
 </div>
 
 ---
