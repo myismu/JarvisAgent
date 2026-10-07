@@ -1,0 +1,62 @@
+# CI 流程：push / PR 时自动验证代码质量
+name: CI
+
+on:
+  push:              # 任何分支推送都跑
+  pull_request:      # PR 提交时跑
+  workflow_dispatch: # 支持在网页上手动点按钮重跑
+
+# 最小权限：CI 只需要读取代码
+permissions:
+  contents: read
+
+# 同一分支连续推送时，自动取消还没跑完的旧任务，避免浪费
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ══ 后端：格式检查 + 单元测试 ══
+  rust:
+    name: Rust 格式与测试
+    runs-on: windows-latest   # 项目是 Windows 主场，测试覆盖 Windows 行为路径
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链（按 rust-toolchain.toml 钉的 1.95.0）
+        run: rustup show
+
+      - name: 缓存 cargo 依赖与编译产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 格式检查
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: 单元测试
+        working-directory: src-tauri
+        run: cargo test
+
+  # ══ 前端：类型检查 + 构建 ══
+  frontend:
+    name: 前端类型检查与构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 pnpm（版本读 package.json 的 packageManager 字段）
+        uses: pnpm/action-setup@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm      # 缓存 pnpm 依赖，加速后续运行
+
+      - name: 安装依赖（冻结锁文件，不许 CI 里改动它）
+        run: pnpm install --frozen-lockfile
+
+      - name: 类型检查与构建
+        run: pnpm build

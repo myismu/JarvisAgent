@@ -1,0 +1,4 @@
+# Rust 工具链钉版本：本地与 CI 使用同一个编译器与 rustfmt，杜绝版本漂移
+[toolchain]
+channel="1.95.0"
+components=["rustfmt"]
