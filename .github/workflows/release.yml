@@ -1,0 +1,49 @@
+# CD 流程：推送 v* 标签时，构建 Windows 安装包并生成草稿 Release
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"          # 只有推 v 开头的标签才触发（如 v0.1.0），平时 push 不受影响
+
+# 创建 Release 需要写权限（CI 流程是最小只读，这里必须放开）
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 构建并发布 Windows 安装包
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链（按 rust-toolchain.toml 钉的 1.95.0）
+        run: rustup show
+
+      - name: 缓存 cargo 依赖与编译产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装 pnpm（版本读 package.json 的 packageManager 字段）
+        uses: pnpm/action-setup@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建并生成草稿 Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}   # 把 Release 挂到触发本次运行的标签上
+          releaseName: "JarvisAgent v__VERSION__"   # __VERSION__ 自动替换为 tauri.conf.json 里的版本号
+          releaseBody: "JarvisAgent 桌面版。Windows 安装包见下方 Assets。"
+          releaseDraft: true                # 草稿：只有你能看到，确认后再点发布
+          prerelease: false
