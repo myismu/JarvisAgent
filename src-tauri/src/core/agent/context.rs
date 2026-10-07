@@ -155,7 +155,9 @@ pub fn inject_user_message(
         _ => Content::Multiple(blocks),
     };
 
-    let message_id = append_message(session, Message::User { content }, "chat");
+    // 用户真实输入 —— `Chat` 是唯一样例同时进模型上下文与界面渲染的来源，
+    // 也是 `is_turn_start_message` 认定「轮起点」的依据。
+    let message_id = append_message(session, Message::User { content }, MessageSource::Chat);
 
     (initial_msg_index, message_id)
 }

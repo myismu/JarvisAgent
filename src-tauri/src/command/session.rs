@@ -1137,7 +1137,8 @@ pub(crate) fn ensure_session_recovered(
             //（assistant 响应 → user 工具结果 → 下一轮 …），
             // 半截内容本就住在最后一个 loop 的 resp_blocks 里，由重放一并带出。
             for message in messages {
-                session::append_message(memory, message, "chat");
+                // 重放出来的是**主对话**的原始消息（响应 + 工具结果），来源即 `Chat`
+                session::append_message(memory, message, MessageSource::Chat);
             }
             finish_recovery(session_id, memory, &run.run_id)
         }
@@ -1145,7 +1146,7 @@ pub(crate) fn ensure_session_recovered(
             // 崩溃 run 无内容可补但会话尾部悬尾（最后一条是 user 且无人回应）：
             // 补一条 assistant 中断占位，维持消息级 user/assistant 严格交替。
             //
-            // source="interrupted" 会进界面渲染；阶段二起小字由**结构化 kind**
+            // `MessageSource::Interrupted` 会进界面渲染；阶段二起小字由**结构化 kind**
             // 驱动（`command/history.rs::interrupt_notice_for`），正文不再放标记
             // 文本——标记在发送给模型前按 kind 拼回。
             println!(
@@ -1157,7 +1158,7 @@ pub(crate) fn ensure_session_recovered(
                 Message::Assistant {
                     content: Content::Single(String::new()),
                 },
-                "interrupted",
+                MessageSource::Interrupted,
                 Some(crate::infra::types::models::InterruptKind::AppClosed.as_str()),
             );
             finish_recovery(session_id, memory, &run.run_id)
@@ -1327,12 +1328,14 @@ async fn compact_inner(
     .await
     .map_err(|e| format!("压缩失败: {}", e))?;
 
-    // 从 DB 中删除已清理的 internal/background 消息
+    // 从 DB 中删除刚才被压缩剔除的消息行。
+    // 名单与 `compact_messages` 的剔除判据同源（`!in_llm_context()`，只剩 `Placeholder`），
+    // 不允许各写一份 —— 见 `core/session/memory.rs` 同一处的说明。
     if let Err(e) = crate::core::session::repository::delete_session_messages_by_source(
         session_id,
-        &["internal", "background"],
+        &[MessageSource::Placeholder],
     ) {
-        println!("[compact] 清理 internal/background 消息失败: {}", e);
+        println!("[compact] 清理内部填充消息失败: {}", e);
     }
 
     let ids: Vec<String> = (0..memory.messages.len())

@@ -58,8 +58,18 @@ function replacePlanTextWithNotice(source: string, planContent: string, notice: 
   return source.replace(content, notice);
 }
 
-function hideSubmittedPlanFromChat(view: SessionViewState, proposal: PlanProposal) {
-  const notice = `我已整理实施方案「${proposal.title}」，请在右侧方案审批面板中审阅。`;
+/**
+ * 把正文里的方案原文替换成一句"已提交到审批面板"的提示。
+ *
+ * `notice` 由调用方传入（成句、已翻译）：本函数在模块顶层，拿不到
+ * `useI18n()` 的组件上下文；把它挪进 composable 只为一句话不值当。
+ * 文案走 `plan.submittedNotice` —— 此前是硬编码中文，英文界面下会冒中文。
+ */
+function hideSubmittedPlanFromChat(
+  view: SessionViewState,
+  proposal: PlanProposal,
+  notice: string,
+) {
   const content = proposal.content || "";
   view.contentBuffer = replacePlanTextWithNotice(view.contentBuffer, content, notice);
   view.tempBuffer = replacePlanTextWithNotice(view.tempBuffer, content, notice);
@@ -232,9 +242,10 @@ export function useAgentEvents() {
     try {
       // 重置式懒加载首屏：与进入会话同口径（全量替换会让分页状态失效）
       await chat.loadSessionMessagesReset(sessionId);
-    } catch {
-      const history = await invoke<string>("get_session_history", { sessionId });
-      session.replaceSessionHistory(sessionId, history);
+    } catch (err) {
+      // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
+      console.error("加载会话消息失败:", err);
+      session.setSessionLoadError(sessionId, true);
     }
   }
 
@@ -488,7 +499,11 @@ export function useAgentEvents() {
       const sid = event.payload.sessionId ?? session.activeSessionId;
       if (sid) {
         const view = session.getSessionView(sid);
-        hideSubmittedPlanFromChat(view, event.payload);
+        hideSubmittedPlanFromChat(
+          view,
+          event.payload,
+          t("plan.submittedNotice", { title: event.payload.title }),
+        );
         perm.finalizePlanProposal(sid, event.payload);
         perm.upsertPlanDocument(
           {
@@ -698,10 +713,27 @@ export function useAgentEvents() {
       // 等待提示与重试进度都是**过程性状态标注**：写进 turn.notice
       // （渲染在气泡下方小字），不进正文、不落库。
       // 经 chat-stream 会被当成模型输出写进回复气泡内部（历史遗留问题）。
-      if (step.type === "waiting_hint" || step.type === "retry") {
-        if (step.content) {
-          view.currentTurn.notice = step.content;
-        }
+      //
+      // 后端只发**秒数参数**（`silentSecs`/`remainSecs`/`waitSecs`），句子在这里用
+      // 语言包拼 —— 它曾经直接发中文 `content`，英文界面下会冒中文。
+      // 与中断类标注（后端发 `notice.*` key、由 `noticeTextFromBackend` 成句）
+      // 共用同一个语言包命名空间，两处措辞口径统一。
+      if (step.type === "waiting_hint") {
+        view.currentTurn.notice = t("notice.waitingHint", {
+          silent: step.silentSecs ?? 0,
+          remain: step.remainSecs ?? 0,
+        });
+        view.streamActive = true;
+        view.hydrated = true;
+        syncActiveSessionView(sessionId, true);
+        return;
+      }
+      if (step.type === "retry") {
+        view.currentTurn.notice = t("notice.retry", {
+          secs: step.waitSecs ?? 0,
+          attempt: step.attempt ?? 0,
+          max: step.max ?? 0,
+        });
         view.streamActive = true;
         view.hydrated = true;
         syncActiveSessionView(sessionId, true);
@@ -836,9 +868,10 @@ export function useAgentEvents() {
           if (!session.hasHydratedSessionView(nextActiveSessionId)) {
             try {
               await chat.loadSessionMessagesReset(nextActiveSessionId);
-            } catch {
-              const history = await invoke<string>("get_session_history", { sessionId: nextActiveSessionId });
-              session.replaceSessionHistory(nextActiveSessionId, history);
+            } catch (err) {
+              // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
+              console.error("加载会话消息失败:", err);
+              session.setSessionLoadError(nextActiveSessionId, true);
             }
           }
           await Promise.all([
@@ -852,16 +885,16 @@ export function useAgentEvents() {
         } else {
           session.workingDirectory = null;
           session.setSessionUsageTotals(null, {});
-          session.resetSessionView(null, session.READY_TEXT);
+          session.resetSessionView(null);
         }
       } catch (err) {
         console.error("同步清理后的会话失败:", err);
         session.workingDirectory = null;
         session.setSessionUsageTotals(null, {});
         if (nextActiveSessionId) {
-          session.resetSessionView(nextActiveSessionId, session.READY_TEXT);
+          session.resetSessionView(nextActiveSessionId);
         } else {
-          session.resetSessionView(null, session.READY_TEXT);
+          session.resetSessionView(null);
         }
       }
 

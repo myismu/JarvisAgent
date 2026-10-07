@@ -675,7 +675,7 @@ const doSwitchProfile = async (id: string) => {
     if (activeProfile) {
       await checkModelCapabilities(activeProfile.config.mainModel);
     }
-    // 切模型后刷新历史，确保 data-user-message-index 同步
+    // 切模型后刷新历史，确保撤回锚点同步
     try {
       if (session.activeSessionId) {
         const view = session.getSessionView(session.activeSessionId);
@@ -683,9 +683,10 @@ const doSwitchProfile = async (id: string) => {
           try {
             const messages = await invoke<any[]>('get_session_messages', { sessionId: session.activeSessionId });
             session.replaceSessionMessages(session.activeSessionId, messages);
-          } catch {
-            const history = await invoke<string>('get_session_history', { sessionId: session.activeSessionId });
-            session.replaceSessionHistory(session.activeSessionId, history);
+          } catch (err) {
+            // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
+            console.error('加载会话消息失败:', err);
+            session.setSessionLoadError(session.activeSessionId, true);
           }
         }
       }
@@ -982,9 +983,10 @@ onMounted(async () => {
           try {
             const messages = await invoke<any[]>('get_session_messages', { sessionId: session.activeSessionId });
             session.replaceSessionMessages(session.activeSessionId, messages);
-          } catch {
-            const history = await invoke<string>('get_session_history', { sessionId: session.activeSessionId });
-            session.replaceSessionHistory(session.activeSessionId, history);
+          } catch (err) {
+            // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
+            console.error('加载会话消息失败:', err);
+            session.setSessionLoadError(session.activeSessionId, true);
           }
         }
       }

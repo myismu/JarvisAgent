@@ -47,12 +47,6 @@ const collapsedProjects = ref<Set<string>>(new Set());
 
 // 会话管理状态
 const sessions = ref<SessionMeta[]>([]);
-const sessionSearchKeyword = ref('');
-const sessionFilterTool = ref('');
-const sessionFilterHasTools = ref(false);
-const sessionFilterRange = ref<'all' | '24h' | '7d' | '30d'>('all');
-const showAdvancedSessionFilters = false;
-const showSessionFilters = ref(false);
 const editingSessionId = ref<string | null>(null);
 const editingTitle = ref('');
 
@@ -84,31 +78,6 @@ const toggleProject = (projectId: string) => {
 
 const isSessionRunning = (sessionId: string): boolean => {
   return sessionStore.sessionViews[sessionId]?.status === "RUNNING";
-};
-
-const sessionFilterFromTs = () => {
-  const now = Date.now();
-  switch (sessionFilterRange.value) {
-    case '24h': return now - 24 * 60 * 60 * 1000;
-    case '7d': return now - 7 * 24 * 60 * 60 * 1000;
-    case '30d': return now - 30 * 24 * 60 * 60 * 1000;
-    default: return null;
-  }
-};
-
-const hasActiveSessionFilters = () => Boolean(
-  sessionSearchKeyword.value.trim()
-  || sessionFilterTool.value.trim()
-  || sessionFilterHasTools.value
-  || sessionFilterRange.value !== 'all'
-);
-
-const clearSessionFilters = async () => {
-  sessionSearchKeyword.value = '';
-  sessionFilterTool.value = '';
-  sessionFilterHasTools.value = false;
-  sessionFilterRange.value = 'all';
-  await loadAll();
 };
 
 const formatSessionTime = (timestamp: number) => {
@@ -232,17 +201,12 @@ const confirmPurgeSession = async () => {
   }
 };
 
+// 会话列表：后端 `list_sessions` 不收参数，全量拉回后按项目分组展示。
+// （曾有一段"高级筛选"链路在这里传 filter，已于 2026-10-07 整体删除 —— 见
+//   `core/session/repository.rs::list_sessions` 的说明。）
 const loadSessions = async () => {
   try {
-    sessionStore.setSessionListFilter({
-      keyword: sessionSearchKeyword.value || null,
-      tool: sessionFilterTool.value || null,
-      hasToolCalls: sessionFilterHasTools.value ? true : null,
-      fromTs: sessionFilterFromTs(),
-    });
-    sessions.value = await invoke<SessionMeta[]>('list_sessions', {
-      filter: sessionStore.getSessionListFilterPayload(),
-    });
+    sessions.value = await invoke<SessionMeta[]>('list_sessions');
   } catch (err) {
     console.error('加载会话列表失败:', err);
   }
@@ -435,9 +399,10 @@ const switchToSession = async (id: string) => {
     if (!view.hydrated) {
       try {
         await chat.loadSessionMessagesReset(id);
-      } catch {
-        const history = await invoke<string>('get_session_history', { sessionId: id });
-        sessionStore.replaceSessionHistory(id, history || 'Ready for input...');
+      } catch (err) {
+        // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
+        console.error('加载会话消息失败:', err);
+        sessionStore.setSessionLoadError(id, true);
       }
     }
 
@@ -512,13 +477,10 @@ onMounted(async () => {
         // 加载会话历史——懒加载首屏（最新 5 轮），上滑时按需加载更早历史
         try {
           await chat.loadSessionMessagesReset(activeId);
-        } catch {
-          const history = await invoke<string>('get_session_history', { sessionId: activeId });
-          if (history && history.trim()) {
-            chat.jarvisResponse = history;
-          } else {
-            chat.jarvisResponse = 'Ready for input...';
-          }
+        } catch (err) {
+          // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
+          console.error('加载会话消息失败:', err);
+          sessionStore.setSessionLoadError(activeId, true);
         }
       } catch (switchErr) {
         console.error('同步会话状态失败:', switchErr);
@@ -611,40 +573,8 @@ onUnmounted(() => {
             <span>{{ t('sidebar.skillManager') }}</span>
           </button>
         </div>
-        <div v-if="showAdvancedSessionFilters" class="session-filter-toggle-row">
-          <button type="button" class="session-filter-toggle" :class="{ active: hasActiveSessionFilters() }" @click="showSessionFilters = !showSessionFilters">
-            {{ t('sidebar.advancedFilter') }}<span v-if="hasActiveSessionFilters()">{{ t('sidebar.enabled') }}</span>
-          </button>
-          <button v-if="hasActiveSessionFilters()" type="button" class="session-filter-clear" @click="clearSessionFilters">{{ t('sidebar.clear') }}</button>
-        </div>
-        <div v-if="showAdvancedSessionFilters && showSessionFilters" class="session-filters">
-          <input
-            v-model="sessionSearchKeyword"
-            class="session-filter-input"
-            :placeholder="t('sidebar.searchSession')"
-            @keydown.enter.prevent="loadSessions"
-            @blur="loadSessions"
-          />
-          <input
-            v-model="sessionFilterTool"
-            class="session-filter-input"
-            :placeholder="t('sidebar.filterByTool')"
-            @keydown.enter.prevent="loadSessions"
-            @blur="loadSessions"
-          />
-          <select v-model="sessionFilterRange" class="session-filter-input" @change="loadSessions">
-            <option value="all">{{ t('sidebar.allTime') }}</option>
-            <option value="24h">{{ t('sidebar.last24h') }}</option>
-            <option value="7d">{{ t('sidebar.last7d') }}</option>
-            <option value="30d">{{ t('sidebar.last30d') }}</option>
-          </select>
-          <label class="session-filter-check">
-            <input v-model="sessionFilterHasTools" type="checkbox" @change="loadSessions" />
-            <span>{{ t('sidebar.hasToolCalls') }}</span>
-          </label>
-        </div>
         <div v-if="sessions.length === 0 && projects.length === 0" class="session-empty-state">
-          {{ hasActiveSessionFilters() ? t('sidebar.noMatchedSessions') : t('sidebar.noSessions') }}
+          {{ t('sidebar.noSessions') }}
         </div>
 
         <!-- 项目分组 -->
@@ -1175,53 +1105,6 @@ body.dark-mode .project-header {
   cursor: default;
 }
 
-.session-filter-toggle-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0 12px 8px;
-}
-
-.session-filter-toggle,
-.session-filter-clear {
-  height: 24px;
-  padding: 0 8px;
-  border: 1px solid var(--glass-border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--glass-bg-light);
-  color: var(--text-muted);
-  font-size: 0.7rem;
-  cursor: pointer;
-}
-
-.session-filter-toggle {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.session-filter-toggle.active {
-  color: var(--accent-blue);
-  border-color: var(--accent-blue);
-}
-
-.session-filter-clear:hover,
-.session-filter-toggle:hover {
-  color: var(--text-main);
-}
-
-.session-filters {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 0 12px 8px;
-  padding: 8px;
-  border: 1px solid var(--glass-border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--glass-bg);
-}
-
 .session-empty-state {
   margin: 4px 12px 8px;
   padding: 10px;
@@ -1230,29 +1113,6 @@ body.dark-mode .project-header {
   border-radius: var(--radius-md);
   font-size: 0.74rem;
   text-align: center;
-}
-
-.session-filter-input {
-  width: 100%;
-  border: 1px solid var(--glass-border-subtle);
-  background: var(--glass-bg-light);
-  color: var(--text-main);
-  border-radius: var(--radius-md);
-  padding: 6px 8px;
-  font-size: 0.75rem;
-  outline: none;
-}
-
-.session-filter-input:focus {
-  border-color: var(--accent-blue);
-}
-
-.session-filter-check {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-muted);
-  font-size: 0.72rem;
 }
 
 .session-list {

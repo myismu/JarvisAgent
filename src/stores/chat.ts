@@ -114,19 +114,6 @@ export const useChatStore = defineStore("chat", () => {
   const rollbackRecalledMessage = ref("");
   const memoryNotice = ref<string | null>(null);
 
-  const jarvisResponse = computed({
-    get: () => {
-      const session = useSessionStore();
-      return session.currentSessionView.jarvisResponse;
-    },
-    set: (value: string) => {
-      const session = useSessionStore();
-      const view = session.getSessionView(session.activeSessionId);
-      view.jarvisResponse = value;
-      view.hydrated = true;
-    },
-  });
-
   const toolBuffer = computed({
     get: () => {
       const session = useSessionStore();
@@ -310,13 +297,13 @@ export const useChatStore = defineStore("chat", () => {
         });
         if (res.status !== "PAUSED_LOOP_LIMIT") {
           const resumeContent = stripPseudoToolCalls(res.content);
-          const resumeNotice = res.notice ?? undefined;
           const snapshot = buildAgentTurnSnapshot(
             requestView.currentTurn,
             resumeContent,
             "",
             res.status,
-            resumeNotice,
+            res.notice_i18n_key ?? undefined,
+            res.notice_detail ?? undefined,
           );
           session.appendSessionMessage(sid, { role: "agent", id: `agent_${Date.now()}`, snapshot });
           session.clearSessionBuffers(sid);
@@ -599,38 +586,15 @@ export const useChatStore = defineStore("chat", () => {
     resetRenderState(sessionIdAtStart);
 
     if (!resumeOnly) {
-      let displayMsg = uiDisplayMsg ?? msg;
-      const userImages = imageBase64List && imageBase64List.length > 0 ? [...imageBase64List] : null;
-      if (userImages) {
-        const imageHtml = userImages
-          .map(
-            (b64) =>
-              `<img src="${b64}" style="max-width: 200px; max-height: 200px; border-radius: 8px; margin: 4px 4px 4px 0; display: inline-block; vertical-align: middle;" alt="用户发送的图片" />`
-          )
-          .join("");
-        displayMsg = imageHtml + (msg ? `\n\n${msg}` : "");
-      }
-
-      // 长消息自动折叠：超过6行或500字符时折叠
-      const COLLAPSE_LINE_THRESHOLD = 6;
-      const COLLAPSE_CHAR_THRESHOLD = 500;
-      const plainText = msg.replace(/<[^>]*>/g, '').replace(/\n{3,}/g, '\n\n');
-      const lineCount = plainText.split('\n').length;
-      const shouldCollapse = lineCount > COLLAPSE_LINE_THRESHOLD || plainText.length > COLLAPSE_CHAR_THRESHOLD;
-      const userMsgHtml = shouldCollapse
-        ? `<div class="chat-message user-message" style="position: relative;"><div class="message-content"><div class="user-msg-collapsed" data-collapsed="true"><div class="user-msg-preview">\n\n${displayMsg}\n\n</div><div class="user-msg-fade"></div></div><button class="user-msg-toggle" onclick="this.previousElementSibling.dataset.collapsed=this.previousElementSibling.dataset.collapsed==='true'?'false':'true';this.textContent=this.previousElementSibling.dataset.collapsed==='true'?'展开全部':'收起'">展开全部</button></div></div>\n\n`
-        : `<div class="chat-message user-message" style="position: relative;"><div class="message-content">\n\n${displayMsg}\n\n</div></div>\n\n`;
-      session.appendSessionHistory(
-        sessionIdAtStart,
-        userMsgHtml
-      );
-
-      // 同时添加到结构化消息数组（供 Vue 组件渲染）
+      // 只往结构化消息数组里追加 —— 界面渲染的是 `messages`。
+      // 这里此前还**顺带拼一份 HTML** 塞进 `jarvisResponse`（图片内联 + 长消息折叠 +
+      // 内联 onclick 里的"展开全部/收起"中文），而那个字段早已不被任何组件渲染，
+      // 纯属每发一条消息白拼一次。HTML 通道已整体删除。
       session.appendSessionMessage(sessionIdAtStart, {
         role: "user",
         id: `user_${Date.now()}`,
         text: (uiDisplayMsg ?? msg) || "",
-        images: userImages,
+        images: imageBase64List && imageBase64List.length > 0 ? [...imageBase64List] : null,
       });
     }
 
@@ -702,7 +666,10 @@ export const useChatStore = defineStore("chat", () => {
               finalContent || cleanedFallback,
               finalToolBuffer,
               "CANCELLED",
-              "用户已取消执行，以上为部分结果",
+              // 与后端中断收尾同一个 key：这条是"取消"路径的本地兜底快照，
+              // 措辞必须与后端 `notice.userCancel` 一致，否则同一次取消
+              // 在不同刷新时机下会显示两种说法
+              "notice.userCancel",
             );
             session.appendSessionMessage(sessionIdAtStart, { role: "agent", id: `agent_${Date.now()}`, snapshot: canceledSnapshot });
           }
@@ -755,7 +722,9 @@ export const useChatStore = defineStore("chat", () => {
         buildFinalResponseParts(requestView, res.content);
       // 正文原样使用；状态标注**只**取后端结构化字段（见本文件上方的删除说明）
       const finalContent = rawFinalContent;
-      const interruptedNotice = res.notice ?? undefined;
+      // 状态标注只取后端结构化字段（i18n key + 可选补充数据），文案由语言包出
+      const interruptedNoticeKey = res.notice_i18n_key ?? undefined;
+      const interruptedNoticeDetail = res.notice_detail ?? undefined;
       // break_loop 时后端通过 tool_execution_summary 传递工具结果，补充到 toolBuffer
       const finalToolBuffer = streamedToolBuffer || (res as any).toolExecutionSummary || "";
       const sessionInputTokens = res.session_input_tokens ?? (res as any).sessionInputTokens ?? 0;
@@ -770,7 +739,8 @@ export const useChatStore = defineStore("chat", () => {
         finalContent,
         finalToolBuffer,
         res.status,
-        interruptedNotice,
+        interruptedNoticeKey,
+        interruptedNoticeDetail,
       );
       session.clearSessionBuffers(sessionIdAtStart);
 
@@ -883,11 +853,8 @@ export const useChatStore = defineStore("chat", () => {
         view.messages.pop();
       }
 
-      // 仍保留 jarvisResponse 操作以兼容后端持久化
-      const lastUserIdx = view.jarvisResponse.lastIndexOf('<div class="chat-message user-message"');
-      if (lastUserIdx !== -1) {
-        view.jarvisResponse = view.jarvisResponse.substring(0, lastUserIdx);
-      }
+      // 这里此前还有一段在 `jarvisResponse`（HTML 字符串）上做 lastIndexOf 截断的代码 ——
+      // 那个字段不被任何组件渲染，纯属白算；HTML 通道已整体删除。
 
       view.agentSteps = view.agentSteps.slice(0, view.currentTurnStepsStart);
       if (view.agentSteps.length === 0) {
@@ -935,9 +902,10 @@ export const useChatStore = defineStore("chat", () => {
       try {
         const messages = await invoke<any[]>("get_session_messages", { sessionId: plan.sessionId });
         session.replaceSessionMessages(plan.sessionId, messages);
-      } catch {
-        const history = await invoke<string>("get_session_history", { sessionId: plan.sessionId });
-        session.replaceSessionHistory(plan.sessionId, history);
+      } catch (err) {
+        // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
+        console.error("加载会话消息失败:", err);
+        session.setSessionLoadError(plan.sessionId, true);
       }
       session.clearSessionBuffers(plan.sessionId);
       resetRenderState(plan.sessionId);
@@ -952,7 +920,6 @@ export const useChatStore = defineStore("chat", () => {
     renderTick,
     rollbackRecalledMessage,
     memoryNotice,
-    jarvisResponse,
     toolBuffer,
     contentBuffer,
     tempBuffer,

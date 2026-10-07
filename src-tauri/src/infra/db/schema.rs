@@ -10,7 +10,7 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 20;
+pub const SCHEMA_VERSION: i64 = 23;
 
 /// 删除废弃的旧 checkpoint 表（v3 迁移）
 fn migrate_v3_drop_deprecated_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -988,6 +988,205 @@ fn migrate_v20_add_agent_runs_interrupt_kind(conn: &Connection) -> Result<(), ru
     Ok(())
 }
 
+/// v21：`session_messages.source` 取值收敛 + 删除死列 `turn_id`。
+///
+/// 详见 `doc/消息来源与轮次元数据重构方案.md`。两件事各自独立：
+///
+/// ## 一、source 取值搬迁（`internal` 一拆为二）
+///
+/// 旧的 `internal` 同时表示两种**相反**的东西，白名单按"不给模型看"处理，
+/// 于是三条**写给模型看的指令**（崩溃恢复指令 / 方案重定向通知 / 反思修正建议）
+/// 从未送达模型。新取值把两种语义分开：
+///
+/// | 旧值 | 新值 | 依据 |
+/// |---|---|---|
+/// | `internal`（正文是 `Context compressed.`） | `placeholder` | 对齐填充，两侧都不该看 |
+/// | `internal`（其余） | `inject` | 写给模型看的系统注入 |
+/// | `background` | `placeholder` | 旧白名单本就把它挡在模型与界面之外 |
+/// | `context` | `inject` | 旧白名单**放行**它给模型、界面不看 —— 正是 `inject` 的语义 |
+///
+/// ⚠️ `Context compressed.` 的判定是**一次性数据搬迁**，不是长期内容匹配规则：
+/// 它只在本次迁移里跑一遍，此后判定依据只有 `source` 列本身。
+/// 将来若这句占位文案被改写，只是那条老数据留在 `inject`（无害），
+/// **不需要**回来维护这个 LIKE 条件 —— 长期靠内容反推元信息正是本方案要废除的做法。
+///
+/// ## 二、删除 `turn_id`
+///
+/// 它自 v7（`a426209`，2026-05-06）引入起就是**死列**：建了列、建了索引、
+/// 进了 SELECT 列清单、读进了结构体，但全仓**零写入点**，恒为 `NULL`。
+/// 唯一的天然消费者（`7159b26` 的按轮凑页）当时用「`role = user` 且正文非空」
+/// 推断轮边界，压根没用它。而"轮"的信息本已由每轮首条 `Chat` 用户消息的
+/// `message_id` 承载（`agent_runs.message_id` 就关联到它），单独存列是重复设计。
+///
+/// 恒 NULL 的列不是"无害的预留"：它误导读者以为按轮查询可用，还被写进了
+/// SELECT 列清单与测试断言，每次读取都要带着它。本迁移连同索引一并删除。
+///
+/// ⚠️ 还有一处**同名不同物**，别被名字带偏：`core/tools/framework/policy_guard.rs`
+/// 的 `PermissionTurnState.turn_id` 装的是 **run_id**（用于批量审批规则"换一轮就重置
+/// 文件计数"），是内存态、不落库，与本列无关。
+///
+/// 另注：`migrate_v7_decouple_session_messages` 里**仍然保留**着创建 `turn_id`
+/// 与索引的语句 —— 迁移在本项目里是**只追加的历史记录**（参见 v18 删、
+/// v20 又加回 `agent_runs.interrupt_kind` 的先例），不回改旧步骤。
+/// 代价是老库升级会走一次"建列 → 删列"，一次性开销，可接受。
+fn migrate_v21_message_source_and_drop_turn_id(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // ⚠️ 表可能不存在（迁移测试的最小桩库只建 sessions/app_state），先探表
+    let table_exists = conn
+        .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'session_messages'")
+        .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
+        .map(|count| count > 0)
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(());
+    }
+
+    // ── 一、source 取值搬迁（顺序敏感：先把例外挑走，再整体搬迁）──
+    conn.execute(
+        "UPDATE session_messages SET source = 'placeholder'
+         WHERE source = 'internal' AND content_json LIKE '%\"content\":\"Context compressed.\"%'",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE session_messages SET source = 'inject' WHERE source = 'internal'",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE session_messages SET source = 'placeholder' WHERE source = 'background'",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE session_messages SET source = 'inject' WHERE source = 'context'",
+        [],
+    )?;
+
+    // ── 二、删除 turn_id 列与它的索引 ──
+    // 索引先删：SQLite 的 DROP COLUMN 对"被索引引用的列"会直接报错。
+    conn.execute("DROP INDEX IF EXISTS idx_session_messages_turn", [])?;
+
+    let has_turn_id = {
+        let mut stmt = conn.prepare("PRAGMA table_info(session_messages)")?;
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .collect();
+        columns.iter().any(|c| c == "turn_id")
+    };
+    if has_turn_id {
+        conn.execute("ALTER TABLE session_messages DROP COLUMN turn_id", [])?;
+    }
+    Ok(())
+}
+
+/// v22：给 `agent_run_events` 加反思审查三列。
+///
+/// 反思的判定（`ok` / `not_ok`）、原因、修正建议此前**只走 `agent-step` 事件**
+/// （前端内存），重载即失 —— 数据库里查不到一次运行触发过几次反思、结论是什么、
+/// 模型有没有采纳。而 `agent_run_events` 是"每轮一行"，反思也是**逐轮**的
+/// （每个 loop 的工具执行后最多触发一次），归属天然吻合，不需要新表。
+///
+/// 旧行留 `NULL`（= 早于本次迁移，或该轮未触发反思）。
+fn migrate_v22_add_reflection_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // ⚠️ 表可能不存在（迁移测试的最小桩库只建 sessions/app_state），先探表再探列
+    let table_exists = conn
+        .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'agent_run_events'")
+        .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
+        .map(|count| count > 0)
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(());
+    }
+
+    for column in [
+        "reflection_judgment",
+        "reflection_reason",
+        "reflection_suggestion",
+    ] {
+        let column_exists = {
+            let mut stmt = conn.prepare("PRAGMA table_info(agent_run_events)")?;
+            let columns: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(Result::ok)
+                .collect();
+            columns.iter().any(|c| c == column)
+        };
+        if !column_exists {
+            conn.execute(
+                &format!("ALTER TABLE agent_run_events ADD COLUMN {} TEXT", column),
+                [],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// v23：把老数据的 `interrupt_kind` 从正文标记文本里一次性回填。
+///
+/// ## 为什么需要它
+///
+/// 阶段二（2026-09-20）之前，中断原因是以**标记文本**形式拼进助手正文的
+/// （`> ⚠️ **[回复被中断]** …` / `**[规划探索已到上限]** …` / `> ✕ **用户已取消执行…**`），
+/// `interrupt_kind` 列在那之后才成为唯一载体。老行因此 kind 为 NULL，
+/// 渲染侧只能靠 `interrupted_notice_text()` **从正文里清洗出**小字说明 ——
+/// 典型的"从内容反推元信息"，与 `source` 字段那次是同一类问题。
+///
+/// 本次把老行按标记文本认出来、写回 kind，那条清洗路径随之删除。
+///
+/// ## 认不出的怎么办
+///
+/// 保持 NULL。渲染侧对 kind 缺失的 `interrupted` 消息**整轮跳过** ——
+/// 宁可少显示一轮，也不把系统标记当模型正文渲染（那正是历史 bug）。
+/// 回填只认下面三类**确定的**特征串，不做模糊猜测。
+///
+/// ⚠️ 这是一次性数据搬迁，**不是长期内容匹配规则**：跑完这一遍之后，
+/// 判定依据只有 `interrupt_kind` 列本身。新代码不该再往这里加条件。
+fn migrate_v23_backfill_interrupt_kind(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // ⚠️ 表可能不存在（迁移测试的最小桩库只建 sessions/app_state），先探表再探列
+    let table_exists = conn
+        .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'session_messages'")
+        .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
+        .map(|count| count > 0)
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(());
+    }
+    let has_kind = {
+        let mut stmt = conn.prepare("PRAGMA table_info(session_messages)")?;
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .collect();
+        columns.iter().any(|c| c == "interrupt_kind")
+    };
+    if !has_kind {
+        return Ok(());
+    }
+
+    // 顺序敏感：先挑特征最强的，再兜泛化的。
+    //
+    // 1) 应用关闭占位（`INTERRUPT_PLACEHOLDER_NO_REPLY`）—— 特征唯一
+    // 2) 规划上限（`PLAN_LIMIT_MARKER`）—— 特征唯一
+    // 3) 用户取消（旧格式 `> ✕ **用户已取消执行…**`）—— 特征唯一
+    // 4) 上面三条都不是、但带 `[回复被中断]` 的：这是**共用措辞**的
+    //    "可续跑"三类（流超时 / 用户取消 / 执行报错），文本上无法区分。
+    //    统一按 `pipeline_error` 回填 —— 它的文案是泛化的"本轮执行中断"，
+    //    对这三种情形都成立；另两个变体的文案更具体，猜错反而说错。
+    for (needle, kind) in [
+        ("本次执行因应用关闭而中断", "app_closed"),
+        ("[规划探索已到上限]", "plan_limit"),
+        ("用户已取消执行", "user_cancel"),
+        ("[回复被中断]", "pipeline_error"),
+    ] {
+        conn.execute(
+            "UPDATE session_messages SET interrupt_kind = ?1
+             WHERE interrupt_kind IS NULL
+               AND source = 'interrupted'
+               AND content_json LIKE '%' || ?2 || '%'",
+            rusqlite::params![kind, needle],
+        )?;
+    }
+    Ok(())
+}
+
 pub fn init_schema(conn: &Connection) -> Result<(), String> {
     // 获取当前 schema 版本。
     //
@@ -1106,6 +1305,18 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             migrate_v20_add_agent_runs_interrupt_kind(conn)
                 .map_err(|e| format!("v20 迁移失败: {}", e))?;
         }
+        if current_version < 21 {
+            migrate_v21_message_source_and_drop_turn_id(conn)
+                .map_err(|e| format!("v21 迁移失败: {}", e))?;
+        }
+        if current_version < 22 {
+            migrate_v22_add_reflection_columns(conn)
+                .map_err(|e| format!("v22 迁移失败: {}", e))?;
+        }
+        if current_version < 23 {
+            migrate_v23_backfill_interrupt_kind(conn)
+                .map_err(|e| format!("v23 迁移失败: {}", e))?;
+        }
     }
 
     conn.execute_batch(
@@ -1163,7 +1374,6 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             recalled_at INTEGER,
             hidden_at INTEGER,
             source TEXT NOT NULL DEFAULT 'chat',
-            turn_id TEXT,
             interrupt_kind TEXT,
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
             UNIQUE(session_id, seq)
@@ -1202,6 +1412,9 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             input_tokens INTEGER NOT NULL DEFAULT 0,
             output_tokens INTEGER NOT NULL DEFAULT 0,
             model TEXT,
+            reflection_judgment TEXT,
+            reflection_reason TEXT,
+            reflection_suggestion TEXT,
             started_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             UNIQUE(run_id, loop_index),
@@ -1329,7 +1542,6 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_session_messages_session_seq ON session_messages(session_id, seq);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_session_messages_session_message_id ON session_messages(session_id, message_id);
         CREATE INDEX IF NOT EXISTS idx_session_messages_visible_seq ON session_messages(session_id, hidden_at, recalled_at, source, seq);
-        CREATE INDEX IF NOT EXISTS idx_session_messages_turn ON session_messages(session_id, turn_id, seq);
         CREATE INDEX IF NOT EXISTS idx_agent_runs_session_started ON agent_runs(session_id, started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_agent_run_events_run_loop ON agent_run_events(run_id, loop_index);
         CREATE INDEX IF NOT EXISTS idx_agent_run_events_session_time ON agent_run_events(session_id, started_at DESC);
@@ -1800,6 +2012,189 @@ mod tests {
         conn.execute_batch("CREATE TABLE sessions (id TEXT PRIMARY KEY);")
             .expect("minimal stub");
         migrate_v20_add_agent_runs_interrupt_kind(&conn).expect("缺表时应直接返回");
+    }
+
+    /// v21 的 source 取值搬迁：`internal` 拆成 `inject` / `placeholder`，
+    /// 另两个死值各归其位；`turn_id` 列与索引一并删除，其余数据不得丢。
+    #[test]
+    fn v21_migration_remaps_sources_and_drops_turn_id() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        // v20 形态的库：session_messages 带 turn_id 与旧的 source 取值
+        conn.execute_batch(
+            "CREATE TABLE session_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                message_id TEXT,
+                seq INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER,
+                recalled_at INTEGER,
+                hidden_at INTEGER,
+                source TEXT NOT NULL DEFAULT 'chat',
+                turn_id TEXT,
+                interrupt_kind TEXT,
+                UNIQUE(session_id, seq)
+            );
+            CREATE INDEX idx_session_messages_turn ON session_messages(session_id, turn_id, seq);
+            INSERT INTO session_messages(session_id, message_id, seq, role, content_json, created_at, source, turn_id) VALUES
+                ('s1', 'm1', 0, 'user',      '{\"role\":\"user\",\"content\":\"你好\"}',                 1, 'chat',        'turn-a'),
+                ('s1', 'm2', 1, 'assistant', '{\"role\":\"assistant\",\"content\":\"Context compressed.\"}', 2, 'internal', 'turn-a'),
+                ('s1', 'm3', 2, 'user',      '{\"role\":\"user\",\"content\":\"请调用 ProposePlan\"}',  3, 'internal',    'turn-a'),
+                ('s1', 'm4', 3, 'assistant', '{\"role\":\"assistant\",\"content\":\"后台结果\"}',          4, 'background',  NULL),
+                ('s1', 'm5', 4, 'user',      '{\"role\":\"user\",\"content\":\"上下文快照\"}',            5, 'context',     NULL),
+                ('s1', 'm6', 5, 'assistant', '{\"role\":\"assistant\",\"content\":\"压缩摘要\"}',          6, 'compact',     NULL);",
+        )
+        .expect("legacy v20 shape");
+
+        migrate_v21_message_source_and_drop_turn_id(&conn).expect("v21 迁移");
+
+        // 1. source 取值逐条搬迁
+        let source_of = |message_id: &str| -> String {
+            conn.query_row(
+                "SELECT source FROM session_messages WHERE message_id = ?1",
+                [message_id],
+                |r| r.get(0),
+            )
+            .expect("row must survive")
+        };
+        assert_eq!(source_of("m1"), "chat", "无关取值不得被动到");
+        assert_eq!(
+            source_of("m2"),
+            "placeholder",
+            "`Context compressed.` 是对齐填充，必须迁到 placeholder 而不是 inject"
+        );
+        assert_eq!(
+            source_of("m3"),
+            "inject",
+            "其余 internal 是写给模型看的注入，必须迁到 inject —— 这是 A 类缺陷的修复点"
+        );
+        assert_eq!(source_of("m4"), "placeholder", "background 旧口径两侧都不可见");
+        assert_eq!(source_of("m5"), "inject", "context 旧口径模型可见、界面不可见");
+        assert_eq!(source_of("m6"), "compact", "无关取值不得被动到");
+
+        // 2. turn_id 列与索引都消失
+        assert!(
+            !column_exists(&conn, "session_messages", "turn_id"),
+            "v21 必须删除 session_messages.turn_id"
+        );
+        let index_gone: bool = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_session_messages_turn'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|c| c == 0)
+            .unwrap_or(false);
+        assert!(index_gone, "v21 必须删除 idx_session_messages_turn");
+
+        // 3. 其余列与行数完整保留
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 6, "迁移不得丢行");
+        let kind: Option<String> = conn
+            .query_row(
+                "SELECT interrupt_kind FROM session_messages WHERE message_id = 'm1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind, None, "其余列仍在（示例行为 NULL）");
+    }
+
+    /// v21 必须幂等：重复跑不报错（迁移被无差别重跑是历史事故，见 init_schema 的 CAST 注释）
+    #[test]
+    fn v21_migration_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        conn.execute_batch(
+            "CREATE TABLE session_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL, message_id TEXT, seq INTEGER NOT NULL,
+                role TEXT NOT NULL, content_json TEXT NOT NULL, created_at INTEGER NOT NULL,
+                source TEXT NOT NULL DEFAULT 'chat', turn_id TEXT, interrupt_kind TEXT,
+                UNIQUE(session_id, seq)
+            );
+            INSERT INTO session_messages(session_id, message_id, seq, role, content_json, created_at, source)
+                VALUES ('s1','m1',0,'user','{}',1,'internal');",
+        )
+        .expect("legacy shape");
+
+        migrate_v21_message_source_and_drop_turn_id(&conn).expect("第一次");
+        migrate_v21_message_source_and_drop_turn_id(&conn).expect("第二次必须同样成功");
+        let source: String = conn
+            .query_row("SELECT source FROM session_messages WHERE message_id='m1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(source, "inject");
+    }
+
+    #[test]
+    fn v21_migration_tolerates_missing_table() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        conn.execute_batch("CREATE TABLE sessions (id TEXT PRIMARY KEY);")
+            .expect("minimal stub");
+        migrate_v21_message_source_and_drop_turn_id(&conn).expect("缺表时应直接返回");
+    }
+
+    /// v22：`agent_run_events` 加反思三列，旧行留 NULL
+    #[test]
+    fn v22_migration_adds_reflection_columns() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        conn.execute_batch(
+            "CREATE TABLE agent_run_events (
+                event_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                loop_index INTEGER NOT NULL,
+                resp_blocks TEXT NOT NULL DEFAULT '',
+                tool_results TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                error TEXT,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                model TEXT,
+                started_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(run_id, loop_index)
+            );
+            INSERT INTO agent_run_events(event_id, run_id, session_id, loop_index, status, started_at, updated_at)
+                VALUES ('e1','r1','s1',1,'complete',1,1);",
+        )
+        .expect("legacy shape");
+
+        migrate_v22_add_reflection_columns(&conn).expect("v22 迁移");
+
+        for col in [
+            "reflection_judgment",
+            "reflection_reason",
+            "reflection_suggestion",
+        ] {
+            assert!(
+                column_exists(&conn, "agent_run_events", col),
+                "v22 必须补上 agent_run_events.{}",
+                col
+            );
+        }
+        let judgment: Option<String> = conn
+            .query_row(
+                "SELECT reflection_judgment FROM agent_run_events WHERE event_id = 'e1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("旧行必须保留");
+        assert_eq!(judgment, None, "旧行留 NULL（= 早于本次迁移或该轮未触发反思）");
+
+        // 幂等
+        migrate_v22_add_reflection_columns(&conn).expect("第二次必须同样成功");
+    }
+
+    #[test]
+    fn v22_migration_tolerates_missing_table() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        conn.execute_batch("CREATE TABLE sessions (id TEXT PRIMARY KEY);")
+            .expect("minimal stub");
+        migrate_v22_add_reflection_columns(&conn).expect("缺表时应直接返回");
     }
 
     /// v14 老库升级到 v15：`agent_run_events` 改为每轮一行、`agent_runs` 去掉三个 live 列、

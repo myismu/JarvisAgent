@@ -154,10 +154,15 @@ pub fn upsert_loop_event(event: &AgentRunLoopEvent) -> Result<(), String> {
     let tool_results = serde_json::to_string(&event.tool_results).map_err(|e| e.to_string())?;
     crate::infra::db::with_connection(|conn| {
         conn.execute(
+            // ⚠️ 反思三列（reflection_*）刻意**只出现在 INSERT 列表、不在 DO UPDATE 集合**：
+            // 同一轮会被写两次（帧级通道 + 收尾覆盖），若纳入覆盖集合，
+            // 后一次写入会把 `mark_loop_reflection` 已记录的判定抹成 NULL。
             "INSERT INTO agent_run_events(
                 event_id, run_id, session_id, loop_index, resp_blocks, tool_results,
-                status, error, input_tokens, output_tokens, model, started_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                status, error, input_tokens, output_tokens, model,
+                reflection_judgment, reflection_reason, reflection_suggestion,
+                started_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
             ON CONFLICT(run_id, loop_index) DO UPDATE SET
                 resp_blocks = excluded.resp_blocks,
                 tool_results = excluded.tool_results,
@@ -179,6 +184,9 @@ pub fn upsert_loop_event(event: &AgentRunLoopEvent) -> Result<(), String> {
                 event.input_tokens as i64,
                 event.output_tokens as i64,
                 event.model,
+                event.reflection_judgment,
+                event.reflection_reason,
+                event.reflection_suggestion,
                 event.started_at as i64,
                 event.updated_at as i64,
             ],
@@ -320,7 +328,8 @@ pub fn set_loop_event_interrupted(
 ///
 /// `AgentRunLoopEvent` 的 SELECT 列清单（本表查询共用一份；与 `loop_event_from_row` 读的列名对应）。
 const LOOP_EVENT_COLUMNS: &str = "event_id, run_id, session_id, loop_index, resp_blocks, \
-     tool_results, status, error, input_tokens, output_tokens, model, started_at, updated_at";
+     tool_results, status, error, input_tokens, output_tokens, model, \
+     reflection_judgment, reflection_reason, reflection_suggestion, started_at, updated_at";
 
 /// ⚠️ `ORDER BY loop_index` 必须显式写：不依赖 SQLite 的插入顺序。
 pub fn load_loop_events(run_id: &str) -> Result<Vec<AgentRunLoopEvent>, String> {
@@ -404,8 +413,34 @@ fn loop_event_from_row(row: &Row<'_>) -> rusqlite::Result<AgentRunLoopEvent> {
         input_tokens: row.get::<_, i64>("input_tokens")? as u64,
         output_tokens: row.get::<_, i64>("output_tokens")? as u64,
         model: row.get("model")?,
+        reflection_judgment: row.get("reflection_judgment")?,
+        reflection_reason: row.get("reflection_reason")?,
+        reflection_suggestion: row.get("reflection_suggestion")?,
         started_at: row.get::<_, i64>("started_at")? as u64,
         updated_at: row.get::<_, i64>("updated_at")? as u64,
+    })
+}
+
+/// 记录某一轮的反思判定（只改反思三列，不动 resp/tool/status）。
+///
+/// 见 `agent_runs::mark_loop_reflection` 的说明：独立 UPDATE 是刻意的，
+/// 目的是让 loop 收尾的重复写入不会抹掉已记录的判定。
+pub fn mark_loop_reflection(
+    run_id: &str,
+    loop_index: usize,
+    judgment: &str,
+    reason: Option<&str>,
+    suggestion: Option<&str>,
+) -> Result<(), String> {
+    crate::infra::db::with_connection(|conn| {
+        conn.execute(
+            "UPDATE agent_run_events
+             SET reflection_judgment = ?3, reflection_reason = ?4, reflection_suggestion = ?5
+             WHERE run_id = ?1 AND loop_index = ?2",
+            params![run_id, loop_index as i64, judgment, reason, suggestion],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     })
 }
 
@@ -529,6 +564,9 @@ mod run_columns_tests {
             "input_tokens",
             "output_tokens",
             "model",
+            "reflection_judgment",
+            "reflection_reason",
+            "reflection_suggestion",
             "started_at",
             "updated_at",
         ] {
@@ -539,8 +577,8 @@ mod run_columns_tests {
         }
         assert_eq!(
             columns.len(),
-            13,
-            "列数应为 13，实际 {}：{columns:?}",
+            16,
+            "列数应为 16，实际 {}：{columns:?}",
             columns.len()
         );
     }

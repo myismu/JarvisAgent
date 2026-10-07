@@ -105,6 +105,23 @@ pub struct AgentRunLoopEvent {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub model: Option<String>,
+    /// 本轮反思审查的判定：`"ok"` / `"not_ok"`；`None` = 本轮未触发反思。
+    ///
+    /// 反思是**逐轮**的（每个 loop 的工具执行后最多触发一次，见
+    /// `pipeline.rs` 的 `should_reflect`），所以"每轮一行"的本表正是它的归属，
+    /// 不需要另开一张表。
+    ///
+    /// 这三个字段**只由 [`mark_loop_reflection`] 写入**，不参与 `upsert_loop_event`
+    /// 的覆盖集合 —— loop 收尾会重复写同一行（帧级通道 + 收尾覆盖），
+    /// 若把反思列也纳入覆盖，后一次写入会把已记录的判定抹成 NULL。
+    #[serde(default)]
+    pub reflection_judgment: Option<String>,
+    /// 反思给出的原因，仅 `judgment = "not_ok"` 时有值
+    #[serde(default)]
+    pub reflection_reason: Option<String>,
+    /// 反思给出的修正建议，仅 `judgment = "not_ok"` 时有值
+    #[serde(default)]
+    pub reflection_suggestion: Option<String>,
     pub started_at: u64,
     pub updated_at: u64,
 }
@@ -300,10 +317,41 @@ pub fn upsert_loop_event(
         input_tokens,
         output_tokens,
         model,
+        // 反思判定不在这里写：它由 `mark_loop_reflection` 单独 UPDATE，
+        // 且刻意不进 `upsert_loop_event` 的覆盖集合（见结构体字段注释）
+        reflection_judgment: None,
+        reflection_reason: None,
+        reflection_suggestion: None,
         started_at: now,
         updated_at: now,
     };
     let _ = agent_run_repository::upsert_loop_event(&event);
+}
+
+/// 记录某一轮的反思审查判定。
+///
+/// ## 为什么是独立的 UPDATE，而不是 `upsert_loop_event` 的一个参数
+///
+/// `upsert_loop_event` 已经有 10 个参数，再加三个只会让它更难读；
+/// 且两者的**写入时机与覆盖语义不同**：
+/// - `upsert_loop_event` 是"这一轮的响应与工具结果"，会重复写（帧级通道一次、
+///   收尾一次），幂等覆盖；
+/// - 反思判定是"这一轮被审查过、结论是什么"，只在结论产生时写一次。
+///
+/// 若把反思列并进 `upsert_loop_event` 的覆盖集合，收尾那次写入会把判定抹成 NULL；
+/// 反过来，若在反思发生时立刻写，默认配置下此时行还没建（收尾才建行）——
+/// 所以只能是"收尾建行之后，再单独 UPDATE"。
+///
+/// 行不存在时影响 0 行（静默）：反思只可能发生在已有工具执行的轮次，
+/// 那种轮次必然会被收尾写行。真出现 0 行说明流程本身异常，不该在此处报错掩盖。
+pub fn mark_loop_reflection(
+    run_id: &str,
+    loop_index: usize,
+    judgment: &str,
+    reason: Option<&str>,
+    suggestion: Option<&str>,
+) {
+    let _ = agent_run_repository::mark_loop_reflection(run_id, loop_index, judgment, reason, suggestion);
 }
 
 /// 把某一轮标记为 `interrupted`，并补上中断原因。

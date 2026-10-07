@@ -14,6 +14,7 @@ import SessionTaskBoard from './SessionTaskBoard.vue';
 import TodoPanel from './TodoPanel.vue';
 import WelcomeScreen from './WelcomeScreen.vue';
 import MessageRail from './MessageRail.vue';
+import { noticeTextFromBackend } from '../../utils/agentTurnState';
 import type { PlanDocument, AgentTurnSnapshot, AgentCurrentTurn } from '../../types';
 
 interface RollbackPreviewFile {
@@ -168,8 +169,9 @@ function convertSnapshotToTurn(snapshot: AgentTurnSnapshot): AgentCurrentTurn {
     thinkingBlocks: snapshot.thinkingBlocks,
     toolCalls: snapshot.toolCalls,
     logs: snapshot.logs,
-    // 状态标注（气泡下方小字）：中断/取消/等待说明
-    notice: snapshot.notice,
+    // 状态标注（气泡下方小字）：中断/取消/等待说明。
+    // 后端只给 i18n key，这里用语言包成句 —— 切语言时这条标注会跟着变。
+    notice: noticeTextFromBackend(snapshot.noticeI18nKey, snapshot.noticeDetail),
     startedAt: snapshot.createdAt,
   };
 
@@ -780,9 +782,11 @@ const confirmRollback = async () => {
       try {
         // 检查点回滚后重置式懒加载首屏（回滚已截断消息，分页游标一并重置）
         await chat.loadSessionMessagesReset(sessionId);
-      } catch {
-        const history = await invoke<string>('get_session_history', { sessionId });
-        session.replaceSessionHistory(sessionId, history || 'Ready for input...');
+      } catch (err) {
+        // 结构化加载失败，没有 HTML 兜底了（那条通道已删除，见 session store 的说明）：
+        // 置一个标记，由界面显示可翻译的提示，而不是让用户对着空白猜
+        console.error('加载会话消息失败:', err);
+        session.setSessionLoadError(sessionId, true);
       }
       const planDocuments = await invoke<PlanDocument[]>('list_plan_documents', { sessionId });
       perm.planDocumentsBySession = {
@@ -821,7 +825,7 @@ onMounted(() => {
     <MessageRail :container="responseAreaRef" />
     <TodoPanel />
     <SessionTaskBoard />
-    <WelcomeScreen v-if="!chat.messages.length && !showAgentTurn" />
+    <WelcomeScreen v-if="!chat.messages.length && !showAgentTurn && !session.currentSessionView.loadError" />
     <div class="response-text markdown-body" v-else :class="{ 'pre-anchor-hidden': initialAnchoring }">
       <!-- 懒加载：更早历史提示（顶部小字，无边框；加载中带旋转图标） -->
       <div v-if="showHistoryLoader" class="history-loader">
@@ -836,6 +840,12 @@ onMounted(() => {
           <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="3" stroke-dasharray="42 21" stroke-linecap="round" />
         </svg>
         {{ historyLoaderText }}
+      </div>
+      <!-- 会话消息加载失败：取代原先那条 HTML 兜底。
+           兜底渲染的是另一套已不被渲染的 HTML，出问题时既不是同一套样式、
+           文案还是写死的中文；改为一句可翻译的提示。 -->
+      <div v-if="session.currentSessionView.loadError" class="session-load-error">
+        {{ t('chat.loadFailed') }}
       </div>
       <!-- 结构化消息列表（Vue 组件渲染） -->
       <template v-for="(message, index) in chat.messages" :key="message.id">
@@ -913,7 +923,7 @@ onMounted(() => {
           </div>
           <!-- 状态标注刻意放在气泡**外面**：它是这一轮的运行状态，不是模型说的话。
                放气泡内会跟着 padding 缩进，看起来像模型正文的一部分。 -->
-          <AgentTurnNotice :notice="message.snapshot.notice" />
+          <AgentTurnNotice :notice="noticeTextFromBackend(message.snapshot.noticeI18nKey, message.snapshot.noticeDetail)" />
         </div>
       </template>
 
@@ -1743,6 +1753,19 @@ onMounted(() => {
   color: var(--text-muted);
   font-size: 0.73rem;
   user-select: none;
+}
+
+/* 会话消息加载失败提示：与 history-loader 同一档视觉重量（不抢眼，但要看得见） */
+.session-load-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 12px;
+  margin: 8px 0;
+  border: 1px dashed var(--glass-border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-size: 0.76rem;
 }
 
 /* 切会话锚定期：列表不可见但保留布局（滚动定位照常计算），落底后一次性显现 */

@@ -86,10 +86,17 @@ pub async fn compact_messages(
     model_id: &str,
     api_format: ApiFormat,
 ) -> Result<(), MemoryError> {
-    // 1. 清理 internal/background 消息（系统内部通知无需保留，直接删除）
+    // 1. 剔除"没有资格进摘要输入"的消息。
+    //
+    // 判据直接取 `MessageSource::in_llm_context()`，不再单独维护一份字符串名单：
+    // 摘要的职责就是压缩"模型看到过的历史"，模型没看到的东西没有理由进摘要 ——
+    // 这正是 `MessageSource` 上写明的不变式。名单曾经是
+    // `chat | compact | context`，把 `interrupted` 漏在外面，于是"模型必须看到
+    // 中断锚点"的设计在压缩后就失效了（见
+    // `doc/消息来源与轮次元数据重构方案.md` §2.5）。
     let mut keep_indices = Vec::new();
     for (i, src) in memory.sources.iter().enumerate() {
-        if matches!(src.as_str(), "chat" | "compact" | "context") {
+        if src.in_llm_context() {
             keep_indices.push(i);
         }
     }
@@ -125,7 +132,7 @@ pub async fn compact_messages(
     messages.push(Message::User {
         content: Content::Single("[用户请求压缩上下文]".to_string()),
     });
-    sources.push("compact".to_string());
+    sources.push(MessageSource::Compact);
     kinds.push(None);
     messages.push(Message::Assistant {
         content: Content::Single(format!(
@@ -133,7 +140,7 @@ pub async fn compact_messages(
             summary
         )),
     });
-    sources.push("compact".to_string());
+    sources.push(MessageSource::Compact);
     kinds.push(None);
 
     Ok(())
@@ -298,15 +305,18 @@ pub async fn auto_compact(
     let transcript_path = append_transcript(session_id, &json_content)?;
     println!("[auto_compact] Transcript saved to {}", transcript_path);
 
-    // 委托核心压缩逻辑（内部保留最近 N 条不压缩，同时清理 internal/background）
+    // 委托核心压缩逻辑（内部按 `in_llm_context` 剔除不进摘要的消息）
     compact_messages(memory, client, api_key, base_url, model_id, api_format).await?;
 
-    // 从 DB 中删除已清理的 internal/background 消息
+    // 从 DB 中删除刚才被剔除的消息行。
+    // 名单与上一步的剔除判据**同源**（都来自 `!in_llm_context()`），
+    // 不允许各写一份 —— 之前这两处就是两份名单，`interrupted` 一处有一处无，
+    // 导致内存与 DB 不一致，要靠 `hide_orphan_session_messages` 兜底。
     if let Err(e) = crate::core::session::repository::delete_session_messages_by_source(
         session_id,
-        &["internal", "background"],
+        &[MessageSource::Placeholder],
     ) {
-        println!("[auto_compact] 清理 internal/background 消息失败: {}", e);
+        println!("[auto_compact] 清理内部填充消息失败: {}", e);
     }
 
     // 生成 message_ids（同样走 message_ids 重建：本函数只负责把整体压缩掉，

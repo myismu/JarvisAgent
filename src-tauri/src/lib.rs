@@ -164,7 +164,6 @@ pub fn run() {
             command::config::get_config,
             command::config::save_config_cmd,
             command::config::get_image_compress_config,
-            command::history::get_session_history,
             command::history::get_session_messages,
             command::history::get_session_messages_paged,
             command::checkpoint::list_checkpoints,

@@ -33,18 +33,6 @@ export interface SessionMeta {
   checkpointCount?: number;
 }
 
-export interface SessionListFilter {
-  keyword?: string | null;
-  fromTs?: number | null;
-  toTs?: number | null;
-  profileId?: string | null;
-  model?: string | null;
-  tool?: string | null;
-  hasToolCalls?: boolean | null;
-  limit?: number | null;
-  offset?: number | null;
-}
-
 export interface JarvisResult {
   status: string;
   content: string;
@@ -84,13 +72,17 @@ export interface JarvisResult {
   /** 需提示用户时的 i18n key（如模型强制思考夹紧了用户的"关闭"意愿） */
   thinking_notice_i18n_key?: string | null;
   /**
-   * 本轮的状态标注（渲染在回复气泡**下方**的小字）：中断 / 取消 / 等待说明等。
+   * 本轮状态标注的 **i18n key**（渲染在回复气泡**下方**的小字）：中断 / 取消说明等。
    *
    * 这是状态标注的**唯一来源** —— 正文不再夹带系统标记，前端也不再从正文里
    * 正则剥离（2026-09-21 删除了 `INTERRUPT_MARKER_LINE_RE` 那套）。
-   * 后端由中断类型 `InterruptKind` 生成，见 `command/history.rs::interrupt_notice_for`。
+   *
+   * 后端只给 key（如 `notice.userCancel`），**不再给文案** —— 它曾经直接返回
+   * 中文句子，于是界面切成英文后中断时仍冒中文。文案统一在语言包的 `notice.*` 下。
    */
-  notice?: string | null;
+  notice_i18n_key?: string | null;
+  /** 状态标注的补充数据（原样展示、不翻译，如具体错误文本） */
+  notice_detail?: string | null;
 }
 
 export interface ContextSectionSnapshot {
@@ -263,6 +255,15 @@ export interface AgentStep {
   reason?: string;
   /** 反思审查给出的修正建议，仅 `judgment === "not_ok"` 时存在 */
   suggestion?: string;
+  /**
+   * 进度类标注的**秒数参数**，仅 `waiting_hint` / `retry` 携带。
+   *
+   * 后端只发数字，句子由前端 `notice.waitingHint` / `notice.retry` 拼 ——
+   * 它曾经直接发拼好的中文 `content`，英文界面下会冒中文。
+   */
+  silentSecs?: number;
+  remainSecs?: number;
+  waitSecs?: number;
   timestamp: number;
 }
 
@@ -353,6 +354,9 @@ export interface AgentCurrentTurn {
    * 与 textBlocks 的区别是**展示位置**——textBlocks 渲染在回复气泡内，
    * notice 渲染在气泡下方。运行状态信息一律走这里，避免挤进正文
    * 看起来像模型自己说的话。
+   *
+   * ⚠️ 存的是**已翻译好的成句**（历史快照直接给 key，运行期的等待提示由
+   * `useAgentEvents` 现场用语言包拼好）——两者在这里统一成最终展示文本。
    */
   notice?: string;
   startedAt: number | null;
@@ -366,7 +370,10 @@ export interface AgentTurnSnapshot {
   toolCalls: AgentToolCallView[];
   logs: AgentExecutionLog[];
   finalContent?: string;
-  notice?: string;
+  /** 状态标注的 i18n key（后端只给 key，文案由语言包出） */
+  noticeI18nKey?: string;
+  /** 状态标注的补充数据（原样展示、不翻译，如具体错误文本） */
+  noticeDetail?: string;
   createdAt: number;
 }
 
@@ -417,6 +424,16 @@ export interface AgentRunLoopEvent {
   inputTokens: number;
   outputTokens: number;
   model?: string | null;
+  /**
+   * 本轮反思审查的判定：`"ok"` / `"not_ok"`；`null` / 缺省 = 本轮未触发反思。
+   *
+   * 与 `reason` / `suggestion` 一起由后端 `mark_loop_reflection` 写在
+   * `agent_run_events` 的这一行上（v22 起落库，此前只走 `agent-step` 事件、
+   * 重载即失）。界面目前尚未消费它们，字段先按数据契约补齐。
+   */
+  reflectionJudgment?: string | null;
+  reflectionReason?: string | null;
+  reflectionSuggestion?: string | null;
   startedAt: number;
   updatedAt: number;
 }

@@ -167,8 +167,14 @@ struct PipelineState {
     /// 本轮因上游失联（流内空闲超时）而中断时的原因说明。
     /// Some 表示属于"运行被打断"，收尾时必须保留现场、不得截断历史。
     interrupted_reason: Option<String>,
-    /// 面向用户的状态标注（气泡下方小字），由中断收尾路径填充。
-    notice: Option<String>,
+    /// 面向用户的状态标注 —— 只存 **i18n key**（气泡下方小字），由中断收尾路径填充。
+    ///
+    /// 这里曾经直接存中文句子。后端写死文案会让界面切成英文后仍冒中文，
+    /// 而且同一个中断类型在"运行期"与"历史重放"两条路径上各写了一份措辞、
+    /// 会漂移出"刷新前后说法不一样"。现在只出 key，文案全在前端语言包。
+    notice_i18n_key: Option<&'static str>,
+    /// 状态标注的补充数据（原样展示、不翻译，如具体错误文本）
+    notice_detail: Option<String>,
     /// 本 loop 的**结构化**响应块（Text / Thinking / ToolUse，顺序即产生顺序）。
     ///
     /// 中断收尾（取消 / 上游失联 / 执行报错）改读这里，不再读 `agent_runs.live_*`
@@ -517,7 +523,7 @@ async fn store_interrupted_turn(
         Message::Assistant {
             content: Content::Multiple(blocks),
         },
-        "interrupted",
+        MessageSource::Interrupted,
         Some(kind_str),
     );
     true
@@ -1005,7 +1011,8 @@ impl PipelineState {
             plan_consecutive_stalls: 0,
             plan_total_loops_without_plan: 0,
             interrupted_reason: None,
-            notice: None,
+            notice_i18n_key: None,
+            notice_detail: None,
             current_blocks: Vec::new(),
             turn_text_this_turn: String::new(),
             turn_thinking_this_turn: String::new(),
@@ -1119,9 +1126,21 @@ impl PipelineState {
                         5. 完成状态整理后，重新调用 RunSubagentsSequentially 继续执行未完成的任务",
                         in_progress.len(), task_list
                     );
-                    append_message(&mut session, Message::Assistant {
+                    // 来源是 `Inject` 而**不是** `Placeholder`：这条通知的正文写着
+                    // "检查文件状态 → UpdateTask → 重新调用 RunSubagentsSequentially"，
+                    // 是**写给模型看的动作要求**，必须进模型上下文（`in_llm_context()` 为真）。
+                    // 它曾经被标成 `internal`，而 `internal` 不在模型白名单里 ——
+                    // 恢复指令从落地那天起就没送到过模型（见
+                    // `doc/消息来源与轮次元数据重构方案.md` §2.2）。
+                    //
+                    // role 从 `Assistant` 改成 `User`：**这条消息以前两侧都不可见，
+                    // role 是什么无所谓；一旦真的发给模型，role 就开始表达语义。**
+                    // 正文是"请按以下步骤处理"——这是系统对模型下的指令，不是模型自己说过的话。
+                    // 留在 `Assistant` 会让模型把它读成自己先前的表态，从而当成已做出的承诺。
+                    // 与另外两处 `Inject`（方案重定向通知 / 反思修正建议）保持同为 `User`。
+                    append_message(&mut session, Message::User {
                         content: Content::Single(recovery_msg),
-                    }, "internal");
+                    }, MessageSource::Inject);
                     println!("[JARVIS] 恢复：检测到 {} 个 InProgress 任务，已注入恢复指令", in_progress.len());
                 }
 
@@ -1222,10 +1241,13 @@ impl PipelineState {
                     // 用户拒绝续跑 / 确认未完成：给一个明确的收尾说明，避免留下空气泡。
                     // 该说明必须落库——旧实现只写在内存 final_answer 里，
                     // 刷新界面后用户看不到任何"为什么停了"的交代。
-                    let notice = "已停止执行。需要继续时告诉我，我会接着上次的进度往下做。";
-                    if self.final_answer.trim().is_empty() {
-                        self.final_answer = notice.to_string();
-                    }
+                    //
+                    // 注意这里**不再把文案写进 final_answer**：那是模型正文的位置，
+                    // 会以"模型说的话"呈现，且文案是后端硬编码的中文。
+                    // 改走 notice（i18n key），与刷新后历史路径按 kind 生成的小字**同一条** ——
+                    // 旧实现两处措辞不同（此处"已停止执行…"vs 历史侧"已达回合上限…"），
+                    // 刷新前后会变成两种说法。
+                    self.notice_i18n_key = Some("notice.loopLimit");
                     // 写入历史的标记面向 LLM（会进上下文），不含"告诉我"这类
                     // 对用户说的措辞——模型会把它们当成自己的话。
                     self.append_interrupted_marker(InterruptKind::LoopLimit)
@@ -1629,7 +1651,7 @@ impl PipelineState {
                     let mut session = self.ctx.memory.lock().await;
                     append_message(&mut session, Message::User {
                         content: Content::Multiple(tool_results.clone()),
-                    }, "chat");
+                    }, MessageSource::Chat);
                 }
                 continue;
             }
@@ -1654,7 +1676,7 @@ impl PipelineState {
                         let mut session = self.ctx.memory.lock().await;
                         append_message(&mut session, Message::User {
                             content: Content::Multiple(tool_results.clone()),
-                        }, "chat");
+                        }, MessageSource::Chat);
                     }
                     let tool_summary: String = tool_results.iter()
                         .filter_map(|block| {
@@ -1743,9 +1765,12 @@ impl PipelineState {
 
                     {
                         let mut session = self.ctx.memory.lock().await;
+                        // `Inject`：正文是"请调用 ProposePlan 工具…"的动作要求。
+                        // 标成 `internal` 时它送不到模型，于是模型在同一上下文下反复
+                        // 输出同样的计划正文 —— 看门狗只是把死循环变成"有限次后失败"。
                         append_message(&mut session, Message::User {
                             content: Content::Single(redirect_msg),
-                        }, "internal");
+                        }, MessageSource::Inject);
                     }
 
                     // ⚠️ 关键修复（2026-09-19）：看门狗必须在这条「无工具 + 计划正文」
@@ -1820,7 +1845,7 @@ impl PipelineState {
                     let mut session = self.ctx.memory.lock().await;
                     append_message(&mut session, Message::User {
                         content: Content::Multiple(tool_results.clone()),
-                    }, "chat");
+                    }, MessageSource::Chat);
                     // 模式切换当轮立即落库：保证崩溃恢复时 snapshot_seq 与新快照同时存在，避免 seq 回退/重复
                     if mode_switched {
                         crate::core::session::save_session(&self.sid, &session, None);
@@ -1828,6 +1853,11 @@ impl PipelineState {
                 } // session 锁在这里释放
 
                 // —— 反思审查：工具结果已写入 session，审查 Agent 携带完整上下文判断 ——
+                //
+                // 判定结果先收在这里，等本轮 `agent_run_events` 的行建好之后
+                // （见下方 `upsert_loop_event`）再单独落库：默认配置下该行是
+                // loop 收尾才建的，反思发生时它还不存在，写不进去。
+                let mut reflection_record: Option<(String, Option<String>, Option<String>)> = None;
                 if should_reflect {
                     println!("[审查 Agent] 触发反思 (mode={}, model={})", self.reflection_mode, self.cfg.utility_model);
                     // 获取 session 消息用于审查
@@ -1853,6 +1883,7 @@ impl PipelineState {
                             println!("[审查 Agent] 判断: OK");
                             self.total_reflections += 1;
                             self.consecutive_reflection_nos = 0;
+                            reflection_record = Some(("ok".to_string(), None, None));
                             let _ = self.app.emit("agent-step", json!({
                                 "type": "reflection",
                                 "sessionId": self.sid,
@@ -1867,6 +1898,11 @@ impl PipelineState {
                             );
                             self.total_reflections += 1;
                             self.consecutive_reflection_nos += 1;
+                            reflection_record = Some((
+                                "not_ok".to_string(),
+                                Some(reason.clone()),
+                                Some(suggestion.clone()),
+                            ));
                             let _ = self.app.emit("agent-step", json!({
                                 "type": "reflection",
                                 "sessionId": self.sid,
@@ -1878,12 +1914,15 @@ impl PipelineState {
 
                             // 注入修正建议到 session
                             let mut session = self.ctx.memory.lock().await;
+                            // `Inject`：`doc/reflection-mechanism-design.md` §3.2 写明
+                            // "继续循环，LLM 在下一轮看到修正提示"。标成 `internal` 时
+                            // 这条提示进不了模型上下文，反思判定对主 Agent 零影响。
                             append_message(&mut session, Message::User {
                                 content: Content::Single(format!(
                                     "审查发现以下问题：{}\n建议修正：{}\n请根据建议修正后继续。",
                                     reason, suggestion
                                 )),
-                            }, "internal");
+                            }, MessageSource::Inject);
                         }
                         Err(e) => {
                             // 审查调用失败不影响主流程，仅记录日志
@@ -1920,6 +1959,18 @@ impl PipelineState {
                     Some(self.model_id.clone()),
                 );
                 drop(session);
+
+                // 反思判定落库（独立 UPDATE，且刻意不进 upsert_loop_event 的覆盖集合——
+                // 否则帧级通道/收尾的任何一次重写都会把它抹掉）
+                if let Some((judgment, reason, suggestion)) = reflection_record {
+                    agent_runs::mark_loop_reflection(
+                        &self.run_id,
+                        self.total_loop_count + 1,
+                        &judgment,
+                        reason.as_deref(),
+                        suggestion.as_deref(),
+                    );
+                }
 
                 // B3 Plan 看门狗：仅 plan 模式；连续无喂狗的工具调用 / 累计无 ProposePlan 的空转达到阈值时，
                 // 先做一次缓存友好的 LLM 进度小结，再强制停下交还决策权。
@@ -2168,7 +2219,7 @@ impl PipelineState {
         println!(
             "[JARVIS] finalize：status={}，notice={:?}，content 长度={}",
             status,
-            self.notice.as_deref().unwrap_or("<无>"),
+            self.notice_i18n_key.unwrap_or("<无>"),
             self.final_answer.chars().count()
         );
 
@@ -2190,7 +2241,8 @@ impl PipelineState {
             checkpoint_id,
             checkpoint_has_patches: Some(checkpoint_has_patches),
             tool_execution_summary: self.tool_execution_summary,
-            notice: self.notice,
+            notice_i18n_key: self.notice_i18n_key.map(|k| k.to_string()),
+            notice_detail: self.notice_detail,
             thinking_enabled: Some(self.turn_thinking_decision.enabled),
             thinking_reason: Some(format!("{:?}", self.turn_thinking_decision.reason)),
             thinking_notice_i18n_key: self
@@ -2221,7 +2273,8 @@ impl PipelineState {
 
         // 面向用户的小字标注：错误原文可能很长且含技术细节，
         // 这里给一句可读的结论，完整错误走事件层与 agent_runs.error（界面"执行详情"可查）。
-        let notice_text = format!("本轮执行中断：{}", error);
+        // 状态标注只出 key；具体错误走 detail 原样展示（错误文本本身无法翻译）
+        let notice_detail = error.to_string();
         println!("[JARVIS] 异常收尾（保留现场）: {}", error);
 
         // 1. 把已流式输出但尚未入库的内容补进历史。
@@ -2263,7 +2316,8 @@ impl PipelineState {
         }
 
         self.final_answer = text;
-        self.notice = Some(notice_text.clone());
+        self.notice_i18n_key = Some("notice.pipelineError");
+        self.notice_detail = Some(notice_detail);
         self.interrupted_reason = Some(error.to_string());
 
         // 3. 落库：本轮标记为 interrupted（**保留**帧级通道已写的半截内容）
@@ -2330,7 +2384,7 @@ impl PipelineState {
                     text: String::new(),
                 }]),
             },
-            "interrupted",
+            MessageSource::Interrupted,
             Some(kind.as_str()),
         );
         session.messages.len() - 1
@@ -2379,6 +2433,9 @@ impl PipelineState {
                     // 走 agent-step 而非 chat-stream：等待提示属于**状态标注**，
                     // 应渲染在气泡下方的小字里；经 chat-stream 会混进模型正文，
                     // 在回复气泡内部显示（实测反馈的 UI 问题）。
+                    //
+                    // 事件**不带 content 文案**，只带两个秒数，由前端拼句子 ——
+                    // 后端写死中文会让英文界面在等待时冒中文（本文件 notice 一节的同一问题）。
                     let silent_secs = silent_ms / 1000;
                     // 剩余秒数按当前生效的终止阈值算。
                     // ⚠️ 这里用 `STREAM_IDLE_TIMEOUT_SECS` 是**准确**的：等待响应头
@@ -2391,10 +2448,9 @@ impl PipelineState {
                         "agent-step",
                         json!({
                             "type": "waiting_hint",
-                            "content": format!(
-                                "⏳ 已等待 {} 秒未收到数据；若持续无响应，约 {} 秒后会自动终止（无需手动停止）。深度思考或上游繁忙时可能较慢。",
-                                silent_secs, remain_secs
-                            ),
+                            // 两个秒数交给前端 `notice.waitingHint` 组句
+                            "silentSecs": silent_secs,
+                            "remainSecs": remain_secs,
                             "sessionId": sid,
                             "loopCount": loop_count
                         }),
@@ -2501,11 +2557,9 @@ impl PipelineState {
             }
         };
 
-        // `reason` 面向用户（走 notice 结构化字段，纯文本、不经 Markdown 渲染，
-        // 故不带引用符/加粗/emoji —— 见 doc/状态标注符号统一与结构化改造方案.md）；
+        // 面向用户的状态标注只出 i18n key（文案在前端 `notice.userCancel`）；
         // 写入历史的标记面向 LLM（会进上下文），故用最小信息量的统一措辞，
-        // 避免模型把系统视角描述当成自己的话。
-        let reason = "用户已取消执行，以上为保留的部分结果，历史未截断。";
+        // 避免模型把系统视角描述当成自己的话 —— 见 `interrupt_marker_for`。
 
         // 落库口径（丙方案）：半截内容 + 中断提示合并成**一条**助手消息，
         // 保持一问一答；正文为空时把提示本身作为正文块，保证前端渲染锚点存在。
@@ -2521,7 +2575,7 @@ impl PipelineState {
         }
 
         self.final_answer = partial.clone();
-        self.notice = Some(reason.to_string());
+        self.notice_i18n_key = Some("notice.userCancel");
         self.interrupted_reason = Some("用户取消".to_string());
 
         // 状态标注走 notice 结构化下发，不再推进正文
@@ -2566,19 +2620,16 @@ impl PipelineState {
         let resp_blocks_for_event =
             take_resp_blocks_with_thinking(&stream_result.blocks, &mut thinking_for_event);
 
-        // 面向用户的文案：会渲染成气泡下方的小字（notice），
-        // 因此不用 Markdown 引用符号 —— 小字是纯文本，`>` 会原样显示。
+        // 面向用户的状态标注只出 i18n key，文案在前端 `notice.streamTimeout`。
+        // 等待了多少秒作为 detail 原样带上（数字无需翻译）。
         //
-        // ⚠️ 归因范围（勿再混淆）：本函数是**流空闲超时**（SSE 30s 零帧）的收尾，
-        // 与 plan 模式的「规划看门狗」（update_plan_watchdog / 阈值 6 次·10 轮）
-        // 是两套完全不同的机制，只有本函数走这里。文案只描述"等待"这个客观事实，
-        // **不得断言服务端状态**（"已停止响应/已失联"都不行）——静默可能是服务
-        // 繁忙、链路抖动或半开连接，在链路上不可区分，断言会误导用户。
-        let reason = format!(
-            "上游长时间未返回数据（已等待 {} 秒），本轮已自动终止。\
-             已保留的部分结果见上，历史未截断。回复「继续」即可接着做。",
-            crate::core::agent::stream::STREAM_IDLE_TIMEOUT_SECS
-        );
+        // ⚠️ 归因口径（前端写文案时仍受此约束，勿再混淆）：本函数是**流空闲超时**
+        // （SSE 30s 零帧）的收尾，与 plan 模式的「规划看门狗」
+        // （update_plan_watchdog / 阈值 6 次·10 轮）是两套完全不同的机制。
+        // 文案只描述"等待"这个客观事实，**不得断言服务端状态**
+        // （"已停止响应/已失联"都不行）——静默可能是服务繁忙、链路抖动或半开连接，
+        // 在链路上不可区分，断言会误导用户。
+        let waited_secs = crate::core::agent::stream::STREAM_IDLE_TIMEOUT_SECS.to_string();
 
         // 落库口径（丙方案）：半截内容落成**一条**助手消息，中断类型结构化写进
         // `interrupt_kinds`（标记文本在发送给模型前由 kind 拼回，见
@@ -2595,13 +2646,14 @@ impl PipelineState {
         }
 
         self.final_answer = partial.clone();
-        self.notice = Some(reason.clone());
+        self.notice_i18n_key = Some("notice.streamTimeout");
+        self.notice_detail = Some(waited_secs);
         // 状态字符串（进 agent_runs.error / 审计，非用户可见）：同样只描述等待事实，
         // 不断言服务端。见本函数上方 handle_stream_idle_timeout 的归因注释。
         self.interrupted_reason = Some("上游响应超时（流内空闲超时）".to_string());
 
         // 状态标注不再经 chat-stream 推进正文（会挤进回复气泡内部），
-        // 改由 JarvisResult.notice 结构化下发，前端渲染为气泡下方小字。
+        // 改由 JarvisResult.notice_i18n_key 结构化下发，前端渲染为气泡下方小字。
         let _ = self.app.emit(
             "agent-step",
             json!({
@@ -2613,7 +2665,7 @@ impl PipelineState {
         );
         println!(
             "[JARVIS] 中断收尾完成：notice={:?}，content 长度={}",
-            self.notice.as_deref().unwrap_or("<无>"),
+            self.notice_i18n_key.unwrap_or("<无>"),
             self.final_answer.chars().count()
         );
 
@@ -2627,7 +2679,9 @@ impl PipelineState {
             resp_blocks_for_event,
             Vec::new(),
             "interrupted",
-            Some(reason.clone()),
+            // 审计层写**技术原因**（非用户文案）——它进「执行详情」与日志，
+            // 与 notice 的 i18n key 是两回事
+            Some("上游响应超时（流内空闲超时）".to_string()),
             0,
             0,
             Some(self.model_id.clone()),
@@ -2792,7 +2846,7 @@ impl PipelineState {
             //     User(ToolResult) 必须成对出现在请求里，切开会让 provider 直接 400。
             let turn_start = self.initial_msg_index.min(session.messages.len());
             let turn_messages: Vec<Message> = session.messages.drain(turn_start..).collect();
-            let turn_sources: Vec<String> = if session.sources.len() >= turn_messages.len() {
+            let turn_sources: Vec<MessageSource> = if session.sources.len() >= turn_messages.len() {
                 let keep = session.sources.len().saturating_sub(turn_messages.len());
                 session.sources.drain(keep..).collect()
             } else {
@@ -2823,12 +2877,12 @@ impl PipelineState {
                 // drain 之后它们长度已不同步）
                 for (i, (msg, src)) in turn_messages.into_iter().zip(turn_sources).enumerate() {
                     let kind = turn_kinds.get(i).cloned().flatten();
-                    append_message_with_kind(&mut session, msg, &src, kind.as_deref());
+                    append_message_with_kind(&mut session, msg, src, kind.as_deref());
                 }
                 // 本轮起点 = 放回后「区间起点」的下标
                 self.initial_msg_index = session.messages.len().saturating_sub(turn_len);
                 if let Some((msg, message_id)) = last_user_msg {
-                    restore_message(&mut session, msg, message_id, "chat");
+                    restore_message(&mut session, msg, message_id, MessageSource::Chat);
                     self.initial_msg_index = session.messages.len().saturating_sub(1);
                 }
                 println!(
@@ -2855,7 +2909,7 @@ impl PipelineState {
                     println!("[JARVIS] 自动压缩失败: {}，继续使用原始上下文", e);
                     for (i, (msg, src)) in turn_messages.into_iter().zip(turn_sources).enumerate() {
                         let kind = turn_kinds.get(i).cloned().flatten();
-                        append_message_with_kind(&mut session, msg, &src, kind.as_deref());
+                        append_message_with_kind(&mut session, msg, src, kind.as_deref());
                     }
                     // 前缀未被压，本轮起点仍落在原前缀之后
                     self.initial_msg_index = prefix_len;
@@ -2871,7 +2925,7 @@ impl PipelineState {
                     let compacted_len = session.messages.len();
                     for (i, (msg, src)) in turn_messages.into_iter().zip(turn_sources).enumerate() {
                         let kind = turn_kinds.get(i).cloned().flatten();
-                        append_message_with_kind(&mut session, msg, &src, kind.as_deref());
+                        append_message_with_kind(&mut session, msg, src, kind.as_deref());
                     }
                     self.initial_msg_index = compacted_len;
                     println!(
@@ -2900,12 +2954,16 @@ impl PipelineState {
                         _ => false,
                     };
                     if needs_assistant_pad {
+                        // `Placeholder`：这条是**对齐填充**（保持 user/assistant 交替），
+                        // 既不该给模型看也不该给用户看 —— 它原先标 `internal` 是"巧合的正确"，
+                        // 因为 `internal` 恰好两边都不可见；但它与上面三条"给模型看的指令"
+                        // 共用同一个值，正是来源语义被压扁的证据。
                         append_message(&mut session, Message::Assistant {
                             content: Content::Single("Context compressed.".to_string()),
-                        }, "internal");
+                        }, MessageSource::Placeholder);
                     }
                 } else {
-                    restore_message(&mut session, msg, message_id, "chat");
+                    restore_message(&mut session, msg, message_id, MessageSource::Chat);
                     self.initial_msg_index = session.messages.len().saturating_sub(1);
                 }
             }
@@ -2930,21 +2988,27 @@ impl PipelineState {
     fn prepare_history_snapshot_from_messages(
         &self,
         messages: Vec<Message>,
-        sources: &[String],
+        sources: &[MessageSource],
         interrupt_kinds: &[Option<String>],
     ) -> Vec<Message> {
-        // 步骤 1：过滤 internal/background 内部消息（LLM 不需要看到系统内部通知），
-        // 并把「本轮用户消息」的下标换算到过滤后的快照坐标系——initial_msg_index
-        // 是过滤前的下标，而图片折叠要的是过滤后的下标。
+        // 步骤 1：过滤不进模型上下文的消息，并把「本轮用户消息」的下标换算到
+        // 过滤后的快照坐标系——initial_msg_index 是过滤前的下标，而图片折叠要的是过滤后的下标。
         //
-        // `interrupted` 刻意列入白名单：运行被打断（取消/失联/报错）后，模型需要
+        // 判据取 `MessageSource::in_llm_context()`，不再维护字符串白名单：
+        // 曾经这里是 `chat | compact | context | interrupted` 四个字面量，而
+        // `Inject`（当时的 `internal`）不在其中 —— 崩溃恢复指令、方案重定向通知、
+        // 反思修正建议三条**写给模型的指令**因此从未送达模型（见
+        // `doc/消息来源与轮次元数据重构方案.md` §2.2）。现在"哪些来源进上下文"
+        // 由枚举一处说了算，新增取值时编译器强制表态。
+        //
+        // `Interrupted` 在其中是有意的：运行被打断（取消/失联/报错）后，模型需要
         // 看到自己中断于何处，用户回一句"继续"才能顺着接上。半截正文出现在
         // 上下文里是预期行为，因为它真实反映了中断时的状态。
         let session_turn_start = self.initial_msg_index;
         let mut filtered: Vec<Message> = Vec::with_capacity(messages.len());
         let mut snapshot_turn_start: Option<usize> = None;
         for (idx, (mut msg, src)) in messages.into_iter().zip(sources.iter()).enumerate() {
-            if !matches!(src.as_str(), "chat" | "compact" | "context" | "interrupted") {
+            if !src.in_llm_context() {
                 continue;
             }
             // 中断类型 → 把标记拼回正文末尾（**模型必须看到"上一句被截断"**，
@@ -3585,7 +3649,7 @@ impl PipelineState {
         if !filtered_blocks.is_empty() {
             append_message(&mut session, Message::Assistant {
                 content: Content::Multiple(filtered_blocks),
-            }, "chat");
+            }, MessageSource::Chat);
         }
     }
 
@@ -3706,7 +3770,7 @@ impl PipelineState {
                     Message::Assistant {
                         content: Content::Single(summary.clone()),
                     },
-                    "chat",
+                    MessageSource::Chat,
                     Some(InterruptKind::PlanLimit.as_str()),
                 );
             }
@@ -4337,7 +4401,9 @@ mod interrupted_turn_store_tests {
     //! 现口径：半截内容（思考 + 正文）+ 中断提示**合并成一条**消息；
     //! 正文为空（纯思考期中止）时把提示本身作为正文块，保证渲染锚点存在。
     use super::store_interrupted_turn;
-    use crate::infra::types::models::{Content, ContentBlock, InterruptKind, Message, SessionMemory};
+    use crate::infra::types::models::{
+        Content, ContentBlock, InterruptKind, Message, MessageSource, SessionMemory,
+    };
 
     /// 测试用中断类型（阶段二起 `store_interrupted_turn` 收 kind，不再收标记文本）。
     /// 取 `PipelineError` 代表"能接着做"一类——它的标记文本仍是
@@ -4357,7 +4423,7 @@ mod interrupted_turn_store_tests {
                     text: text.to_string(),
                 }]),
             },
-            "chat",
+            MessageSource::Chat,
         );
     }
 
@@ -4412,7 +4478,7 @@ mod interrupted_turn_store_tests {
             Some(KIND.as_str()),
             "中断类型必须打在该消息上"
         );
-        assert_eq!(session.sources[0], "interrupted");
+        assert_eq!(session.sources[0], MessageSource::Interrupted);
     }
 
     /// 纯思考期中止（正文为空）：提示本身作为正文块 —— 前端渲染锚点不能缺
@@ -4497,7 +4563,7 @@ mod interrupted_turn_store_tests {
                     },
                 ]),
             },
-            "chat",
+            MessageSource::Chat,
         );
 
         store_interrupted_turn(&mut session, "半截正文", "内心独白", KIND).await;

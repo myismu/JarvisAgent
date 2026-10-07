@@ -10,6 +10,9 @@ import type {
   AgentToolStatus,
   AgentTurnSnapshot,
 } from "../types";
+// 全局 i18n 实例（与 `utils/toolDisplay.ts` / `utils/markdown.ts` 同一取法）：
+// 本文件是纯工具函数，拿不到组件上下文，故走 `i18n.global.t`
+import { i18n } from "../i18n";
 
 let sequence = 0;
 
@@ -328,13 +331,45 @@ export function hasStructuredTurnContent(turn: AgentCurrentTurn) {
   );
 }
 
+/**
+ * 把后端的状态标注（i18n key + 可选补充数据）渲染成最终展示文本。
+ *
+ * 后端**只给 key**（`notice.streamTimeout` 之类），文案在语言包的 `notice.*` 下 ——
+ * 后端曾经直接返回中文句子，界面切英文后中断时仍冒中文。
+ *
+ * `detail` 是"无法翻译但必须原样显示"的补充（具体错误文本、等待秒数），
+ * 由语言包的 `notice.detail` 包一层再拼到主句后面。
+ *
+ * ⚠️ 与 `useAgentEvents` 里的等待提示/重试进度**同一套 key 词汇**：
+ * 那两处是运行期事件（带秒数参数），这里是落库后的历史重放，两边措辞必须一致，
+ * 否则用户刷新前后会看到不同说法。
+ */
+export function noticeTextFromBackend(
+  i18nKey?: string | null,
+  detail?: string | null,
+): string | undefined {
+  if (!i18nKey) return undefined;
+  const base = i18n.global.t(i18nKey);
+  const extra = (detail ?? "").trim();
+  if (!extra) return base;
+  return `${base} ${i18n.global.t("notice.detail", { detail: extra })}`;
+}
+
 export function buildAgentTurnSnapshot(
   turn: AgentCurrentTurn,
   finalContent: string,
   fallbackExecution: string,
   status: string,
-  /** 状态标注（气泡下方小字）。**显式传入**，不从 turn.notice 继承（理由见下方 return 处） */
-  notice?: string,
+  /**
+   * 状态标注的 i18n key（气泡下方小字）。**显式传入**，不从 turn.notice 继承
+   * （理由见下方 return 处）。
+   *
+   * 传 key 而不是成句：这样界面切语言时，这条标注会跟着变 ——
+   * 存成句的话切语言后它仍是旧语言，直到重新加载。
+   */
+  noticeI18nKey?: string,
+  /** 状态标注的补充数据（原样展示，如具体错误文本） */
+  noticeDetail?: string,
 ): AgentTurnSnapshot {
   completeAgentCurrentTurn({ currentTurn: turn });
 
@@ -383,7 +418,8 @@ export function buildAgentTurnSnapshot(
     // 状态标注**显式传入**，刻意不从 turn.notice 继承：
     // turn.notice 会累积"等待提示"这类临时标注，若继承下来，请求最终成功时
     // 那条"已 30 秒未收到数据"会残留在快照里（明明已经成功完成）。
-    notice,
+    noticeI18nKey,
+    noticeDetail,
     finalContent,
     createdAt: now(),
   };

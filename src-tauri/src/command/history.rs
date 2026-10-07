@@ -1,16 +1,24 @@
-//! # history.rs — 会话历史渲染 Tauri 命令
+//! # history.rs — 会话历史读取 Tauri 命令
 //!
-//! 将会话消息历史渲染为 HTML 格式，供前端展示。
-//! 处理用户消息（含图片 base64 内联）、助手消息（思考过程折叠显示），
-//! 并关联检查点信息以支持消息撤回按钮。
+//! 把会话消息读成**结构化的 JSON**（`SessionMessage[]` + `AgentTurnSnapshot`），
+//! 交给前端 Vue 组件渲染；并关联检查点信息以支持消息撤回按钮。
 //!
 //! ## 关键导出
-//! - `get_session_history()`: 返回会话历史的 HTML 渲染结果
-//! - `get_session_messages()`: 返回会话历史的结构化 JSON，供前端 Vue 组件渲染
+//! - `get_session_messages()`: 全量结构化消息
+//! - `get_session_messages_paged()`: 按轮懒加载
+//!
+//! ## 历史演进：HTML 渲染通道已删除（2026-10-07）
+//!
+//! 这里原本还有一条 `get_session_history()`：把消息**拼成 HTML 字符串**返回，
+//! 前端存进 `jarvisResponse` 字段。它早已不被渲染（`ChatArea` 渲染的是
+//! 结构化 `messages`），只剩 8 处 `catch` 兜底在调用它；而它拼出的 HTML 里
+//! 还写死了中文（思考折叠标题 / token 消耗行 / 图片 alt）。
+//! 整条通道连同前端的 `jarvisResponse` 字段一并删除 —— 兜底改为
+//! "重试结构化接口 + 显示可翻译的错误提示"。
 //!
 //! ## 约束
-//! - 过滤内部消息（background-results 通知、内部 ack 回复）
-//! - 助手多轮回复合并显示，思考过程用 `<details>` 折叠
+//! - 过滤不可见来源（按 `MessageSource::rendered_in_ui()`）
+//! - 助手多轮回复合并显示；思考过程由前端折叠
 //! - 用户消息关联检查点 ID，支持前端回滚按钮
 
 use crate::infra::types::models::*;
@@ -25,11 +33,14 @@ struct RollbackInfo {
     created_at: u64,
 }
 
+/// 一条**可渲染用户消息**的附加信息（编号 / 撤回入口）。
+///
+/// ⚠️ 它**不装正文** —— 正文在渲染循环里由 `user_display_content` 现算。
+/// 此前它还带 `display` 与 `memory_index` 两个字段，只有已删除的 HTML 渲染器
+/// （`render_user_message`）在读，故一并去掉。
 struct UserDisplayMessage {
-    memory_index: usize,
     message_id: Option<String>,
     seq: Option<usize>,
-    display: String,
     rollback_info: Option<RollbackInfo>,
 }
 
@@ -81,13 +92,17 @@ pub struct AgentTurnSnapshot {
     tool_calls: Vec<AgentToolCallView>,
     logs: Vec<AgentExecutionLog>,
     tokens: Option<AgentTurnTokens>,
-    /// 气泡下方的小字说明（如"以上为部分结果""回复被中断"）。
+    /// 气泡下方的小字说明 —— 只给 **i18n key**，文案由前端出。
     ///
     /// 与 `text_blocks` 的区别是展示位置：notice 渲染在回复气泡**之外**的下方，
     /// 属于状态标注；而 text_blocks 是模型正文，渲染在气泡内。
     /// 中断/取消这类"运行状态"信息一律走 notice，避免混进正文显得突兀。
+    ///
+    /// ⚠️ 这里曾经是 `notice: Option<String>`、装后端拼好的**中文句子** ——
+    /// 界面切英文后中断轮次仍冒中文。现在后端只发 key（如 `notice.userCancel`），
+    /// 文案统一由前端语言包提供，与运行期 `JarvisResult::notice_i18n_key` 同源。
     #[serde(skip_serializing_if = "Option::is_none")]
-    notice: Option<String>,
+    notice_i18n_key: Option<String>,
     created_at: u64,
 }
 
@@ -152,7 +167,7 @@ impl AgentTurnSnapshot {
             // 收尾轮次被判为空而整轮丢弃 —— 实测出现于"中断后没有后续消息"的场景
             // （最后一条就是 interrupted 消息，结果界面什么都不显示）。
             && self
-                .notice
+                .notice_i18n_key
                 .as_deref()
                 .map(|n| n.trim().is_empty())
                 .unwrap_or(true)
@@ -364,55 +379,14 @@ fn find_rollback_info(
     }
 }
 
-/// 渲染用户消息 HTML，撤回按钮由前端统一补齐
-fn render_user_message(history: &mut String, message: &UserDisplayMessage) {
-    let display = &message.display;
-    if display.trim().is_empty() {
-        return;
-    }
 
-    let rollback_mode = if message
-        .rollback_info
-        .as_ref()
-        .map(|info| info.has_file_edits)
-        .unwrap_or(false)
-    {
-        "both"
-    } else {
-        "session"
-    };
-    let rollback_checkpoint_id = message
-        .rollback_info
-        .as_ref()
-        .map(|info| info.checkpoint_id.as_str())
-        .unwrap_or("");
-
-    history.push_str(&format!(
-        "<div class=\"chat-message user-message\" style=\"position: relative;\"><div class=\"message-content\" data-user-message-index=\"{}\"{}{} data-rollback-mode=\"{}\" data-rollback-checkpoint-id=\"{}\">\n\n{}\n\n</div></div>\n\n",
-        message.memory_index,
-        message
-            .message_id
-            .as_ref()
-            .map(|id| format!(" data-message-id=\"{}\"", id))
-            .unwrap_or_default(),
-        message
-            .seq
-            .map(|seq| format!(" data-message-seq=\"{}\"", seq))
-            .unwrap_or_default(),
-        rollback_mode,
-        rollback_checkpoint_id,
-        display
-    ));
-}
-
-/// 渲染助手消息 HTML，思考过程用 details 折叠，取最后一段非空文本作为可见回复
 
 /// 判断该 source 是否属于"中断收尾消息"。
 ///
 /// ⚠️ 别据此断言它"不是模型正文" —— 新数据的正文块里装的恰恰是半截内容，
 /// 该不该渲染见 [`interrupted_body_is_content`]。
-fn is_interrupted_source(source: &str) -> bool {
-    source == "interrupted"
+fn is_interrupted_source(source: MessageSource) -> bool {
+    source == MessageSource::Interrupted
 }
 
 /// `interrupted` 消息的正文块是否应当渲染进 `text_blocks`。
@@ -421,372 +395,71 @@ fn is_interrupted_source(source: &str) -> bool {
 /// - **kind 有值**（新数据）：正文块里是**半截内容**（`pipeline.rs` 中断收尾的分支二
 ///   写明"正文即半截内容；正文块恒存在"），必须渲染 —— 否则用户取消后只剩一句
 ///   "用户已取消执行"，已经生成的部分凭空消失（实测 bug）；
-/// - **kind 缺失**（旧库数据）：正文是 `**[回复被中断]** …` 这类标记文本，已由
-///   notice 承载，再渲染会把它当模型正文重复显示一遍。
+/// - **kind 缺失**（v23 之前的老数据）：正文是 `**[回复被中断]** …` 这类标记文本，
+///   已由 notice 承载，再渲染会把它当模型正文重复显示一遍。
 ///
-/// 判据与 notice 的生成路径**对称**：新数据由 kind 驱动，旧数据回退正文清洗。
+/// v23 迁移已把老数据的 `interrupt_kind` 一次性回填（从那些标记文本里认出来的），
+/// 所以"kind 缺失"现在只剩**认不出的极少数**（正文被人手改过、或标记格式前所未见）。
+/// 那些轮次会被整轮跳过 —— 这是刻意的：宁可少显示，也不把系统标记当模型正文渲染。
 fn interrupted_body_is_content(kind: Option<&str>) -> bool {
     kind.is_some()
 }
 
-/// 从 `interrupted` 消息里取出给用户看的小字说明。
+/// 中断类型 → 前端 i18n key（文案在前端语言包的 `notice.*` 下）。
 ///
-/// 标记文案现行格式为 `**[标签]** …`（如 `**[回复被中断]** …`，不带引用符）；
-/// 旧库遗留格式为 `> ⚠️ **[回复被中断]** …` 与 `> ✕ **用户已取消执行…**`。
-/// 这里剥掉引用符、加粗与 emoji 哨兵，只留纯文本，
-/// 交给前端渲染成气泡下方的小字。
+/// ## 为什么这里只出 key
 ///
-/// ⚠️ `.replace("⚠️", "⚠")` 专为**旧库数据**保留：新格式已不含 emoji，
-/// 但旧会话历史不会自动改写——删掉它旧小字会显示带变体选择符的 `⚠️`。
-/// 新格式与旧格式的识别锚点是 `strip_interrupt_markers`（agent_runs.rs）。
-/// 前端原有的那份 `INTERRUPT_MARKER_LINE_RE` 已于 2026-09-21 删除：
-/// 它对新数据永不命中，却会误伤模型正文里自己写的 `⚠` 并截断整条回复。
-fn interrupted_notice_text(content: &Content) -> Option<String> {
-    let raw = match content {
-        Content::Single(s) => s.as_str(),
-        Content::Multiple(blocks) => blocks.iter().find_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })?,
-    };
-    let cleaned = raw
-        .trim()
-        .trim_start_matches('>')
-        .trim()
-        .replace("**", "")
-        .replace("⚠️", "⚠")
-        .trim()
-        .to_string();
-    if cleaned.is_empty() {
-        None
-    } else {
-        Some(cleaned)
-    }
-}
-
-/// 按**结构化中断类型**生成用户可见的小字说明（阶段二路径）。
+/// 这里曾经是 `interrupt_notice_for()`，直接返回**中文句子**。后果是界面切成英文后，
+/// 中断轮次的小字仍然是中文 —— 后端产出的用户可见文案绕开了前端语言包。
+/// 现在后端只说"中断类型"，文案由前端出。
 ///
-/// 与 [`interrupted_notice_text`]（从正文文本清洗，旧库兼容路径）的分工：
-/// 新数据正文是干净的（标记不再拼进正文），notice 只能由 kind 生成；
-/// 旧库数据 kind 列为 NULL，回退到文本清洗。
-/// 返回值**不含**方括号标签与 emoji —— 它是给用户看的小字，不是给模型的标记。
-fn interrupt_notice_for(kind: Option<&str>) -> Option<String> {
+/// ## 与运行期必须同源
+///
+/// 运行期（`pipeline.rs` 的三处收尾）也会设一次 notice，用户先看到它，
+/// 刷新后由本函数按 `interrupt_kind` 重新生成。**两处必须给出同一个 key** ——
+/// 措辞若不一致，用户会看到"刷新前后说法变了"。
+/// 旧实现正是两套文案并存（`handle_cancellation` 里还内联了一份
+/// "用户已取消执行…"的副本），本次一并收敛到这里。
+///
+/// ## 旧库数据
+///
+/// 这里曾经还有一条 `interrupted_notice_text()` 回退：从正文里**清洗出**
+/// 旧格式标记文本（`> ⚠️ **[回复被中断]** …`）当小字。那是"从内容反推元信息"，
+/// 已在 v23 迁移里把老数据的 `interrupt_kind` 一次性回填，该回退随之删除。
+fn interrupt_notice_key(kind: Option<&str>) -> Option<&'static str> {
     use crate::infra::types::models::InterruptKind;
-    let kind = InterruptKind::from_db(kind?)?;
-    Some(match kind {
-        InterruptKind::StreamTimeout => {
-            "上游长时间未返回数据，本轮已自动终止。以上为已保留的部分结果，回复「继续」即可接着做。"
-                .to_string()
-        }
-        InterruptKind::UserCancel => {
-            "用户已取消执行，以上为保留的部分结果，历史未截断。".to_string()
-        }
-        InterruptKind::PipelineError => {
-            "本轮执行中断，以上为已保留的部分结果，回复「继续」即可接着做。".to_string()
-        }
-        InterruptKind::AppClosed => "本次执行因应用关闭而中断，未产生回复内容。".to_string(),
-        InterruptKind::LoopLimit => "已达回合上限且未获续跑授权，本轮在此停下。".to_string(),
-        InterruptKind::PlanLimit => "规划探索已达到阈值，本轮自动停下，等待用户决策。".to_string(),
+    Some(match InterruptKind::from_db(kind?)? {
+        InterruptKind::StreamTimeout => "notice.streamTimeout",
+        InterruptKind::UserCancel => "notice.userCancel",
+        InterruptKind::PipelineError => "notice.pipelineError",
+        InterruptKind::AppClosed => "notice.appClosed",
+        InterruptKind::LoopLimit => "notice.loopLimit",
+        InterruptKind::PlanLimit => "notice.planLimit",
     })
 }
 
-fn render_assistant_message(history: &mut String, assistant: &mut AgentTurnSnapshot) {
-    if assistant.is_empty() {
-        return;
-    }
 
-    assistant.status = "FINISH".to_string();
-    assistant.version = 1;
-    if assistant.created_at == 0 {
-        assistant.created_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-    }
-
-    let json_data = serde_json::to_string(assistant)
-        .unwrap_or_default()
-        .replace('<', "\\u003c");
-
-    // Fetch the final visible text for fallback
-    let final_text = assistant
-        .text_blocks
-        .last()
-        .map(|b| b.content.as_str())
-        .unwrap_or("");
-    let visible_text = if final_text.is_empty() {
-        assistant
-            .thinking_blocks
-            .last()
-            .map(|b| b.content.as_str())
-            .unwrap_or("")
-    } else {
-        final_text
-    };
-
-    history
-        .push_str("<div class=\"chat-message agent-message\"><div class=\"message-content current-turn-content\">
-
-");
-
-    history.push_str(&format!(
-        "<script type=\"application/json\" class=\"agent-turn-data\">{}</script>
-",
-        json_data
-    ));
-
-    // Fallback rendering
-    if !assistant.thinking_blocks.is_empty() {
-        let thinking_all = assistant
-            .thinking_blocks
-            .iter()
-            .map(|b| b.content.as_str())
-            .collect::<Vec<_>>()
-            .join(
-                "
-
-",
-            );
-        history.push_str(&format!(
-            "
-
-<details><summary><svg viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\" style=\"vertical-align: text-bottom; margin-right: 4px;\"><circle cx=\"12\" cy=\"12\" r=\"3\"></circle><path d=\"M12 2v3\"></path><path d=\"M12 19v3\"></path><path d=\"M4.93 4.93l2.12 2.12\"></path><path d=\"M16.95 16.95l2.12 2.12\"></path><path d=\"M2 12h3\"></path><path d=\"M19 12h3\"></path><path d=\"M4.93 19.07l2.12-2.12\"></path><path d=\"M16.95 7.05l2.12-2.12\"></path></svg> 贾维斯已完成思考与操作（点击查看完整决策链）</summary>
-
-{}
-
-</details>
-
-",
-            thinking_all
-        ));
-    }
-
-    if !visible_text.is_empty() {
-        history.push_str(visible_text);
-    }
-
-    if let Some(tokens) = &assistant.tokens {
-        history.push_str(&format!(
-            "\n\n<div class=\"token-usage\"><b>本次消耗</b>: 输入 {} / 输出 {} Token</div>",
-            tokens.input, tokens.output
-        ));
-    }
-
-    history.push_str("\n\n</div></div>\n\n");
-}
-
-/// 该 source 的消息是否参与会话历史的界面渲染。
+/// 该来源的消息是否参与会话历史的界面渲染。
 ///
-/// 白名单语义：
-/// - `chat`：常规对话（用户输入 / 助手回复）；
-/// - `interrupted`：运行被打断（用户取消 / 上游失联 / 执行报错）时的收尾消息。
+/// 判据直接取 `MessageSource::rendered_in_ui()`（白名单是 `Chat | Interrupted`），
+/// 不再维护字符串名单 —— 曾经这里是一份独立的 `matches!(source, "chat" | "interrupted")`，
+/// 与模型侧白名单（`pipeline.rs`）、压缩侧名单（`memory.rs`）各写各的，
+/// 任一处漏改都是**静默**的消息消失或泄漏。见
+/// `doc/消息来源与轮次元数据重构方案.md` §2.1。
+///
+/// - `Chat`：常规对话（用户输入 / 助手回复）；
+/// - `Interrupted`：运行被打断（用户取消 / 上游失联 / 执行报错）时的收尾消息。
 ///   必须渲染，否则中断轮次会从界面消失，用户会以为「根本没执行」。
-///
-/// 其余 source（`compact` 压缩摘要、`internal` 内部通知、`background` 后台结果、
-/// `context` 上下文注入）仍由 SQL 与内容规则过滤，不进界面。
-fn is_renderable_source(source: &str) -> bool {
-    matches!(source, "chat" | "interrupted")
+fn is_renderable_source(source: MessageSource) -> bool {
+    source.rendered_in_ui()
 }
 
-#[tauri::command]
-pub async fn get_session_history(
-    session_id: String,
-    session_manager: tauri::State<'_, SessionManager>,
-    registry: tauri::State<'_, SnapshotRegistry>,
-) -> Result<String, String> {
-    let ctx = session_manager.get_or_create(&session_id).await;
-    // 注意：**不要**在这里把内存 flush 到 DB（与 extract_session_messages 同理）。
-    // 该 flush 会把内存中已删除的消息复活，"删掉后刷新又回来"即由此产生。
-    let mut memory = session::load_session(&session_id)?;
-
-    // ── 中断恢复：唯一闸门 `ensure_session_recovered`（含原子抢占锁 + 先落库后盖章），
-    // 各入口禁止自行实现恢复链或 save/mark 收尾。──
-    let active_run_id = ctx.active_run_id.lock().await.clone();
-    let _ = crate::command::session::ensure_session_recovered(
-        &session_id,
-        &mut memory,
-        active_run_id.as_deref(),
-    );
-    // 读取语义：以 DB 为准的 memory 写回 ctx（无论是否发生恢复）
-    *ctx.memory.lock().await = memory.clone();
-
-    if memory.messages.is_empty() && session::session_messages_count(&session_id).unwrap_or(0) == 0 {
-        return Ok(String::new());
-    }
-
-    let linked_rollbacks = build_linked_rollbacks(&session_id);
-    let metadata_rollbacks_by_index;
-    let metadata_rollbacks_by_message_id;
-    {
-        let manager = registry.0.read().await.get_or_create(&session_id).await?;
-        let mut by_index = Vec::new();
-        let mut by_message_id = HashMap::new();
-        for snapshot in manager
-            .list_snapshots(None)
-            .await
-            .into_iter()
-            .filter(|snapshot| snapshot.is_checkpoint)
-        {
-            let patch_count = parse_snapshot_usize(&snapshot, "patch_count").unwrap_or(0);
-            if patch_count == 0 {
-                continue;
-            }
-            let info = RollbackInfo {
-                checkpoint_id: snapshot.id.clone(),
-                has_file_edits: true,
-                created_at: snapshot.created_at,
-            };
-            if let Some(message_id) = parse_snapshot_string(&snapshot, "trigger_user_message_id") {
-                by_message_id.insert(message_id, info);
-            }
-            if let Some(trigger_index) = parse_snapshot_usize(&snapshot, "trigger_user_memory_index") {
-                by_index.push((trigger_index, snapshot.created_at, snapshot.id));
-            }
-        }
-        by_index.sort_by_key(|(trigger_index, created_at, _)| (*trigger_index, *created_at));
-        metadata_rollbacks_by_index = by_index;
-        metadata_rollbacks_by_message_id = by_message_id;
-    };
-
-    let stored_messages = session::list_visible_session_messages(&session_id)?;
-    // stored_messages 和 session_memory 表是同一次 save_session 写入的，
-    // 顺序完全一致，直接用 enumerate() 的 idx 作为 memory_index，无需 HashMap 查找
-    let render_messages: Vec<_> = if stored_messages.is_empty() {
-        memory
-            .messages
-            .iter()
-            .enumerate()
-            .map(|(idx, message)| {
-                let source = memory.sources.get(idx).cloned().unwrap_or_else(|| "chat".to_string());
-                let kind = memory.interrupt_kinds.get(idx).cloned().flatten();
-                (idx, memory.message_ids.get(idx).cloned(), None, message.clone(), source, kind)
-            })
-            .collect()
-    } else {
-        stored_messages
-            .into_iter()
-            .enumerate()
-            .map(|(idx, stored)| {
-                (
-                    idx,
-                    Some(stored.message_id),
-                    Some(stored.seq),
-                    stored.content,
-                    stored.source,
-                    stored.interrupt_kind,
-                )
-            })
-            .collect()
-    };
-
-    let display_messages = render_messages
-        .iter()
-        .filter_map(|(memory_index, message_id, seq, msg, source, _kind)| {
-            if let Message::User { content } = msg {
-                let display = user_display_content(content);
-                if is_renderable_source(source) && !display.trim().is_empty() {
-                    return Some(UserDisplayMessage {
-                        memory_index: *memory_index,
-                        message_id: message_id.clone(),
-                        seq: *seq,
-                        display,
-                        rollback_info: find_rollback_info(
-                            &linked_rollbacks,
-                            &metadata_rollbacks_by_index,
-                            &metadata_rollbacks_by_message_id,
-                            *memory_index,
-                            message_id.as_deref(),
-                        ),
-                    });
-                }
-            }
-            None
-        })
-        .collect::<Vec<_>>();
-
-    let mut history = String::new();
-    let mut pending_assistant = AgentTurnSnapshot::default();
-    let mut visible_user_index = 0usize;
-    let mut loop_idx = 1;
-    let mut current_ts = 1000u64;
-
-    for (_, _, _, msg, source, kind) in &render_messages {
-        current_ts += 1;
-        match msg {
-            Message::User { content } => {
-                let display = user_display_content(content);
-
-                // Process ToolResults inside User messages before checking if we should skip
-                if let Content::Multiple(blocks) = content {
-                    for block in blocks {
-                        if let ContentBlock::ToolResult {
-                            tool_use_id,
-                            content: res_content,
-                        } = block
-                        {
-                            append_tool_result(
-                                &mut pending_assistant,
-                                tool_use_id,
-                                res_content,
-                                current_ts,
-                            );
-                        }
-                    }
-                }
-
-                if !is_renderable_source(source.as_str()) || display.trim().is_empty() {
-                    continue;
-                }
-                let Some(message) = display_messages.get(visible_user_index) else {
-                    continue;
-                };
-
-                render_assistant_message(&mut history, &mut pending_assistant);
-                pending_assistant = AgentTurnSnapshot::default();
-                loop_idx = 1;
-                render_user_message(&mut history, message);
-                visible_user_index += 1;
-            }
-            Message::Assistant { content } => {
-                if !is_renderable_source(source.as_str()) {
-                    continue;
-                }
-                // `interrupted` 消息承载两种东西，按 kind 是否存在区分 —— 这里曾经搞反过：
-                // 渲染侧按"它不是模型正文"整条丢弃，而落库侧（`pipeline.rs` 中断收尾的
-                // 分支二）写的恰恰是"正文即半截内容；正文块恒存在"，于是用户取消后
-                // 只剩一句状态说明，已经生成的部分凭空消失。
-                // - kind 有值（新数据）：正文块里是**半截内容**，必须一并渲染；
-                // - kind 缺失（旧库数据）：正文是 `**[回复被中断]** …` 这类标记文本，
-                //   已由上面的 notice 承载，再 append 会把它当模型正文重复显示一遍。
-                // notice 本身仍渲染在气泡**下方**的小字里，不挤进回复气泡内部。
-                if is_interrupted_source(source.as_str()) {
-                    // 阶段二：notice 优先按**结构化 kind** 生成（不再从正文猜）；
-                    // kind 缺失（旧库数据 / 恢复重建未打标）才回退文本清洗路径。
-                    let notice = interrupt_notice_for(kind.as_deref())
-                        .or_else(|| interrupted_notice_text(content));
-                    if let Some(notice) = notice {
-                        pending_assistant.notice = Some(notice);
-                    }
-                    // 只有旧库的标记文本拦在这里；新数据的半截正文继续往下走去 append
-                    if !interrupted_body_is_content(kind.as_deref()) {
-                        continue;
-                    }
-                }
-                append_assistant_content(&mut pending_assistant, content, loop_idx, current_ts);
-                loop_idx += 1;
-            }
-        }
-    }
-
-    render_assistant_message(&mut history, &mut pending_assistant);
-    Ok(history)
-}
 
 // ═══════════════════════════════════════════════════════════════
 //  新增：get_session_messages — 返回结构化 JSON 消息列表
 // ═══════════════════════════════════════════════════════════════
 
-/// 提取消息列表的公共逻辑（与 get_session_history 共享）
+/// 提取消息列表的公共逻辑（全量与分页两条命令共用）
 async fn extract_session_messages(
     session_id: &str,
     session_manager: &SessionManager,
@@ -904,7 +577,7 @@ async fn extract_session_messages_window(
             .iter()
             .enumerate()
             .map(|(idx, message)| {
-                let source = memory.sources.get(idx).cloned().unwrap_or_else(|| "chat".to_string());
+                let source = memory.sources.get(idx).copied().unwrap_or(MessageSource::Chat);
                 let kind = memory.interrupt_kinds.get(idx).cloned().flatten();
                 (idx, memory.message_ids.get(idx).cloned(), None, message.clone(), source, kind)
             })
@@ -936,12 +609,10 @@ async fn extract_session_messages_window(
         .filter_map(|(memory_index, message_id, seq, msg, source, _kind)| {
             if let Message::User { content } = msg {
                 let display = user_display_content(content);
-                if is_renderable_source(source) && !display.trim().is_empty() {
+                if is_renderable_source(*source) && !display.trim().is_empty() {
                     return Some(UserDisplayMessage {
-                        memory_index: *memory_index,
                         message_id: message_id.clone(),
                         seq: *seq,
-                        display,
                         rollback_info: find_rollback_info(
                             &linked_rollbacks,
                             &metadata_rollbacks_by_index,
@@ -981,7 +652,7 @@ async fn extract_session_messages_window(
                     }
                 }
 
-                if !is_renderable_source(source.as_str()) || display.trim().is_empty() {
+                if !is_renderable_source(*source) || display.trim().is_empty() {
                     continue;
                 }
                 let Some(message) = display_messages.get(visible_user_index) else {
@@ -1031,7 +702,7 @@ async fn extract_session_messages_window(
                 loop_idx = 1;
             }
             Message::Assistant { content } => {
-                if !is_renderable_source(source.as_str()) {
+                if !is_renderable_source(*source) {
                     continue;
                 }
                 // `interrupted` 消息承载两种东西，按 kind 是否存在区分 —— 这里曾经搞反过：
@@ -1042,13 +713,11 @@ async fn extract_session_messages_window(
                 // - kind 缺失（旧库数据）：正文是 `**[回复被中断]** …` 这类标记文本，
                 //   已由上面的 notice 承载，再 append 会把它当模型正文重复显示一遍。
                 // notice 本身仍渲染在气泡**下方**的小字里，不挤进回复气泡内部。
-                if is_interrupted_source(source.as_str()) {
+                if is_interrupted_source(*source) {
                     // 阶段二：notice 优先按**结构化 kind** 生成（不再从正文猜）；
                     // kind 缺失（旧库数据 / 恢复重建未打标）才回退文本清洗路径。
-                    let notice = interrupt_notice_for(kind.as_deref())
-                        .or_else(|| interrupted_notice_text(content));
-                    if let Some(notice) = notice {
-                        pending_assistant.notice = Some(notice);
+                    if let Some(key) = interrupt_notice_key(kind.as_deref()) {
+                        pending_assistant.notice_i18n_key = Some(key.to_string());
                     }
                     // 只有旧库的标记文本拦在这里；新数据的半截正文继续往下走去 append
                     if !interrupted_body_is_content(kind.as_deref()) {
@@ -1159,11 +828,12 @@ pub async fn get_session_messages_paged(
 #[cfg(test)]
 mod renderable_source_tests {
     use super::is_renderable_source;
+    use crate::infra::types::models::MessageSource;
 
     /// 常规对话必须渲染
     #[test]
     fn chat_is_renderable() {
-        assert!(is_renderable_source("chat"));
+        assert!(is_renderable_source(MessageSource::Chat));
     }
 
     /// 回归防护：中断收尾消息必须渲染。
@@ -1171,16 +841,23 @@ mod renderable_source_tests {
     /// 用户会误以为「根本没执行」——这正是本次要修掉的问题。
     #[test]
     fn interrupted_is_renderable() {
-        assert!(is_renderable_source("interrupted"));
+        assert!(is_renderable_source(MessageSource::Interrupted));
     }
 
-    /// 内部消息仍不得泄漏到界面
+    /// 其余来源不得泄漏到界面。
+    /// 这里逐个列出（而不是遍历枚举）是为了与上一个版本保持同样的断言语义：
+    /// 新增取值时本测试不会自动通过 —— 必须先想清楚它该不该渲染。
     #[test]
-    fn internal_sources_stay_hidden() {
-        for src in ["compact", "internal", "background", "context"] {
+    fn other_sources_stay_hidden() {
+        for src in [
+            MessageSource::Compact,
+            MessageSource::Inject,
+            MessageSource::Placeholder,
+        ] {
             assert!(
                 !is_renderable_source(src),
-                "{src} 不应参与界面渲染"
+                "{:?} 不应参与界面渲染",
+                src
             );
         }
     }
@@ -1198,9 +875,9 @@ mod notice_not_empty_tests {
     //! 两边都必须把 notice 计入 —— 只改一边仍会漏。
     use super::AgentTurnSnapshot;
 
-    fn snapshot_with_notice(notice: Option<&str>) -> AgentTurnSnapshot {
+    fn snapshot_with_notice(key: Option<&str>) -> AgentTurnSnapshot {
         AgentTurnSnapshot {
-            notice: notice.map(|s| s.to_string()),
+            notice_i18n_key: key.map(|s| s.to_string()),
             ..Default::default()
         }
     }
@@ -1208,7 +885,7 @@ mod notice_not_empty_tests {
     /// 只有 notice 时不算空：否则整轮被丢弃，用户看不到任何中断/等待提示
     #[test]
     fn notice_only_is_not_empty() {
-        assert!(!snapshot_with_notice(Some("⚠ 上游长时间未返回数据")).is_empty());
+        assert!(!snapshot_with_notice(Some("notice.streamTimeout")).is_empty());
     }
 
     /// 空白 notice 仍算空，避免渲染出一个空壳气泡

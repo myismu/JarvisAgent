@@ -218,10 +218,8 @@ pub async fn api_call_with_retry(
                     "type": "retry",
                     "attempt": attempt,
                     "max": max_retries,
-                    "content": format!(
-                        "API 调用失败，{} 秒后进行第 {}/{} 次重试…",
-                        wait_secs, attempt, max_retries
-                    ),
+                    // 秒数交给前端 `notice.retry` 组句 —— 后端不再产出用户可见文案
+                    "waitSecs": wait_secs,
                     "sessionId": session_id
                 }),
             );

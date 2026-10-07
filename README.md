@@ -289,7 +289,7 @@ ToolRegistry::is_available(工具名 × 意图 × 工作模式 × 用户工具�
 
 ```
 session_messages 表（唯一数据源）
-  └── message_id + content_json + seq + source（chat/compact/context/internal/background）
+  └── message_id + content_json + seq + source（chat/compact/inject/interrupted/placeholder）
 
 session_memory 表（LLM 活动视图索引）
   └── message_ids: ["id1", "id2", ...]  ← 不存消息内容，只存 ID 列表
@@ -298,13 +298,13 @@ session_memory 表（LLM 活动视图索引）
 回滚：隐藏检查点后的消息 → 更新 message_ids → 原始消息从 session_messages 恢复
 ```
 
-物理删除仅发生在三处：撤回 / 编辑重发需截断、压缩时清掉 internal 与 background、会话彻底删除。其余情况一律靠 `hidden_at` / `recalled_at` 标记控制可见性。历史消息按轮做游标分页懒加载，不一次性灌进前端。
+物理删除仅发生在三处：撤回 / 编辑重发需截断、压缩时清掉 placeholder 类对齐填充、会话彻底删除。其余情况一律靠 `hidden_at` / `recalled_at` 标记控制可见性。历史消息按轮做游标分页懒加载，不一次性灌进前端。
 
 ### 上下文压缩（单级 LLM 摘要）
 
 ```
 发送前裁剪（每轮恒定）：
-- 过滤 internal/background 内部消息，只保留 chat/compact/context 来源
+- 按 MessageSource 的可见域过滤：只有 placeholder（对齐填充）不进模型上下文
 - 已发出的历史一律只读：工具结果不做二次折叠（改写缓存前缀得不偿失）
 - 图片以「本轮用户消息」为界：本轮始终携带 base64，往轮折叠为 [图片: type] 文本摘要
 - 单条工具结果写入时超过 5 万字符即截断

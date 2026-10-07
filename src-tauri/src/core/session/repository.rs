@@ -1,12 +1,11 @@
 //! # repository.rs — 会话 SQLite 仓储
 //!
-//! 封装会话元数据、完整记忆、消息展开索引和列表筛选的 SQLite 读写。
+//! 封装会话元数据、完整记忆与消息展开索引的 SQLite 读写。
 //!
 //! ## Key Exports
-//! - `SessionListFilter`: 会话列表筛选条件
 //! - `upsert_session()`: 保存会话元数据和记忆
 //! - `load_session()`: 读取完整会话记忆
-//! - `list_sessions()`: 查询会话列表并支持筛选
+//! - `list_sessions()`: 查询会话列表
 //! - `upsert_context_snapshot()`: 保存最近一次上下文 token 快照
 //! - `set_last_active_session_id()`: 持久化最后活跃会话
 //!
@@ -16,9 +15,10 @@
 
 use std::collections::HashMap;
 use rusqlite::{params, OptionalExtension, Row};
-use serde::{Deserialize, Serialize};
 
-use crate::infra::types::models::{Message, SessionContextSnapshot, SessionMemory};
+use crate::infra::types::models::{
+    Message, MessageSource, SessionContextSnapshot, SessionMemory,
+};
 use crate::core::session::{SessionMeta, SessionTokenTotals};
 
 #[derive(Debug, Clone)]
@@ -31,33 +31,11 @@ pub struct StoredSessionMessage {
     pub updated_at: Option<u64>,
     pub recalled_at: Option<u64>,
     pub hidden_at: Option<u64>,
-    pub source: String,
-    pub turn_id: Option<String>,
+    /// 消息来源（可见域）。落库形态是字符串，此处在读边界经
+    /// `MessageSource::from_db` 还原 —— 未知值会**报错**而不是静默降级。
+    pub source: MessageSource,
     /// 中断类型（`None` = 非中断消息）。取值见 `InterruptKind::as_str`。
     pub interrupt_kind: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionListFilter {
-    #[serde(default)]
-    pub keyword: Option<String>,
-    #[serde(default)]
-    pub from_ts: Option<u64>,
-    #[serde(default)]
-    pub to_ts: Option<u64>,
-    #[serde(default)]
-    pub profile_id: Option<String>,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub tool: Option<String>,
-    #[serde(default)]
-    pub has_tool_calls: Option<bool>,
-    #[serde(default)]
-    pub limit: Option<usize>,
-    #[serde(default)]
-    pub offset: Option<usize>,
 }
 
 pub fn upsert_session(meta: &SessionMeta, memory: &SessionMemory) -> Result<(), String> {
@@ -187,7 +165,7 @@ pub fn append_or_upsert_session_messages(
     session_id: &str,
     messages: &[Message],
     message_ids: &[String],
-    sources: &[String],
+    sources: &[MessageSource],
     interrupt_kinds: &[Option<String>],
     now: u64,
 ) -> Result<(), String> {
@@ -223,7 +201,12 @@ pub fn append_or_upsert_session_messages(
             let Some(message_id) = message_ids.get(idx).filter(|id| !id.trim().is_empty()) else {
                 continue;
             };
-            let source = sources.get(idx).map(|s| s.as_str()).unwrap_or("chat");
+            // 与消息平行的来源；缺来源按 `Chat` 补（口径同 `normalize_message_ids`）
+            let source = sources
+                .get(idx)
+                .copied()
+                .unwrap_or(MessageSource::Chat)
+                .as_db();
             // 中断类型（None = 非中断消息）；与 messages/sources 平行取值
             let interrupt_kind = interrupt_kinds.get(idx).and_then(|k| k.as_deref());
             let role = match message {
@@ -304,7 +287,7 @@ pub fn append_or_upsert_session_messages(
 /// 抽成常量后"加列只改这一行"；再配合 `stored_session_message_from_row` 的
 /// **按列名取值**，列序与列数都不再是隐式约定，这类错位在结构上不可能发生。
 const SESSION_MESSAGE_COLUMNS: &str = "message_id, seq, role, content_json, created_at, \
-     updated_at, recalled_at, hidden_at, source, turn_id, interrupt_kind";
+     updated_at, recalled_at, hidden_at, source, interrupt_kind";
 
 pub fn list_visible_session_messages(session_id: &str) -> Result<Vec<StoredSessionMessage>, String> {
     crate::infra::db::with_connection(|conn| {
@@ -314,13 +297,16 @@ pub fn list_visible_session_messages(session_id: &str) -> Result<Vec<StoredSessi
                  WHERE session_id = ?1
                    AND hidden_at IS NULL
                    AND recalled_at IS NULL
-                   AND source != 'compact'
+                   AND source != ?2
                  ORDER BY seq ASC",
                 SESSION_MESSAGE_COLUMNS
             ))
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([session_id], stored_session_message_from_row)
+            .query_map(
+                params![session_id, MessageSource::Compact.as_db()],
+                stored_session_message_from_row,
+            )
             .map_err(|e| e.to_string())?;
         let mut messages = Vec::new();
         for row in rows {
@@ -348,7 +334,7 @@ pub fn list_visible_session_messages_paged(
                  WHERE session_id = ?1
                    AND hidden_at IS NULL
                    AND recalled_at IS NULL
-                   AND source != 'compact'
+                   AND source != ?4
                    AND (?2 IS NULL OR seq < ?2)
                  ORDER BY seq DESC
                  LIMIT ?3",
@@ -357,7 +343,12 @@ pub fn list_visible_session_messages_paged(
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(
-                rusqlite::params![session_id, before_seq, limit as i64],
+                rusqlite::params![
+                    session_id,
+                    before_seq,
+                    limit as i64,
+                    MessageSource::Compact.as_db()
+                ],
                 stored_session_message_from_row,
             )
             .map_err(|e| e.to_string())?;
@@ -376,8 +367,13 @@ pub fn list_visible_session_messages_paged(
 /// 懒加载的窗口必须从轮的起点开始：turn 聚合（多条 assistant/tool 消息合成一个
 /// 气泡）以 user 消息开轮；窗口切在轮中间会让首条渲染成"无 user 开头"的半轮。
 /// 渲染层 `user_display_content` 在 command 层，此处为避免反向依赖用同样判定内联实现。
+/// ⚠️ `source` 判断不可省：`Inject`（崩溃恢复指令 / 方案重定向通知 / 反思修正建议）
+/// 也是 **user role + 非空正文** —— 它们是"伪装成一轮用户发言喂给模型的系统指令"。
+/// 只按 role 判断会把它们误认成轮起点，于是按轮凑页会把**真实的一轮切在中间**，
+/// 正是本函数注释开头要避免的"半轮"。判定改为「真实用户输入」：
+/// 来源是 `Chat` 且正文可渲染。
 fn is_turn_start_message(stored: &StoredSessionMessage) -> bool {
-    if stored.role != "user" {
+    if stored.role != "user" || stored.source != MessageSource::Chat {
         return false;
     }
     if let Message::User { content } = &stored.content {
@@ -578,14 +574,14 @@ pub fn delete_session_messages_from_seq(session_id: &str, seq: usize) -> Result<
 /// 删除 session_messages 中指定 source 的消息（压缩时清理 internal/background）
 pub fn delete_session_messages_by_source(
     session_id: &str,
-    sources: &[&str],
+    sources: &[MessageSource],
 ) -> Result<usize, String> {
     crate::infra::db::with_connection(|conn| {
         let mut deleted = 0usize;
         for src in sources {
             deleted += conn.execute(
                 "DELETE FROM session_messages WHERE session_id = ?1 AND source = ?2",
-                params![session_id, *src],
+                params![session_id, src.as_db()],
             ).map_err(|e| e.to_string())?;
         }
         Ok(deleted)
@@ -681,8 +677,22 @@ fn stored_session_message_from_row(row: &Row<'_>) -> rusqlite::Result<StoredSess
         updated_at: updated_at.map(|value| value.max(0) as u64),
         recalled_at: recalled_at.map(|value| value.max(0) as u64),
         hidden_at: hidden_at.map(|value| value.max(0) as u64),
-        source: row.get("source")?,
-        turn_id: row.get("turn_id")?,
+        // 读边界的唯一一处「字符串 → 枚举」转换。未知值报错而不是静默降级，
+        // 并把出错的值与消息号一并带进错误文本，便于直接定位那一行数据。
+        source: {
+            let raw: String = row.get("source")?;
+            MessageSource::from_db(&raw).map_err(|msg| {
+                let column = row.as_ref().column_index("source").unwrap_or(0);
+                rusqlite::Error::FromSqlConversionFailure(
+                    column,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("{}（message_id={}）", msg, row.get::<_, String>("message_id").unwrap_or_default()),
+                    )),
+                )
+            })?
+        },
         interrupt_kind: row.get("interrupt_kind")?,
     })
 }
@@ -735,9 +745,16 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
                     )),
                 )
                 .map_err(|e| e.to_string())?;
-            let mut content_by_id: HashMap<String, (String, String, Option<String>)> = HashMap::new();
+            // source 在**读边界**就还原成枚举（未知值报错），不把字符串带进内存：
+            // 内存里的 `sources` 从此只有 `MessageSource` 一种形态，
+            // "这条消息该被谁看见"不会再出现第二套字符串口径。
+            let mut content_by_id: HashMap<String, (String, MessageSource, Option<String>)> =
+                HashMap::new();
             for row in rows {
-                let (mid, content_json, source, kind) = row.map_err(|e| e.to_string())?;
+                let (mid, content_json, raw_source, kind) = row.map_err(|e| e.to_string())?;
+                let source = MessageSource::from_db(&raw_source).map_err(|msg| {
+                    format!("会话 {} 的消息 {} 读取失败：{}", id, mid, msg)
+                })?;
                 content_by_id.insert(mid, (content_json, source, kind));
             }
             // 严格按 message_ids 数组顺序重建 messages / sources / interrupt_kinds，保证三数组平行
@@ -745,7 +762,7 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
                 if let Some((content_json, source, kind)) = content_by_id.get(mid) {
                     if let Ok(msg) = serde_json::from_str::<Message>(content_json) {
                         memory.messages.push(msg);
-                        memory.sources.push(source.clone());
+                        memory.sources.push(*source);
                         memory.interrupt_kinds.push(kind.clone());
                     }
                 }
@@ -883,9 +900,17 @@ pub fn get_session_meta(id: &str) -> Result<SessionMeta, String> {
     })
 }
 
-pub fn list_sessions(filter: Option<&SessionListFilter>) -> Result<Vec<SessionMeta>, String> {
+/// 列出未归档的会话（按最近更新倒序）。
+///
+/// 曾有一个 `Option<&SessionListFilter>` 参数与配套的 `matches_filter`，
+/// 于 2026-10-07 整体删除 —— 那条筛选链路**三段全断**：前端面板被一个写死的
+/// `false` 关着（连关键字搜索框也在里面）、后端命令 `list_sessions()` 不收参数
+/// （条件被静默丢弃）、且其中两个查询查的 `agent_run_events.tool` 列在 v15
+/// 换表时已不存在。功能建好第二天就被关掉且未留理由，半年多无人使用。
+/// 需要"按工具/模型/E 筛选会话"时，工具名现在在 `resp_blocks` 的
+/// `ContentBlock::ToolUse` 里（`tool_results` 只有 id 与内容，没有名字）。
+pub fn list_sessions() -> Result<Vec<SessionMeta>, String> {
     crate::infra::db::with_connection(|conn| {
-        let mut sessions = Vec::new();
         let sql = format!(
             "SELECT {} FROM sessions s \
              LEFT JOIN projects p ON s.project_id = p.id \
@@ -897,17 +922,9 @@ pub fn list_sessions(filter: Option<&SessionListFilter>) -> Result<Vec<SessionMe
         let rows = stmt
             .query_map([], session_meta_from_row)
             .map_err(|e| e.to_string())?;
+        let mut sessions = Vec::new();
         for row in rows {
-            let meta = row.map_err(|e| e.to_string())?;
-            if matches_filter(conn, &meta, filter)? {
-                sessions.push(meta);
-            }
-        }
-
-        if let Some(filter) = filter {
-            let offset = filter.offset.unwrap_or(0);
-            let limit = filter.limit.unwrap_or(sessions.len());
-            sessions = sessions.into_iter().skip(offset).take(limit).collect();
+            sessions.push(row.map_err(|e| e.to_string())?);
         }
         Ok(sessions)
     })
@@ -1331,83 +1348,6 @@ fn project_meta_from_row(row: &Row<'_>) -> rusqlite::Result<crate::core::session
     })
 }
 
-fn matches_filter(
-    conn: &rusqlite::Connection,
-    meta: &SessionMeta,
-    filter: Option<&SessionListFilter>,
-) -> Result<bool, String> {
-    let Some(filter) = filter else {
-        return Ok(true);
-    };
-
-    if let Some(keyword) = filter
-        .keyword
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-    {
-        let keyword = keyword.to_lowercase();
-        if !meta.title.to_lowercase().contains(&keyword)
-            && !meta.id.to_lowercase().contains(&keyword)
-        {
-            return Ok(false);
-        }
-    }
-    if let Some(from_ts) = filter.from_ts {
-        if meta.updated_at < from_ts {
-            return Ok(false);
-        }
-    }
-    if let Some(to_ts) = filter.to_ts {
-        if meta.updated_at > to_ts {
-            return Ok(false);
-        }
-    }
-    if let Some(profile_id) = filter.profile_id.as_ref().filter(|value| !value.is_empty()) {
-        if meta.profile_id.as_deref() != Some(profile_id.as_str()) {
-            return Ok(false);
-        }
-    }
-    if let Some(tool) = filter.tool.as_ref().filter(|value| !value.is_empty()) {
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM agent_run_events WHERE session_id = ?1 AND tool = ?2",
-                params![meta.id, tool],
-                |row| row.get(0),
-            )
-            .map_err(|e| e.to_string())?;
-        if count == 0 {
-            return Ok(false);
-        }
-    }
-    if let Some(has_tool_calls) = filter.has_tool_calls {
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM agent_run_events WHERE session_id = ?1 AND tool IS NOT NULL",
-                [meta.id.as_str()],
-                |row| row.get(0),
-            )
-            .map_err(|e| e.to_string())?;
-        if has_tool_calls != (count > 0) {
-            return Ok(false);
-        }
-    }
-    if let Some(model) = filter.model.as_ref().filter(|value| !value.is_empty()) {
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM agent_run_events WHERE session_id = ?1 AND model = ?2",
-                params![meta.id, model],
-                |row| row.get(0),
-            )
-            .map_err(|e| e.to_string())?;
-        if count == 0 {
-            return Ok(false);
-        }
-    }
-
-    Ok(true)
-}
-
 #[cfg(test)]
 mod meta_columns_tests {
     //! `sessions` / `projects` 两张表的列一致性护栏。
@@ -1539,16 +1479,19 @@ mod message_columns_tests {
             "recalled_at",
             "hidden_at",
             "source",
-            "turn_id",
             "interrupt_kind",
         ] {
             assert!(columns.contains(&name), "共享列清单缺少 {name}：{columns:?}");
         }
         assert_eq!(
             columns.len(),
-            11,
-            "列数应为 11，实际 {}：{columns:?}",
+            10,
+            "列数应为 10，实际 {}：{columns:?}",
             columns.len()
+        );
+        assert!(
+            !columns.contains(&"turn_id"),
+            "turn_id 已于 v21 删除，不得回到共享列清单里"
         );
     }
 
@@ -1570,7 +1513,7 @@ mod message_columns_tests {
             .prepare(
                 "SELECT ?1 AS interrupt_kind, ?2 AS message_id, 7 AS seq, 'user' AS role, \
                         ?3 AS content_json, 1 AS created_at, 2 AS updated_at, 3 AS recalled_at, \
-                        4 AS hidden_at, 'chat' AS source, 't1' AS turn_id",
+                        4 AS hidden_at, 'chat' AS source",
             )
             .unwrap();
         let stored = stmt
@@ -1579,8 +1522,7 @@ mod message_columns_tests {
         assert_eq!(stored.message_id, "m1");
         assert_eq!(stored.seq, 7);
         assert_eq!(stored.role, "user");
-        assert_eq!(stored.source, "chat");
-        assert_eq!(stored.turn_id.as_deref(), Some("t1"));
+        assert_eq!(stored.source, MessageSource::Chat);
         assert_eq!(stored.updated_at, Some(2));
         assert_eq!(stored.interrupt_kind.as_deref(), Some("ix"));
     }
@@ -1595,7 +1537,7 @@ mod message_columns_tests {
             .prepare(
                 "SELECT ?1 AS message_id, 0 AS seq, 'user' AS role, ?2 AS content_json, \
                         0 AS created_at, 0 AS updated_at, 0 AS recalled_at, 0 AS hidden_at, \
-                        'chat' AS source, 't1' AS turn_id",
+                        'chat' AS source",
             )
             .unwrap();
         let err = stmt
@@ -1629,8 +1571,8 @@ mod message_columns_tests {
         .unwrap();
         conn.execute(
             "INSERT INTO session_messages(session_id, message_id, seq, role, content_json,
-                                          created_at, source, turn_id, interrupt_kind)
-             VALUES('s-repo-test', 'm-repo-test', 0, 'user', ?1, 0, 'chat', 't1', 'stream_timeout')",
+                                          created_at, source, interrupt_kind)
+             VALUES('s-repo-test', 'm-repo-test', 0, 'user', ?1, 0, 'chat', 'stream_timeout')",
             params![sample_content_json()],
         )
         .unwrap();
@@ -1640,7 +1582,81 @@ mod message_columns_tests {
             .expect("应能按 id 找到这条消息");
         assert_eq!(found.message_id, "m-repo-test");
         assert_eq!(found.role, "user");
-        assert_eq!(found.turn_id.as_deref(), Some("t1"));
+        assert_eq!(found.source, MessageSource::Chat);
         assert_eq!(found.interrupt_kind.as_deref(), Some("stream_timeout"));
+    }
+}
+
+#[cfg(test)]
+mod turn_start_tests {
+    //! 轮起点判定。
+    //!
+    //! `load_visible_turns_page` 靠它凑页：判错会让**真实的一轮被切在中间**，
+    //! 首条渲染成"无 user 开头"的半轮（该函数注释开头写明要避免的情况）。
+    //!
+    //! 背景：`Inject`（崩溃恢复指令 / 方案重定向通知 / 反思修正建议）也是
+    //! **user role + 非空正文** —— 它们是"伪装成一轮用户发言喂给模型的系统指令"。
+    //! 判定若只看 `role`，这些注入会被当成新的一轮。
+
+    use super::*;
+    use crate::infra::types::models::Content;
+
+    fn stored(role: &str, source: MessageSource, text: &str) -> StoredSessionMessage {
+        let content = Content::Single(text.to_string());
+        StoredSessionMessage {
+            message_id: "m".to_string(),
+            seq: 0,
+            role: role.to_string(),
+            content: Message::User { content },
+            created_at: 0,
+            updated_at: None,
+            recalled_at: None,
+            hidden_at: None,
+            source,
+            interrupt_kind: None,
+        }
+    }
+
+    /// 用户真实输入（`Chat` + 非空正文）才算轮起点
+    #[test]
+    fn chat_user_message_starts_a_turn() {
+        assert!(is_turn_start_message(&stored(
+            "user",
+            MessageSource::Chat,
+            "帮我看一下这个 bug"
+        )));
+    }
+
+    /// 回归防护：系统注入不得被当成轮起点 —— 否则按轮凑页会切出半轮
+    #[test]
+    fn inject_user_message_does_not_start_a_turn() {
+        assert!(
+            !is_turn_start_message(&stored(
+                "user",
+                MessageSource::Inject,
+                "【系统拦截通知】请调用 ProposePlan 工具提交方案"
+            )),
+            "Inject 是伪装成用户发言的系统指令，不是新的一轮"
+        );
+    }
+
+    /// 空正文的 user 消息（纯 tool_result 型）仍不算轮起点
+    #[test]
+    fn empty_user_message_does_not_start_a_turn() {
+        assert!(!is_turn_start_message(&stored(
+            "user",
+            MessageSource::Chat,
+            "   "
+        )));
+    }
+
+    /// assistant 消息永远不是轮起点
+    #[test]
+    fn assistant_never_starts_a_turn() {
+        assert!(!is_turn_start_message(&stored(
+            "assistant",
+            MessageSource::Chat,
+            "好的"
+        )));
     }
 }

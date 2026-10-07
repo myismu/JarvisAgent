@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
-import type { AgentCurrentTurn, AgentApprovalMode, AgentUserMode, SessionListFilter } from "../types";
+import type { AgentCurrentTurn, AgentApprovalMode, AgentUserMode } from "../types";
 import { createEmptyAgentCurrentTurn, resetAgentCurrentTurn } from "../utils/agentTurnState";
 
 interface LatestCheckpoint {
@@ -13,7 +13,15 @@ interface LatestCheckpoint {
 export interface SessionViewState {
   status: string;
   messages: any[];
-  jarvisResponse: string;
+  /**
+   * 会话消息**加载失败**标记：结构化接口报错且没有兜底通道可用时置起，
+   * 由界面显示一句可翻译的提示（`chat.loadFailed`）。
+   *
+   * 此前这里有一条 HTML 兜底（`get_session_history` → `jarvisResponse`），
+   * 已随整条 HTML 通道删除 —— 兜底渲染的是另一套已不被渲染的 HTML，
+   * 出问题时既不是同一套样式，文案还是写死的中文。
+   */
+  loadError: boolean;
   toolBuffer: string;
   contentBuffer: string;
   tempBuffer: string;
@@ -88,14 +96,13 @@ export interface SessionUsageTotals {
   cacheMiss?: number;
 }
 
-const READY_TEXT = "Ready for input...";
 const DEFAULT_SESSION_KEY = "__default__";
 
-function createEmptySessionView(initialHistory = READY_TEXT, hydrated = false): SessionViewState {
+function createEmptySessionView(hydrated = false): SessionViewState {
   return {
     status: "IDLE",
     messages: [],
-    jarvisResponse: initialHistory,
+    loadError: false,
     toolBuffer: "",
     contentBuffer: "",
     tempBuffer: "",
@@ -134,7 +141,7 @@ function getSessionKey(sessionId: string | null | undefined) {
 
 export const useSessionStore = defineStore("session", () => {
   const sessionViews = ref<Record<string, SessionViewState>>({
-    [DEFAULT_SESSION_KEY]: createEmptySessionView(READY_TEXT, true),
+    [DEFAULT_SESSION_KEY]: createEmptySessionView(true),
   });
   const activeSessionId = ref<string | null>(null);
   const pendingProjectId = ref<string | null>(null);
@@ -161,35 +168,11 @@ export const useSessionStore = defineStore("session", () => {
   /// `null` = 用户没拨过（不是"关闭"），与 `false`（明确拨到关）语义不同。
   const pendingReadOnly = ref<boolean | null>(null);
   const workingDirectory = ref<string | null>(null);
-  const sessionListFilter = ref<SessionListFilter>({});
 
-  function setSessionListFilter(filter: SessionListFilter) {
-    sessionListFilter.value = { ...filter };
-  }
-
-  function clearSessionListFilter() {
-    sessionListFilter.value = {};
-  }
-
-  function getSessionListFilterPayload(): SessionListFilter | null {
-    const filter = sessionListFilter.value;
-    const payload: SessionListFilter = {};
-    if (filter.keyword?.trim()) payload.keyword = filter.keyword.trim();
-    if (filter.fromTs) payload.fromTs = filter.fromTs;
-    if (filter.toTs) payload.toTs = filter.toTs;
-    if (filter.profileId?.trim()) payload.profileId = filter.profileId.trim();
-    if (filter.model?.trim()) payload.model = filter.model.trim();
-    if (filter.tool?.trim()) payload.tool = filter.tool.trim();
-    if (filter.hasToolCalls !== undefined && filter.hasToolCalls !== null) {
-      payload.hasToolCalls = filter.hasToolCalls;
-    }
-    return Object.keys(payload).length ? payload : null;
-  }
-
-  function getSessionView(sessionId: string | null | undefined, initialHistory = READY_TEXT) {
+  function getSessionView(sessionId: string | null | undefined) {
     const key = getSessionKey(sessionId);
     if (!sessionViews.value[key]) {
-      sessionViews.value[key] = createEmptySessionView(initialHistory, false);
+      sessionViews.value[key] = createEmptySessionView(false);
     }
     return sessionViews.value[key];
   }
@@ -199,9 +182,9 @@ export const useSessionStore = defineStore("session", () => {
     return Boolean(sessionViews.value[key]?.hydrated);
   }
 
-  function resetSessionView(sessionId: string | null | undefined, initialHistory = READY_TEXT) {
+  function resetSessionView(sessionId: string | null | undefined) {
     const key = getSessionKey(sessionId);
-    sessionViews.value[key] = createEmptySessionView(initialHistory, true);
+    sessionViews.value[key] = createEmptySessionView(true);
   }
 
   function deleteSessionView(sessionId: string | null | undefined) {
@@ -219,19 +202,15 @@ export const useSessionStore = defineStore("session", () => {
     resetAgentCurrentTurn(view);
   }
 
-  function replaceSessionHistory(sessionId: string | null | undefined, history: string) {
-    const view = getSessionView(sessionId);
-    view.jarvisResponse = history && history.trim() ? history : READY_TEXT;
-    view.messages = [];
-    view.hydrated = true;
-    if (view.status !== 'RUNNING') {
-      view.contentBuffer = "";
-      view.tempBuffer = "";
-      view.toolBuffer = "";
-      view.thinkingBuffer = "";
-      view.streamActive = false;
-      resetAgentCurrentTurn(view);
-    }
+  /**
+   * 标记/清除"会话消息加载失败"。
+   *
+   * 取代了原先的 `replaceSessionHistory(html)` —— 那条路把后端拼好的 HTML
+   * 塞进一个**已不再被渲染**的字段，出错时用户看到的既不是同一套样式、
+   * 文案还是写死的中文。现在只置一个布尔位，由界面显示可翻译的提示。
+   */
+  function setSessionLoadError(sessionId: string | null | undefined, failed: boolean) {
+    getSessionView(sessionId).loadError = failed;
   }
 
   function replaceSessionMessages(sessionId: string | null | undefined, messages: any[]) {
@@ -242,7 +221,7 @@ export const useSessionStore = defineStore("session", () => {
       content: msg.content ?? msg.userContent,
       text: msg.text ?? (msg.role === 'user' ? msg.userContent?.replace(/<[^>]*>/g, '') : undefined),
     }));
-    view.jarvisResponse = READY_TEXT;
+    view.loadError = false;
     view.hydrated = true;
     // 如果会话仍在运行，保留 currentTurn 避免和 checkpoint 快照产生重叠分裂
     if (view.status !== 'RUNNING') {
@@ -281,26 +260,6 @@ export const useSessionStore = defineStore("session", () => {
     const view = getSessionView(sessionId);
     view.pagedOldestSeq = oldestSeq;
     view.pagedHasMore = hasMore;
-  }
-
-  function appendSessionHistory(sessionId: string | null | undefined, html: string) {
-    const view = getSessionView(sessionId);
-    if (view.jarvisResponse === READY_TEXT) {
-      view.jarvisResponse = "";
-    }
-    view.jarvisResponse += html;
-    view.hydrated = true;
-  }
-
-  function removeTrailingUserMessageFromView(sessionId: string | null | undefined = activeSessionId.value) {
-    const view = getSessionView(sessionId);
-    const lastUserIdx = view.jarvisResponse.lastIndexOf('<div class="chat-message user-message"');
-    if (lastUserIdx !== -1) {
-      const lastAgentIdx = view.jarvisResponse.lastIndexOf('<div class="chat-message agent-message"');
-      if (lastAgentIdx < lastUserIdx) {
-        view.jarvisResponse = view.jarvisResponse.substring(0, lastUserIdx);
-      }
-    }
   }
 
   function setSessionUsageTotals(sessionId: string | null | undefined, usage: SessionUsageTotals) {
@@ -398,22 +357,16 @@ export const useSessionStore = defineStore("session", () => {
     totalOutputTokens,
     totalCacheHitTokens,
     totalCacheMissTokens,
-    sessionListFilter,
-    setSessionListFilter,
-    clearSessionListFilter,
-    getSessionListFilterPayload,
     getSessionView,
     hasHydratedSessionView,
     resetSessionView,
     deleteSessionView,
     clearSessionBuffers,
-    replaceSessionHistory,
+    setSessionLoadError,
     replaceSessionMessages,
     appendSessionMessage,
     prependSessionMessages,
     setSessionPaging,
-    appendSessionHistory,
-    removeTrailingUserMessageFromView,
     setSessionUsageTotals,
     markRequestFirstDelta,
     settleRequestThroughput,
@@ -423,7 +376,6 @@ export const useSessionStore = defineStore("session", () => {
     currentSessionStatus,
     isCurrentSessionRunning,
     isAnySessionRunning,
-    READY_TEXT,
     getSessionKey,
   };
 });

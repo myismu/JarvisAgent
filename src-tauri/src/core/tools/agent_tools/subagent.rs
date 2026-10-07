@@ -1149,7 +1149,12 @@ pub async fn run_subagent(
                     messages: std::mem::take(&mut messages),
                     ..Default::default()
                 };
-                temp_memory.sources = temp_memory.messages.iter().map(|_| "chat".to_string()).collect();
+                // 子 Agent 的压缩是纯函数式调用：临时 memory 里全是普通对话消息
+                temp_memory.sources = temp_memory
+                    .messages
+                    .iter()
+                    .map(|_| crate::infra::types::models::MessageSource::Chat)
+                    .collect();
                 let _ = compact_messages(
                     &mut temp_memory,
                     &client,
