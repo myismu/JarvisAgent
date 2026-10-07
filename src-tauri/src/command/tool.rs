@@ -64,7 +64,11 @@ pub async fn list_tools() -> Result<Vec<ToolMeta>, String> {
         .collect();
 
     // 按分类 + 名称排序：UI 直接渲染，不必自己排
-    tools.sort_by(|a, b| a.category.cmp(&b.category).then_with(|| a.name.cmp(&b.name)));
+    tools.sort_by(|a, b| {
+        a.category
+            .cmp(&b.category)
+            .then_with(|| a.name.cmp(&b.name))
+    });
     Ok(tools)
 }
 

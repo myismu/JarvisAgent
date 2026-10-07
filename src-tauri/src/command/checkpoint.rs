@@ -1,4 +1,4 @@
-﻿//! # checkpoint.rs — 检查点命令兼容层
+//! # checkpoint.rs — 检查点命令兼容层
 //!
 //! 所有检查点操作已迁移到底层快照引擎。本模块作为前端兼容层，
 //! 将旧的 checkpoint 命令映射到 snapshot 系统。
@@ -170,7 +170,9 @@ fn checkpoint_id_before_user_message(
         let by_seq = links
             .iter()
             .filter(|link| {
-                link.has_file_edits && !link.checkpoint_id.is_empty() && link.user_message_index < message_seq
+                link.has_file_edits
+                    && !link.checkpoint_id.is_empty()
+                    && link.user_message_index < message_seq
             })
             .max_by_key(|link| (link.user_message_index, link.created_at))
             .map(|link| link.checkpoint_id.clone());
@@ -222,11 +224,10 @@ async fn resolve_rollback_target(
     let (truncate_index, recalled_text) = if let Some(stored) = stored_target.as_ref() {
         // 压缩后 message_ids 只含摘要 ID，position() 查不到原始消息。
         // 改用 stored.seq 从 session_messages 表定位。
-        let visible = crate::core::session::list_visible_session_messages(session_id)
-            .unwrap_or_default();
+        let visible =
+            crate::core::session::list_visible_session_messages(session_id).unwrap_or_default();
         let pos = visible.iter().position(|m| m.seq == stored.seq);
-        let index = pos.or(user_message_index)
-            .unwrap_or(stored.seq);
+        let index = pos.or(user_message_index).unwrap_or(stored.seq);
         if let crate::infra::types::models::Message::User { content } = &stored.content {
             (index, message_text(content))
         } else if let Some(user_idx) = user_message_index {
@@ -275,14 +276,15 @@ async fn resolve_rollback_target(
         ));
     };
 
-    let effective_checkpoint_id =
-        if let Some(id) = checkpoint_id_before_user_message(session_id, Some(truncate_index), message_seq) {
-            id
-        } else if let Some(id) = checkpoint_parent_id(session_id, checkpoint_id, registry).await? {
-            id
-        } else {
-            String::new()
-        };
+    let effective_checkpoint_id = if let Some(id) =
+        checkpoint_id_before_user_message(session_id, Some(truncate_index), message_seq)
+    {
+        id
+    } else if let Some(id) = checkpoint_parent_id(session_id, checkpoint_id, registry).await? {
+        id
+    } else {
+        String::new()
+    };
 
     Ok(RollbackTarget {
         truncate_index,
@@ -330,10 +332,7 @@ async fn rollback_files_to_snapshot(
             .map_err(|e| log_rollback_abort(session_id, &format!("文件回滚失败: {}", e)))?
             .1
     };
-    println!(
-        "[Rollback] 会话 {} 已恢复到 {}",
-        session_id, target_label
-    );
+    println!("[Rollback] 会话 {} 已恢复到 {}", session_id, target_label);
     if !outcome.restore_failures.is_empty() {
         eprintln!(
             "[Rollback] 会话 {} 有 {} 个对象未能恢复（快照无内容且回收站副本缺失）: {:?}",
@@ -560,7 +559,10 @@ pub async fn preview_rollback_to_checkpoint_with_recall(
             if index >= session.messages.len() {
                 return Err(log_rollback_abort(&session_id, "撤回消息不存在"));
             }
-            if !matches!(session.messages[index], crate::infra::types::models::Message::User { .. }) {
+            if !matches!(
+                session.messages[index],
+                crate::infra::types::models::Message::User { .. }
+            ) {
                 return Err(log_rollback_abort(&session_id, "撤回目标不是用户消息"));
             }
         }

@@ -16,16 +16,15 @@ use crate::core::tools::framework;
 use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{
-    encode_text_preserve_encoding, ensure_fresh_read, is_locked_file_error,
-    normalize_line_endings, read_text_preserve_encoding, record_file_read, resolve_path,
-    TextEncoding,
+    encode_text_preserve_encoding, ensure_fresh_read, is_locked_file_error, normalize_line_endings,
+    read_text_preserve_encoding, record_file_read, resolve_path, TextEncoding,
 };
 use super::diff::compute_diff;
-use crate::core::tools::notebook_tools::notebook_guard::{
-    is_notebook_path, looks_like_notebook_json, notebook_text_edit_rejection,
-};
 use super::workspace::{
     get_workspace, record_patch_to_snapshot, resolve_exec_path, sandbox_missing_hint,
+};
+use crate::core::tools::notebook_tools::notebook_guard::{
+    is_notebook_path, looks_like_notebook_json, notebook_text_edit_rejection,
 };
 
 /// 写入文件（自动备份原始内容 + 自动创建快照）
@@ -60,7 +59,10 @@ pub async fn write_file(
                         e
                     ));
                 }
-                return framework::ToolCallResult::error(format!("写入失败，无法读取原文件编码: {}", e));
+                return framework::ToolCallResult::error(format!(
+                    "写入失败，无法读取原文件编码: {}",
+                    e
+                ));
             }
         }
     } else {
@@ -83,7 +85,9 @@ pub async fn write_file(
 
     // TOCTOU 防护：记录读取时的 mtime
     let read_mtime = if file_exists {
-        std::fs::metadata(&path).ok().and_then(|m| m.modified().ok())
+        std::fs::metadata(&path)
+            .ok()
+            .and_then(|m| m.modified().ok())
     } else {
         None
     };

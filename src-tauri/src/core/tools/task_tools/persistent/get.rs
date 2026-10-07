@@ -34,7 +34,9 @@ pub async fn task_get(
     session_id: &str,
 ) -> framework::ToolCallResult {
     match TaskManager::for_session(session_id).get(task_id(input)) {
-        Ok(task) => framework::ToolCallResult::ok(serde_json::to_string_pretty(&task).unwrap_or_default()),
+        Ok(task) => {
+            framework::ToolCallResult::ok(serde_json::to_string_pretty(&task).unwrap_or_default())
+        }
         Err(e) => framework::ToolCallResult::error(e),
     }
 }

@@ -1,4 +1,4 @@
-﻿//! # context.rs — 上下文构建与消息注入
+//! # context.rs — 上下文构建与消息注入
 //!
 //! 负责构建随用户消息一起落库的动态上下文（意图标签、能力边界、项目结构、用户画像），
 //! 并将用户消息、图片数据、上下文信息注入到会话历史中。
@@ -27,10 +27,10 @@
 //!   在循环第二轮就被折叠，请求前缀中途改变（缓存全失效），模型也再看不到本轮图片
 //! - 动态上下文只放「每轮才有效且会变」的内容，格式统一为 XML 标签
 
-use crate::infra::types::models::*;
+use crate::core::agent::prompts::get_mode_prompt;
 use crate::core::session::{append_message, memory::*};
 use crate::core::tools::*;
-use crate::core::agent::prompts::get_mode_prompt;
+use crate::infra::types::models::*;
 
 /// 构建随用户消息一起落库的动态上下文。
 ///
@@ -276,7 +276,9 @@ mod tests {
         );
 
         match &session.messages[0] {
-            Message::User { content: Content::Multiple(blocks) } => {
+            Message::User {
+                content: Content::Multiple(blocks),
+            } => {
                 assert_eq!(blocks.len(), 2, "应该是 context + text 两个块");
                 match &blocks[0] {
                     ContentBlock::Context { text } => assert!(text.contains("<intent>ACTION")),

@@ -28,6 +28,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tauri::Emitter;
 
+use crate::core::orchestration::agent_runs;
 use crate::infra::debug_logger;
 use crate::infra::llm::api_format::ApiFormat;
 use crate::infra::llm::stream_parse; // 模块本身也要导入，供下方 stream_parse::parse_frame 前缀调用
@@ -36,7 +37,6 @@ use crate::infra::llm::stream_parse::{
 };
 use crate::infra::llm::usage::UsageObservation;
 use crate::infra::types::models::*;
-use crate::core::orchestration::agent_runs;
 
 /// 流内空闲超时（秒）：连续该时长未收到任何 SSE 帧即判定上游失联。
 ///
@@ -304,12 +304,7 @@ struct FrameFlusher {
 }
 
 impl FrameFlusher {
-    fn new(
-        run_id: &str,
-        session_id: &str,
-        loop_index: usize,
-        model: Option<String>,
-    ) -> Self {
+    fn new(run_id: &str, session_id: &str, loop_index: usize, model: Option<String>) -> Self {
         Self {
             run_id: run_id.to_string(),
             session_id: session_id.to_string(),
@@ -383,8 +378,7 @@ pub async fn process_stream(
     let mut turn_has_tool = false;
     // usage 与缓存读数统一交给 `UsageObservation`（字段级 last-wins + 缓存合并，见其文档）。
     // 协议家族判断收在 for_format 构造器里，本函数从此不感知 usage 字段的协议差异。
-    let mut usage_obs =
-        UsageObservation::for_format(api_format, config.cache_usage_style.clone());
+    let mut usage_obs = UsageObservation::for_format(api_format, config.cache_usage_style.clone());
     let mut stop_reason: Option<String> = None;
     let mut logged_textual_tool_violation = false;
     let mut usage_raw: Option<String> = None;
@@ -505,7 +499,9 @@ pub async fn process_stream(
                 ProtocolEvent::TextStart { .. } => {
                     // Anthropic content_block_start(text)：推入空文本块。
                     // 推入位置 = 数组末尾；正常流中与线上块下标一致（与拆分前行为相同）。
-                    current_blocks.push(ContentBlock::Text { text: String::new() });
+                    current_blocks.push(ContentBlock::Text {
+                        text: String::new(),
+                    });
                     // 块边界：先结清攒批缓冲再开新块（方案 §5.3），
                     // 保证崩溃瞬间 DB 里的拼串与块边界对齐。
                     if let Some(flusher) = frame_flusher.as_mut() {
@@ -529,23 +525,23 @@ pub async fn process_stream(
                     match block {
                         // Anthropic：精确改写第 i 块；该块不是文本/越界则静默（与拆分前一致）
                         Some(i) => {
-                            if let Some(ContentBlock::Text { text: buf }) = current_blocks.get_mut(i)
+                            if let Some(ContentBlock::Text { text: buf }) =
+                                current_blocks.get_mut(i)
                             {
                                 buf.push_str(&text);
                             }
                         }
                         // OpenAI：当前块是文本就追加，否则新开一块
                         None => {
-                            let is_text = matches!(
-                                current_blocks.last(),
-                                Some(ContentBlock::Text { .. })
-                            );
+                            let is_text =
+                                matches!(current_blocks.last(), Some(ContentBlock::Text { .. }));
                             if !is_text {
                                 current_blocks.push(ContentBlock::Text {
                                     text: String::new(),
                                 });
                             }
-                            if let Some(ContentBlock::Text { text: buf }) = current_blocks.last_mut()
+                            if let Some(ContentBlock::Text { text: buf }) =
+                                current_blocks.last_mut()
                             {
                                 buf.push_str(&text);
                             }
@@ -580,13 +576,19 @@ pub async fn process_stream(
                         }
                     }
                 }
-                ProtocolEvent::ThinkingDelta { block, text, signature } => {
+                ProtocolEvent::ThinkingDelta {
+                    block,
+                    text,
+                    signature,
+                } => {
                     // 落块 + 追加（text 与 signature 互不依赖：纯签名帧 text 为空串）
                     match block {
                         // Anthropic：精确改写第 i 块（签名分片也拼进该块）
                         Some(i) => {
-                            if let Some(ContentBlock::Thinking { thinking, signature: sig }) =
-                                current_blocks.get_mut(i)
+                            if let Some(ContentBlock::Thinking {
+                                thinking,
+                                signature: sig,
+                            }) = current_blocks.get_mut(i)
                             {
                                 if !text.is_empty() {
                                     thinking.push_str(&text);
@@ -770,7 +772,10 @@ pub async fn process_stream(
             // 移除原有的纯文本块，替换为解析出的工具调用块
             current_blocks.retain(|b| !matches!(b, ContentBlock::Text { .. }));
             for (i, (name, input_json)) in parsed.iter().enumerate() {
-                let id = format!("call_{}", uuid::Uuid::new_v4().simple().to_string()[..8].to_string());
+                let id = format!(
+                    "call_{}",
+                    uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
+                );
                 current_blocks.push(ContentBlock::ToolUse {
                     name: name.clone(),
                     input: input_json.clone(),

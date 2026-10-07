@@ -670,13 +670,17 @@ mod tests {
     #[test]
     pub fn test_assignment_capture_of_readonly_is_readonly() {
         // A2：变量捕获（$t = ...）本身无副作用，右侧只读 → 整条只读
-        assert!(is_readonly_command("$t = Test-NetConnection localhost -Port 3000"));
+        assert!(is_readonly_command(
+            "$t = Test-NetConnection localhost -Port 3000"
+        ));
         // 脚本块一票否决后，右侧带 `{ }` 过滤的捕获不再免问（`Where-Object {…}` 弹卡）
         assert!(!is_readonly_command(
             "$conns = Get-NetTCPConnection -LocalPort 3000 | Where-Object {$_.State -eq 'Listen'}"
         ));
         assert!(is_readonly_command("$x = $y = Get-Process"));
-        assert!(is_readonly_command("Test-NetConnection localhost -Port 3000"));
+        assert!(is_readonly_command(
+            "Test-NetConnection localhost -Port 3000"
+        ));
         assert!(is_readonly_command("Start-Sleep -Seconds 2"));
         assert!(is_readonly_command("ping 127.0.0.1"));
 
@@ -685,7 +689,9 @@ mod tests {
         assert!(!is_readonly_command("Get-Process; $x = 1"));
         assert!(!is_readonly_command("$x = Remove-Item y"));
         // 命令中部出现赋值（非开头前缀）→ 保守判非只读
-        assert!(!is_readonly_command("Get-Process | ForEach-Object { $a = 1 }"));
+        assert!(!is_readonly_command(
+            "Get-Process | ForEach-Object { $a = 1 }"
+        ));
     }
 
     #[test]
@@ -752,11 +758,11 @@ mod tests {
         // 换掉判定基准、或制造"值被误当子命令"的解析差分
         for args in [
             &["-c", "core.fsmonitor=x", "status"][..],
-            &["-ccore.pager=sh", "status"][..],   // 短标志粘连形态
-            &["-C", "/tmp", "log"][..],           // -C（大写，小写归一后命中 -c）
-            &["-C/tmp", "log"][..],               // -C 粘连形态
+            &["-ccore.pager=sh", "status"][..], // 短标志粘连形态
+            &["-C", "/tmp", "log"][..],         // -C（大写，小写归一后命中 -c）
+            &["-C/tmp", "log"][..],             // -C 粘连形态
             &["--git-dir", "/tmp/x", "status"][..],
-            &["--git-dir=/tmp/x", "status"][..],  // 等号 attached 形态
+            &["--git-dir=/tmp/x", "status"][..], // 等号 attached 形态
             &["--work-tree=/tmp/x", "status"][..],
             &["--namespace", "x", "log"][..],
             &["--shallow-file=/tmp/x", "log"][..],
@@ -771,7 +777,11 @@ mod tests {
         }
         // 第三道关扩充：传输辅助程序选项——借 fetch/ls-remote/push 执行任意代码
         assert!(!is_readonly_git_args(&["ls-remote", "--upload-pack=evil"]));
-        assert!(!is_readonly_git_args(&["ls-remote", "--upload-pack", "evil"]));
+        assert!(!is_readonly_git_args(&[
+            "ls-remote",
+            "--upload-pack",
+            "evil"
+        ]));
         assert!(!is_readonly_git_args(&["log", "--receive-pack=evil"]));
 
         // 不误伤：全局域扫描只看子命令之前的 token，子命令自己的选项不受影响
@@ -832,8 +842,12 @@ mod tests {
             "dir | foreach { Remove-Item x }"
         ));
         assert!(!is_readonly_command_windows("dir | % { Remove-Item x }"));
-        assert!(!is_readonly_command_windows("dir | where { Remove-Item x }"));
-        assert!(!is_readonly_command_windows("dir | select { Remove-Item $_ }"));
+        assert!(!is_readonly_command_windows(
+            "dir | where { Remove-Item x }"
+        ));
+        assert!(!is_readonly_command_windows(
+            "dir | select { Remove-Item $_ }"
+        ));
         // 无脚本块时：foreach 归一为 foreach-object（不在免问名单）→ 弹卡
         assert!(!is_readonly_command_windows("foreach -MemberName Name"));
         // where 归一为 where-object（免问名单里有）→ 免问；`where {…}` 已被否决拦住

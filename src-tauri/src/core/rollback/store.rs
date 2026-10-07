@@ -1,4 +1,4 @@
-﻿//! SQLite-backed snapshot persistence.
+//! SQLite-backed snapshot persistence.
 
 use super::SnapshotTree;
 use rusqlite::{params, OptionalExtension};
@@ -107,7 +107,6 @@ impl SnapshotStore {
             None => Err(StoreError::NotFound("snapshot tree".to_string())),
         }
     }
-
 }
 
 pub fn save_content(session_id: &str, hash: &str, content: &str) -> Result<(), String> {

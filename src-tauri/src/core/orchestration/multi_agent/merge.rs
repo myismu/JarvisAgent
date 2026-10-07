@@ -116,18 +116,21 @@ impl MergeEngine {
         let merged_patches =
             self.merge_patches(&source_patches, &target_patches, &resolved_conflicts);
 
-        Ok((MergeResult {
-            success: unresolved == 0,
-            target_branch: target_branch.to_string(),
-            source_branch: source_branch.to_string(),
-            merged_snapshot_id: None,
-            conflicts: resolved_conflicts.clone(),
-            auto_resolved: resolved_conflicts
-                .iter()
-                .filter(|c| c.resolution.is_some())
-                .count(),
-            manual_required: unresolved,
-        }, merged_patches))
+        Ok((
+            MergeResult {
+                success: unresolved == 0,
+                target_branch: target_branch.to_string(),
+                source_branch: source_branch.to_string(),
+                merged_snapshot_id: None,
+                conflicts: resolved_conflicts.clone(),
+                auto_resolved: resolved_conflicts
+                    .iter()
+                    .filter(|c| c.resolution.is_some())
+                    .count(),
+                manual_required: unresolved,
+            },
+            merged_patches,
+        ))
     }
 
     /// 预览合并结果（不实际执行）

@@ -34,52 +34,60 @@ fn line_starts_skeleton_entry(path: &str, line: &str) -> bool {
         .to_lowercase();
     let trimmed = line.trim();
     match ext.as_str() {
-        "vue" => trimmed.starts_with("<script")
-            || trimmed.starts_with("defineProps(")
-            || trimmed.starts_with("defineEmits(")
-            || trimmed.starts_with("function ")
-            || trimmed.starts_with("const ")
-            || trimmed.starts_with("let ")
-            || trimmed.starts_with("export default")
-            || trimmed.starts_with("export const ")
-            || trimmed.contains("defineProps<")
-            || trimmed.contains("defineProps(")
-            || trimmed.contains("defineEmits<")
-            || trimmed.contains("defineEmits("),
-        "ts" | "tsx" => trimmed.starts_with("export function ")
-            || trimmed.starts_with("export const ")
-            || trimmed.starts_with("export class ")
-            || trimmed.starts_with("function ")
-            || trimmed.starts_with("const ")
-            || trimmed.starts_with("let ")
-            || trimmed.starts_with("interface ")
-            || trimmed.starts_with("type ")
-            || trimmed.starts_with("class ")
-            || trimmed.starts_with("enum ")
-            || trimmed.starts_with("export type "),
-        "rs" => trimmed.starts_with("pub fn ")
-            || trimmed.starts_with("fn ")
-            || trimmed.starts_with("pub struct ")
-            || trimmed.starts_with("struct ")
-            || trimmed.starts_with("pub enum ")
-            || trimmed.starts_with("enum ")
-            || trimmed.starts_with("pub trait ")
-            || trimmed.starts_with("trait ")
-            || trimmed.starts_with("impl ")
-            || trimmed.starts_with("mod ")
-            || trimmed.starts_with("macro_rules! "),
-        _ => trimmed.starts_with("fn ")
-            || trimmed.starts_with("pub fn ")
-            || trimmed.starts_with("struct ")
-            || trimmed.starts_with("pub struct ")
-            || trimmed.starts_with("class ")
-            || trimmed.starts_with("def ")
-            || trimmed.starts_with("import ")
-            || trimmed.starts_with("use ")
-            || trimmed.starts_with("impl ")
-            || trimmed.starts_with("interface ")
-            || trimmed.starts_with("type ")
-            || trimmed.starts_with("export "),
+        "vue" => {
+            trimmed.starts_with("<script")
+                || trimmed.starts_with("defineProps(")
+                || trimmed.starts_with("defineEmits(")
+                || trimmed.starts_with("function ")
+                || trimmed.starts_with("const ")
+                || trimmed.starts_with("let ")
+                || trimmed.starts_with("export default")
+                || trimmed.starts_with("export const ")
+                || trimmed.contains("defineProps<")
+                || trimmed.contains("defineProps(")
+                || trimmed.contains("defineEmits<")
+                || trimmed.contains("defineEmits(")
+        }
+        "ts" | "tsx" => {
+            trimmed.starts_with("export function ")
+                || trimmed.starts_with("export const ")
+                || trimmed.starts_with("export class ")
+                || trimmed.starts_with("function ")
+                || trimmed.starts_with("const ")
+                || trimmed.starts_with("let ")
+                || trimmed.starts_with("interface ")
+                || trimmed.starts_with("type ")
+                || trimmed.starts_with("class ")
+                || trimmed.starts_with("enum ")
+                || trimmed.starts_with("export type ")
+        }
+        "rs" => {
+            trimmed.starts_with("pub fn ")
+                || trimmed.starts_with("fn ")
+                || trimmed.starts_with("pub struct ")
+                || trimmed.starts_with("struct ")
+                || trimmed.starts_with("pub enum ")
+                || trimmed.starts_with("enum ")
+                || trimmed.starts_with("pub trait ")
+                || trimmed.starts_with("trait ")
+                || trimmed.starts_with("impl ")
+                || trimmed.starts_with("mod ")
+                || trimmed.starts_with("macro_rules! ")
+        }
+        _ => {
+            trimmed.starts_with("fn ")
+                || trimmed.starts_with("pub fn ")
+                || trimmed.starts_with("struct ")
+                || trimmed.starts_with("pub struct ")
+                || trimmed.starts_with("class ")
+                || trimmed.starts_with("def ")
+                || trimmed.starts_with("import ")
+                || trimmed.starts_with("use ")
+                || trimmed.starts_with("impl ")
+                || trimmed.starts_with("interface ")
+                || trimmed.starts_with("type ")
+                || trimmed.starts_with("export ")
+        }
     }
 }
 
@@ -129,7 +137,11 @@ fn compact_signature(lines: &[&str], start_idx: usize, end_idx: usize) -> String
             continue;
         }
         parts.push(trimmed.to_string());
-        if trimmed.ends_with('{') || trimmed.ends_with(';') || trimmed.ends_with(')') || trimmed.ends_with("=>") {
+        if trimmed.ends_with('{')
+            || trimmed.ends_with(';')
+            || trimmed.ends_with(')')
+            || trimmed.ends_with("=>")
+        {
             break;
         }
     }
@@ -154,7 +166,10 @@ fn extract_skeleton_entries(path: &str, content: &str) -> Vec<SkeletonEntry> {
 }
 
 fn format_skeleton_entry(entry: &SkeletonEntry) -> String {
-    format!("[{}-{}] {}", entry.start_line, entry.end_line, entry.signature)
+    format!(
+        "[{}-{}] {}",
+        entry.start_line, entry.end_line, entry.signature
+    )
 }
 
 fn extract_skeleton_lines(path: &str, content: &str) -> Vec<String> {
@@ -184,9 +199,15 @@ mod tests {
             "store.ts",
             "import x from 'x'\nexport function load() {}\ninterface State {}\nexport type Mode = 'a'",
         );
-        assert!(lines.iter().any(|line| line.contains("[2-2] export function load")));
-        assert!(lines.iter().any(|line| line.contains("[3-3] interface State")));
-        assert!(lines.iter().any(|line| line.contains("[4-4] export type Mode")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("[2-2] export function load")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("[3-3] interface State")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("[4-4] export type Mode")));
     }
 
     #[test]
@@ -258,7 +279,10 @@ pub async fn read_file(
             let start_idx = actual_start.saturating_sub(1);
 
             if start_idx >= total_lines {
-                return framework::ToolCallResult::error(format!("起始行 {} 超过文件总行数 {}", start_line, total_lines));
+                return framework::ToolCallResult::error(format!(
+                    "起始行 {} 超过文件总行数 {}",
+                    start_line, total_lines
+                ));
             }
 
             // 输出行数截断

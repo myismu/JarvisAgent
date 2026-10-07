@@ -1,4 +1,4 @@
-﻿//! # tools_runner.rs — 工具调用并行执行引擎
+//! # tools_runner.rs — 工具调用并行执行引擎
 //!
 //! 实现工具调用的三阶段流水线：预处理（串行解析参数）→ 并行执行（tokio::spawn）→ 排序汇总。
 //! 支持参数自动修复、取消检查、`RunSubagentsSequentially` 调度器特殊处理等。
@@ -18,10 +18,10 @@
 use serde_json::json;
 use tauri::Emitter;
 
-use crate::infra::llm::adapters::parse_streamed_tool_input;
-use crate::infra::types::models::*;
 use crate::core::orchestration::scheduler::TaskScheduler;
 use crate::core::tools::*;
+use crate::infra::llm::adapters::parse_streamed_tool_input;
+use crate::infra::types::models::*;
 
 /// 阶段1产出：待并行执行的工具任务数据
 struct ToolTaskData {
@@ -270,8 +270,8 @@ pub async fn execute_tool_calls(
             let mut flags = ctx.tool_result_flags.lock().await;
             flags.remove(&result.name).unwrap_or((false, false))
         };
-        let is_parse_error = result.output.starts_with("工具 `")
-            && result.output.contains("参数解析失败");
+        let is_parse_error =
+            result.output.starts_with("工具 `") && result.output.contains("参数解析失败");
         let status = if is_parse_error || tool_flags.1 {
             "error"
         } else {
@@ -321,10 +321,17 @@ pub async fn execute_tool_calls(
         });
     }
 
-    println!("[JARVIS] execute_tool_calls 完成: tool_results 数量={}", tool_results.len());
+    println!(
+        "[JARVIS] execute_tool_calls 完成: tool_results 数量={}",
+        tool_results.len()
+    );
     for (i, tr) in tool_results.iter().enumerate() {
         if let ContentBlock::ToolResult { content, .. } = tr {
-            println!("[JARVIS]   tool_results[{}]: {}...", i, content.chars().take(100).collect::<String>());
+            println!(
+                "[JARVIS]   tool_results[{}]: {}...",
+                i,
+                content.chars().take(100).collect::<String>()
+            );
         }
     }
 

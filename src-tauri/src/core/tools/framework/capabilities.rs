@@ -103,18 +103,39 @@ impl Capabilities {
     ///    做心理活动，甚至向用户解释"本环境不支持子代理"（真实事故：
     ///    会话 47ecd917 的 thinking 与 plan.md 相互打架，"派子代理 不可用"是起因之一）。
     pub fn context_block(&self) -> String {
-        let mark = |ok: bool| if ok { "可用" } else { "不可用（本会话不存在对应工具）" };
+        let mark = |ok: bool| {
+            if ok {
+                "可用"
+            } else {
+                "不可用（本会话不存在对应工具）"
+            }
+        };
         let mut out = String::from("<capabilities>\n【本会话能力边界 · 系统强制】\n");
         out.push_str(&format!("- 读取文件/代码：{}\n", mark(self.read)));
-        out.push_str(&format!("- 修改文件（写入/编辑/删除/重命名）：{}\n", mark(self.write)));
-        out.push_str(&format!("- 执行命令（含启动服务）：{}\n", mark(self.run_commands)));
-        out.push_str(&format!("- 任务编排（建任务清单 / 待办）：{}\n", mark(self.orchestrate)));
+        out.push_str(&format!(
+            "- 修改文件（写入/编辑/删除/重命名）：{}\n",
+            mark(self.write)
+        ));
+        out.push_str(&format!(
+            "- 执行命令（含启动服务）：{}\n",
+            mark(self.run_commands)
+        ));
+        out.push_str(&format!(
+            "- 任务编排（建任务清单 / 待办）：{}\n",
+            mark(self.orchestrate)
+        ));
         // 派子代理：只在可用时列出（规划模式下整项不出现，理由见上方文档注释）
         if self.delegate {
             out.push_str("- 派子代理（RunSubagent / RunSubagentsSequentially）：可用\n");
         }
-        out.push_str(&format!("- 提交方案审批（ProposePlan）：{}\n", mark(self.plan)));
-        out.push_str(&format!("- 切换工作模式（SwitchWorkMode）：{}\n", mark(self.switch_mode)));
+        out.push_str(&format!(
+            "- 提交方案审批（ProposePlan）：{}\n",
+            mark(self.plan)
+        ));
+        out.push_str(&format!(
+            "- 切换工作模式（SwitchWorkMode）：{}\n",
+            mark(self.switch_mode)
+        ));
         out.push_str(
             "标记为「不可用」的能力在本会话没有任何工具可实现：不要调用 GetToolCatalog / \
              DiscoverTools 去搜索它们，也不要尝试用其他工具绕行。用户要求这类操作时，\
@@ -171,9 +192,18 @@ mod tests {
     fn plan_mode_never_mentions_subagent_at_all() {
         let caps = Capabilities::for_work_mode("plan", &ToolFilter::allow_all());
         let block = caps.context_block();
-        assert!(!block.contains("派子代理"), "规划模式能力块不得出现「派子代理」");
-        assert!(!block.contains("RunSubagent"), "规划模式能力块不得出现子代理工具名");
-        assert!(!caps.summary_line().contains("派子代理"), "摘要行同样不得出现");
+        assert!(
+            !block.contains("派子代理"),
+            "规划模式能力块不得出现「派子代理」"
+        );
+        assert!(
+            !block.contains("RunSubagent"),
+            "规划模式能力块不得出现子代理工具名"
+        );
+        assert!(
+            !caps.summary_line().contains("派子代理"),
+            "摘要行同样不得出现"
+        );
         assert!(!caps.summary_line().contains("RunSubagent"));
     }
 

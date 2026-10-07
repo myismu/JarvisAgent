@@ -51,10 +51,7 @@ pub enum ProtocolEvent {
     /// - `Some(idx)`：精确改写第 idx 块（Anthropic 的 delta 帧带 `index`）
     /// - `None`：没有索引概念（OpenAI），运行时语义 = "追加进当前文本块；
     ///   当前块不是文本就新开一块"——与拆分前 OpenAI 分支的行为一致
-    TextDelta {
-        block: Option<usize>,
-        text: String,
-    },
+    TextDelta { block: Option<usize>, text: String },
     /// 思考增量。`text` 可为空串（纯签名帧），`signature` 是本帧携带的签名分片。
     ThinkingDelta {
         block: Option<usize>,
@@ -72,10 +69,7 @@ pub enum ProtocolEvent {
     },
     /// 工具参数分片。工具入参 JSON 是逐帧拼接的
     /// （Anthropic 叫 `partial_json`，OpenAI 叫 `function.arguments`），运行时负责累积后解析。
-    ToolArgsDelta {
-        wire_idx: usize,
-        fragment: String,
-    },
+    ToolArgsDelta { wire_idx: usize, fragment: String },
     /// 原始 usage JSON。谁家字段长什么样解析器不管，
     /// 归一化（字段名、缓存口径）统一交给 `usage::UsageObservation`。
     UsageObserved(serde_json::Value),
@@ -163,11 +157,7 @@ fn parse_openai_frame(frame: &serde_json::Value, events: &mut Vec<ProtocolEvent>
             // 带 id/name 的帧视为"调用开始"。若某家实现每个分片都重复带 id/name
             // （非标准），运行时会按映射表去重，不会重复建块——与拆分前行为一致。
             if !id.is_empty() || !name.is_empty() {
-                events.push(ProtocolEvent::ToolStart {
-                    wire_idx,
-                    id,
-                    name,
-                });
+                events.push(ProtocolEvent::ToolStart { wire_idx, id, name });
             }
             // 参数分片：只管搬运，累积与 JSON 解析在运行时（拆分前连空串也 push，
             // 空串 push 是无操作，这里跳过不影响结果）
@@ -401,7 +391,10 @@ mod tests {
         });
         assert_eq!(
             parse_frame(ApiFormat::Anthropic, &frame),
-            vec![ProtocolEvent::TextDelta { block: Some(0), text: "你好".to_string() }]
+            vec![ProtocolEvent::TextDelta {
+                block: Some(0),
+                text: "你好".to_string()
+            }]
         );
     }
 
@@ -459,7 +452,10 @@ mod tests {
         let events = parse_frame(ApiFormat::Anthropic, &frame);
         match &events[0] {
             ProtocolEvent::ThinkingDelta { signature, .. } => {
-                assert_eq!(signature.as_deref(), Some("3f7c1f5e-2b6a-4f1e-9a5d-0b2c8e7d4a11"))
+                assert_eq!(
+                    signature.as_deref(),
+                    Some("3f7c1f5e-2b6a-4f1e-9a5d-0b2c8e7d4a11")
+                )
             }
             other => panic!("应为 ThinkingDelta，实际 {:?}", other),
         }
@@ -536,7 +532,10 @@ mod tests {
         });
         assert_eq!(
             parse_frame(ApiFormat::OpenAI, &frame),
-            vec![ProtocolEvent::TextDelta { block: None, text: "hello".to_string() }]
+            vec![ProtocolEvent::TextDelta {
+                block: None,
+                text: "hello".to_string()
+            }]
         );
     }
 
@@ -631,10 +630,7 @@ mod tests {
         let parsed = parse_textual_tool_calls(text);
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].0, "RunCommand");
-        assert_eq!(
-            parsed[0].1,
-            json!({ "cmd": "ls -la", "timeout": 30 })
-        );
+        assert_eq!(parsed[0].1, json!({ "cmd": "ls -la", "timeout": 30 }));
         assert!(looks_like_textual_tool_call(text));
         assert!(!looks_like_textual_tool_call("普通回复，没有任何标记"));
     }

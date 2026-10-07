@@ -22,15 +22,15 @@ use tauri::{Emitter, Manager};
 
 use super::super::framework::agent_registry::{normalize_agent_role, AgentRegistry};
 use super::super::handle_tool_call_inner_owned;
-use crate::core::agent::{process_stream, StreamConfig};
-use crate::infra::config::config::ConfigState;
 use crate::core::agent::prompts::get_subagent_system_prompt;
-use crate::infra::llm::adapters::parse_streamed_tool_input;
-use crate::infra::types::models::{AnthropicRequest, Content, ContentBlock, Message};
+use crate::core::agent::{process_stream, StreamConfig};
 use crate::core::orchestration::subagents::{SubAgentMonitor, SubAgentPhase};
 use crate::core::session::memory::{compact_messages, estimate_tokens};
-use crate::infra::state::state::{SessionManager, ToolDedupeCacheEntry};
 use crate::core::tools::file_tools::generate_repo_map;
+use crate::infra::config::config::ConfigState;
+use crate::infra::llm::adapters::parse_streamed_tool_input;
+use crate::infra::state::state::{SessionManager, ToolDedupeCacheEntry};
+use crate::infra::types::models::{AnthropicRequest, Content, ContentBlock, Message};
 use std::collections::HashMap;
 
 /// 提取工具调用的关键输入摘要（规则提取，不调用 LLM）
@@ -169,7 +169,9 @@ fn summarize_tool_result(name: &str, content: &str) -> String {
             }
         }
         "WriteFile" | "EditFile" => {
-            if content.contains("成功创建") || content.contains("成功编辑") || content.contains("成功写入")
+            if content.contains("成功创建")
+                || content.contains("成功编辑")
+                || content.contains("成功写入")
             {
                 "成功".to_string()
             } else if content.contains("失败") || content.contains("编辑失败") {
@@ -203,11 +205,7 @@ fn summarize_tool_result(name: &str, content: &str) -> String {
 fn is_dedup_target(name: &str) -> bool {
     matches!(
         name,
-        "LoadSkill"
-            | "CompactConversation"
-            | "ConsolidateMemory"
-            | "ProposePlan"
-            | "RunSubagent"
+        "LoadSkill" | "CompactConversation" | "ConsolidateMemory" | "ProposePlan" | "RunSubagent"
     )
 }
 
@@ -240,11 +238,14 @@ async fn extract_subagent_context(
 
         // 遍历消息，将 ToolUse 与紧随的 ToolResult 配对
         for window in msgs.windows(2) {
-            if let (Message::Assistant {
-                content: Content::Multiple(assistant_blocks),
-            }, Message::User {
-                content: Content::Multiple(user_blocks),
-            }) = (&window[0], &window[1])
+            if let (
+                Message::Assistant {
+                    content: Content::Multiple(assistant_blocks),
+                },
+                Message::User {
+                    content: Content::Multiple(user_blocks),
+                },
+            ) = (&window[0], &window[1])
             {
                 for block in assistant_blocks {
                     if let ContentBlock::ToolUse {
@@ -272,7 +273,9 @@ async fn extract_subagent_context(
                             .iter()
                             .find_map(|b| {
                                 if let ContentBlock::ToolResult {
-                                    tool_use_id, content, ..
+                                    tool_use_id,
+                                    content,
+                                    ..
                                 } = b
                                 {
                                     if tool_use_id == id {
@@ -335,10 +338,7 @@ async fn extract_subagent_context(
                         .join(" ");
                     if !text.trim().is_empty() {
                         let truncated: String = text.chars().take(300).collect();
-                        ctx.push_str(&format!(
-                            "【主Agent的分析结论】\n{}\n\n",
-                            truncated
-                        ));
+                        ctx.push_str(&format!("【主Agent的分析结论】\n{}\n\n", truncated));
                     }
                     break;
                 }
@@ -475,7 +475,8 @@ pub async fn run_subagent(
             // 用户可能把它关掉了，那时 resolve_tools 已经剔除它，这句"Use LoadSkill"
             // 就成了调用必失败的死指引。
             if !matched.is_empty() && filter.is_enabled("LoadSkill") {
-                system_prompt.push_str("\n\n[Available skills]\nUse LoadSkill tool to load full content.\n");
+                system_prompt
+                    .push_str("\n\n[Available skills]\nUse LoadSkill tool to load full content.\n");
                 for skill in &matched {
                     system_prompt.push_str(&format!("  - {}: {}\n", skill.name, skill.description));
                 }
@@ -639,11 +640,8 @@ pub async fn run_subagent(
             output_config: None,
         };
 
-        let thinking_plan = crate::infra::llm::registry::plan_anthropic_thinking(
-            &model_id,
-            should_think,
-            None,
-        );
+        let thinking_plan =
+            crate::infra::llm::registry::plan_anthropic_thinking(&model_id, should_think, None);
         let thinking_active = thinking_plan.thinking_active();
         request_body.thinking = thinking_plan.thinking;
         request_body.output_config = thinking_plan.output_config;
@@ -657,11 +655,8 @@ pub async fn run_subagent(
                 translate_messages_to_openai_with_reasoning_backfill, translate_tools_to_openai,
             };
             use crate::infra::types::models::OpenAIRequest;
-            let backfill_reasoning_content = should_backfill_deepseek_reasoning_content(
-                &model_id,
-                &base_url,
-                should_think,
-            );
+            let backfill_reasoning_content =
+                should_backfill_deepseek_reasoning_content(&model_id, &base_url, should_think);
             let openai_msgs = translate_messages_to_openai_with_reasoning_backfill(
                 &request_body.system,
                 &request_body.messages,
@@ -692,7 +687,9 @@ pub async fn run_subagent(
             };
 
             crate::infra::llm::registry::apply_thinking_for_model(
-                &mut openai_req, &model_id, should_think,
+                &mut openai_req,
+                &model_id,
+                should_think,
             );
             serde_json::to_value(openai_req).unwrap()
         } else {
@@ -702,9 +699,16 @@ pub async fn run_subagent(
         println!(
             "[SUB AGENT] loop {} request ({} bytes)",
             loop_count + 1,
-            serde_json::to_string(&req_json).map(|s| s.len()).unwrap_or(0)
+            serde_json::to_string(&req_json)
+                .map(|s| s.len())
+                .unwrap_or(0)
         );
-        crate::infra::debug_logger::debug_logger().log_request(&session_id, "SUB", loop_count + 1, &req_json);
+        crate::infra::debug_logger::debug_logger().log_request(
+            &session_id,
+            "SUB",
+            loop_count + 1,
+            &req_json,
+        );
 
         let (auth_header, auth_value) = api_format_enum.auth_header(&api_key);
         let mut req = client
@@ -934,10 +938,15 @@ pub async fn run_subagent(
                                     name, entry.suppressed_count
                                 );
                                 SubAgentMonitor::record_tool_result(
-                                    &app, &run_id, name,
+                                    &app,
+                                    &run_id,
+                                    name,
                                     Some(blocked.chars().take(180).collect::<String>()),
-                                    loop_count + 1, sub_input_tokens, sub_output_tokens,
-                                ).await;
+                                    loop_count + 1,
+                                    sub_input_tokens,
+                                    sub_output_tokens,
+                                )
+                                .await;
                                 immediate_results.push(SubToolTaskResult {
                                     index,
                                     tool_use_id: id.clone(),
@@ -1038,9 +1047,9 @@ pub async fn run_subagent(
                             task.name.clone(),
                             task.input.clone(),
                             sid_clone,
-                            "SUBAGENT".to_string(),  // intent：子代理执行的意图标记
-                            "edit".to_string(),      // 子agent使用 edit 模式
-                            agent_tag,               // agent_type：带子代理类型（2026-09-20）
+                            "SUBAGENT".to_string(), // intent：子代理执行的意图标记
+                            "edit".to_string(),     // 子agent使用 edit 模式
+                            agent_tag,              // agent_type：带子代理类型（2026-09-20）
                         )
                         .await;
                         SubToolTaskResult {
@@ -1233,10 +1242,7 @@ pub async fn run_subagent(
                 })
                 .collect::<Vec<_>>()
                 .join("\n---\n");
-            format!(
-                "\n\n【部分成果（{}轮已达上限）】\n{}",
-                max_loops, joined
-            )
+            format!("\n\n【部分成果（{}轮已达上限）】\n{}", max_loops, joined)
         } else {
             String::new()
         };

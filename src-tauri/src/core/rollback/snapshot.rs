@@ -133,15 +133,23 @@ impl Workspace {
     }
 
     /// 应用单个补丁到工作区
-    pub fn apply_patch(&mut self, patch: &Patch, session_id: &str) -> Result<(), super::patch::PatchError> {
+    pub fn apply_patch(
+        &mut self,
+        patch: &Patch,
+        session_id: &str,
+    ) -> Result<(), super::patch::PatchError> {
         use super::patch::PatchError;
 
         let resolve_content = |inline: &str, hash: Option<&String>| -> String {
             if !inline.is_empty() {
                 return inline.to_string();
             }
-            hash.and_then(|h| crate::core::rollback::store::load_content(session_id, h).ok().flatten())
-                .unwrap_or_default()
+            hash.and_then(|h| {
+                crate::core::rollback::store::load_content(session_id, h)
+                    .ok()
+                    .flatten()
+            })
+            .unwrap_or_default()
         };
 
         match patch {
@@ -157,7 +165,9 @@ impl Workspace {
             } => {
                 if self.files.remove(path).is_none() {
                     if let Some(hash) = content_hash {
-                        if let Ok(Some(c)) = crate::core::rollback::store::load_content(session_id, hash) {
+                        if let Ok(Some(c)) =
+                            crate::core::rollback::store::load_content(session_id, hash)
+                        {
                             self.files.insert(path.clone(), c);
                             self.files.remove(path);
                         }
@@ -207,7 +217,11 @@ impl Workspace {
     }
 
     /// 批量应用补丁
-    pub fn apply_patches(&mut self, patches: &[Patch], session_id: &str) -> Result<(), super::patch::PatchError> {
+    pub fn apply_patches(
+        &mut self,
+        patches: &[Patch],
+        session_id: &str,
+    ) -> Result<(), super::patch::PatchError> {
         for patch in patches {
             self.apply_patch(patch, session_id)?;
         }
@@ -215,13 +229,21 @@ impl Workspace {
     }
 
     /// 撤销单个补丁（用于回滚）
-    pub fn undo_patch(&mut self, patch: &Patch, session_id: &str) -> Result<(), super::patch::PatchError> {
+    pub fn undo_patch(
+        &mut self,
+        patch: &Patch,
+        session_id: &str,
+    ) -> Result<(), super::patch::PatchError> {
         let resolve_content = |inline: &str, hash: Option<&String>| -> String {
             if !inline.is_empty() {
                 return inline.to_string();
             }
-            hash.and_then(|h| crate::core::rollback::store::load_content(session_id, h).ok().flatten())
-                .unwrap_or_default()
+            hash.and_then(|h| {
+                crate::core::rollback::store::load_content(session_id, h)
+                    .ok()
+                    .flatten()
+            })
+            .unwrap_or_default()
         };
 
         match patch {
@@ -233,14 +255,19 @@ impl Workspace {
                 path, content_hash, ..
             } => {
                 if let Some(hash) = content_hash {
-                    if let Ok(Some(c)) = crate::core::rollback::store::load_content(session_id, hash) {
+                    if let Ok(Some(c)) =
+                        crate::core::rollback::store::load_content(session_id, hash)
+                    {
                         self.files.insert(path.clone(), c);
                     }
                 }
                 Ok(())
             }
             Patch::UpdateFile {
-                path, old_content, content_hash, ..
+                path,
+                old_content,
+                content_hash,
+                ..
             } => {
                 let old = resolve_content(old_content, content_hash.as_ref().map(|h| &h.0));
                 self.files.insert(path.clone(), old.clone());

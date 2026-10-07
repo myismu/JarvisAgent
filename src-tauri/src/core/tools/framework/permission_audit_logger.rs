@@ -86,7 +86,10 @@ impl PermissionAuditLogger {
         warning: Option<&str>,
     ) {
         let seq = {
-            let mut seqs = self.seqs.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut seqs = self
+                .seqs
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let entry = seqs.entry(session_id.to_string()).or_insert(0);
             *entry += 1;
             *entry
@@ -124,11 +127,7 @@ impl PermissionAuditLogger {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-        {
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
             if let Ok(line) = serde_json::to_string(record) {
                 let _ = writeln!(file, "{}", line);
             }

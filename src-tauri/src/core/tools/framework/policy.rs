@@ -111,7 +111,10 @@ impl ToolClass {
     pub fn mutates_project(&self) -> bool {
         matches!(
             self,
-            ToolClass::CreateFile | ToolClass::ModifyContent | ToolClass::Delete | ToolClass::Rename
+            ToolClass::CreateFile
+                | ToolClass::ModifyContent
+                | ToolClass::Delete
+                | ToolClass::Rename
         )
     }
 
@@ -123,10 +126,7 @@ impl ToolClass {
     pub fn always_asks(&self) -> bool {
         matches!(
             self,
-            ToolClass::Delete
-                | ToolClass::Rename
-                | ToolClass::RunCommand
-                | ToolClass::Background
+            ToolClass::Delete | ToolClass::Rename | ToolClass::RunCommand | ToolClass::Background
         )
     }
 
@@ -178,51 +178,352 @@ const READ_ONLY: ToolClass = ToolClass::ReadOnly;
 /// **唯一一张策略表**：工具名 → 归类 + 参数字段。
 pub const TOOL_POLICIES: &[(&str, ToolPolicy)] = &[
     // ── 只看不碰 ──
-    ("ReadFile", ToolPolicy { class: READ_ONLY, path_fields: &["path"], command_field: None, patch_field: None }),
-    ("ReadFileSkeleton", ToolPolicy { class: READ_ONLY, path_fields: &["path"], command_field: None, patch_field: None }),
-    ("ReadSymbol", ToolPolicy { class: READ_ONLY, path_fields: &["path"], command_field: None, patch_field: None }),
-    ("FindSymbol", ToolPolicy { class: READ_ONLY, path_fields: &["dir"], command_field: None, patch_field: None }),
-    ("FindReferences", ToolPolicy { class: READ_ONLY, path_fields: &["dir"], command_field: None, patch_field: None }),
-    ("CodeSearch", ToolPolicy { class: READ_ONLY, path_fields: &["dir"], command_field: None, patch_field: None }),
-    ("SearchRepo", ToolPolicy { class: READ_ONLY, path_fields: &["dir"], command_field: None, patch_field: None }),
-    ("SearchText", ToolPolicy { class: READ_ONLY, path_fields: &["path", "dir"], command_field: None, patch_field: None }),
-    ("FindFiles", ToolPolicy { class: READ_ONLY, path_fields: &["dir"], command_field: None, patch_field: None }),
-    ("ListDirectory", ToolPolicy { class: READ_ONLY, path_fields: &["path"], command_field: None, patch_field: None }),
-    ("CheckBackgroundCommand", ToolPolicy { class: READ_ONLY, path_fields: &[], command_field: None, patch_field: None }),
-    ("ListTasks", ToolPolicy { class: READ_ONLY, path_fields: &[], command_field: None, patch_field: None }),
-    ("GetTask", ToolPolicy { class: READ_ONLY, path_fields: &[], command_field: None, patch_field: None }),
-    ("SummarizeTasks", ToolPolicy { class: READ_ONLY, path_fields: &[], command_field: None, patch_field: None }),
-    ("ReadMemory", ToolPolicy { class: READ_ONLY, path_fields: &[], command_field: None, patch_field: None }),
-    ("GetToolCatalog", ToolPolicy { class: READ_ONLY, path_fields: &[], command_field: None, patch_field: None }),
-    ("DiscoverTools", ToolPolicy { class: READ_ONLY, path_fields: &[], command_field: None, patch_field: None }),
-    ("LoadSkill", ToolPolicy { class: READ_ONLY, path_fields: &[], command_field: None, patch_field: None }),
-
+    (
+        "ReadFile",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &["path"],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "ReadFileSkeleton",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &["path"],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "ReadSymbol",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &["path"],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "FindSymbol",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &["dir"],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "FindReferences",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &["dir"],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "CodeSearch",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &["dir"],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "SearchRepo",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &["dir"],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "SearchText",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &["path", "dir"],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "FindFiles",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &["dir"],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "ListDirectory",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &["path"],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "CheckBackgroundCommand",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "ListTasks",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "GetTask",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "SummarizeTasks",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "ReadMemory",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "GetToolCatalog",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "DiscoverTools",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "LoadSkill",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
     // ── 改文件 ──
-    ("WriteFile", ToolPolicy { class: ToolClass::CreateFile, path_fields: &["path"], command_field: None, patch_field: None }),
-    ("EditFile", ToolPolicy { class: ToolClass::ModifyContent, path_fields: &["path"], command_field: None, patch_field: None }),
-    ("ApplyPatch", ToolPolicy { class: ToolClass::ModifyContent, path_fields: &[], command_field: None, patch_field: Some("patch") }),
-    ("EditNotebook", ToolPolicy { class: ToolClass::ModifyContent, path_fields: &["notebook_path"], command_field: None, patch_field: None }),
-    ("DeleteFile", ToolPolicy { class: ToolClass::Delete, path_fields: &["path"], command_field: None, patch_field: None }),
-    ("RenameFile", ToolPolicy { class: ToolClass::Rename, path_fields: &["path", "new_path"], command_field: None, patch_field: None }),
-
+    (
+        "WriteFile",
+        ToolPolicy {
+            class: ToolClass::CreateFile,
+            path_fields: &["path"],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "EditFile",
+        ToolPolicy {
+            class: ToolClass::ModifyContent,
+            path_fields: &["path"],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "ApplyPatch",
+        ToolPolicy {
+            class: ToolClass::ModifyContent,
+            path_fields: &[],
+            command_field: None,
+            patch_field: Some("patch"),
+        },
+    ),
+    (
+        "EditNotebook",
+        ToolPolicy {
+            class: ToolClass::ModifyContent,
+            path_fields: &["notebook_path"],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "DeleteFile",
+        ToolPolicy {
+            class: ToolClass::Delete,
+            path_fields: &["path"],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "RenameFile",
+        ToolPolicy {
+            class: ToolClass::Rename,
+            path_fields: &["path", "new_path"],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
     // ── 命令 ──
     // （SetWorkspace 已退役：见 system_tools/mod.rs 模块注释）
-    ("RunCommand", ToolPolicy { class: ToolClass::RunCommand, path_fields: &[], command_field: Some("command"), patch_field: None }),
-    ("StartBackgroundCommand", ToolPolicy { class: ToolClass::Background, path_fields: &["dir"], command_field: Some("command"), patch_field: None }),
-
+    (
+        "RunCommand",
+        ToolPolicy {
+            class: ToolClass::RunCommand,
+            path_fields: &[],
+            command_field: Some("command"),
+            patch_field: None,
+        },
+    ),
+    (
+        "StartBackgroundCommand",
+        ToolPolicy {
+            class: ToolClass::Background,
+            path_fields: &["dir"],
+            command_field: Some("command"),
+            patch_field: None,
+        },
+    ),
     // ── 编排 / 会话 / 应用 ──
-    ("CreateTask", ToolPolicy { class: ToolClass::Orchestrate, path_fields: &[], command_field: None, patch_field: None }),
-    ("UpdateTask", ToolPolicy { class: ToolClass::Orchestrate, path_fields: &[], command_field: None, patch_field: None }),
-    ("DeleteTask", ToolPolicy { class: ToolClass::Orchestrate, path_fields: &[], command_field: None, patch_field: None }),
-    ("UpdateTodos", ToolPolicy { class: ToolClass::Orchestrate, path_fields: &[], command_field: None, patch_field: None }),
-    ("RunSubagent", ToolPolicy { class: ToolClass::Orchestrate, path_fields: &[], command_field: None, patch_field: None }),
-    ("RunSubagentsSequentially", ToolPolicy { class: ToolClass::Orchestrate, path_fields: &[], command_field: None, patch_field: None }),
-    ("ProposePlan", ToolPolicy { class: ToolClass::Orchestrate, path_fields: &[], command_field: None, patch_field: None }),
-    ("CompactConversation", ToolPolicy { class: ToolClass::SessionMgmt, path_fields: &[], command_field: None, patch_field: None }),
-    ("ConsolidateMemory", ToolPolicy { class: ToolClass::SessionMgmt, path_fields: &[], command_field: None, patch_field: None }),
-    ("UpdateMemory", ToolPolicy { class: ToolClass::SessionMgmt, path_fields: &[], command_field: None, patch_field: None }),
-    ("SwitchWorkMode", ToolPolicy { class: ToolClass::AppControl, path_fields: &[], command_field: None, patch_field: None }),
-    ("ExecuteTool", ToolPolicy { class: ToolClass::AppControl, path_fields: &[], command_field: None, patch_field: None }),
+    (
+        "CreateTask",
+        ToolPolicy {
+            class: ToolClass::Orchestrate,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "UpdateTask",
+        ToolPolicy {
+            class: ToolClass::Orchestrate,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "DeleteTask",
+        ToolPolicy {
+            class: ToolClass::Orchestrate,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "UpdateTodos",
+        ToolPolicy {
+            class: ToolClass::Orchestrate,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "RunSubagent",
+        ToolPolicy {
+            class: ToolClass::Orchestrate,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "RunSubagentsSequentially",
+        ToolPolicy {
+            class: ToolClass::Orchestrate,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "ProposePlan",
+        ToolPolicy {
+            class: ToolClass::Orchestrate,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "CompactConversation",
+        ToolPolicy {
+            class: ToolClass::SessionMgmt,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "ConsolidateMemory",
+        ToolPolicy {
+            class: ToolClass::SessionMgmt,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "UpdateMemory",
+        ToolPolicy {
+            class: ToolClass::SessionMgmt,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "SwitchWorkMode",
+        ToolPolicy {
+            class: ToolClass::AppControl,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "ExecuteTool",
+        ToolPolicy {
+            class: ToolClass::AppControl,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
 ];
 
 /// 查策略表；没登记返回 `None`（调用方要把它标成"未分类"）
@@ -553,11 +854,21 @@ mod tests {
         // 2026-09-19 沐拍板调整：请求审批档后台恒问（每次人确认）；
         // 帮我批准档后台放行（"别烦我"语义 + 修补 RunCommand run_in_background 路径不一致）。
         assert_eq!(
-            judge("StartBackgroundCommand", ApprovalMode::RequestApproval, &allow_input()).outcome,
+            judge(
+                "StartBackgroundCommand",
+                ApprovalMode::RequestApproval,
+                &allow_input()
+            )
+            .outcome,
             Outcome::Ask
         );
         assert_eq!(
-            judge("StartBackgroundCommand", ApprovalMode::AutoApprove, &allow_input()).outcome,
+            judge(
+                "StartBackgroundCommand",
+                ApprovalMode::AutoApprove,
+                &allow_input()
+            )
+            .outcome,
             Outcome::Allow
         );
     }
@@ -666,7 +977,11 @@ mod tests {
         };
         let decision = judge("EditFile", ApprovalMode::AutoApprove, &input);
         assert_eq!(decision.outcome, Outcome::Ask);
-        assert!(decision.reason.contains("第 3 个文件"), "{}", decision.reason);
+        assert!(
+            decision.reason.contains("第 3 个文件"),
+            "{}",
+            decision.reason
+        );
 
         let second = JudgementInput {
             files_in_turn: 2,
@@ -747,7 +1062,9 @@ mod tests {
     fn ask_reason_is_not_polluted_by_existing_warning() {
         // 现有守卫的警告只作为补充提示，不能混进"为什么要问你"
         let input = JudgementInput {
-            existing_warning: Some("命令包含 .NET 静态方法调用 [Type]::Method()。请确认调用安全。".to_string()),
+            existing_warning: Some(
+                "命令包含 .NET 静态方法调用 [Type]::Method()。请确认调用安全。".to_string(),
+            ),
             ..allow_input()
         };
         let decision = judge("RunCommand", ApprovalMode::AutoApprove, &input);

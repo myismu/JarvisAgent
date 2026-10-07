@@ -217,7 +217,8 @@ fn extract_title(messages: &[Message]) -> String {
                     .chars()
                     .take(crate::infra::types::constants::MAX_SESSION_TITLE_LEN)
                     .collect();
-                return if user_input.chars().count() > crate::infra::types::constants::MAX_SESSION_TITLE_LEN
+                return if user_input.chars().count()
+                    > crate::infra::types::constants::MAX_SESSION_TITLE_LEN
                 {
                     format!("{}...", title)
                 } else {
@@ -332,9 +333,7 @@ pub fn normalize_message_ids(memory: &mut SessionMemory) {
         );
         memory.message_ids.truncate(msg_count);
         while memory.message_ids.len() < msg_count {
-            memory
-                .message_ids
-                .push(uuid::Uuid::new_v4().to_string());
+            memory.message_ids.push(uuid::Uuid::new_v4().to_string());
         }
     }
     memory.sources.truncate(msg_count);
@@ -374,14 +373,19 @@ pub fn append_message_with_kind(
     memory.messages.push(message);
     memory.message_ids.push(message_id.clone());
     memory.sources.push(source);
-    memory.interrupt_kinds.push(interrupt_kind.map(|k| k.to_string()));
+    memory
+        .interrupt_kinds
+        .push(interrupt_kind.map(|k| k.to_string()));
     message_id
 }
 
 pub fn pop_message(memory: &mut SessionMemory) -> Option<(Message, String)> {
     normalize_message_ids(memory);
     let message = memory.messages.pop()?;
-    let message_id = memory.message_ids.pop().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let message_id = memory
+        .message_ids
+        .pop()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     memory.sources.pop();
     memory.interrupt_kinds.pop();
     Some((message, message_id))
@@ -409,7 +413,9 @@ pub fn restore_message_with_kind(
     memory.messages.push(message);
     memory.message_ids.push(message_id);
     memory.sources.push(source);
-    memory.interrupt_kinds.push(interrupt_kind.map(|k| k.to_string()));
+    memory
+        .interrupt_kinds
+        .push(interrupt_kind.map(|k| k.to_string()));
 }
 
 pub fn reset_message_ids(memory: &mut SessionMemory) {
@@ -498,106 +504,109 @@ pub fn save_session(
                 .cloned()
                 .flatten();
             let filtered_message = match msg {
-            Message::User { content } => match content {
-                Content::Single(_) => Some(msg.clone()),
-                Content::Multiple(blocks) => {
-                    let filtered_blocks: Vec<ContentBlock> = blocks
-                        .iter()
-                        .filter(|b| {
-                            matches!(
-                                b,
-                                ContentBlock::Text { .. }
-                                    | ContentBlock::Image { .. }
-                                    | ContentBlock::ToolResult { .. }
-                                    | ContentBlock::Context { .. }
-                            )
-                        })
-                        .map(|b| {
-                            if let ContentBlock::Image { source } = b {
-                                // 落库前把图片本体转存进 `session_attachments` 表，消息记录里只留文件名。
-                                // 内存中的 base64 不回写磁盘，真正的字节在数据库。
-                                let file_path = if source.file_path.is_some() {
-                                    source.file_path.clone()
-                                } else if !source.data.is_empty() {
-                                    let fp =
-                                        save_image_to_file(id, &source.media_type, &source.data);
-                                    Some(fp)
-                                } else {
-                                    None
-                                };
-                                ContentBlock::Image {
-                                    source: ImageSource {
-                                        r#type: source.r#type.clone(),
-                                        media_type: source.media_type.clone(),
-                                        data: String::new(),
-                                        file_path,
-                                    },
-                                }
-                            } else {
-                                b.clone()
-                            }
-                        })
-                        .collect();
-                    if filtered_blocks.is_empty() {
-                        None
-                    } else if filtered_blocks.len() == 1 {
-                        if let ContentBlock::Text { text } = &filtered_blocks[0] {
-                            Some(Message::User {
-                                content: Content::Single(text.clone()),
+                Message::User { content } => match content {
+                    Content::Single(_) => Some(msg.clone()),
+                    Content::Multiple(blocks) => {
+                        let filtered_blocks: Vec<ContentBlock> = blocks
+                            .iter()
+                            .filter(|b| {
+                                matches!(
+                                    b,
+                                    ContentBlock::Text { .. }
+                                        | ContentBlock::Image { .. }
+                                        | ContentBlock::ToolResult { .. }
+                                        | ContentBlock::Context { .. }
+                                )
                             })
+                            .map(|b| {
+                                if let ContentBlock::Image { source } = b {
+                                    // 落库前把图片本体转存进 `session_attachments` 表，消息记录里只留文件名。
+                                    // 内存中的 base64 不回写磁盘，真正的字节在数据库。
+                                    let file_path = if source.file_path.is_some() {
+                                        source.file_path.clone()
+                                    } else if !source.data.is_empty() {
+                                        let fp = save_image_to_file(
+                                            id,
+                                            &source.media_type,
+                                            &source.data,
+                                        );
+                                        Some(fp)
+                                    } else {
+                                        None
+                                    };
+                                    ContentBlock::Image {
+                                        source: ImageSource {
+                                            r#type: source.r#type.clone(),
+                                            media_type: source.media_type.clone(),
+                                            data: String::new(),
+                                            file_path,
+                                        },
+                                    }
+                                } else {
+                                    b.clone()
+                                }
+                            })
+                            .collect();
+                        if filtered_blocks.is_empty() {
+                            None
+                        } else if filtered_blocks.len() == 1 {
+                            if let ContentBlock::Text { text } = &filtered_blocks[0] {
+                                Some(Message::User {
+                                    content: Content::Single(text.clone()),
+                                })
+                            } else {
+                                Some(Message::User {
+                                    content: Content::Multiple(filtered_blocks),
+                                })
+                            }
                         } else {
                             Some(Message::User {
                                 content: Content::Multiple(filtered_blocks),
                             })
                         }
-                    } else {
-                        Some(Message::User {
-                            content: Content::Multiple(filtered_blocks),
-                        })
                     }
-                }
-            },
-            Message::Assistant { content } => match content {
-                Content::Single(text) => {
-                    if text.trim().is_empty() {
-                        None
-                    } else {
-                        Some(Message::Assistant {
-                            content: Content::Single(text.clone()),
-                        })
+                },
+                Message::Assistant { content } => match content {
+                    Content::Single(text) => {
+                        if text.trim().is_empty() {
+                            None
+                        } else {
+                            Some(Message::Assistant {
+                                content: Content::Single(text.clone()),
+                            })
+                        }
                     }
-                }
-                Content::Multiple(blocks) => {
-                    let text_blocks: Vec<ContentBlock> = blocks
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::Text { text } if !text.trim().is_empty() => {
-                                Some(b.clone())
-                            }
-                            ContentBlock::Thinking { thinking, .. }
-                                if !thinking.trim().is_empty() =>
-                            {
-                                Some(b.clone())
-                            }
-                            ContentBlock::ToolUse { .. } => Some(b.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    if text_blocks.is_empty() {
-                        None
-                    } else {
-                        Some(Message::Assistant {
-                            content: Content::Multiple(text_blocks),
-                        })
+                    Content::Multiple(blocks) => {
+                        let text_blocks: Vec<ContentBlock> = blocks
+                            .iter()
+                            .filter_map(|b| match b {
+                                ContentBlock::Text { text } if !text.trim().is_empty() => {
+                                    Some(b.clone())
+                                }
+                                ContentBlock::Thinking { thinking, .. }
+                                    if !thinking.trim().is_empty() =>
+                                {
+                                    Some(b.clone())
+                                }
+                                ContentBlock::ToolUse { .. } => Some(b.clone()),
+                                _ => None,
+                            })
+                            .collect();
+                        if text_blocks.is_empty() {
+                            None
+                        } else {
+                            Some(Message::Assistant {
+                                content: Content::Multiple(text_blocks),
+                            })
+                        }
                     }
-                }
-            },
-        };
+                },
+            };
             // ⚠️ 带中断类型的消息**不得因正文为空被丢弃**：无产出中断
             // （纯思考期中止、应用关闭占位）正文本就是空的——阶段二起气泡锚点
             // 与小字都由 `interrupt_kind` 提供，丢弃会让该轮次从界面彻底消失。
-            let filtered_message = filtered_message
-                .or_else(|| interrupt_kind.as_ref().map(|_| msg.clone()));
+            let filtered_message =
+                filtered_message.or_else(|| interrupt_kind.as_ref().map(|_| msg.clone()));
             filtered_message.map(|message| (message_id, message, source, interrupt_kind))
         })
         .collect();
@@ -621,8 +630,9 @@ pub fn save_session(
         meta.total_input_tokens = meta.total_input_tokens.saturating_add(delta.input);
         meta.total_output_tokens = meta.total_output_tokens.saturating_add(delta.output);
         meta.total_cache_hit_tokens = meta.total_cache_hit_tokens.saturating_add(delta.cache_hit);
-        meta.total_cache_miss_tokens =
-            meta.total_cache_miss_tokens.saturating_add(delta.cache_miss);
+        meta.total_cache_miss_tokens = meta
+            .total_cache_miss_tokens
+            .saturating_add(delta.cache_miss);
     }
 
     let new_count = filtered_messages.len();
@@ -647,8 +657,10 @@ pub fn save_session(
         .unwrap_or_else(|err| panic!("保存 SQLite 会话 {} 失败: {}", id, err));
     let visible_sources: Vec<MessageSource> = filtered_memory.sources.clone();
     let visible_kinds: Vec<Option<String>> = filtered_memory.interrupt_kinds.clone();
-    let (visible_message_ids, visible_messages): (Vec<String>, Vec<Message>) =
-        filtered_memory.message_ids.iter().cloned()
+    let (visible_message_ids, visible_messages): (Vec<String>, Vec<Message>) = filtered_memory
+        .message_ids
+        .iter()
+        .cloned()
         .zip(filtered_memory.messages.iter().cloned())
         .unzip();
     // 同步前清理 session_messages 中已被压缩覆盖的孤儿行
@@ -698,7 +710,9 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
     Ok(memory)
 }
 
-pub fn list_visible_session_messages(id: &str) -> Result<Vec<repository::StoredSessionMessage>, String> {
+pub fn list_visible_session_messages(
+    id: &str,
+) -> Result<Vec<repository::StoredSessionMessage>, String> {
     repository::list_visible_session_messages(id)
 }
 
@@ -727,10 +741,7 @@ pub fn hide_session_messages_from_seq(
     repository::hide_session_messages_from_seq(session_id, seq, recalled)
 }
 
-pub fn delete_session_messages_from_seq(
-    session_id: &str,
-    seq: usize,
-) -> Result<(), String> {
+pub fn delete_session_messages_from_seq(session_id: &str, seq: usize) -> Result<(), String> {
     repository::delete_session_messages_from_seq(session_id, seq)
 }
 
@@ -982,14 +993,23 @@ mod tests {
             strip_extended_path_prefix(r"C:\Users\test\project"),
             r"C:\Users\test\project"
         );
-        assert_eq!(strip_extended_path_prefix("/home/user/project"), "/home/user/project");
+        assert_eq!(
+            strip_extended_path_prefix("/home/user/project"),
+            "/home/user/project"
+        );
         assert_eq!(strip_extended_path_prefix(""), "");
     }
 
     #[test]
     fn only_strips_the_exact_prefix() {
         // 前缀必须精确匹配，避免误伤普通以反斜杠开头的路径
-        assert_eq!(strip_extended_path_prefix(r"\\?\UNC\server\share"), r"UNC\server\share");
-        assert_eq!(strip_extended_path_prefix(r"\?\C:\not_extended"), r"\?\C:\not_extended");
+        assert_eq!(
+            strip_extended_path_prefix(r"\\?\UNC\server\share"),
+            r"UNC\server\share"
+        );
+        assert_eq!(
+            strip_extended_path_prefix(r"\?\C:\not_extended"),
+            r"\?\C:\not_extended"
+        );
     }
 }

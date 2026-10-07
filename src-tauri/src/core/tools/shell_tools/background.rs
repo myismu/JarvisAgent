@@ -1,4 +1,4 @@
-﻿//! # background.rs — 后台执行与状态查询
+//! # background.rs — 后台执行与状态查询
 //!
 //! 提供长周期 Shell 任务的后台执行和状态检查功能。
 //!
@@ -49,7 +49,10 @@ pub async fn background_run(
     if let Some(ref workspace) = ws {
         if let Some(ref d) = dir {
             if !is_within_workspace(d, Some(workspace)) {
-                return framework::ToolCallResult::blocked(format!("沙箱限制：指定的目录 '{}' 不在沙箱内。", d));
+                return framework::ToolCallResult::blocked(format!(
+                    "沙箱限制：指定的目录 '{}' 不在沙箱内。",
+                    d
+                ));
             }
         }
     }
@@ -61,8 +64,13 @@ pub async fn background_run(
         ws.map(|p| p.to_string_lossy().into_owned())
     };
 
-    let output = crate::infra::background::BackgroundManager::run(app.clone(), cmd.to_string(), exec_dir, Some(session_id.to_string()))
-        .await;
+    let output = crate::infra::background::BackgroundManager::run(
+        app.clone(),
+        cmd.to_string(),
+        exec_dir,
+        Some(session_id.to_string()),
+    )
+    .await;
     framework::ToolCallResult::ok(output)
 }
 

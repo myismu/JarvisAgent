@@ -162,11 +162,14 @@ where
                 if is_locked && attempt < max_retries {
                     println!(
                         "[ROLLBACK] File locked (attempt {}/{}), retrying in {}ms...",
-                        attempt + 1, max_retries, 300 * (attempt + 1)
+                        attempt + 1,
+                        max_retries,
+                        300 * (attempt + 1)
                     );
                     tokio::time::sleep(std::time::Duration::from_millis(
                         300 * (attempt as u64 + 1),
-                    )).await;
+                    ))
+                    .await;
                     last_err = Some(e);
                     continue;
                 }
@@ -602,7 +605,9 @@ impl AtomicFileRollback {
 
     /// 执行原子回滚（先写入临时目录，再批量重命名，遇文件锁自动重试）
     pub async fn execute(&self) -> Result<RollbackOutcome, ReplayError> {
-        use super::rollback_logger::{self, FileAction, FileOpRecord, FileOpStatus, RollbackPhase, RollbackSummary};
+        use super::rollback_logger::{
+            self, FileAction, FileOpRecord, FileOpStatus, RollbackPhase, RollbackSummary,
+        };
 
         let logger = rollback_logger::rollback_logger();
         let staging_dir = self.temp_dir.join(format!("staging-{}", Uuid::new_v4()));
@@ -623,7 +628,9 @@ impl AtomicFileRollback {
 
             let (action, size) = match &entry.action {
                 UndoAction::Create { content } => (FileAction::Create, Some(content.len() as u64)),
-                UndoAction::Update { new_content, .. } => (FileAction::Update, Some(new_content.len() as u64)),
+                UndoAction::Update { new_content, .. } => {
+                    (FileAction::Update, Some(new_content.len() as u64))
+                }
                 UndoAction::Delete { .. } => (FileAction::Delete, None),
             };
 
@@ -910,7 +917,11 @@ impl AtomicFileRollback {
         Ok(())
     }
 
-    pub fn load_undo_log(path: &PathBuf, target_dir: Option<PathBuf>, session_id: &str) -> Result<Self, ReplayError> {
+    pub fn load_undo_log(
+        path: &PathBuf,
+        target_dir: Option<PathBuf>,
+        session_id: &str,
+    ) -> Result<Self, ReplayError> {
         let json = fs::read_to_string(path)?;
         let undo_log: Vec<UndoEntry> = serde_json::from_str(&json)?;
         let actual_target = target_dir
@@ -955,7 +966,10 @@ mod sweep_tests {
     }
 
     fn known(paths: &[&std::path::Path]) -> std::collections::HashSet<String> {
-        paths.iter().map(|p| path_key(&p.to_string_lossy())).collect()
+        paths
+            .iter()
+            .map(|p| path_key(&p.to_string_lossy()))
+            .collect()
     }
 
     /// 只带"清理判据"的回滚上下文（回收站恢复清单为空）
@@ -1066,7 +1080,9 @@ mod sweep_tests {
             known_paths: known(&[&missing]),
             trash_restores: std::collections::HashMap::from([(
                 missing.to_string_lossy().to_string(),
-                root.join("no-such-trash-entry").to_string_lossy().to_string(),
+                root.join("no-such-trash-entry")
+                    .to_string_lossy()
+                    .to_string(),
             )]),
         };
 

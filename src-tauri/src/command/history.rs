@@ -21,9 +21,9 @@
 //! - 助手多轮回复合并显示；思考过程由前端折叠
 //! - 用户消息关联检查点 ID，支持前端回滚按钮
 
-use crate::infra::types::models::*;
 use crate::core::session;
 use crate::infra::state::state::*;
+use crate::infra::types::models::*;
 use std::collections::HashMap;
 
 #[derive(Clone)]
@@ -379,8 +379,6 @@ fn find_rollback_info(
     }
 }
 
-
-
 /// 判断该 source 是否属于"中断收尾消息"。
 ///
 /// ⚠️ 别据此断言它"不是模型正文" —— 新数据的正文块里装的恰恰是半截内容，
@@ -438,7 +436,6 @@ fn interrupt_notice_key(kind: Option<&str>) -> Option<&'static str> {
     })
 }
 
-
 /// 该来源的消息是否参与会话历史的界面渲染。
 ///
 /// 判据直接取 `MessageSource::rendered_in_ui()`（白名单是 `Chat | Interrupted`），
@@ -453,7 +450,6 @@ fn interrupt_notice_key(kind: Option<&str>) -> Option<&'static str> {
 fn is_renderable_source(source: MessageSource) -> bool {
     source.rendered_in_ui()
 }
-
 
 // ═══════════════════════════════════════════════════════════════
 //  新增：get_session_messages — 返回结构化 JSON 消息列表
@@ -517,7 +513,11 @@ async fn extract_session_messages_window(
     // 曾在此内联复制过一份无去重的实现，导致**每加载一次就多一条合并副本**
     // （实测"删掉再刷新，副本又回来"，且因未走到守卫分支连日志都不打印）。
     let active_run_id = ctx.active_run_id.lock().await.clone();
-    let _ = crate::command::session::ensure_session_recovered(session_id, &mut memory, active_run_id.as_deref());
+    let _ = crate::command::session::ensure_session_recovered(
+        session_id,
+        &mut memory,
+        active_run_id.as_deref(),
+    );
     *ctx.memory.lock().await = memory.clone();
 
     if memory.messages.is_empty() && session::session_messages_count(session_id).unwrap_or(0) == 0 {
@@ -550,7 +550,9 @@ async fn extract_session_messages_window(
             if let Some(message_id) = parse_snapshot_string(&snapshot, "trigger_user_message_id") {
                 by_message_id.insert(message_id, info);
             }
-            if let Some(trigger_index) = parse_snapshot_usize(&snapshot, "trigger_user_memory_index") {
+            if let Some(trigger_index) =
+                parse_snapshot_usize(&snapshot, "trigger_user_memory_index")
+            {
                 by_index.push((trigger_index, snapshot.created_at, snapshot.id));
             }
         }
@@ -566,10 +568,7 @@ async fn extract_session_messages_window(
         let (page, more) = session::load_visible_turns_page(session_id, before_seq, max_turns)?;
         (page, Some(more))
     } else {
-        (
-            session::list_visible_session_messages(session_id)?,
-            None,
-        )
+        (session::list_visible_session_messages(session_id)?, None)
     };
     let render_messages: Vec<_> = if stored_messages.is_empty() {
         memory
@@ -577,9 +576,20 @@ async fn extract_session_messages_window(
             .iter()
             .enumerate()
             .map(|(idx, message)| {
-                let source = memory.sources.get(idx).copied().unwrap_or(MessageSource::Chat);
+                let source = memory
+                    .sources
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(MessageSource::Chat);
                 let kind = memory.interrupt_kinds.get(idx).cloned().flatten();
-                (idx, memory.message_ids.get(idx).cloned(), None, message.clone(), source, kind)
+                (
+                    idx,
+                    memory.message_ids.get(idx).cloned(),
+                    None,
+                    message.clone(),
+                    source,
+                    kind,
+                )
             })
             .collect()
     } else {
@@ -646,8 +656,17 @@ async fn extract_session_messages_window(
 
                 if let Content::Multiple(blocks) = content {
                     for block in blocks {
-                        if let ContentBlock::ToolResult { tool_use_id, content: res_content } = block {
-                            append_tool_result(&mut pending_assistant, tool_use_id, res_content, current_ts);
+                        if let ContentBlock::ToolResult {
+                            tool_use_id,
+                            content: res_content,
+                        } = block
+                        {
+                            append_tool_result(
+                                &mut pending_assistant,
+                                tool_use_id,
+                                res_content,
+                                current_ts,
+                            );
                         }
                     }
                 }
@@ -669,7 +688,12 @@ async fn extract_session_messages_window(
                     result.push(SessionMessage {
                         role: "agent".to_string(),
                         // seq 稳定唯一：分页/全量、跨页都不会撞 key
-                        id: format!("agent_{}", last_seen_seq.map(|s| s.to_string()).unwrap_or_else(|| format!("m{}", result.len()))),
+                        id: format!(
+                            "agent_{}",
+                            last_seen_seq
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| format!("m{}", result.len()))
+                        ),
                         snapshot: Some(pending_assistant.clone()),
                         snapshot_id: None,
                         message_id: None,
@@ -680,16 +704,30 @@ async fn extract_session_messages_window(
                     pending_assistant = AgentTurnSnapshot::default();
                 }
 
-                let rollback_mode = if message.rollback_info.as_ref().map(|info| info.has_file_edits).unwrap_or(false) {
+                let rollback_mode = if message
+                    .rollback_info
+                    .as_ref()
+                    .map(|info| info.has_file_edits)
+                    .unwrap_or(false)
+                {
                     Some("both".to_string())
                 } else {
                     Some("session".to_string())
                 };
-                let rollback_checkpoint_id = message.rollback_info.as_ref().map(|info| info.checkpoint_id.clone());
+                let rollback_checkpoint_id = message
+                    .rollback_info
+                    .as_ref()
+                    .map(|info| info.checkpoint_id.clone());
 
                 result.push(SessionMessage {
                     role: "user".to_string(),
-                    id: format!("user_{}", message.seq.map(|s| s.to_string()).unwrap_or_else(|| format!("m{}", result.len()))),
+                    id: format!(
+                        "user_{}",
+                        message
+                            .seq
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| format!("m{}", result.len()))
+                    ),
                     snapshot: None,
                     snapshot_id: None,
                     message_id: message.message_id.clone(),
@@ -739,7 +777,12 @@ async fn extract_session_messages_window(
         }
         result.push(SessionMessage {
             role: "agent".to_string(),
-            id: format!("agent_{}", last_seen_seq.map(|s| s.to_string()).unwrap_or_else(|| format!("m{}", result.len()))),
+            id: format!(
+                "agent_{}",
+                last_seen_seq
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("m{}", result.len()))
+            ),
             snapshot: Some(pending_assistant),
             snapshot_id: None,
             message_id: None,
@@ -777,7 +820,10 @@ pub async fn get_session_messages(
     };
     if recovered {
         // 恢复出的增量已由闸门内统一落库；此处仅提示日志口径与恢复命令一致
-        println!("[JARVIS] get_session_messages：中断恢复已补回消息并落库（session {}）", session_id);
+        println!(
+            "[JARVIS] get_session_messages：中断恢复已补回消息并落库（session {}）",
+            session_id
+        );
     }
     extract_session_messages(&session_id, &session_manager, &registry).await
 }
@@ -812,12 +858,20 @@ pub async fn get_session_messages_paged(
         )
     };
     if recovered {
-        println!("[JARVIS] get_session_messages_paged：中断恢复已补回消息并落库（session {}）", session_id);
+        println!(
+            "[JARVIS] get_session_messages_paged：中断恢复已补回消息并落库（session {}）",
+            session_id
+        );
     }
     // limit 在此命令中语义为 **每页轮数**（默认 5 轮）
-    let (messages, has_more, oldest_seq) =
-        extract_session_messages_window(&session_id, &session_manager, &registry, before_seq, limit)
-            .await?;
+    let (messages, has_more, oldest_seq) = extract_session_messages_window(
+        &session_id,
+        &session_manager,
+        &registry,
+        before_seq,
+        limit,
+    )
+    .await?;
     Ok(PagedSessionMessages {
         messages,
         has_more,
@@ -854,11 +908,7 @@ mod renderable_source_tests {
             MessageSource::Inject,
             MessageSource::Placeholder,
         ] {
-            assert!(
-                !is_renderable_source(src),
-                "{:?} 不应参与界面渲染",
-                src
-            );
+            assert!(!is_renderable_source(src), "{:?} 不应参与界面渲染", src);
         }
     }
 }

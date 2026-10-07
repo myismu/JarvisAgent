@@ -1,8 +1,8 @@
-﻿use super::common::{optional_i32_vec, optional_string, task_delete_inner, task_id};
-use crate::infra::types::models::TaskStatus;
+use super::common::{optional_i32_vec, optional_string, task_delete_inner, task_id};
 use crate::core::orchestration::tasks::{TaskManager, TaskUpdateParams};
 use crate::core::tools::framework;
 use crate::core::tools::framework::registry::ToolDef;
+use crate::infra::types::models::TaskStatus;
 use serde_json::json;
 
 pub(super) fn tool_def() -> ToolDef {
@@ -113,12 +113,14 @@ pub async fn task_update(
                 framework::ToolCallResult::error(output.to_string())
             }
         }
-        Err(e) => framework::ToolCallResult::error(serde_json::json!({
-            "success": false,
-            "taskId": id,
-            "updatedFields": [],
-            "error": e
-        })
-        .to_string()),
+        Err(e) => framework::ToolCallResult::error(
+            serde_json::json!({
+                "success": false,
+                "taskId": id,
+                "updatedFields": [],
+                "error": e
+            })
+            .to_string(),
+        ),
     }
 }

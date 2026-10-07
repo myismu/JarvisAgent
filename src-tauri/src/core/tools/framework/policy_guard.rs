@@ -32,8 +32,8 @@
 use super::permission::{PermissionDecision, PermissionKind};
 use super::policy::{self, ApprovalMode, JudgementInput, Outcome, ToolClass};
 use crate::infra::state::state::{SessionAllowance, SessionContext};
-use std::collections::BTreeSet;
 use serde_json::Value;
+use std::collections::BTreeSet;
 use tauri::{Emitter, Manager};
 
 /// 会话内的"本轮"状态：只保留判定真正需要跨调用保持的东西。
@@ -150,7 +150,10 @@ mod tests {
             split_command_segments("npm install;; npm run dev"),
             ["npm install", "npm run dev"]
         );
-        assert_eq!(split_command_segments(r#"& "C:\x.ps1""#), [r#"& "C:\x.ps1""#]);
+        assert_eq!(
+            split_command_segments(r#"& "C:\x.ps1""#),
+            [r#"& "C:\x.ps1""#]
+        );
     }
 
     #[test]
@@ -224,13 +227,7 @@ mod tests {
     fn classes_without_session_allowance_have_no_key() {
         // 会话/应用控制是一次性动作且不在允许体系内；未登记分类的工具一律问
         // （原用 WorkspaceChange 举例，该类随 SetWorkspace 退役已移除）
-        assert!(allowance_keys_for(
-            Some(ToolClass::AppControl),
-            &json!({}),
-            &[],
-            None,
-        )
-        .is_empty());
+        assert!(allowance_keys_for(Some(ToolClass::AppControl), &json!({}), &[], None,).is_empty());
         assert!(allowance_keys_for(None, &json!({}), &[], None).is_empty());
     }
 
@@ -407,9 +404,7 @@ mod tests {
             &facts
         )
         .is_some());
-        assert!(
-            read_only_deny_reason("RunSubagentsSequentially", &json!({}), &facts).is_some()
-        );
+        assert!(read_only_deny_reason("RunSubagentsSequentially", &json!({}), &facts).is_some());
 
         // 任务清单不碰用户代码，只读保护下仍要能用（否则连规划都做不了）
         assert!(read_only_deny_reason("CreateTask", &json!({}), &facts).is_none());
@@ -420,14 +415,18 @@ mod tests {
     fn read_only_shell_only_allows_readonly_commands() {
         let readonly_cmd = facts_with(Some(ToolClass::RunCommand), true);
         let write_cmd = facts_with(Some(ToolClass::RunCommand), false);
-        assert!(
-            read_only_deny_reason("RunCommand", &json!({ "command": "git status" }), &readonly_cmd)
-                .is_none()
-        );
-        assert!(
-            read_only_deny_reason("RunCommand", &json!({ "command": "npm install" }), &write_cmd)
-                .is_some()
-        );
+        assert!(read_only_deny_reason(
+            "RunCommand",
+            &json!({ "command": "git status" }),
+            &readonly_cmd
+        )
+        .is_none());
+        assert!(read_only_deny_reason(
+            "RunCommand",
+            &json!({ "command": "npm install" }),
+            &write_cmd
+        )
+        .is_some());
         // 起后台服务即使用只读命令也拒（起服务本身就是状态改变）
         let bg = facts_with(Some(ToolClass::Background), true);
         assert!(read_only_deny_reason(
@@ -437,7 +436,6 @@ mod tests {
         )
         .is_some());
     }
-
 }
 
 /// 一次调用的事实（判定器与观察层共用）
@@ -474,11 +472,7 @@ impl PreparedFacts {
 }
 
 /// 采集判定事实（含更新"本轮改过哪些文件"）。观察层与执行前判定共用此函数。
-pub async fn prepare_facts(
-    ctx: &SessionContext,
-    tool: &str,
-    input: &Value,
-) -> PreparedFacts {
+pub async fn prepare_facts(ctx: &SessionContext, tool: &str, input: &Value) -> PreparedFacts {
     let policy = policy::policy_for(tool);
     let mut targets: Vec<String> = Vec::new();
     if let Some(policy) = policy {
@@ -578,7 +572,9 @@ fn inspect_existing_guards(
     input: &Value,
     workspace: Option<&std::path::Path>,
 ) -> ExistingGuardVerdict {
-    use crate::core::tools::shell_tools::{execution, readonly, security, types::SafetyResult, utils};
+    use crate::core::tools::shell_tools::{
+        execution, readonly, security, types::SafetyResult, utils,
+    };
 
     let command = input["command"].as_str().unwrap_or("").to_string();
     if command.trim().is_empty() {
@@ -698,10 +694,8 @@ const PREFIX_WIDENING_ALLOWED: &[&str] = &[
     // JS / TS 生态
     "npm", "pnpm", "yarn", "bun", "tsc", "vite", "vitest", "jest", "eslint", "prettier",
     // Rust / Go / .NET / JVM
-    "cargo", "rustc", "go", "dotnet", "mvn", "gradle",
-    // Python 生态
-    "pytest", "ruff", "mypy", "uv", "poetry",
-    // 构建系统
+    "cargo", "rustc", "go", "dotnet", "mvn", "gradle", // Python 生态
+    "pytest", "ruff", "mypy", "uv", "poetry", // 构建系统
     "make", "cmake", "ninja",
 ];
 
@@ -883,21 +877,19 @@ fn allowance_keys_for(
 /// 3. 会话没有项目（非沙箱）→ 退回该目标所在目录
 ///
 /// 返回 `(范围键, 展示路径)`。
-fn file_scope_for(
-    first: &str,
-    workspace: Option<&std::path::Path>,
-) -> Option<(String, String)> {
+fn file_scope_for(first: &str, workspace: Option<&std::path::Path>) -> Option<(String, String)> {
     let target = std::path::Path::new(first);
-    let dir = target
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_default();
+    let dir = target.parent().map(|p| p.to_path_buf()).unwrap_or_default();
 
     if let Some(ws) = workspace {
         if super::permission::is_within_workspace(first, Some(ws)) {
             return Some((normalize_dir_key(ws), normalize_dir_key(ws)));
         }
-        let resolved_dir = if dir.is_absolute() { dir } else { ws.join(&dir) };
+        let resolved_dir = if dir.is_absolute() {
+            dir
+        } else {
+            ws.join(&dir)
+        };
         return Some((
             normalize_dir_key(&resolved_dir),
             normalize_dir_key(&resolved_dir),
@@ -932,7 +924,10 @@ pub fn scope_covers(granted: &str, candidate: &str) -> bool {
 /// 为什么需要：范围键是**字符串精确比较**。工具参数里写成 `src/a.ts` 与 `src//a.ts`
 /// 会算出带不带尾斜杠的两种目录串，于是"同一个目录"被当成两个范围，用户要重复授权。
 fn normalize_dir_key(path: &std::path::Path) -> String {
-    let text = path.to_string_lossy().trim_start_matches(r"\\?\").to_string();
+    let text = path
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .to_string();
     let trimmed = text.trim_end_matches(['\\', '/']);
     // 别把 `E:\` 修成 `E:`（后者是"当前目录"的意思，完全不同的路径）
     if trimmed.is_empty() || trimmed.ends_with(':') {
@@ -994,7 +989,9 @@ pub async fn grant_session_allowance(
     // 只有一部分被覆盖时不该被放行，而这一轮 grant 可能只是补齐最后一把。
     let granted_now: Vec<(String, String)> = {
         let list = ctx.session_allowances.lock().await;
-        list.iter().map(|a| (a.kind.clone(), a.scope.clone())).collect()
+        list.iter()
+            .map(|a| (a.kind.clone(), a.scope.clone()))
+            .collect()
     };
     let swept: Vec<(String, tokio::sync::oneshot::Sender<PermissionDecision>)> = {
         let mut perms = ctx.pending_permissions.lock().await;
@@ -1003,9 +1000,10 @@ pub async fn grant_session_allowance(
             .filter(|(_, entry)| {
                 entry.kind == PermissionKind::Tool
                     && !entry.allowance.is_empty()
-                    && entry.allowance.iter().all(|(k, s)| {
-                        granted_now.iter().any(|(gk, gs)| gk == k && gs == s)
-                    })
+                    && entry
+                        .allowance
+                        .iter()
+                        .all(|(k, s)| granted_now.iter().any(|(gk, gs)| gk == k && gs == s))
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -1230,10 +1228,7 @@ pub async fn enforce(
     // 这是它相对"规划模式"的关键差别——不看 work_mode，所以 SwitchWorkMode 也绕不过。
     if ctx.read_only_enabled().await {
         if let Some(reason) = read_only_deny_reason(tool, input, &facts) {
-            println!(
-                "[JARVIS] 只读保护拦截：工具={} 原因={}",
-                tool, reason
-            );
+            println!("[JARVIS] 只读保护拦截：工具={} 原因={}", tool, reason);
             return Some(super::ToolCallResult::blocked(format!(
                 "{}\n不要换等价写法重试；确实需要改动，请让用户先关掉只读保护开关。",
                 reason
@@ -1255,7 +1250,10 @@ pub async fn enforce(
             // 判据与 judge 规则 4 的放行分支同口径：档位 AutoApprove + 命令类 + 无警示。
             if mode == ApprovalMode::AutoApprove
                 && !facts.command_is_readonly
-                && facts.class.map(|c| c.auto_approved_in_auto_mode()).unwrap_or(false)
+                && facts
+                    .class
+                    .map(|c| c.auto_approved_in_auto_mode())
+                    .unwrap_or(false)
                 && facts.warning.is_none()
             {
                 super::permission_audit_logger::permission_audit_logger().log_decision(
@@ -1264,7 +1262,8 @@ pub async fn enforce(
                     tool,
                     facts.allowance.first().map(|k| k.kind),
                     facts.allowance.first().map(|k| k.scope.as_str()),
-                    super::permission_audit_logger::ACTION_AUTO_APPROVE,                    None,
+                    super::permission_audit_logger::ACTION_AUTO_APPROVE,
+                    None,
                 );
             }
             None
@@ -1356,14 +1355,8 @@ pub async fn enforce(
                 PermissionDecision::AllowSession => {
                     // 链式命令：一次点击把各段的键都登记（用户看到的是"同时登记以下范围"）
                     for k in &keys {
-                        grant_session_allowance(
-                            app,
-                            session_id,
-                            k.kind,
-                            &k.scope,
-                            k.label.clone(),
-                        )
-                        .await;
+                        grant_session_allowance(app, session_id, k.kind, &k.scope, k.label.clone())
+                            .await;
                     }
                     audit.log_decision(
                         session_id,

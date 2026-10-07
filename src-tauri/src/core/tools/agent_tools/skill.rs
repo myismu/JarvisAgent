@@ -1,4 +1,4 @@
-﻿//! # skill.rs — 技能加载工具
+//! # skill.rs — 技能加载工具
 //!
 //! 按名称从 skills 目录加载技能知识文件。
 //!
@@ -44,9 +44,15 @@ pub async fn load_skill(
         Some(skill) => {
             let active = activations.get(&skill.name).copied().unwrap_or(true);
             if !active {
-                return framework::ToolCallResult::error(format!("技能 '{}' 未激活，请在技能管理中启用后再使用。", skill_name));
+                return framework::ToolCallResult::error(format!(
+                    "技能 '{}' 未激活，请在技能管理中启用后再使用。",
+                    skill_name
+                ));
             }
-            framework::ToolCallResult::ok(format!("<skill name=\"{}\">\n{}\n</skill>", skill.name, skill.body))
+            framework::ToolCallResult::ok(format!(
+                "<skill name=\"{}\">\n{}\n</skill>",
+                skill.name, skill.body
+            ))
         }
         None => {
             let available: Vec<String> = skills

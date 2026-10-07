@@ -23,11 +23,11 @@ use super::common::{
     resolve_path, unc_path_rejection, MAX_FILE_SIZE_BYTES,
 };
 use super::diff::compute_diff;
-use crate::core::tools::notebook_tools::notebook_guard::{
-    is_notebook_path, looks_like_notebook_json, notebook_text_edit_rejection,
-};
 use super::workspace::{
     get_workspace, record_patch_to_snapshot, resolve_exec_path, sandbox_missing_hint,
+};
+use crate::core::tools::notebook_tools::notebook_guard::{
+    is_notebook_path, looks_like_notebook_json, notebook_text_edit_rejection,
 };
 
 struct SingleEdit {
@@ -38,7 +38,8 @@ struct SingleEdit {
 
 /// 解析 old_text 参数（别名兼容）
 fn resolve_old_text(input: &serde_json::Value) -> String {
-    input["old_text"].as_str()
+    input["old_text"]
+        .as_str()
         .or_else(|| input["old_str"].as_str())
         .or_else(|| input["old_string"].as_str())
         .or_else(|| input["old_content"].as_str())
@@ -50,7 +51,8 @@ fn resolve_old_text(input: &serde_json::Value) -> String {
 /// 解析 new_text 参数（别名兼容）
 fn resolve_new_text(input: &serde_json::Value) -> String {
     normalize_line_endings(
-        input["new_text"].as_str()
+        input["new_text"]
+            .as_str()
             .or_else(|| input["new_str"].as_str())
             .or_else(|| input["new_string"].as_str())
             .or_else(|| input["new_content"].as_str())
@@ -62,11 +64,13 @@ fn resolve_new_text(input: &serde_json::Value) -> String {
 /// 解析编辑列表：优先 `edits` 数组，否则退到单条 `old_text`/`new_text`
 fn resolve_edits(input: &serde_json::Value) -> Vec<SingleEdit> {
     if let Some(arr) = input["edits"].as_array() {
-        arr.iter().map(|item| SingleEdit {
-            old_text: resolve_old_text(item),
-            new_text: resolve_new_text(item),
-            replace_all: item["replace_all"].as_bool().unwrap_or(false),
-        }).collect()
+        arr.iter()
+            .map(|item| SingleEdit {
+                old_text: resolve_old_text(item),
+                new_text: resolve_new_text(item),
+                replace_all: item["replace_all"].as_bool().unwrap_or(false),
+            })
+            .collect()
     } else {
         vec![SingleEdit {
             old_text: resolve_old_text(input),
@@ -84,7 +88,11 @@ fn validate_single_edit<'a>(
     path: &str,
     is_batch: bool,
 ) -> Result<usize, String> {
-    let label = if is_batch { format!("edits[{}]", idx) } else { "old_text".to_string() };
+    let label = if is_batch {
+        format!("edits[{}]", idx)
+    } else {
+        "old_text".to_string()
+    };
 
     if edit.old_text.is_empty() {
         return Err(format!(
@@ -132,19 +140,24 @@ fn validate_single_edit<'a>(
                 let ctx_end = (line_num + old_lines_count + 2).min(lines.len());
                 context_msg.push_str(&format!(
                     "--- 匹配 {} (第 {} 行附近) ---\n",
-                    m_idx + 1, line_num + 1
+                    m_idx + 1,
+                    line_num + 1
                 ));
                 for (i, line) in lines[ctx_start..ctx_end].iter().enumerate() {
                     let ln = ctx_start + i + 1;
                     let marker = if ln >= line_num + 1 && ln <= line_num + old_lines_count {
-                        ">>>" } else { "   " };
+                        ">>>"
+                    } else {
+                        "   "
+                    };
                     context_msg.push_str(&format!("{} {:4} | {}\n", marker, ln, line));
                 }
                 context_msg.push('\n');
                 search_from = absolute_pos + edit.old_text.len();
             }
         }
-        context_msg.push_str("请提供更多上下文使 old_text 唯一，或设置 replace_all=true 替换所有匹配。");
+        context_msg
+            .push_str("请提供更多上下文使 old_text 唯一，或设置 replace_all=true 替换所有匹配。");
         return Err(context_msg);
     }
 
@@ -176,7 +189,9 @@ pub async fn edit_file(
     let is_batch = edits.len() > 1;
 
     if edits.is_empty() {
-        return framework::ToolCallResult::error("编辑失败: 缺少 old_text 或 edits 参数".to_string());
+        return framework::ToolCallResult::error(
+            "编辑失败: 缺少 old_text 或 edits 参数".to_string(),
+        );
     }
 
     if is_unc_path(&path) {
@@ -192,7 +207,9 @@ pub async fn edit_file(
         return framework::ToolCallResult::error(notebook_text_edit_rejection(&path));
     }
 
-    let read_mtime = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
+    let read_mtime = std::fs::metadata(&path)
+        .ok()
+        .and_then(|m| m.modified().ok());
 
     match read_text_preserve_encoding(&path) {
         Ok(decoded) => {
@@ -249,7 +266,9 @@ pub async fn edit_file(
 
             let bytes = match encode_text_preserve_encoding(&updated_content, encoding) {
                 Ok(bytes) => bytes,
-                Err(e) => return framework::ToolCallResult::error(format!("编辑并保存失败: {}", e)),
+                Err(e) => {
+                    return framework::ToolCallResult::error(format!("编辑并保存失败: {}", e))
+                }
             };
 
             match std::fs::write(&path, bytes) {
@@ -262,7 +281,12 @@ pub async fn edit_file(
                         Some(compute_diff(&content, &updated_content)),
                     );
                     let msg = if is_batch {
-                        Some(format!("批量编辑 {} 处 → {} ({} 条)", total_replacements, path, edits.len()))
+                        Some(format!(
+                            "批量编辑 {} 处 → {} ({} 条)",
+                            total_replacements,
+                            path,
+                            edits.len()
+                        ))
                     } else if total_replacements > 1 {
                         Some(format!("全局替换 {} 处 → {}", total_replacements, path))
                     } else {
@@ -273,9 +297,17 @@ pub async fn edit_file(
                     record_file_read(app, session_id, &path, &updated_content).await;
 
                     if is_batch {
-                        framework::ToolCallResult::ok(format!("成功: 在 {} 中批量替换了 {} 处（{} 条编辑）", path, total_replacements, edits.len()))
+                        framework::ToolCallResult::ok(format!(
+                            "成功: 在 {} 中批量替换了 {} 处（{} 条编辑）",
+                            path,
+                            total_replacements,
+                            edits.len()
+                        ))
                     } else if total_replacements > 1 {
-                        framework::ToolCallResult::ok(format!("成功: 在 {} 中替换了 {} 处匹配", path, total_replacements))
+                        framework::ToolCallResult::ok(format!(
+                            "成功: 在 {} 中替换了 {} 处匹配",
+                            path, total_replacements
+                        ))
                     } else {
                         framework::ToolCallResult::ok(format!("成功编辑 {}", path))
                     }
@@ -349,8 +381,16 @@ mod tests {
     fn batch_edit_replaces_all_in_order() {
         let content = "header\nbody\nfooter";
         let edits = vec![
-            super::SingleEdit { old_text: "header".into(), new_text: "HEAD".into(), replace_all: false },
-            super::SingleEdit { old_text: "footer".into(), new_text: "FOOT".into(), replace_all: false },
+            super::SingleEdit {
+                old_text: "header".into(),
+                new_text: "HEAD".into(),
+                replace_all: false,
+            },
+            super::SingleEdit {
+                old_text: "footer".into(),
+                new_text: "FOOT".into(),
+                replace_all: false,
+            },
         ];
         let result = super::apply_edits(content, &edits);
         assert_eq!(result, "HEAD\nbody\nFOOT");
@@ -359,9 +399,11 @@ mod tests {
     #[test]
     fn batch_edit_with_replace_all() {
         let content = "a a a";
-        let edits = vec![
-            super::SingleEdit { old_text: "a".into(), new_text: "b".into(), replace_all: true },
-        ];
+        let edits = vec![super::SingleEdit {
+            old_text: "a".into(),
+            new_text: "b".into(),
+            replace_all: true,
+        }];
         let result = super::apply_edits(content, &edits);
         assert_eq!(result, "b b b");
     }

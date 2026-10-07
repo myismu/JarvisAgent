@@ -61,7 +61,6 @@ struct ReferenceCandidate {
     kind: ReferenceKind,
 }
 
-
 fn parse_kind(kind: Option<&str>) -> SymbolKind {
     match kind.unwrap_or("any").to_lowercase().as_str() {
         "function" => SymbolKind::Function,
@@ -134,27 +133,71 @@ fn detect_symbol_in_line(path: &Path, line: &str, symbol: &str) -> Option<(Symbo
         .to_lowercase();
 
     let ts_patterns = [
-        (r"^(?:export\s+)?(?:async\s+)?function\s+{symbol}\b", SymbolKind::Function, 95),
-        (r"^(?:export\s+)?(?:const|let|var)\s+{symbol}\b", SymbolKind::Variable, 90),
+        (
+            r"^(?:export\s+)?(?:async\s+)?function\s+{symbol}\b",
+            SymbolKind::Function,
+            95,
+        ),
+        (
+            r"^(?:export\s+)?(?:const|let|var)\s+{symbol}\b",
+            SymbolKind::Variable,
+            90,
+        ),
         (r"^(?:export\s+)?class\s+{symbol}\b", SymbolKind::Class, 95),
-        (r"^(?:export\s+)?interface\s+{symbol}\b", SymbolKind::Type, 95),
+        (
+            r"^(?:export\s+)?interface\s+{symbol}\b",
+            SymbolKind::Type,
+            95,
+        ),
         (r"^(?:export\s+)?type\s+{symbol}\b", SymbolKind::Type, 95),
         (r"^(?:export\s+)?enum\s+{symbol}\b", SymbolKind::Type, 90),
     ];
     let rust_patterns = [
-        (r"^(?:pub(?:\([^)]*\))?\s+)?fn\s+{symbol}\b", SymbolKind::Function, 95),
-        (r"^(?:pub(?:\([^)]*\))?\s+)?struct\s+{symbol}\b", SymbolKind::Type, 95),
-        (r"^(?:pub(?:\([^)]*\))?\s+)?enum\s+{symbol}\b", SymbolKind::Type, 95),
-        (r"^(?:pub(?:\([^)]*\))?\s+)?trait\s+{symbol}\b", SymbolKind::Type, 95),
-        (r"^(?:pub(?:\([^)]*\))?\s+)?mod\s+{symbol}\b", SymbolKind::Type, 85),
+        (
+            r"^(?:pub(?:\([^)]*\))?\s+)?fn\s+{symbol}\b",
+            SymbolKind::Function,
+            95,
+        ),
+        (
+            r"^(?:pub(?:\([^)]*\))?\s+)?struct\s+{symbol}\b",
+            SymbolKind::Type,
+            95,
+        ),
+        (
+            r"^(?:pub(?:\([^)]*\))?\s+)?enum\s+{symbol}\b",
+            SymbolKind::Type,
+            95,
+        ),
+        (
+            r"^(?:pub(?:\([^)]*\))?\s+)?trait\s+{symbol}\b",
+            SymbolKind::Type,
+            95,
+        ),
+        (
+            r"^(?:pub(?:\([^)]*\))?\s+)?mod\s+{symbol}\b",
+            SymbolKind::Type,
+            85,
+        ),
         (r"^macro_rules!\s+{symbol}\b", SymbolKind::Function, 85),
     ];
     let generic_patterns = [
         (r"^def\s+{symbol}\b", SymbolKind::Function, 90),
         (r"^class\s+{symbol}\b", SymbolKind::Class, 90),
-        (r"^func\s+(?:\([^)]*\)\s*)?{symbol}\b", SymbolKind::Function, 90),
-        (r"^(?:public|private|protected)?\s*(?:static\s+)?class\s+{symbol}\b", SymbolKind::Class, 85),
-        (r"^(?:public|private|protected)?\s*(?:static\s+)?(?:async\s+)?[\w<>\[\], ?]+\s+{symbol}\s*\(", SymbolKind::Function, 75),
+        (
+            r"^func\s+(?:\([^)]*\)\s*)?{symbol}\b",
+            SymbolKind::Function,
+            90,
+        ),
+        (
+            r"^(?:public|private|protected)?\s*(?:static\s+)?class\s+{symbol}\b",
+            SymbolKind::Class,
+            85,
+        ),
+        (
+            r"^(?:public|private|protected)?\s*(?:static\s+)?(?:async\s+)?[\w<>\[\], ?]+\s+{symbol}\s*\(",
+            SymbolKind::Function,
+            75,
+        ),
     ];
 
     match ext.as_str() {
@@ -324,11 +367,9 @@ fn find_symbol_candidates(
 
 fn find_symbol_in_file(path: &Path, symbol: &str) -> Option<(usize, SymbolKind, u8)> {
     let decoded = read_text_preserve_encoding(path).ok()?;
-    decoded
-        .content
-        .lines()
-        .enumerate()
-        .find_map(|(idx, line)| detect_symbol_in_line(path, line, symbol).map(|(kind, confidence)| (idx, kind, confidence)))
+    decoded.content.lines().enumerate().find_map(|(idx, line)| {
+        detect_symbol_in_line(path, line, symbol).map(|(kind, confidence)| (idx, kind, confidence))
+    })
 }
 
 fn leading_indent(line: &str) -> usize {
@@ -376,7 +417,9 @@ pub async fn find_references(
 ) -> framework::ToolCallResult {
     let symbol = input["symbol"].as_str().unwrap_or("").trim();
     if symbol.is_empty() {
-        return framework::ToolCallResult::error("FindReferences 错误: symbol 不能为空。".to_string());
+        return framework::ToolCallResult::error(
+            "FindReferences 错误: symbol 不能为空。".to_string(),
+        );
     }
 
     let dir = input["dir"].as_str().unwrap_or(".");
@@ -399,7 +442,9 @@ pub async fn find_references(
     let include_patterns = input_patterns(input, "include");
     let exclude_patterns = input_patterns(input, "exclude");
     let ignore_dirs = input_string_list(input, "ignore_dirs");
-    let file_type = input["type"].as_str().or_else(|| input["file_type"].as_str());
+    let file_type = input["type"]
+        .as_str()
+        .or_else(|| input["file_type"].as_str());
     let options = SymbolSearchOptions {
         include_patterns: &include_patterns,
         exclude_patterns: &exclude_patterns,
@@ -411,7 +456,11 @@ pub async fn find_references(
         return framework::ToolCallResult::ok(format!("未找到符号引用: {}", symbol));
     }
 
-    let mut result = format!("Found {} occurrence(s) for symbol '{}':\n", candidates.len(), symbol);
+    let mut result = format!(
+        "Found {} occurrence(s) for symbol '{}':\n",
+        candidates.len(),
+        symbol
+    );
     for candidate in candidates {
         result.push_str(&format!(
             "{}:{} [{}] {}\n",
@@ -455,7 +504,9 @@ pub async fn find_symbol(
     let include_patterns = input_patterns(input, "include");
     let exclude_patterns = input_patterns(input, "exclude");
     let ignore_dirs = input_string_list(input, "ignore_dirs");
-    let file_type = input["type"].as_str().or_else(|| input["file_type"].as_str());
+    let file_type = input["type"]
+        .as_str()
+        .or_else(|| input["file_type"].as_str());
     let options = SymbolSearchOptions {
         include_patterns: &include_patterns,
         exclude_patterns: &exclude_patterns,
@@ -467,7 +518,11 @@ pub async fn find_symbol(
         return framework::ToolCallResult::ok(format!("未找到符号定义: {}", symbol));
     }
 
-    let mut result = format!("Found {} candidate(s) for symbol '{}':\n", candidates.len(), symbol);
+    let mut result = format!(
+        "Found {} candidate(s) for symbol '{}':\n",
+        candidates.len(),
+        symbol
+    );
     for candidate in candidates {
         result.push_str(&format!(
             "{}:{} [{} confidence={}] {}\n",
@@ -509,7 +564,9 @@ pub async fn code_search(
     let mut include_patterns = input_patterns(input, "include");
     let exclude_patterns = input_patterns(input, "exclude");
     let ignore_dirs = input_string_list(input, "ignore_dirs");
-    let file_type = input["type"].as_str().or_else(|| input["file_type"].as_str());
+    let file_type = input["type"]
+        .as_str()
+        .or_else(|| input["file_type"].as_str());
     if include_patterns.is_empty() {
         include_patterns.push("**/*".to_string());
     }
@@ -529,13 +586,8 @@ pub async fn code_search(
     files.retain(|path| passes_options(path, &search_dir, &options));
     files.sort_by_key(|path| search_path_rank(path));
 
-    let symbol_candidates = find_symbol_candidates(
-        &search_dir,
-        query,
-        SymbolKind::Any,
-        limit,
-        &options,
-    );
+    let symbol_candidates =
+        find_symbol_candidates(&search_dir, query, SymbolKind::Any, limit, &options);
 
     let query_lower = query.to_lowercase();
     let mut text_matches = Vec::new();
@@ -605,7 +657,9 @@ pub async fn read_symbol(
     let path = input["path"].as_str().unwrap_or("");
     let symbol = input["symbol"].as_str().unwrap_or("").trim();
     if path.is_empty() || symbol.is_empty() {
-        return framework::ToolCallResult::error("ReadSymbol 错误: path 和 symbol 不能为空。".to_string());
+        return framework::ToolCallResult::error(
+            "ReadSymbol 错误: path 和 symbol 不能为空。".to_string(),
+        );
     }
 
     let ws = get_workspace(app, session_id).await;
@@ -665,7 +719,8 @@ mod tests {
     #[test]
     fn detects_typescript_function() {
         let path = Path::new("src/store.ts");
-        let detected = detect_symbol_in_line(path, "export function loadSession() {}", "loadSession");
+        let detected =
+            detect_symbol_in_line(path, "export function loadSession() {}", "loadSession");
         assert_eq!(detected, Some((SymbolKind::Function, 95)));
     }
 
@@ -688,7 +743,11 @@ mod tests {
             Some(ReferenceKind::PossibleReference)
         );
         assert_eq!(
-            classify_reference(path, "import { loadSession } from './session'", "loadSession"),
+            classify_reference(
+                path,
+                "import { loadSession } from './session'",
+                "loadSession"
+            ),
             Some(ReferenceKind::ImportExport)
         );
     }

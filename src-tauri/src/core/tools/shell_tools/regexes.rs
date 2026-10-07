@@ -85,8 +85,16 @@ pub fn recursive_listing_re() -> &'static Regex {
 /// 检查递归列目录命令是否排除了依赖目录
 pub fn has_dependency_exclusion(cmd: &str) -> bool {
     let exclusions = [
-        "node_modules", ".git", "target", "dist", "build",
-        "__pycache__", ".next", ".nuxt", "vendor", "bower_components",
+        "node_modules",
+        ".git",
+        "target",
+        "dist",
+        "build",
+        "__pycache__",
+        ".next",
+        ".nuxt",
+        "vendor",
+        "bower_components",
     ];
     let lower = cmd.to_lowercase();
     exclusions.iter().any(|d| lower.contains(d))

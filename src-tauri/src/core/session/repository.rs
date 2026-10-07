@@ -13,13 +13,11 @@
 //! - Internal: `crate::infra::db`, `crate::infra::types::models`
 //! - External: `rusqlite`, `serde`
 
-use std::collections::HashMap;
 use rusqlite::{params, OptionalExtension, Row};
+use std::collections::HashMap;
 
-use crate::infra::types::models::{
-    Message, MessageSource, SessionContextSnapshot, SessionMemory,
-};
 use crate::core::session::{SessionMeta, SessionTokenTotals};
+use crate::infra::types::models::{Message, MessageSource, SessionContextSnapshot, SessionMemory};
 
 #[derive(Debug, Clone)]
 pub struct StoredSessionMessage {
@@ -236,7 +234,14 @@ pub fn append_or_upsert_session_messages(
                     "UPDATE session_messages
                      SET message_id = ?3, updated_at = ?4, source = ?5, interrupt_kind = ?6
                      WHERE session_id = ?1 AND seq = ?2",
-                    params![session_id, seq, message_id, now as i64, source, interrupt_kind],
+                    params![
+                        session_id,
+                        seq,
+                        message_id,
+                        now as i64,
+                        source,
+                        interrupt_kind
+                    ],
                 )
                 .map_err(|e| e.to_string())?;
                 seq
@@ -289,7 +294,9 @@ pub fn append_or_upsert_session_messages(
 const SESSION_MESSAGE_COLUMNS: &str = "message_id, seq, role, content_json, created_at, \
      updated_at, recalled_at, hidden_at, source, interrupt_kind";
 
-pub fn list_visible_session_messages(session_id: &str) -> Result<Vec<StoredSessionMessage>, String> {
+pub fn list_visible_session_messages(
+    session_id: &str,
+) -> Result<Vec<StoredSessionMessage>, String> {
     crate::infra::db::with_connection(|conn| {
         let mut stmt = conn
             .prepare(&format!(
@@ -387,9 +394,7 @@ fn is_turn_start_message(stored: &StoredSessionMessage) -> bool {
 /// 与渲染层 `user_display_content` 等价的轻量判定：用户消息里是否有可渲染内容
 /// （Text 文本或 Image 图片——带图消息可能只有 Image 块）。
 /// （tool_result 型 user 消息只携带工具结果块，没有用户输入内容，不构成轮起点。）
-fn user_display_content_for_paging(
-    content: &crate::infra::types::models::Content,
-) -> String {
+fn user_display_content_for_paging(content: &crate::infra::types::models::Content) -> String {
     use crate::infra::types::models::ContentBlock;
     match content {
         crate::infra::types::models::Content::Single(text) => text.clone(),
@@ -579,10 +584,12 @@ pub fn delete_session_messages_by_source(
     crate::infra::db::with_connection(|conn| {
         let mut deleted = 0usize;
         for src in sources {
-            deleted += conn.execute(
-                "DELETE FROM session_messages WHERE session_id = ?1 AND source = ?2",
-                params![session_id, src.as_db()],
-            ).map_err(|e| e.to_string())?;
+            deleted += conn
+                .execute(
+                    "DELETE FROM session_messages WHERE session_id = ?1 AND source = ?2",
+                    params![session_id, src.as_db()],
+                )
+                .map_err(|e| e.to_string())?;
         }
         Ok(deleted)
     })
@@ -590,20 +597,26 @@ pub fn delete_session_messages_by_source(
 
 /// 隐藏 session_messages 中已不在 memory.message_ids 里的孤儿行
 /// 压缩后 message_ids 被替换为新ID，旧行需要标记 hidden 以保持两表一致
-pub fn hide_orphan_session_messages(session_id: &str, alive_message_ids: &[String]) -> Result<usize, String> {
+pub fn hide_orphan_session_messages(
+    session_id: &str,
+    alive_message_ids: &[String],
+) -> Result<usize, String> {
     crate::infra::db::with_connection(|conn| {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
         // 将不在 alive_message_ids 中且未被隐藏的行标记 hidden_at
-        let placeholders: Vec<String> = alive_message_ids.iter().enumerate()
+        let placeholders: Vec<String> = alive_message_ids
+            .iter()
+            .enumerate()
             .map(|(i, _)| format!("?{}", i + 3))
             .collect();
         let sql = if alive_message_ids.is_empty() {
             "UPDATE session_messages
              SET hidden_at = COALESCE(hidden_at, ?1), updated_at = ?2
-             WHERE session_id = ?3 AND hidden_at IS NULL".to_string()
+             WHERE session_id = ?3 AND hidden_at IS NULL"
+                .to_string()
         } else {
             format!(
                 "UPDATE session_messages
@@ -620,11 +633,12 @@ pub fn hide_orphan_session_messages(session_id: &str, alive_message_ids: &[Strin
         for id in alive_message_ids {
             params.push(Box::new(id.clone()));
         }
-        let affected = conn.execute(
-            &sql,
-            rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
-        )
-        .map_err(|e| e.to_string())?;
+        let affected = conn
+            .execute(
+                &sql,
+                rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+            )
+            .map_err(|e| e.to_string())?;
         Ok(affected)
     })
 }
@@ -688,7 +702,11 @@ fn stored_session_message_from_row(row: &Row<'_>) -> rusqlite::Result<StoredSess
                     rusqlite::types::Type::Text,
                     Box::new(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        format!("{}（message_id={}）", msg, row.get::<_, String>("message_id").unwrap_or_default()),
+                        format!(
+                            "{}（message_id={}）",
+                            msg,
+                            row.get::<_, String>("message_id").unwrap_or_default()
+                        ),
                     )),
                 )
             })?
@@ -711,8 +729,7 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("会话 {} 不存在", id))?;
 
-        let mut memory: SessionMemory =
-            serde_json::from_str(&json).map_err(|e| e.to_string())?;
+        let mut memory: SessionMemory = serde_json::from_str(&json).map_err(|e| e.to_string())?;
 
         // 从 session_messages 表重建 messages 和 sources
         // 按 message_ids 的顺序加载，而非依赖 seq（seq 可能因 upsert 错位）
@@ -728,8 +745,7 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
                  WHERE session_id = ?1 AND message_id IN ({})",
                 placeholders.join(",")
             );
-            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
-                vec![Box::new(id.to_string())];
+            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(id.to_string())];
             for mid in &memory.message_ids {
                 params.push(Box::new(mid.clone()));
             }
@@ -737,12 +753,14 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
             let rows = stmt
                 .query_map(
                     rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
-                    |row| Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                    )),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                        ))
+                    },
                 )
                 .map_err(|e| e.to_string())?;
             // source 在**读边界**就还原成枚举（未知值报错），不把字符串带进内存：
@@ -752,9 +770,8 @@ pub fn load_session(id: &str) -> Result<SessionMemory, String> {
                 HashMap::new();
             for row in rows {
                 let (mid, content_json, raw_source, kind) = row.map_err(|e| e.to_string())?;
-                let source = MessageSource::from_db(&raw_source).map_err(|msg| {
-                    format!("会话 {} 的消息 {} 读取失败：{}", id, mid, msg)
-                })?;
+                let source = MessageSource::from_db(&raw_source)
+                    .map_err(|msg| format!("会话 {} 的消息 {} 读取失败：{}", id, mid, msg))?;
                 content_by_id.insert(mid, (content_json, source, kind));
             }
             // 严格按 message_ids 数组顺序重建 messages / sources / interrupt_kinds，保证三数组平行
@@ -1075,7 +1092,8 @@ pub fn rename_session(
     })
 }
 
-pub fn update_session_profile(id: &str, profile_id: &str) -> Result<(), String> {    crate::infra::db::with_connection(|conn| {
+pub fn update_session_profile(id: &str, profile_id: &str) -> Result<(), String> {
+    crate::infra::db::with_connection(|conn| {
         let changed = conn
             .execute(
                 "UPDATE sessions SET profile_id = ?2 WHERE id = ?1 AND deleted_at IS NULL",
@@ -1199,8 +1217,11 @@ pub fn set_last_active_session_id(id: &str) -> Result<(), String> {
 
 pub fn clear_last_active_session_id() -> Result<(), String> {
     crate::infra::db::with_connection(|conn| {
-        conn.execute("DELETE FROM app_state WHERE key = 'last_active_session_id'", [])
-            .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM app_state WHERE key = 'last_active_session_id'",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     })
 }
@@ -1250,10 +1271,15 @@ pub fn get_project_path(project_id: &str) -> Result<Option<String>, String> {
     })
 }
 
-pub fn get_project_by_path(path: &str) -> Result<Option<crate::core::session::ProjectMeta>, String> {
+pub fn get_project_by_path(
+    path: &str,
+) -> Result<Option<crate::core::session::ProjectMeta>, String> {
     crate::infra::db::with_connection(|conn| {
         conn.query_row(
-            &format!("SELECT {} FROM projects p WHERE p.path = ?1", PROJECT_META_COLUMNS),
+            &format!(
+                "SELECT {} FROM projects p WHERE p.path = ?1",
+                PROJECT_META_COLUMNS
+            ),
             [path],
             project_meta_from_row,
         )
@@ -1444,7 +1470,12 @@ mod meta_columns_tests {
                 "PROJECT_META_COLUMNS 的结果集里没有 {name}：{names:?}"
             );
         }
-        assert_eq!(names.len(), 6, "列数应为 6，实际 {}：{names:?}", names.len());
+        assert_eq!(
+            names.len(),
+            6,
+            "列数应为 6，实际 {}：{names:?}",
+            names.len()
+        );
     }
 }
 
@@ -1481,7 +1512,10 @@ mod message_columns_tests {
             "source",
             "interrupt_kind",
         ] {
-            assert!(columns.contains(&name), "共享列清单缺少 {name}：{columns:?}");
+            assert!(
+                columns.contains(&name),
+                "共享列清单缺少 {name}：{columns:?}"
+            );
         }
         assert_eq!(
             columns.len(),

@@ -25,7 +25,9 @@ use crate::core::tools::framework;
 use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{read_text_preserve_encoding, resolve_path};
-use super::workspace::{get_workspace, record_patch_to_snapshot, resolve_exec_path, sandbox_missing_hint};
+use super::workspace::{
+    get_workspace, record_patch_to_snapshot, resolve_exec_path, sandbox_missing_hint,
+};
 
 /// 回收站内该对象的目标路径：`<回收站根>/<时间戳>_<原名>`。
 ///

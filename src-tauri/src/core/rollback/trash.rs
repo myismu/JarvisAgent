@@ -205,7 +205,10 @@ mod tests {
         let removed = remove_unreferenced_in(&root, &referenced);
 
         assert!(kept.exists(), "被引用的条目必须留下（回滚要用）");
-        assert!(!stale_file.exists() && !stale_dir.exists(), "没被引用的条目应被清掉");
+        assert!(
+            !stale_file.exists() && !stale_dir.exists(),
+            "没被引用的条目应被清掉"
+        );
         assert_eq!(removed, 2);
         let _ = std::fs::remove_dir_all(&root);
     }

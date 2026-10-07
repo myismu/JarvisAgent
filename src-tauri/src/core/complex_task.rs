@@ -140,7 +140,9 @@ mod tests {
         assert!(is_complex_task(
             "请先提交一份可审批的实施方案，然后创建一个完整最小可用项目"
         ));
-        assert!(is_complex_task("在桌面创建一个包含前端和后端的任务管理系统"));
+        assert!(is_complex_task(
+            "在桌面创建一个包含前端和后端的任务管理系统"
+        ));
         assert!(is_complex_task("先给个方案再动手"));
     }
 

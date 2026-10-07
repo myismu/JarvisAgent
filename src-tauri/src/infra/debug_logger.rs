@@ -481,17 +481,30 @@ impl DebugLogger {
             Plan::BaseChanged => {
                 write_base();
                 write_full("base_changed");
-                println!("[JARVIS] 日志: loop {} 固定块变化，重写 base + 全量请求", loop_count);
+                println!(
+                    "[JARVIS] 日志: loop {} 固定块变化，重写 base + 全量请求",
+                    loop_count
+                );
             }
             Plan::Anchor => {
                 write_base();
                 write_full("first");
-                println!("[JARVIS] 日志: loop {} 首次锚定，写 base + 全量请求", loop_count);
+                println!(
+                    "[JARVIS] 日志: loop {} 首次锚定，写 base + 全量请求",
+                    loop_count
+                );
             }
             Plan::Rewritten => {
-                let reason = if force_full { "forced" } else { "history_rewritten" };
+                let reason = if force_full {
+                    "forced"
+                } else {
+                    "history_rewritten"
+                };
                 write_full(reason);
-                println!("[JARVIS] 日志: loop {} 历史非追加（{}），写全量请求", loop_count, reason);
+                println!(
+                    "[JARVIS] 日志: loop {} 历史非追加（{}），写全量请求",
+                    loop_count, reason
+                );
             }
         }
 
@@ -583,14 +596,8 @@ impl DebugLogger {
         );
     }
 
-
     /// 记录记忆代理操作
-    pub fn log_memory(
-        &self,
-        session_id: &str,
-        request_json: &str,
-        response_summary: &str,
-    ) {
+    pub fn log_memory(&self, session_id: &str, request_json: &str, response_summary: &str) {
         self.write_record(
             session_id,
             &MemoryEvent {
@@ -638,7 +645,11 @@ impl DebugLogger {
         // 截断消息快照到 8KB，避免日志膨胀
         let truncated = if messages_snapshot.len() > 8192 {
             let safe: String = messages_snapshot.chars().take(8192).collect();
-            format!("{}...[截断，原始长度 {} 字符]", safe, messages_snapshot.len())
+            format!(
+                "{}...[截断，原始长度 {} 字符]",
+                safe,
+                messages_snapshot.len()
+            )
         } else {
             messages_snapshot.to_string()
         };
@@ -864,10 +875,7 @@ mod tests {
     #[test]
     fn first_request_anchors_with_base_and_full() {
         let msgs = vec![json!({"role": "user", "content": "hi"})];
-        assert_eq!(
-            plan_request(None, "b1", "F1", &msgs, false),
-            Plan::Anchor
-        );
+        assert_eq!(plan_request(None, "b1", "F1", &msgs, false), Plan::Anchor);
     }
 
     #[test]
@@ -951,7 +959,10 @@ mod tests {
     #[test]
     fn prefix_hash_matches_whole_array_hash() {
         let all = vec![json!({"role": "user"}), json!({"role": "assistant"})];
-        assert_eq!(hash_values(&all[..1]), hash_values(&[json!({"role": "user"})]));
+        assert_eq!(
+            hash_values(&all[..1]),
+            hash_values(&[json!({"role": "user"})])
+        );
         assert_ne!(hash_values(&all[..1]), hash_values(&all));
         assert_eq!(hash_values(&[]), hash_values(&[]));
     }
@@ -982,8 +993,11 @@ mod tests {
     }
 
     /// 复刻查看器的重建逻辑：request_base + request_delta/request_full → loop -> 完整请求
-    fn rebuild_requests(events: &[serde_json::Value]) -> std::collections::HashMap<usize, serde_json::Value> {
-        let mut bases: std::collections::HashMap<String, serde_json::Value> = std::collections::HashMap::new();
+    fn rebuild_requests(
+        events: &[serde_json::Value],
+    ) -> std::collections::HashMap<usize, serde_json::Value> {
+        let mut bases: std::collections::HashMap<String, serde_json::Value> =
+            std::collections::HashMap::new();
         let mut messages: Vec<serde_json::Value> = Vec::new();
         let mut current_base: Option<String> = None;
         let mut out = std::collections::HashMap::new();
@@ -1007,10 +1021,17 @@ mod tests {
                 }
                 "request_delta" => {
                     let id = ev["base_id"].as_str().unwrap_or_default().to_string();
-                    assert_eq!(current_base.as_deref(), Some(id.as_str()), "delta 的 base 必须已写过");
+                    assert_eq!(
+                        current_base.as_deref(),
+                        Some(id.as_str()),
+                        "delta 的 base 必须已写过"
+                    );
                     // 前缀校验：重建出来的前缀哈希必须和落盘的一致
                     let prefix = &messages[..ev["from_index"].as_u64().unwrap_or(0) as usize];
-                    assert_eq!(hash_values(prefix), ev["prefix_hash"].as_str().unwrap_or_default());
+                    assert_eq!(
+                        hash_values(prefix),
+                        ev["prefix_hash"].as_str().unwrap_or_default()
+                    );
                     messages.extend(ev["added"].as_array().cloned().unwrap_or_default());
                     let mut body = bases.get(&id).cloned().unwrap_or_else(|| json!({}));
                     body["messages"] = serde_json::Value::Array(messages.clone());
@@ -1024,10 +1045,8 @@ mod tests {
 
     #[test]
     fn jsonl_round_trip_base_plus_delta() {
-        let dir = std::env::temp_dir().join(format!(
-            "jarvis-debug-logger-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("jarvis-debug-logger-test-{}", uuid::Uuid::new_v4()));
         let logger = DebugLogger::with_dir(dir.clone());
         let sid = "testsession";
 
@@ -1123,7 +1142,11 @@ mod tests {
         let new_bytes: usize = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .map(|e| std::fs::metadata(e.path()).map(|m| m.len() as usize).unwrap_or(0))
+            .map(|e| {
+                std::fs::metadata(e.path())
+                    .map(|m| m.len() as usize)
+                    .unwrap_or(0)
+            })
             .sum();
         let old_bytes: usize = [&req1, &req2, &req3]
             .iter()
@@ -1140,6 +1163,9 @@ mod tests {
     #[test]
     fn sse_raw_mode_switch_is_off_by_default() {
         assert!(!env_flag("JARVIS_LOG_SSE_RAW", "1"), "默认不逐片记录 SSE");
-        assert!(!env_flag("JARVIS_LOG_REQUEST", "FULL"), "默认按增量记录请求");
+        assert!(
+            !env_flag("JARVIS_LOG_REQUEST", "FULL"),
+            "默认按增量记录请求"
+        );
     }
 }

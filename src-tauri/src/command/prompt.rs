@@ -193,11 +193,7 @@ pub async fn get_assembled_system_prompt(
                 &crate::core::tools::framework::registry::ToolFilter::allow_all(),
             );
             Ok(crate::core::agent::build_dynamic_context(
-                "ACTION",
-                &ws_buf,
-                &caps,
-                mode,
-                0,
+                "ACTION", &ws_buf, &caps, mode, 0,
             ))
         }
         _ => Ok(get_system_prompt(&audience, "edit", ws_buf.as_deref())),

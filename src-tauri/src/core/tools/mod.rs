@@ -39,8 +39,8 @@ pub mod task_tools;
 
 use std::path::Path;
 
-use crate::infra::types::models::Skill;
 use crate::get_agent_home;
+use crate::infra::types::models::Skill;
 // `try_state` 是 Manager trait 的方法，不 import 就用不了（tool_filter_for 里要用）
 use tauri::Manager;
 
@@ -53,8 +53,8 @@ pub use framework::permission::{
 };
 pub use framework::tool_search::{
     get_core_tool_definitions, get_deferred_tool_full_schema, get_deferred_tool_list,
-    get_deferred_tool_search_entries, handle_search_tools,
-    search_deferred_tools, DeferredToolSearchEntry,
+    get_deferred_tool_search_entries, handle_search_tools, search_deferred_tools,
+    DeferredToolSearchEntry,
 };
 
 /// 递归扫描 skills 目录，解析所有 SKILL.md 文件
@@ -167,7 +167,8 @@ pub async fn handle_tool_call(
         let filter = tool_filter_for(app, session_id).await;
         let result = framework::tool_search::handle_execute_tool(
             app, input, session_id, "main", intent, work_mode, &filter,
-        ).await;
+        )
+        .await;
         // handle_execute_tool 内部已通过 log_deferred_call 记录了完整的审计日志
         // （含工具名、错误类型、纠正追踪）。此处不再重复记录，避免同一次调用产生
         // 两条日志条目（一条带实际工具名，一条仅显示 ExecuteTool）。
@@ -189,10 +190,7 @@ pub async fn handle_tool_call(
             if tool_def.should_defer {
                 let filter = tool_filter_for(app, session_id).await;
                 if !framework::registry::ToolRegistry::is_available(
-                    tool_def,
-                    intent,
-                    work_mode,
-                    &filter,
+                    tool_def, intent, work_mode, &filter,
                 ) {
                     if let Some(message) = mode_block_message(name, intent, work_mode) {
                         return (message, 0, 0);
@@ -205,32 +203,54 @@ pub async fn handle_tool_call(
                         "工具 '{}' 是按需工具，不能直接调用。请通过 ExecuteTool 代理执行。\n\
                         用法: ExecuteTool(name=\"{}\", args={{...}})\n\
                         当前意图下可用的按需工具: {}",
-                        name, name,
-                        if names.is_empty() { "无".to_string() } else { names.join(", ") }
+                        name,
+                        name,
+                        if names.is_empty() {
+                            "无".to_string()
+                        } else {
+                            names.join(", ")
+                        }
                     ),
-                    0, 0,
+                    0,
+                    0,
                 );
             }
         }
 
-        let result = dispatch_tool_call(app, name, input, session_id, intent, work_mode, "main").await;
+        let result =
+            dispatch_tool_call(app, name, input, session_id, intent, work_mode, "main").await;
         // 记录工具调用审计日志
         let logger = framework::tool_call_logger::tool_call_logger();
         if result.is_blocked {
             logger.log_core_call(
-                session_id, "main", name, input, intent, work_mode,
+                session_id,
+                "main",
+                name,
+                input,
+                intent,
+                work_mode,
                 framework::tool_call_logger::ToolCallStatus::Blocked,
                 Some(result.output.chars().take(500).collect()),
             );
         } else if result.is_error {
             logger.log_core_call(
-                session_id, "main", name, input, intent, work_mode,
+                session_id,
+                "main",
+                name,
+                input,
+                intent,
+                work_mode,
                 framework::tool_call_logger::ToolCallStatus::Error,
                 Some(result.output.chars().take(500).collect()),
             );
         } else {
             logger.log_core_call(
-                session_id, "main", name, input, intent, work_mode,
+                session_id,
+                "main",
+                name,
+                input,
+                intent,
+                work_mode,
                 framework::tool_call_logger::ToolCallStatus::Ok,
                 None,
             );
@@ -271,7 +291,16 @@ pub async fn handle_tool_call_inner_owned(
     work_mode: String,
     agent_type: String,
 ) -> (String, bool) {
-    handle_tool_call_inner(&app, &name, &input, &session_id, &intent, &work_mode, &agent_type).await
+    handle_tool_call_inner(
+        &app,
+        &name,
+        &input,
+        &session_id,
+        &intent,
+        &work_mode,
+        &agent_type,
+    )
+    .await
 }
 
 /// 主 Agent 路径的工具分发：比 [`dispatch_core_tool`] 多一个 `RunSubagent`。
@@ -337,9 +366,11 @@ pub async fn dispatch_tool_call(
         .as_str()
         .filter(|value| !value.trim().is_empty())
         .map(|value| value.to_string());
-    let skills: Option<Vec<String>> = input["skills"]
-        .as_array()
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect());
+    let skills: Option<Vec<String>> = input["skills"].as_array().map(|arr| {
+        arr.iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect()
+    });
     let prompt = input["prompt"].as_str().unwrap_or("");
     // 这里可以直接 await：本函数是"主 Agent 专用"的那一支，子代理路径到不了它，
     // 自递归的 opaque 环已经不存在——这正是拆函数的全部意义。
@@ -438,9 +469,8 @@ pub async fn dispatch_core_tool(
         "RunSubagentsSequentially" => {
             use crate::core::orchestration::scheduler::TaskScheduler;
             let cancel_token = tokio_util::sync::CancellationToken::new();
-            let (report, in_tokens, out_tokens) = TaskScheduler::run_schedule(
-                app, session_id, "", &cancel_token,
-            ).await;
+            let (report, in_tokens, out_tokens) =
+                TaskScheduler::run_schedule(app, session_id, "", &cancel_token).await;
             return framework::ToolCallResult::ok(report).with_usage(in_tokens, out_tokens);
         }
 
@@ -498,18 +528,28 @@ pub async fn handle_tool_call_inner(
     // 子代理的工具集由 agent 名单直接给出完整 schema（`resolve_tools` 不看
     // should_defer），而 ExecuteTool 不在任何 agent 的名单里。走到这里只可能是协议误用，
     // 交给下游的「未知工具」报错即可。
-    let result = dispatch_core_tool(app, name, input, session_id, intent, work_mode, agent_type)
-        .await;
+    let result =
+        dispatch_core_tool(app, name, input, session_id, intent, work_mode, agent_type).await;
     let logger = framework::tool_call_logger::tool_call_logger();
     if result.is_error {
         logger.log_core_call(
-            session_id, agent_type, name, input, intent, work_mode,
+            session_id,
+            agent_type,
+            name,
+            input,
+            intent,
+            work_mode,
             framework::tool_call_logger::ToolCallStatus::Error,
             Some(result.output.chars().take(500).collect()),
         );
     } else {
         logger.log_core_call(
-            session_id, agent_type, name, input, intent, work_mode,
+            session_id,
+            agent_type,
+            name,
+            input,
+            intent,
+            work_mode,
             framework::tool_call_logger::ToolCallStatus::Ok,
             None,
         );
@@ -655,9 +695,7 @@ mod write_guard_tests {
         // （多厂商前缀缓存），而 RunSubagent 在 PLAN_BLOCKED_EXTRA 里，于是规划模式下
         // 模型会一直看见一个"调用必被拦"的工具，还会为它绕路。
         let registry = framework::registry::ToolRegistry::global();
-        let def = registry
-            .get("RunSubagent")
-            .expect("RunSubagent 必须已注册");
+        let def = registry.get("RunSubagent").expect("RunSubagent 必须已注册");
         assert!(
             def.should_defer,
             "RunSubagent 必须是按需工具：它进 PLAN_BLOCKED_EXTRA，留在恒定核心集里等于在规划模式下白占 schema"
@@ -682,25 +720,41 @@ mod write_guard_tests {
     #[test]
     fn plan_mode_hides_run_subagent_edit_mode_exposes_it() {
         let registry = framework::registry::ToolRegistry::global();
-        let def = registry
-            .get("RunSubagent")
-            .expect("RunSubagent 必须已注册");
+        let def = registry.get("RunSubagent").expect("RunSubagent 必须已注册");
 
         assert!(
-            !framework::registry::ToolRegistry::is_available(def, "PROJECT_ACTION", "plan", &ToolFilter::allow_all()),
+            !framework::registry::ToolRegistry::is_available(
+                def,
+                "PROJECT_ACTION",
+                "plan",
+                &ToolFilter::allow_all()
+            ),
             "规划模式下 RunSubagent 必须不可用（否则子代理内层 edit 模式=写保护旁路）"
         );
         assert!(
-            framework::registry::ToolRegistry::is_available(def, "PROJECT_ACTION", "edit", &ToolFilter::allow_all()),
+            framework::registry::ToolRegistry::is_available(
+                def,
+                "PROJECT_ACTION",
+                "edit",
+                &ToolFilter::allow_all()
+            ),
             "编辑模式下必须可用，否则这个工具等于被删了"
         );
 
-        let plan_list = framework::tool_search::get_deferred_tool_list("PROJECT_ACTION", "plan", &ToolFilter::allow_all());
+        let plan_list = framework::tool_search::get_deferred_tool_list(
+            "PROJECT_ACTION",
+            "plan",
+            &ToolFilter::allow_all(),
+        );
         assert!(
             !plan_list.iter().any(|(n, _)| n == "RunSubagent"),
             "规划模式的按需工具目录里不得出现 RunSubagent"
         );
-        let edit_list = framework::tool_search::get_deferred_tool_list("PROJECT_ACTION", "edit", &ToolFilter::allow_all());
+        let edit_list = framework::tool_search::get_deferred_tool_list(
+            "PROJECT_ACTION",
+            "edit",
+            &ToolFilter::allow_all(),
+        );
         assert!(
             edit_list.iter().any(|(n, _)| n == "RunSubagent"),
             "编辑模式的按需工具目录里必须有 RunSubagent，否则模型永远发现不了它"

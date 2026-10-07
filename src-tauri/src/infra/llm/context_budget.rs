@@ -139,10 +139,22 @@ mod tests {
     #[test]
     fn calibration_without_previous_measurement_returns_raw_estimate() {
         assert_eq!(calibrated_context_tokens(None, None, 20_000), 20_000);
-        assert_eq!(calibrated_context_tokens(None, Some(17_300), 20_000), 20_000);
-        assert_eq!(calibrated_context_tokens(Some(52_000), None, 20_000), 20_000);
-        assert_eq!(calibrated_context_tokens(Some(0), Some(17_300), 20_000), 20_000);
-        assert_eq!(calibrated_context_tokens(Some(52_000), Some(0), 20_000), 20_000);
+        assert_eq!(
+            calibrated_context_tokens(None, Some(17_300), 20_000),
+            20_000
+        );
+        assert_eq!(
+            calibrated_context_tokens(Some(52_000), None, 20_000),
+            20_000
+        );
+        assert_eq!(
+            calibrated_context_tokens(Some(0), Some(17_300), 20_000),
+            20_000
+        );
+        assert_eq!(
+            calibrated_context_tokens(Some(52_000), Some(0), 20_000),
+            20_000
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-﻿//! # permission.rs — 权限管理模块
+//! # permission.rs — 权限管理模块
 //!
 //! 路径安全检查、沙箱边界校验、用户权限确认（通过 oneshot channel 阻塞等待前端决策）。
 //!
@@ -19,8 +19,8 @@
 
 use serde_json::json;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tokio::sync::oneshot;
 
@@ -72,7 +72,10 @@ pub enum PermissionDecision {
 impl PermissionDecision {
     /// 是否放行本次操作
     pub fn is_allowed(&self) -> bool {
-        matches!(self, PermissionDecision::Allow | PermissionDecision::AllowSession)
+        matches!(
+            self,
+            PermissionDecision::Allow | PermissionDecision::AllowSession
+        )
     }
 
     /// 是否为用户明确拒绝
@@ -300,9 +303,11 @@ pub async fn request_permission_with_origin(
                 reason: "本轮执行已被取消".to_string(),
             },
         },
-        None => rx.await.unwrap_or_else(|_| PermissionDecision::Interrupted {
-            reason: "权限通道已关闭".to_string(),
-        }),
+        None => rx
+            .await
+            .unwrap_or_else(|_| PermissionDecision::Interrupted {
+                reason: "权限通道已关闭".to_string(),
+            }),
     };
 
     // 正常路径下 resolve_permission 已经取走条目并广播了 permission-resolved；

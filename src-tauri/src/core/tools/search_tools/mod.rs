@@ -1,4 +1,4 @@
-﻿//! # claude_code_tools.rs — Claude Code 风格搜索工具
+//! # claude_code_tools.rs — Claude Code 风格搜索工具
 //!
 //! 提供两个只读、并发安全的搜索工具：
 //! - `glob`: 按 glob 模式查找文件路径，结果按修改时间倒序排列
@@ -135,9 +135,7 @@ async fn ensure_resolved_path_permission(
 fn should_skip_dir_with_overrides(path: &Path, ignore_dirs: &[String]) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .map(|name| {
-            SKIP_DIRS.contains(&name) || ignore_dirs.iter().any(|ignored| ignored == name)
-        })
+        .map(|name| SKIP_DIRS.contains(&name) || ignore_dirs.iter().any(|ignored| ignored == name))
         .unwrap_or(false)
 }
 
@@ -220,7 +218,13 @@ fn collect_files_glob(
             // Check if the directory itself matches the pattern
             let relative = path.strip_prefix(base).unwrap_or(&path);
             if glob_matches(pattern, relative)
-                && matches_search_filters(&path, base, include_patterns, exclude_patterns, file_type)
+                && matches_search_filters(
+                    &path,
+                    base,
+                    include_patterns,
+                    exclude_patterns,
+                    file_type,
+                )
             {
                 files.push(path.clone());
                 *limit -= 1;
@@ -230,13 +234,26 @@ fn collect_files_glob(
             }
             // Recurse to find matching files/subdirs within
             collect_files_glob(
-                &path, pattern, base, include_patterns, exclude_patterns,
-                file_type, ignore_dirs, limit, files,
+                &path,
+                pattern,
+                base,
+                include_patterns,
+                exclude_patterns,
+                file_type,
+                ignore_dirs,
+                limit,
+                files,
             );
         } else if path.is_file() {
             let relative = path.strip_prefix(base).unwrap_or(&path);
             if glob_matches(pattern, relative)
-                && matches_search_filters(&path, base, include_patterns, exclude_patterns, file_type)
+                && matches_search_filters(
+                    &path,
+                    base,
+                    include_patterns,
+                    exclude_patterns,
+                    file_type,
+                )
             {
                 files.push(path.clone());
                 *limit -= 1;
@@ -468,9 +485,33 @@ fn matches_search_filters(
 fn is_code_extension(ext: &str) -> bool {
     matches!(
         ext.to_lowercase().as_str(),
-        "rs" | "ts" | "tsx" | "js" | "jsx" | "vue" | "svelte" | "py" | "go" | "java" | "kt"
-            | "kts" | "swift" | "c" | "h" | "cpp" | "cc" | "cxx" | "hpp" | "cs" | "php" | "rb"
-            | "scala" | "sql" | "html" | "css" | "scss" | "less"
+        "rs" | "ts"
+            | "tsx"
+            | "js"
+            | "jsx"
+            | "vue"
+            | "svelte"
+            | "py"
+            | "go"
+            | "java"
+            | "kt"
+            | "kts"
+            | "swift"
+            | "c"
+            | "h"
+            | "cpp"
+            | "cc"
+            | "cxx"
+            | "hpp"
+            | "cs"
+            | "php"
+            | "rb"
+            | "scala"
+            | "sql"
+            | "html"
+            | "css"
+            | "scss"
+            | "less"
     )
 }
 
@@ -486,7 +527,15 @@ fn path_contains_component(path: &Path, component: &str) -> bool {
 }
 
 fn path_noise_score(path: &Path) -> usize {
-    let noisy = ["node_modules", "target", "dist", "build", ".next", ".cache", "coverage"];
+    let noisy = [
+        "node_modules",
+        "target",
+        "dist",
+        "build",
+        ".next",
+        ".cache",
+        "coverage",
+    ];
     noisy
         .iter()
         .filter(|component| path_contains_component(path, component))
@@ -495,7 +544,11 @@ fn path_noise_score(path: &Path) -> usize {
 
 fn code_search_rank(path: &Path) -> (usize, usize, usize, String) {
     (
-        if path_contains_component(path, "src") { 0 } else { 1 },
+        if path_contains_component(path, "src") {
+            0
+        } else {
+            1
+        },
         if is_code_file(path) { 0 } else { 1 },
         path_noise_score(path),
         normalize_path_for_match(path),
@@ -689,7 +742,11 @@ fn collect_content_matches(
 }
 
 /// Claude Code 风格 Glob：按文件名 glob 模式快速查找文件。
-pub async fn glob(app: &tauri::AppHandle, input: &serde_json::Value, session_id: &str) -> framework::ToolCallResult {
+pub async fn glob(
+    app: &tauri::AppHandle,
+    input: &serde_json::Value,
+    session_id: &str,
+) -> framework::ToolCallResult {
     let pattern = input["pattern"].as_str().unwrap_or("").trim();
     if pattern.is_empty() {
         return framework::ToolCallResult::error("Glob 错误: pattern 不能为空。".to_string());
@@ -697,7 +754,9 @@ pub async fn glob(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
 
     let raw_path = input["path"].as_str().or_else(|| input["dir"].as_str());
     let limit = value_as_usize(input, "limit").unwrap_or(GLOB_DEFAULT_LIMIT);
-    let file_type = input["type"].as_str().or_else(|| input["file_type"].as_str());
+    let file_type = input["type"]
+        .as_str()
+        .or_else(|| input["file_type"].as_str());
     let include_patterns = input_patterns(input, "include");
     let exclude_patterns = input_patterns(input, "exclude");
     let ignore_dirs = input_string_list(input, "ignore_dirs");
@@ -715,10 +774,16 @@ pub async fn glob(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
     }
 
     if !base.exists() {
-        return framework::ToolCallResult::error(format!("Directory does not exist: {}", base.display()));
+        return framework::ToolCallResult::error(format!(
+            "Directory does not exist: {}",
+            base.display()
+        ));
     }
     if !base.is_dir() {
-        return framework::ToolCallResult::error(format!("Path is not a directory: {}", base.display()));
+        return framework::ToolCallResult::error(format!(
+            "Path is not a directory: {}",
+            base.display()
+        ));
     }
 
     let start = Instant::now();
@@ -767,7 +832,11 @@ pub async fn glob(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
 }
 
 /// Claude Code 风格 Grep：使用正则表达式搜索文件内容。
-pub async fn grep(app: &tauri::AppHandle, input: &serde_json::Value, session_id: &str) -> framework::ToolCallResult {
+pub async fn grep(
+    app: &tauri::AppHandle,
+    input: &serde_json::Value,
+    session_id: &str,
+) -> framework::ToolCallResult {
     let pattern = input["pattern"].as_str().unwrap_or("").trim();
     if pattern.is_empty() {
         return framework::ToolCallResult::error("Grep 错误: pattern 不能为空。".to_string());
@@ -793,7 +862,10 @@ pub async fn grep(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
     }
 
     if !base.exists() {
-        return framework::ToolCallResult::error(format!("Path does not exist: {}", base.display()));
+        return framework::ToolCallResult::error(format!(
+            "Path does not exist: {}",
+            base.display()
+        ));
     }
 
     let mut builder = regex::RegexBuilder::new(pattern);
@@ -811,7 +883,9 @@ pub async fn grep(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
     let mut extra_include_patterns = input_patterns(input, "include");
     let exclude_patterns = input_patterns(input, "exclude");
     let ignore_dirs = input_string_list(input, "ignore_dirs");
-    let file_type = input["type"].as_str().or_else(|| input["file_type"].as_str());
+    let file_type = input["type"]
+        .as_str()
+        .or_else(|| input["file_type"].as_str());
     let head_limit = value_as_usize(input, "head_limit");
     let offset = value_as_usize(input, "offset").unwrap_or(0);
     let show_line_numbers = value_as_bool(input, "-n", true);
@@ -829,7 +903,13 @@ pub async fn grep(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
     };
     extra_include_patterns.extend(include_patterns);
     files.retain(|path| {
-        matches_search_filters(path, glob_base, &extra_include_patterns, &exclude_patterns, file_type)
+        matches_search_filters(
+            path,
+            glob_base,
+            &extra_include_patterns,
+            &exclude_patterns,
+            file_type,
+        )
     });
     sort_for_code_search(&mut files);
 
@@ -850,7 +930,9 @@ pub async fn grep(app: &tauri::AppHandle, input: &serde_json::Value, session_id:
                         workspace.as_deref(),
                     );
                     for line in lines {
-                        if looks_like_definition_line(line.rsplit_once(':').map(|(_, text)| text).unwrap_or(&line)) {
+                        if looks_like_definition_line(
+                            line.rsplit_once(':').map(|(_, text)| text).unwrap_or(&line),
+                        ) {
                             definition_lines.push(line);
                         } else {
                             matched_lines.push(line);
@@ -1164,7 +1246,10 @@ mod tests {
     #[test]
     fn test_glob_matches_file_inside_directory() {
         // 仅当 pattern 包含通配符时，目录内的文件才匹配
-        assert!(glob_matches("**/Desktop/**", Path::new("Users/Alice/Desktop/notes.txt")));
+        assert!(glob_matches(
+            "**/Desktop/**",
+            Path::new("Users/Alice/Desktop/notes.txt")
+        ));
         assert!(glob_matches("Desktop/*", Path::new("Desktop/notes.txt")));
         // 精确 "Desktop" 不匹配目录内的文件
         assert!(!glob_matches("Desktop", Path::new("Desktop/notes.txt")));

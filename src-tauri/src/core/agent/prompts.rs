@@ -248,7 +248,11 @@ struct PromptRule {
 
 impl PromptRule {
     fn new(level: PromptLevel, title: &'static str, body: impl Into<Cow<'static, str>>) -> Self {
-        PromptRule { level, title, body: body.into() }
+        PromptRule {
+            level,
+            title,
+            body: body.into(),
+        }
     }
 }
 
@@ -263,7 +267,9 @@ fn render_prompt(rules: &[PromptRule]) -> String {
         if current_level != Some(rule.level) {
             current_level = Some(rule.level);
             match rule.level {
-                PromptLevel::P0Critical => out.push_str("\n## P0 · 最高优先级（违反将导致严重错误）\n\n"),
+                PromptLevel::P0Critical => {
+                    out.push_str("\n## P0 · 最高优先级（违反将导致严重错误）\n\n")
+                }
                 PromptLevel::P1Important => out.push_str("\n## P1 · 核心规范\n\n"),
                 PromptLevel::P2Reference => out.push_str("\n## P2 · 参考信息（按需查阅）\n\n"),
             }
@@ -282,9 +288,21 @@ fn render_prompt(rules: &[PromptRule]) -> String {
 /// 因此写操作/命令执行/任务编排类规则在所有模式下都注入。
 fn base_rules(work_mode: &str) -> Vec<PromptRule> {
     let mut rules = vec![
-        PromptRule::new(PromptLevel::P0Critical, "基础规则", resolve_prompt("base_p0.md")),
-        PromptRule::new(PromptLevel::P1Important, "基础规则", resolve_prompt("base_p1.md")),
-        PromptRule::new(PromptLevel::P2Reference, "基础规则", resolve_prompt("base_p2.md")),
+        PromptRule::new(
+            PromptLevel::P0Critical,
+            "基础规则",
+            resolve_prompt("base_p0.md"),
+        ),
+        PromptRule::new(
+            PromptLevel::P1Important,
+            "基础规则",
+            resolve_prompt("base_p1.md"),
+        ),
+        PromptRule::new(
+            PromptLevel::P2Reference,
+            "基础规则",
+            resolve_prompt("base_p2.md"),
+        ),
     ];
     let _ = work_mode;
     rules.push(PromptRule::new(
@@ -304,10 +322,14 @@ fn base_rules(work_mode: &str) -> Vec<PromptRule> {
 
 fn audience_rules(audience: &str) -> Vec<PromptRule> {
     match audience {
-        "user" => vec![PromptRule::new(PromptLevel::P1Important, "回复风格 — 普通用户模式",
+        "user" => vec![PromptRule::new(
+            PromptLevel::P1Important,
+            "回复风格 — 普通用户模式",
             resolve_prompt("audience/user.md"),
         )],
-        _ => vec![PromptRule::new(PromptLevel::P1Important, "回复风格 — 开发者模式",
+        _ => vec![PromptRule::new(
+            PromptLevel::P1Important,
+            "回复风格 — 开发者模式",
             resolve_prompt("audience/developer.md"),
         )],
     }
@@ -328,11 +350,23 @@ pub fn get_mode_prompt(work_mode: &str) -> Cow<'static, str> {
 
 fn os_rules() -> Vec<PromptRule> {
     if cfg!(target_os = "windows") {
-        vec![PromptRule::new(PromptLevel::P2Reference, "系统环境", resolve_prompt("os/windows.md"))]
+        vec![PromptRule::new(
+            PromptLevel::P2Reference,
+            "系统环境",
+            resolve_prompt("os/windows.md"),
+        )]
     } else if cfg!(target_os = "macos") {
-        vec![PromptRule::new(PromptLevel::P2Reference, "系统环境", resolve_prompt("os/macos.md"))]
+        vec![PromptRule::new(
+            PromptLevel::P2Reference,
+            "系统环境",
+            resolve_prompt("os/macos.md"),
+        )]
     } else {
-        vec![PromptRule::new(PromptLevel::P2Reference, "系统环境", resolve_prompt("os/linux.md"))]
+        vec![PromptRule::new(
+            PromptLevel::P2Reference,
+            "系统环境",
+            resolve_prompt("os/linux.md"),
+        )]
     }
 }
 
@@ -385,11 +419,15 @@ pub fn get_system_prompt(
 pub fn get_subagent_system_prompt(cwd: &str, workspace: Option<&str>) -> String {
     let mut rules: Vec<PromptRule> = Vec::new();
 
-    rules.push(PromptRule::new(PromptLevel::P0Critical, "子代理核心规则",
+    rules.push(PromptRule::new(
+        PromptLevel::P0Critical,
+        "子代理核心规则",
         resolve_prompt("subagent.md"),
     ));
 
-    rules.push(PromptRule::new(PromptLevel::P2Reference, "工作目录",
+    rules.push(PromptRule::new(
+        PromptLevel::P2Reference,
+        "工作目录",
         format!(
             "工作目录: {}{}\n操作系统: {}",
             cwd,
@@ -397,7 +435,13 @@ pub fn get_subagent_system_prompt(cwd: &str, workspace: Option<&str>) -> String 
                 Some(ws) => format!("\n沙箱: 文件操作限制在 '{}' 内", ws),
                 None => String::new(),
             },
-            if cfg!(target_os = "windows") { "Windows" } else if cfg!(target_os = "macos") { "macOS" } else { "Linux" },
+            if cfg!(target_os = "windows") {
+                "Windows"
+            } else if cfg!(target_os = "macos") {
+                "macOS"
+            } else {
+                "Linux"
+            },
         ),
     ));
 
@@ -456,7 +500,6 @@ pub const MEMORY_CURATOR_SYSTEM: &str = "你是「全局记忆」的整理者。
 ## 输出
 只输出整理后的完整 Markdown 文件内容。不要解释、不要加代码块围栏、不要保留「(暂无记录)」这类占位文本。
 ";
-
 
 // ── 结构性断言测试 ──
 
@@ -518,7 +561,11 @@ mod tests {
             let rules = base_rules(mode);
             assert_eq!(rules.len(), expected, "base({}) rule count", mode);
             for rule in &rules {
-                assert!(!rule.body.trim().is_empty(), "Rule '{}' has empty body", rule.title);
+                assert!(
+                    !rule.body.trim().is_empty(),
+                    "Rule '{}' has empty body",
+                    rule.title
+                );
             }
         }
     }
@@ -617,7 +664,10 @@ mod tests {
     fn missing_disk_file_falls_back_to_embedded() {
         let dir = tmp_dir("missing");
         let resolved = resolve_prompt_from(&dir, "base_p2.md");
-        assert!(matches!(resolved, Cow::Borrowed(_)), "无磁盘文件应返回内置 Borrowed");
+        assert!(
+            matches!(resolved, Cow::Borrowed(_)),
+            "无磁盘文件应返回内置 Borrowed"
+        );
         // 内置版就是源码 md 的原文
         assert_eq!(&*resolved, include_str!("prompts/base_p2.md"));
         std::fs::remove_dir_all(&dir).ok();
@@ -629,7 +679,10 @@ mod tests {
         let dir = tmp_dir("blank");
         std::fs::write(dir.join("base_p2.md"), "   \n  \n").expect("write blank");
         let resolved = resolve_prompt_from(&dir, "base_p2.md");
-        assert!(matches!(resolved, Cow::Borrowed(_)), "空白磁盘文件应回落内置");
+        assert!(
+            matches!(resolved, Cow::Borrowed(_)),
+            "空白磁盘文件应回落内置"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

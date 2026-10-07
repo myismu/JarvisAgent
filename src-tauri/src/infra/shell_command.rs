@@ -32,7 +32,8 @@ const PS_UTF8_PREFIX: &str = "[Console]::OutputEncoding = [System.Text.Encoding]
 /// 段间守卫：前一段失败（`$?` 为 false）则终止整个命令。
 /// `$LASTEXITCODE` 只在**原生命令**（npm/cargo/git…）执行后才有值；
 /// 为 `null`（纯 cmdlet 失败）时兜底 `exit 1`，避免把失败伪装成成功。
-const PS_FAIL_GUARD: &str = "if (-not $?) { if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }; exit 1 }";
+const PS_FAIL_GUARD: &str =
+    "if (-not $?) { if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }; exit 1 }";
 
 /// Windows 进程创建标志：不为子进程分配控制台窗口。
 ///
@@ -169,10 +170,7 @@ mod tests {
             split_on_double_ampersand("npm install && npm start"),
             ["npm install", "npm start"]
         );
-        assert_eq!(
-            split_on_double_ampersand("a && b && c"),
-            ["a", "b", "c"]
-        );
+        assert_eq!(split_on_double_ampersand("a && b && c"), ["a", "b", "c"]);
     }
 
     #[test]
@@ -217,13 +215,7 @@ mod tests {
         assert!(out.starts_with(PS_UTF8_PREFIX));
         // 顺序：seg1 → 守卫 → seg2，守卫只出现在段间
         let tail = out.trim_start_matches(PS_UTF8_PREFIX).to_string();
-        assert_eq!(
-            tail,
-            format!(
-                "npm install; {}; npm start",
-                PS_FAIL_GUARD
-            )
-        );
+        assert_eq!(tail, format!("npm install; {}; npm start", PS_FAIL_GUARD));
     }
 
     #[test]

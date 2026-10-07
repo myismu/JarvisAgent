@@ -1,6 +1,6 @@
-pub mod capabilities;
 pub mod agent_registry;
 pub mod allowance_store;
+pub mod capabilities;
 pub mod permission;
 pub mod permission_audit_logger;
 pub mod policy;

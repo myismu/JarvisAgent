@@ -59,7 +59,12 @@ const MAX_PARTS: usize = 1000;
 /// 分片也不归档、无限增长。`permission_decisions` 曾长期不在名单里，而它恰好是
 /// `auto_approve` 档唯一的事后追溯手段（档位策略静默放行、用户从未逐条表态），
 /// 也是授权落盘的素材来源——丢了就彻底无痕。
-const LOG_SUBDIRS: [&str; 4] = ["agent_loop", "tool_calls", "rollbacks", "permission_decisions"];
+const LOG_SUBDIRS: [&str; 4] = [
+    "agent_loop",
+    "tool_calls",
+    "rollbacks",
+    "permission_decisions",
+];
 /// 归档目录名
 const ARCHIVE_DIR: &str = "archive";
 
@@ -110,12 +115,7 @@ fn env_u64(name: &str) -> Option<u64> {
 /// 之后 `<日期>_<session>.2.jsonl`、`.3.jsonl` …
 ///
 /// 判定：从第一片开始找，遇到"不存在"或"未超阈值"的文件就用它；都满了就继续往后。
-pub fn resolve_part_file(
-    dir: &Path,
-    date: &str,
-    session_id: &str,
-    policy: &LogPolicy,
-) -> OsString {
+pub fn resolve_part_file(dir: &Path, date: &str, session_id: &str, policy: &LogPolicy) -> OsString {
     let base = format!("{date}_{session_id}.jsonl");
     if policy.max_part_bytes == 0 {
         return OsString::from(base);
@@ -209,11 +209,16 @@ fn archive_old_files(
         if !path.is_file() || !is_archivable(&path) {
             continue;
         }
-        if !is_older_than(now, entry.metadata().and_then(|m| m.modified()), policy.archive_after_days)
-        {
+        if !is_older_than(
+            now,
+            entry.metadata().and_then(|m| m.modified()),
+            policy.archive_after_days,
+        ) {
             continue;
         }
-        let Some(name) = path.file_name() else { continue };
+        let Some(name) = path.file_name() else {
+            continue;
+        };
         let dest = archive_dir.join(format!("{}.gz", name.to_string_lossy()));
         let original_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
 
@@ -268,8 +273,11 @@ fn prune_old_archives(
         if !path.is_file() || !is_gz {
             continue;
         }
-        if !is_older_than(now, entry.metadata().and_then(|m| m.modified()), policy.keep_archive_days)
-        {
+        if !is_older_than(
+            now,
+            entry.metadata().and_then(|m| m.modified()),
+            policy.keep_archive_days,
+        ) {
             continue;
         }
         match fs::remove_file(&path) {
@@ -368,7 +376,12 @@ mod tests {
         //   tool_calls           → core/tools/framework/tool_call_logger.rs
         //   rollbacks            → core/rollback/rollback_logger.rs
         //   permission_decisions → core/tools/framework/permission_audit_logger.rs
-        let every_logger_dir = ["agent_loop", "tool_calls", "rollbacks", "permission_decisions"];
+        let every_logger_dir = [
+            "agent_loop",
+            "tool_calls",
+            "rollbacks",
+            "permission_decisions",
+        ];
 
         for dir in every_logger_dir {
             assert!(
@@ -462,8 +475,7 @@ mod tests {
         assert!(gz.exists(), "应生成 .gz 归档");
 
         // 解压回来验证内容无损
-        let mut decoder =
-            flate2::read::GzDecoder::new(File::open(&gz).expect("open gz"));
+        let mut decoder = flate2::read::GzDecoder::new(File::open(&gz).expect("open gz"));
         let mut restored = String::new();
         decoder.read_to_string(&mut restored).expect("gunzip");
         assert_eq!(restored, content);

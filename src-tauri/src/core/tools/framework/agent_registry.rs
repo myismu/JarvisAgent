@@ -343,7 +343,10 @@ mod tests {
         let mut out = Vec::new();
         let mut rest = text;
         while let Some(start) = rest.find(['（', '(']) {
-            let open = rest[start..].chars().next().expect("find 给出的位置必有字符");
+            let open = rest[start..]
+                .chars()
+                .next()
+                .expect("find 给出的位置必有字符");
             let after = &rest[start + open.len_utf8()..];
             let Some(end) = after.find(['）', ')']) else {
                 break;
@@ -368,7 +371,8 @@ mod tests {
             "缺省角色必须默认只读：模型忘传参数时不该拿到能改文件的子代理"
         );
 
-        let tools = registry.resolve_tools(agent, agent.read_only_default, &ToolFilter::allow_all());
+        let tools =
+            registry.resolve_tools(agent, agent.read_only_default, &ToolFilter::allow_all());
         let names: Vec<&str> = tools
             .iter()
             .filter_map(|tool| tool["name"].as_str())
@@ -528,12 +532,30 @@ mod tests {
             "audience/developer.md",
             include_str!("../../agent/prompts/audience/developer.md"),
         ),
-        ("mode/edit.md", include_str!("../../agent/prompts/mode/edit.md")),
-        ("mode/plan.md", include_str!("../../agent/prompts/mode/plan.md")),
-        ("os/windows.md", include_str!("../../agent/prompts/os/windows.md")),
-        ("os/macos.md", include_str!("../../agent/prompts/os/macos.md")),
-        ("os/linux.md", include_str!("../../agent/prompts/os/linux.md")),
-        ("subagent.md", include_str!("../../agent/prompts/subagent.md")),
+        (
+            "mode/edit.md",
+            include_str!("../../agent/prompts/mode/edit.md"),
+        ),
+        (
+            "mode/plan.md",
+            include_str!("../../agent/prompts/mode/plan.md"),
+        ),
+        (
+            "os/windows.md",
+            include_str!("../../agent/prompts/os/windows.md"),
+        ),
+        (
+            "os/macos.md",
+            include_str!("../../agent/prompts/os/macos.md"),
+        ),
+        (
+            "os/linux.md",
+            include_str!("../../agent/prompts/os/linux.md"),
+        ),
+        (
+            "subagent.md",
+            include_str!("../../agent/prompts/subagent.md"),
+        ),
     ];
 
     /// 扫出"长得像工具名"的词：PascalCase（至少两段），且**前面不是连字符或单词字符**。

@@ -126,27 +126,57 @@ pub struct UiPreferences {
     pub user_message_opacity: i32,
 }
 
-fn default_font_size() -> i32 { 15 }
-fn default_code_font_size() -> i32 { 13 }
-fn default_true() -> bool { true }
-fn default_agent_panel_position() -> String { "right".to_string() }
-fn default_agent_audience() -> String { "developer".to_string() }
-fn default_agent_work_mode() -> String { "edit".to_string() }
-fn default_approval_mode() -> String { "request_approval".to_string() }
+fn default_font_size() -> i32 {
+    15
+}
+fn default_code_font_size() -> i32 {
+    13
+}
+fn default_true() -> bool {
+    true
+}
+fn default_agent_panel_position() -> String {
+    "right".to_string()
+}
+fn default_agent_audience() -> String {
+    "developer".to_string()
+}
+fn default_agent_work_mode() -> String {
+    "edit".to_string()
+}
+fn default_approval_mode() -> String {
+    "request_approval".to_string()
+}
 /// 深度思考默认档位。默认 `follow_global`：跟随模型能力（强制思考模型开、其余关），
 /// 这是"升级后行为最接近旧默认"的选择——旧默认在 DeepSeek 上正是开。
-fn default_thinking_default() -> String { "follow_global".to_string() }
-fn default_locale() -> String { "zh-CN".to_string() }
-fn default_image_compress_tier() -> String { "standard".to_string() }
+fn default_thinking_default() -> String {
+    "follow_global".to_string()
+}
+fn default_locale() -> String {
+    "zh-CN".to_string()
+}
+fn default_image_compress_tier() -> String {
+    "standard".to_string()
+}
 /// 图片压缩默认档位 = **标准档**，与前端 `usePreferences.ts` 的 `IMAGE_COMPRESS_TIERS.standard` 同源。
 ///
 /// 为什么是 1568×896 而不是 1920×1080：1568 是 Anthropic 服务端的长边硬上限，
 /// 传更大的图既多花上传流量、又多耗 token，模型却仍然只看到 1568（约 1900 token/张 vs 2800）。
-fn default_image_max_width() -> u32 { 1568 }
-fn default_image_max_height() -> u32 { 896 }
-fn default_image_quality() -> f32 { 0.8 }
-fn default_opacity() -> i32 { 100 }
-fn default_agent_opacity() -> i32 { 0 }
+fn default_image_max_width() -> u32 {
+    1568
+}
+fn default_image_max_height() -> u32 {
+    896
+}
+fn default_image_quality() -> f32 {
+    0.8
+}
+fn default_opacity() -> i32 {
+    100
+}
+fn default_agent_opacity() -> i32 {
+    0
+}
 
 impl Default for UiPreferences {
     fn default() -> Self {

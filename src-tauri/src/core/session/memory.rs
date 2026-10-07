@@ -6,9 +6,9 @@
 //! 2. **上下文压缩** — 单级 LLM 摘要：接近 token 上限时调模型压缩历史为一段摘要
 //! 3. **记忆系统** — 全局记忆的读写；主 Agent 通过记忆工具维护，超预算时后台整理压缩
 
-use crate::infra::types::error::MemoryError;
 use crate::core::agent::prompts::*;
 use crate::infra::llm::api_format::ApiFormat;
+use crate::infra::types::error::MemoryError;
 use crate::infra::types::models::*;
 use reqwest::header::CONTENT_TYPE;
 use std::path::{Path, PathBuf};
@@ -101,8 +101,14 @@ pub async fn compact_messages(
         }
     }
     if keep_indices.len() < memory.messages.len() {
-        memory.messages = keep_indices.iter().map(|&i| memory.messages[i].clone()).collect();
-        memory.sources = keep_indices.iter().map(|&i| memory.sources[i].clone()).collect();
+        memory.messages = keep_indices
+            .iter()
+            .map(|&i| memory.messages[i].clone())
+            .collect();
+        memory.sources = keep_indices
+            .iter()
+            .map(|&i| memory.sources[i].clone())
+            .collect();
         // ⚠️ 平行数组必须同步重建：漏掉 interrupt_kinds 会让 kind 错配到别的消息上
         memory.interrupt_kinds = keep_indices
             .iter()
@@ -124,7 +130,8 @@ pub async fn compact_messages(
     //
     // ⚠️ 调用方必须先把本轮区间摘出去，否则会把正在执行的任务也压掉。
 
-    let summary = call_summarize_llm(messages, client, api_key, base_url, model_id, api_format).await?;
+    let summary =
+        call_summarize_llm(messages, client, api_key, base_url, model_id, api_format).await?;
 
     messages.clear();
     sources.clear();
@@ -246,9 +253,11 @@ async fn call_summarize_llm(
 
     crate::infra::llm::api_client::log_model_request(model_id, base_url, "摘要压缩");
 
-    let response = req.json(&req_json).send().await.map_err(|e| {
-        MemoryError::CompactionFailed(format!("compact request failed: {}", e))
-    })?;
+    let response = req
+        .json(&req_json)
+        .send()
+        .await
+        .map_err(|e| MemoryError::CompactionFailed(format!("compact request failed: {}", e)))?;
 
     let body: serde_json::Value = response.json().await.map_err(|e| {
         MemoryError::CompactionFailed(format!("compact response parse failed: {}", e))
@@ -575,7 +584,11 @@ pub async fn rewrite_global_memory(
     // 记忆整理提示词每次都是新内容（不参与增量），pretty 串只用于 log_memory 阅读；
     // 请求日志走增量通道，直接传结构化 Value
     let request_json_str = serde_json::to_string_pretty(&req_json).unwrap_or_default();
-    println!("[MEMORY] {} request ({} bytes)", log_label, request_json_str.len());
+    println!(
+        "[MEMORY] {} request ({} bytes)",
+        log_label,
+        request_json_str.len()
+    );
     crate::infra::debug_logger::debug_logger().log_request(session_id, "MEMORY", 1, &req_json);
 
     let (auth_header, auth_value) = api_format.auth_header(&config.api_key);
@@ -588,7 +601,11 @@ pub async fn rewrite_global_memory(
         req = req.header("anthropic-version", "2023-06-01");
     }
 
-    crate::infra::llm::api_client::log_model_request(&config.utility_model, &config.base_url, "记忆整理");
+    crate::infra::llm::api_client::log_model_request(
+        &config.utility_model,
+        &config.base_url,
+        "记忆整理",
+    );
 
     let body: serde_json::Value = req.json(&req_json).send().await.ok()?.json().await.ok()?;
 

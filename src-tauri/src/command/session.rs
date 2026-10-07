@@ -14,11 +14,11 @@
 //! - `list_agent_runs()` / `get_subagent_runs()`: Agent 运行记录查询
 //! - `get_session_context_snapshot()`: 查询最近一次上下文 token 快照
 
-use crate::infra::llm::api_client;
-use crate::infra::types::models::*;
-use crate::core::session;
 use crate::core::orchestration::{agent_run_repository, agent_runs};
+use crate::core::session;
+use crate::infra::llm::api_client;
 use crate::infra::state::state::*;
+use crate::infra::types::models::*;
 use tauri::{Emitter, Manager};
 
 #[tauri::command]
@@ -183,14 +183,13 @@ pub async fn create_session(
 }
 
 #[tauri::command]
-pub async fn open_project(
-    path: String,
-) -> Result<session::ProjectMeta, String> {
+pub async fn open_project(path: String) -> Result<session::ProjectMeta, String> {
     let normalized = std::path::Path::new(&path);
     if !normalized.exists() || !normalized.is_dir() {
         return Err(format!("目录不存在或不是文件夹: {}", path));
     }
-    let abs_canonical = normalized.canonicalize()
+    let abs_canonical = normalized
+        .canonicalize()
         .map_err(|e| format!("解析路径失败: {}", e))?
         .to_string_lossy()
         .to_string();
@@ -202,7 +201,9 @@ pub async fn open_project(
         return Ok(project);
     }
     if abs != abs_canonical {
-        if let Ok(Some(project)) = crate::core::session::repository::get_project_by_path(&abs_canonical) {
+        if let Ok(Some(project)) =
+            crate::core::session::repository::get_project_by_path(&abs_canonical)
+        {
             return Ok(project);
         }
     }
@@ -385,7 +386,10 @@ pub async fn auto_name_session(
                     for b in blocks {
                         if let crate::infra::types::models::ContentBlock::Text { text } = b {
                             let t = text.trim().to_string();
-                            if !t.is_empty() { assistant_text = Some(t); break; }
+                            if !t.is_empty() {
+                                assistant_text = Some(t);
+                                break;
+                            }
                         }
                     }
                 }
@@ -462,8 +466,13 @@ pub async fn auto_name_session(
     let char_count = title.chars().count();
     if char_count >= 2 && char_count <= 30 {
         // 额外检查：标题不能是某条原始消息的原文复述
-        let is_verbatim = user_texts.iter().any(|t| t.contains(&title) && t.len() < title.len() * 3)
-            || assistant_text.as_ref().map(|t| t.contains(&title) && t.len() < title.len() * 3).unwrap_or(false);
+        let is_verbatim = user_texts
+            .iter()
+            .any(|t| t.contains(&title) && t.len() < title.len() * 3)
+            || assistant_text
+                .as_ref()
+                .map(|t| t.contains(&title) && t.len() < title.len() * 3)
+                .unwrap_or(false);
         if !is_verbatim {
             let _ = session::rename_session(&session_id, &title, true);
             let _ = app.emit("session-renamed", ());
@@ -510,9 +519,14 @@ pub async fn recall_last_message(
             .ok_or_else(|| "没有可撤回的用户消息".to_string())?
     };
     recall_message(
-        session_id, None, Some(last_user_idx), None,
-        session_manager, app,
-    ).await
+        session_id,
+        None,
+        Some(last_user_idx),
+        None,
+        session_manager,
+        app,
+    )
+    .await
 }
 
 /// 统一撤回入口。recall_last_message / rollback_to_checkpoint_with_recall 均委托至此。
@@ -526,11 +540,12 @@ pub async fn recall_message(
     app: tauri::AppHandle,
 ) -> Result<String, String> {
     let ctx = session_manager.get_or_create(&session_id).await;
-    let stored_target = if let Some(message_id) = message_id.as_ref().filter(|id| !id.trim().is_empty()) {
-        session::find_session_message_by_id(&session_id, message_id)?
-    } else {
-        None
-    };
+    let stored_target =
+        if let Some(message_id) = message_id.as_ref().filter(|id| !id.trim().is_empty()) {
+            session::find_session_message_by_id(&session_id, message_id)?
+        } else {
+            None
+        };
     let recalled_text;
     let is_empty;
     {
@@ -539,7 +554,9 @@ pub async fn recall_message(
         // 压缩后 message_ids 只含摘要 ID，position() 查不到原始消息，必须从 DB 重建。
         let target_msg: Option<Message> = if let Some(stored) = stored_target.as_ref() {
             let visible = session::list_visible_session_messages(&session_id)?;
-            let pos = visible.iter().position(|m| m.seq == stored.seq)
+            let pos = visible
+                .iter()
+                .position(|m| m.seq == stored.seq)
                 .ok_or_else(|| "撤回消息不存在".to_string())?;
             // 撤回目标消息及之后的所有消息，只保留之前的
             let target_content = visible.get(pos).map(|m| m.content.clone());
@@ -801,11 +818,8 @@ pub async fn set_session_thinking_enabled(
     // 3) 组装权威快照
     let model_id = current_main_model(&config_state).await;
     let caps = crate::infra::llm::registry::query_capabilities(&model_id);
-    let snapshot = build_thinking_snapshot(
-        &id,
-        session::thinking::ThinkingMode(enabled),
-        caps.as_ref(),
-    );
+    let snapshot =
+        build_thinking_snapshot(&id, session::thinking::ThinkingMode(enabled), caps.as_ref());
 
     // 4) 广播（带 payload，跨窗口各自过滤 sessionId）
     let _ = app.emit("session-thinking-mode-changed", snapshot.clone());
@@ -857,19 +871,40 @@ pub async fn get_session_context_snapshot(
                                 }
                                 ContentBlock::ToolUse { name, input, .. } => {
                                     let s = serde_json::to_string(input).unwrap_or_default();
-                                    let t = if s.len() > 120 { let mut e=120; while e>0 && !s.is_char_boundary(e) { e-=1; } &s[..e] } else { &s };
+                                    let t = if s.len() > 120 {
+                                        let mut e = 120;
+                                        while e > 0 && !s.is_char_boundary(e) {
+                                            e -= 1;
+                                        }
+                                        &s[..e]
+                                    } else {
+                                        &s
+                                    };
                                     out.push_str(&format!("  → {}({})\n", name, t));
                                 }
-                                ContentBlock::ToolResult { tool_use_id, content: tc } => {
+                                ContentBlock::ToolResult {
+                                    tool_use_id,
+                                    content: tc,
+                                } => {
                                     let sid = &tool_use_id[tool_use_id.len().saturating_sub(12)..];
                                     let lines: Vec<&str> = tc.lines().collect();
                                     let preview = if lines.len() > 2 {
                                         format!("{}\n  …", lines[..2].join("\n"))
-                                    } else { tc.clone() };
+                                    } else {
+                                        tc.clone()
+                                    };
                                     out.push_str(&format!("  ← {}: {}\n", sid, preview));
                                 }
                                 ContentBlock::Thinking { thinking, .. } => {
-                                    let p = if thinking.len() > 80 { let mut e=80; while e>0 && !thinking.is_char_boundary(e) { e-=1; } &thinking[..e] } else { thinking };
+                                    let p = if thinking.len() > 80 {
+                                        let mut e = 80;
+                                        while e > 0 && !thinking.is_char_boundary(e) {
+                                            e -= 1;
+                                        }
+                                        &thinking[..e]
+                                    } else {
+                                        thinking
+                                    };
                                     out.push_str(&format!("  … {}\n", p));
                                 }
                                 ContentBlock::Context { text } => {
@@ -894,28 +929,34 @@ pub async fn get_session_context_snapshot(
             out
         };
         let new_chars = messages_text.chars().count();
-        let token_count = crate::infra::llm::token_count::count_text(
-            &snapshot.model, &messages_text,
-        );
+        let token_count =
+            crate::infra::llm::token_count::count_text(&snapshot.model, &messages_text);
         let messages_json = serde_json::to_string_pretty(&memory.messages).unwrap_or_default();
         // 更新 messages 段
-        let old_msg_chars: usize = snapshot.sections.iter()
+        let old_msg_chars: usize = snapshot
+            .sections
+            .iter()
             .find(|s| s.key == "messages")
             .map(|s| s.chars)
             .unwrap_or(0);
-        snapshot.total_chars = snapshot.total_chars.saturating_sub(old_msg_chars).saturating_add(new_chars);
+        snapshot.total_chars = snapshot
+            .total_chars
+            .saturating_sub(old_msg_chars)
+            .saturating_add(new_chars);
         snapshot.sections.retain(|s| s.key != "messages");
-        snapshot.sections.push(crate::infra::types::models::ContextSectionSnapshot {
-            key: "messages".to_string(),
-            label: "Session Messages".to_string(),
-            chars: new_chars,
-            estimated_tokens: token_count.tokens,
-            token_count_method: token_count.method.as_str().to_string(),
-            item_count: memory.messages.len(),
-            content: messages_text,
-            truncated: false,
-            raw_content: Some(messages_json),
-        });
+        snapshot
+            .sections
+            .push(crate::infra::types::models::ContextSectionSnapshot {
+                key: "messages".to_string(),
+                label: "Session Messages".to_string(),
+                chars: new_chars,
+                estimated_tokens: token_count.tokens,
+                token_count_method: token_count.method.as_str().to_string(),
+                item_count: memory.messages.len(),
+                content: messages_text,
+                truncated: false,
+                raw_content: Some(messages_json),
+            });
         snapshot.estimated_tokens = snapshot.sections.iter().map(|s| s.estimated_tokens).sum();
         snapshot.message_count = memory.messages.len();
     }
@@ -1101,8 +1142,8 @@ pub(crate) fn ensure_session_recovered(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;
-    let stale_cutoff = now_ms
-        .saturating_sub(crate::core::orchestration::agent_runs::RUN_STALE_MS as i64);
+    let stale_cutoff =
+        now_ms.saturating_sub(crate::core::orchestration::agent_runs::RUN_STALE_MS as i64);
     match agent_run_repository::try_claim_run_for_recovery(&run.run_id, stale_cutoff) {
         Ok(true) => {}
         Ok(false) => return false, // 被其它入口/实例抢走：它们正在恢复，直接退出
@@ -1182,7 +1223,6 @@ fn finish_recovery(session_id: &str, memory: &SessionMemory, run_id: &str) -> bo
     true
 }
 
-
 #[tauri::command]
 pub async fn recover_interrupted_session_messages(
     session_id: String,
@@ -1228,10 +1268,7 @@ pub async fn dismiss_background_task(
 }
 
 #[tauri::command]
-pub async fn kill_background_task(
-    task_id: String,
-    app: tauri::AppHandle,
-) -> Result<bool, String> {
+pub async fn kill_background_task(task_id: String, app: tauri::AppHandle) -> Result<bool, String> {
     Ok(crate::infra::background::BackgroundManager::kill_task(&app, &task_id).await)
 }
 
@@ -1309,7 +1346,11 @@ async fn compact_inner(
     let mut memory = ctx.memory.lock().await;
     let keep = crate::infra::types::constants::COMPACT_MIN_MESSAGES;
     if memory.messages.len() <= keep {
-        return Ok(format!("消息不足（仅有 {} 条，下限 {} 条），无需压缩。", memory.messages.len(), keep));
+        return Ok(format!(
+            "消息不足（仅有 {} 条，下限 {} 条），无需压缩。",
+            memory.messages.len(),
+            keep
+        ));
     }
     // 辅助调用统一走带超时的客户端
     let client = api_client::build_utility_client();

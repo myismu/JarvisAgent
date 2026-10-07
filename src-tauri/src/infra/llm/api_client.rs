@@ -25,11 +25,11 @@ use std::time::Duration;
 use serde_json::json;
 use tauri::Emitter;
 
+use crate::infra::llm::api_format::ApiFormat;
 use crate::infra::types::constants::{
     API_NON_STREAM_TIMEOUT_SECS, HTTP_CONNECT_TIMEOUT_SECS, HTTP_TCP_KEEPALIVE_SECS,
 };
 use crate::infra::types::error::ApiError;
-use crate::infra::llm::api_format::ApiFormat;
 
 /// 统一构造 HTTP 客户端（带连接超时与 TCP keepalive）。
 ///
@@ -82,13 +82,10 @@ pub(crate) async fn send_non_stream_and_read_with_timeout(
     timeout_secs: u64,
 ) -> Result<(u16, String), ApiError> {
     let future = async {
-        let res = req
-            .send()
-            .await
-            .map_err(|e| {
-                // 打全成因链：只写 e.to_string() 会丢掉 connect/tls/body 等底层原因
-                ApiError::Network(format!("{e:#}"))
-            })?;
+        let res = req.send().await.map_err(|e| {
+            // 打全成因链：只写 e.to_string() 会丢掉 connect/tls/body 等底层原因
+            ApiError::Network(format!("{e:#}"))
+        })?;
         let status = res.status();
         let body = res
             .text()
@@ -138,7 +135,9 @@ fn retry_backoff_secs(attempt: u32) -> u64 {
     if attempt == 0 {
         return 0;
     }
-    let idx = (attempt as usize).saturating_sub(1).min(RETRY_BACKOFF_SECS.len() - 1);
+    let idx = (attempt as usize)
+        .saturating_sub(1)
+        .min(RETRY_BACKOFF_SECS.len() - 1);
     RETRY_BACKOFF_SECS[idx]
 }
 
@@ -283,7 +282,11 @@ pub async fn api_call_with_retry(
                 // 拿不到 `Connection refused`。既然区分不可靠，就不做区分：
                 // 统一走退避重试（也覆盖"服务正在启动、稍后就绪"的情况）。
                 last_error = format!("网络错误: {}", describe_network_error(&e));
-                println!("[JARVIS] API 请求失败（第 {} 次）: {}", attempt + 1, last_error);
+                println!(
+                    "[JARVIS] API 请求失败（第 {} 次）: {}",
+                    attempt + 1,
+                    last_error
+                );
             }
         }
     }
@@ -345,9 +348,7 @@ pub async fn call_llm_simple(
                 top_p: None,
             };
             // 工具调用不需要深度思考，显式关闭（避免 DeepSeek 等默认开启的模型浪费 token）
-            crate::infra::llm::registry::apply_thinking_for_model(
-                &mut openai_req, model_id, false,
-            );
+            crate::infra::llm::registry::apply_thinking_for_model(&mut openai_req, model_id, false);
             (serde_json::to_value(openai_req).unwrap(), true)
         }
         ApiFormat::Anthropic => (serde_json::to_value(request_body).unwrap(), false),
@@ -366,8 +367,7 @@ pub async fn call_llm_simple(
     log_model_request(model_id, base_url, "主agent");
 
     let label = format!("非流式调用({})", model_id);
-    let (status, response_text) =
-        send_non_stream_and_read(req.json(&req_json), &label).await?;
+    let (status, response_text) = send_non_stream_and_read(req.json(&req_json), &label).await?;
 
     if !(200..300).contains(&status) {
         return Err(ApiError::HttpError {
@@ -444,9 +444,7 @@ pub async fn call_llm_with_messages(
                 temperature: None,
                 top_p: None,
             };
-            crate::infra::llm::registry::apply_thinking_for_model(
-                &mut openai_req, model_id, false,
-            );
+            crate::infra::llm::registry::apply_thinking_for_model(&mut openai_req, model_id, false);
             (serde_json::to_value(openai_req).unwrap(), true)
         }
         ApiFormat::Anthropic => (serde_json::to_value(request_body).unwrap(), false),
@@ -465,8 +463,7 @@ pub async fn call_llm_with_messages(
     log_model_request(model_id, base_url, "审查 Agent");
 
     let label = format!("非流式调用({})", model_id);
-    let (status, response_text) =
-        send_non_stream_and_read(req.json(&req_json), &label).await?;
+    let (status, response_text) = send_non_stream_and_read(req.json(&req_json), &label).await?;
 
     if !(200..300).contains(&status) {
         return Err(ApiError::HttpError {
@@ -495,9 +492,7 @@ pub async fn call_llm_with_messages(
 
 #[cfg(test)]
 mod retry_policy_tests {
-    use super::{
-        describe_network_error, retry_backoff_secs, MAX_API_RETRIES, RETRY_BACKOFF_SECS,
-    };
+    use super::{describe_network_error, retry_backoff_secs, MAX_API_RETRIES, RETRY_BACKOFF_SECS};
 
     /// 退避阶梯必须是固定且递增的，且不含首跳长等待 ——
     /// "首次 15 秒宽限"由 `HTTP_CONNECT_TIMEOUT_SECS` 承担，不再放进阶梯。
@@ -551,7 +546,10 @@ mod retry_policy_tests {
     /// 超出阶梯时沿用最后一级，不得 panic 或返回 0（返回 0 会变成忙重试）
     #[test]
     fn backoff_saturates_beyond_ladder() {
-        assert_eq!(retry_backoff_secs(99), RETRY_BACKOFF_SECS[RETRY_BACKOFF_SECS.len() - 1]);
+        assert_eq!(
+            retry_backoff_secs(99),
+            RETRY_BACKOFF_SECS[RETRY_BACKOFF_SECS.len() - 1]
+        );
     }
 
     /// **文案回归**：连接失败必须给出可读结论，而不是把 reqwest 的

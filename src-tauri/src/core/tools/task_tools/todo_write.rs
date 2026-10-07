@@ -1,6 +1,6 @@
-﻿use crate::infra::types::models::{TodoItem, TodoStatus};
 use crate::core::tools::framework;
 use crate::core::tools::framework::registry::ToolDef;
+use crate::infra::types::models::{TodoItem, TodoStatus};
 use serde_json::json;
 use tauri::{Emitter, Manager};
 
@@ -139,11 +139,13 @@ pub async fn todo_write(
     let todos = match parse_todos(input) {
         Ok(todos) => todos,
         Err(e) => {
-            return framework::ToolCallResult::error(serde_json::json!({
-                "success": false,
-                "error": e
-            })
-            .to_string());
+            return framework::ToolCallResult::error(
+                serde_json::json!({
+                    "success": false,
+                    "error": e
+                })
+                .to_string(),
+            );
         }
     };
 
@@ -153,15 +155,16 @@ pub async fn todo_write(
             .all(|todo| todo.status == TodoStatus::Completed);
     let visible_todos = if all_done { Vec::new() } else { todos.clone() };
 
-    let old_todos = if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
-        let ctx = manager.get_or_create(session_id).await;
-        let mut state = ctx.todos.lock().await;
-        let old = state.clone();
-        *state = visible_todos.clone();
-        old
-    } else {
-        Vec::new()
-    };
+    let old_todos =
+        if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
+            let ctx = manager.get_or_create(session_id).await;
+            let mut state = ctx.todos.lock().await;
+            let old = state.clone();
+            *state = visible_todos.clone();
+            old
+        } else {
+            Vec::new()
+        };
 
     let _ = app.emit(
         "todo-update",

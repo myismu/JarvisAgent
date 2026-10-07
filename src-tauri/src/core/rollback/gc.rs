@@ -1,4 +1,4 @@
-﻿//! 垃圾回收模块
+//! 垃圾回收模块
 //!
 //! 清理过期快照、孤立分支和孤儿内容，释放存储空间。
 //!
@@ -225,9 +225,9 @@ impl GarbageCollector {
 /// 这条锁的是"删早了会让回滚缺本体"的风险 —— 判据只能是引用，不能是时间/大小。
 #[cfg(test)]
 mod trash_gc_tests {
-    use super::*;
     use super::super::patch::Patch;
     use super::super::snapshot::Snapshot;
+    use super::*;
 
     #[test]
     fn gc_removes_only_unreferenced_trash_entries() {
@@ -272,7 +272,10 @@ mod trash_gc_tests {
         let gc = GarbageCollector::new(GcConfig::default());
         let result = gc.collect(&mut tree, session);
 
-        assert!(kept.exists(), "被快照引用的回收站条目必须留下，否则回滚会缺本体");
+        assert!(
+            kept.exists(),
+            "被快照引用的回收站条目必须留下，否则回滚会缺本体"
+        );
         assert!(!stale.exists(), "没有被引用的回收站条目应被清掉");
         assert_eq!(result.removed_trash_entries, 1);
         let _ = std::fs::remove_dir_all(&root);
@@ -290,8 +293,8 @@ fn current_timestamp() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::snapshot::{Branch, Snapshot, SnapshotTree};
+    use super::*;
     use std::collections::HashMap;
 
     fn make_snapshot(id: &str, branch: &str, created_at: u64) -> Snapshot {
@@ -342,8 +345,16 @@ mod tests {
         };
         let gc = GarbageCollector::new(config);
         // 时间戳口径为毫秒：40 天 = 40 * 24 * 60 * 60 * 1000 毫秒
-        let old = make_snapshot("old", "main", current_timestamp() - 40 * 24 * 60 * 60 * 1000);
-        let recent = make_snapshot("recent", "main", current_timestamp() - 5 * 24 * 60 * 60 * 1000);
+        let old = make_snapshot(
+            "old",
+            "main",
+            current_timestamp() - 40 * 24 * 60 * 60 * 1000,
+        );
+        let recent = make_snapshot(
+            "recent",
+            "main",
+            current_timestamp() - 5 * 24 * 60 * 60 * 1000,
+        );
         assert!(gc.should_remove(&old));
         assert!(!gc.should_remove(&recent));
     }
@@ -366,8 +377,10 @@ mod tests {
         let mut tree = make_tree();
         let s1 = make_snapshot("s1", "main", current_timestamp());
         tree.nodes.insert("s1".into(), s1);
-        tree.branches.insert("main".into(), make_branch("main", "s1"));
-        tree.branches.insert("orphan".into(), make_branch("orphan", "missing"));
+        tree.branches
+            .insert("main".into(), make_branch("main", "s1"));
+        tree.branches
+            .insert("orphan".into(), make_branch("orphan", "missing"));
         let orphans = gc.find_orphan_branches(&tree);
         assert_eq!(orphans, vec!["orphan"]);
     }

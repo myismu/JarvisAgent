@@ -55,7 +55,9 @@ fn migrate_v8_agent_runs_message_id(conn: &Connection) -> Result<(), rusqlite::E
 fn migrate_v6_add_session_message_id(conn: &Connection) -> Result<(), rusqlite::Error> {
     // 新数据库表尚未创建 → 跳过
     let table_exists: bool = conn
-        .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_messages'")
+        .prepare(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_messages'",
+        )
         .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
         .map(|c| c > 0)
         .unwrap_or(false);
@@ -71,7 +73,10 @@ fn migrate_v6_add_session_message_id(conn: &Connection) -> Result<(), rusqlite::
     drop(stmt);
 
     if !has_message_id {
-        conn.execute("ALTER TABLE session_messages ADD COLUMN message_id TEXT", [])?;
+        conn.execute(
+            "ALTER TABLE session_messages ADD COLUMN message_id TEXT",
+            [],
+        )?;
     }
 
     let rows: Vec<(i64, String, i64)> = {
@@ -111,7 +116,9 @@ fn migrate_v6_add_session_message_id(conn: &Connection) -> Result<(), rusqlite::
 fn migrate_v7_decouple_session_messages(conn: &Connection) -> Result<(), rusqlite::Error> {
     // 新数据库表尚未创建 → 跳过
     let table_exists: bool = conn
-        .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_messages'")
+        .prepare(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_messages'",
+        )
         .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
         .map(|c| c > 0)
         .unwrap_or(false);
@@ -119,11 +126,7 @@ fn migrate_v7_decouple_session_messages(conn: &Connection) -> Result<(), rusqlit
         return Ok(());
     }
 
-    fn has_column(
-        conn: &Connection,
-        table: &str,
-        column: &str,
-    ) -> Result<bool, rusqlite::Error> {
+    fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, rusqlite::Error> {
         let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
         let has_column = stmt
             .query_map([], |row| row.get::<_, String>(1))?
@@ -160,12 +163,18 @@ fn migrate_v7_decouple_session_messages(conn: &Connection) -> Result<(), rusqlit
     ] {
         // 表可能不存在（新数据库已改为 agent_run_patches）→ 先检查表
         let table_exists: bool = conn
-            .prepare(&format!("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='{}'", table))
+            .prepare(&format!(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='{}'",
+                table
+            ))
             .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
             .map(|c| c > 0)
             .unwrap_or(false);
         if table_exists && !has_column(conn, table, column)? {
-            conn.execute(&format!("ALTER TABLE {} ADD COLUMN {}", table, definition), [])?;
+            conn.execute(
+                &format!("ALTER TABLE {} ADD COLUMN {}", table, definition),
+                [],
+            )?;
         }
     }
 
@@ -581,8 +590,7 @@ fn scale_json_map_timestamps(
         return Ok(());
     }
     let rows: Vec<(String, String)> = {
-        let mut stmt =
-            conn.prepare(&format!("SELECT {key_column}, {json_column} FROM {table}"))?;
+        let mut stmt = conn.prepare(&format!("SELECT {key_column}, {json_column} FROM {table}"))?;
         let collected = stmt
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -642,8 +650,7 @@ fn scale_json_root_timestamp(
     }
     // 主键是 INTEGER，按 i64 读出
     let rows: Vec<(i64, String)> = {
-        let mut stmt =
-            conn.prepare(&format!("SELECT {key_column}, {json_column} FROM {table}"))?;
+        let mut stmt = conn.prepare(&format!("SELECT {key_column}, {json_column} FROM {table}"))?;
         let collected = stmt
             .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -692,8 +699,7 @@ fn scale_json_array_timestamps(
         return Ok(());
     }
     let rows: Vec<(String, String)> = {
-        let mut stmt =
-            conn.prepare(&format!("SELECT {key_column}, {json_column} FROM {table}"))?;
+        let mut stmt = conn.prepare(&format!("SELECT {key_column}, {json_column} FROM {table}"))?;
         let collected = stmt
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -931,7 +937,10 @@ fn migrate_v19_drop_unused_run_columns(conn: &Connection) -> Result<(), rusqlite
             columns.iter().any(|c| c == column)
         };
         if column_exists {
-            conn.execute(&format!("ALTER TABLE agent_runs DROP COLUMN {}", column), [])?;
+            conn.execute(
+                &format!("ALTER TABLE agent_runs DROP COLUMN {}", column),
+                [],
+            )?;
         }
     }
     Ok(())
@@ -1032,7 +1041,9 @@ fn migrate_v20_add_agent_runs_interrupt_kind(conn: &Connection) -> Result<(), ru
 fn migrate_v21_message_source_and_drop_turn_id(conn: &Connection) -> Result<(), rusqlite::Error> {
     // ⚠️ 表可能不存在（迁移测试的最小桩库只建 sessions/app_state），先探表
     let table_exists = conn
-        .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'session_messages'")
+        .prepare(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'session_messages'",
+        )
         .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
         .map(|count| count > 0)
         .unwrap_or(false);
@@ -1088,7 +1099,9 @@ fn migrate_v21_message_source_and_drop_turn_id(conn: &Connection) -> Result<(), 
 fn migrate_v22_add_reflection_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
     // ⚠️ 表可能不存在（迁移测试的最小桩库只建 sessions/app_state），先探表再探列
     let table_exists = conn
-        .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'agent_run_events'")
+        .prepare(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'agent_run_events'",
+        )
         .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
         .map(|count| count > 0)
         .unwrap_or(false);
@@ -1142,7 +1155,9 @@ fn migrate_v22_add_reflection_columns(conn: &Connection) -> Result<(), rusqlite:
 fn migrate_v23_backfill_interrupt_kind(conn: &Connection) -> Result<(), rusqlite::Error> {
     // ⚠️ 表可能不存在（迁移测试的最小桩库只建 sessions/app_state），先探表再探列
     let table_exists = conn
-        .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'session_messages'")
+        .prepare(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'session_messages'",
+        )
         .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
         .map(|count| count > 0)
         .unwrap_or(false);
@@ -1214,14 +1229,15 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
     // 因此新库不跑迁移也是同构的。
     if current_version > 0 {
         // 执行迁移
-            if current_version < 3 {
+        if current_version < 3 {
             migrate_v3_drop_deprecated_tables(conn).map_err(|e| format!("v3 迁移失败: {}", e))?;
         }
         if current_version < 6 {
             migrate_v6_add_session_message_id(conn).map_err(|e| format!("v6 迁移失败: {}", e))?;
         }
         if current_version < 7 {
-            migrate_v7_decouple_session_messages(conn).map_err(|e| format!("v7 迁移失败: {}", e))?;
+            migrate_v7_decouple_session_messages(conn)
+                .map_err(|e| format!("v7 迁移失败: {}", e))?;
         }
         if current_version < 8 {
             migrate_v8_agent_runs_message_id(conn).map_err(|e| format!("v8 迁移失败: {}", e))?;
@@ -1278,20 +1294,17 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
                 .map_err(|e| format!("v13 迁移失败: {}", e))?;
         }
         if current_version < 14 {
-            migrate_v14_thinking_mode_to_bool(conn)
-                .map_err(|e| format!("v14 迁移失败: {}", e))?;
+            migrate_v14_thinking_mode_to_bool(conn).map_err(|e| format!("v14 迁移失败: {}", e))?;
         }
         if current_version < 15 {
             migrate_v15_agent_run_events_per_loop(conn)
                 .map_err(|e| format!("v15 迁移失败: {}", e))?;
         }
         if current_version < 16 {
-            migrate_v16_timestamps_to_millis(conn)
-                .map_err(|e| format!("v16 迁移失败: {}", e))?;
+            migrate_v16_timestamps_to_millis(conn).map_err(|e| format!("v16 迁移失败: {}", e))?;
         }
         if current_version < 17 {
-            migrate_v17_add_interrupt_kind(conn)
-                .map_err(|e| format!("v17 迁移失败: {}", e))?;
+            migrate_v17_add_interrupt_kind(conn).map_err(|e| format!("v17 迁移失败: {}", e))?;
         }
         if current_version < 18 {
             migrate_v18_drop_agent_runs_interrupt_kind(conn)
@@ -1310,8 +1323,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
                 .map_err(|e| format!("v21 迁移失败: {}", e))?;
         }
         if current_version < 22 {
-            migrate_v22_add_reflection_columns(conn)
-                .map_err(|e| format!("v22 迁移失败: {}", e))?;
+            migrate_v22_add_reflection_columns(conn).map_err(|e| format!("v22 迁移失败: {}", e))?;
         }
         if current_version < 23 {
             migrate_v23_backfill_interrupt_kind(conn)
@@ -1628,9 +1640,11 @@ mod tests {
             "升级到最新版后 thinking_mode 必须是布尔列（v14）"
         );
         let value: i64 = conn
-            .query_row("SELECT thinking_mode FROM sessions WHERE id = 's1'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT thinking_mode FROM sessions WHERE id = 's1'",
+                [],
+                |r| r.get(0),
+            )
             .expect("read legacy row");
         assert_eq!(value, 0, "v10 老会话无有效表态，按保守口径转为关闭");
 
@@ -1653,9 +1667,11 @@ mod tests {
             .expect("set mode");
         init_schema(&conn).expect("re-init idempotent");
         let after: i64 = conn
-            .query_row("SELECT thinking_mode FROM sessions WHERE id = 's1'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT thinking_mode FROM sessions WHERE id = 's1'",
+                [],
+                |r| r.get(0),
+            )
             .expect("re-read");
         assert_eq!(after, 1, "重复初始化不得清掉用户表态");
     }
@@ -1761,9 +1777,11 @@ mod tests {
         init_schema(&conn).expect("re-init");
 
         let value: i64 = conn
-            .query_row("SELECT thinking_mode FROM sessions WHERE id = 's1'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT thinking_mode FROM sessions WHERE id = 's1'",
+                [],
+                |r| r.get(0),
+            )
             .expect("read thinking_mode");
         assert_eq!(value, 1, "重复初始化不得清掉用户表态");
     }
@@ -1905,7 +1923,11 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("read version");
-        assert!(version >= 13, "v13 升级后版本号至少到 13（实际 {}）", version);
+        assert!(
+            version >= 13,
+            "v13 升级后版本号至少到 13（实际 {}）",
+            version
+        );
 
         // 幂等：再次初始化不报错，且不破坏已有值
         conn.execute_batch(
@@ -2070,8 +2092,16 @@ mod tests {
             "inject",
             "其余 internal 是写给模型看的注入，必须迁到 inject —— 这是 A 类缺陷的修复点"
         );
-        assert_eq!(source_of("m4"), "placeholder", "background 旧口径两侧都不可见");
-        assert_eq!(source_of("m5"), "inject", "context 旧口径模型可见、界面不可见");
+        assert_eq!(
+            source_of("m4"),
+            "placeholder",
+            "background 旧口径两侧都不可见"
+        );
+        assert_eq!(
+            source_of("m5"),
+            "inject",
+            "context 旧口径模型可见、界面不可见"
+        );
         assert_eq!(source_of("m6"), "compact", "无关取值不得被动到");
 
         // 2. turn_id 列与索引都消失
@@ -2124,7 +2154,11 @@ mod tests {
         migrate_v21_message_source_and_drop_turn_id(&conn).expect("第一次");
         migrate_v21_message_source_and_drop_turn_id(&conn).expect("第二次必须同样成功");
         let source: String = conn
-            .query_row("SELECT source FROM session_messages WHERE message_id='m1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT source FROM session_messages WHERE message_id='m1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(source, "inject");
     }
@@ -2183,7 +2217,10 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("旧行必须保留");
-        assert_eq!(judgment, None, "旧行留 NULL（= 早于本次迁移或该轮未触发反思）");
+        assert_eq!(
+            judgment, None,
+            "旧行留 NULL（= 早于本次迁移或该轮未触发反思）"
+        );
 
         // 幂等
         migrate_v22_add_reflection_columns(&conn).expect("第二次必须同样成功");
@@ -2317,15 +2354,7 @@ mod tests {
                 "SELECT status, loop_count, input_tokens, output_tokens, resumable
                  FROM agent_runs WHERE run_id = 'ar_1'",
                 [],
-                |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                    ))
-                },
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .expect("legacy run row must survive");
         assert_eq!(status, "completed");
@@ -2362,7 +2391,11 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("read version");
-        assert!(version >= 15, "v15 升级后版本号至少到 15（实际 {}）", version);
+        assert!(
+            version >= 15,
+            "v15 升级后版本号至少到 15（实际 {}）",
+            version
+        );
 
         // 6. 幂等：重复初始化不报错、不破坏数据
         init_schema(&conn).expect("re-init idempotent");
@@ -2386,8 +2419,11 @@ mod tests {
         // sessions.profile_id / session_messages.turn_id 等列，桩缺列会导致建索引失败），
         // 再把版本号改回 15、塞入秒级数据，模拟"真实的 v15 库"。
         init_schema(&conn).expect("create fresh schema");
-        conn.execute("UPDATE app_state SET value = '15' WHERE key = 'schema_version'", [])
-            .expect("fake v15");
+        conn.execute(
+            "UPDATE app_state SET value = '15' WHERE key = 'schema_version'",
+            [],
+        )
+        .expect("fake v15");
 
         conn.execute_batch(
             "INSERT INTO sessions(id, title, created_at, updated_at, message_count)
@@ -2499,16 +2535,18 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("read version");
-        assert!(version >= 16, "v16 升级后版本号至少到 16（实际 {}）", version);
+        assert!(
+            version >= 16,
+            "v16 升级后版本号至少到 16（实际 {}）",
+            version
+        );
 
         // 4. 幂等：重复初始化不得把毫秒再放大一次（秒级阈值守卫）
         init_schema(&conn).expect("re-init idempotent");
         let created_again: i64 = conn
-            .query_row(
-                "SELECT created_at FROM sessions WHERE id = 's1'",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT created_at FROM sessions WHERE id = 's1'", [], |r| {
+                r.get(0)
+            })
             .expect("re-read sessions");
         assert_eq!(
             created_again, 1_700_000_000_000,

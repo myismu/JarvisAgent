@@ -19,18 +19,22 @@ pub(super) fn optional_i32_vec(input: &serde_json::Value, key: &str) -> Option<V
 
 pub(super) fn task_delete_inner(session_id: &str, id: i32) -> framework::ToolCallResult {
     match TaskManager::for_session(session_id).delete(id) {
-        Ok(deleted) => framework::ToolCallResult::ok(serde_json::json!({
-            "success": deleted,
-            "taskId": id,
-            "updatedFields": ["deleted"],
-            "statusChange": { "from": "unknown", "to": "deleted" },
-        })
-        .to_string()),
-        Err(e) => framework::ToolCallResult::error(serde_json::json!({
-            "success": false,
-            "taskId": id,
-            "error": e
-        })
-        .to_string()),
+        Ok(deleted) => framework::ToolCallResult::ok(
+            serde_json::json!({
+                "success": deleted,
+                "taskId": id,
+                "updatedFields": ["deleted"],
+                "statusChange": { "from": "unknown", "to": "deleted" },
+            })
+            .to_string(),
+        ),
+        Err(e) => framework::ToolCallResult::error(
+            serde_json::json!({
+                "success": false,
+                "taskId": id,
+                "error": e
+            })
+            .to_string(),
+        ),
     }
 }

@@ -1,4 +1,4 @@
-﻿//! # switch_mode.rs — 工作模式切换工具
+//! # switch_mode.rs — 工作模式切换工具
 //!
 //! Agent 可在运行中通过此工具切换 WorkMode（edit/plan），Audience（user/developer）不变。
 //!
@@ -30,7 +30,10 @@ pub async fn switch_work_mode(
     }
 
     if current_mode == target_mode {
-        return framework::ToolCallResult::ok(format!("当前已经处于「{}」模式，无需切换。", current_mode));
+        return framework::ToolCallResult::ok(format!(
+            "当前已经处于「{}」模式，无需切换。",
+            current_mode
+        ));
     }
 
     *ctx.agent_work_mode.lock().await = target_mode.clone();

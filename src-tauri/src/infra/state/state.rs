@@ -23,8 +23,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::infra::types::models::SessionMemory;
 use crate::core::rollback::session_manager::SnapshotManagerRegistry;
+use crate::infra::types::models::SessionMemory;
 
 pub struct WorkspaceState(pub Mutex<Option<std::path::PathBuf>>);
 
@@ -113,9 +113,8 @@ pub struct PendingPermission {
     /// 只用于前端把风险行做弱化的视觉分级（琥珀色小字），不参与任何判定逻辑。
     pub warning: Option<String>,
     /// 决策发送端（结构化决策，不是字符串）
-    pub responder: tokio::sync::oneshot::Sender<
-        crate::core::tools::framework::permission::PermissionDecision,
-    >,
+    pub responder:
+        tokio::sync::oneshot::Sender<crate::core::tools::framework::permission::PermissionDecision>,
 }
 
 pub struct SessionContext {
@@ -175,8 +174,7 @@ pub struct SessionContext {
     /// 由 dispatch_tool_call 写入，tools_runner 读取后清除
     pub tool_result_flags: Mutex<HashMap<String, (bool, bool)>>,
     /// 权限判定的"本轮"状态（本轮改过哪些文件）——给批量规则用
-    pub permission_turn:
-        Mutex<crate::core::tools::framework::policy_guard::PermissionTurnState>,
+    pub permission_turn: Mutex<crate::core::tools::framework::policy_guard::PermissionTurnState>,
     /// 权限档位："request_approval"（请求审批，默认）/ "auto_approve"（帮我批准）
     pub approval_mode: Mutex<String>,
     /// 本会话已允许的范围（内存态，会话结束即失效）
@@ -312,18 +310,14 @@ impl SessionContext {
 
     pub async fn allowance_covers(&self, kind: &str, scope: &str) -> bool {
         let file_kind = kind != crate::core::tools::framework::policy_guard::ALLOWANCE_KIND_COMMAND;
-        self.session_allowances
-            .lock()
-            .await
-            .iter()
-            .any(|a| {
-                a.kind == kind
-                    && if file_kind {
-                        crate::core::tools::framework::policy_guard::scope_covers(&a.scope, scope)
-                    } else {
-                        a.scope == scope
-                    }
-            })
+        self.session_allowances.lock().await.iter().any(|a| {
+            a.kind == kind
+                && if file_kind {
+                    crate::core::tools::framework::policy_guard::scope_covers(&a.scope, scope)
+                } else {
+                    a.scope == scope
+                }
+        })
     }
 }
 
@@ -359,9 +353,21 @@ impl SessionManager {
         // 注意：这三个字段仍是纯内存态（不落库），这里只是把"出厂默认"换成"用户设置的默认"。
         {
             let prefs = crate::command::app_config::read_file().ui_preferences;
-            let work_mode = if prefs.agent_work_mode == "plan" { "plan" } else { "edit" };
-            let approval = if prefs.agent_approval_mode == "auto_approve" { "auto_approve" } else { "request_approval" };
-            let audience = if prefs.agent_audience == "user" { "user" } else { "developer" };
+            let work_mode = if prefs.agent_work_mode == "plan" {
+                "plan"
+            } else {
+                "edit"
+            };
+            let approval = if prefs.agent_approval_mode == "auto_approve" {
+                "auto_approve"
+            } else {
+                "request_approval"
+            };
+            let audience = if prefs.agent_audience == "user" {
+                "user"
+            } else {
+                "developer"
+            };
             *ctx.agent_work_mode.lock().await = work_mode.to_string();
             *ctx.approval_mode.lock().await = approval.to_string();
             *ctx.agent_audience.lock().await = audience.to_string();
@@ -386,9 +392,7 @@ impl SessionManager {
         if let Ok(meta) = crate::core::session::get_session_meta(session_id) {
             // 存量记录可能带 \\?\ 前缀，绑定前剥离（下游报错文案与显示才干净）
             *ctx.workspace.lock().await = meta.working_directory.map(|ws| {
-                std::path::PathBuf::from(
-                    crate::core::session::strip_extended_path_prefix(&ws),
-                )
+                std::path::PathBuf::from(crate::core::session::strip_extended_path_prefix(&ws))
             });
             // 深度思考档位随会话恢复（布尔）。已在建会话/首次发消息时固化为确定值，
             // 因此直接取库值即可，无需再解析"设置默认"。

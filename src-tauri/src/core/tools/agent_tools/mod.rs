@@ -24,8 +24,8 @@ mod switch_mode;
 
 pub use compact::compact;
 pub use memory::{
-    consolidate_memory, extract_profile, read_memory, update_memory,
-    MEMORY_BUDGET_CHARS, MEMORY_CONSOLIDATE_THRESHOLD_CHARS, MEMORY_SECTIONS, PROFILE_SECTIONS,
+    consolidate_memory, extract_profile, read_memory, update_memory, MEMORY_BUDGET_CHARS,
+    MEMORY_CONSOLIDATE_THRESHOLD_CHARS, MEMORY_SECTIONS, PROFILE_SECTIONS,
 };
 pub use plan::propose_plan;
 pub use skill::load_skill;
@@ -91,12 +91,17 @@ pub async fn get_tool_catalog(
             .map(|s| s.name.to_string())
             .collect();
         if !active_skills.is_empty() {
-            out.push_str(&format!("\n【可用技能】（通过 LoadSkill 加载）:\n- {}\n", active_skills.join(", ")));
+            out.push_str(&format!(
+                "\n【可用技能】（通过 LoadSkill 加载）:\n- {}\n",
+                active_skills.join(", ")
+            ));
         }
     }
 
     if out.is_empty() {
-        return framework::ToolCallResult::error("当前意图下没有可用的按需工具或技能。".to_string());
+        return framework::ToolCallResult::error(
+            "当前意图下没有可用的按需工具或技能。".to_string(),
+        );
     }
 
     out.push_str("\n使用方式:\n- 按需工具: 先 DiscoverTools 查询参数，再 ExecuteTool(name=\"工具名\", args={...}) 执行");

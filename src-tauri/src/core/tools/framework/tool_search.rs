@@ -81,10 +81,7 @@ pub fn get_deferred_tool_search_entries(
 }
 
 /// 按名称获取一个按需工具的完整 JSON Schema
-pub fn get_deferred_tool_full_schema(
-    name: &str,
-    filter: &ToolFilter,
-) -> Option<serde_json::Value> {
+pub fn get_deferred_tool_full_schema(name: &str, filter: &ToolFilter) -> Option<serde_json::Value> {
     ToolRegistry::global().get_deferred_full_schema(name, filter)
 }
 
@@ -221,14 +218,21 @@ pub async fn handle_execute_tool(
         Some(n) => n,
         None => {
             logger.log_deferred_call(
-                session_id, agent_type, "", input, intent, work_mode,
+                session_id,
+                agent_type,
+                "",
+                input,
+                intent,
+                work_mode,
                 super::tool_call_logger::ToolCallStatus::Error,
                 Some(super::tool_call_logger::ErrorType::MissingParam),
                 Some("缺少必填参数 'name'".to_string()),
                 false,
                 super::tool_call_logger::TokenUsage::NONE,
             );
-            return super::ToolCallResult::error("缺少必填参数 'name'（要执行的工具名称）。".to_string());
+            return super::ToolCallResult::error(
+                "缺少必填参数 'name'（要执行的工具名称）。".to_string(),
+            );
         }
     };
     let args = input.get("args").cloned().unwrap_or(serde_json::json!({}));
@@ -241,21 +245,34 @@ pub async fn handle_execute_tool(
         Some(def) => def,
         None => {
             logger.log_deferred_call(
-                session_id, agent_type, name, &input, intent, work_mode,
+                session_id,
+                agent_type,
+                name,
+                &input,
+                intent,
+                work_mode,
                 super::tool_call_logger::ToolCallStatus::Error,
                 Some(super::tool_call_logger::ErrorType::ToolNotFound),
                 Some(format!("工具 '{}' 不存在", name)),
                 searched_before,
                 super::tool_call_logger::TokenUsage::NONE,
             );
-            return super::ToolCallResult::error(format!("工具 '{}' 不存在。请使用 DiscoverTools 查询可用工具。", name));
+            return super::ToolCallResult::error(format!(
+                "工具 '{}' 不存在。请使用 DiscoverTools 查询可用工具。",
+                name
+            ));
         }
     };
 
     // 校验：是否为按需工具
     if !tool_def.should_defer {
         logger.log_deferred_call(
-            session_id, agent_type, name, &input, intent, work_mode,
+            session_id,
+            agent_type,
+            name,
+            &input,
+            intent,
+            work_mode,
             super::tool_call_logger::ToolCallStatus::Error,
             Some(super::tool_call_logger::ErrorType::NotDeferred),
             Some(format!("工具 '{}' 是核心工具", name)),
@@ -289,10 +306,18 @@ pub async fn handle_execute_tool(
             )
         };
         logger.log_deferred_call(
-            session_id, agent_type, name, &input, intent, work_mode,
+            session_id,
+            agent_type,
+            name,
+            &input,
+            intent,
+            work_mode,
             super::tool_call_logger::ToolCallStatus::Error,
             Some(super::tool_call_logger::ErrorType::IntentBlocked),
-            Some(format!("工具 '{}' 在 {} 意图 / {} 模式下不可用", name, intent, work_mode)),
+            Some(format!(
+                "工具 '{}' 在 {} 意图 / {} 模式下不可用",
+                name, intent, work_mode
+            )),
             searched_before,
             super::tool_call_logger::TokenUsage::NONE,
         );
@@ -303,25 +328,27 @@ pub async fn handle_execute_tool(
     if crate::core::tools::should_block_write_tool(name, intent, work_mode) {
         let msg = "当前状态下只能使用只读工具。";
         logger.log_deferred_call(
-            session_id, agent_type, name, &input, intent, work_mode,
+            session_id,
+            agent_type,
+            name,
+            &input,
+            intent,
+            work_mode,
             super::tool_call_logger::ToolCallStatus::Blocked,
             Some(super::tool_call_logger::ErrorType::ModeBlocked),
             Some(msg.to_string()),
             searched_before,
             super::tool_call_logger::TokenUsage::NONE,
         );
-        return super::ToolCallResult::error(format!("工具 '{}' 在当前状态下不可用。{}", name, msg));
+        return super::ToolCallResult::error(format!(
+            "工具 '{}' 在当前状态下不可用。{}",
+            name, msg
+        ));
     }
 
     // 执行工具（调用 dispatch_tool_call 避免递归）
     let result = crate::core::tools::dispatch_tool_call(
-        app,
-        name,
-        &args,
-        session_id,
-        intent,
-        work_mode,
-        agent_type,
+        app, name, &args, session_id, intent, work_mode, agent_type,
     )
     .await;
 
@@ -331,7 +358,12 @@ pub async fn handle_execute_tool(
     // （见 TokenUsage 的说明；用法由 ToolCallResult::with_usage 写入）。
     if result.is_error {
         logger.log_deferred_call(
-            session_id, agent_type, name, &input, intent, work_mode,
+            session_id,
+            agent_type,
+            name,
+            &input,
+            intent,
+            work_mode,
             super::tool_call_logger::ToolCallStatus::Error,
             Some(super::tool_call_logger::ErrorType::ExecutionFailed),
             Some(result.output.chars().take(500).collect()),
@@ -340,9 +372,15 @@ pub async fn handle_execute_tool(
         );
     } else {
         logger.log_deferred_call(
-            session_id, agent_type, name, &input, intent, work_mode,
+            session_id,
+            agent_type,
+            name,
+            &input,
+            intent,
+            work_mode,
             super::tool_call_logger::ToolCallStatus::Ok,
-            None, None,
+            None,
+            None,
             searched_before,
             super::tool_call_logger::TokenUsage::new(result.input_tokens, result.output_tokens),
         );
@@ -428,21 +466,24 @@ mod tests {
 
     #[test]
     fn test_search_select_exact() {
-        let deferred = get_deferred_tool_search_entries("PROJECT_ACTION", "edit", &ToolFilter::allow_all());
+        let deferred =
+            get_deferred_tool_search_entries("PROJECT_ACTION", "edit", &ToolFilter::allow_all());
         let result = search_deferred_tools("select:ReadFileSkeleton,WriteFile", &deferred, 5);
         assert_eq!(result, vec!["ReadFileSkeleton", "WriteFile"]);
     }
 
     #[test]
     fn test_search_select_case_insensitive() {
-        let deferred = get_deferred_tool_search_entries("PROJECT_ACTION", "edit", &ToolFilter::allow_all());
+        let deferred =
+            get_deferred_tool_search_entries("PROJECT_ACTION", "edit", &ToolFilter::allow_all());
         let result = search_deferred_tools("select:readfileskeleton", &deferred, 5);
         assert_eq!(result, vec!["ReadFileSkeleton"]);
     }
 
     #[test]
     fn test_search_keyword() {
-        let deferred = get_deferred_tool_search_entries("PROJECT_ACTION", "edit", &ToolFilter::allow_all());
+        let deferred =
+            get_deferred_tool_search_entries("PROJECT_ACTION", "edit", &ToolFilter::allow_all());
         let result = search_deferred_tools("notebook jupyter", &deferred, 5);
         // EditNotebook should score highest
         assert!(result.contains(&"EditNotebook".to_string()));
@@ -450,21 +491,24 @@ mod tests {
 
     #[test]
     fn test_search_hint_matches_progress_checklist() {
-        let deferred = get_deferred_tool_search_entries("PROJECT_ACTION", "edit", &ToolFilter::allow_all());
+        let deferred =
+            get_deferred_tool_search_entries("PROJECT_ACTION", "edit", &ToolFilter::allow_all());
         let result = search_deferred_tools("progress checklist", &deferred, 5);
         assert_eq!(result.first(), Some(&"UpdateTodos".to_string()));
     }
 
     #[test]
     fn test_search_description_still_matches_chinese_query() {
-        let deferred = get_deferred_tool_search_entries("PROJECT_ACTION", "edit", &ToolFilter::allow_all());
+        let deferred =
+            get_deferred_tool_search_entries("PROJECT_ACTION", "edit", &ToolFilter::allow_all());
         let result = search_deferred_tools("函数签名", &deferred, 5);
         assert!(result.contains(&"ReadFileSkeleton".to_string()));
     }
 
     #[test]
     fn test_search_no_match() {
-        let deferred = get_deferred_tool_search_entries("PROJECT_ACTION", "edit", &ToolFilter::allow_all());
+        let deferred =
+            get_deferred_tool_search_entries("PROJECT_ACTION", "edit", &ToolFilter::allow_all());
         let result = search_deferred_tools("nonexistent_xyz_tool", &deferred, 5);
         assert!(result.is_empty());
     }
@@ -503,24 +547,44 @@ mod tests {
         // 不变量：能力清单是工具目录的投影——清单说"不可用"，目录里就绝不能有
         for work_mode in ["plan", "edit"] {
             let registry = ToolRegistry::global();
-            let names: Vec<String> = get_deferred_tool_list("PROJECT_ACTION", work_mode, &ToolFilter::allow_all())
-                .into_iter()
-                .map(|(n, _)| n)
-                .collect();
+            let names: Vec<String> =
+                get_deferred_tool_list("PROJECT_ACTION", work_mode, &ToolFilter::allow_all())
+                    .into_iter()
+                    .map(|(n, _)| n)
+                    .collect();
             let probe = |tool: &str| {
                 registry
                     .get(tool)
-                    .map(|def| ToolRegistry::is_available(def, "PROJECT_ACTION", work_mode, &ToolFilter::allow_all()))
+                    .map(|def| {
+                        ToolRegistry::is_available(
+                            def,
+                            "PROJECT_ACTION",
+                            work_mode,
+                            &ToolFilter::allow_all(),
+                        )
+                    })
                     .unwrap_or(false)
             };
             if !probe("WriteFile") {
-                assert!(!names.iter().any(|n| n == "WriteFile"), "mode={}", work_mode);
+                assert!(
+                    !names.iter().any(|n| n == "WriteFile"),
+                    "mode={}",
+                    work_mode
+                );
             }
             if !probe("RunCommand") {
-                assert!(!names.iter().any(|n| n == "RunCommand"), "mode={}", work_mode);
+                assert!(
+                    !names.iter().any(|n| n == "RunCommand"),
+                    "mode={}",
+                    work_mode
+                );
             }
             if probe("ProposePlan") {
-                assert!(names.iter().any(|n| n == "ProposePlan"), "mode={}", work_mode);
+                assert!(
+                    names.iter().any(|n| n == "ProposePlan"),
+                    "mode={}",
+                    work_mode
+                );
             }
         }
     }
@@ -585,10 +649,17 @@ mod tests {
 
     #[test]
     fn test_get_deferred_tools_list_returns_grouped_names() {
-        let groups = ToolRegistry::global().get_deferred_by_category("PROJECT_ACTION", "edit", &ToolFilter::allow_all());
+        let groups = ToolRegistry::global().get_deferred_by_category(
+            "PROJECT_ACTION",
+            "edit",
+            &ToolFilter::allow_all(),
+        );
         assert!(!groups.is_empty());
         // 验证包含写操作工具
-        let all_names: Vec<&str> = groups.iter().flat_map(|(_, names)| names.iter().copied()).collect();
+        let all_names: Vec<&str> = groups
+            .iter()
+            .flat_map(|(_, names)| names.iter().copied())
+            .collect();
         assert!(all_names.contains(&"WriteFile"));
         // shell 全家已提为核心工具，不再出现在按需列表
         assert!(!all_names.contains(&"RunCommand"));

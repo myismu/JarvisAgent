@@ -231,7 +231,10 @@ pub struct UsageObservation {
 
 impl UsageObservation {
     /// 按协议格式构造。家族判断只发生在这里，之后的方法全部与协议无关。
-    pub fn for_format(api_format: crate::infra::llm::api_format::ApiFormat, cache_style: Option<String>) -> Self {
+    pub fn for_format(
+        api_format: crate::infra::llm::api_format::ApiFormat,
+        cache_style: Option<String>,
+    ) -> Self {
         use crate::infra::llm::api_format::ApiFormat;
         let (input_key, output_key, openai_family) = match api_format {
             ApiFormat::OpenAI => ("prompt_tokens", "completion_tokens", true),
@@ -385,7 +388,8 @@ mod tests {
         assert_eq!(cache.hit, Some(1536));
 
         // 只有平铺时也能识别（Kimi anthropic 出口的形态）
-        let flat_only = json!({ "prompt_tokens": 1694, "cached_tokens": 1536, "completion_tokens": 24 });
+        let flat_only =
+            json!({ "prompt_tokens": 1694, "cached_tokens": 1536, "completion_tokens": 24 });
         let cache = extract_cache_usage(&flat_only);
         assert_eq!(cache.source, "cached_tokens");
         assert_eq!(cache.hit, Some(1536));
@@ -420,7 +424,8 @@ mod tests {
         assert_eq!(cache.hit, Some(0));
         assert_eq!(cache.hit_rate(), Some(0.0));
 
-        let glm_cold = json!({ "prompt_tokens": 1809, "prompt_tokens_details": { "cached_tokens": 0 } });
+        let glm_cold =
+            json!({ "prompt_tokens": 1809, "prompt_tokens_details": { "cached_tokens": 0 } });
         let cache = extract_cache_usage(&glm_cold);
         assert!(cache.is_known());
         assert_eq!(cache.hit_rate(), Some(0.0));
@@ -435,13 +440,15 @@ mod tests {
 
     #[test]
     fn merge_keeps_earlier_values_when_later_event_lacks_them() {
-        let start = json!({ "input_tokens": 190, "cache_read_input_tokens": 1536, "output_tokens": 1 });
+        let start =
+            json!({ "input_tokens": 190, "cache_read_input_tokens": 1536, "output_tokens": 1 });
         let delta = json!({ "input_tokens": 190, "output_tokens": 42 }); // 没有缓存字段
-        let merged = merge_cache_usage(
-            extract_cache_usage(&start),
-            extract_cache_usage(&delta),
+        let merged = merge_cache_usage(extract_cache_usage(&start), extract_cache_usage(&delta));
+        assert_eq!(
+            merged.hit,
+            Some(1536),
+            "后到但字段缺失的事件不能冲掉已有命中数"
         );
-        assert_eq!(merged.hit, Some(1536), "后到但字段缺失的事件不能冲掉已有命中数");
         assert_eq!(merged.source, "cache_read_input_tokens");
     }
 
@@ -481,7 +488,10 @@ mod tests {
             "prompt_tokens_details.cached_tokens"
         );
         // 指定 flat → 只按平铺取
-        assert_eq!(extract_cache_usage_with_style(&mixed, Some("flat")).source, "cached_tokens");
+        assert_eq!(
+            extract_cache_usage_with_style(&mixed, Some("flat")).source,
+            "cached_tokens"
+        );
         // 指定 deepseek → 该写法不存在 ⇒ 未知
         assert!(!extract_cache_usage_with_style(&mixed, Some("deepseek")).is_known());
         // 明确知道不报告 → 直接未知，省掉探测
@@ -523,7 +533,11 @@ mod usage_observation_tests {
             "input_tokens": 190, "cache_creation_input_tokens": 0,
             "cache_read_input_tokens": 1536, "output_tokens": 19
         }));
-        assert_eq!(obs.resolve(), (1726, 19), "Anthropic 的输入应归一为 hit + miss");
+        assert_eq!(
+            obs.resolve(),
+            (1726, 19),
+            "Anthropic 的输入应归一为 hit + miss"
+        );
     }
 
     /// 两组协议口径必须可比：同一个 prompt 规模下，OpenAI 与 Anthropic 出口归一出同一个数。
@@ -535,7 +549,9 @@ mod usage_observation_tests {
             "prompt_tokens_details": { "cached_tokens": 1536 }
         }));
         let mut anthropic = UsageObservation::for_format(ApiFormat::Anthropic, None);
-        anthropic.observe(&json!({ "input_tokens": 190, "cache_read_input_tokens": 1536, "output_tokens": 24 }));
+        anthropic.observe(
+            &json!({ "input_tokens": 190, "cache_read_input_tokens": 1536, "output_tokens": 24 }),
+        );
         assert_eq!(openai.resolve().0, anthropic.resolve().0);
     }
 
@@ -545,7 +561,10 @@ mod usage_observation_tests {
         let mut obs = UsageObservation::for_format(ApiFormat::Anthropic, None);
         obs.observe(&json!({ "input_tokens": 1813, "output_tokens": 24 }));
         assert_eq!(obs.resolve(), (1813, 24));
-        assert!(obs.cache.hit.is_none(), "未识别到字段时必须保持未知，而不是 0");
+        assert!(
+            obs.cache.hit.is_none(),
+            "未识别到字段时必须保持未知，而不是 0"
+        );
     }
 
     /// delta 帧只带 output 时，不得把 `message_start` 已给的 input 抹掉，也不得覆盖缓存读数；
@@ -553,10 +572,16 @@ mod usage_observation_tests {
     #[test]
     fn later_delta_frame_overwrites_only_the_fields_it_carries() {
         let mut obs = UsageObservation::for_format(ApiFormat::Anthropic, None);
-        obs.observe(&json!({ "input_tokens": 190, "cache_read_input_tokens": 1536, "output_tokens": 1 }));
+        obs.observe(
+            &json!({ "input_tokens": 190, "cache_read_input_tokens": 1536, "output_tokens": 1 }),
+        );
         obs.observe(&json!({ "output_tokens": 42 }));
         assert_eq!(obs.resolve(), (1726, 42));
-        assert_eq!(obs.cache.hit, Some(1536), "字段缺失的 delta 不得冲掉缓存读数");
+        assert_eq!(
+            obs.cache.hit,
+            Some(1536),
+            "字段缺失的 delta 不得冲掉缓存读数"
+        );
 
         obs.observe(&json!({ "input_tokens": 190, "output_tokens": 42 }));
         assert_eq!(obs.resolve().0, 1726, "回带的 input 只覆盖、不叠加");

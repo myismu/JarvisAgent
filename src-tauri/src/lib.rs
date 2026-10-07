@@ -5,21 +5,17 @@
 //! - `core`: 业务层 — Agent 主循环、调度、会话、回滚、工具
 //! - `command`: 命令层 — Tauri invoke handler 胶水
 
-pub mod infra;
-pub mod core;
 pub mod command;
+pub mod core;
+pub mod infra;
 
-use crate::infra::state::state::{
-    SessionManager,
-    SnapshotRegistry,
-    WorkspaceState,
-};
+use crate::infra::state::state::{SessionManager, SnapshotRegistry, WorkspaceState};
 // [暂存·已注释] 原导入含 RuntimeConfigState/RuntimeSettings，因相关代码已注释，改为仅导入在用项
-use crate::infra::config::config::{load_config, ConfigState};
-use tauri::Manager;
-use crate::infra::background::{BackgroundState, CompactingState};
 use crate::core::orchestration::subagents::SubAgentMonitorState;
 use crate::core::rollback::session_manager::SnapshotManagerRegistry;
+use crate::infra::background::{BackgroundState, CompactingState};
+use crate::infra::config::config::{load_config, ConfigState};
+use tauri::Manager;
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -62,7 +58,10 @@ pub fn run() {
     let data_dir = detect_data_dir();
     let _ = std::fs::create_dir_all(&data_dir);
     let _ = AGENT_HOME_DIR.set(data_dir.clone());
-    println!("[System] Agent data directory locked to: {}", data_dir.display());
+    println!(
+        "[System] Agent data directory locked to: {}",
+        data_dir.display()
+    );
 
     infra::config::data_paths::ensure_base_layout();
     // 日志维护：分片由各 logger 写入时处理，这里在后台线程做归档（gzip）+ 保留期清理，不阻塞启动

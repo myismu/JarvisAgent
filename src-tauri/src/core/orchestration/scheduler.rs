@@ -1,4 +1,4 @@
-﻿//! 任务调度器模块 - 基于依赖图的流式任务调度
+//! 任务调度器模块 - 基于依赖图的流式任务调度
 //!
 //! 调度算法：
 //! 1. 查找所有就绪任务（无依赖或依赖已满足）
@@ -8,9 +8,9 @@
 
 use tauri::Emitter;
 
-use crate::infra::types::models::TaskStatus;
 use crate::core::orchestration::tasks::{TaskManager, TaskUpdateParams};
 use crate::core::tools::{run_subagent, IMPLEMENTATION_AGENT_ROLE};
+use crate::infra::types::models::TaskStatus;
 
 pub struct TaskScheduler;
 
@@ -44,10 +44,7 @@ impl TaskScheduler {
             if remaining == 0 {
                 return ("无待执行任务".to_string(), 0, 0);
             }
-            let msg = format!(
-                "[SCHEDULER] 检测到循环依赖，{} 个任务无法调度",
-                remaining
-            );
+            let msg = format!("[SCHEDULER] 检测到循环依赖，{} 个任务无法调度", remaining);
             println!("{}", msg);
             return (msg, _total_in, total_out);
         }
@@ -79,21 +76,40 @@ impl TaskScheduler {
 
         // 标记初始任务 InProgress
         for task in &ready_tasks {
-            let _ = tm.update(task.id, TaskUpdateParams {
-                status: Some(TaskStatus::InProgress),
-                subject: None, description: None, active_form: None,
-                owner: None, add_blocked_by: None, add_blocks: None, metadata: None, subagent_type: None,
-            });
-            let _ = app.emit("agent-step", serde_json::json!({
-                "type": "task_scheduled", "taskId": task.id,
-                "subject": task.subject, "sessionId": session_id,
-            }));
+            let _ = tm.update(
+                task.id,
+                TaskUpdateParams {
+                    status: Some(TaskStatus::InProgress),
+                    subject: None,
+                    description: None,
+                    active_form: None,
+                    owner: None,
+                    add_blocked_by: None,
+                    add_blocks: None,
+                    metadata: None,
+                    subagent_type: None,
+                },
+            );
+            let _ = app.emit(
+                "agent-step",
+                serde_json::json!({
+                    "type": "task_scheduled", "taskId": task.id,
+                    "subject": task.subject, "sessionId": session_id,
+                }),
+            );
         }
 
         // 2. 全部 spawn 到 JoinSet
         let mut set = tokio::task::JoinSet::new();
         for task in ready_tasks {
-            spawn_into_set(&mut set, app, session_id, &task, &mut task_subjects, &completed_results);
+            spawn_into_set(
+                &mut set,
+                app,
+                session_id,
+                &task,
+                &mut task_subjects,
+                &completed_results,
+            );
         }
 
         // 3. 流式级联：完成一个 → 标记 → 立即查新解锁 → spawn → 继续
@@ -129,55 +145,97 @@ impl TaskScheduler {
                     "完成"
                 };
 
-                let _ = tm.update(task_id, TaskUpdateParams {
-                    status: Some(TaskStatus::Completed),
-                    subject: None, description: None, active_form: None,
-                    owner: None, add_blocked_by: None, add_blocks: None, metadata: None, subagent_type: None,
-                });
+                let _ = tm.update(
+                    task_id,
+                    TaskUpdateParams {
+                        status: Some(TaskStatus::Completed),
+                        subject: None,
+                        description: None,
+                        active_form: None,
+                        owner: None,
+                        add_blocked_by: None,
+                        add_blocks: None,
+                        metadata: None,
+                        subagent_type: None,
+                    },
+                );
 
                 println!(
                     "[SCHEDULER] Task #{} {} (input: {}, output: {} tokens)",
                     task_id, status_msg, si, so
                 );
 
-                let _ = app.emit("agent-step", serde_json::json!({
-                    "type": "task_completed", "taskId": task_id,
-                    "status": status_msg, "sessionId": session_id,
-                }));
+                let _ = app.emit(
+                    "agent-step",
+                    serde_json::json!({
+                        "type": "task_completed", "taskId": task_id,
+                        "status": status_msg, "sessionId": session_id,
+                    }),
+                );
 
                 // 保存已完成任务的结果摘要（供下游任务引用）
                 {
-                    let subject = task_subjects.get(&task_id).cloned()
+                    let subject = task_subjects
+                        .get(&task_id)
+                        .cloned()
                         .unwrap_or_else(|| format!("Task #{}", task_id));
                     if status_msg == "完成" {
                         let summary: String = answer.chars().take(500).collect();
                         completed_results.insert(task_id, (subject.clone(), summary));
                     }
-                    let icon = if status_msg == "完成" { "[OK]" } else { "[FAIL]" };
-                    let _ = app.emit("chat-stream", serde_json::json!({
-                        "content": format!(
-                            "\n> {} Task #{}: {} ({}, {} tokens)\n",
-                            icon, task_id, subject, status_msg, si + so
-                        ),
-                        "sessionId": session_id,
-                    }));
+                    let icon = if status_msg == "完成" {
+                        "[OK]"
+                    } else {
+                        "[FAIL]"
+                    };
+                    let _ = app.emit(
+                        "chat-stream",
+                        serde_json::json!({
+                            "content": format!(
+                                "\n> {} Task #{}: {} ({}, {} tokens)\n",
+                                icon, task_id, subject, status_msg, si + so
+                            ),
+                            "sessionId": session_id,
+                        }),
+                    );
                 }
 
                 // 级联解锁：立即查找新就绪任务，加入同一个 JoinSet
                 let new_ready = tm.get_ready_tasks();
                 for task in &new_ready {
-                    if cancel_token.is_cancelled() { break; }
+                    if cancel_token.is_cancelled() {
+                        break;
+                    }
                     task_subjects.insert(task.id, task.subject.clone());
-                    let _ = tm.update(task.id, TaskUpdateParams {
-                        status: Some(TaskStatus::InProgress),
-                        subject: None, description: None, active_form: None,
-                        owner: None, add_blocked_by: None, add_blocks: None, metadata: None, subagent_type: None,
-                    });
-                    let _ = app.emit("agent-step", serde_json::json!({
-                        "type": "task_scheduled", "taskId": task.id,
-                        "subject": task.subject, "sessionId": session_id,
-                    }));
-                    spawn_into_set(&mut set, app, session_id, task, &mut task_subjects, &completed_results);
+                    let _ = tm.update(
+                        task.id,
+                        TaskUpdateParams {
+                            status: Some(TaskStatus::InProgress),
+                            subject: None,
+                            description: None,
+                            active_form: None,
+                            owner: None,
+                            add_blocked_by: None,
+                            add_blocks: None,
+                            metadata: None,
+                            subagent_type: None,
+                        },
+                    );
+                    let _ = app.emit(
+                        "agent-step",
+                        serde_json::json!({
+                            "type": "task_scheduled", "taskId": task.id,
+                            "subject": task.subject, "sessionId": session_id,
+                        }),
+                    );
+                    spawn_into_set(
+                        &mut set,
+                        app,
+                        session_id,
+                        task,
+                        &mut task_subjects,
+                        &completed_results,
+                    );
                 }
             }
         }
@@ -194,7 +252,9 @@ impl TaskScheduler {
             return (format!("{}\n\n{}", msg, summary), _total_in, total_out);
         }
 
-        let summary = tm.summary().unwrap_or_else(|e| format!("获取任务摘要失败: {}", e));
+        let summary = tm
+            .summary()
+            .unwrap_or_else(|e| format!("获取任务摘要失败: {}", e));
         let report = format!(
             "任务调度完成：{} 成功，{} 失败\n\n{}",
             completed_count, failed_count, summary
@@ -207,7 +267,6 @@ impl TaskScheduler {
 
         (report, _total_in, total_out)
     }
-
 }
 
 fn spawn_into_set(
@@ -230,7 +289,8 @@ fn spawn_into_set(
 
     // 注入上游已完成任务的结果
     let prompt = if !task.blocked_by.is_empty() {
-        let mut ctx = String::from("【前置任务已完成，以下是它们的执行结果，请基于这些结果继续工作】\n");
+        let mut ctx =
+            String::from("【前置任务已完成，以下是它们的执行结果，请基于这些结果继续工作】\n");
         for upstream_id in &task.blocked_by {
             if let Some((subject, summary)) = completed_results.get(upstream_id) {
                 let short: String = summary.chars().take(300).collect();
@@ -259,11 +319,18 @@ fn spawn_into_set(
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(300),
             run_subagent(
-                app_clone, prompt, false, sid,
-                Some(tid), Some(label),
-                Some(agent_role), None, None,
+                app_clone,
+                prompt,
+                false,
+                sid,
+                Some(tid),
+                Some(label),
+                Some(agent_role),
+                None,
+                None,
             ),
-        ).await;
+        )
+        .await;
         let (answer, si, so) = match result {
             Ok(r) => r,
             Err(_) => (format!("任务超时（超过 5 分钟）"), 0, 0),

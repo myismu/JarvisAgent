@@ -1,4 +1,4 @@
-﻿//! # workspace.rs — 会话工作区与快照记录桥接
+//! # workspace.rs — 会话工作区与快照记录桥接
 //!
 //! 为文件工具提供当前会话工作目录查询，以及写入 rollback 后通知前端的统一入口。
 //!
@@ -14,10 +14,10 @@
 
 use tauri::{Emitter, Manager};
 
-use crate::infra::types::models::Message;
 use crate::core::rollback::Patch;
-use crate::infra::state::state::{PendingSnapshotPatch, SessionManager};
 use crate::infra::state::state::SnapshotRegistry;
+use crate::infra::state::state::{PendingSnapshotPatch, SessionManager};
+use crate::infra::types::models::Message;
 
 /// 获取当前会话的工作目录沙箱
 pub(super) async fn get_workspace(
@@ -210,12 +210,11 @@ pub async fn commit_pending_snapshot(
     let pending = {
         let mut guard = ctx.pending_patches.lock().await;
         if guard.is_empty() {
-            let records =
-                crate::infra::db::list_agent_run_patches(session_id, run_id.as_deref())
-                    .unwrap_or_else(|err| {
-                        eprintln!("[Snapshot] 读取 pending patch 失败: {}", err);
-                        Vec::new()
-                    });
+            let records = crate::infra::db::list_agent_run_patches(session_id, run_id.as_deref())
+                .unwrap_or_else(|err| {
+                    eprintln!("[Snapshot] 读取 pending patch 失败: {}", err);
+                    Vec::new()
+                });
             records_to_pending(records)
         } else if let Some(run_id) = run_id.as_ref() {
             let (current_run, remaining): (Vec<_>, Vec<_>) =
@@ -268,10 +267,9 @@ pub async fn commit_pending_snapshot(
             {
                 Ok(snapshot) => {
                     let snapshot_id = snapshot.id.clone();
-                    if let Err(err) = crate::infra::db::delete_agent_run_patches(
-                        session_id,
-                        Some(&commit_run_id),
-                    ) {
+                    if let Err(err) =
+                        crate::infra::db::delete_agent_run_patches(session_id, Some(&commit_run_id))
+                    {
                         eprintln!("[Snapshot] 清理 pending patch 失败: {}", err);
                     }
                     let _ = app.emit(

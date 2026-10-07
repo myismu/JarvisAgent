@@ -1,11 +1,11 @@
-﻿//! 任务管理器 - 任务生命周期与依赖关系管理
+//! 任务管理器 - 任务生命周期与依赖关系管理
 //!
 //! 提供任务的创建、查询、更新、删除等 CRUD 操作。
 //! 支持任务间依赖关系（blocked_by/blocks）和级联解锁机制。
 //! 任务以 JSON 文件形式持久化存储。
 
-use crate::infra::types::models::{Task, TaskStatus};
 use crate::core::session::resource_repository;
+use crate::infra::types::models::{Task, TaskStatus};
 
 /// 任务管理器 - 基于 SQLite 的任务持久化
 pub struct TaskManager {
@@ -174,7 +174,10 @@ impl TaskManager {
         if let Some(ref abb) = params.add_blocked_by {
             for &dep_id in abb {
                 if dep_id == id {
-                    return Err(format!("任务不能依赖自身：blocked_by 中包含自己的 ID ({})", id));
+                    return Err(format!(
+                        "任务不能依赖自身：blocked_by 中包含自己的 ID ({})",
+                        id
+                    ));
                 }
                 if self._load(dep_id).is_err() {
                     invalid_ids.push(dep_id);
@@ -184,7 +187,10 @@ impl TaskManager {
         if let Some(ref ab) = params.add_blocks {
             for &blocked_id in ab {
                 if blocked_id == id {
-                    return Err(format!("任务不能阻塞自身：add_blocks 中包含自己的 ID ({})", id));
+                    return Err(format!(
+                        "任务不能阻塞自身：add_blocks 中包含自己的 ID ({})",
+                        id
+                    ));
                 }
                 if self._load(blocked_id).is_err() {
                     invalid_ids.push(blocked_id);

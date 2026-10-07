@@ -48,22 +48,36 @@ pub async fn task_create(
     // 批量模式
     if let Some(tasks) = input["tasks"].as_array() {
         if tasks.is_empty() {
-            return framework::ToolCallResult::error(serde_json::json!({"success": false, "error": "tasks 数组不能为空"}).to_string());
+            return framework::ToolCallResult::error(
+                serde_json::json!({"success": false, "error": "tasks 数组不能为空"}).to_string(),
+            );
         }
         let tm = TaskManager::for_session(session_id);
         // 使用 HashMap 而非 Vec，避免空 subject 跳过导致索引错位
-        let mut created_ids: std::collections::HashMap<usize, i32> = std::collections::HashMap::new();
+        let mut created_ids: std::collections::HashMap<usize, i32> =
+            std::collections::HashMap::new();
         let mut failures: Vec<String> = Vec::new();
         for (idx, item) in tasks.iter().enumerate() {
             let subject = item["subject"].as_str().unwrap_or("").to_string();
-            if subject.trim().is_empty() { continue; }
+            if subject.trim().is_empty() {
+                continue;
+            }
             let description = item["description"].as_str().unwrap_or("").to_string();
             let active_form = optional_string(item, "activeForm");
             let metadata = item.get("metadata").cloned();
             let owner = optional_string(item, "owner");
             let subagent_type = optional_string(item, "subagent_type");
-            match tm.create(subject.clone(), description, active_form, metadata, owner, subagent_type) {
-                Ok(t) => { created_ids.insert(idx, t.id); },
+            match tm.create(
+                subject.clone(),
+                description,
+                active_form,
+                metadata,
+                owner,
+                subagent_type,
+            ) {
+                Ok(t) => {
+                    created_ids.insert(idx, t.id);
+                }
                 Err(e) => failures.push(format!("「{}」: {}", subject, e)),
             }
         }
@@ -71,17 +85,27 @@ pub async fn task_create(
         for (idx, item) in tasks.iter().enumerate() {
             if let Some(task_id) = created_ids.get(&idx) {
                 if let Some(deps) = item["depends_on"].as_array() {
-                    let blocked_by: Vec<i32> = deps.iter()
+                    let blocked_by: Vec<i32> = deps
+                        .iter()
                         .filter_map(|d| d.as_u64().map(|n| (n as usize).saturating_sub(1)))
                         .filter_map(|di| created_ids.get(&di).copied())
                         .map(|id| id as i32)
                         .collect();
                     if !blocked_by.is_empty() {
-                        let _ = tm.update(*task_id, crate::core::orchestration::tasks::TaskUpdateParams {
-                            status: None, subject: None, description: None, active_form: None,
-                            owner: None, metadata: None, add_blocked_by: Some(blocked_by),
-                            add_blocks: None, subagent_type: None,
-                        });
+                        let _ = tm.update(
+                            *task_id,
+                            crate::core::orchestration::tasks::TaskUpdateParams {
+                                status: None,
+                                subject: None,
+                                description: None,
+                                active_form: None,
+                                owner: None,
+                                metadata: None,
+                                add_blocked_by: Some(blocked_by),
+                                add_blocks: None,
+                                subagent_type: None,
+                            },
+                        );
                     }
                 }
             }
@@ -116,18 +140,22 @@ pub async fn task_create(
         owner,
         subagent_type,
     ) {
-        Ok(task) => framework::ToolCallResult::ok(serde_json::json!({
-            "success": true,
-            "task": {
-                "id": task.id,
-                "subject": task.subject,
-            }
-        })
-        .to_string()),
-        Err(e) => framework::ToolCallResult::error(serde_json::json!({
-            "success": false,
-            "error": e
-        })
-        .to_string()),
+        Ok(task) => framework::ToolCallResult::ok(
+            serde_json::json!({
+                "success": true,
+                "task": {
+                    "id": task.id,
+                    "subject": task.subject,
+                }
+            })
+            .to_string(),
+        ),
+        Err(e) => framework::ToolCallResult::error(
+            serde_json::json!({
+                "success": false,
+                "error": e
+            })
+            .to_string(),
+        ),
     }
 }

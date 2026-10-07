@@ -16,12 +16,12 @@ use super::super::framework;
 use super::super::framework::permission::{
     is_within_workspace, request_permission_with_origin, PermissionDecision, PermissionKind,
 };
-use crate::core::tools::file_tools::workspace::resolve_exec_path;
-use crate::infra::shell_command::NoWindow;
 use super::background::background_run_internal;
 use super::readonly::is_readonly_command;
 use super::security::*;
-use super::utils::{*, is_exit_code_error};
+use super::utils::{is_exit_code_error, *};
+use crate::core::tools::file_tools::workspace::resolve_exec_path;
+use crate::infra::shell_command::NoWindow;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -96,22 +96,34 @@ pub fn is_file_mutation_command(cmd: &str) -> Option<&'static str> {
         );
     }
 
-    if lower.contains("set-content") || lower.contains("out-file") || lower.contains("add-content") {
+    if lower.contains("set-content") || lower.contains("out-file") || lower.contains("add-content")
+    {
         return Some("请使用 WriteFile 或 EditFile 工具，不要用 PowerShell cmdlet 写文件");
     }
     // New-Item -ItemType File 创建文件需拦，-ItemType Directory 放行
     if lower.contains("new-item") && lower.contains("file") {
         return Some("请使用 WriteFile 工具，不要用 New-Item 创建文件");
     }
-    if lower.contains("remove-item") || lower.contains("del ") || lower.contains("rm ") || lower.contains("rmdir ") {
+    if lower.contains("remove-item")
+        || lower.contains("del ")
+        || lower.contains("rm ")
+        || lower.contains("rmdir ")
+    {
         return Some("请使用 DeleteFile 工具，不要用 shell 命令删除文件");
     }
     if (lower.contains(">") || lower.contains(">>"))
-        && !lower.contains("git ") && !lower.contains("npm ") && !lower.contains("cargo ") && !lower.contains("pnpm ")
+        && !lower.contains("git ")
+        && !lower.contains("npm ")
+        && !lower.contains("cargo ")
+        && !lower.contains("pnpm ")
     {
         return Some("请使用 WriteFile/EditFile 工具，不要用 shell 重定向写文件");
     }
-    if lower.contains("move-item") || lower.contains("rename-item") || lower.contains("ren ") || lower.contains("mv ") {
+    if lower.contains("move-item")
+        || lower.contains("rename-item")
+        || lower.contains("ren ")
+        || lower.contains("mv ")
+    {
         return Some("请使用 RenameFile 工具，不要用 shell 命令重命名文件");
     }
     if lower.contains("copy-item") || lower.contains("cp ") {
@@ -235,7 +247,9 @@ pub async fn run_shell(
         let lower_cmd = cmd.to_lowercase();
         let dir_change_keywords = ["cd ", "sl ", "chdir ", "set-location", "push-location"];
         if dir_change_keywords.iter().any(|k| lower_cmd.contains(k)) {
-            return framework::ToolCallResult::blocked("沙箱限制：禁止在沙箱会话中使用目录切换命令（cd/Set-Location）。".to_string());
+            return framework::ToolCallResult::blocked(
+                "沙箱限制：禁止在沙箱会话中使用目录切换命令（cd/Set-Location）。".to_string(),
+            );
         }
     }
 
@@ -248,7 +262,11 @@ pub async fn run_shell(
     // 校验口径与 StartBackgroundCommand 一致（见 background.rs）：沙箱会话下 dir 必须
     // 落在工作区内；相对路径按工作区目录解析（复用 resolve_exec_path，避免
     // "校验按 ws join、执行按进程 CWD"的沙箱逃逸）。
-    let exec_dir = match input["dir"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+    let exec_dir = match input["dir"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(dir) => {
             if let Some(ref workspace) = ws {
                 if !is_within_workspace(dir, Some(workspace)) {
@@ -303,8 +321,7 @@ pub async fn run_shell(
             // 同一条命令每跑一次还会再弹一次卡，等于那个按钮对命令类不起作用。
             // 键口径与 `policy_guard::allowance_key_for` 共用同一实现，两道门不会打架。
             // 与外层判定同口径：链式命令一段一把键（command_prefix_scopes）
-            let keys =
-                framework::policy_guard::command_prefix_scopes(cmd).unwrap_or_default();
+            let keys = framework::policy_guard::command_prefix_scopes(cmd).unwrap_or_default();
             // 危险命令与外层 enforce 同口径（policy::ask_always_repeated）：每次亲手批——
             // 不查会话允许（防历史登记残留绕过），不发范围键（防「本次会话都允许」
             // 从这张卡绕回来：下面 AllowSession 分支会真的 grant_session_allowance）

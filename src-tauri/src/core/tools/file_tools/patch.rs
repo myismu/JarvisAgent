@@ -10,14 +10,14 @@ use crate::core::tools::framework;
 use crate::core::tools::framework::permission::ensure_path_permission;
 
 use super::common::{
-    encode_text_preserve_encoding, ensure_fresh_read, is_locked_file_error,
-    normalize_line_endings, read_text_preserve_encoding, record_file_read, TextEncoding,
+    encode_text_preserve_encoding, ensure_fresh_read, is_locked_file_error, normalize_line_endings,
+    read_text_preserve_encoding, record_file_read, TextEncoding,
 };
 use super::diff::compute_diff;
+use super::workspace::{get_workspace, record_patch_to_snapshot};
 use crate::core::tools::notebook_tools::notebook_guard::{
     is_notebook_path, looks_like_notebook_json, notebook_text_edit_rejection,
 };
-use super::workspace::{get_workspace, record_patch_to_snapshot};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PatchLine {
@@ -94,11 +94,17 @@ fn parse_file_path(line: &str, prefix: &str) -> Option<String> {
 fn parse_range(raw: &str) -> Result<(usize, usize), String> {
     let raw = raw.trim_start_matches(['-', '+']);
     if let Some((start, len)) = raw.split_once(',') {
-        let start = start.parse::<usize>().map_err(|_| format!("无效 hunk range: {}", raw))?;
-        let len = len.parse::<usize>().map_err(|_| format!("无效 hunk range: {}", raw))?;
+        let start = start
+            .parse::<usize>()
+            .map_err(|_| format!("无效 hunk range: {}", raw))?;
+        let len = len
+            .parse::<usize>()
+            .map_err(|_| format!("无效 hunk range: {}", raw))?;
         Ok((start, len))
     } else {
-        let start = raw.parse::<usize>().map_err(|_| format!("无效 hunk range: {}", raw))?;
+        let start = raw
+            .parse::<usize>()
+            .map_err(|_| format!("无效 hunk range: {}", raw))?;
         Ok((start, 1))
     }
 }
@@ -108,9 +114,15 @@ fn parse_hunk_header(line: &str) -> Result<(usize, usize, usize, usize), String>
     if parts.next() != Some("@@") {
         return Err(format!("无效 hunk header: {}", line));
     }
-    let old_range = parts.next().ok_or_else(|| format!("无效 hunk header: {}", line))?;
-    let new_range = parts.next().ok_or_else(|| format!("无效 hunk header: {}", line))?;
-    let end = parts.next().ok_or_else(|| format!("无效 hunk header: {}", line))?;
+    let old_range = parts
+        .next()
+        .ok_or_else(|| format!("无效 hunk header: {}", line))?;
+    let new_range = parts
+        .next()
+        .ok_or_else(|| format!("无效 hunk header: {}", line))?;
+    let end = parts
+        .next()
+        .ok_or_else(|| format!("无效 hunk header: {}", line))?;
     if end != "@@" {
         return Err(format!("无效 hunk header: {}", line));
     }
@@ -134,9 +146,16 @@ fn parse_apply_patch(input: &str) -> Result<Vec<FilePatch>, String> {
             continue;
         }
 
-        if let Some(path) = line.strip_prefix("*** Update File:").map(str::trim).filter(|path| !path.is_empty()) {
+        if let Some(path) = line
+            .strip_prefix("*** Update File:")
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        {
             if let Some(previous_path) = current_path.replace(path.to_string()) {
-                patches.push(FilePatch { path: previous_path, hunks: std::mem::take(&mut current_hunks) });
+                patches.push(FilePatch {
+                    path: previous_path,
+                    hunks: std::mem::take(&mut current_hunks),
+                });
             }
             i += 1;
             continue;
@@ -153,7 +172,10 @@ fn parse_apply_patch(input: &str) -> Result<Vec<FilePatch>, String> {
         if let Some(path) = parse_file_path(line, "+++ ") {
             if let Some(previous_path) = current_path.replace(path) {
                 if !current_hunks.is_empty() {
-                    patches.push(FilePatch { path: previous_path, hunks: std::mem::take(&mut current_hunks) });
+                    patches.push(FilePatch {
+                        path: previous_path,
+                        hunks: std::mem::take(&mut current_hunks),
+                    });
                 }
             }
             i += 1;
@@ -191,7 +213,13 @@ fn parse_apply_patch(input: &str) -> Result<Vec<FilePatch>, String> {
                 }
                 i += 1;
             }
-            current_hunks.push(PatchHunk { old_start, old_len, new_start, new_len, lines: hunk_lines });
+            current_hunks.push(PatchHunk {
+                old_start,
+                old_len,
+                new_start,
+                new_len,
+                lines: hunk_lines,
+            });
             continue;
         }
 
@@ -199,12 +227,18 @@ fn parse_apply_patch(input: &str) -> Result<Vec<FilePatch>, String> {
     }
 
     if let Some(path) = current_path {
-        patches.push(FilePatch { path, hunks: current_hunks });
+        patches.push(FilePatch {
+            path,
+            hunks: current_hunks,
+        });
     }
 
     patches.retain(|patch| !patch.hunks.is_empty());
     if patches.is_empty() {
-        return Err("未解析到可应用的 patch hunk。请提供 unified diff 或 *** Begin Patch 格式。".to_string());
+        return Err(
+            "未解析到可应用的 patch hunk。请提供 unified diff 或 *** Begin Patch 格式。"
+                .to_string(),
+        );
     }
     Ok(patches)
 }
@@ -227,10 +261,13 @@ impl FuzzyHunkMatch {
 }
 
 fn hunk_expected_lines(hunk: &PatchHunk) -> Vec<&str> {
-    hunk.lines.iter().filter_map(|line| match line {
-        PatchLine::Context(text) | PatchLine::Remove(text) => Some(text.as_str()),
-        PatchLine::Add(_) => None,
-    }).collect()
+    hunk.lines
+        .iter()
+        .filter_map(|line| match line {
+            PatchLine::Context(text) | PatchLine::Remove(text) => Some(text.as_str()),
+            PatchLine::Add(_) => None,
+        })
+        .collect()
 }
 
 fn line_similarity(a: &str, b: &str) -> usize {
@@ -238,7 +275,9 @@ fn line_similarity(a: &str, b: &str) -> usize {
         3
     } else if a.trim() == b.trim() && !a.trim().is_empty() {
         2
-    } else if normalize_fuzzy_line(a) == normalize_fuzzy_line(b) && !normalize_fuzzy_line(a).is_empty() {
+    } else if normalize_fuzzy_line(a) == normalize_fuzzy_line(b)
+        && !normalize_fuzzy_line(a).is_empty()
+    {
         1
     } else {
         0
@@ -249,19 +288,33 @@ fn normalize_fuzzy_line(line: &str) -> String {
     line.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn exact_hunk_start(content_lines: &[String], expected: &[&str], preferred: usize) -> Option<usize> {
+fn exact_hunk_start(
+    content_lines: &[String],
+    expected: &[&str],
+    preferred: usize,
+) -> Option<usize> {
     if preferred + expected.len() <= content_lines.len()
-        && expected.iter().enumerate().all(|(idx, line)| content_lines[preferred + idx] == *line)
+        && expected
+            .iter()
+            .enumerate()
+            .all(|(idx, line)| content_lines[preferred + idx] == *line)
     {
         return Some(preferred);
     }
 
-    content_lines
-        .windows(expected.len())
-        .position(|window| expected.iter().enumerate().all(|(idx, line)| window[idx] == *line))
+    content_lines.windows(expected.len()).position(|window| {
+        expected
+            .iter()
+            .enumerate()
+            .all(|(idx, line)| window[idx] == *line)
+    })
 }
 
-fn fuzzy_hunk_candidates(content_lines: &[String], expected: &[&str], preferred: usize) -> Vec<FuzzyHunkMatch> {
+fn fuzzy_hunk_candidates(
+    content_lines: &[String],
+    expected: &[&str],
+    preferred: usize,
+) -> Vec<FuzzyHunkMatch> {
     if expected.is_empty() {
         return Vec::new();
     }
@@ -291,14 +344,20 @@ fn fuzzy_hunk_candidates(content_lines: &[String], expected: &[&str], preferred:
     }
 
     candidates.sort_by(|a, b| {
-        b.score
-            .cmp(&a.score)
-            .then_with(|| a.start.abs_diff(preferred).cmp(&b.start.abs_diff(preferred)))
+        b.score.cmp(&a.score).then_with(|| {
+            a.start
+                .abs_diff(preferred)
+                .cmp(&b.start.abs_diff(preferred))
+        })
     });
     candidates
 }
 
-fn fuzzy_failure_message(content_lines: &[String], hunk: &PatchHunk, candidates: &[FuzzyHunkMatch]) -> String {
+fn fuzzy_failure_message(
+    content_lines: &[String],
+    hunk: &PatchHunk,
+    candidates: &[FuzzyHunkMatch],
+) -> String {
     let near = hunk.old_start.saturating_sub(1).min(content_lines.len());
     if candidates.is_empty() {
         return format!(
@@ -368,7 +427,11 @@ fn hunk_context(content_lines: &[String], start: usize) -> String {
     result
 }
 
-fn build_fuzzy_replacement(lines: &[String], start: usize, hunk: &PatchHunk) -> (Vec<String>, usize, usize, usize) {
+fn build_fuzzy_replacement(
+    lines: &[String],
+    start: usize,
+    hunk: &PatchHunk,
+) -> (Vec<String>, usize, usize, usize) {
     let mut replacement = Vec::new();
     let mut consumed = 0usize;
     let mut added = 0usize;
@@ -403,8 +466,8 @@ fn apply_hunks(content: &str, hunks: &[PatchHunk]) -> Result<(String, usize, usi
     let mut removed_lines = 0;
 
     for hunk in hunks {
-        let start = find_hunk_start(&lines, hunk)
-            .map_err(|e| format!("{}\n文件 hunk 应用已中止", e))?;
+        let start =
+            find_hunk_start(&lines, hunk).map_err(|e| format!("{}\n文件 hunk 应用已中止", e))?;
         let exact_match = hunk_expected_lines(hunk)
             .iter()
             .enumerate()
@@ -466,7 +529,9 @@ fn load_patch_file(path: &str, workspace: Option<&Path>) -> Result<LoadedFile, S
     let resolved = resolve_patch_path(path, workspace);
     let existed = resolved.exists();
     if existed {
-        let read_mtime = std::fs::metadata(&resolved).ok().and_then(|meta| meta.modified().ok());
+        let read_mtime = std::fs::metadata(&resolved)
+            .ok()
+            .and_then(|meta| meta.modified().ok());
         match read_text_preserve_encoding(&resolved) {
             Ok(decoded) => {
                 if looks_like_notebook_json(&decoded.content) {
@@ -483,7 +548,10 @@ fn load_patch_file(path: &str, workspace: Option<&Path>) -> Result<LoadedFile, S
             Err(e) => {
                 let err_msg = e.to_string();
                 if is_locked_file_error(&err_msg) {
-                    Err(format!("读取失败: 文件可能被锁定，请稍后重试。详细错误: {}", e))
+                    Err(format!(
+                        "读取失败: 文件可能被锁定，请稍后重试。详细错误: {}",
+                        e
+                    ))
                 } else {
                     Err(format!("读取失败: {}", e))
                 }
@@ -500,10 +568,14 @@ fn load_patch_file(path: &str, workspace: Option<&Path>) -> Result<LoadedFile, S
     }
 }
 
-fn plan_patch(file_patch: &FilePatch, workspace: Option<&Path>) -> Result<PlannedFilePatch, String> {
+fn plan_patch(
+    file_patch: &FilePatch,
+    workspace: Option<&Path>,
+) -> Result<PlannedFilePatch, String> {
     let loaded = load_patch_file(&file_patch.path, workspace)?;
-    let (new_content, added_lines, removed_lines) = apply_hunks(&loaded.old_content, &file_patch.hunks)
-        .map_err(|e| format!("{}\n文件: {}", e, file_patch.path))?;
+    let (new_content, added_lines, removed_lines) =
+        apply_hunks(&loaded.old_content, &file_patch.hunks)
+            .map_err(|e| format!("{}\n文件: {}", e, file_patch.path))?;
     if looks_like_notebook_json(&new_content) {
         return Err(notebook_text_edit_rejection(&file_patch.path));
     }
@@ -527,7 +599,10 @@ fn preview_for(file_patch: &FilePatch, planned: &PlannedFilePatch) -> ApplyPrevi
 fn check_toctou(planned: &PlannedFilePatch, workspace: Option<&Path>) -> Result<(), String> {
     if !planned.loaded.existed {
         if resolve_patch_path(&planned.loaded.path, workspace).exists() {
-            return Err(format!("应用中止: 文件 {} 在读取后被外部创建。", planned.loaded.path));
+            return Err(format!(
+                "应用中止: 文件 {} 在读取后被外部创建。",
+                planned.loaded.path
+            ));
         }
         return Ok(());
     }
@@ -593,7 +668,9 @@ pub async fn apply_patch(
 
     let ws = get_workspace(app, session_id).await;
     for file_patch in &file_patches {
-        if let Err(e) = ensure_path_permission(app, &file_patch.path, "应用 patch", ws.as_deref()).await {
+        if let Err(e) =
+            ensure_path_permission(app, &file_patch.path, "应用 patch", ws.as_deref()).await
+        {
             return framework::ToolCallResult::error(e);
         }
     }
@@ -603,7 +680,9 @@ pub async fn apply_patch(
     for file_patch in &file_patches {
         let plan = match plan_patch(file_patch, ws.as_deref()) {
             Ok(plan) => plan,
-            Err(e) => return framework::ToolCallResult::error(format!("ApplyPatch 预检失败: {}", e)),
+            Err(e) => {
+                return framework::ToolCallResult::error(format!("ApplyPatch 预检失败: {}", e))
+            }
         };
         previews.push(preview_for(file_patch, &plan));
         planned.push(plan);
@@ -620,9 +699,13 @@ pub async fn apply_patch(
     for plan in &planned {
         if plan.loaded.existed {
             let resolved = resolve_patch_path(&plan.loaded.path, ws.as_deref());
-            if let Err(e) =
-                ensure_fresh_read(app, session_id, &resolved.to_string_lossy(), &plan.loaded.old_content)
-                    .await
+            if let Err(e) = ensure_fresh_read(
+                app,
+                session_id,
+                &resolved.to_string_lossy(),
+                &plan.loaded.old_content,
+            )
+            .await
             {
                 return framework::ToolCallResult::error(format!("ApplyPatch 中止: {}", e));
             }
@@ -637,7 +720,10 @@ pub async fn apply_patch(
 
     for plan in &planned {
         if let Err(e) = write_planned_file(plan, ws.as_deref()) {
-            return framework::ToolCallResult::error(format!("ApplyPatch 写入失败，已停止。可能已有部分文件写入，请检查工作区。{}", e));
+            return framework::ToolCallResult::error(format!(
+                "ApplyPatch 写入失败，已停止。可能已有部分文件写入，请检查工作区。{}",
+                e
+            ));
         }
     }
 
@@ -645,7 +731,13 @@ pub async fn apply_patch(
         let resolved = resolve_patch_path(&plan.loaded.path, ws.as_deref());
         // 写入成功 → 刷新认知为补丁后的新版本（新建文件同样记录），
         // 后续 EditFile / 再打补丁不会因这次写入被误判为外部修改
-        record_file_read(app, session_id, &resolved.to_string_lossy(), &plan.new_content).await;
+        record_file_read(
+            app,
+            session_id,
+            &resolved.to_string_lossy(),
+            &plan.new_content,
+        )
+        .await;
         let patch = if plan.loaded.existed {
             Patch::update_file_patch(
                 session_id,
@@ -678,7 +770,8 @@ mod tests {
 
     #[test]
     fn parses_unified_patch() {
-        let patch = "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -1,2 +1,2 @@\n const a = 1\n-old\n+new\n";
+        let patch =
+            "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -1,2 +1,2 @@\n const a = 1\n-old\n+new\n";
         let parsed = parse_apply_patch(patch).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].path, "src/foo.ts");
@@ -687,7 +780,9 @@ mod tests {
 
     #[test]
     fn applies_hunk() {
-        let patch = parse_apply_patch("--- a/foo.txt\n+++ b/foo.txt\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n").unwrap();
+        let patch =
+            parse_apply_patch("--- a/foo.txt\n+++ b/foo.txt\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n")
+                .unwrap();
         let (content, added, removed) = apply_hunks("a\nb\nc\n", &patch[0].hunks).unwrap();
         assert_eq!(content, "a\nB\nc\n");
         assert_eq!(added, 1);
@@ -696,7 +791,9 @@ mod tests {
 
     #[test]
     fn applies_fuzzy_hunk_when_whitespace_changed() {
-        let patch = parse_apply_patch("--- a/foo.txt\n+++ b/foo.txt\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n").unwrap();
+        let patch =
+            parse_apply_patch("--- a/foo.txt\n+++ b/foo.txt\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n")
+                .unwrap();
         let (content, added, removed) = apply_hunks(" a\n b\n c\n", &patch[0].hunks).unwrap();
         assert_eq!(content, " a\nB\n c\n");
         assert_eq!(added, 1);
@@ -705,8 +802,12 @@ mod tests {
 
     #[test]
     fn rejects_ambiguous_fuzzy_hunk() {
-        let patch = parse_apply_patch("--- a/foo.txt\n+++ b/foo.txt\n@@ -1,2 +1,2 @@\n same\n-old\n+new\n").unwrap();
+        let patch =
+            parse_apply_patch("--- a/foo.txt\n+++ b/foo.txt\n@@ -1,2 +1,2 @@\n same\n-old\n+new\n")
+                .unwrap();
         let result = apply_hunks(" same\n old\n same\n old\n", &patch[0].hunks);
-        assert!(result.unwrap_err().contains("fuzzy 匹配置信度不足或存在歧义"));
+        assert!(result
+            .unwrap_err()
+            .contains("fuzzy 匹配置信度不足或存在歧义"));
     }
 }

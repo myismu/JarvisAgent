@@ -122,7 +122,12 @@ pub async fn propose_plan(
 
         // 对每个节点做 DFS 检测环
         let mut visited = vec![0u8; n]; // 0=未访问, 1=访问中, 2=已完成
-        fn dfs(u: usize, adj: &[Vec<usize>], visited: &mut [u8], tasks: &[serde_json::Value]) -> Option<String> {
+        fn dfs(
+            u: usize,
+            adj: &[Vec<usize>],
+            visited: &mut [u8],
+            tasks: &[serde_json::Value],
+        ) -> Option<String> {
             visited[u] = 1;
             for &v in &adj[u] {
                 if visited[v] == 1 {
@@ -159,13 +164,19 @@ pub async fn propose_plan(
         let mut order: Vec<usize> = (0..n).collect();
         order.sort_by_key(|&u| std::cmp::Reverse(visited[u])); // 2（已完成）排前面
         for u in order {
-            if visited[u] != 2 { continue; }
+            if visited[u] != 2 {
+                continue;
+            }
             let mut max_child = 0u32;
             for &v in &adj[u] {
-                if depth[v] > max_child { max_child = depth[v]; }
+                if depth[v] > max_child {
+                    max_child = depth[v];
+                }
             }
             depth[u] = max_child + 1;
-            if depth[u] > max_depth { max_depth = depth[u]; }
+            if depth[u] > max_depth {
+                max_depth = depth[u];
+            }
         }
         if max_depth > 5 {
             println!(
@@ -213,7 +224,11 @@ pub async fn propose_plan(
             }
         }
         if !superseded.is_empty() {
-            println!("[JARVIS] ProposePlan: 将 {} 个旧方案标记为 revision_requested ({:?})", superseded.len(), superseded);
+            println!(
+                "[JARVIS] ProposePlan: 将 {} 个旧方案标记为 revision_requested ({:?})",
+                superseded.len(),
+                superseded
+            );
         }
     }
     {
@@ -338,5 +353,8 @@ pub async fn propose_plan(
     }
 
     crate::jarvis_info!("JARVIS", "[JARVIS] 方案已提交审批面板: {} ({})", title, id);
-    format!("方案「{}」已提交审批面板。请等待用户查阅后做出决策。", title)
+    format!(
+        "方案「{}」已提交审批面板。请等待用户查阅后做出决策。",
+        title
+    )
 }

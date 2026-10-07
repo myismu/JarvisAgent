@@ -103,7 +103,10 @@ pub struct TokenUsage {
 
 impl TokenUsage {
     /// 不产生 token 用量的工具（绝大多数）
-    pub const NONE: TokenUsage = TokenUsage { input: 0, output: 0 };
+    pub const NONE: TokenUsage = TokenUsage {
+        input: 0,
+        output: 0,
+    };
 
     /// 由工具返回值构造（来源见 `ToolCallResult::with_usage`）
     pub fn new(input: u64, output: u64) -> Self {
@@ -192,7 +195,10 @@ impl SessionToolAudit {
 
     fn record_error(&mut self, seq: u64, tool_name: &str, error_type: &ErrorType) {
         self.total_errors += 1;
-        *self.error_breakdown.entry(format!("{:?}", error_type)).or_insert(0) += 1;
+        *self
+            .error_breakdown
+            .entry(format!("{:?}", error_type))
+            .or_insert(0) += 1;
         self.last_error = Some(LastError {
             seq,
             tool_name: tool_name.to_string(),
@@ -433,9 +439,7 @@ impl ToolCallLogger {
             "error_breakdown": audit.error_breakdown,
         });
 
-        let path = self
-            .log_dir
-            .join(format!("{}_summary.json", session_id));
+        let path = self.log_dir.join(format!("{}_summary.json", session_id));
         if let Ok(mut file) = OpenOptions::new()
             .create(true)
             .write(true)
@@ -468,11 +472,7 @@ impl ToolCallLogger {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-        {
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
             if let Ok(line) = serde_json::to_string(record) {
                 let _ = writeln!(file, "{}", line);
             }
@@ -493,10 +493,20 @@ fn extract_deferred_args_summary(tool_name: &str, args: &serde_json::Value) -> s
     let mut summary = serde_json::json!({ "name": tool_name });
 
     // 优先从 args["args"] 提取（正常调用路径），fallback 到顶层（错误路径）
-    let source = args.get("args").and_then(|v| v.as_object()).or_else(|| args.as_object());
+    let source = args
+        .get("args")
+        .and_then(|v| v.as_object())
+        .or_else(|| args.as_object());
 
     if let Some(inner_args) = source {
-        for key in &["path", "command", "query", "pattern", "content", "subagent_type"] {
+        for key in &[
+            "path",
+            "command",
+            "query",
+            "pattern",
+            "content",
+            "subagent_type",
+        ] {
             if let Some(val) = inner_args.get(*key) {
                 summary[*key] = val.clone();
             }
@@ -508,7 +518,15 @@ fn extract_deferred_args_summary(tool_name: &str, args: &serde_json::Value) -> s
 /// 从核心工具的 args 中提取关键字段
 fn extract_core_args_summary(tool_name: &str, args: &serde_json::Value) -> serde_json::Value {
     let mut summary = serde_json::json!({ "name": tool_name });
-    for key in &["path", "command", "query", "pattern", "prompt", "skill", "subagent_type"] {
+    for key in &[
+        "path",
+        "command",
+        "query",
+        "pattern",
+        "prompt",
+        "skill",
+        "subagent_type",
+    ] {
         if let Some(val) = args.get(*key) {
             summary[*key] = val.clone();
         }

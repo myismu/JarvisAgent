@@ -212,12 +212,7 @@ pub fn decide(
     }
 
     // 3. 会话档位（L2）——已是确定布尔，无需再做"跟随"解析
-    clamp_to_model(
-        session_mode.0,
-        ThinkingReason::SessionMode,
-        caps,
-        true,
-    )
+    clamp_to_model(session_mode.0, ThinkingReason::SessionMode, caps, true)
 }
 
 /// 按模型硬约束夹紧用户意愿。
@@ -434,10 +429,22 @@ mod tests {
             ThinkingDefault::FollowGlobal
         );
         // 旧 config.json 里的 "auto" 落到 follow_global（与旧行为最接近）
-        assert_eq!(ThinkingDefault::parse("auto"), ThinkingDefault::FollowGlobal);
-        assert_eq!(ThinkingDefault::parse("garbage"), ThinkingDefault::FollowGlobal);
+        assert_eq!(
+            ThinkingDefault::parse("auto"),
+            ThinkingDefault::FollowGlobal
+        );
+        assert_eq!(
+            ThinkingDefault::parse("garbage"),
+            ThinkingDefault::FollowGlobal
+        );
         assert_eq!(ThinkingDefault::parse_strict("garbage"), None);
-        assert_eq!(ThinkingDefault::parse_strict("on"), Some(ThinkingDefault::On));
-        assert_eq!(ThinkingDefault::parse_strict("off"), Some(ThinkingDefault::Off));
+        assert_eq!(
+            ThinkingDefault::parse_strict("on"),
+            Some(ThinkingDefault::On)
+        );
+        assert_eq!(
+            ThinkingDefault::parse_strict("off"),
+            Some(ThinkingDefault::Off)
+        );
     }
 }

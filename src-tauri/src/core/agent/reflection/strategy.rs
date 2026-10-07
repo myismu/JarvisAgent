@@ -44,10 +44,7 @@ const CONVERSATIONAL_TOOLS: &[&str] = &[
 ];
 
 /// 子 Agent 调度工具（完成代表一个独立工作单元结束）
-const SUBAGENT_TOOLS: &[&str] = &[
-    "RunSubagent",
-    "RunSubagentsSequentially",
-];
+const SUBAGENT_TOOLS: &[&str] = &["RunSubagent", "RunSubagentsSequentially"];
 
 /// 变更类工具（产生副作用的操作，完成后值得审查）
 const MUTATION_TOOLS: &[&str] = &[
@@ -233,18 +230,17 @@ fn parse_reflection_response(response: &str) -> ReflectionJudgment {
     }
 
     // NO: <reason> | 建议: <suggestion>
-    if let Some(no_part) = trimmed.strip_prefix("NO:").or_else(|| trimmed.strip_prefix("NO :")) {
+    if let Some(no_part) = trimmed
+        .strip_prefix("NO:")
+        .or_else(|| trimmed.strip_prefix("NO :"))
+    {
         let no_part = no_part.trim();
         // 兼容 "|建议:" 和 "| 建议:" 两种格式
         if let Some((reason, suggestion)) = no_part
             .split_once("|建议:")
             .or_else(|| no_part.split_once("| 建议:"))
         {
-            let reason = reason
-                .trim()
-                .strip_prefix("建议:")
-                .unwrap_or(reason)
-                .trim();
+            let reason = reason.trim().strip_prefix("建议:").unwrap_or(reason).trim();
             return ReflectionJudgment::NotOk {
                 reason: reason.to_string(),
                 suggestion: suggestion.trim().to_string(),
@@ -315,42 +311,111 @@ mod tests {
 
     #[test]
     fn test_should_reflect_off() {
-        assert!(!should_reflect("off", 5, 0, 0, &["EditFile".into()], "不确定"));
+        assert!(!should_reflect(
+            "off",
+            5,
+            0,
+            0,
+            &["EditFile".into()],
+            "不确定"
+        ));
     }
 
     #[test]
     fn test_should_reflect_always_subagent() {
-        assert!(should_reflect("always", 3, 0, 0, &["RunSubagent".into()], ""));
-        assert!(should_reflect("always", 3, 0, 0, &["RunSubagentsSequentially".into()], ""));
+        assert!(should_reflect(
+            "always",
+            3,
+            0,
+            0,
+            &["RunSubagent".into()],
+            ""
+        ));
+        assert!(should_reflect(
+            "always",
+            3,
+            0,
+            0,
+            &["RunSubagentsSequentially".into()],
+            ""
+        ));
     }
 
     #[test]
     fn test_should_reflect_always_mutation() {
         assert!(should_reflect("always", 3, 0, 0, &["WriteFile".into()], ""));
         assert!(should_reflect("always", 3, 0, 0, &["EditFile".into()], ""));
-        assert!(should_reflect("always", 3, 0, 0, &["DeleteFile".into()], ""));
-        assert!(should_reflect("always", 3, 0, 0, &["RunCommand".into()], ""));
-        assert!(should_reflect("always", 3, 0, 0, &["ProposePlan".into()], ""));
+        assert!(should_reflect(
+            "always",
+            3,
+            0,
+            0,
+            &["DeleteFile".into()],
+            ""
+        ));
+        assert!(should_reflect(
+            "always",
+            3,
+            0,
+            0,
+            &["RunCommand".into()],
+            ""
+        ));
+        assert!(should_reflect(
+            "always",
+            3,
+            0,
+            0,
+            &["ProposePlan".into()],
+            ""
+        ));
     }
 
     #[test]
     fn test_should_reflect_always_read_only_no_trigger() {
         // 纯读取 → 不触发
         assert!(!should_reflect("always", 3, 0, 0, &["ReadFile".into()], ""));
-        assert!(!should_reflect("always", 3, 0, 0, &["ListDirectory".into()], ""));
-        assert!(!should_reflect("always", 3, 0, 0, &["SearchRepo".into()], ""));
-        assert!(!should_reflect("always", 3, 0, 0, &["FindFiles".into()], ""));
+        assert!(!should_reflect(
+            "always",
+            3,
+            0,
+            0,
+            &["ListDirectory".into()],
+            ""
+        ));
+        assert!(!should_reflect(
+            "always",
+            3,
+            0,
+            0,
+            &["SearchRepo".into()],
+            ""
+        ));
+        assert!(!should_reflect(
+            "always",
+            3,
+            0,
+            0,
+            &["FindFiles".into()],
+            ""
+        ));
     }
 
     #[test]
     fn test_should_reflect_smart_keyword() {
         assert!(should_reflect(
-            "smart", 3, 0, 0,
+            "smart",
+            3,
+            0,
+            0,
             &["ReadFile".into()],
             "我不确定这个结果是否正确"
         ));
         assert!(!should_reflect(
-            "smart", 3, 0, 0,
+            "smart",
+            3,
+            0,
+            0,
             &["ReadFile".into()],
             "文件内容已成功读取"
         ));
@@ -359,33 +424,42 @@ mod tests {
     #[test]
     fn test_should_reflect_skip_conversational() {
         assert!(!should_reflect(
-            "always", 3, 0, 0,
-            &["ReadMemory".into()], ""
+            "always",
+            3,
+            0,
+            0,
+            &["ReadMemory".into()],
+            ""
         ));
     }
 
     #[test]
     fn test_should_reflect_max_total() {
         assert!(!should_reflect(
-            "always", 3, 10, 0,
-            &["EditFile".into()], ""
+            "always",
+            3,
+            10,
+            0,
+            &["EditFile".into()],
+            ""
         ));
     }
 
     #[test]
     fn test_should_reflect_consecutive_nos() {
-        assert!(!should_reflect(
-            "always", 3, 5, 3,
-            &["EditFile".into()], ""
-        ));
+        assert!(!should_reflect("always", 3, 5, 3, &["EditFile".into()], ""));
     }
 
     #[test]
     fn test_should_reflect_always_multiple_tools() {
         // 一轮中既有读又有写 → 变更工具触发
         assert!(should_reflect(
-            "always", 3, 0, 0,
-            &["ReadFile".into(), "EditFile".into()], ""
+            "always",
+            3,
+            0,
+            0,
+            &["ReadFile".into(), "EditFile".into()],
+            ""
         ));
     }
 }

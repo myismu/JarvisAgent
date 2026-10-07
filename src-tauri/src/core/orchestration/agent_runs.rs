@@ -10,8 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 
-use crate::infra::types::models::{Content, ContentBlock, InterruptKind, Message};
 use crate::core::orchestration::agent_run_repository;
+use crate::infra::types::models::{Content, ContentBlock, InterruptKind, Message};
 
 /// 运行记录过期阈值（毫秒），超过此时间未更新视为中断。
 /// 同时用于 `recovering` 恢复抢占的接管判定（恢复本身是秒级操作，同一阈值足够宽裕）。
@@ -179,7 +179,9 @@ pub fn list_runs(session_id: Option<&str>) -> Vec<AgentRun> {
 
 /// 根据 message_id 查找对应的 agent_run
 pub fn find_run_by_message_id(message_id: &str) -> Option<AgentRun> {
-    agent_run_repository::find_by_message_id(message_id).ok().flatten()
+    agent_run_repository::find_by_message_id(message_id)
+        .ok()
+        .flatten()
 }
 
 /// 根据 message_id 清理对应的 agent_run 与其全部轮次事件
@@ -351,7 +353,9 @@ pub fn mark_loop_reflection(
     reason: Option<&str>,
     suggestion: Option<&str>,
 ) {
-    let _ = agent_run_repository::mark_loop_reflection(run_id, loop_index, judgment, reason, suggestion);
+    let _ = agent_run_repository::mark_loop_reflection(
+        run_id, loop_index, judgment, reason, suggestion,
+    );
 }
 
 /// 把某一轮标记为 `interrupted`，并补上中断原因。
@@ -451,12 +455,7 @@ pub fn cancel_run(
 /// ⚠️ 不再接收 `error` 文本：它此前只写 `agent_runs.error` 列（只写不读，已于 v19
 /// 删除）。失败原因仍可在 `agent_run_events.error`（每轮一行）里查到；
 /// run 级只保留**类型**（`interrupt_kind = PipelineError`）。
-pub fn fail_run(
-    app: &tauri::AppHandle,
-    run_id: &str,
-    input_tokens: u64,
-    output_tokens: u64,
-) {
+pub fn fail_run(app: &tauri::AppHandle, run_id: &str, input_tokens: u64, output_tokens: u64) {
     finish_run(
         app,
         run_id,
@@ -1026,13 +1025,21 @@ mod loop_rebuild_tests {
         // 与 rebuild_messages_from_events 同口径的纯函数（不触 DB）
         let mut out = Vec::new();
         for (resp, tools) in events {
-            let r: Vec<_> = resp.iter().filter(|b| !is_empty_block(b)).cloned().collect();
+            let r: Vec<_> = resp
+                .iter()
+                .filter(|b| !is_empty_block(b))
+                .cloned()
+                .collect();
             if !r.is_empty() {
                 out.push(Message::Assistant {
                     content: Content::Multiple(r),
                 });
             }
-            let t: Vec<_> = tools.iter().filter(|b| !is_empty_block(b)).cloned().collect();
+            let t: Vec<_> = tools
+                .iter()
+                .filter(|b| !is_empty_block(b))
+                .cloned()
+                .collect();
             if !t.is_empty() {
                 out.push(Message::User {
                     content: Content::Multiple(t),
@@ -1047,14 +1054,18 @@ mod loop_rebuild_tests {
     fn replay_orders_resp_then_tools_per_loop() {
         let events = vec![
             (
-                vec![ContentBlock::Text { text: "第一轮正文".into() }],
+                vec![ContentBlock::Text {
+                    text: "第一轮正文".into(),
+                }],
                 vec![ContentBlock::ToolResult {
                     tool_use_id: "t1".into(),
                     content: "结果1".into(),
                 }],
             ),
             (
-                vec![ContentBlock::Text { text: "第二轮正文".into() }],
+                vec![ContentBlock::Text {
+                    text: "第二轮正文".into(),
+                }],
                 vec![],
             ),
         ];
@@ -1071,7 +1082,10 @@ mod loop_rebuild_tests {
         let events = vec![(
             vec![
                 ContentBlock::Text { text: "   ".into() },
-                ContentBlock::Thinking { thinking: "".into(), signature: "".into() },
+                ContentBlock::Thinking {
+                    thinking: "".into(),
+                    signature: "".into(),
+                },
             ],
             vec![],
         )];
@@ -1115,14 +1129,9 @@ mod loop_rebuild_tests {
     #[test]
     fn diff_tail_no_duplicate_when_turn_already_persisted() {
         // 历史：起点 user 提问 + 半截 assistant（恢复前已由 store_assistant_response 落库）
-        let current = vec![
-            user("提问"),
-            assistant("我已经分析完毕，结论如下"),
-        ];
+        let current = vec![user("提问"), assistant("我已经分析完毕，结论如下")];
         // 重放：不含起点 user；尾条是同一 assistant 的更完整文本
-        let rebuilt = vec![
-            assistant("我已经分析完毕，结论如下，具体分三点："),
-        ];
+        let rebuilt = vec![assistant("我已经分析完毕，结论如下，具体分三点：")];
         let extra = diff_tail(&current, &rebuilt);
         // 尾条文本不同 → 语义上无法确认覆盖，保守补出（宁可重复也不丢内容），
         // 但**绝不能**把已对齐的历史也当成增量再补一遍
@@ -1142,11 +1151,7 @@ mod loop_rebuild_tests {
             user("工具结果"),
             assistant("第二轮"),
         ];
-        let rebuilt = vec![
-            assistant("第一轮"),
-            user("工具结果"),
-            assistant("第二轮"),
-        ];
+        let rebuilt = vec![assistant("第一轮"), user("工具结果"), assistant("第二轮")];
         assert!(
             diff_tail(&current, &rebuilt).is_empty(),
             "重放内容全部已在历史中，不应产生增量"
@@ -1191,8 +1196,9 @@ mod loop_rebuild_tests {
         // 旧库格式：`> ⚠️ **[回复被中断]** …`（旧会话历史不会自动改写，必须兼容）
         let legacy_marker = Message::Assistant {
             content: Content::Multiple(vec![ContentBlock::Text {
-                text: "半截正文\n\n> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。"
-                    .into(),
+                text:
+                    "半截正文\n\n> ⚠️ **[回复被中断]** 上次回复在此处中断，请基于上下文继续完成。"
+                        .into(),
             }]),
         };
         assert!(messages_equivalent(&legacy_marker, &replayed));
@@ -1241,7 +1247,9 @@ mod loop_rebuild_tests {
         let current = vec![
             user("提问"),
             Message::Assistant {
-                content: Content::Multiple(vec![ContentBlock::Text { text: "第一轮".into() }]),
+                content: Content::Multiple(vec![ContentBlock::Text {
+                    text: "第一轮".into(),
+                }]),
             },
             Message::User {
                 content: Content::Single("工具结果".into()),
@@ -1249,7 +1257,9 @@ mod loop_rebuild_tests {
         ];
         let rebuilt = vec![
             Message::Assistant {
-                content: Content::Multiple(vec![ContentBlock::Text { text: "第一轮".into() }]),
+                content: Content::Multiple(vec![ContentBlock::Text {
+                    text: "第一轮".into(),
+                }]),
             },
             Message::User {
                 content: Content::Multiple(vec![ContentBlock::ToolResult {
@@ -1258,7 +1268,9 @@ mod loop_rebuild_tests {
                 }]),
             },
             Message::Assistant {
-                content: Content::Multiple(vec![ContentBlock::Text { text: "第二轮".into() }]),
+                content: Content::Multiple(vec![ContentBlock::Text {
+                    text: "第二轮".into(),
+                }]),
             },
         ];
         let extra = diff_tail(&current, &rebuilt);

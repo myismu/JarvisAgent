@@ -1,4 +1,4 @@
-﻿//! # notebook_tools.rs — Jupyter Notebook cell 级编辑工具
+//! # notebook_tools.rs — Jupyter Notebook cell 级编辑工具
 //!
 //! `.ipynb` 文件本质是 JSON，直接用文本替换容易破坏结构或误改 outputs。
 //! 本模块提供 cell 级别的 replace / insert / delete 操作。
@@ -13,10 +13,10 @@ use tauri::Manager;
 
 use super::framework::permission::ensure_path_permission;
 use super::framework::registry::ToolDef;
-use crate::core::tools::framework;
-use crate::infra::types::models::Message;
 use crate::core::rollback::Patch;
+use crate::core::tools::framework;
 use crate::infra::state::state::{PendingSnapshotPatch, SessionManager};
+use crate::infra::types::models::Message;
 
 const IPYNB_INDENT: &[u8] = b" ";
 
@@ -359,7 +359,9 @@ pub async fn notebook_edit(
     let edit_mode = input["edit_mode"].as_str().unwrap_or("replace");
 
     if notebook_path.trim().is_empty() {
-        return framework::ToolCallResult::error("NotebookEdit 错误: notebook_path 不能为空。".to_string());
+        return framework::ToolCallResult::error(
+            "NotebookEdit 错误: notebook_path 不能为空。".to_string(),
+        );
     }
 
     let workspace = get_workspace(app, session_id).await;
@@ -388,7 +390,12 @@ pub async fn notebook_edit(
 
     let mut notebook: Value = match serde_json::from_str(&original_content) {
         Ok(value) => value,
-        Err(e) => return framework::ToolCallResult::error(format!("NotebookEdit 失败: Notebook 不是合法 JSON: {}", e)),
+        Err(e) => {
+            return framework::ToolCallResult::error(format!(
+                "NotebookEdit 失败: Notebook 不是合法 JSON: {}",
+                e
+            ))
+        }
     };
 
     let outcome =

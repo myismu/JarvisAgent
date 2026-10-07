@@ -140,11 +140,7 @@ pub async fn persist(ctx: &SessionContext, session_id: &str, kind: &str, scope: 
     if file.project_path.is_empty() {
         file.project_path = project_root.to_string_lossy().to_string();
     }
-    if file
-        .keys
-        .iter()
-        .any(|a| a.kind == kind && a.scope == scope)
-    {
+    if file.keys.iter().any(|a| a.kind == kind && a.scope == scope) {
         return; // 已存在，无需重写
     }
     file.keys.push(StoredAllowance {
@@ -174,8 +170,7 @@ pub async fn revoke(ctx: &SessionContext, kind: &str, scope: &str) {
     let path = store_dir().join(file_name_for(&project_root));
     let mut file = read_file(&path);
     let before = file.keys.len();
-    file.keys
-        .retain(|a| !(a.kind == kind && a.scope == scope));
+    file.keys.retain(|a| !(a.kind == kind && a.scope == scope));
     if file.keys.len() != before {
         file.updated_at = now_string();
         write_file(&path, &file);

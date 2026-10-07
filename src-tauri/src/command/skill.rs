@@ -11,7 +11,7 @@
 //! - External: `tiktoken_rs`
 
 use crate::core::tools::load_all_skills;
-use crate::infra::types::models::{SkillMeta, SkillDetail};
+use crate::infra::types::models::{SkillDetail, SkillMeta};
 use tiktoken_rs::cl100k_base;
 
 /// 计算文本的 token 数量
@@ -33,16 +33,19 @@ fn count_tokens(text: &str) -> usize {
 pub async fn list_skills() -> Result<Vec<SkillMeta>, String> {
     let skills = load_all_skills();
     let activations = crate::command::app_config::get_all_skill_activations();
-    Ok(skills.into_iter().map(|s| {
-        let active = activations.get(&s.name).copied().unwrap_or(true);
-        SkillMeta {
-            name: s.name,
-            description: s.description,
-            path: s.path,
-            body_tokens: count_tokens(&s.body),
-            active,
-        }
-    }).collect())
+    Ok(skills
+        .into_iter()
+        .map(|s| {
+            let active = activations.get(&s.name).copied().unwrap_or(true);
+            SkillMeta {
+                name: s.name,
+                description: s.description,
+                path: s.path,
+                body_tokens: count_tokens(&s.body),
+                active,
+            }
+        })
+        .collect())
 }
 
 /// 获取指定 skill 的完整详情
@@ -52,10 +55,13 @@ pub async fn list_skills() -> Result<Vec<SkillMeta>, String> {
 #[tauri::command]
 pub async fn get_skill_detail(name: String) -> Result<Option<SkillDetail>, String> {
     let skills = load_all_skills();
-    Ok(skills.into_iter().find(|s| s.name == name).map(|s| SkillDetail {
-        name: s.name,
-        description: s.description,
-        path: s.path,
-        body: s.body,
-    }))
+    Ok(skills
+        .into_iter()
+        .find(|s| s.name == name)
+        .map(|s| SkillDetail {
+            name: s.name,
+            description: s.description,
+            path: s.path,
+            body: s.body,
+        }))
 }

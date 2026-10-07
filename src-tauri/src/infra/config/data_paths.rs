@@ -1,11 +1,11 @@
-﻿//! Runtime data layout helpers.
+//! Runtime data layout helpers.
 //!
 //! Persistent session data lives in SQLite (`jarvis.sqlite3`). This module only
 //! creates non-session runtime directories such as global config, logs, cache,
 //! and temporary workspaces.
 
-use crate::infra::types::constants;
 use crate::get_agent_home;
+use crate::infra::types::constants;
 use std::fs;
 use std::path::PathBuf;
 

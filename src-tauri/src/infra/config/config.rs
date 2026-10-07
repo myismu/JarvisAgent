@@ -295,7 +295,8 @@ pub fn save_config(config: &AppConfig) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {}", e))?;
     }
-    let json = serde_json::to_string_pretty(config).map_err(|e| format!("序列化配置失败: {}", e))?;
+    let json =
+        serde_json::to_string_pretty(config).map_err(|e| format!("序列化配置失败: {}", e))?;
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, &json).map_err(|e| format!("写入配置失败: {}", e))?;
     std::fs::rename(&tmp, &path).map_err(|e| format!("保存配置失败: {}", e))?;

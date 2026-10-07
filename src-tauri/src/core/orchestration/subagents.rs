@@ -1,4 +1,4 @@
-﻿//! 子Agent监控模块 - 子Agent生命周期与状态追踪
+//! 子Agent监控模块 - 子Agent生命周期与状态追踪
 //!
 //! 管理子Agent的运行状态、事件记录、取消控制。
 //! 通过 Tauri 事件系统向前端推送实时状态更新。
@@ -115,7 +115,9 @@ impl SubAgentMonitor {
             .iter()
             .filter(|(_, run)| {
                 run.status != SubAgentStatus::Running
-                    && run.finished_at.map_or(false, |finished| now.saturating_sub(finished) > ttl_ms)
+                    && run
+                        .finished_at
+                        .map_or(false, |finished| now.saturating_sub(finished) > ttl_ms)
             })
             .map(|(id, _)| id.clone())
             .collect();

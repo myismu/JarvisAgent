@@ -57,17 +57,17 @@ use eventsource_stream::Eventsource;
 use serde_json::json;
 use tauri::{Emitter, Manager};
 
-use crate::infra::config::config::AgentConfig;
-use crate::infra::types::error::{AgentError, ApiError};
-use crate::infra::debug_logger;
-use crate::infra::llm::api_client;
-use crate::infra::types::models::*;
 use crate::core::orchestration::agent_runs;
 use crate::core::session::{
     append_message, append_message_with_kind, memory::*, normalize_message_ids, pop_message,
     restore_message,
 };
 use crate::core::tools::*;
+use crate::infra::config::config::AgentConfig;
+use crate::infra::debug_logger;
+use crate::infra::llm::api_client;
+use crate::infra::types::error::{AgentError, ApiError};
+use crate::infra::types::models::*;
 
 use super::context::*;
 use super::stream::{process_stream, StreamConfig};
@@ -269,8 +269,7 @@ impl WaitingHint {
 
     /// 本轮结束，停止看门狗
     fn finish(&self) {
-        self.done
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.done.store(true, std::sync::atomic::Ordering::Relaxed);
         self.handle.abort();
     }
 }
@@ -321,9 +320,9 @@ const PLAN_LIMIT_MARKER: &str =
 fn interrupt_marker_for(kind: InterruptKind) -> &'static str {
     match kind {
         // 能接着做的三种（流超时 / 用户取消 / 执行报错）共用"接着做"措辞
-        InterruptKind::StreamTimeout
-        | InterruptKind::UserCancel
-        | InterruptKind::PipelineError => INTERRUPT_MARKER_RESUMABLE,
+        InterruptKind::StreamTimeout | InterruptKind::UserCancel | InterruptKind::PipelineError => {
+            INTERRUPT_MARKER_RESUMABLE
+        }
         // 应用关闭：**没有半截内容可续**，用恢复占位措辞（等用户下一条新意图）
         InterruptKind::AppClosed => {
             crate::core::orchestration::agent_runs::INTERRUPT_PLACEHOLDER_NO_REPLY
@@ -372,7 +371,8 @@ fn append_interrupt_marker_to_message(msg: &mut Message, marker: &str) {
     }
 }
 
-struct ContextEstimate {    total_chars: usize,
+struct ContextEstimate {
+    total_chars: usize,
     estimated_tokens: usize,
     message_count: usize,
     tool_schema_count: usize,
@@ -424,20 +424,16 @@ fn assistant_text_exists_at_tail(messages: &[Message], target: &str) -> bool {
     if target.is_empty() {
         return false;
     }
-    messages
-        .iter()
-        .rev()
-        .take(4)
-        .any(|msg| match msg {
-            Message::Assistant { content } => match content {
-                Content::Single(text) => text.trim() == target,
-                Content::Multiple(blocks) => blocks.iter().any(|b| match b {
-                    ContentBlock::Text { text } => text.trim() == target,
-                    _ => false,
-                }),
-            },
-            _ => false,
-        })
+    messages.iter().rev().take(4).any(|msg| match msg {
+        Message::Assistant { content } => match content {
+            Content::Single(text) => text.trim() == target,
+            Content::Multiple(blocks) => blocks.iter().any(|b| match b {
+                ContentBlock::Text { text } => text.trim() == target,
+                _ => false,
+            }),
+        },
+        _ => false,
+    })
 }
 
 /// 中断收尾共用落库：把当轮已生成的内容（思考 + 正文）与中断提示合并成
@@ -494,7 +490,13 @@ async fn store_interrupted_turn(
     if !text.is_empty() {
         if let Some(idx) = tail_assistant_text_index(&session.messages, text) {
             normalize_message_ids(session);
-            if session.interrupt_kinds.get(idx).cloned().flatten().is_some() {
+            if session
+                .interrupt_kinds
+                .get(idx)
+                .cloned()
+                .flatten()
+                .is_some()
+            {
                 return false;
             }
             if idx < session.interrupt_kinds.len() {
@@ -572,9 +574,11 @@ fn fix_broken_tool_call_pairs(messages: &mut Vec<Message>) {
     while i < messages.len() {
         // 检查当前消息是否为包含 ToolUse 的 Assistant 消息
         let has_tool_use = match &messages[i] {
-            Message::Assistant { content: Content::Multiple(blocks) } => {
-                blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }))
-            }
+            Message::Assistant {
+                content: Content::Multiple(blocks),
+            } => blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { .. })),
             _ => false,
         };
 
@@ -585,28 +589,36 @@ fn fix_broken_tool_call_pairs(messages: &mut Vec<Message>) {
 
         // 收集所有 ToolUse 的 tool_use_id
         let tool_use_ids: Vec<String> = match &messages[i] {
-            Message::Assistant { content: Content::Multiple(blocks) } => {
-                blocks.iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::ToolUse { id, .. } => Some(id.clone()),
-                        _ => None,
-                    })
-                    .collect()
-            }
+            Message::Assistant {
+                content: Content::Multiple(blocks),
+            } => blocks
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                    _ => None,
+                })
+                .collect(),
             _ => vec![],
         };
 
         // 检查下一条消息是否包含对应的 ToolResult
         let next_has_results = if i + 1 < messages.len() {
             match &messages[i + 1] {
-                Message::User { content: Content::Multiple(blocks) } => {
-                    let result_ids: Vec<&str> = blocks.iter()
+                Message::User {
+                    content: Content::Multiple(blocks),
+                } => {
+                    let result_ids: Vec<&str> = blocks
+                        .iter()
                         .filter_map(|b| match b {
-                            ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                            ContentBlock::ToolResult { tool_use_id, .. } => {
+                                Some(tool_use_id.as_str())
+                            }
                             _ => None,
                         })
                         .collect();
-                    tool_use_ids.iter().all(|id| result_ids.contains(&id.as_str()))
+                    tool_use_ids
+                        .iter()
+                        .all(|id| result_ids.contains(&id.as_str()))
                 }
                 _ => false,
             }
@@ -620,7 +632,8 @@ fn fix_broken_tool_call_pairs(messages: &mut Vec<Message>) {
                 i
             );
             // 为缺失的 tool_use_id 注入占位 ToolResult
-            let placeholder_blocks: Vec<ContentBlock> = tool_use_ids.iter()
+            let placeholder_blocks: Vec<ContentBlock> = tool_use_ids
+                .iter()
                 .map(|id| ContentBlock::ToolResult {
                     tool_use_id: id.clone(),
                     content: "[系统注入：该工具已执行但结果因中断（取消/上游失联/报错）未能留档，\
@@ -629,9 +642,12 @@ fn fix_broken_tool_call_pairs(messages: &mut Vec<Message>) {
                         .to_string(),
                 })
                 .collect();
-            messages.insert(i + 1, Message::User {
-                content: Content::Multiple(placeholder_blocks),
-            });
+            messages.insert(
+                i + 1,
+                Message::User {
+                    content: Content::Multiple(placeholder_blocks),
+                },
+            );
             // 跳过刚插入的消息
             i += 2;
         } else {
@@ -844,13 +860,16 @@ impl PipelineState {
         // 的任何一条，属惰性代码，已随死代码清理删除。
         //
         // "用户已同意方案/要求修改方案"是审批续跑，不算复杂任务
-        let is_approval_continuation = msg.starts_with("用户已同意方案")
-            || msg.starts_with("用户要求修改方案");
+        let is_approval_continuation =
+            msg.starts_with("用户已同意方案") || msg.starts_with("用户要求修改方案");
         // 复杂任务判定：正则直判（命中 → 走方案审批）；"用户已同意方案/要求修改"属于审批续跑
         let detected_intent = {
             let is_complex = crate::core::complex_task::is_complex_task(&msg);
             if is_complex && !is_approval_continuation {
-                println!("[JARVIS] {} 模式：规则检测到复杂任务，首轮直接进入方案审批流程", current_work_mode);
+                println!(
+                    "[JARVIS] {} 模式：规则检测到复杂任务，首轮直接进入方案审批流程",
+                    current_work_mode
+                );
                 "TASK_PLAN".to_string()
             } else {
                 println!("[JARVIS] {} 模式：直接进入项目操作流程", current_work_mode);
@@ -903,19 +922,31 @@ impl PipelineState {
                             || msg_trim == "拒绝"
                             || msg_trim == "reject"
                             || msg_trim == "no";
-                        let new_status = if is_reject { "revision_requested" } else { "approved" };
+                        let new_status = if is_reject {
+                            "revision_requested"
+                        } else {
+                            "approved"
+                        };
                         approved_any = new_status == "approved";
 
                         for (plan_id, plan_title) in &pending_plans {
                             if let Ok(Some(doc)) = crate::core::session::update_plan_document_status(
-                                &session_id, plan_id, new_status, None,
+                                &session_id,
+                                plan_id,
+                                new_status,
+                                None,
                             ) {
-                                if let Some(existing) = memory.plan_documents.iter_mut().find(|d| d.id == doc.id) {
+                                if let Some(existing) =
+                                    memory.plan_documents.iter_mut().find(|d| d.id == doc.id)
+                                {
                                     *existing = doc.clone();
                                 }
                                 let _ = app.emit("plan-document-updated", &doc);
                             }
-                            println!("[JARVIS] 输入框审批：方案「{}」→ {}", plan_title, new_status);
+                            println!(
+                                "[JARVIS] 输入框审批：方案「{}」→ {}",
+                                plan_title, new_status
+                            );
                         }
                     }
                 } // 释放 memory 锁，避免锁顺序死锁
@@ -991,7 +1022,7 @@ impl PipelineState {
             tool_filter,
             // 以下字段在后续阶段填充
             dynamic_context_str: String::new(),
-                        user_msg_preview: String::new(),
+            user_msg_preview: String::new(),
             initial_msg_index: 0,
             user_message_id: None,
             should_think: false,
@@ -1029,9 +1060,7 @@ impl PipelineState {
             println!("[JARVIS] 意图前置拦截：TASK_PLAN 意图，首轮强制切换到 Plan 模式");
             *state.ctx.agent_work_mode.lock().await = "plan".to_string();
             // 模式是会话级属性：同步落库（sessions.work_mode），随会话恢复
-            if let Err(e) =
-                crate::core::session::update_session_work_mode(&state.sid, "plan")
-            {
+            if let Err(e) = crate::core::session::update_session_work_mode(&state.sid, "plan") {
                 eprintln!("[JARVIS] 工作模式落库失败（会话 {}）：{}", state.sid, e);
             }
             // system 必须全程字节恒定：这里只切换 work_mode，不重建 system。
@@ -1070,10 +1099,11 @@ impl PipelineState {
         };
         // 能力清单位于快照内，必须与当前 work_mode 保持一致（审批通过/首轮强制切 plan 后亦然）；
         // 工具开关则用 setup 时取好的会话快照，保证与 current_tools() 的可见性口径一致
-        self.capabilities = crate::core::tools::framework::capabilities::Capabilities::for_work_mode(
-            &current_mode,
-            &self.tool_filter,
-        );
+        self.capabilities =
+            crate::core::tools::framework::capabilities::Capabilities::for_work_mode(
+                &current_mode,
+                &self.tool_filter,
+            );
         self.dynamic_context_str = build_dynamic_context(
             &self.detected_intent,
             &self.request_workspace,
@@ -1105,12 +1135,14 @@ impl PipelineState {
             if recovered {
                 // 检测程序崩溃时残留的 InProgress 任务，注入恢复指令给 LLM
                 let tm = crate::core::orchestration::tasks::TaskManager::for_session(&self.sid);
-                let in_progress: Vec<_> = tm.get_all_tasks()
+                let in_progress: Vec<_> = tm
+                    .get_all_tasks()
                     .into_iter()
                     .filter(|t| t.status == crate::infra::types::models::TaskStatus::InProgress)
                     .collect();
                 if !in_progress.is_empty() {
-                    let task_list: String = in_progress.iter()
+                    let task_list: String = in_progress
+                        .iter()
                         .map(|t| format!("  • Task #{}: {}", t.id, t.subject))
                         .collect::<Vec<_>>()
                         .join("\n");
@@ -1138,10 +1170,17 @@ impl PipelineState {
                     // 正文是"请按以下步骤处理"——这是系统对模型下的指令，不是模型自己说过的话。
                     // 留在 `Assistant` 会让模型把它读成自己先前的表态，从而当成已做出的承诺。
                     // 与另外两处 `Inject`（方案重定向通知 / 反思修正建议）保持同为 `User`。
-                    append_message(&mut session, Message::User {
-                        content: Content::Single(recovery_msg),
-                    }, MessageSource::Inject);
-                    println!("[JARVIS] 恢复：检测到 {} 个 InProgress 任务，已注入恢复指令", in_progress.len());
+                    append_message(
+                        &mut session,
+                        Message::User {
+                            content: Content::Single(recovery_msg),
+                        },
+                        MessageSource::Inject,
+                    );
+                    println!(
+                        "[JARVIS] 恢复：检测到 {} 个 InProgress 任务，已注入恢复指令",
+                        in_progress.len()
+                    );
                 }
 
                 let _ = self.app.emit("session-updated", ());
@@ -1196,7 +1235,10 @@ impl PipelineState {
             let session = self.ctx.memory.lock().await;
             session.message_ids.get(self.initial_msg_index).cloned()
         };
-        println!("[JARVIS] start_run: message_id={:?} initial_msg_index={}", user_message_id, self.initial_msg_index);
+        println!(
+            "[JARVIS] start_run: message_id={:?} initial_msg_index={}",
+            user_message_id, self.initial_msg_index
+        );
         // 步骤 6：在 agent_runs 表登记本次 run（实时进度 + 崩溃恢复用）
         // （不再传用户消息文本：它只曾用于 v19 删掉的 user_message_preview 列）
         self.run_id = agent_runs::start_run(&self.app, &self.sid, None, user_message_id);
@@ -1223,7 +1265,10 @@ impl PipelineState {
     /// 用户取消 / 达到 200 轮绝对上限 / API 连续失败
     async fn run_main_loop(&mut self) -> Result<(), AgentError> {
         loop {
-            println!("[JARVIS] 主循环开始: loop_count={}, total_loop_count={}", self.loop_count, self.total_loop_count);
+            println!(
+                "[JARVIS] 主循环开始: loop_count={}, total_loop_count={}",
+                self.loop_count, self.total_loop_count
+            );
 
             // ════ 主循环每轮开始 ════
             // 步骤 1：取消检查 —— 用户点停止则退出循环
@@ -1287,9 +1332,16 @@ impl PipelineState {
             println!(
                 "[MAIN AGENT] loop {} request ({} bytes)",
                 self.total_loop_count + 1,
-                serde_json::to_string(&req_json).map(|s| s.len()).unwrap_or(0)
+                serde_json::to_string(&req_json)
+                    .map(|s| s.len())
+                    .unwrap_or(0)
             );
-            debug_logger::debug_logger().log_request(&self.sid, "MAIN", self.total_loop_count + 1, &req_json);
+            debug_logger::debug_logger().log_request(
+                &self.sid,
+                "MAIN",
+                self.total_loop_count + 1,
+                &req_json,
+            );
 
             if self.cancel_token.is_cancelled() {
                 continue;
@@ -1321,8 +1373,11 @@ impl PipelineState {
                         serde_json::to_string_pretty(&session.messages).unwrap_or_default()
                     };
                     crate::infra::debug_logger::debug_logger().log_api_error(
-                        &self.sid, "MAIN", self.total_loop_count + 1,
-                        &e.to_string(), &messages_json,
+                        &self.sid,
+                        "MAIN",
+                        self.total_loop_count + 1,
+                        &e.to_string(),
+                        &messages_json,
                     );
                     return Err(e.into());
                 }
@@ -1440,10 +1495,8 @@ impl PipelineState {
             // **不是** `should_retry`。二者语义不同：
             // - "吐了半截后静默"时 should_retry=false（不该重试），但仍必须收尾并给出中断提示，
             //   否则界面只剩半截正文，用户会误以为已经正常完成（实测反馈的 bug）。
-            if must_finish_as_interrupted(
-                stream_result.idle_timed_out,
-                stream_result.should_retry,
-            ) {
+            if must_finish_as_interrupted(stream_result.idle_timed_out, stream_result.should_retry)
+            {
                 self.handle_stream_idle_timeout(stream_result).await;
                 break;
             }
@@ -1649,9 +1702,13 @@ impl PipelineState {
             if was_cancelled_this_loop {
                 if !tool_results.is_empty() {
                     let mut session = self.ctx.memory.lock().await;
-                    append_message(&mut session, Message::User {
-                        content: Content::Multiple(tool_results.clone()),
-                    }, MessageSource::Chat);
+                    append_message(
+                        &mut session,
+                        Message::User {
+                            content: Content::Multiple(tool_results.clone()),
+                        },
+                        MessageSource::Chat,
+                    );
                 }
                 continue;
             }
@@ -1664,7 +1721,10 @@ impl PipelineState {
                     println!(
                         "[JARVIS] break诊断: should_break={}, flags={:?}, tool_results.len()={}",
                         should_break,
-                        flags.iter().map(|(k, (brk, err))| format!("{}→break={},err={}", k, brk, err)).collect::<Vec<_>>(),
+                        flags
+                            .iter()
+                            .map(|(k, (brk, err))| format!("{}→break={},err={}", k, brk, err))
+                            .collect::<Vec<_>>(),
                         tool_results.len()
                     );
                 }
@@ -1674,11 +1734,16 @@ impl PipelineState {
                     // Assistant(tool_calls) 后缺少 ToolResult 导致 API 400 错误
                     if !tool_results.is_empty() {
                         let mut session = self.ctx.memory.lock().await;
-                        append_message(&mut session, Message::User {
-                            content: Content::Multiple(tool_results.clone()),
-                        }, MessageSource::Chat);
+                        append_message(
+                            &mut session,
+                            Message::User {
+                                content: Content::Multiple(tool_results.clone()),
+                            },
+                            MessageSource::Chat,
+                        );
                     }
-                    let tool_summary: String = tool_results.iter()
+                    let tool_summary: String = tool_results
+                        .iter()
                         .filter_map(|block| {
                             if let ContentBlock::ToolResult { content, .. } = block {
                                 Some(content.as_str())
@@ -1689,7 +1754,11 @@ impl PipelineState {
                         .collect::<Vec<_>>()
                         .join("\n\n");
                     // 保存工具结果摘要，传递给前端 toolBuffer
-                    self.tool_execution_summary = if tool_summary.is_empty() { None } else { Some(tool_summary.clone()) };
+                    self.tool_execution_summary = if tool_summary.is_empty() {
+                        None
+                    } else {
+                        Some(tool_summary.clone())
+                    };
                     self.final_answer = if current_text_this_turn.trim().is_empty() {
                         tool_summary
                     } else if tool_summary.is_empty() {
@@ -1725,9 +1794,7 @@ impl PipelineState {
                 if (work_mode == "edit" || work_mode == "plan")
                     && crate::core::complex_task::detect_plan_in_text(&self.final_answer)
                 {
-                    println!(
-                        "[JARVIS] 响应后置拦截：检测到正文中的计划内容，重定向到 ProposePlan"
-                    );
+                    println!("[JARVIS] 响应后置拦截：检测到正文中的计划内容，重定向到 ProposePlan");
                     let _ = self.app.emit(
                         "chat-stream",
                         json!({
@@ -1768,9 +1835,13 @@ impl PipelineState {
                         // `Inject`：正文是"请调用 ProposePlan 工具…"的动作要求。
                         // 标成 `internal` 时它送不到模型，于是模型在同一上下文下反复
                         // 输出同样的计划正文 —— 看门狗只是把死循环变成"有限次后失败"。
-                        append_message(&mut session, Message::User {
-                            content: Content::Single(redirect_msg),
-                        }, MessageSource::Inject);
+                        append_message(
+                            &mut session,
+                            Message::User {
+                                content: Content::Single(redirect_msg),
+                            },
+                            MessageSource::Inject,
+                        );
                     }
 
                     // ⚠️ 关键修复（2026-09-19）：看门狗必须在这条「无工具 + 计划正文」
@@ -1843,9 +1914,13 @@ impl PipelineState {
                 // 添加工具结果（模式切换时末块为新快照）到 session
                 {
                     let mut session = self.ctx.memory.lock().await;
-                    append_message(&mut session, Message::User {
-                        content: Content::Multiple(tool_results.clone()),
-                    }, MessageSource::Chat);
+                    append_message(
+                        &mut session,
+                        Message::User {
+                            content: Content::Multiple(tool_results.clone()),
+                        },
+                        MessageSource::Chat,
+                    );
                     // 模式切换当轮立即落库：保证崩溃恢复时 snapshot_seq 与新快照同时存在，避免 seq 回退/重复
                     if mode_switched {
                         crate::core::session::save_session(&self.sid, &session, None);
@@ -1859,7 +1934,10 @@ impl PipelineState {
                 // loop 收尾才建的，反思发生时它还不存在，写不进去。
                 let mut reflection_record: Option<(String, Option<String>, Option<String>)> = None;
                 if should_reflect {
-                    println!("[审查 Agent] 触发反思 (mode={}, model={})", self.reflection_mode, self.cfg.utility_model);
+                    println!(
+                        "[审查 Agent] 触发反思 (mode={}, model={})",
+                        self.reflection_mode, self.cfg.utility_model
+                    );
                     // 获取 session 消息用于审查
                     let session_messages = {
                         let session = self.ctx.memory.lock().await;
@@ -1884,18 +1962,18 @@ impl PipelineState {
                             self.total_reflections += 1;
                             self.consecutive_reflection_nos = 0;
                             reflection_record = Some(("ok".to_string(), None, None));
-                            let _ = self.app.emit("agent-step", json!({
-                                "type": "reflection",
-                                "sessionId": self.sid,
-                                "loopCount": self.total_loop_count + 1,
-                                "judgment": "ok",
-                            }));
+                            let _ = self.app.emit(
+                                "agent-step",
+                                json!({
+                                    "type": "reflection",
+                                    "sessionId": self.sid,
+                                    "loopCount": self.total_loop_count + 1,
+                                    "judgment": "ok",
+                                }),
+                            );
                         }
                         Ok(super::reflection::ReflectionJudgment::NotOk { reason, suggestion }) => {
-                            println!(
-                                "[审查 Agent] 判断: NO — {}\n建议: {}",
-                                reason, suggestion
-                            );
+                            println!("[审查 Agent] 判断: NO — {}\n建议: {}", reason, suggestion);
                             self.total_reflections += 1;
                             self.consecutive_reflection_nos += 1;
                             reflection_record = Some((
@@ -1903,26 +1981,33 @@ impl PipelineState {
                                 Some(reason.clone()),
                                 Some(suggestion.clone()),
                             ));
-                            let _ = self.app.emit("agent-step", json!({
-                                "type": "reflection",
-                                "sessionId": self.sid,
-                                "loopCount": self.total_loop_count + 1,
-                                "judgment": "not_ok",
-                                "reason": reason,
-                                "suggestion": suggestion,
-                            }));
+                            let _ = self.app.emit(
+                                "agent-step",
+                                json!({
+                                    "type": "reflection",
+                                    "sessionId": self.sid,
+                                    "loopCount": self.total_loop_count + 1,
+                                    "judgment": "not_ok",
+                                    "reason": reason,
+                                    "suggestion": suggestion,
+                                }),
+                            );
 
                             // 注入修正建议到 session
                             let mut session = self.ctx.memory.lock().await;
                             // `Inject`：`doc/reflection-mechanism-design.md` §3.2 写明
                             // "继续循环，LLM 在下一轮看到修正提示"。标成 `internal` 时
                             // 这条提示进不了模型上下文，反思判定对主 Agent 零影响。
-                            append_message(&mut session, Message::User {
-                                content: Content::Single(format!(
+                            append_message(
+                                &mut session,
+                                Message::User {
+                                    content: Content::Single(format!(
                                     "审查发现以下问题：{}\n建议修正：{}\n请根据建议修正后继续。",
                                     reason, suggestion
                                 )),
-                            }, MessageSource::Inject);
+                                },
+                                MessageSource::Inject,
+                            );
                         }
                         Err(e) => {
                             // 审查调用失败不影响主流程，仅记录日志
@@ -1988,7 +2073,10 @@ impl PipelineState {
             self.loop_count += 1;
             self.total_loop_count += 1;
             // 步骤 11：进入下一轮循环（累计轮数，超 200 轮绝对上限强制停止）
-            println!("[JARVIS] 主循环: 进入下一轮 loop_count={}, total_loop_count={}", self.loop_count, self.total_loop_count);
+            println!(
+                "[JARVIS] 主循环: 进入下一轮 loop_count={}, total_loop_count={}",
+                self.loop_count, self.total_loop_count
+            );
 
             if self.total_loop_count >= crate::infra::types::constants::MAX_AGENT_LOOP_ABSOLUTE {
                 self.final_answer = format!(
@@ -2015,7 +2103,9 @@ impl PipelineState {
 
         // 崩溃兜底：提交前先把补丁持久化到 agent_run_patches 表
         {
-            let manager = self.app.state::<crate::infra::state::state::SessionManager>();
+            let manager = self
+                .app
+                .state::<crate::infra::state::state::SessionManager>();
             let ctx = manager.get_or_create(&self.sid).await;
             let patches: Vec<_> = ctx.pending_patches.lock().await.clone();
             for p in &patches {
@@ -2099,8 +2189,8 @@ impl PipelineState {
         if let Some(ref meta) = session_meta {
             let _ = self.app.emit("session-updated", ());
 
-        // 自动命名：消息数足够且未命名过时，后台调 LLM 生成标题
-        if !was_cancelled && meta.message_count >= 2 && meta.title_source == "default" {
+            // 自动命名：消息数足够且未命名过时，后台调 LLM 生成标题
+            if !was_cancelled && meta.message_count >= 2 && meta.title_source == "default" {
                 let app_clone = self.app.clone();
                 let sid_clone = self.sid.clone();
                 let memory_clone = memory.clone();
@@ -2306,13 +2396,8 @@ impl PipelineState {
         // 只由统一的 INTERRUPT_MARKER_RESUMABLE 提示"该接着做"。
         {
             let mut session = self.ctx.memory.lock().await;
-            store_interrupted_turn(
-                &mut session,
-                &text,
-                &thinking,
-                InterruptKind::PipelineError,
-            )
-            .await;
+            store_interrupted_turn(&mut session, &text, &thinking, InterruptKind::PipelineError)
+                .await;
         }
 
         self.final_answer = text;
@@ -2589,7 +2674,8 @@ impl PipelineState {
         );
         // 标记 run 为 CANCELLED，并向前端发送取消通知。
         // 轮次事件同样打上 interrupted（保留帧级通道已写的半截内容）。
-        self.mark_loop_event_interrupted("用户取消".to_string()).await;
+        self.mark_loop_event_interrupted("用户取消".to_string())
+            .await;
         agent_runs::cancel_run(
             &self.app,
             &self.run_id,
@@ -2605,7 +2691,10 @@ impl PipelineState {
     /// 流层已采用「优雅终止」——`process_stream` 返回已累积的部分结果而非抛错，
     /// 因此这里不需要（也不应该）走 `fail_run` 的抹除路径。服务恢复后用户
     /// 直接说"继续"即可接上，因为历史完整且标记对模型可见。
-    async fn handle_stream_idle_timeout(&mut self, stream_result: crate::core::agent::StreamResult) {
+    async fn handle_stream_idle_timeout(
+        &mut self,
+        stream_result: crate::core::agent::StreamResult,
+    ) {
         let partial = stream_result.text.trim().to_string();
         println!(
             "[JARVIS] 上游超时收尾：已累积文本 {} 字，工具={}，loop={}",
@@ -2802,7 +2891,12 @@ impl PipelineState {
         let (prev_measured, est_prev) = crate::core::session::get_context_snapshot(&self.sid)
             .ok()
             .flatten()
-            .map(|snapshot| (snapshot.provider_input_tokens, Some(snapshot.estimated_tokens)))
+            .map(|snapshot| {
+                (
+                    snapshot.provider_input_tokens,
+                    Some(snapshot.estimated_tokens),
+                )
+            })
             .unwrap_or((None, None));
         let tokens = crate::infra::llm::context_budget::calibrated_context_tokens(
             prev_measured,
@@ -2958,9 +3052,13 @@ impl PipelineState {
                         // 既不该给模型看也不该给用户看 —— 它原先标 `internal` 是"巧合的正确"，
                         // 因为 `internal` 恰好两边都不可见；但它与上面三条"给模型看的指令"
                         // 共用同一个值，正是来源语义被压扁的证据。
-                        append_message(&mut session, Message::Assistant {
-                            content: Content::Single("Context compressed.".to_string()),
-                        }, MessageSource::Placeholder);
+                        append_message(
+                            &mut session,
+                            Message::Assistant {
+                                content: Content::Single("Context compressed.".to_string()),
+                            },
+                            MessageSource::Placeholder,
+                        );
                     }
                 } else {
                     restore_message(&mut session, msg, message_id, MessageSource::Chat);
@@ -3086,7 +3184,8 @@ impl PipelineState {
                                         } else {
                                             tc_lines.join("\n")
                                         };
-                                        let short_id = &tool_use_id[tool_use_id.len().saturating_sub(12)..];
+                                        let short_id =
+                                            &tool_use_id[tool_use_id.len().saturating_sub(12)..];
                                         out.push_str(&format!(
                                             "  ← ToolResult: {}\n    {}\n",
                                             short_id, preview
@@ -3133,11 +3232,7 @@ impl PipelineState {
                                             out.push('\n');
                                         }
                                     }
-                                    ContentBlock::ToolUse {
-                                        id: _,
-                                        name,
-                                        input,
-                                    } => {
+                                    ContentBlock::ToolUse { id: _, name, input } => {
                                         let input_str =
                                             serde_json::to_string(input).unwrap_or_default();
                                         let truncated = if input_str.len() > 200 {
@@ -3629,7 +3724,7 @@ impl PipelineState {
         }
     }
 
-/// 存储助手回复到会话历史（过滤空文本/空思考块，工具块原样保留）
+    /// 存储助手回复到会话历史（过滤空文本/空思考块，工具块原样保留）
     async fn store_assistant_response(&self, current_blocks: &[ContentBlock]) {
         let mut session = self.ctx.memory.lock().await;
         // 过滤空文本/空思考块，仅保留有效内容
@@ -3647,9 +3742,13 @@ impl PipelineState {
             .collect();
         // 写入会话历史（chat 来源，下一轮请求会发给 LLM）
         if !filtered_blocks.is_empty() {
-            append_message(&mut session, Message::Assistant {
-                content: Content::Multiple(filtered_blocks),
-            }, MessageSource::Chat);
+            append_message(
+                &mut session,
+                Message::Assistant {
+                    content: Content::Multiple(filtered_blocks),
+                },
+                MessageSource::Chat,
+            );
         }
     }
 
@@ -3664,7 +3763,9 @@ impl PipelineState {
     /// 旧实现只挂在工具执行分支，而"纯文本空转"走的是无工具分支，
     /// 计数器永远停在 0、看门狗结构性失效（2026-09-19 死循环事故根因）。
     fn update_plan_watchdog(&mut self, work_mode: &str, tool_calls: &[(String, String)]) -> bool {
-        use crate::infra::types::constants::{PLAN_WATCHDOG_MAX_CONSECUTIVE_STALLS, PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN};
+        use crate::infra::types::constants::{
+            PLAN_WATCHDOG_MAX_CONSECUTIVE_STALLS, PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN,
+        };
 
         if work_mode != "plan" {
             self.plan_consecutive_stalls = 0;
@@ -3691,7 +3792,9 @@ impl PipelineState {
     /// B3 触发后：先复用当前 system + 历史做一次缓存友好的 LLM 进度小结，
     /// 再把决策权交还用户并强制结束当前 loop。
     async fn handle_plan_watchdog_summary(&mut self) {
-        use crate::infra::types::constants::{PLAN_WATCHDOG_MAX_CONSECUTIVE_STALLS, PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN};
+        use crate::infra::types::constants::{
+            PLAN_WATCHDOG_MAX_CONSECUTIVE_STALLS, PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN,
+        };
 
         // 触发指令带实际计数：触发时两个计数器尚未清零（触发分支直接 break），
         // 把真实值与阈值一起告诉模型，让它对"空转了多久"有量化感知。
@@ -3722,8 +3825,9 @@ impl PipelineState {
                     &self.cancel_token,
                     StreamConfig {
                         is_subagent: false,
-                        cache_usage_style:
-                            crate::infra::llm::registry::cache_usage_style_for(&self.model_id),
+                        cache_usage_style: crate::infra::llm::registry::cache_usage_style_for(
+                            &self.model_id,
+                        ),
                         // 看门狗小结是短请求，不需要等待提示
                         on_frame: None,
                         model_id: Some(self.model_id.clone()),
@@ -3741,7 +3845,8 @@ impl PipelineState {
         }
 
         if summary.is_empty() {
-            summary = "本次规划探索尚未收敛，已自动停止。请选择：继续探索 / 缩小范围 / 直接执行。".to_string();
+            summary = "本次规划探索尚未收敛，已自动停止。请选择：继续探索 / 缩小范围 / 直接执行。"
+                .to_string();
         }
 
         self.final_answer = summary.clone();
@@ -3787,7 +3892,11 @@ impl PipelineState {
     /// → assistant 的标准工具循环形态。缓存安全性不变：tool_result 消息
     /// 是本轮新产生、从未入缓存前缀，加块不影响已缓存前缀。
     /// 落库由调用侧在 append 后立即执行（防 seq 回退/重复的动机不变）。
-    async fn merge_mode_snapshot_into_blocks(&mut self, blocks: &mut Vec<ContentBlock>, mode: &str) {
+    async fn merge_mode_snapshot_into_blocks(
+        &mut self,
+        blocks: &mut Vec<ContentBlock>,
+        mode: &str,
+    ) {
         let seq = {
             let mut session = self.ctx.memory.lock().await;
             session.snapshot_seq = session.snapshot_seq.saturating_add(1);
@@ -3831,9 +3940,9 @@ fn take_resp_blocks_with_thinking(
 ) -> Vec<ContentBlock> {
     let mut out = blocks.to_vec();
     if !thinking_this_turn.trim().is_empty()
-        && !out
-            .iter()
-            .any(|b| matches!(b, ContentBlock::Thinking { thinking, .. } if !thinking.trim().is_empty()))
+        && !out.iter().any(
+            |b| matches!(b, ContentBlock::Thinking { thinking, .. } if !thinking.trim().is_empty()),
+        )
     {
         out.insert(
             0,
@@ -3924,7 +4033,7 @@ pub async fn resume_pipeline(
 }
 
 /// 流水线总调度（run_pipeline / resume_pipeline 共用）
-/// 
+///
 /// 依次执行：阶段 1 setup → 阶段 2 pre_loop
 /// → 阶段 3 run_main_loop（出错走 abort_after_error）→ 阶段 4 finalize
 async fn run_pipeline_inner(
@@ -4112,7 +4221,10 @@ mod interrupted_tail_dedup_tests {
     #[test]
     fn does_not_match_different_text() {
         let messages = vec![assistant_single("上一轮已经说完的完整回复")];
-        assert!(!assistant_text_exists_at_tail(&messages, "本轮被打断的半截话"));
+        assert!(!assistant_text_exists_at_tail(
+            &messages,
+            "本轮被打断的半截话"
+        ));
     }
 
     /// 空目标视为不存在，避免把空串当命中而跳过写入
@@ -4189,10 +4301,7 @@ mod interrupt_marker_tests {
                 "应以 `**[标签]` 开头（2026-09-20 风格统一：去掉 `>` 引用符与 emoji），\
                  便于统一剥离：{marker}"
             );
-            assert!(
-                !marker.contains('⚠'),
-                "不应再含 emoji 哨兵：{marker}"
-            );
+            assert!(!marker.contains('⚠'), "不应再含 emoji 哨兵：{marker}");
         }
     }
 }
@@ -4460,7 +4569,11 @@ mod interrupted_turn_store_tests {
         let wrote = store_interrupted_turn(&mut session, "半截正文", "半截思考", KIND).await;
 
         assert!(wrote, "有内容时必须落库");
-        assert_eq!(session.messages.len(), 1, "必须只有一条助手消息（一问一答）");
+        assert_eq!(
+            session.messages.len(),
+            1,
+            "必须只有一条助手消息（一问一答）"
+        );
         let blocks = only_blocks(&session);
         assert!(
             matches!(&blocks[0], ContentBlock::Thinking { .. }),

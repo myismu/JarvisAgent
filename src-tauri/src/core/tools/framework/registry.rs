@@ -289,7 +289,11 @@ impl ToolRegistry {
                     && t.is_enabled
                     && Self::is_available(t, intent, work_mode, filter)
                 {
-                    let cat = if t.category.is_empty() { "其他" } else { t.category };
+                    let cat = if t.category.is_empty() {
+                        "其他"
+                    } else {
+                        t.category
+                    };
                     if let Some((_, names)) = groups.iter_mut().find(|(c, _)| *c == cat) {
                         names.push(t.name);
                     } else {
@@ -386,10 +390,8 @@ impl ToolRegistry {
     /// 同时用它过滤工具目录（GetToolCatalog / DiscoverTools），规划模式下它们从目录里
     /// 直接消失——这就是"规划模式看不见派子代理"的实现方式（2026-09-21 RunSubagent
     /// 从核心工具降级为按需工具之后；此前它的 schema 常驻 tools 参数，规划模式一直看得见）。
-    pub const PLAN_BLOCKED_EXTRA: &'static [&'static str] = &[
-        "RunSubagent",
-        "RunSubagentsSequentially",
-    ];
+    pub const PLAN_BLOCKED_EXTRA: &'static [&'static str] =
+        &["RunSubagent", "RunSubagentsSequentially"];
 
     /// 规划模式下这个工具名是否不可用（写工具 + [`Self::PLAN_BLOCKED_EXTRA`]）。
     ///
@@ -529,7 +531,10 @@ mod tool_filter_tests {
     use std::collections::HashMap;
 
     fn states(pairs: &[(&str, bool)]) -> HashMap<String, bool> {
-        pairs.iter().map(|(name, on)| (name.to_string(), *on)).collect()
+        pairs
+            .iter()
+            .map(|(name, on)| (name.to_string(), *on))
+            .collect()
     }
 
     fn names(defs: &[serde_json::Value]) -> Vec<String> {
@@ -549,8 +554,7 @@ mod tool_filter_tests {
     /// 只收集**被显式关掉**的；显式打开的不进禁用集，未记录的照样启用
     #[test]
     fn only_explicitly_disabled_are_collected() {
-        let filter =
-            ToolFilter::from_states(&states(&[("RunCommand", false), ("ReadFile", true)]));
+        let filter = ToolFilter::from_states(&states(&[("RunCommand", false), ("ReadFile", true)]));
         assert!(!filter.is_enabled("RunCommand"));
         assert!(filter.is_enabled("ReadFile"), "显式打开的当然要放行");
         assert!(filter.is_enabled("SearchRepo"), "没出现在配置里的默认启用");
@@ -563,7 +567,10 @@ mod tool_filter_tests {
     fn disabled_core_tool_leaves_the_tools_payload() {
         let registry = ToolRegistry::global();
         let before = names(&registry.get_core_definitions(&ToolFilter::allow_all()));
-        assert!(before.contains(&"ReadFile".to_string()), "前置：默认应包含 ReadFile");
+        assert!(
+            before.contains(&"ReadFile".to_string()),
+            "前置：默认应包含 ReadFile"
+        );
 
         let filter = ToolFilter::from_states(&states(&[("ReadFile", false)]));
         let after = names(&registry.get_core_definitions(&filter));
@@ -624,6 +631,11 @@ mod tool_filter_tests {
         ));
 
         let filter = ToolFilter::from_states(&states(&[("ReadFile", false)]));
-        assert!(!ToolRegistry::is_available(def, "PROJECT_ACTION", "edit", &filter));
+        assert!(!ToolRegistry::is_available(
+            def,
+            "PROJECT_ACTION",
+            "edit",
+            &filter
+        ));
     }
 }

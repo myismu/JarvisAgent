@@ -13,15 +13,15 @@
 //! - `sandbox`: 多 Agent 沙箱会话
 //! - `merge`: 分支合并
 
+pub mod app_config;
 pub mod checkpoint;
 pub mod config;
 pub mod history;
 pub mod merge;
 pub mod permission;
+pub mod prompt;
 pub mod sandbox;
 pub mod session;
 pub mod skill;
-pub mod tool;
 pub mod snapshot;
-pub mod prompt;
-pub mod app_config;
+pub mod tool;

@@ -7,12 +7,12 @@
 //!
 //! DeepSeek 模型的 reasoning_content 字段特殊处理也在此模块。
 
+use crate::core::session;
 use crate::infra::types::models::{
     Content, ContentBlock, Message, OpenAIContentPart, OpenAIFunctionCall,
     OpenAIFunctionDefinition, OpenAIImageUrl, OpenAIMessage, OpenAITool, OpenAIToolCall,
     OpenAIUserContent,
 };
-use crate::core::session;
 
 /// 规范化 JSON 字符串中的控制字符（换行、制表符等）
 fn normalize_json_string_control_chars(raw: &str) -> String {
@@ -180,7 +180,10 @@ fn strip_trailing_closers(raw: &str) -> Option<String> {
     if tail.trim().is_empty() {
         return None;
     }
-    if !tail.chars().all(|c| c.is_whitespace() || c == '}' || c == ']') {
+    if !tail
+        .chars()
+        .all(|c| c.is_whitespace() || c == '}' || c == ']')
+    {
         return None;
     }
     Some(raw[..=end].to_string())
@@ -239,7 +242,9 @@ fn repair_unescaped_quotes(raw: &str) -> String {
         match ch {
             '\\' => {
                 result.push(ch);
-                if in_string { escaping = true; }
+                if in_string {
+                    escaping = true;
+                }
                 i += 1;
             }
             '"' => {
@@ -247,7 +252,12 @@ fn repair_unescaped_quotes(raw: &str) -> String {
                     // 在字符串内部遇到引号 → 检查是否为字符串结束
                     // 向前看：跳过空白，下一个非空字符是 , } ] : → 字符串结束
                     let next = skip_whitespace(raw, i + 1);
-                    if next == Some(',') || next == Some('}') || next == Some(']') || next == Some(':') || next.is_none() {
+                    if next == Some(',')
+                        || next == Some('}')
+                        || next == Some(']')
+                        || next == Some(':')
+                        || next.is_none()
+                    {
                         in_string = false;
                         result.push(ch);
                     } else {
@@ -551,8 +561,12 @@ pub fn translate_messages_to_openai_with_reasoning_backfill(
                             } else {
                                 Some(tool_calls)
                             },
-                            reasoning_content: if backfill_assistant_reasoning_content && !thinking_segments.is_empty() {
-                                Some(reasoning_content_from_thinking(&thinking_segments.join("\n")))
+                            reasoning_content: if backfill_assistant_reasoning_content
+                                && !thinking_segments.is_empty()
+                            {
+                                Some(reasoning_content_from_thinking(
+                                    &thinking_segments.join("\n"),
+                                ))
                             } else {
                                 None
                             },
@@ -785,7 +799,9 @@ mod tests {
                 content: Content::Single(t)
             } if t == "第二句"
         ));
-        assert!(!serde_json::to_string(&stripped).unwrap().contains("context"));
+        assert!(!serde_json::to_string(&stripped)
+            .unwrap()
+            .contains("context"));
     }
 
     #[test]
@@ -818,7 +834,9 @@ mod tests {
         let first = serde_json::to_string(&stripped[0]).unwrap();
         assert!(!first.contains("thinking"));
         assert!(first.contains("回答"));
-        assert!(serde_json::to_string(&stripped[1]).unwrap().contains("sig-123"));
+        assert!(serde_json::to_string(&stripped[1])
+            .unwrap()
+            .contains("sig-123"));
     }
 
     #[test]
@@ -858,7 +876,11 @@ mod tests {
     #[test]
     fn thinking_strip_policy_follows_provider() {
         // 真 Anthropic：必须剥（回传无签名 thinking 会被判 400）
-        assert!(should_strip_unsigned_thinking("claude-sonnet-4-6", "https://api.anthropic.com", true));
+        assert!(should_strip_unsigned_thinking(
+            "claude-sonnet-4-6",
+            "https://api.anthropic.com",
+            true
+        ));
         // DeepSeek（按 model 或 baseUrl 判定）：必须留，否则报 thinking must be passed back
         assert!(!should_strip_unsigned_thinking(
             "deepseek-flash",
@@ -871,7 +893,11 @@ mod tests {
             true
         ));
         // thinking 关闭时不存在链要求，剥不剥都无所谓（保持旧行为：剥）
-        assert!(should_strip_unsigned_thinking("deepseek-flash", "https://api.deepseek.com", false));
+        assert!(should_strip_unsigned_thinking(
+            "deepseek-flash",
+            "https://api.deepseek.com",
+            false
+        ));
     }
 
     #[test]
@@ -902,7 +928,11 @@ mod tests {
             strip_unsigned_thinking_for_anthropic(&messages)
         };
         let json = serde_json::to_string(&sent).unwrap();
-        assert!(json.contains("thinking"), "DeepSeek 出口必须保留思考链：{}", json);
+        assert!(
+            json.contains("thinking"),
+            "DeepSeek 出口必须保留思考链：{}",
+            json
+        );
         assert!(json.contains("call_9"));
     }
 }

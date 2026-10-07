@@ -1,4 +1,4 @@
-﻿//! # repository.rs — Agent Run SQLite 仓储
+//! # repository.rs — Agent Run SQLite 仓储
 //!
 //! 持久化主 Agent 执行记录与「每轮一行」的运行事件，替代 run.json/events.jsonl/checkpoint.json。
 //!
@@ -15,9 +15,7 @@
 
 use rusqlite::{params, OptionalExtension, Row};
 
-use crate::core::orchestration::agent_runs::{
-    AgentRun, AgentRunLoopEvent, AgentRunStatus,
-};
+use crate::core::orchestration::agent_runs::{AgentRun, AgentRunLoopEvent, AgentRunStatus};
 
 /// `agent_runs` 的列清单（SELECT / INSERT 共用，避免两处漂移）。
 ///
@@ -78,7 +76,10 @@ pub fn upsert_run(run: &AgentRun) -> Result<(), String> {
 pub fn list_runs(session_id: Option<&str>) -> Result<Vec<AgentRun>, String> {
     crate::infra::db::with_connection(|conn| {
         let sql = if session_id.is_some() {
-            format!("SELECT {} FROM agent_runs WHERE session_id = ?1 ORDER BY started_at", RUN_COLUMNS)
+            format!(
+                "SELECT {} FROM agent_runs WHERE session_id = ?1 ORDER BY started_at",
+                RUN_COLUMNS
+            )
         } else {
             format!("SELECT {} FROM agent_runs ORDER BY started_at", RUN_COLUMNS)
         };
@@ -112,7 +113,9 @@ pub fn load_run(run_id: &str) -> Result<Option<AgentRun>, String> {
 
 /// 根据 message_id 查找 agent_run
 pub fn find_by_message_id(message_id: &str) -> Result<Option<AgentRun>, String> {
-    if message_id.is_empty() { return Ok(None); }
+    if message_id.is_empty() {
+        return Ok(None);
+    }
     crate::infra::db::with_connection(|conn| {
         conn.query_row(
             &format!(
@@ -335,12 +338,10 @@ const LOOP_EVENT_COLUMNS: &str = "event_id, run_id, session_id, loop_index, resp
 pub fn load_loop_events(run_id: &str) -> Result<Vec<AgentRunLoopEvent>, String> {
     crate::infra::db::with_connection(|conn| {
         let mut stmt = conn
-            .prepare(
-                &format!(
-                    "SELECT {} FROM agent_run_events WHERE run_id = ?1 ORDER BY loop_index",
-                    LOOP_EVENT_COLUMNS
-                ),
-            )
+            .prepare(&format!(
+                "SELECT {} FROM agent_run_events WHERE run_id = ?1 ORDER BY loop_index",
+                LOOP_EVENT_COLUMNS
+            ))
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([run_id], loop_event_from_row)
@@ -368,7 +369,9 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<AgentRun> {
         output_tokens: row.get::<_, i64>("output_tokens")? as u64,
         started_at: row.get::<_, i64>("started_at")? as u64,
         updated_at: row.get::<_, i64>("updated_at")? as u64,
-        finished_at: row.get::<_, Option<i64>>("finished_at")?.map(|value| value as u64),
+        finished_at: row
+            .get::<_, Option<i64>>("finished_at")?
+            .map(|value| value as u64),
         last_safe_point: row.get("last_safe_point")?,
         summary: row.get("summary")?,
         resumable: row.get::<_, i64>("resumable")? != 0,
@@ -516,7 +519,10 @@ mod run_columns_tests {
     use rusqlite::Connection;
 
     fn column_names(list: &str) -> Vec<&str> {
-        list.split(',').map(|c| c.trim()).filter(|c| !c.is_empty()).collect()
+        list.split(',')
+            .map(|c| c.trim())
+            .filter(|c| !c.is_empty())
+            .collect()
     }
 
     #[test]
@@ -539,7 +545,10 @@ mod run_columns_tests {
             "resumed_from_run_id",
             "interrupt_kind",
         ] {
-            assert!(columns.contains(&name), "RUN_COLUMNS 缺少 {name}：{columns:?}");
+            assert!(
+                columns.contains(&name),
+                "RUN_COLUMNS 缺少 {name}：{columns:?}"
+            );
         }
         assert_eq!(
             columns.len(),
@@ -589,7 +598,10 @@ mod run_columns_tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::infra::db::schema::init_schema(&conn).expect("建表");
         for (label, sql) in [
-            ("RUN_COLUMNS", format!("SELECT {} FROM agent_runs", RUN_COLUMNS)),
+            (
+                "RUN_COLUMNS",
+                format!("SELECT {} FROM agent_runs", RUN_COLUMNS),
+            ),
             (
                 "LOOP_EVENT_COLUMNS",
                 format!("SELECT {} FROM agent_run_events", LOOP_EVENT_COLUMNS),

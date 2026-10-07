@@ -261,7 +261,7 @@ impl AnthropicThinkingPlan {
 ///
 /// 原先这段逻辑在主 Agent、子代理、Anthropic provider 三处各硬编码了一份
 /// `{type: enabled|disabled, budget_tokens: 1024}`，而那套形态在 Opus 4.7 及之后的
-/// 模型上已被移除（传 `enabled` 直接 400），Fable 5 系更是连 `disabled` 都拒 —— 
+/// 模型上已被移除（传 `enabled` 直接 400），Fable 5 系更是连 `disabled` 都拒 ——
 /// 结果是"注册表里写着支持思考，直连却必然报错"。
 ///
 /// 形态由注册表的 `thinkingMode` 决定，档位由 `thinkingEffortValues` 决定；
@@ -341,8 +341,12 @@ pub fn apply_thinking_for_model(
     model_id: &str,
     should_think: bool,
 ) {
-    let Some(caps) = query_capabilities(model_id) else { return };
-    if !caps.thinking { return; }
+    let Some(caps) = query_capabilities(model_id) else {
+        return;
+    };
+    if !caps.thinking {
+        return;
+    }
     // P-DS 兜底：强制思考的模型（DeepSeek 系）无视调用方的 false。
     //
     // 这是"最后一道防线"：裁决层（core::session::thinking::decide）已经会夹紧，
@@ -368,7 +372,11 @@ pub fn apply_thinking_for_model(
             let existing_budget = req.thinking.as_ref().and_then(|t| t.budget_tokens);
             req.thinking = Some(crate::infra::types::models::ThinkingConfig {
                 r#type: Some(if should_think { "enabled" } else { "disabled" }.to_string()),
-                budget_tokens: if should_think { existing_budget.or(Some(1024)) } else { None },
+                budget_tokens: if should_think {
+                    existing_budget.or(Some(1024))
+                } else {
+                    None
+                },
                 enable: None,
                 display: None,
             });
@@ -408,7 +416,11 @@ pub fn apply_thinking_for_model(
             let existing_budget = req.thinking.as_ref().and_then(|t| t.budget_tokens);
             req.thinking = Some(crate::infra::types::models::ThinkingConfig {
                 r#type: None,
-                budget_tokens: if should_think { existing_budget.or(Some(1024)) } else { None },
+                budget_tokens: if should_think {
+                    existing_budget.or(Some(1024))
+                } else {
+                    None
+                },
                 enable: Some(should_think),
                 display: None,
             });
@@ -484,7 +496,10 @@ mod anthropic_thinking_tests {
                 Some("adaptive"),
                 "Fable 5.1 传 enabled / disabled 都会 400，任何情况都只能是 adaptive"
             );
-            assert!(plan.thinking_active(), "这类模型恒开，调用方传 false 也关不掉");
+            assert!(
+                plan.thinking_active(),
+                "这类模型恒开，调用方传 false 也关不掉"
+            );
             assert_eq!(
                 thinking_display(&plan).as_deref(),
                 Some("summarized"),
@@ -573,7 +588,10 @@ mod anthropic_thinking_tests {
         for model in ["glm-5.1", "mimo-v2.5-pro"] {
             let mut on = openai_req(model);
             apply_thinking_for_model(&mut on, model, true);
-            let thinking = on.thinking.as_ref().unwrap_or_else(|| panic!("「{}」应写入 thinking", model));
+            let thinking = on
+                .thinking
+                .as_ref()
+                .unwrap_or_else(|| panic!("「{}」应写入 thinking", model));
             assert_eq!(thinking.r#type.as_deref(), Some("enabled"));
             assert_eq!(
                 thinking.budget_tokens, None,
@@ -583,7 +601,10 @@ mod anthropic_thinking_tests {
 
             let mut off = openai_req(model);
             apply_thinking_for_model(&mut off, model, false);
-            let thinking = off.thinking.as_ref().unwrap_or_else(|| panic!("「{}」应写入 thinking", model));
+            let thinking = off
+                .thinking
+                .as_ref()
+                .unwrap_or_else(|| panic!("「{}」应写入 thinking", model));
             assert_eq!(thinking.r#type.as_deref(), Some("disabled"));
             assert_eq!(thinking.budget_tokens, None);
         }
@@ -697,11 +718,11 @@ mod status_tests {
     /// 官方已明确宣布退役/关停的条目。
     const RETIRED: &[&str] = &[
         // OpenAI：退役时间表见 developers.openai.com/api/docs/deprecations
-        "o3",         // 2026-12-11 → gpt-5.6-sol
-        "o4-mini",    // 2026-10-23 → gpt-5.6-terra
-        "o1",         // 2026-10-23 → gpt-5.6-sol
-        "o1-pro",     // 2026-10-23 → gpt-5.6-sol
-        "gpt-4.5",    // 2025-07-14（gpt-4.5-preview）→ gpt-4.1
+        "o3",      // 2026-12-11 → gpt-5.6-sol
+        "o4-mini", // 2026-10-23 → gpt-5.6-terra
+        "o1",      // 2026-10-23 → gpt-5.6-sol
+        "o1-pro",  // 2026-10-23 → gpt-5.6-sol
+        "gpt-4.5", // 2025-07-14（gpt-4.5-preview）→ gpt-4.1
         // Anthropic：model-deprecations 页标 Retired，请求会失败
         "claude-3-7-sonnet-20250219",
         "claude-3-5-sonnet-20241022",
@@ -722,10 +743,10 @@ mod status_tests {
     /// **查不到 ≠ 退役**。这些条目在官方当前目录里找不到，但官方从未公告退役，
     /// 因此只能标 `unverifiable`，不得禁止用户使用。
     const UNVERIFIABLE: &[&str] = &[
-        "o4-mini-high",     // 非官方 API 模型 ID，官方无独立页面
-        "qwen2.5-max",      // 官方文档 404、模型列表未列，但未找到下线公告
+        "o4-mini-high",      // 非官方 API 模型 ID，官方无独立页面
+        "qwen2.5-max",       // 官方文档 404、模型列表未列，但未找到下线公告
         "hunyuan-pro-think", // 未在腾讯任何官方清单中出现
-        "abab6.5s-think",   // 不在 MiniMax 官方现行模型列表
+        "abab6.5s-think",    // 不在 MiniMax 官方现行模型列表
     ];
 
     #[test]
@@ -754,8 +775,7 @@ mod status_tests {
     #[test]
     fn unverifiable_must_never_be_classified_as_retired() {
         for id in UNVERIFIABLE {
-            let status = model_status(id)
-                .unwrap_or_else(|| panic!("「{}」应有注册表条目", id));
+            let status = model_status(id).unwrap_or_else(|| panic!("「{}」应有注册表条目", id));
             assert_eq!(
                 status, "unverifiable",
                 "「{}」只是官方目录里查不到，并无退役公告——标成 retired 会把\
@@ -794,10 +814,7 @@ mod status_tests {
     #[test]
     fn alias_stays_usable() {
         // 模型已退役、名字仍受理，请求由官方指定的新模型承接——旧会话引用了它也不该被拦。
-        assert_eq!(
-            model_status("deepseek-v4-flash").as_deref(),
-            Some("alias")
-        );
+        assert_eq!(model_status("deepseek-v4-flash").as_deref(), Some("alias"));
         assert!(!is_retired("deepseek-v4-flash"));
     }
 

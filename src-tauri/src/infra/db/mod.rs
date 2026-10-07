@@ -1,4 +1,4 @@
-﻿//! # db/mod.rs — SQLite 连接与事务入口
+//! # db/mod.rs — SQLite 连接与事务入口
 //!
 //! 负责初始化本地 SQLite 数据库、设置运行期 PRAGMA，并提供同步短事务访问函数。
 //!
@@ -209,10 +209,7 @@ fn agent_run_patch_from_row(
     })
 }
 
-pub fn delete_agent_run_patches(
-    session_id: &str,
-    run_id: Option<&str>,
-) -> Result<(), String> {
+pub fn delete_agent_run_patches(session_id: &str, run_id: Option<&str>) -> Result<(), String> {
     with_connection(|conn| {
         if let Some(run_id) = run_id {
             conn.execute(
@@ -413,7 +410,10 @@ mod patch_columns_tests {
     use super::*;
 
     fn column_names(list: &str) -> Vec<&str> {
-        list.split(',').map(|c| c.trim()).filter(|c| !c.is_empty()).collect()
+        list.split(',')
+            .map(|c| c.trim())
+            .filter(|c| !c.is_empty())
+            .collect()
     }
 
     #[test]
@@ -446,10 +446,7 @@ mod patch_columns_tests {
     fn patch_columns_prepare_against_the_real_schema() {
         let conn = Connection::open_in_memory().unwrap();
         crate::infra::db::schema::init_schema(&conn).expect("建表");
-        conn.prepare(&format!(
-            "SELECT {} FROM agent_run_patches",
-            PATCH_COLUMNS
-        ))
-        .unwrap_or_else(|e| panic!("PATCH_COLUMNS 无法在真实表结构上准备：{e}"));
+        conn.prepare(&format!("SELECT {} FROM agent_run_patches", PATCH_COLUMNS))
+            .unwrap_or_else(|e| panic!("PATCH_COLUMNS 无法在真实表结构上准备：{e}"));
     }
 }

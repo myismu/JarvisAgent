@@ -41,13 +41,24 @@ pub async fn resolve_permission(
 ) -> Result<serde_json::Value, String> {
     let ctx = session_manager.get_or_create(&session_id).await;
     if id.starts_with("plan_") {
-        let status = if decision == "allow" { "approved" } else { "revision_requested" };
+        let status = if decision == "allow" {
+            "approved"
+        } else {
+            "revision_requested"
+        };
         if let Ok(Some(doc)) = crate::core::session::update_plan_document_status(
-            &session_id, &id, status, content.clone(),
+            &session_id,
+            &id,
+            status,
+            content.clone(),
         ) {
             {
                 let mut memory = ctx.memory.lock().await;
-                if let Some(existing) = memory.plan_documents.iter_mut().find(|item| item.id == doc.id) {
+                if let Some(existing) = memory
+                    .plan_documents
+                    .iter_mut()
+                    .find(|item| item.id == doc.id)
+                {
                     *existing = doc.clone();
                 } else {
                     memory.plan_documents.push(doc.clone());
@@ -68,12 +79,15 @@ pub async fn resolve_permission(
     // 同时清理 cancel_token，确保审批续跑的 ask_jarvis 不会因 has_active_run 被拦截。
     if id.starts_with("plan_") {
         *ctx.cancel_token.lock().await = None;
-        let _ = app.emit("permission-resolved", serde_json::json!({
-            "id": id,
-            "sessionId": session_id,
-            "decision": parsed.status_label(),
-            "decisionText": parsed.model_note(),
-        }));
+        let _ = app.emit(
+            "permission-resolved",
+            serde_json::json!({
+                "id": id,
+                "sessionId": session_id,
+                "decision": parsed.status_label(),
+                "decisionText": parsed.model_note(),
+            }),
+        );
         return Ok(serde_json::json!({ "needsResume": false }));
     }
 
@@ -84,12 +98,15 @@ pub async fn resolve_permission(
         if pending {
             *ctx.loop_continuation_pending.lock().await = false;
             *ctx.cancel_token.lock().await = None;
-            let _ = app.emit("permission-resolved", serde_json::json!({
-                "id": id,
-                "sessionId": session_id,
-                "decision": parsed.status_label(),
-                "decisionText": parsed.model_note(),
-            }));
+            let _ = app.emit(
+                "permission-resolved",
+                serde_json::json!({
+                    "id": id,
+                    "sessionId": session_id,
+                    "decision": parsed.status_label(),
+                    "decisionText": parsed.model_note(),
+                }),
+            );
             return Ok(serde_json::json!({
                 "needsResume": true,
                 "resumeWith": "用户已授权继续执行，请继续之前未完成的任务。"
@@ -97,12 +114,15 @@ pub async fn resolve_permission(
         }
     }
 
-    let _ = app.emit("permission-resolved", serde_json::json!({
-        "id": id,
-        "sessionId": session_id,
-        "decision": parsed.status_label(),
-        "decisionText": parsed.model_note(),
-    }));
+    let _ = app.emit(
+        "permission-resolved",
+        serde_json::json!({
+            "id": id,
+            "sessionId": session_id,
+            "decision": parsed.status_label(),
+            "decisionText": parsed.model_note(),
+        }),
+    );
     Ok(serde_json::json!({ "needsResume": false }))
 }
 
@@ -260,14 +280,13 @@ pub async fn set_session_approval_mode(
     // 没有这一步，已弹出的卡仍然挂在界面上等点击，观感就是"切了档位没反应"。
     // 重判复用 policy::judge，不会与执行期判定出现两套口径；仍要问的（命令/删除/
     // 改名/批量）原样保留。返回值只是清扫条数，失败不阻断切档。
-    let swept =
-        crate::core::tools::framework::policy_guard::sweep_pending_on_mode_change(&app, &session_id)
-            .await;
+    let swept = crate::core::tools::framework::policy_guard::sweep_pending_on_mode_change(
+        &app,
+        &session_id,
+    )
+    .await;
     if swept > 0 {
-        println!(
-            "[JARVIS] 档位切换清扫：消化了 {} 条挂起请求",
-            swept
-        );
+        println!("[JARVIS] 档位切换清扫：消化了 {} 条挂起请求", swept);
     }
     Ok(())
 }

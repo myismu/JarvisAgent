@@ -15,21 +15,20 @@
 //! - `AgentError`, `ApiError`, `ToolError`, `MemoryError`
 //! - `AgentConfig`, `ConfigState`, `load_config`, `save_config`
 
-pub mod types;
 pub mod config;
-pub mod state;
 pub mod db;
 pub mod llm;
+pub mod state;
+pub mod types;
 
 pub mod background;
 pub mod debug_logger;
 pub mod log_maintenance;
 pub mod shell_command;
 
-
 // 重导出常用基础类型
+pub use config::data_paths;
 pub use types::{
     constants, error,
     models::{self, Content, ContentBlock, Message, SessionMemory, Task, TaskStatus},
 };
-pub use config::data_paths;

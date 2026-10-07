@@ -1,4 +1,4 @@
-﻿//! # merge.rs — 分支合并 Tauri 命令
+//! # merge.rs — 分支合并 Tauri 命令
 //!
 //! 提供快照分支的合并预览、执行和冲突查询命令。
 //!
@@ -7,8 +7,8 @@
 //! - `merge_execute()`: 执行合并（带冲突解决方案）
 //! - `merge_get_conflicts()`: 获取两个分支间的冲突列表
 
-use crate::core::rollback::Snapshot;
 use crate::core::orchestration::multi_agent::{Conflict, ConflictResolution, MergeResult};
+use crate::core::rollback::Snapshot;
 use crate::infra::state::state::SnapshotRegistry;
 use std::collections::HashMap as StdHashMap;
 

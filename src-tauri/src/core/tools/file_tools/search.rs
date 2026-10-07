@@ -74,7 +74,6 @@ fn append_match_context(
     }
 }
 
-
 pub async fn search_repo(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
@@ -128,7 +127,9 @@ pub async fn search_repo(
     let include_patterns = input_patterns(input, "include");
     let exclude_patterns = input_patterns(input, "exclude");
     let ignore_dirs = input_string_list(input, "ignore_dirs");
-    let file_type = input["type"].as_str().or_else(|| input["file_type"].as_str());
+    let file_type = input["type"]
+        .as_str()
+        .or_else(|| input["file_type"].as_str());
     let mut remaining = limit;
     let options = SearchOptions {
         re: compiled_regex.as_ref(),
@@ -139,12 +140,7 @@ pub async fn search_repo(
         ignore_dirs: &ignore_dirs,
         file_type,
     };
-    let result = search_in_dir(
-        &search_dir,
-        pattern,
-        &mut remaining,
-        &options,
-    );
+    let result = search_in_dir(&search_dir, pattern, &mut remaining, &options);
     if result.is_empty() {
         framework::ToolCallResult::ok(format!("未找到包含 '{}' 的内容。", pattern))
     } else {

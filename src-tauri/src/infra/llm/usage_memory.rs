@@ -110,7 +110,11 @@ impl UsageMemory {
         saw_cache_field: bool,
         source: Option<&str>,
     ) -> Observation {
-        let entry = self.data.endpoints.entry(endpoint_key.to_string()).or_default();
+        let entry = self
+            .data
+            .endpoints
+            .entry(endpoint_key.to_string())
+            .or_default();
         let before_reports = entry.reports;
         entry.observes = entry.observes.saturating_add(1);
         entry.last_seen = Some(chrono::Utc::now().to_rfc3339());
@@ -286,7 +290,10 @@ mod tests {
             "api.deepseek.com|anthropic"
         );
         assert_eq!(
-            endpoint_key("https://open.bigmodel.cn/api/paas/v4/chat/completions", "openai"),
+            endpoint_key(
+                "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+                "openai"
+            ),
             "open.bigmodel.cn|openai"
         );
         // 同一家不同格式是两条链路
@@ -305,7 +312,11 @@ mod tests {
     #[test]
     fn first_sighting_marks_endpoint_as_reporting() {
         let mut mem = temp_memory("first");
-        let obs = mem.observe("api.deepseek.com|openai", true, Some("prompt_cache_hit_tokens"));
+        let obs = mem.observe(
+            "api.deepseek.com|openai",
+            true,
+            Some("prompt_cache_hit_tokens"),
+        );
         assert!(obs.reports_cache);
         assert!(obs.first_seen);
         let cap = mem.capability("api.deepseek.com|openai");
@@ -368,7 +379,11 @@ mod tests {
         let out = resolve_cache_outcome(None, None, None, true, Some("cached_tokens"), 20000);
         assert_eq!(out.hit, Some(0), "已知会报告的端点：缺失 ⇒ 0 命中");
         assert_eq!(out.miss, Some(20000), "未命中量 = 本次输入总量");
-        assert_eq!(out.source.as_deref(), Some("cached_tokens"), "字段名沿用记忆");
+        assert_eq!(
+            out.source.as_deref(),
+            Some("cached_tokens"),
+            "字段名沿用记忆"
+        );
         assert!(out.is_known());
     }
 

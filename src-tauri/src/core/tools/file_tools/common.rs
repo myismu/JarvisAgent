@@ -30,7 +30,8 @@ pub(super) const MAX_LINES_DEFAULT: usize = 2000;
 /// 从工具调用参数中提取 file path，兼容 path / file_path / filePath 三种命名
 /// 自动剥离 \\?\ 前缀（Windows 扩展长度路径前缀，文件系统不识别）
 pub(super) fn resolve_path(input: &serde_json::Value) -> String {
-    let raw = input["path"].as_str()
+    let raw = input["path"]
+        .as_str()
         .or_else(|| input["file_path"].as_str())
         .or_else(|| input["filePath"].as_str())
         .unwrap_or("");
@@ -254,9 +255,7 @@ fn has_binary_magic_bytes(sample: &[u8]) -> bool {
         return true;
     }
     // RAR
-    if sample.starts_with(b"Rar!\x1A\x07")
-        || sample.starts_with(b"Rar!\x1A\x07\x01\x00")
-    {
+    if sample.starts_with(b"Rar!\x1A\x07") || sample.starts_with(b"Rar!\x1A\x07\x01\x00") {
         return true;
     }
     // tar (ustar)
@@ -438,8 +437,24 @@ pub(super) fn is_code_file(path: &Path) -> bool {
         .map(|ext| {
             matches!(
                 ext.to_lowercase().as_str(),
-                "rs" | "ts" | "tsx" | "js" | "jsx" | "vue" | "py" | "go" | "java" | "c" | "h"
-                    | "cpp" | "hpp" | "cs" | "php" | "rb" | "html" | "css" | "scss"
+                "rs" | "ts"
+                    | "tsx"
+                    | "js"
+                    | "jsx"
+                    | "vue"
+                    | "py"
+                    | "go"
+                    | "java"
+                    | "c"
+                    | "h"
+                    | "cpp"
+                    | "hpp"
+                    | "cs"
+                    | "php"
+                    | "rb"
+                    | "html"
+                    | "css"
+                    | "scss"
             )
         })
         .unwrap_or(false)
@@ -448,7 +463,11 @@ pub(super) fn is_code_file(path: &Path) -> bool {
 /// 搜索结果排序键：`src/` 下的代码文件优先，其余按展示路径字典序。
 pub(super) fn search_path_rank(path: &Path) -> (usize, usize, String) {
     (
-        if path_contains_component(path, "src") { 0 } else { 1 },
+        if path_contains_component(path, "src") {
+            0
+        } else {
+            1
+        },
         if is_code_file(path) { 0 } else { 1 },
         display_path(path),
     )
@@ -513,13 +532,17 @@ pub(super) fn passes_include_globs(path: &Path, base: &Path, patterns: &[String]
         return true;
     }
     let relative = relative_to(path, base);
-    patterns.iter().any(|pattern| glob_matches(pattern, relative))
+    patterns
+        .iter()
+        .any(|pattern| glob_matches(pattern, relative))
 }
 
 /// exclude 规则：**没有规则 = 不排除**，无人命中。
 pub(super) fn hits_exclude_globs(path: &Path, base: &Path, patterns: &[String]) -> bool {
     let relative = relative_to(path, base);
-    patterns.iter().any(|pattern| glob_matches(pattern, relative))
+    patterns
+        .iter()
+        .any(|pattern| glob_matches(pattern, relative))
 }
 
 // ===================== 文件类型过滤 =====================
@@ -1047,16 +1070,52 @@ mod tests {
         let rs_only = vec!["**/*.rs".to_string()];
 
         // include 有规则时照常生效
-        assert!(passes_file_filters(&path_of("proj/src/a.rs"), &base, &rs_only, &[], None));
-        assert!(!passes_file_filters(&path_of("proj/src/a.ts"), &base, &rs_only, &[], None));
+        assert!(passes_file_filters(
+            &path_of("proj/src/a.rs"),
+            &base,
+            &rs_only,
+            &[],
+            None
+        ));
+        assert!(!passes_file_filters(
+            &path_of("proj/src/a.ts"),
+            &base,
+            &rs_only,
+            &[],
+            None
+        ));
 
         // exclude 有规则时照常生效
-        assert!(!passes_file_filters(&path_of("proj/src/a.rs"), &base, &[], &rs_only, None));
-        assert!(passes_file_filters(&path_of("proj/src/a.ts"), &base, &[], &rs_only, None));
+        assert!(!passes_file_filters(
+            &path_of("proj/src/a.rs"),
+            &base,
+            &[],
+            &rs_only,
+            None
+        ));
+        assert!(passes_file_filters(
+            &path_of("proj/src/a.ts"),
+            &base,
+            &[],
+            &rs_only,
+            None
+        ));
 
         // type 过滤照常生效
-        assert!(passes_file_filters(&path_of("proj/src/a.rs"), &base, &[], &[], Some("rust")));
-        assert!(!passes_file_filters(&path_of("proj/src/a.ts"), &base, &[], &[], Some("rust")));
+        assert!(passes_file_filters(
+            &path_of("proj/src/a.rs"),
+            &base,
+            &[],
+            &[],
+            Some("rust")
+        ));
+        assert!(!passes_file_filters(
+            &path_of("proj/src/a.ts"),
+            &base,
+            &[],
+            &[],
+            Some("rust")
+        ));
     }
 
     #[test]

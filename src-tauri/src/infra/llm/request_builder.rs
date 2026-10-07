@@ -74,7 +74,8 @@ pub fn build_request_body(input: LlmRequestInput) -> (Value, ApiFormat) {
     // 思考参数走注册表统一决策（`registry::plan_anthropic_thinking`）。原先这里
     // 写死 `{type: enabled|disabled, budget_tokens: 1024}`，而该形态在 Opus 4.7
     // 及之后已被移除（Fable 5 系连 disabled 都拒），直连必然 400。
-    let thinking_plan = registry::plan_anthropic_thinking(&input.model_id, input.should_think, None);
+    let thinking_plan =
+        registry::plan_anthropic_thinking(&input.model_id, input.should_think, None);
     let thinking_active = thinking_plan.thinking_active();
 
     // 输出预算兜底：思考模型需要思考空间，上限过小（≤1024）时抬到 4096。
@@ -147,10 +148,7 @@ pub fn build_request_body(input: LlmRequestInput) -> (Value, ApiFormat) {
         };
 
         registry::apply_thinking_for_model(&mut openai_req, &input.model_id, input.should_think);
-        (
-            serde_json::to_value(openai_req).unwrap(),
-            ApiFormat::OpenAI,
-        )
+        (serde_json::to_value(openai_req).unwrap(), ApiFormat::OpenAI)
     } else {
         // Anthropic 出口的 thinking 块策略按服务商分两种：
         // - 真 Anthropic：无 signature 的 thinking 回传会被判 400 → 必须剥掉；

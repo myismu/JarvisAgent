@@ -413,7 +413,15 @@ mod message_source_tests {
     /// `inject` / `placeholder`，走这条分支说明迁移没跑）。
     #[test]
     fn unknown_db_value_is_an_error() {
-        for raw in ["", "chat ", "CHAT", "internal", "background", "context", "ui_only"] {
+        for raw in [
+            "",
+            "chat ",
+            "CHAT",
+            "internal",
+            "background",
+            "context",
+            "ui_only",
+        ] {
             assert!(
                 MessageSource::from_db(raw).is_err(),
                 "「{raw}」不是合法取值，必须报错而不是降级"
