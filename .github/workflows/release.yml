@@ -33,7 +33,10 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      - name: 测试（发版硬门槛：挂了就不出包）
+        working-directory: src-tauri
 
+        run: cargo test --release
       - name: 安装前端依赖
         run: pnpm install --frozen-lockfile
 
