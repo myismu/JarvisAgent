@@ -1,5 +1,7 @@
 # JarvisAgent，一个 AI 驱动的桌面端编程助手
 
+[![CI](https://github.com/myismu/JarvisAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/myismu/JarvisAgent/actions/workflows/ci.yml)
+
 <div align="center">
 一一一一用你自己的 API Key 运行：会读代码、改文件、跑命令的桌面端 AI 编程助手 —— 改坏了能退回去，动手前会先问你。
 
