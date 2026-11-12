@@ -284,8 +284,6 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   background: var(--glass-bg-heavy);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
   min-width: 0;
   min-height: 0;
   position: relative;
@@ -295,8 +293,6 @@ onBeforeUnmount(() => {
 .tab-bar {
   height: 38px;
   background: var(--glass-bg);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
   display: flex;
   align-items: center;
   border-bottom: 1px solid var(--glass-border);
@@ -340,7 +336,7 @@ onBeforeUnmount(() => {
 
 .tab-bar-project svg {
   flex-shrink: 0;
-  opacity: 0.5;
+  opacity: 0.85;
 }
 
 .status-indicator {
@@ -381,10 +377,10 @@ onBeforeUnmount(() => {
 .status-indicator.running .status-core { animation: statusPulse 1.5s ease-in-out infinite; }
 
 .status-indicator.interrupted { color: var(--text-muted); }
-.status-indicator.interrupted .status-core { opacity: 0.65; }
+.status-indicator.interrupted .status-core { opacity: 0.85; }
 
 .status-indicator.cancelled { color: var(--text-muted); }
-.status-indicator.cancelled .status-core { opacity: 0.5; }
+.status-indicator.cancelled .status-core { opacity: 0.85; }
 
 .status-indicator.idle { color: var(--text-muted); }
 .status-indicator.idle .status-core { opacity: 0.4; }

@@ -132,7 +132,8 @@ const defaults: UiPreferences = {
   thinkingDefault: "follow_global",
   locale: DEFAULT_LOCALE,
   agentMessageOpacity: 0,
-  userMessageOpacity: 0,
+  // 用户消息默认显示实心浅灰气泡（Codex 风格），与无底色的 Agent 回复形成主次
+  userMessageOpacity: 100,
   reflectionMode: "smart",
   // 默认关：绝大多数场景下"进程崩溃"不是常态，没必要让每一轮都背上帧级写库的开销
   crashProtection: false,
@@ -232,15 +233,40 @@ function applyAll(p: UiPreferences) {
 
 // ── 持久化（Rust 后端 → data/app-config.json） ──
 
+/**
+ * UI 视觉改版（Codex 风格）一次性迁移：用户消息透明度默认值 0 → 100。
+ *
+ * 旧默认值 0 与「用户主动调到 0」在落库数据里无法区分，因此用一个迁移标记兜住：
+ * 标记只在本机写入一次，迁移之后用户再手动设成 0 的选择会被尊重，不会被反复覆盖。
+ * 不为此新增后端字段，避免为一次性迁移引入长期的数据结构负担。
+ */
+const UI_REDESIGN_MIGRATION_KEY = "jarvis.ui-redesign-v1.migrated";
+
+function migrateUiRedesign(p: UiPreferences): boolean {
+  try {
+    if (localStorage.getItem(UI_REDESIGN_MIGRATION_KEY)) return false;
+    localStorage.setItem(UI_REDESIGN_MIGRATION_KEY, "1");
+  } catch {
+    // localStorage 不可用时放弃迁移，宁可不迁也不要每次启动都覆盖
+    return false;
+  }
+  if (p.userMessageOpacity !== 0) return false;
+  p.userMessageOpacity = defaults.userMessageOpacity;
+  return true;
+}
+
 async function loadFromBackend() {
+  let migrated = false;
   try {
     const saved = await invoke<UiPreferences>("get_ui_preferences");
     prefs.value = normalizePrefs(saved);
+    migrated = migrateUiRedesign(prefs.value);
   } catch {
     prefs.value = { ...defaults };
   }
   applyAll(prefs.value);
   loaded = true;
+  if (migrated) scheduleSave();
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;

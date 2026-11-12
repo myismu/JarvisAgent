@@ -1541,8 +1541,6 @@ const handleRecallEdit = async () => {
   width: 100%;
   max-width: min(85%, 960px); /* 与消息区同一套宽度口径，上下对齐 */
   background: var(--surface-strong);
-  backdrop-filter: blur(var(--glass-blur-heavy));
-  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   border: 1px solid var(--glass-border);
   border-radius: 24px; /* 增加圆角度，使其更圆润 */
   box-shadow: var(--shadow-lg);
@@ -1589,8 +1587,6 @@ const handleRecallEdit = async () => {
   gap: 6px;
   cursor: pointer;
   transition: all var(--transition-fast);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 .profile-btn:hover {
@@ -1610,8 +1606,6 @@ const handleRecallEdit = async () => {
   bottom: calc(100% + 12px);
   left: 0;
   background: var(--surface-strong);
-  backdrop-filter: blur(var(--glass-blur-heavy));
-  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   border: 1px solid color-mix(in srgb, var(--text-muted) 22%, transparent);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
@@ -1698,8 +1692,6 @@ const handleRecallEdit = async () => {
   font-weight: 500;
   cursor: pointer;
   transition: all var(--transition-fast);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   box-shadow: none;
   position: relative;
 }
@@ -1834,8 +1826,6 @@ const handleRecallEdit = async () => {
   gap: 6px;
   cursor: pointer;
   transition: background var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 .work-mode-btn:hover {
@@ -1883,8 +1873,6 @@ const handleRecallEdit = async () => {
 
 .work-mode-menu-inner {
   background: var(--surface-strong);
-  backdrop-filter: blur(var(--glass-blur-heavy));
-  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   border: 1px solid color-mix(in srgb, var(--text-muted) 22%, transparent);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
@@ -2004,7 +1992,7 @@ const handleRecallEdit = async () => {
 
 .editor-input::placeholder {
   color: var(--text-muted);
-  opacity: 0.6;
+  opacity: 0.85;
 }
 
 .editor-input.input-disabled {
@@ -2026,22 +2014,20 @@ const handleRecallEdit = async () => {
   cursor: pointer;
   transition: all var(--transition-fast);
   flex-shrink: 0;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 .send-btn.active {
-  background: var(--accent-blue);
-  color: white;
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
   border-color: transparent;
 }
 
 .send-btn.active:hover {
-  background: var(--accent-blue-hover);
+  background: var(--btn-primary-bg-hover);
 }
 
 .send-btn.active:active {
-  background: var(--accent-blue-hover);
+  background: var(--btn-primary-bg-hover);
 }
 
 .send-btn.stop-state {
@@ -2073,8 +2059,6 @@ const handleRecallEdit = async () => {
   background: var(--glass-bg-light);
   border: 1px solid var(--glass-border-subtle);
   max-width: 200px;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 .media-thumbnail {
@@ -2156,8 +2140,8 @@ const handleRecallEdit = async () => {
 }
 
 .recall-edit-btn:hover {
-  background: var(--accent-blue);
-  color: white;
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
   border-color: transparent;
   transform: translateY(-1px);
 }
@@ -2166,7 +2150,7 @@ const handleRecallEdit = async () => {
   background: none;
   border: none;
   color: var(--accent-blue);
-  opacity: 0.6;
+  opacity: 0.85;
   cursor: pointer;
   padding: 2px 6px;
   border-radius: var(--radius-sm);
@@ -2188,7 +2172,7 @@ const handleRecallEdit = async () => {
   padding: 2px;
   margin-left: auto;
   color: inherit;
-  opacity: 0.55;
+  opacity: 0.85;
   cursor: pointer;
   border-radius: var(--radius-sm);
   transition: all var(--transition-fast);
@@ -2245,7 +2229,7 @@ const handleRecallEdit = async () => {
 }
 
 .token-bar-item svg {
-  opacity: 0.5;
+  opacity: 0.85;
 }
 
 .token-bar-sep {
@@ -2302,8 +2286,6 @@ const handleRecallEdit = async () => {
   padding: 5px 9px;
   white-space: nowrap;
   background: var(--surface-strong);
-  backdrop-filter: blur(var(--glass-blur-heavy));
-  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   border: 1px solid color-mix(in srgb, var(--text-muted) 22%, transparent);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
@@ -2365,7 +2347,7 @@ const handleRecallEdit = async () => {
 }
 
 .token-bar-cache.cache-unknown {
-  opacity: 0.5;
+  opacity: 0.85;
 }
 
 /* 主 Agent 进度 + 本次请求吞吐：整组不可点、无浮层 */
@@ -2382,6 +2364,6 @@ const handleRecallEdit = async () => {
 .token-bar-model {
   font-style: italic;
   font-size: 0.6rem;
-  opacity: 0.6;
+  opacity: 0.85;
 }
 </style>

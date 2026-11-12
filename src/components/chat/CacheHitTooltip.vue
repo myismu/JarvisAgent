@@ -204,8 +204,6 @@ const sessionMissText = computed(() =>
   width: 236px;
   padding: 10px 12px;
   background: var(--surface-strong);
-  backdrop-filter: blur(var(--glass-blur-heavy));
-  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   border: 1px solid color-mix(in srgb, var(--text-muted) 22%, transparent);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
@@ -238,7 +236,7 @@ const sessionMissText = computed(() =>
 .cache-tip-group {
   font-size: 0.6rem;
   letter-spacing: 0.02em;
-  opacity: 0.6;
+  opacity: 0.85;
   margin-bottom: 2px;
 }
 
@@ -334,13 +332,13 @@ const sessionMissText = computed(() =>
 .cache-tip-num.is-unknown {
   font-weight: 400;
   color: inherit;
-  opacity: 0.55;
+  opacity: 0.85;
   cursor: help;
 }
 
 .cache-tip-hint {
   margin-top: 4px;
-  opacity: 0.7;
+  opacity: 0.85;
   line-height: 1.45;
 }
 

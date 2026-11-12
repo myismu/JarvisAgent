@@ -328,7 +328,7 @@ onUnmounted(detach);
   height: calc(3.5px * var(--rail-scale, 1)); /* ③ 块粗细 */
   border-radius: calc(4.25px * var(--rail-scale, 1));
   background: var(--text-muted);
-  opacity: 0.5;
+  opacity: 0.85;
   transform-origin: left center;
   /* 回弹缓动：邻近横线依距离衰减拉长（宽度由 JS 按波纹公式计算），动画交给这里 */
   transition: width 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),

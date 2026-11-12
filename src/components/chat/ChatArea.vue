@@ -1193,8 +1193,6 @@ onMounted(() => {
   margin: 12px 0;
   padding: 8px 12px;
   background: color-mix(in srgb, var(--glass-bg-light) calc(var(--agent-message-opacity, 0) * 1%), transparent);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   border-radius: var(--radius-md);
   transition: background-color var(--transition-fast);
 }
@@ -1482,8 +1480,6 @@ onMounted(() => {
   position: fixed;
   z-index: 10000;
   background: var(--glass-bg-heavy);
-  backdrop-filter: blur(var(--glass-blur-heavy));
-  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
@@ -1500,7 +1496,7 @@ onMounted(() => {
 .rollback-menu-title {
   font-size: 0.75rem;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--text-soft);
   padding: 6px 10px;
   border-bottom: 1px solid var(--glass-border-subtle);
   margin-bottom: 4px;
@@ -1631,8 +1627,6 @@ onMounted(() => {
   border-radius: 6px;
   border: 1px solid transparent;
   background: transparent;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   cursor: pointer;
   padding: 0;
   margin-top: 8px;
@@ -1688,8 +1682,6 @@ onMounted(() => {
   border-radius: 50%;
   border: 1px solid var(--glass-border);
   background: var(--glass-bg-heavy);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   color: var(--accent-blue);
   cursor: pointer;
   display: flex;
@@ -1740,7 +1732,7 @@ onMounted(() => {
 }
 .memory-notice svg {
   flex-shrink: 0;
-  opacity: 0.5;
+  opacity: 0.85;
 }
 
 /* 懒加载：更早历史提示（顶部小字，无边框，与通知条同风格） */

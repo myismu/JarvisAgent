@@ -84,7 +84,7 @@ const handleToggle = async (event: Event) => {
 }
 
 .skill-card.inactive {
-  opacity: 0.5;
+  opacity: 0.85;
 }
 
 .skill-card:hover {
@@ -200,8 +200,8 @@ const handleToggle = async (event: Event) => {
 }
 
 .skill-view-btn:hover {
-  background: var(--accent-blue);
-  border-color: var(--accent-blue);
-  color: white;
+  background: var(--btn-primary-bg);
+  border-color: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
 }
 </style>

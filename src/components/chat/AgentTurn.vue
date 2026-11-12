@@ -204,6 +204,8 @@ function toolStatusLabel(status: string): string {
 /* 执行过程大折叠 */
 .dev-execution-fold {
   margin-bottom: 16px;
+  max-width: 100%;
+  overflow: hidden;
 }
 .dev-execution-summary {
   font-size: 0.75rem;
@@ -221,9 +223,13 @@ function toolStatusLabel(status: string): string {
   flex-direction: column;
   gap: 2px;
   padding-bottom: 24px;
+  margin: 4px 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 .dev-execution-fold .dev-layout {
   padding-bottom: 0;
+  margin: 0;
 }
 
 /* 状态圆点 */
@@ -234,6 +240,7 @@ function toolStatusLabel(status: string): string {
   flex-shrink: 0;
   background: var(--accent-green);
   transition: background 0.2s;
+  display: inline-block;
 }
 .dev-status-dot.running {
   background: var(--text-muted);
@@ -246,6 +253,8 @@ function toolStatusLabel(status: string): string {
 /* 思考块 */
 .dev-thinking {
   padding: 6px 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 .dev-thinking-summary {
   display: inline-flex;
@@ -262,7 +271,7 @@ function toolStatusLabel(status: string): string {
   display: none;
 }
 .dev-thinking-label {
-  color: var(--text-muted);
+  color: var(--text-soft);
 }
 .dev-thinking-body {
   margin-top: 8px;
@@ -272,6 +281,8 @@ function toolStatusLabel(status: string): string {
   font-size: 0.82rem;
   color: var(--text-muted);
   line-height: 1.6;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 /* 工具调用 */
@@ -280,6 +291,8 @@ function toolStatusLabel(status: string): string {
 .dev-tool {
   border-radius: 6px;
   transition: background 0.15s;
+  max-width: 100%;
+  overflow: hidden;
 }
 .dev-tool[open] {
   background: var(--msg-block-tint);
@@ -344,6 +357,8 @@ function toolStatusLabel(status: string): string {
 }
 .dev-tool-section {
   margin-top: 8px;
+  max-width: 100%;
+  overflow: hidden;
 }
 /* 参数 / 输出：容器内的内容块，比外层再深一档（tint-strong），同样受透明度控制 */
 .dev-tool-section :deep(.streaming-markdown) {
@@ -384,13 +399,13 @@ function toolStatusLabel(status: string): string {
 .dev-tool-section-label {
   font-size: 0.7rem;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--text-soft);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: 4px;
 }
 .dev-tool-section.error .dev-tool-section-label {
-  color: var(--text-muted);
+  color: var(--text-soft);
 }
 
 /* 执行日志终端 */
@@ -400,6 +415,7 @@ function toolStatusLabel(status: string): string {
   border: 1px solid var(--glass-border-subtle);
   overflow: hidden;
   margin: 8px 0;
+  max-width: 100%;
 }
 .dev-log-header {
   background: var(--msg-block-tint-strong);
@@ -412,7 +428,7 @@ function toolStatusLabel(status: string): string {
 .dev-log-title {
   font-family: var(--font-mono);
   font-size: 0.68rem;
-  color: var(--text-muted);
+  color: var(--text-soft);
   letter-spacing: 1px;
 }
 .dev-log-body {
@@ -426,6 +442,8 @@ function toolStatusLabel(status: string): string {
   max-height: 160px;
   overflow-y: auto;
   line-height: 1.5;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 .dev-log-body :deep(pre),
 .dev-log-body :deep(code) {
@@ -448,5 +466,45 @@ function toolStatusLabel(status: string): string {
 @keyframes agent-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
+}
+
+/* 从 global.css 迁入：此前与上面的同名规则各留一份副本，现统一收口到这里 */
+.dev-status-dot.completed {
+  background: var(--accent-green);
+}
+.dev-thinking.streaming .dev-thinking-label {
+  color: var(--text-soft);
+}
+.dev-thinking.streaming .dev-thinking-body {
+  border-left-color: var(--glass-border);
+}
+.dev-tool-pre {
+  font-family: var(--font-mono);
+  /* 跟代码口径：工具参数/输出块本质是代码与日志，不是正文 */
+  font-size: var(--code-font-size);
+  line-height: 1.5;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 10px;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+  color: var(--text-main);
+  margin: 0;
+}
+.dev-tool-section.error .dev-tool-pre {
+  border-color: var(--glass-border-subtle);
+  background: color-mix(in srgb, var(--text-muted) calc(5 * var(--agent-message-opacity) / 100), transparent);
+}
+.dev-log-body :deep(pre),`n.dev-log-body :deep(code) {
+  background: transparent;
+  padding: 0;
+  border: none;
+  color: inherit;
+  font-size: inherit;
 }
 </style>

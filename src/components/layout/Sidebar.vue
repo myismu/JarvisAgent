@@ -777,7 +777,7 @@ onUnmounted(() => {
 <style scoped>
 /* 归档区里的条目：整行淡一点，右侧给"取消归档 / 彻底删除"两个文字按钮 */
 .deleted-item {
-  opacity: 0.72;
+  opacity: 0.85;
 }
 .restore-btn {
   flex-shrink: 0;
@@ -803,8 +803,6 @@ onUnmounted(() => {
 .sidebar {
   width: 250px;
   background: var(--glass-bg);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
   border-right: 1px solid var(--glass-border);
   display: flex;
   flex-direction: column;
@@ -898,7 +896,7 @@ onUnmounted(() => {
 .sidebar-title {
   font-size: 0.75rem;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--text-soft);
   padding: 4px 12px 8px;
   letter-spacing: 0.05em;
   display: flex;
@@ -990,7 +988,7 @@ body.dark-mode .project-header {
 
 .project-icon {
   flex-shrink: 0;
-  opacity: 0.7;
+  opacity: 0.85;
 }
 
 .project-name {
@@ -1236,7 +1234,7 @@ body.dark-mode .session-item.active {
   display: none;
   background: var(--glass-bg-light);
   border: 1px solid var(--glass-border-subtle);
-  color: var(--text-muted);
+  color: var(--text-soft);
   cursor: pointer;
   padding: 4px;
   margin-left: 4px;

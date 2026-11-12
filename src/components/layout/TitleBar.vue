@@ -39,8 +39,6 @@ defineProps<{
 .editor-header {
   height: var(--header-height);
   background: var(--glass-bg);
-  backdrop-filter: blur(var(--glass-blur-heavy));
-  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   border-bottom: 1px solid var(--glass-border);
   display: flex;
   align-items: center;
@@ -75,7 +73,7 @@ defineProps<{
   height: 100%;
   font-size: 0.85rem;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--text-soft);
   letter-spacing: 0.02em;
 }
 .reactor-label {

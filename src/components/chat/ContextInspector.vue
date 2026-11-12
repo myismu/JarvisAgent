@@ -1088,7 +1088,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 }
 
 .context-detail-label {
-  color: var(--text-muted);
+  color: var(--text-soft);
   font-size: 0.66rem;
   font-weight: var(--fw-heavy);
   letter-spacing: 0.08em;

@@ -319,7 +319,7 @@ const rePreview = async () => {
 
 .group-title {
   font-size: 0.7333rem;
-  color: var(--text-muted);
+  color: var(--text-soft);
   padding: 10px 10px 4px;
 }
 
@@ -365,7 +365,7 @@ const rePreview = async () => {
 }
 
 .badge.customized {
-  background: rgba(250, 179, 21, 0.18);
+  background: var(--surface-warning);
   color: var(--accent-amber, #e8a33d);
 }
 
@@ -409,7 +409,7 @@ const rePreview = async () => {
 }
 
 .sep {
-  opacity: 0.5;
+  opacity: 0.85;
 }
 
 .editor-actions {
@@ -439,9 +439,9 @@ const rePreview = async () => {
 }
 
 .btn.primary {
-  background: var(--accent-blue);
-  border-color: var(--accent-blue);
-  color: #fff;
+  background: var(--btn-primary-bg);
+  border-color: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
 }
 
 .btn.ghost.danger:hover {

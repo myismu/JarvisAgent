@@ -109,14 +109,10 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   z-index: 10000;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 .confirm-modal {
   background: var(--surface-strong);
-  backdrop-filter: blur(var(--glass-blur-heavy));
-  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-xl);
   padding: 24px;
@@ -182,12 +178,12 @@ onBeforeUnmount(() => {
 }
 
 .confirm-btn.primary {
-  background: var(--accent-blue);
-  color: var(--text-inverse);
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
 }
 
 .confirm-btn.primary:hover:not(:disabled) {
-  background: var(--accent-blue-hover);
+  background: var(--btn-primary-bg-hover);
 }
 
 .confirm-btn.danger {

@@ -307,8 +307,8 @@ onUnmounted(() => {
 }
 
 .mode-btn.active {
-  background: var(--accent-blue);
-  color: white;
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
 }
 
 .port-input {

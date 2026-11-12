@@ -130,8 +130,6 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
   border-bottom: none;
   border-radius: 16px 16px 0 0;
   background: var(--surface-strong);
-  backdrop-filter: blur(var(--glass-blur-heavy));
-  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   width: 100%;
   max-width: min(42.5%, 480px);
   font-size: 0.74rem;

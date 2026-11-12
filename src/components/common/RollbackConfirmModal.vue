@@ -55,7 +55,6 @@ const emit = defineEmits<{
 }
 .modal-content {
   background: var(--glass-bg-heavy);
-  backdrop-filter: blur(var(--glass-blur));
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-lg);
   padding: var(--space-lg);
@@ -81,7 +80,7 @@ const emit = defineEmits<{
   overflow-y: auto;
 }
 .details-label {
-  color: var(--text-muted);
+  color: var(--text-soft);
   font-size: 0.8rem;
   margin-bottom: var(--space-xs);
 }
@@ -114,9 +113,9 @@ const emit = defineEmits<{
   cursor: not-allowed;
 }
 .cmd-button.safe {
-  background: var(--accent-blue);
-  border-color: var(--accent-blue);
-  color: white;
+  background: var(--btn-primary-bg);
+  border-color: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
 }
 .cmd-button.safe:hover:not(:disabled) {
   opacity: 0.9;

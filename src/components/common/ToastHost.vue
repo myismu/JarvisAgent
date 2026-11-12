@@ -65,7 +65,6 @@ import { dismissToast, toasts } from '../../composables/useToast';
   background: var(--glass-bg-heavy);
   border: 1px solid var(--glass-border);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
-  backdrop-filter: blur(var(--glass-blur));
   cursor: pointer;
   word-break: break-word;
 }

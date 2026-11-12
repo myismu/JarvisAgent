@@ -1,35 +1,48 @@
 /* ============================
    JarvisAgent 全局样式
-   简洁扁平设计系统（语义色克制使用）
+   Codex 风格设计系统：实心表面 + 实色细线分界 + 高对比四档文字 + 中性色主导
+   设计依据见 doc/UI视觉重设计计划-对齐Codex.md
    ============================ */
 
 /* --- 1. CSS 变量定义 --- */
 :root {
-  /* 浅色模式调色板 */
-  --bg-dark: #f7f7f8;
-  --bg-panel: rgba(255, 255, 255, 0.85);
-  --bg-sidebar: rgba(247, 247, 248, 0.85);
-  --border-color: rgba(10, 10, 10, 0.1);
+  /* 表面层级（全部实心：层级靠底色区分，不靠半透明 + 模糊） */
+  --bg-dark: #ffffff;
+  --bg-panel: #ffffff;
+  --bg-sidebar: #f9f9f9;
+  --surface-1: #f4f4f4;
+  --surface-2: #ececec;
+  --surface-overlay: #ffffff;
+  --border-color: #e3e3e3;
+  --border-strong: #cfcfcf;
 
-  /* 文本颜色（中性灰阶：去掉 slate 蓝味，与暗色主题的 zinc 同族） */
-  --text-main: #0a0a0a;
-  --text-muted: #636363;
+  /* 文本四档：主 / 次主 / 次级（AA）/ 辅助 */
+  --text-main: #0d0d0d;
+  --text-soft: #2e2e2e;
+  --text-muted: #5c5c5c;
+  --text-faint: #8a8a8a;
   --text-inverse: #ffffff;
 
-  /* 交互色 / 强调色：蓝=品牌交互，绿=成功，红=错误，黄=警告 */
-  --accent-blue: #3b82f6;
-  --accent-blue-hover: #2563eb;
-  --accent-green: #10b981;
-  --accent-red: #ef4444;
-  --text-soft: #404040;
+  /* 主按钮：中性黑白，蓝色只留给链接与焦点 */
+  --btn-primary-bg: #0d0d0d;
+  --btn-primary-bg-hover: #2e2e2e;
+  --btn-primary-fg: #ffffff;
+
+  /* 语义色：蓝=链接/焦点，绿=成功，红=错误，黄=警告 */
+  --accent-blue: #2563eb;
+  --accent-blue-hover: #1d4ed8;
+  --accent-green: #16a34a;
+  --accent-red: #dc2626;
   --text-on-danger: #ffffff;
-  --surface-strong: rgba(255, 255, 255, 0.94);
-  --surface-danger: rgba(220, 38, 38, 0.96);
-  --surface-danger-hover: rgba(185, 28, 28, 0.98);
-  --border-danger: rgba(185, 28, 28, 0.46);
+  --surface-strong: #ffffff;
+  --surface-danger: #dc2626;
+  --surface-danger-hover: #b91c1c;
+  --border-danger: rgba(185, 28, 28, 0.5);
   /* 弱警示（琥珀）：危险卡视觉分级用，刻意比 danger 低一档饱和度 */
   --text-warning: #b45309;
-  --border-warning: rgba(180, 83, 9, 0.4);
+  --border-warning: rgba(180, 83, 9, 0.45);
+  --surface-warning: #fef3c7;
+
 
   /* 字体系统
      拉丁在前、中文在后：中文如果不显式声明，就交给 WebView2 的脚本兜底去猜，
@@ -76,21 +89,22 @@
      工具参数输出与执行日志的容器会把它改写成 --code-font-size，让整块内容走代码口径。 */
   --md-body-font-size: var(--content-font-size);
 
-  /* 面板表面变量（近实心，保留轻微通透感） */
-  --glass-bg: rgba(255, 255, 255, 0.8);
-  --glass-bg-heavy: rgba(255, 255, 255, 0.92);
-  --glass-bg-light: rgba(10, 10, 10, 0.04);
-  --glass-border: rgba(10, 10, 10, 0.1);
-  --glass-border-subtle: rgba(10, 10, 10, 0.06);
-  --glass-blur: 12px;
-  --glass-blur-heavy: 20px;
-  --msg-bg-rgb: 255, 255, 255;
-  --glass-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+  /* 面板表面变量：历史命名保留（组件大量引用），取值全部实心化。
+     --glass-bg-light 是"叠加在面板上的一层浅灰"，用于 hover / 内嵌块。 */
+  --glass-bg: var(--bg-panel);
+  --glass-bg-heavy: var(--surface-overlay);
+  --glass-bg-light: var(--surface-1);
+  --glass-border: var(--border-color);
+  --glass-border-subtle: #ececec;
+  --glass-blur: 0px;
+  --glass-blur-heavy: 0px;
+  --msg-bg-rgb: 244, 244, 244;
+  --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 
-  /* 阴影层级 */
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.04), 0 2px 4px -1px rgba(0, 0, 0, 0.02);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.04), 0 4px 6px -2px rgba(0, 0, 0, 0.02);
+  /* 阴影层级：平面元素靠边框，阴影只给浮层 */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.06);
 
   /* 布局与圆角 */
   --header-height: 44px;
@@ -116,41 +130,53 @@
 
 /* --- 2. 暗色模式变量 --- */
 body.dark-mode {
-  --bg-dark: #18181b;
-  --bg-panel: rgba(39, 39, 42, 0.85);
-  --bg-sidebar: rgba(24, 24, 27, 0.9);
-  --border-color: rgba(255, 255, 255, 0.1);
+  --bg-dark: #1a1a1a;
+  --bg-panel: #1a1a1a;
+  --bg-sidebar: #141414;
+  --surface-1: #262626;
+  --surface-2: #303030;
+  --surface-overlay: #262626;
+  --border-color: #333333;
+  --border-strong: #454545;
 
-  --text-main: #f4f4f5;
-  --text-muted: #a1a1aa;
-  --text-inverse: #09090b;
+  --text-main: #f2f2f2;
+  --text-soft: #d4d4d4;
+  --text-muted: #a3a3a3;
+  --text-faint: #737373;
+  --text-inverse: #0d0d0d;
 
-  --accent-blue: #3b82f6;
-  --accent-blue-hover: #60a5fa;
+  --btn-primary-bg: #f2f2f2;
+  --btn-primary-bg-hover: #d4d4d4;
+  --btn-primary-fg: #0d0d0d;
+
+  --accent-blue: #60a5fa;
+  --accent-blue-hover: #93c5fd;
   --accent-green: #22c55e;
-  --accent-red: #ef4444;
-  --text-soft: #d4d4d8;
+  --accent-red: #f87171;
   --text-on-danger: #ffffff;
-  --surface-strong: rgba(39, 39, 42, 0.96);
-  --surface-danger: rgba(153, 27, 27, 0.94);
-  --surface-danger-hover: rgba(127, 29, 29, 0.98);
-  --border-danger: rgba(248, 113, 113, 0.42);
-  --text-warning: #d97706;
-  --border-warning: rgba(217, 119, 6, 0.45);
+  --surface-strong: #262626;
+  --surface-danger: #b91c1c;
+  --surface-danger-hover: #991b1b;
+  --border-danger: rgba(248, 113, 113, 0.5);
+  --text-warning: #f59e0b;
+  --border-warning: rgba(245, 158, 11, 0.5);
+  --surface-warning: #3a2a0a;
 
-  --glass-bg: rgba(39, 39, 42, 0.8);
-  --glass-bg-heavy: rgba(39, 39, 42, 0.92);
-  --glass-bg-light: rgba(255, 255, 255, 0.06);
-  --glass-border: rgba(255, 255, 255, 0.1);
-  --glass-border-subtle: rgba(255, 255, 255, 0.05);
-  --glass-blur: 12px;
-  --glass-blur-heavy: 20px;
-  --msg-bg-rgb: 50, 50, 50;
-  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  /* 别名必须在此重新声明：:root 上的 var() 在 :root 处就已解析，
+     body 覆盖基础变量并不会让它们重新计算。 */
+  --glass-bg: var(--bg-panel);
+  --glass-bg-heavy: var(--surface-overlay);
+  --glass-bg-light: var(--surface-1);
+  --glass-border: var(--border-color);
+  --glass-border-subtle: #2a2a2a;
+  --glass-blur: 0px;
+  --glass-blur-heavy: 0px;
+  --msg-bg-rgb: 48, 48, 48;
+  --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
 
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.5);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.35);
 
   /* Toggle 开关 */
   --toggle-track-inactive: rgba(255, 255, 255, 0.15);
@@ -201,29 +227,22 @@ html, body {
   padding: 0;
 }
 
-/* --- 4. 面板工具类 --- */
+/* --- 4. 面板工具类（类名沿用历史命名，实际为实心面板，不再使用 backdrop-filter） --- */
 .glass-panel {
   background: var(--glass-bg);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow);
 }
 
 .glass-panel-heavy {
   background: var(--glass-bg-heavy);
-  backdrop-filter: blur(var(--glass-blur-heavy));
-  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   border: 1px solid var(--glass-border);
-  box-shadow: var(--glass-shadow);
+  box-shadow: var(--shadow-md);
 }
 
 .glass-panel-light {
   background: var(--glass-bg-light);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
-  border: 1px solid var(--glass-border-subtle);
-  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--glass-border);
 }
 
 /* --- 6. 无障碍焦点样式 --- */
@@ -310,26 +329,25 @@ body.dragging-active .editor-container {
 
 /* ── 开发者模式：Cursor/Codex 风格轨迹 ── */
 
-/* 消息背景透明度 */
+/* 消息气泡背景透明度（用户可在设置中调节，只作用于气泡本身） */
 :root {
   --agent-message-opacity: 0;
-  --user-message-opacity: 0;
+  --user-message-opacity: 100;
 }
 
-/* assistant 消息框内「内容块」的底色（思考块 / 工具块 / 参数输出 / 日志终端）。
-   浓度由「消息背景透明度」统一控制：该值为 0 时它们与气泡一起消失，只剩纯文字；
-   调高则按各自档位浮现。
-   浅色用**淡黑**叠加、深色用**淡白**叠加 —— 这样两种主题下都与气泡底色形成对比。
-   （不能用 --surface-strong 这类面板色：浅色下它与白气泡同色，叠了等于没叠。）
+/* assistant 消息内「内容块」的底色（思考块 / 工具块 / 参数输出 / 日志终端）。
+   **与气泡透明度解耦**：此前它们乘以 --agent-message-opacity，默认 0 时代码块、
+   工具块的底色一起消失，整个对话区只剩纯文字 —— 这是界面发"淡"的首要根因。
+   现在内容块始终是实心底色，层级稳定，不受气泡设置影响。
    - `--msg-block-tint`：外层容器（思考块 / 工具块 / 日志块）
    - `--msg-block-tint-strong`：容器内的内容块（参数 / 输出 / 日志标题栏） */
 :root {
-  --msg-block-tint: rgba(10, 10, 10, calc(var(--agent-message-opacity) / 100 * 0.045));
-  --msg-block-tint-strong: rgba(10, 10, 10, calc(var(--agent-message-opacity) / 100 * 0.08));
+  --msg-block-tint: #f7f7f7;
+  --msg-block-tint-strong: #efefef;
 }
 body.dark-mode {
-  --msg-block-tint: rgba(255, 255, 255, calc(var(--agent-message-opacity) / 100 * 0.05));
-  --msg-block-tint-strong: rgba(255, 255, 255, calc(var(--agent-message-opacity) / 100 * 0.09));
+  --msg-block-tint: #212121;
+  --msg-block-tint-strong: #2a2a2a;
 }
 .chat-message.agent-message .message-content {
   background: rgba(var(--msg-bg-rgb), calc(var(--agent-message-opacity) / 100));
@@ -340,233 +358,9 @@ body.dark-mode {
 }
 
 /* 执行过程大折叠 */
-.dev-execution-fold {
-  margin-bottom: 16px;
-  max-width: 100%;
-  overflow: hidden;
-}
-.dev-execution-summary {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  cursor: pointer;
-  user-select: none;
-}
-.dev-execution-fold[open] > .dev-execution-summary {
-  margin-bottom: 8px;
-}
 
-.dev-layout {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 4px 0;
-  max-width: 100%;
-  overflow: hidden;
-}
-.dev-execution-fold .dev-layout {
-  margin: 0;
-}
 
-/* 状态圆点 */
-.dev-status-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  background: var(--accent-green);
-}
-.dev-status-dot.running {
-  background: var(--text-muted);
-}
-.dev-status-dot.error {
-  background: var(--text-muted);
-}
-.dev-status-dot.completed {
-  background: var(--accent-green);
-}
-
-/* 思考块 */
-.dev-thinking {
-  padding: 6px 0;
-  max-width: 100%;
-  overflow: hidden;
-}
-.dev-thinking-summary {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  user-select: none;
-  list-style: none;
-  color: var(--text-muted);
-  font-size: 0.8rem;
-  padding: 2px 0;
-}
-.dev-thinking-summary::-webkit-details-marker { display: none; }
-.dev-thinking-label {
-  color: var(--text-muted);
-}
-.dev-thinking.streaming .dev-thinking-label {
-  color: var(--text-soft);
-}
-.dev-thinking-body {
-  margin-top: 8px;
-  padding: 10px 14px;
-  border-left: 2px solid var(--glass-border-subtle);
-  background: var(--msg-block-tint);
-  font-size: 0.82rem;
-  color: var(--text-muted);
-  line-height: 1.6;
-  max-width: 100%;
-  overflow: hidden;
-}
-.dev-thinking.streaming .dev-thinking-body {
-  border-left-color: var(--glass-border);
-}
-
-/* 工具调用 */
-.dev-tool {
-  border-radius: 6px;
-  max-width: 100%;
-  overflow: hidden;
-}
-/* ⚠️ 本文件与 AgentTurn.vue 的 scoped 样式里各有一份同名的 `.dev-*` 定义副本。
-   scoped 的 specificity 更高、会盖住这里，但一旦 scoped 里删掉某条声明，
-   这里的旧值就会顶上来 —— 所以改一处必须同时改另一处。 */
-.dev-tool[open] {
-  background: var(--msg-block-tint);
-}
-.dev-tool-summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 8px;
-  cursor: pointer;
-  user-select: none;
-  list-style: none;
-  border-radius: 6px;
-  font-size: 0.8rem;
-}
-.dev-tool-summary::-webkit-details-marker { display: none; }
-.dev-tool-summary:hover {
-  background: color-mix(in srgb, var(--surface-strong) calc(20 * var(--agent-message-opacity) / 100), transparent);
-}
-.dev-tool-name {
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--text-main);
-  background: transparent !important;
-  padding: 0 !important;
-  border: 0 !important;
-}
-.dev-tool-action {
-  color: var(--text-muted);
-  font-size: 0.78rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dev-tool-status {
-  margin-left: auto;
-  font-size: 0.7rem;
-  flex-shrink: 0;
-}
-.dev-tool.completed .dev-tool-status { color: var(--accent-green); }
-.dev-tool.running .dev-tool-status { color: var(--text-muted); }
-.dev-tool.error .dev-tool-status { color: var(--text-muted); }
-.dev-tool.error .dev-tool-name { color: var(--text-soft); }
-
-.dev-tool-body {
-  padding: 0 8px 8px 24px;
-  max-width: 100%;
-  overflow: hidden;
-}
-.dev-tool-section {
-  margin-top: 8px;
-  max-width: 100%;
-  overflow: hidden;
-}
-.dev-tool-section-label {
-  font-size: 0.7rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 4px;
-}
-.dev-tool-section.error .dev-tool-section-label {
-  color: var(--text-muted);
-}
-.dev-tool-pre {
-  font-family: var(--font-mono);
-  /* 跟代码口径：工具参数/输出块本质是代码与日志，不是正文 */
-  font-size: var(--code-font-size);
-  line-height: 1.5;
-  background: transparent;
-  border: none;
-  border-radius: 4px;
-  padding: 8px 10px;
-  max-width: 100%;
-  overflow-x: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 240px;
-  overflow-y: auto;
-  color: var(--text-main);
-  margin: 0;
-}
-.dev-tool-section.error .dev-tool-pre {
-  border-color: var(--glass-border-subtle);
-  background: color-mix(in srgb, var(--text-muted) calc(5 * var(--agent-message-opacity) / 100), transparent);
-}
-
-/* 执行日志终端 */
-.dev-log {
-  background: var(--msg-block-tint);
-  border-radius: 8px;
-  border: 1px solid var(--glass-border-subtle);
-  overflow: hidden;
-  margin: 8px 0;
-  max-width: 100%;
-}
-.dev-log-header {
-  background: var(--msg-block-tint-strong);
-  padding: 6px 10px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  border-bottom: 1px solid var(--glass-border-subtle);
-}
-.dev-log-title {
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  color: var(--text-muted);
-  letter-spacing: 1px;
-}
-.dev-log-body {
-  padding: 8px 12px;
-  font-family: var(--font-mono);
-  /* 同 AgentTurn.vue 里那份 .dev-log-body 副本：改一处必须改另一处 */
-  font-size: var(--code-font-size);
-  --md-body-font-size: var(--code-font-size);
-  color: var(--text-main);
-  max-height: 160px;
-  overflow-y: auto;
-  line-height: 1.5;
-  max-width: 100%;
-  overflow-x: hidden;
-}
-.dev-log-body pre,
-.dev-log-body code {
-  background: transparent;
-  padding: 0;
-  border: none;
-  color: inherit;
-  font-size: inherit;
-}
+/* 开发者模式轨迹的 `.dev-*` 样式已统一收口到 AgentTurn.vue（scoped），此处不再保留副本 */
 
 /* ── 旧版开发者视图（保留向后兼容，已废弃） ── */
 .agent-developer-view {

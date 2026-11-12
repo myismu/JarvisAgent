@@ -191,7 +191,7 @@ const patchIconPaths = computed(() => getFileOpPaths(props.patch.type));
 
 .diff-title-icon {
   flex: 0 0 auto;
-  color: var(--text-muted);
+  color: var(--text-soft);
 }
 
 .diff-title {
@@ -243,7 +243,7 @@ const patchIconPaths = computed(() => getFileOpPaths(props.patch.type));
   min-width: 40px;
   text-align: right;
   color: var(--text-muted);
-  opacity: 0.5;
+  opacity: 0.85;
   user-select: none;
   padding: 0 4px;
   font-size: 0.7rem;

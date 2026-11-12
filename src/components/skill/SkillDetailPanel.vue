@@ -136,8 +136,6 @@ const renderMarkdown = (text: string): string => {
   justify-content: center;
   align-items: center;
   z-index: 1000;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   animation: fadeIn var(--transition-fast);
 }
 

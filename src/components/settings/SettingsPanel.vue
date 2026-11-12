@@ -1446,8 +1446,6 @@ const save = async () => {
   justify-content: center;
   align-items: center;
   z-index: 1000;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   animation: fadeIn var(--transition-fast);
 }
 
@@ -1461,8 +1459,6 @@ const save = async () => {
      故混入更多底色（76/24）让两者看起来是同一种"黑" */
   --sel-fill: color-mix(in srgb, var(--text-main) 76%, var(--surface-strong));
   background: var(--surface-strong);
-  backdrop-filter: blur(var(--glass-blur-heavy));
-  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-xl);
   width: min(1080px, calc(100vw - 48px));
@@ -1884,8 +1880,6 @@ const save = async () => {
   min-width: 100%;
   z-index: 110;
   background: var(--surface-strong);
-  backdrop-filter: blur(var(--glass-blur-heavy));
-  -webkit-backdrop-filter: blur(var(--glass-blur-heavy));
   border: 1px solid color-mix(in srgb, var(--text-muted) 20%, transparent);
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(10, 10, 10, 0.12);
@@ -2027,8 +2021,6 @@ const save = async () => {
   font-weight: var(--fw-semibold);
   color: var(--text-main);
   background: var(--glass-bg);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--glass-border-subtle);
   border-radius: 6px;
   padding: 4px 10px;
@@ -2220,7 +2212,7 @@ const save = async () => {
 }
 
 .badge-deprecated {
-  background: color-mix(in srgb, #d97706 14%, transparent);
+  background: var(--surface-warning);
   color: #b45309;
   border: 1px solid color-mix(in srgb, #d97706 35%, transparent);
 }

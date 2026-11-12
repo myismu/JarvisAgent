@@ -739,7 +739,7 @@ const backgroundStatusLabel = (status: string): string => {
   border: 0;
   border-radius: 5px;
   background: transparent;
-  color: var(--text-muted);
+  color: var(--text-soft);
   cursor: pointer;
   transition: color 0.15s, background 0.15s;
 }
@@ -1204,7 +1204,7 @@ const backgroundStatusLabel = (status: string): string => {
 
 .status-label {
   flex-shrink: 0;
-  color: var(--text-muted);
+  color: var(--text-soft);
   font-size: 0.72rem;
   font-weight: 700;
 }
@@ -1258,7 +1258,7 @@ const backgroundStatusLabel = (status: string): string => {
 }
 
 .ct-label {
-  color: var(--text-muted);
+  color: var(--text-soft);
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -1428,7 +1428,7 @@ const backgroundStatusLabel = (status: string): string => {
 }
 
 .prompt-label {
-  color: var(--text-muted);
+  color: var(--text-soft);
   font-size: 0.66rem;
   font-weight: var(--fw-heavy);
   margin-bottom: 2px;

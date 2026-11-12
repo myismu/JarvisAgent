@@ -347,8 +347,6 @@ function renderTableCell(cell: any): string {
   border-left: 3px solid var(--glass-border);
   border-radius: var(--radius-md);
   background: var(--glass-bg-light);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 /* 引用块（含加粗标题的提示块）：中性灰 */

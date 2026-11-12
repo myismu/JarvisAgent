@@ -548,7 +548,6 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   z-index: 9999;
-  backdrop-filter: blur(4px);
 }
 
 .rollback-modal {
@@ -637,8 +636,8 @@ onUnmounted(() => {
 }
 
 .confirm-btn {
-  background: var(--accent-blue);
-  color: white;
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
 }
 
 .confirm-btn:hover {

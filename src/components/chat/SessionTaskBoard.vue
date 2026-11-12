@@ -168,7 +168,7 @@ onBeforeUnmount(() => {
 }
 
 .task-board-title {
-  color: var(--text-muted);
+  color: var(--text-soft);
 }
 
 .task-board-progress {
@@ -180,12 +180,12 @@ onBeforeUnmount(() => {
 .task-board-counts {
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
-  opacity: 0.6;
+  opacity: 0.85;
 }
 
 .task-board-chevron {
   flex-shrink: 0;
-  opacity: 0.5;
+  opacity: 0.85;
   transition: transform 0.2s;
 }
 

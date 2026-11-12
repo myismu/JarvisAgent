@@ -376,7 +376,7 @@ onMounted(load);
 }
 /* 关掉的卡整体压暗：一眼能看出"这些是不生效的"（与技能卡片的 inactive 同语义） */
 .tool-card.off {
-  opacity: 0.5;
+  opacity: 0.85;
 }
 
 .tool-card-head {

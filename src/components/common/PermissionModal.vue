@@ -116,8 +116,6 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
   padding: 14px 18px;
   border-radius: var(--radius-lg);
   background: var(--glass-bg-heavy);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--glass-border);
   box-shadow: var(--shadow-lg);
   max-width: 580px;
@@ -134,7 +132,7 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
 .perm-header svg {
   flex-shrink: 0;
   margin-top: 1px;
-  opacity: 0.7;
+  opacity: 0.85;
 }
 
 .perm-title {

@@ -454,8 +454,6 @@ const toggleMinimize = () => {
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-xl);
   box-shadow: var(--glass-shadow), -18px 0 56px rgba(0, 0, 0, 0.15);
-  backdrop-filter: blur(var(--glass-blur-heavy)) saturate(1.28);
-  -webkit-backdrop-filter: blur(var(--glass-blur-heavy)) saturate(1.28);
 }
 
 .plan-panel::after {
@@ -542,8 +540,6 @@ const toggleMinimize = () => {
     background var(--transition-fast),
     border-color var(--transition-fast),
     transform var(--transition-fast);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
 }
 
 .plan-icon-btn:hover {
@@ -571,7 +567,7 @@ const toggleMinimize = () => {
 .plan-label {
   display: block;
   margin-bottom: 5px;
-  color: var(--text-muted);
+  color: var(--text-soft);
   font-size: 0.72rem;
   font-weight: 700;
   line-height: 1.2;
@@ -749,8 +745,6 @@ const toggleMinimize = () => {
     border-color var(--transition-fast),
     transform var(--transition-fast),
     box-shadow var(--transition-fast);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
 }
 
 .plan-mini-btn:hover {
@@ -767,14 +761,14 @@ const toggleMinimize = () => {
 }
 
 .plan-mini-btn-primary {
-  color: var(--text-inverse);
-  border-color: var(--accent-blue);
-  background: var(--accent-blue);
+  color: var(--btn-primary-fg);
+  border-color: var(--btn-primary-bg);
+  background: var(--btn-primary-bg);
 }
 
 .plan-mini-btn-primary:hover {
   color: var(--text-inverse);
-  background: var(--accent-blue-hover);
+  background: var(--btn-primary-bg-hover);
 }
 
 .plan-body {
@@ -797,8 +791,6 @@ const toggleMinimize = () => {
   border-radius: 50%;
   border: 1px solid var(--glass-border);
   background: var(--glass-bg-heavy);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   color: var(--accent-blue);
   cursor: pointer;
   display: flex;
@@ -881,8 +873,6 @@ const toggleMinimize = () => {
   border-radius: var(--radius-lg);
   background: var(--glass-bg-light);
   box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.05);
-  backdrop-filter: blur(14px) saturate(1.12);
-  -webkit-backdrop-filter: blur(14px) saturate(1.12);
 }
 
 .plan-editor::placeholder {
@@ -1036,8 +1026,6 @@ const toggleMinimize = () => {
   flex-shrink: 0;
   border-top: 1px solid var(--glass-border-subtle);
   background: var(--glass-bg-light);
-  backdrop-filter: blur(18px) saturate(1.15);
-  -webkit-backdrop-filter: blur(18px) saturate(1.15);
 }
 
 .plan-actions-streaming {
@@ -1079,8 +1067,6 @@ const toggleMinimize = () => {
     box-shadow var(--transition-fast),
     transform var(--transition-fast),
     color var(--transition-fast);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
 }
 
 .plan-btn:hover {
@@ -1123,8 +1109,6 @@ const toggleMinimize = () => {
   border: 1px solid var(--glass-border-subtle);
   border-radius: var(--radius-lg);
   background: var(--glass-bg-heavy);
-  backdrop-filter: blur(var(--glass-blur-heavy)) saturate(1.28);
-  -webkit-backdrop-filter: blur(var(--glass-blur-heavy)) saturate(1.28);
   box-shadow: var(--glass-shadow), 0 4px 16px rgba(0, 0, 0, 0.12);
   color: var(--text-muted);
   cursor: pointer;

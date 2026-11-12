@@ -69,8 +69,6 @@ const todoLabel = (todo: TodoItem): string =>
   padding: 6px 14px;
   border-radius: 20px;
   background: var(--glass-bg-heavy);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--glass-border);
   box-shadow: var(--shadow-sm);
   cursor: pointer;
@@ -134,8 +132,6 @@ const todoLabel = (todo: TodoItem): string =>
   padding: 8px 12px;
   border-radius: 12px;
   background: var(--glass-bg-heavy);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--glass-border);
   box-shadow: var(--shadow-lg);
   display: flex;
@@ -162,7 +158,7 @@ const todoLabel = (todo: TodoItem): string =>
 }
 .item-pending .todo-text { color: var(--text-muted); opacity: 0.6; }
 .item-in_progress .todo-text { color: var(--text-main); font-weight: 600; }
-.item-completed .todo-text { color: var(--text-muted); text-decoration: line-through; opacity: 0.5; }
+.item-completed .todo-text { color: var(--text-muted); text-decoration: line-through; opacity: 0.85; }
 
 .todo-fade-enter-active,
 .todo-fade-leave-active { transition: opacity 0.2s, transform 0.2s; }

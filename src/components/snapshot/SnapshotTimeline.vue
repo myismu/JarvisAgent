@@ -565,7 +565,7 @@ onUnmounted(() => {
 
 .timeline-hint {
   font-size: 0.75rem;
-  opacity: 0.6;
+  opacity: 0.85;
   margin-top: 4px;
   display: inline-block;
 }
@@ -770,7 +770,6 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   z-index: 9999;
-  backdrop-filter: blur(4px);
 }
 
 .rollback-modal,
@@ -822,7 +821,7 @@ onUnmounted(() => {
 }
 
 .detail-label {
-  color: var(--text-muted);
+  color: var(--text-soft);
   min-width: 60px;
 }
 
@@ -869,8 +868,8 @@ onUnmounted(() => {
 }
 
 .confirm-btn {
-  background: var(--accent-blue);
-  color: white;
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
 }
 
 .confirm-btn:hover {
