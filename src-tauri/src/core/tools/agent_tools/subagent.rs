@@ -406,6 +406,12 @@ pub async fn run_subagent(
         .max_turns
         .unwrap_or(crate::infra::types::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM);
 
+    let parent_run_id = if let Some(manager) = app.try_state::<SessionManager>() {
+        manager.get_or_create(&session_id).await.active_run_id.lock().await.clone()
+    } else {
+        None
+    };
+
     // 注册子代理运行记录
     let run_id = SubAgentMonitor::start_run(
         &app,
@@ -416,6 +422,7 @@ pub async fn run_subagent(
         label,
         agent_role.clone(),
         max_loops,
+        parent_run_id,
     )
     .await;
 
@@ -703,6 +710,11 @@ pub async fn run_subagent(
                 .map(|s| s.len())
                 .unwrap_or(0)
         );
+        if let Err(err) = SubAgentMonitor::append_trace_event(
+            &app, &run_id, loop_count + 1, "request", &req_json, Some(&model_id), None, None,
+        ).await {
+            crate::jarvis_warn!("SUBAGENT", "failed to persist request trace: {}", err);
+        }
         crate::infra::debug_logger::debug_logger().log_request(
             &session_id,
             "SUB",
@@ -820,6 +832,19 @@ pub async fn run_subagent(
         let tool_input_buffers = stream_result.tool_input_buffers;
         let current_text_this_turn = stream_result.text;
         let current_thinking_this_turn = stream_result.thinking;
+
+        let response_payload = serde_json::json!({
+            "blocks": &current_blocks,
+            "text": &current_text_this_turn,
+            "thinking": &current_thinking_this_turn,
+            "stopReason": &stream_result.stop_reason,
+        });
+        if let Err(err) = SubAgentMonitor::append_trace_event(
+            &app, &run_id, loop_count + 1, "response", &response_payload, Some(&model_id),
+            Some(stream_result.input_tokens), Some(stream_result.output_tokens),
+        ).await {
+            crate::jarvis_warn!("SUBAGENT", "failed to persist response trace: {}", err);
+        }
 
         let tool_calls: Vec<(String, String)> = tool_input_buffers
             .iter()
@@ -1110,6 +1135,19 @@ pub async fn run_subagent(
                 sub_output_tokens,
             )
             .await;
+
+            let trace_result = serde_json::json!({
+                "toolUseId": &result.tool_use_id,
+                "tool": &result.name,
+                "output": &result.output,
+                "isError": result.is_error,
+            });
+            if let Err(err) = SubAgentMonitor::append_trace_event(
+                &app, &run_id, loop_count + 1, "tool_result", &trace_result, Some(&model_id),
+                Some(sub_input_tokens), Some(sub_output_tokens),
+            ).await {
+                crate::jarvis_warn!("SUBAGENT", "failed to persist tool trace: {}", err);
+            }
 
             tool_results.push(ContentBlock::ToolResult {
                 tool_use_id: result.tool_use_id,

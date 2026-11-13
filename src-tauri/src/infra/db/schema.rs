@@ -4,13 +4,64 @@
 //!
 //! ## Key Exports
 //! - `init_schema()`: 初始化或升级 SQLite schema
+//! - `SCHEMA_VERSION`: 当前数据库结构版本
 //!
 //! ## Dependencies
 //! - External: `rusqlite`
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 23;
+pub const SCHEMA_VERSION: i64 = 25;
+
+/// v24：用子 Agent 逐轮轨迹替代仅归档溢出事件的旧表。
+fn migrate_v24_subagent_trace(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS subagent_events;
+         CREATE TABLE IF NOT EXISTS subagent_trace_runs (
+            run_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            parent_run_id TEXT,
+            label TEXT NOT NULL DEFAULT '',
+            started_at INTEGER NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+         );
+         CREATE TABLE IF NOT EXISTS subagent_trace_events (
+            event_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            loop_index INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            model TEXT,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            timestamp INTEGER NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES subagent_trace_runs(run_id) ON DELETE CASCADE,
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+         );
+         CREATE INDEX IF NOT EXISTS idx_subagent_trace_runs_session
+            ON subagent_trace_runs(session_id, started_at);
+         CREATE INDEX IF NOT EXISTS idx_subagent_trace_events_run_loop
+            ON subagent_trace_events(run_id, loop_index);",
+    )?;
+    Ok(())
+}
+
+/// v25：为子 Agent 轨迹索引保存稳定显示名称，便于按会话恢复子 Agent 列表。
+fn migrate_v25_subagent_trace_run_label(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let mut stmt = conn.prepare("PRAGMA table_info(subagent_trace_runs)")?;
+    let has_label = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(Result::ok)
+        .any(|column| column == "label");
+    if !has_label {
+        conn.execute(
+            "ALTER TABLE subagent_trace_runs ADD COLUMN label TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+    Ok(())
+}
 
 /// 删除废弃的旧 checkpoint 表（v3 迁移）
 fn migrate_v3_drop_deprecated_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -1329,6 +1380,14 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             migrate_v23_backfill_interrupt_kind(conn)
                 .map_err(|e| format!("v23 迁移失败: {}", e))?;
         }
+        if current_version < 24 {
+            migrate_v24_subagent_trace(conn)
+                .map_err(|e| format!("v24 迁移失败: {}", e))?;
+        }
+        if current_version < 25 {
+            migrate_v25_subagent_trace_run_label(conn)
+                .map_err(|e| format!("v25 迁移失败: {}", e))?;
+        }
     }
 
     conn.execute_batch(
@@ -1434,20 +1493,27 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
 
-        CREATE TABLE IF NOT EXISTS subagent_events (
+        CREATE TABLE IF NOT EXISTS subagent_trace_runs (
+            run_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            parent_run_id TEXT,
+            label TEXT NOT NULL DEFAULT '',
+            started_at INTEGER NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS subagent_trace_events (
             event_id TEXT PRIMARY KEY,
             run_id TEXT NOT NULL,
             session_id TEXT NOT NULL,
+            loop_index INTEGER NOT NULL,
             event_type TEXT NOT NULL,
-            message TEXT NOT NULL,
-            tool TEXT,
-            input_summary TEXT,
-            output_summary TEXT,
-            error TEXT,
-            loop_count INTEGER NOT NULL,
-            input_tokens INTEGER NOT NULL,
-            output_tokens INTEGER NOT NULL,
+            payload_json TEXT NOT NULL,
+            model TEXT,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
             timestamp INTEGER NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES subagent_trace_runs(run_id) ON DELETE CASCADE,
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
 
@@ -1557,6 +1623,8 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_agent_runs_session_started ON agent_runs(session_id, started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_agent_run_events_run_loop ON agent_run_events(run_id, loop_index);
         CREATE INDEX IF NOT EXISTS idx_agent_run_events_session_time ON agent_run_events(session_id, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_subagent_trace_runs_session ON subagent_trace_runs(session_id, started_at);
+        CREATE INDEX IF NOT EXISTS idx_subagent_trace_events_run_loop ON subagent_trace_events(run_id, loop_index);
         CREATE INDEX IF NOT EXISTS idx_session_context_snapshots_updated ON session_context_snapshots(updated_at DESC);
 
         CREATE INDEX IF NOT EXISTS idx_session_attachments_session ON session_attachments(session_id);

@@ -390,7 +390,6 @@ const switchToSession = async (id: string) => {
       events.loadAgentRunsFromBackend(id, { refreshHistory: false }),
       events.loadAgentRunEventsFromBackend(id),
       events.loadSubAgentRunsFromBackend(id),
-      events.loadSubAgentEventsFromBackend(id),
       events.loadContextSnapshotFromBackend(id),
     ]);
 
@@ -525,7 +524,6 @@ onMounted(async () => {
     events.loadAgentRunsFromBackend(undefined, { refreshHistory: false }),
     events.loadAgentRunEventsFromBackend(),
     events.loadSubAgentRunsFromBackend(),
-    events.loadSubAgentEventsFromBackend(),
     events.loadContextSnapshotFromBackend(),
   ]);
 

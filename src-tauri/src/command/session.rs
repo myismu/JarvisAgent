@@ -12,6 +12,7 @@
 //! - `recall_last_message()`: 撤回最后一条用户消息
 //! - `auto_name_session()`: 使用 LLM 自动生成会话名称（内部函数）
 //! - `list_agent_runs()` / `get_subagent_runs()`: Agent 运行记录查询
+//! - `list_subagent_trace_runs()`: 按会话查询持久化子 Agent 列表
 //! - `get_session_context_snapshot()`: 查询最近一次上下文 token 快照
 
 use crate::core::orchestration::{agent_run_repository, agent_runs};
@@ -1299,13 +1300,17 @@ pub async fn list_subagents(
 }
 
 #[tauri::command]
-pub async fn list_subagent_events(
-    session_id: Option<String>,
-    run_id: Option<String>,
-    monitor_state: tauri::State<'_, crate::core::orchestration::subagents::SubAgentMonitorState>,
-) -> Result<Vec<crate::core::orchestration::subagents::SubAgentEvent>, String> {
-    let monitor = monitor_state.0.lock().await;
-    Ok(monitor.list_events(session_id.as_deref(), run_id.as_deref()))
+pub async fn list_subagent_trace_runs(
+    session_id: String,
+) -> Result<Vec<crate::core::orchestration::subagents::SubAgentTraceRunSummary>, String> {
+    crate::core::orchestration::subagents::SubAgentMonitor::list_trace_runs(&session_id)
+}
+
+#[tauri::command]
+pub async fn list_subagent_trace_events(
+    run_id: String,
+) -> Result<Vec<crate::core::orchestration::subagents::SubAgentTraceEvent>, String> {
+    crate::core::orchestration::subagents::SubAgentMonitor::list_trace_events(&run_id)
 }
 
 #[tauri::command]

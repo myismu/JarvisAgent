@@ -1,3 +1,18 @@
+/**
+ * # agent.ts — Agent 前端状态与会话级轨迹索引
+ *
+ * 保存 Agent 运行态、循环事件以及按需加载的子 Agent 持久化轨迹索引。
+ *
+ * ## Key Exports
+ * - `useAgentStore()`: 提供 Agent 运行态与子 Agent 轨迹状态
+ *
+ * ## Dependencies
+ * - Internal: `../types`, `./session`
+ * - External: `pinia`, `vue`
+ *
+ * ## Constraints
+ * - 子 Agent 详细轨迹按需加载，列表只保存轻量索引
+ */
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import type {
@@ -5,7 +20,8 @@ import type {
   AgentRunLoopEvent,
   SessionContextSnapshot,
   SubAgentRun,
-  SubAgentEvent,
+  SubAgentTraceEvent,
+  SubAgentTraceRunSummary,
   TodoItem,
 } from "../types";
 import { useSessionStore } from "./session";
@@ -14,7 +30,9 @@ export const useAgentStore = defineStore("agent", () => {
   const agentRuns = ref<Record<string, AgentRun>>({});
   const agentRunEventsByRun = ref<Record<string, AgentRunLoopEvent[]>>({});
   const subAgentRuns = ref<Record<string, SubAgentRun>>({});
-  const subAgentEventsByRun = ref<Record<string, SubAgentEvent[]>>({});
+  const subAgentTraceByRun = ref<Record<string, SubAgentTraceEvent[]>>({});
+  const subAgentTraceRunsBySession = ref<Record<string, SubAgentTraceRunSummary[]>>({});
+  const pinnedSubAgentTraceRunId = ref<string | null>(null);
   const contextSnapshots = ref<Record<string, SessionContextSnapshot>>({});
   const todosBySession = ref<Record<string, TodoItem[]>>({});
   const focusedTaskId = ref<number | null>(null);
@@ -46,6 +64,13 @@ export const useAgentStore = defineStore("agent", () => {
       });
   });
 
+  const currentSubAgentTraceRuns = computed(() => {
+    const session = useSessionStore();
+    const sessionId = session.activeSessionId;
+    if (!sessionId) return [];
+    return subAgentTraceRunsBySession.value[sessionId] ?? [];
+  });
+
   const activeSubAgentRuns = computed(() => {
     return currentSubAgentRuns.value.filter((run) => run.status === "running");
   });
@@ -72,8 +97,18 @@ export const useAgentStore = defineStore("agent", () => {
     return contextSnapshots.value[sessionId] ?? null;
   });
 
-  function getSubAgentEvents(runId: string): SubAgentEvent[] {
-    return subAgentEventsByRun.value[runId] ?? [];
+  function getSubAgentTrace(runId: string): SubAgentTraceEvent[] { return subAgentTraceByRun.value[runId] ?? []; }
+
+  function clearSubAgentTrace(runId: string) {
+    if (pinnedSubAgentTraceRunId.value === runId) return;
+    if (!Object.prototype.hasOwnProperty.call(subAgentTraceByRun.value, runId)) return;
+    const next = { ...subAgentTraceByRun.value };
+    delete next[runId];
+    subAgentTraceByRun.value = next;
+  }
+
+  function pinSubAgentTrace(runId: string | null) {
+    pinnedSubAgentTraceRunId.value = runId;
   }
 
   function getAgentRunEvents(runId: string): AgentRunLoopEvent[] {
@@ -116,16 +151,21 @@ export const useAgentStore = defineStore("agent", () => {
     agentRuns,
     agentRunEventsByRun,
     subAgentRuns,
-    subAgentEventsByRun,
+    subAgentTraceByRun,
+    subAgentTraceRunsBySession,
+    pinnedSubAgentTraceRunId,
     contextSnapshots,
     focusedTaskId,
     showAgentPanel,
     currentSubAgentRuns,
+    currentSubAgentTraceRuns,
     activeSubAgentRuns,
     currentAgentRuns,
     interruptedAgentRuns,
     currentContextSnapshot,
-    getSubAgentEvents,
+    getSubAgentTrace,
+    clearSubAgentTrace,
+    pinSubAgentTrace,
     getAgentRunEvents,
     upsertAgentRun,
     upsertContextSnapshot,

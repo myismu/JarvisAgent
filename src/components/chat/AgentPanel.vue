@@ -17,15 +17,17 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { emit, listen } from '@tauri-apps/api/event';
 import { useWindow } from '../../composables/useWindow';
+import { useAgentEvents } from '../../composables/useAgentEvents';
 import { useSessionStore } from '../../stores/session';
 import { useAgentStore } from '../../stores/agent';
 import { usePermissionStore } from '../../stores/permission';
-import type { BackgroundTask, PlanDocument, SessionContextSnapshot, SubAgentEvent } from '../../types';
+import type { BackgroundTask, PlanDocument, SessionContextSnapshot, SubAgentTraceEvent } from '../../types';
 import ContextInspector from './ContextInspector.vue';
 
 const session = useSessionStore();
 const agent = useAgentStore();
 const permission = usePermissionStore();
+const { loadSubAgentTraceFromBackend } = useAgentEvents();
 
 // ── 权限状态 ──
 const permissionAllowanceCount = ref(0)
@@ -176,8 +178,18 @@ const formatTokens = (tokens: number): string => {
 
 const toggleExpand = (runId: string) => {
   const next = new Set(expandedSubAgents.value);
-  next.has(runId) ? next.delete(runId) : next.add(runId);
+  if (next.has(runId)) {
+    next.delete(runId);
+    agent.clearSubAgentTrace(runId);
+  } else {
+    next.add(runId);
+    void loadSubAgentTraceFromBackend(runId);
+  }
   expandedSubAgents.value = next;
+};
+
+const openSubAgentChat = async (run: { runId: string; sessionId: string }) => {
+  await emit('open-subagent-chat', { runId: run.runId, sessionId: run.sessionId });
 };
 
 const phaseClass = (phase: string): string => `phase-${phase}`;
@@ -195,36 +207,36 @@ const phaseLabel = (phase: string): string => {
   }
 };
 
-const getToolTimeline = (runId: string): SubAgentEvent[] => {
-  return agent.getSubAgentEvents(runId)
-    .filter((ev) => ev.eventType === 'tool_call' || ev.eventType === 'tool_result');
-};
+const getToolTimeline = (runId: string): SubAgentTraceEvent[] => agent.getSubAgentTrace(runId);
 
 /**
  * 收起行上的「工具调用次数」。
  *
- * 只数 `tool_call`：一次调用会产生 `tool_call` + `tool_result` 两条事件，
- * 直接取时间线长度会把次数翻倍。数据来自内存中的子代理事件（与展开后的时间线同源）。
+ * 只数 `tool_result`：每次工具调用最终对应一条结果轨迹；详情展开后才按需加载该 run 的轨迹缓存。
  */
 const toolCallCount = (runId: string): number =>
-  agent.getSubAgentEvents(runId).filter((ev) => ev.eventType === 'tool_call').length;
+  agent.getSubAgentTrace(runId).filter((ev) => ev.eventType === 'tool_result').length;
 
 const copiedTimeline = ref<string | null>(null);
+const expandedTraceEvents = ref<Set<string>>(new Set());
+
+const toggleTraceEvent = (eventId: string) => {
+  const next = new Set(expandedTraceEvents.value);
+  if (next.has(eventId)) next.delete(eventId);
+  else next.add(eventId);
+  expandedTraceEvents.value = next;
+};
 
 const copyTimeline = async (runId: string) => {
   const events = getToolTimeline(runId);
   const text = events.map((ev) =>
-    `L${ev.loopCount} ${ev.eventType === 'tool_call' ? '▸' : '✓'} ${ev.tool}: ${ev.input || ev.output || ev.message}`
+    `L${ev.loopIndex} ${ev.eventType}: ${JSON.stringify(ev.payload)}`
   ).join('\n');
   try {
     await navigator.clipboard.writeText(text);
     copiedTimeline.value = runId;
     setTimeout(() => { copiedTimeline.value = null; }, 1500);
   } catch { /* ignore */ }
-};
-
-const toolEventIcon = (eventType: string): string => {
-  return eventType === 'tool_call' ? '▸' : eventType === 'tool_result' ? '✓' : '•';
 };
 
 const toolEventClass = (eventType: string): string => `tl-${eventType}`;
@@ -445,7 +457,7 @@ const backgroundStatusLabel = (status: string): string => {
                 :class="[itemStatusClass(run.status), { expanded: expandedSubAgents.has(run.runId) }]"
               >
                 <!-- 卡片头部（始终可见） -->
-                <div class="subagent-header" @click="toggleExpand(run.runId)">
+                <div class="subagent-header" @click="openSubAgentChat(run)" :title="t('monitor.subAgentChat.open')">
                   <span class="status-dot"></span>
                   <strong>{{ run.label || run.runId }}</strong>
                   <span class="agent-type-badge" :title="`Agent: ${run.agentRole}`">{{ agentRoleLabel(run.agentRole) }}</span>
@@ -459,7 +471,14 @@ const backgroundStatusLabel = (status: string): string => {
                     :title="t('monitor.toolTimeline')"
                   >{{ t('monitor.toolCalls', { count: toolCallCount(run.runId) }) }}</span>
                   <span v-if="run.status === 'running'" class="countdown-badge">&#9201; {{ formatCountdown(run) }}</span>
-                  <span class="expand-arrow">{{ expandedSubAgents.has(run.runId) ? '▾' : '▸' }}</span>
+                  <span class="open-chat-hint">{{ t('monitor.subAgentChat.open') }}</span>
+                  <button
+                    class="expand-arrow"
+                    type="button"
+                    :aria-expanded="expandedSubAgents.has(run.runId)"
+                    :title="expandedSubAgents.has(run.runId) ? '收起运行信息' : '展开运行信息'"
+                    @click.stop="toggleExpand(run.runId)"
+                  >{{ expandedSubAgents.has(run.runId) ? '▾' : '▸' }}</button>
                 </div>
 
                 <!-- 详情区域（点击展开） -->
@@ -489,10 +508,19 @@ const backgroundStatusLabel = (status: string): string => {
                       class="timeline-item"
                       :class="toolEventClass(event.eventType)"
                     >
-                      <span class="tl-loop">L{{ event.loopCount }}</span>
-                      <span class="tl-icon">{{ toolEventIcon(event.eventType) }}</span>
-                      <span class="tl-tool">{{ event.tool }}</span>
-                      <span class="tl-summary">{{ event.input || event.output || event.message }}</span>
+                      <span class="tl-loop">L{{ event.loopIndex }}</span>
+                      <span class="tl-icon">{{ event.eventType === 'tool_result' ? '✓' : '•' }}</span>
+                      <span class="tl-tool">{{ event.eventType }}</span>
+                      <pre
+                        class="tl-summary"
+                        :class="{ expanded: expandedTraceEvents.has(event.eventId) }"
+                        :title="expandedTraceEvents.has(event.eventId) ? '点击收起' : '点击查看完整内容'"
+                        role="button"
+                        tabindex="0"
+                        @click.stop="toggleTraceEvent(event.eventId)"
+                        @keydown.enter.stop="toggleTraceEvent(event.eventId)"
+                        @keydown.space.prevent.stop="toggleTraceEvent(event.eventId)"
+                      >{{ JSON.stringify(event.payload, null, 2) }}</pre>
                     </div>
                   </div>
                   <div v-else class="tool-timeline-empty">{{ t('monitor.noToolEvents') }}</div>
@@ -1236,10 +1264,25 @@ const backgroundStatusLabel = (status: string): string => {
 .expand-arrow {
   flex-shrink: 0;
   width: 16px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
   text-align: center;
   color: var(--text-muted);
   font-size: 0.66rem;
+  cursor: pointer;
   transition: transform 120ms ease;
+}
+.expand-arrow:hover { color: var(--text-main); background: var(--glass-bg-light); }
+
+.open-chat-hint {
+  flex-shrink: 0;
+  color: var(--accent-blue);
+  font-size: 0.68rem;
+  font-weight: 700;
+  opacity: 0.8;
 }
 
 /* 详情区域 */
@@ -1367,8 +1410,20 @@ const backgroundStatusLabel = (status: string): string => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
   color: var(--text-muted);
   font-size: 0.66rem;
+}
+
+.tl-summary.expanded {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
+  max-height: 320px;
+  padding: 5px 7px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bg-elevated) 65%, transparent);
+  text-overflow: clip;
 }
 
 /* Token 明细 */

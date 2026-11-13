@@ -1,16 +1,21 @@
 <!--
 # App.vue — 应用根组件
 
-组合 TitleBar / Sidebar / ChatArea 的整体布局，管理全局运行状态指示灯与明暗主题挂载。
+组合 TitleBar / Sidebar / ChatArea 的整体布局，管理全局运行状态、主对话与会话级子 Agent 视图切换。
+
+## Key Exports
+- `App`: 应用根界面与会话工作区
 
 ## Constraints
 - 状态灯语义：running/interrupted/cancelled/idle 用中性灰，finish=绿，error=红（仅致命错误）
+- 子 Agent 列表按当前会话的持久化轨迹索引恢复，详细事件按选中项懒加载
 -->
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, computed, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAgentEvents } from "./composables/useAgentEvents";
 import { usePreferences } from "./composables/usePreferences";
 import { useWindow } from "./composables/useWindow";
@@ -29,6 +34,8 @@ import PlanPreviewPanel from "./components/common/PlanPreviewPanel.vue";
 import ToastHost from "./components/common/ToastHost.vue";
 import SettingsPanel from "./components/settings/SettingsPanel.vue";
 import SkillManager from "./components/skill/SkillManager.vue";
+import SubAgentChatPane from "./components/chat/SubAgentChatPane.vue";
+import type { SubAgentConversationItem } from "./types";
 
 const showSettings = ref(false);
 const { t } = useI18n();
@@ -40,7 +47,7 @@ const session = useSessionStore();
 const chat = useChatStore();
 const agent = useAgentStore();
 const appView = useAppViewStore();
-const { initListeners } = useAgentEvents();
+const { initListeners, loadSubAgentRunsFromBackend, loadSubAgentTraceFromBackend } = useAgentEvents();
 const {
   openMonitorWindow,
   toggleMonitorWindow,
@@ -59,6 +66,101 @@ const hasUnseenFinish = ref(false);
 let unlistenMonitorWindowClosed: (() => void) | null = null;
 let unwatchWindowState: (() => void) | null = null;
 let unlistenSessionCompacted: UnlistenFn | null = null;
+let unlistenSubAgentChatRequested: UnlistenFn | null = null;
+const activeConversationTab = ref<'main' | 'subagents'>('main');
+const activeSubAgentRunId = ref<string | null>(null);
+const selectedSubAgentBySession = ref<Record<string, string>>({});
+
+const subAgentConversationItems = computed<SubAgentConversationItem[]>(() =>
+  agent.currentSubAgentTraceRuns.map((summary) => {
+    const liveRun = agent.subAgentRuns[summary.runId];
+    return {
+      ...summary,
+      label: liveRun?.label || summary.label || summary.runId,
+      status: liveRun?.status ?? 'saved',
+      phase: liveRun?.phase ?? 'finalizing',
+      loopCount: liveRun?.loopCount ?? summary.loopCount,
+      maxLoops: liveRun?.maxLoops ?? 0,
+      currentTool: liveRun?.currentTool ?? null,
+      inputTokens: liveRun?.inputTokens ?? 0,
+      outputTokens: liveRun?.outputTokens ?? 0,
+      error: liveRun?.error ?? null,
+      summary: liveRun?.summary ?? null,
+      promptPreview: liveRun?.promptPreview,
+    };
+  }),
+);
+
+const selectedSubAgent = computed(() =>
+  subAgentConversationItems.value.find((item) => item.runId === activeSubAgentRunId.value) ?? null,
+);
+const activeSubAgentTrace = computed(() =>
+  selectedSubAgent.value ? agent.getSubAgentTrace(selectedSubAgent.value.runId) : [],
+);
+
+const selectSubAgent = (runId: string) => {
+  const item = subAgentConversationItems.value.find((entry) => entry.runId === runId);
+  if (!item) return;
+  activeConversationTab.value = 'subagents';
+  activeSubAgentRunId.value = runId;
+  selectedSubAgentBySession.value = {
+    ...selectedSubAgentBySession.value,
+    [item.sessionId]: runId,
+  };
+};
+
+const selectSubAgentView = async () => {
+  activeConversationTab.value = 'subagents';
+  const sessionId = session.activeSessionId;
+  const rememberedRunId = sessionId ? selectedSubAgentBySession.value[sessionId] : null;
+  const selected = subAgentConversationItems.value.find((item) => item.runId === rememberedRunId)
+    ?? subAgentConversationItems.value[0];
+  if (selected) selectSubAgent(selected.runId);
+};
+
+const openSubAgentChat = async (runId: string, sessionId: string) => {
+  await loadSubAgentRunsFromBackend(sessionId);
+  if (session.activeSessionId !== sessionId) return;
+  await selectSubAgent(runId);
+};
+
+const selectMainConversation = () => { activeConversationTab.value = 'main'; };
+
+let subAgentSessionLoadGeneration = 0;
+watch(() => session.activeSessionId, async (sessionId) => {
+  const generation = ++subAgentSessionLoadGeneration;
+  activeSubAgentRunId.value = null;
+  if (!sessionId) {
+    if (activeConversationTab.value === 'subagents') activeConversationTab.value = 'main';
+    return;
+  }
+
+  await loadSubAgentRunsFromBackend(sessionId);
+  if (generation !== subAgentSessionLoadGeneration || session.activeSessionId !== sessionId) return;
+
+  const entries = subAgentConversationItems.value;
+  const rememberedRunId = selectedSubAgentBySession.value[sessionId];
+  const selected = entries.find((item) => item.runId === rememberedRunId) ?? entries[0];
+  if (!selected) {
+    if (activeConversationTab.value === 'subagents') activeConversationTab.value = 'main';
+    return;
+  }
+  activeSubAgentRunId.value = selected.runId;
+  selectedSubAgentBySession.value = {
+    ...selectedSubAgentBySession.value,
+    [sessionId]: selected.runId,
+  };
+}, { immediate: true, flush: 'post' });
+
+watch([activeConversationTab, activeSubAgentRunId], ([tab, runId], [previousTab, previousRunId]) => {
+  agent.pinSubAgentTrace(tab === 'subagents' ? runId : null);
+  if (previousRunId && (previousRunId !== runId || (previousTab === 'subagents' && tab !== 'subagents'))) {
+    agent.clearSubAgentTrace(previousRunId);
+  }
+  if (tab === 'subagents' && runId && !Object.prototype.hasOwnProperty.call(agent.subAgentTraceByRun, runId)) {
+    void loadSubAgentTraceFromBackend(runId);
+  }
+}, { flush: 'post' });
 
 // 恢复持久化的 Agent 面板可见性
 agent.showAgentPanel = prefs.agentPanelVisible;
@@ -155,6 +257,14 @@ onMounted(async () => {
     } catch { /* ignore */ }
   });
   await initListeners();
+  unlistenSubAgentChatRequested = await listen<{ runId: string; sessionId: string }>("open-subagent-chat", (event) => {
+    const { runId, sessionId } = event.payload ?? {};
+    if (runId && sessionId) {
+      void openSubAgentChat(runId, sessionId).then(() => getCurrentWindow().setFocus()).catch((err) => {
+        console.error('打开子 Agent 对话失败:', err);
+      });
+    }
+  });
   if (agent.showAgentPanel) {
     try {
       await openMonitorWindow();
@@ -170,6 +280,7 @@ onBeforeUnmount(() => {
   unlistenMonitorWindowClosed?.();
   unwatchWindowState?.();
   unlistenSessionCompacted?.();
+  unlistenSubAgentChatRequested?.();
 });
 </script>
 
@@ -229,14 +340,50 @@ onBeforeUnmount(() => {
             <SkillManager />
           </template>
           <template v-else>
-            <ChatArea />
-            <PlanPreviewPanel />
-            <div class="floating-terminal-container">
-              <!-- 权限卡：贴输入框顶部 0px（Codex 风格）。放进本容器后，
-                   卡片高度变化由 TerminalInput 对容器的 ResizeObserver 自动测入
-                   --input-area-height，聊天流底部留白无需另行补偿 -->
-              <PermissionCard />
-              <TerminalInput />
+            <div class="conversation-workspace">
+              <div class="conversation-tabs" role="tablist" :aria-label="t('monitor.subAgentChat.title')">
+                <button
+                  class="conversation-tab parent-conversation-tab"
+                  :class="{ active: activeConversationTab === 'main' }"
+                  role="tab"
+                  :aria-selected="activeConversationTab === 'main'"
+                  @click="selectMainConversation"
+                >
+                  <span>{{ t('monitor.subAgentChat.parentConversation') }}</span>
+                </button>
+                <button
+                  v-if="subAgentConversationItems.length"
+                  class="conversation-tab parent-conversation-tab"
+                  :class="{ active: activeConversationTab === 'subagents' }"
+                  role="tab"
+                  :aria-selected="activeConversationTab === 'subagents'"
+                  @click="selectSubAgentView"
+                >
+                  <span>{{ t('monitor.subAgentChat.subAgents') }}</span>
+                  <span class="conversation-tab-count">{{ t('monitor.subAgentChat.subAgentCount', { count: subAgentConversationItems.length }) }}</span>
+                </button>
+              </div>
+              <div class="conversation-view">
+                <section class="primary-chat-pane" v-show="activeConversationTab === 'main'">
+                  <ChatArea />
+                  <PlanPreviewPanel />
+                  <div class="floating-terminal-container">
+                    <!-- 权限卡：贴输入框顶部 0px（Codex 风格）。放进本容器后，
+                         卡片高度变化由 TerminalInput 对容器的 ResizeObserver 自动测入
+                         --input-area-height，聊天流底部留白无需另行补偿 -->
+                    <PermissionCard />
+                    <TerminalInput />
+                  </div>
+                </section>
+                <SubAgentChatPane
+                  v-if="activeConversationTab === 'subagents'"
+                  :runs="subAgentConversationItems"
+                  :active-run-id="activeSubAgentRunId"
+                  :run="selectedSubAgent"
+                  :events="activeSubAgentTrace"
+                  @select-run="selectSubAgent"
+                />
+              </div>
             </div>
           </template>
         </div>
@@ -288,6 +435,80 @@ onBeforeUnmount(() => {
   min-height: 0;
   position: relative;
   z-index: 1;
+}
+
+.conversation-workspace {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.conversation-tabs {
+  height: 42px;
+  min-height: 42px;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 5px 8px 0;
+  overflow-x: auto;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+}
+
+.parent-conversation-tab.active { border-color: var(--glass-border); background: var(--bg-sidebar); color: var(--text-main); }
+
+.conversation-tab {
+  height: 36px;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.conversation-tab:hover { color: var(--text-main); background: var(--glass-bg-light); }
+.conversation-tab.active { color: var(--text-main); }
+.parent-conversation-tab { flex: 0 0 auto; }
+.conversation-tab-count {
+  margin-left: 2px;
+  padding: 1px 7px;
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: 999px;
+  background: var(--glass-bg-light);
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+
+.conversation-view {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.primary-chat-pane {
+  position: relative;
+  flex: 1 1 100%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .tab-bar {

@@ -1,7 +1,7 @@
 /**
  * # useAgentEvents.ts — Agent 事件监听与历史恢复
  *
- * 统一注册 Tauri 事件监听器，并从后端恢复主 Agent、子 Agent、计划文档和上下文快照状态。
+ * 统一注册 Tauri 事件监听器，恢复运行状态；子 Agent 的大体积逐轮轨迹按需从后端读取。
  *
  * ## Key Exports
  * - `useAgentEvents()`: 提供事件初始化与会话运行态恢复方法
@@ -42,7 +42,8 @@ import type {
   SessionContextSnapshot,
   SessionUsageUpdatedPayload,
   SubAgentRun,
-  SubAgentEvent,
+  SubAgentTraceEvent,
+  SubAgentTraceRunSummary,
 } from "../types";
 
 interface SessionCleanupPayload {
@@ -97,6 +98,8 @@ export function useAgentEvents() {
   const agent = useAgentStore();
   const perm = usePermissionStore();
   const dismissedInterruptedRuns = new Set<string>();
+  const subAgentTraceLoadVersion = new Map<string, number>();
+  const subAgentRunsLoads = new Map<string, Promise<void>>();
 
   function syncActiveSessionView(sessionId: string | null | undefined, followScroll = false) {
     if (sessionId === session.activeSessionId) {
@@ -250,43 +253,51 @@ export function useAgentEvents() {
   }
 
   async function loadSubAgentRunsFromBackend(sid?: string | null) {
+    const effectiveSid = sid ?? session.activeSessionId;
+    if (!effectiveSid) return;
+    const existingLoad = subAgentRunsLoads.get(effectiveSid);
+    if (existingLoad) return existingLoad;
+
+    const load = (async () => {
+      try {
+        const [runs, traceRuns] = await Promise.all([
+          invoke<SubAgentRun[]>("list_subagents", { sessionId: effectiveSid }),
+          invoke<SubAgentTraceRunSummary[]>("list_subagent_trace_runs", { sessionId: effectiveSid }),
+        ]);
+        const otherRuns = Object.fromEntries(
+          Object.entries(agent.subAgentRuns).filter(([, run]) => run.sessionId !== effectiveSid)
+        );
+        agent.subAgentRuns = {
+          ...otherRuns,
+          ...Object.fromEntries(runs.map((run) => [run.runId, run])),
+        };
+        agent.subAgentTraceRunsBySession = {
+          ...agent.subAgentTraceRunsBySession,
+          [effectiveSid]: traceRuns,
+        };
+      } catch (err) {
+        console.error("加载子 Agent 运行记录失败:", err);
+      }
+    })();
+    subAgentRunsLoads.set(effectiveSid, load);
     try {
-      const effectiveSid = sid ?? session.activeSessionId;
-      if (!effectiveSid) return;
-      const runs = await invoke<SubAgentRun[]>("list_subagents", { sessionId: effectiveSid });
-      const otherRuns = Object.fromEntries(
-        Object.entries(agent.subAgentRuns).filter(([, run]) => run.sessionId !== effectiveSid)
-      );
-      agent.subAgentRuns = {
-        ...otherRuns,
-        ...Object.fromEntries(runs.map((run) => [run.runId, run])),
-      };
-    } catch (err) {
-      console.error("加载子 Agent 运行记录失败:", err);
+      await load;
+    } finally {
+      if (subAgentRunsLoads.get(effectiveSid) === load) subAgentRunsLoads.delete(effectiveSid);
     }
   }
 
-  async function loadSubAgentEventsFromBackend(sid?: string | null) {
+  async function loadSubAgentTraceFromBackend(runId: string) {
+    const version = (subAgentTraceLoadVersion.get(runId) ?? 0) + 1;
+    subAgentTraceLoadVersion.set(runId, version);
+    agent.subAgentTraceByRun[runId] ??= [];
     try {
-      const effectiveSid = sid ?? session.activeSessionId;
-      if (!effectiveSid) return;
-      const events = await invoke<SubAgentEvent[]>("list_subagent_events", { sessionId: effectiveSid, runId: null });
-      const grouped = events.reduce<Record<string, SubAgentEvent[]>>((acc, item) => {
-        if (!acc[item.runId]) acc[item.runId] = [];
-        acc[item.runId].push(item);
-        return acc;
-      }, {});
-      for (const runEvents of Object.values(grouped)) {
-        runEvents.sort((a, b) => a.timestamp - b.timestamp);
+      const events = await invoke<SubAgentTraceEvent[]>("list_subagent_trace_events", { runId });
+      if (subAgentTraceLoadVersion.get(runId) === version && Object.prototype.hasOwnProperty.call(agent.subAgentTraceByRun, runId)) {
+        agent.subAgentTraceByRun[runId] = events;
       }
-      const otherEvents = Object.fromEntries(
-        Object.entries(agent.subAgentEventsByRun).filter(([, runEvents]) => {
-          return runEvents.length > 0 && runEvents[0].sessionId !== effectiveSid;
-        })
-      );
-      agent.subAgentEventsByRun = { ...otherEvents, ...grouped };
     } catch (err) {
-      console.error("加载子 Agent 事件历史失败:", err);
+      console.error("加载子 Agent 轨迹失败:", err);
     }
   }
 
@@ -775,22 +786,39 @@ export function useAgentEvents() {
       pendingSubAgentRuns[run.runId] = run;
       if (!subAgentFlushTimer) {
         subAgentFlushTimer = setTimeout(() => {
+          const flushedRuns = Object.values(pendingSubAgentRuns);
           agent.subAgentRuns = { ...agent.subAgentRuns, ...pendingSubAgentRuns };
+          const summariesBySession = { ...agent.subAgentTraceRunsBySession };
+          for (const updatedRun of flushedRuns) {
+            const sessionRuns = summariesBySession[updatedRun.sessionId] ?? [];
+            const index = sessionRuns.findIndex((item) => item.runId === updatedRun.runId);
+            const summary: SubAgentTraceRunSummary = {
+              runId: updatedRun.runId,
+              sessionId: updatedRun.sessionId,
+              parentRunId: index >= 0 ? sessionRuns[index].parentRunId : null,
+              label: updatedRun.label,
+              startedAt: updatedRun.startedAt,
+              loopCount: updatedRun.loopCount,
+            };
+            const nextRuns = [...sessionRuns];
+            if (index >= 0) nextRuns[index] = summary;
+            else nextRuns.push(summary);
+            summariesBySession[updatedRun.sessionId] = nextRuns.sort((a, b) => b.startedAt - a.startedAt);
+          }
+          agent.subAgentTraceRunsBySession = summariesBySession;
           pendingSubAgentRuns = {};
           subAgentFlushTimer = null;
         }, 2000);
       }
     });
 
-    // subagent event
-    await on<SubAgentEvent>("subagent-event", (event) => {
-      const item = event.payload;
-      if (!item?.runId) return;
-      const events = [...(agent.subAgentEventsByRun[item.runId] ?? []), item]
-        .sort((a, b) => a.timestamp - b.timestamp)
-        .slice(-300);
-      agent.subAgentEventsByRun = { ...agent.subAgentEventsByRun, [item.runId]: events };
+    await on<{runId:string}>("subagent-trace-updated", (event) => {
+      const runId = event.payload?.runId;
+      if (runId && Object.prototype.hasOwnProperty.call(agent.subAgentTraceByRun, runId)) {
+        void loadSubAgentTraceFromBackend(runId);
+      }
     });
+
 
     // checkpoint created
     await on<any>("checkpoint-created", async (event) => {
@@ -846,11 +874,10 @@ export function useAgentEvents() {
         agent.subAgentRuns = Object.fromEntries(
           Object.entries(agent.subAgentRuns).filter(([, run]) => run.sessionId !== deletedSessionId)
         );
-        agent.subAgentEventsByRun = Object.fromEntries(
-          Object.entries(agent.subAgentEventsByRun).filter(([, events]) => {
-            return events.some((item) => item.sessionId !== deletedSessionId);
-          })
-        );
+        const remainingTraceRuns = { ...agent.subAgentTraceRunsBySession };
+        delete remainingTraceRuns[deletedSessionId];
+        agent.subAgentTraceRunsBySession = remainingTraceRuns;
+        agent.subAgentTraceByRun = Object.fromEntries(Object.entries(agent.subAgentTraceByRun).filter(([, events]) => events.some((item) => item.sessionId !== deletedSessionId)));
         agent.clearContextSnapshot(deletedSessionId);
       }
 
@@ -876,7 +903,6 @@ export function useAgentEvents() {
           }
           await Promise.all([
             loadSubAgentRunsFromBackend(nextActiveSessionId),
-            loadSubAgentEventsFromBackend(nextActiveSessionId),
             loadPlanDocumentsFromBackend(nextActiveSessionId),
             loadAgentRunsFromBackend(nextActiveSessionId, { refreshHistory: false }),
             loadAgentRunEventsFromBackend(nextActiveSessionId),
@@ -926,7 +952,7 @@ export function useAgentEvents() {
   return {
     initListeners,
     loadSubAgentRunsFromBackend,
-    loadSubAgentEventsFromBackend,
+    loadSubAgentTraceFromBackend,
     loadPlanDocumentsFromBackend,
     loadTodosFromBackend,
     loadAgentRunsFromBackend,

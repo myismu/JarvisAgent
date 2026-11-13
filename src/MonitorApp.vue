@@ -33,7 +33,6 @@ const { locale } = useI18n();
 const {
   initListeners,
   loadSubAgentRunsFromBackend,
-  loadSubAgentEventsFromBackend,
   loadPlanDocumentsFromBackend,
   loadAgentRunsFromBackend,
   loadAgentRunEventsFromBackend,
@@ -67,7 +66,6 @@ const hydrateMonitorState = async (targetSessionId?: string | null) => {
 
   await Promise.all([
     loadSubAgentRunsFromBackend(activeSessionId),
-    loadSubAgentEventsFromBackend(activeSessionId),
     loadPlanDocumentsFromBackend(activeSessionId),
     loadAgentRunsFromBackend(activeSessionId, { refreshHistory: false }),
     loadAgentRunEventsFromBackend(activeSessionId),

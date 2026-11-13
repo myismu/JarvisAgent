@@ -1,8 +1,21 @@
-//! 子Agent监控模块 - 子Agent生命周期与状态追踪
+//! # subagents.rs — 子 Agent 生命周期、实时状态与持久化轨迹
 //!
-//! 管理子Agent的运行状态、事件记录、取消控制。
+//! 管理子Agent的运行状态、逐轮轨迹存储与取消控制。
 //! 通过 Tauri 事件系统向前端推送实时状态更新。
-//! 支持心跳检测、批量取消、事件历史记录。
+//! 支持心跳检测、批量取消和持久化轨迹查询。
+//!
+//! ## Key Exports
+//! - `SubAgentMonitor`: 管理运行态并提供 SQLite 轨迹查询
+//! - `SubAgentRun`: 子 Agent 实时运行状态
+//! - `SubAgentTraceRunSummary`: 按会话恢复列表所需的轻量索引
+//! - `SubAgentTraceEvent`: 单轮模型请求、回复和工具结果
+//!
+//! ## Dependencies
+//! - Internal: `crate::infra::db`
+//! - External: `serde`, `tokio`, `tokio-util`, `tauri`
+//!
+//! ## Constraints
+//! - 详细轨迹写入 SQLite；运行态只在进程内保留并通过事件推送
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -63,25 +76,33 @@ pub struct SubAgentRun {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SubAgentEvent {
+pub struct SubAgentTraceEvent {
     pub event_id: String,
     pub run_id: String,
     pub session_id: String,
+    pub loop_index: usize,
     pub event_type: String,
-    pub message: String,
-    pub tool: Option<String>,
-    pub input_summary: Option<String>,
-    pub output_summary: Option<String>,
-    pub error: Option<String>,
-    pub loop_count: usize,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
+    pub payload: serde_json::Value,
+    pub model: Option<String>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
     pub timestamp: u64,
+}
+
+/// 从 SQLite 恢复会话级子 Agent 列表所需的轻量索引信息。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubAgentTraceRunSummary {
+    pub run_id: String,
+    pub session_id: String,
+    pub parent_run_id: Option<String>,
+    pub label: String,
+    pub started_at: u64,
+    pub loop_count: usize,
 }
 
 pub struct SubAgentMonitor {
     pub runs: HashMap<String, SubAgentRun>,
-    pub events: HashMap<String, Vec<SubAgentEvent>>,
     pub cancel_tokens: HashMap<String, CancellationToken>,
 }
 
@@ -89,7 +110,6 @@ impl SubAgentMonitor {
     pub fn new() -> Self {
         Self {
             runs: HashMap::new(),
-            events: HashMap::new(),
             cancel_tokens: HashMap::new(),
         }
     }
@@ -123,26 +143,85 @@ impl SubAgentMonitor {
             .collect();
         for id in &expired {
             self.runs.remove(id);
-            self.events.remove(id);
             self.cancel_tokens.remove(id);
         }
     }
 
-    pub fn list_events(
-        &self,
-        session_id: Option<&str>,
-        run_id: Option<&str>,
-    ) -> Vec<SubAgentEvent> {
-        let mut events: Vec<SubAgentEvent> = self
-            .events
-            .iter()
-            .filter(|(rid, _)| run_id.map_or(true, |target| target == rid.as_str()))
-            .flat_map(|(_, events)| events.iter())
-            .filter(|event| session_id.map_or(true, |sid| event.session_id == sid))
-            .cloned()
-            .collect();
-        events.sort_by_key(|event| event.timestamp);
-        events
+    pub fn create_trace_run(session_id: &str, run_id: &str, parent_run_id: Option<&str>, label: &str, started_at: u64) -> Result<(), String> {
+        crate::infra::db::with_connection(|conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO subagent_trace_runs(run_id, session_id, parent_run_id, label, started_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![run_id, session_id, parent_run_id, label, started_at as i64],
+            ).map_err(|e| e.to_string())?;
+            Ok(())
+        })
+    }
+
+    pub fn list_trace_runs(session_id: &str) -> Result<Vec<SubAgentTraceRunSummary>, String> {
+        crate::infra::db::with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT r.run_id, r.session_id, r.parent_run_id, r.label, r.started_at,
+                        COALESCE(MAX(e.loop_index), 0),
+                        (SELECT request.payload_json
+                         FROM subagent_trace_events request
+                         WHERE request.run_id = r.run_id AND request.event_type = 'request'
+                         ORDER BY request.loop_index, request.timestamp
+                         LIMIT 1)
+                 FROM subagent_trace_runs r
+                 LEFT JOIN subagent_trace_events e ON e.run_id = r.run_id
+                 WHERE r.session_id = ?1
+                 GROUP BY r.run_id
+                 ORDER BY r.started_at DESC, r.run_id DESC",
+            ).map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([session_id], |row| {
+                let run_id: String = row.get(0)?;
+                let stored_label: String = row.get(3)?;
+                let first_request: Option<String> = row.get(6)?;
+                let inferred_label = first_request
+                    .as_deref()
+                    .and_then(infer_trace_label);
+                Ok(SubAgentTraceRunSummary {
+                    run_id,
+                    session_id: row.get(1)?,
+                    parent_run_id: row.get(2)?,
+                    label: if stored_label.trim().is_empty() {
+                        inferred_label.unwrap_or_else(|| "子 Agent".to_string())
+                    } else {
+                        stored_label
+                    },
+                    started_at: row.get::<_, i64>(4)?.max(0) as u64,
+                    loop_count: row.get::<_, i64>(5)?.max(0) as usize,
+                })
+            }).map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        })
+    }
+
+    pub async fn append_trace_event(app: &tauri::AppHandle, run_id: &str, loop_index: usize, event_type: &str,
+        payload: &serde_json::Value, model: Option<&str>, input_tokens: Option<u64>, output_tokens: Option<u64>) -> Result<(), String> {
+        let state = app.try_state::<SubAgentMonitorState>().ok_or_else(|| "Subagent monitor is not initialized".to_string())?;
+        let session_id = state.0.lock().await.runs.get(run_id).map(|r| r.session_id.clone())
+            .ok_or_else(|| format!("Subagent run {} not found", run_id))?;
+        let payload_json = serde_json::to_string(payload).map_err(|e| e.to_string())?;
+        let timestamp = now_millis();
+        crate::infra::db::with_connection(|conn| {
+            conn.execute("INSERT INTO subagent_trace_events(event_id, run_id, session_id, loop_index, event_type, payload_json, model, input_tokens, output_tokens, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![format!("sat_{}", uuid::Uuid::new_v4().simple()), run_id, session_id, loop_index as i64, event_type, payload_json, model, input_tokens.map(|v| v as i64), output_tokens.map(|v| v as i64), timestamp as i64]).map_err(|e| e.to_string())?;
+            Ok(())
+        })?;
+        let _ = app.emit("subagent-trace-updated", serde_json::json!({"runId":run_id,"loopIndex":loop_index}));
+        Ok(())
+    }
+
+    pub fn list_trace_events(run_id: &str) -> Result<Vec<SubAgentTraceEvent>, String> {
+        crate::infra::db::with_connection(|conn| {
+            let mut stmt = conn.prepare("SELECT event_id, run_id, session_id, loop_index, event_type, payload_json, model, input_tokens, output_tokens, timestamp FROM subagent_trace_events WHERE run_id=?1 ORDER BY loop_index, timestamp").map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([run_id], |row| {
+                let json: String = row.get(5)?;
+                Ok(SubAgentTraceEvent { event_id: row.get(0)?, run_id: row.get(1)?, session_id: row.get(2)?, loop_index: row.get::<_, i64>(3)? as usize, event_type: row.get(4)?, payload: serde_json::from_str(&json).unwrap_or(serde_json::Value::Null), model: row.get(6)?, input_tokens: row.get::<_, Option<i64>>(7)?.map(|v| v as u64), output_tokens: row.get::<_, Option<i64>>(8)?.map(|v| v as u64), timestamp: row.get::<_, i64>(9)? as u64 })
+            }).map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        })
     }
 
     /// 启动子Agent运行
@@ -158,6 +237,7 @@ impl SubAgentMonitor {
         label: Option<String>,
         agent_role: String,
         max_loops: usize,
+        parent_run_id: Option<String>,
     ) -> String {
         let run_id = format!("sa_{}", uuid::Uuid::new_v4().to_string()[..8].to_string());
         let now = now_millis();
@@ -196,6 +276,9 @@ impl SubAgentMonitor {
             monitor.cancel_tokens.insert(run_id.clone(), cancel_token);
         }
 
+        if let Err(err) = Self::create_trace_run(session_id, &run_id, parent_run_id.as_deref(), &run.label, now) {
+            crate::jarvis_warn!("SUBAGENT", "failed to create trace run: {}", err);
+        }
         emit_update(app, &run);
         Self::push_event(
             app,
@@ -563,16 +646,8 @@ impl SubAgentMonitor {
         let Some(run) = monitor.runs.get(run_id) else {
             return "子 Agent 已结束。".to_string();
         };
-        let events = monitor.events.get(run_id).cloned().unwrap_or_default();
-        let tool_count = events
-            .iter()
-            .filter(|event| event.event_type == "tool_call")
-            .count();
-        let last_tool = events
-            .iter()
-            .rev()
-            .find_map(|event| event.tool.as_ref())
-            .cloned();
+        let tool_count = 0usize;
+        let last_tool: Option<String> = None;
         let total_tokens = run.input_tokens + run.output_tokens;
 
         if let Some(err) = error {
@@ -599,123 +674,22 @@ impl SubAgentMonitor {
         )
     }
 
-    /// 子 Agent 事件持久化到 SQLite，进程退出后可恢复
-    fn persist_subagent_events(events: &[SubAgentEvent]) {
-        for event in events {
-            let _ = crate::infra::db::with_connection(|conn| {
-                conn.execute(
-                    "INSERT OR IGNORE INTO subagent_events(
-                        event_id, run_id, session_id, event_type, message, tool,
-                        input_summary, output_summary, error, loop_count,
-                        input_tokens, output_tokens, timestamp
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                    rusqlite::params![
-                        event.event_id,
-                        event.run_id,
-                        event.session_id,
-                        event.event_type,
-                        event.message,
-                        event.tool,
-                        event.input_summary,
-                        event.output_summary,
-                        event.error,
-                        event.loop_count as i64,
-                        event.input_tokens as i64,
-                        event.output_tokens as i64,
-                        event.timestamp as i64,
-                    ],
-                )
-                .map_err(|e| e.to_string())?;
-                Ok(())
-            });
-        }
-    }
-
-    /// 从 SQLite 加载指定 run_id 的历史事件
-    pub fn load_persisted_events(run_id: &str) -> Vec<SubAgentEvent> {
-        crate::infra::db::with_connection(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT event_id, run_id, session_id, event_type, message, tool,
-                            input_summary, output_summary, error, loop_count,
-                            input_tokens, output_tokens, timestamp
-                     FROM subagent_events WHERE run_id = ?1 ORDER BY timestamp",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map([run_id], |row| {
-                    Ok(SubAgentEvent {
-                        event_id: row.get(0)?,
-                        run_id: row.get(1)?,
-                        session_id: row.get(2)?,
-                        event_type: row.get(3)?,
-                        message: row.get(4)?,
-                        tool: row.get(5)?,
-                        input_summary: row.get(6)?,
-                        output_summary: row.get(7)?,
-                        error: row.get(8)?,
-                        loop_count: row.get::<_, i64>(9)? as usize,
-                        input_tokens: row.get::<_, i64>(10)? as u64,
-                        output_tokens: row.get::<_, i64>(11)? as u64,
-                        timestamp: row.get::<_, i64>(12)? as u64,
-                    })
-                })
-                .map_err(|e| e.to_string())?;
-            Ok(rows.filter_map(|r| r.ok()).collect())
-        })
-        .unwrap_or_default()
-    }
-
     async fn push_event(
-        app: &tauri::AppHandle,
-        run_id: &str,
-        event_type: &str,
-        message: String,
-        tool: Option<String>,
-        input_summary: Option<String>,
-        output_summary: Option<String>,
-        error: Option<String>,
-        loop_count: usize,
-        input_tokens: u64,
-        output_tokens: u64,
-    ) -> Option<SubAgentEvent> {
-        let state = app.try_state::<SubAgentMonitorState>()?;
-        let event = {
-            let mut monitor = state.0.lock().await;
-            let run = monitor.runs.get(run_id)?;
-            let event = SubAgentEvent {
-                event_id: format!("sae_{}", uuid::Uuid::new_v4().to_string()[..8].to_string()),
-                run_id: run_id.to_string(),
-                session_id: run.session_id.clone(),
-                event_type: event_type.to_string(),
-                message,
-                tool,
-                input_summary,
-                output_summary,
-                error,
-                loop_count: if loop_count == 0 {
-                    run.loop_count
-                } else {
-                    loop_count
-                },
-                input_tokens,
-                output_tokens,
-                timestamp: now_millis(),
-            };
-            let events = monitor.events.entry(run_id.to_string()).or_default();
-            events.push(event.clone());
-            if events.len() > 300 {
-                let overflow = events.len() - 300;
-                // 丢弃的事件持久化到 SQLite，防止彻底丢失
-                let drained: Vec<_> = events.drain(0..overflow).collect();
-                Self::persist_subagent_events(&drained);
-            }
-            event
-        };
-
-        let _ = app.emit("subagent-event", &event);
-        Some(event)
+        _app: &tauri::AppHandle,
+        _run_id: &str,
+        _event_type: &str,
+        _message: String,
+        _tool: Option<String>,
+        _input_summary: Option<String>,
+        _output_summary: Option<String>,
+        _error: Option<String>,
+        _loop_count: usize,
+        _input_tokens: u64,
+        _output_tokens: u64,
+    ) {
+        // Legacy call sites are removed as the UI migrates to persisted loop traces.
     }
+
 }
 
 pub struct SubAgentMonitorState(pub Arc<Mutex<SubAgentMonitor>>);
@@ -768,4 +742,38 @@ fn preview(value: &str, max_chars: usize) -> String {
         preview.push_str("...");
     }
     preview
+}
+
+fn infer_trace_label(payload_json: &str) -> Option<String> {
+    let payload: serde_json::Value = serde_json::from_str(payload_json).ok()?;
+    let messages = payload.get("messages")?.as_array()?;
+    for message in messages {
+        if message.get("role").and_then(serde_json::Value::as_str) != Some("user") {
+            continue;
+        }
+        let content = message.get("content")?;
+        let text = if let Some(text) = content.as_str() {
+            text.to_string()
+        } else if let Some(blocks) = content.as_array() {
+            blocks
+                .iter()
+                .filter_map(|block| {
+                    let kind = block.get("type").and_then(serde_json::Value::as_str);
+                    if matches!(kind, Some("text") | Some("context")) {
+                        block.get("text").and_then(serde_json::Value::as_str)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            String::new()
+        };
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !text.is_empty() {
+            return Some(preview(&text, 48));
+        }
+    }
+    None
 }

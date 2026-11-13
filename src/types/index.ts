@@ -1,3 +1,16 @@
+/**
+ * # index.ts — 前端跨模块共享的数据契约
+ *
+ * 定义会话、Agent、工具、运行轨迹和界面状态使用的 TypeScript 类型。
+ *
+ * ## Key Exports
+ * - `SessionMeta`: 会话列表与元数据结构
+ * - `AgentRun` / `SubAgentRun`: 主 Agent 与子 Agent 运行状态
+ * - `SubAgentTraceRunSummary` / `SubAgentTraceEvent`: 子 Agent 持久化轨迹索引与事件
+ *
+ * ## Constraints
+ * - 与 Rust/Tauri 序列化字段保持 camelCase 对齐
+ */
 // === 核心会话类型 ===
 
 export interface ProjectMeta {
@@ -474,29 +487,39 @@ export interface SubAgentRun {
   summary?: string | null;
 }
 
-export type SubAgentEventType =
-  | "start"
-  | "phase"
-  | "tool_call"
-  | "tool_result"
-  | "complete"
-  | "cancel"
-  | "error";
-
-export interface SubAgentEvent {
+export interface SubAgentTraceEvent {
   eventId: string;
   runId: string;
   sessionId: string;
-  eventType: SubAgentEventType | string;
-  message: string;
-  tool?: string | null;
-  input?: string | null;
-  output?: string | null;
-  error?: string | null;
+  loopIndex: number;
+  eventType: string;
+  payload: unknown;
+  model?: string | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  timestamp: number;
+}
+
+export interface SubAgentTraceRunSummary {
+  runId: string;
+  sessionId: string;
+  parentRunId?: string | null;
+  label: string;
+  startedAt: number;
   loopCount: number;
+}
+
+/** 子 Agent 视图中的会话级条目；saved 表示仅从持久化轨迹恢复，运行状态不再驻留内存。 */
+export interface SubAgentConversationItem extends SubAgentTraceRunSummary {
+  status: SubAgentStatus | "saved";
+  phase: SubAgentPhase;
+  maxLoops: number;
+  currentTool?: string | null;
   inputTokens: number;
   outputTokens: number;
-  timestamp: number;
+  error?: string | null;
+  summary?: string | null;
+  promptPreview?: string;
 }
 
 // === 检查点/快照类型（旧版） ===
