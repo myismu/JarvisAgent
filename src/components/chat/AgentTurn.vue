@@ -500,7 +500,8 @@ function toolStatusLabel(status: string): string {
   border-color: var(--glass-border-subtle);
   background: color-mix(in srgb, var(--text-muted) calc(5 * var(--agent-message-opacity) / 100), transparent);
 }
-.dev-log-body :deep(pre),`n.dev-log-body :deep(code) {
+.dev-log-body :deep(pre),
+.dev-log-body :deep(code) {
   background: transparent;
   padding: 0;
   border: none;
