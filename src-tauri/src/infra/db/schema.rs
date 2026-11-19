@@ -1381,8 +1381,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
                 .map_err(|e| format!("v23 迁移失败: {}", e))?;
         }
         if current_version < 24 {
-            migrate_v24_subagent_trace(conn)
-                .map_err(|e| format!("v24 迁移失败: {}", e))?;
+            migrate_v24_subagent_trace(conn).map_err(|e| format!("v24 迁移失败: {}", e))?;
         }
         if current_version < 25 {
             migrate_v25_subagent_trace_run_label(conn)

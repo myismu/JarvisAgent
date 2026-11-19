@@ -384,7 +384,13 @@ pub async fn run_subagent(
         .unwrap_or(crate::infra::types::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM);
 
     let parent_run_id = if let Some(manager) = app.try_state::<SessionManager>() {
-        manager.get_or_create(&session_id).await.active_run_id.lock().await.clone()
+        manager
+            .get_or_create(&session_id)
+            .await
+            .active_run_id
+            .lock()
+            .await
+            .clone()
     } else {
         None
     };
@@ -688,8 +694,17 @@ pub async fn run_subagent(
                 .unwrap_or(0)
         );
         if let Err(err) = SubAgentMonitor::append_trace_event(
-            &app, &run_id, loop_count + 1, "request", &req_json, Some(&model_id), None, None,
-        ).await {
+            &app,
+            &run_id,
+            loop_count + 1,
+            "request",
+            &req_json,
+            Some(&model_id),
+            None,
+            None,
+        )
+        .await
+        {
             crate::jarvis_warn!("SUBAGENT", "failed to persist request trace: {}", err);
         }
         crate::infra::debug_logger::debug_logger().log_request(
@@ -817,9 +832,17 @@ pub async fn run_subagent(
             "stopReason": &stream_result.stop_reason,
         });
         if let Err(err) = SubAgentMonitor::append_trace_event(
-            &app, &run_id, loop_count + 1, "response", &response_payload, Some(&model_id),
-            Some(stream_result.input_tokens), Some(stream_result.output_tokens),
-        ).await {
+            &app,
+            &run_id,
+            loop_count + 1,
+            "response",
+            &response_payload,
+            Some(&model_id),
+            Some(stream_result.input_tokens),
+            Some(stream_result.output_tokens),
+        )
+        .await
+        {
             crate::jarvis_warn!("SUBAGENT", "failed to persist response trace: {}", err);
         }
 
@@ -1120,9 +1143,17 @@ pub async fn run_subagent(
                 "isError": result.is_error,
             });
             if let Err(err) = SubAgentMonitor::append_trace_event(
-                &app, &run_id, loop_count + 1, "tool_result", &trace_result, Some(&model_id),
-                Some(sub_input_tokens), Some(sub_output_tokens),
-            ).await {
+                &app,
+                &run_id,
+                loop_count + 1,
+                "tool_result",
+                &trace_result,
+                Some(&model_id),
+                Some(sub_input_tokens),
+                Some(sub_output_tokens),
+            )
+            .await
+            {
                 crate::jarvis_warn!("SUBAGENT", "failed to persist tool trace: {}", err);
             }
 
