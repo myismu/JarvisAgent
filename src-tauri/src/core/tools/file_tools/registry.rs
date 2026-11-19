@@ -292,13 +292,13 @@ crate::define_tools! {
         },
         ToolDef {
             name: "ListDirectory",
-            description: "列出指定目录下的所有文件和文件夹",
+            description: "列出目录当前一层的内容（非递归；跳过依赖/构建目录，最多 200 项）",
             search_hint: "list directory folder files ls",
             category: "文件操作",
             should_defer: false,
             schema: json!({
                 "name": "ListDirectory",
-                "description": "列出指定目录下的所有文件和文件夹。",
+                "description": "列出指定目录当前一层的内容（非递归）。依赖/构建目录（node_modules、target、dist）会被跳过；超过 200 项时截断并提示；需要按名称/扩展名筛选时用 FindFiles。",
                 "input_schema": {
                     "type": "object",
                     "properties": {

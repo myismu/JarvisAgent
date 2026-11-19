@@ -376,7 +376,7 @@ Rust emit("chat-content")  ──→ useAgentEvents.listen() ──→ sessionSt
 |------|------|------|
 | 文件读取 | ReadFile, ReadFileSkeleton | 读文件全文/骨架，支持行号范围 |
 | 文件写入 | WriteFile, EditFile, ApplyPatch, DeleteFile, RenameFile | 写文件、搜索替换编辑、应用 diff、删除（含目录）、重命名 |
-| 目录 | ListDirectory, SearchRepo | 列目录、生成仓库地图 |
+| 目录 | ListDirectory, SearchRepo | 列目录（单层，含截断防护）、生成仓库地图 |
 | 搜索 | SearchText, FindFiles | 文本搜索（grep）、文件名搜索（glob） |
 | 符号 | FindSymbol, ReadSymbol, FindReferences, CodeSearch | 符号定位、读定义、查引用 |
 | Shell | RunCommand, CheckBackgroundCommand | 命令执行（含 run_in_background 后台模式）、后台状态检查（git 读写统一走 RunCommand） |
