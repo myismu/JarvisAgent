@@ -37,19 +37,69 @@ pub fn try_agent_home() -> Option<&'static PathBuf> {
     AGENT_HOME_DIR.get()
 }
 
+/// 解析数据根目录。规则按"运行形态"分档，避免开发版与安装版共用同一份数据：
+///
+/// 1. `JARVIS_DATA_DIR` 环境变量：测试 / CI / 用隔离数据验证安装包时的最高优先级；
+/// 2. 开发构建（debug）：沿用仓库内 `data/`（cwd 探测），保持开发体验，数据可随手删；
+/// 3. 便携模式（release + exe 同目录存在 `portable.flag`）：数据放 exe 旁 `data/`，拷走即迁移；
+/// 4. 正式安装版（release 默认）：平台标准用户目录（Windows 为 `%LOCALAPPDATA%\com.jarvis.agent`），
+///    与安装目录分离——更新与卸载只动程序，用户数据不受影响。
 fn detect_data_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("JARVIS_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
+
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    if cwd.join("src-tauri").join("Cargo.toml").exists() {
-        cwd.join("data")
-    } else if cwd.join("Cargo.toml").exists() && cwd.join("src").join("lib.rs").exists() {
-        cwd.parent()
-            .map(|p| p.join("data"))
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(PathBuf::from));
+
+    #[cfg(debug_assertions)]
+    {
+        if cwd.join("src-tauri").join("Cargo.toml").exists() {
+            return cwd.join("data");
+        }
+        if cwd.join("Cargo.toml").exists() && cwd.join("src").join("lib.rs").exists() {
+            return cwd
+                .parent()
+                .map(|p| p.join("data"))
+                .unwrap_or_else(|| cwd.join("data"));
+        }
+        return exe_dir
+            .map(|d| d.join("data"))
+            .unwrap_or_else(|| cwd.join("data"));
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        if let Some(ref exe_dir) = exe_dir {
+            if exe_dir.join("portable.flag").exists() {
+                return exe_dir.join("data");
+            }
+        }
+        if let Some(base) = platform_data_dir() {
+            return base.join("com.jarvis.agent");
+        }
+        exe_dir
+            .map(|d| d.join("data"))
             .unwrap_or_else(|| cwd.join("data"))
-    } else {
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("data")))
-            .unwrap_or_else(|| cwd.join("data"))
+    }
+}
+
+/// 平台标准的数据根（不含应用标识）。Windows 取 `%LOCALAPPDATA%`，其他平台取 XDG data 目录。
+#[cfg(not(debug_assertions))]
+fn platform_data_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
+            return Some(PathBuf::from(dir));
+        }
+        std::env::var_os("USERPROFILE")
+            .map(|profile| PathBuf::from(profile).join("AppData").join("Local"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("share"))
     }
 }
 
@@ -104,6 +154,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_window_state::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             core::agent::ask_jarvis,
             core::agent::resume_jarvis,

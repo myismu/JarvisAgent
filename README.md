@@ -62,13 +62,23 @@ Tauri 2 + Rust + Vue 3 · 12 家厂商 93 个模型 · 135 个 Rust 模块 / 544
 pnpm install          # 安装前端依赖
 pnpm tauri dev        # 开发模式（热更新）
 pnpm build            # 前端类型检查与构建：vue-tsc --noEmit && vite build
-pnpm tauri build      # 生产构建
+pnpm tauri build      # 生产构建（本地打包需先设置更新签名私钥，见下）
 cargo test            # Rust 测试（在 src-tauri/ 下运行）
+```
+
+本地打包安装包前需要载入更新签名私钥（未设置时 `createUpdaterArtifacts` 会拒绝打包；CI 发版由 GitHub Secrets 提供，不需要本地设置）：
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content "$env:USERPROFILE\.tauri\jarvisagent.key" -Raw
+```
+
+```powershell
+pnpm tauri build
 ```
 
 ## 配置
 
-首次运行点击设置按钮配置。设置面板分四个页签：常规 / 预设 / 提示词 / 工具。
+首次运行点击设置按钮配置。设置面板分五个页签：常规 / 预设 / 提示词 / 工具 / 关于。
 
 1. **API Key** — LLM API 密钥
 2. **Base URL** — API 端点地址（按 API 格式自动补全 `/chat/completions` 或 `/messages` 路径）
@@ -209,7 +219,7 @@ JarvisAgent/
 │                                     # + claudecode_tools（Claude Code 工具源码参考）
 │                                     # + 教程页（rust / py-ts）+ 面试准备页
 ├── doc/                              # 架构与设计文档
-├── data/                             # 运行期数据（SQLite / 配置 / 提示词覆盖 / 授权 / 回收站 / 日志）
+├── data/                             # 开发构建运行期数据（SQLite / 配置 / 提示词覆盖 / 授权 / 回收站 / 日志）；安装版数据在 %LOCALAPPDATA%\com.jarvis.agent
 ├── index.html / monitor.html         # Vite 双入口
 └── package.json / pnpm-workspace.yaml
 ```

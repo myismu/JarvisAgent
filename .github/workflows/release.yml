@@ -44,6 +44,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         with:
           tagName: ${{ github.ref_name }}   # 把 Release 挂到触发本次运行的标签上
           releaseName: "JarvisAgent v__VERSION__"   # __VERSION__ 自动替换为 tauri.conf.json 里的版本号

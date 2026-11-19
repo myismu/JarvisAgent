@@ -32,12 +32,16 @@ import TerminalInput from "./components/chat/TerminalInput.vue";
 import PermissionCard from "./components/chat/PermissionCard.vue";
 import PlanPreviewPanel from "./components/common/PlanPreviewPanel.vue";
 import ToastHost from "./components/common/ToastHost.vue";
+import UpdatePrompt from "./components/common/UpdatePrompt.vue";
 import SettingsPanel from "./components/settings/SettingsPanel.vue";
+import { useUpdater } from "./composables/useUpdater";
 import SkillManager from "./components/skill/SkillManager.vue";
 import SubAgentChatPane from "./components/chat/SubAgentChatPane.vue";
 import type { SubAgentConversationItem } from "./types";
 
 const showSettings = ref(false);
+const updater = useUpdater();
+let updateCheckTimer: ReturnType<typeof setTimeout> | null = null;
 const { t } = useI18n();
 const prefs = usePreferences();
 const sidebarCollapsed = ref(prefs.sidebarCollapsed);
@@ -273,9 +277,18 @@ onMounted(async () => {
       agent.showAgentPanel = false;
     }
   }
+  // 启动后延迟检查更新：不阻塞启动；开发模式由 checkForUpdate 内部跳过
+  void updater.init();
+  updateCheckTimer = setTimeout(() => {
+    void updater.checkForUpdate(false);
+  }, 5000);
 });
 
 onBeforeUnmount(() => {
+  if (updateCheckTimer) {
+    clearTimeout(updateCheckTimer);
+    updateCheckTimer = null;
+  }
   removeFinishAcknowledgementListeners();
   unlistenMonitorWindowClosed?.();
   unwatchWindowState?.();
@@ -391,6 +404,9 @@ onBeforeUnmount(() => {
     </div>
 
     <SettingsPanel v-model="showSettings" />
+
+    <!-- 启动时发现新版本的更新提示（状态来自 useUpdater 单例） -->
+    <UpdatePrompt />
 
     <!-- 全局轻提示：挂一次即可（Teleport 到 body，不参与本组件布局） -->
     <ToastHost />

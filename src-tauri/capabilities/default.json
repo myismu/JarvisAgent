@@ -5,6 +5,7 @@
   "windows": ["main", "monitor"],
   "permissions": [
     "core:default",
+    "core:app:allow-version",
     "opener:default",
     "dialog:allow-open",
     "core:window:allow-close",
@@ -32,6 +33,8 @@
     "core:event:allow-listen",
     "core:event:allow-emit",
     "fs:default",
-    "fs:allow-read-file"
+    "fs:allow-read-file",
+    "updater:default",
+    "process:default"
   ]
 }

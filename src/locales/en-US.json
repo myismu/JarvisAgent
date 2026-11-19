@@ -434,7 +434,8 @@
       "general": "General",
       "presets": "Model Presets",
       "prompts": "Prompts",
-      "tools": "Tools"
+      "tools": "Tools",
+      "about": "About"
     },
     "tools": {
       "intro": "Turning a tool off means the model cannot see it at all — it leaves the tool list and disappears from the on-demand catalog. Changes apply to new sessions only: core tool schemas must stay constant for the whole session, otherwise every request loses its cache prefix. (Skill toggles apply immediately — they don't touch the schema.)",
@@ -452,6 +453,25 @@
       "hideSchema": "Collapse",
       "noParams": "No parameters",
       "required": "required"
+    },
+    "about": {
+      "title": "About & Updates",
+      "version": "Current version",
+      "check": "Check for updates",
+      "checking": "Checking…",
+      "upToDate": "You're on the latest version",
+      "devHint": "Update checks are unavailable in dev mode; verify with an installed build.",
+      "updateFoundTitle": "Update available",
+      "available": "Version v{version} is available (current v{current})",
+      "notes": "Release notes",
+      "noNotes": "No release notes were provided.",
+      "install": "Download & install",
+      "downloading": "Downloading {percent}%",
+      "downloadingUnknown": "Downloading…",
+      "installed": "Update installed. Restart to apply.",
+      "restart": "Restart app",
+      "later": "Later",
+      "updateError": "Operation failed: {error}"
     },
     "prompts": {
       "loading": "Loading...",
