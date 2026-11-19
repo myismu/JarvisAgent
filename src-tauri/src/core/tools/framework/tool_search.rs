@@ -435,7 +435,7 @@ crate::define_tools! {
                     "properties": {
                         "name": {
                             "type": "string",
-                            "description": "要执行的按需工具名称（如 'ReadFile'、'RunCommand'）"
+                            "description": "要执行的按需工具名称（如 'WriteFile'、'EditFile'），核心工具请直接调用，无需经 ExecuteTool"
                         },
                         "args": {
                             "type": "object",
@@ -675,5 +675,93 @@ mod tests {
         assert!(names.contains(&"StartBackgroundCommand"));
         assert!(names.contains(&"CheckBackgroundCommand"));
         assert!(!names.contains(&"RunGitCommand"));
+    }
+
+    /// 递归收集 JSON 中所有 `description` 字段的文本（含嵌套属性描述）。
+    fn collect_description_texts(value: &serde_json::Value, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, child) in map {
+                    if key == "description" {
+                        if let Some(text) = child.as_str() {
+                            out.push(text.to_string());
+                        }
+                    }
+                    collect_description_texts(child, out);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    collect_description_texts(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 按 ASCII 边界匹配工具名，避免 `ReadFile` 命中 `ReadFileSkeleton`。
+    fn mentions_tool_name(text: &str, name: &str) -> bool {
+        text.match_indices(name).any(|(idx, _)| {
+            let left_ok = text[..idx]
+                .chars()
+                .next_back()
+                .map_or(true, |ch| !ch.is_ascii_alphanumeric());
+            let right_ok = text[idx + name.len()..]
+                .chars()
+                .next()
+                .map_or(true, |ch| !ch.is_ascii_alphanumeric());
+            left_ok && right_ok
+        })
+    }
+
+    /// 不变量：工具发现协议的描述只能把仍在按需集合里的工具当作示例/执行目标。
+    ///
+    /// 背景（2026-11-20 评审）：shell 全家转正为核心工具后，ExecuteTool 的 `name`
+    /// 示例仍写着 'RunCommand'，GetToolCatalog 仍把 RunCommand 列为"非核心工具"示例。
+    /// 模型照描述调用 ExecuteTool("RunCommand")，运行期只会收到"是核心工具，请直接调用"——
+    /// 这正是 registry.rs 文档里记录过的"文档把模型引向做不到的方案"，且文字与注册表之间
+    /// 没有任何自动对账机制。此测试就是那道对账：
+    ///
+    /// - 扫描 GetToolCatalog / DiscoverTools / ExecuteTool 的 schema 中所有描述文本；
+    /// - 文本中出现的已注册工具名，除发现协议自身（三者互相引用是正常设计）外，
+    ///   必须 `should_defer == true`；引用核心工具即失败。
+    /// - LoadSkill 故意不在豁免名单里：GetToolCatalog 曾无条件推荐"技能通过 LoadSkill 加载"，
+    ///   用户关掉 LoadSkill 后这句就是死路（见 agent_tools/mod.rs 的 2026-09-21 注释），别写回去。
+    #[test]
+    fn test_discovery_protocol_descriptions_only_reference_deferred_tools() {
+        const PROTOCOL_TOOLS: &[&str] = &["GetToolCatalog", "DiscoverTools", "ExecuteTool"];
+        let registry = ToolRegistry::global();
+        let core = get_core_tool_definitions(&ToolFilter::allow_all());
+        let all_names = registry.all_tool_names();
+
+        for tool_name in PROTOCOL_TOOLS {
+            let definition = core
+                .iter()
+                .find(|def| def["name"].as_str() == Some(*tool_name))
+                .unwrap_or_else(|| panic!("{tool_name} 必须是核心工具（发现协议依赖它常驻）"));
+            let mut texts = Vec::new();
+            collect_description_texts(definition, &mut texts);
+
+            for referenced in &all_names {
+                if *referenced == *tool_name || PROTOCOL_TOOLS.contains(referenced) {
+                    continue;
+                }
+                if !texts
+                    .iter()
+                    .any(|text| mentions_tool_name(text, referenced))
+                {
+                    continue;
+                }
+                let is_deferred = registry
+                    .get(referenced)
+                    .map(|def| def.should_defer)
+                    .unwrap_or(false);
+                assert!(
+                    is_deferred,
+                    "{} 的描述引用了核心工具「{}」：发现协议的文案只能把按需工具当作示例或执行目标，否则模型会照着描述调用一个必然被拒绝的核心工具。请更新文案，或确认该工具的 should_defer 注册状态。",
+                    tool_name, referenced
+                );
+            }
+        }
     }
 }

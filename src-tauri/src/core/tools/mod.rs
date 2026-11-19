@@ -21,7 +21,7 @@
 //!   opaque 类型自递归、直接编译失败——详见 `dispatch_tool_call` 的文档注释，别合并。
 //!   附带效果：子代理不能再派子代理，从运行时过滤升级成了类型结构上的保证。
 //! - 子代理（SUBAGENT）不能调用 RunSubagent / ConsolidateMemory / CompactConversation / RunSubagentsSequentially
-//! - 写操作工具（WriteFile, EditFile, RunCommand 等）是按需工具，通过三步协议调用：GetToolCatalog → DiscoverTools → ExecuteTool
+//! - 写文件类工具（WriteFile、EditFile 等）是按需工具，通过三步协议调用：GetToolCatalog → DiscoverTools → ExecuteTool；shell 执行类（RunCommand 等）已转正为核心工具
 //! - 派子代理（RunSubagent / RunSubagentsSequentially）同为按需工具：规划模式下它们在工具目录里
 //!   根本不出现（`PLAN_BLOCKED_EXTRA`），编辑模式下才可发现
 //! - 兜底防护：CHAT/QUESTION 意图禁止写操作；规划模式按注册表名单拦下写工具

@@ -134,7 +134,7 @@ crate::define_tools! {
             // 末端原写"技能通过 LoadSkill 直接加载"，已删（2026-09-21）：
             // 那是 LoadSkill **自己**的用法说明，该在它的 schema 里（见 LoadSkill 的
             // schema_desc）。写在这里等于无条件推荐一个用户可能已经关掉的工具。
-            schema_desc: "获取当前可用的按需工具列表（按分类分组）和技能列表。当你需要使用非核心工具（如 WriteFile、EditFile、RunCommand 等写操作工具）或加载技能时，必须先调用此工具获取可用资源目录。按需工具通过 DiscoverTools + ExecuteTool 两步执行。",
+            schema_desc: "获取当前可用的按需工具列表（按分类分组）和技能列表。当你需要使用非核心工具（如 WriteFile、EditFile 等写文件工具）或加载技能时，必须先调用此工具获取可用资源目录。按需工具通过 DiscoverTools + ExecuteTool 两步执行。",
             category: "系统",
             read_only: true,
             concurrency_safe: true,
