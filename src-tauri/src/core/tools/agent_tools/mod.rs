@@ -263,7 +263,7 @@ crate::define_tools! {
             "RunSubagentsSequentially",
             desc: "启动任务调度器，根据依赖关系自动并行执行任务",
             hint: "run tasks scheduler execute parallel",
-            schema_desc: "【任务调度器】启动自动任务调度。系统将根据任务依赖关系（blocked_by）自动执行：无依赖的任务并行运行，阻塞任务等待前置完成后自动启动。创建完所有任务和依赖关系后调用此工具一次性调度执行。不要用于简单启动项目/运行命令；这类任务应直接用 StartBackgroundCommand/RunCommand。若调度返回失败，禁止继续创建重复任务，应复用现有任务 ID 修复或报告阻塞。",
+            schema_desc: "【任务调度器】启动自动任务调度。系统将根据任务依赖关系（blocked_by）自动执行：无依赖的任务并行运行，阻塞任务等待前置完成后自动启动。创建完所有任务和依赖关系后调用此工具一次性调度执行。不要用于简单启动项目/运行命令；这类任务应直接用 RunCommand（后台服务设 run_in_background=true）。若调度返回失败，禁止继续创建重复任务，应复用现有任务 ID 修复或报告阻塞。",
             category: "Agent 调度",
             defer: true,
         )

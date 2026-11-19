@@ -389,6 +389,30 @@ pub async fn dispatch_tool_call(
     framework::ToolCallResult::ok(output).with_usage(in_tokens, out_tokens)
 }
 
+/// 子代理禁后台服务的统一文案：返回 `Some(文本)` 表示这个调用不要执行。
+///
+/// 2026-11-20 合并 StartBackgroundCommand 后，这条限制从"子代理拿不到独立后台工具"
+/// 下沉为入参级规则：子代理可以跑前台命令，但 `run_in_background=true` 一律拒绝——
+/// 后台服务由主 Agent 统一管理（完成通知、任务面板、清理都以主会话为中心）。
+pub fn subagent_background_block_message(
+    name: &str,
+    input: &serde_json::Value,
+    intent: &str,
+) -> Option<String> {
+    if intent == "SUBAGENT"
+        && name == "RunCommand"
+        && input["run_in_background"].as_bool().unwrap_or(false)
+    {
+        Some(
+            "子代理不能启动后台服务（RunCommand + run_in_background=true 被拒绝）：\
+             后台服务由主 Agent 统一管理。请把需要后台运行的命令与目录返回给主 Agent。"
+                .to_string(),
+        )
+    } else {
+        None
+    }
+}
+
 /// 核心工具执行器（**不含** `RunSubagent`）：主 Agent 与子代理共用的一支。
 ///
 /// ExecuteTool 代理执行时直接调用此函数（避免与 `handle_tool_call` 递归）。
@@ -407,6 +431,11 @@ pub async fn dispatch_core_tool(
 ) -> framework::ToolCallResult {
     // 兜底防护：CHAT/QUESTION 意图，或 chat/plan 模式下禁止写操作
     if let Some(message) = mode_block_message(name, intent, work_mode) {
+        return framework::ToolCallResult::error(message);
+    }
+
+    // 兜底防护：子代理不得启动后台服务（入参级规则，见函数注释）
+    if let Some(message) = subagent_background_block_message(name, input, intent) {
         return framework::ToolCallResult::error(message);
     }
 
@@ -443,7 +472,6 @@ pub async fn dispatch_core_tool(
         // RunCommand：外层人审在上方 enforce 已完成（弹卡或会话允许放行），
         // 传 true = 跳过二道门重复弹卡（防同一次执行连弹两张卡）；直调路径才传 false 兜底
         "RunCommand" => shell_tools::run_shell(app, input, session_id, true).await,
-        "StartBackgroundCommand" => shell_tools::background_run(app, input, session_id).await,
         "CheckBackgroundCommand" => shell_tools::check_background(app, input, session_id).await,
 
         // 任务工具
@@ -656,6 +684,22 @@ mod write_guard_tests {
         let msg = mode_block_message("WriteFile", "ACTION", "plan").unwrap();
         assert!(msg.contains("派子代理"));
         assert!(msg.contains("ProposePlan"));
+    }
+
+    /// 合并 StartBackgroundCommand 后的入参级禁令（2026-11-20）：
+    /// 子代理跑前台命令不受影响，`run_in_background=true` 一律拒绝；
+    /// 主 Agent 的后台服务不受这条规则影响。
+    #[test]
+    fn subagent_cannot_start_background_service() {
+        let bg_input = serde_json::json!({ "command": "npm run dev", "run_in_background": true });
+        assert!(subagent_background_block_message("RunCommand", &bg_input, "SUBAGENT").is_some());
+
+        let fg_input = serde_json::json!({ "command": "cargo test" });
+        assert!(subagent_background_block_message("RunCommand", &fg_input, "SUBAGENT").is_none());
+
+        assert!(
+            subagent_background_block_message("RunCommand", &bg_input, "PROJECT_ACTION").is_none()
+        );
     }
 
     #[test]

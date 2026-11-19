@@ -49,6 +49,6 @@
 
 #### 后台任务
 
-- 你无权启动后台服务（StartBackgroundCommand 不可用），服务由主Agent统一管理
+- 你无权启动后台服务（RunCommand 的 run_in_background=true 会被直接拒绝），服务由主Agent统一管理
 - npm install 等一次性安装命令可用 RunCommand 执行（dir 参数指向子目录）
 - 禁止用 Start-Sleep / sleep 等待

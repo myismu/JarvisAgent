@@ -375,7 +375,7 @@ fn os_rules() -> Vec<PromptRule> {
 fn sandbox_rules(workspace: &str) -> Vec<PromptRule> {
     vec![PromptRule::new(PromptLevel::P1Important, "会话沙箱",
         format!(
-            "当前工作目录已锁定为沙箱：'{}'\n- 沙箱内你可以自由操作：读写文件、创建目录、执行命令，没有限制\n- 当前工作目录就是沙箱根目录，所有相对路径都从这个目录出发\n- 只需注意：不要访问沙箱外的路径（系统会自动拦截），沙箱内的操作完全自由\n- 绝对禁止使用 cd / Set-Location / chdir 切换目录（会被拦截）\n- 如果在子目录执行命令，用 dir 参数：\n  - StartBackgroundCommand(command=\"npm install\", dir=\"{}/subdir\")\n  - RunCommand 会在沙箱根目录执行，可用 --prefix 指定子目录",
+            "当前工作目录已锁定为沙箱：'{}'\n- 沙箱内你可以自由操作：读写文件、创建目录、执行命令，没有限制\n- 当前工作目录就是沙箱根目录，所有相对路径都从这个目录出发\n- 只需注意：不要访问沙箱外的路径（系统会自动拦截），沙箱内的操作完全自由\n- 绝对禁止使用 cd / Set-Location / chdir 切换目录（会被拦截）\n- 如果在子目录执行命令，用 RunCommand 的 dir 参数（前台与后台模式都支持）：\n  - RunCommand(command=\"npm install\", description=\"安装依赖\", dir=\"{}/subdir\")\n  - 启动长周期服务用 RunCommand(..., run_in_background=true)",
             workspace, workspace
         ),
     )]

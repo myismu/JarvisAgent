@@ -96,11 +96,11 @@ mod tests {
 
     #[test]
     fn background_tool_skips_long_running_warning() {
-        // 2026-09-19 沐拍板：StartBackgroundCommand 已经后台化，"建议 run_in_background"
-        // 的长周期警示对它是过期提醒，不该挡住帮批准档自动放行。
+        // 2026-09-19 沐拍板，2026-11-20 合并后口径不变：run_in_background=true 已经后台化，
+        // "建议 run_in_background" 的长周期警示对它是过期提醒，不该挡住帮批准档自动放行。
         let verdict = inspect_existing_guards(
-            "StartBackgroundCommand",
-            &json!({ "command": "npm run dev" }),
+            "RunCommand",
+            &json!({ "command": "npm run dev", "run_in_background": true }),
             None,
         );
         assert!(
@@ -427,11 +427,11 @@ mod tests {
             &write_cmd
         )
         .is_some());
-        // 起后台服务即使用只读命令也拒（起服务本身就是状态改变）
+        // 起后台服务即使用只读命令也拒（起服务本身就是状态改变）——合并后由入参派生
         let bg = facts_with(Some(ToolClass::Background), true);
         assert!(read_only_deny_reason(
-            "StartBackgroundCommand",
-            &json!({ "command": "npm run dev" }),
+            "RunCommand",
+            &json!({ "command": "npm run dev", "run_in_background": true }),
             &bg
         )
         .is_some());
@@ -467,6 +467,7 @@ impl PreparedFacts {
             existing_deny_reason: self.existing_deny_reason.clone(),
             existing_warning: self.warning.clone(),
             command_is_readonly: self.command_is_readonly,
+            background_run: self.class == Some(ToolClass::Background),
         }
     }
 }
@@ -474,16 +475,30 @@ impl PreparedFacts {
 /// 采集判定事实（含更新"本轮改过哪些文件"）。观察层与执行前判定共用此函数。
 pub async fn prepare_facts(ctx: &SessionContext, tool: &str, input: &Value) -> PreparedFacts {
     let policy = policy::policy_for(tool);
+
+    // 后台语义由入参派生（2026-11-20 合并 StartBackgroundCommand）：
+    // RunCommand 的 run_in_background=true 视同从前的 Background 类 ——
+    // 目标路径取 dir、权限卡片按"起后台服务"展示、只读保护直接拒绝。
+    let is_background_run =
+        tool == "RunCommand" && input["run_in_background"].as_bool().unwrap_or(false);
+    const BACKGROUND_PATH_FIELDS: &[&str] = &["dir"];
+    let path_fields: &[&str] = if is_background_run {
+        BACKGROUND_PATH_FIELDS
+    } else {
+        policy.map(|p| p.path_fields).unwrap_or(&[])
+    };
+
     let mut targets: Vec<String> = Vec::new();
-    if let Some(policy) = policy {
-        for field in policy.path_fields {
-            if let Some(path) = input[*field].as_str() {
-                targets.push(path.to_string());
-            }
+    for field in path_fields {
+        if let Some(path) = input[*field].as_str() {
+            targets.push(path.to_string());
         }
-        if let Some(patch_text) = policy.patch_field.and_then(|f| input[f].as_str()) {
-            targets.extend(policy::files_in_patch(patch_text));
-        }
+    }
+    if let Some(patch_text) = policy
+        .and_then(|p| p.patch_field)
+        .and_then(|field| input[field].as_str())
+    {
+        targets.extend(policy::files_in_patch(patch_text));
     }
     targets.dedup();
 
@@ -499,7 +514,11 @@ pub async fn prepare_facts(ctx: &SessionContext, tool: &str, input: &Value) -> P
         .cloned()
         .collect();
 
-    let class = policy.map(|p| p.class);
+    let class = if is_background_run {
+        Some(ToolClass::Background)
+    } else {
+        policy.map(|p| p.class)
+    };
     let files_in_call = if targets.is_empty() { 0 } else { targets.len() };
 
     let target_exists = match class {
@@ -615,12 +634,12 @@ fn inspect_existing_guards(
     if warning.is_none() {
         warning = security::get_destructive_warning(&command);
     }
-    // 2026-09-19 沐拍板：后台工具不背「长周期命令」警示——它已经后台化了，
-    // 警示自己建议的 `run_in_background: true` 已被满足；这条 Warn 留着唯一的效果
-    // 是挡住帮批准档自动放行（policy::judge 规则 4 要求 warning 为 none）并触发
-    // "每次必问、不给会话允许键"，纯属误伤。其余警示（sleep / 子表达式 / 破坏性
-    // 删除等）对后台工具照旧生效——硬边界不破。
-    if tool == "StartBackgroundCommand" {
+    // 2026-09-19 沐拍板，2026-11-20 合并后口径不变：后台模式（RunCommand +
+    // run_in_background=true）不背「长周期命令」警示——它已经后台化了，警示自己建议的
+    // `run_in_background: true` 已被满足；这条 Warn 留着唯一的效果是挡住帮批准档自动放行
+    // （policy::judge 规则 4 要求 warning 为 none）并触发"每次必问、不给会话允许键"，纯属误伤。
+    // 其余警示（sleep / 子表达式 / 破坏性删除等）对后台模式照旧生效——硬边界不破。
+    if tool == "RunCommand" && input["run_in_background"].as_bool().unwrap_or(false) {
         warning = warning.and_then(|msg| {
             let kept: Vec<&str> = msg
                 .lines()
@@ -1176,6 +1195,14 @@ pub fn read_only_deny_reason(tool: &str, input: &Value, facts: &PreparedFacts) -
     if ToolRegistry::is_write_tool_name(tool) {
         // 命令类要细分：只读命令仍然放行，否则只读保护会把"看一下 git log"也一起禁掉
         if tool == "RunCommand" {
+            // 后台模式先于只读命令判定：起服务本身就是状态改变，只读命令也不放行
+            // （沿用原 StartBackgroundCommand 的口径，2026-11-20 合并后由入参派生）
+            if input["run_in_background"].as_bool().unwrap_or(false) {
+                return Some(
+                    "只读保护已开启：本会话不允许启动后台服务（长周期、影响面大于一次命令）。"
+                        .to_string(),
+                );
+            }
             if facts.command_is_readonly {
                 return None;
             }
@@ -1184,12 +1211,6 @@ pub fn read_only_deny_reason(tool: &str, input: &Value, facts: &PreparedFacts) -
                 "只读保护已开启：命令「{}」不是只读命令，本会话不允许执行。",
                 command
             ));
-        }
-        if tool == "StartBackgroundCommand" {
-            return Some(
-                "只读保护已开启：本会话不允许启动后台服务（长周期、影响面大于一次命令）。"
-                    .to_string(),
-            );
         }
         return Some(format!(
             "只读保护已开启：{}（{}）会改动工作区，本会话不允许。",

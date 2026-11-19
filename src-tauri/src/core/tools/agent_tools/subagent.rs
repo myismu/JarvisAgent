@@ -72,7 +72,7 @@ fn summarize_tool_input(name: &str, input: &serde_json::Value) -> String {
             let sym = input["name"].as_str().unwrap_or("?");
             format!("{}", sym)
         }
-        "RunCommand" | "StartBackgroundCommand" => {
+        "RunCommand" => {
             let cmd = input["command"].as_str().unwrap_or("?");
             let truncated: String = cmd.chars().take(80).collect();
             if cmd.len() > 80 {

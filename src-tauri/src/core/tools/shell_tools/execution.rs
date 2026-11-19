@@ -255,13 +255,12 @@ pub async fn run_shell(
 
     // --- 2b. 解析 dir 参数（命令的工作目录；2026-09-21 新增）---
     //
-    // 为什么需要：RunCommand 原先恒在工作区根目录执行，而沙箱禁止 cd（上面刚拦），
-    // 子代理又没有 StartBackgroundCommand 权限 —— "在子目录跑 npm install" 根本无法
-    // 做到，但提示词两处都写着 RunCommand 有 dir（一直是悬空引用）。
+    // 背景：RunCommand 原先恒在工作区根目录执行（dir 是悬空引用），而沙箱禁止 cd，
+    // "在子目录跑 npm install" 根本无法做到。2026-11-20 起前后台模式统一按 dir 执行，
+    // 独立的后台工具 StartBackgroundCommand 已并入本工具（run_in_background=true）。
     //
-    // 校验口径与 StartBackgroundCommand 一致（见 background.rs）：沙箱会话下 dir 必须
-    // 落在工作区内；相对路径按工作区目录解析（复用 resolve_exec_path，避免
-    // "校验按 ws join、执行按进程 CWD"的沙箱逃逸）。
+    // 校验口径：沙箱会话下 dir 必须落在工作区内；相对路径按工作区目录解析
+    // （复用 resolve_exec_path，避免"校验按 ws join、执行按进程 CWD"的沙箱逃逸）。
     let exec_dir = match input["dir"]
         .as_str()
         .map(str::trim)
@@ -397,7 +396,7 @@ pub async fn run_shell(
 
     // --- 4. 后台模式 → 委托 BackgroundManager ---
     if run_in_bg {
-        let result = background_run_internal(app, cmd, &exec_dir).await;
+        let result = background_run_internal(app, cmd, &exec_dir, session_id).await;
         let output = if warnings.is_empty() {
             result
         } else {

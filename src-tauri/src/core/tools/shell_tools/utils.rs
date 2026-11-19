@@ -423,7 +423,7 @@ pub fn is_exit_code_error(cmd: &str, exit_code: i32) -> bool {
     semantics == "错误" || semantics == "失败" || semantics == "构建失败"
 }
 
-/// `dir` 参数的描述（RunCommand 与 StartBackgroundCommand 共用）。
+/// `dir` 参数的描述（RunCommand 前后台模式共用）。
 ///
 /// 为什么共用而不是各写一份：两个工具的 `dir` 是同一套语义与取值规则
 /// （尤其"要指向 package.json 所在子目录"那条），各写一份必然漂移 ——

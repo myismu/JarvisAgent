@@ -345,8 +345,8 @@ impl ToolRegistry {
                         | "UpdateTodos"
                         | "CompactConversation"
                         | "ConsolidateMemory"
-                        // 后台服务（主Agent 统一管理）
-                        | "StartBackgroundCommand"
+                        // 后台任务检查（启动入口已并入 RunCommand；子代理的后台禁令
+                        // 由 tools::subagent_background_block_message 在分发层按入参拦截）
                         | "CheckBackgroundCommand"
                 )
             }
@@ -366,7 +366,6 @@ impl ToolRegistry {
         "RenameFile",
         "ApplyPatch",
         "RunCommand",
-        "StartBackgroundCommand",
         "EditNotebook",
     ];
 

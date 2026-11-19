@@ -139,11 +139,10 @@ impl ToolClass {
     /// 覆盖范围：`CreateFile` / `ModifyContent` / `RunCommand` / `Background` / `Rename`。
     /// - 文件类：写操作走补丁暂存 + 快照回滚，旧内容找得回来；
     /// - 命令类：只放行"非危险"的（危险警示命中在规则 4 之前仍 Ask）；
-    /// - **`Background` 也在列**（2026-09-19 沐拍板调整）：帮批准档连后台服务也不再问——
-    ///   一是与 A 的档位语义自洽（"别烦我"），二是修补路径不一致（`RunCommand` 的
-    ///   `run_in_background=true` 已被 A 放行，同为"起服务"的 `StartBackgroundCommand`
-    ///   不应两种待遇）；带危险警示的后台命令仍必问（同一套 `inspect_existing_guards`）。
-    ///   请求审批档下后台**保持恒问**（每次都要人确认）。
+    /// - **`Background` 也在列**（2026-09-19 沐拍板调整；2026-11-20 合并独立后台工具后
+    ///   由 `RunCommand` + `run_in_background=true` 派生）：帮批准档连后台服务也不再问——
+    ///   与 A 的档位语义自洽（"别烦我"）；带危险警示的后台命令仍必问（同一套
+    ///   `inspect_existing_guards`）。请求审批档下后台**保持恒问**（每次都要人确认）。
     /// - **`Rename` 也在列**（2026-09-19 沐拍板"和 A 同逻辑"）：改名与编辑/覆盖完全同权——
     ///   `Patch::RenameFile` 在回滚系统完整支持（snapshot apply_patch / replay 精准清孤儿
     ///   路径把文件挪回原位 / patch 有专项测试），且它本就共享 edit_project 键
@@ -406,15 +405,6 @@ pub const TOOL_POLICIES: &[(&str, ToolPolicy)] = &[
             patch_field: None,
         },
     ),
-    (
-        "StartBackgroundCommand",
-        ToolPolicy {
-            class: ToolClass::Background,
-            path_fields: &["dir"],
-            command_field: Some("command"),
-            patch_field: None,
-        },
-    ),
     // ── 编排 / 会话 / 应用 ──
     (
         "CreateTask",
@@ -582,6 +572,12 @@ pub struct JudgementInput {
     pub existing_warning: Option<String>,
     /// 命令是不是"只读命令"（今天这类命令本来就免弹窗，新规则也应当直接放行）
     pub command_is_readonly: bool,
+    /// 本次调用是否是 RunCommand 的后台模式（run_in_background=true）。
+    ///
+    /// 2026-11-20 合并 StartBackgroundCommand 后，后台语义由入参派生：
+    /// judge() 据此把类别视同 Background（卡片文案"起后台服务"、只读保护直接拒绝），
+    /// 而不是再依赖一个独立的工具名。
+    pub background_run: bool,
 }
 
 /// 一次判定的结果
@@ -610,7 +606,14 @@ pub const BATCH_FILE_THRESHOLD: usize = 3;
 /// 7. 其余按档位：请求审批档问，帮我批准档放行
 pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDecision {
     let policy = policy_for(tool);
-    let class = policy.map(|p| p.class);
+    // 后台语义由入参派生（2026-11-20 合并 StartBackgroundCommand 后，后台服务唯一入口是
+    // RunCommand 的 run_in_background=true）：类别视同 Background，权限卡片按"起后台服务"
+    // 展示，只读保护与长周期警示的口径也跟着入参走，而不是再靠一个独立工具名。
+    let class = if input.background_run {
+        Some(ToolClass::Background)
+    } else {
+        policy.map(|p| p.class)
+    };
 
     // 1. 现有运行时检查（命令安全检查等）已经要拒绝
     if let Some(reason) = &input.existing_deny_reason {
@@ -634,7 +637,7 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
     }
 
     // 3. 未登记分类
-    let Some(policy) = policy else {
+    let Some(class_value) = class else {
         return ShadowDecision {
             class: None,
             outcome: Outcome::Ask,
@@ -643,7 +646,7 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
     };
 
     // 4. 默认就要问的类别
-    if policy.class.always_asks() {
+    if class_value.always_asks() {
         // 只读命令（Get-ChildItem 这类）本来就免弹窗，新规则同样直接放行，
         // 否则观察数据会把"免询问的只读命令"算成打扰次数
         if input.command_is_readonly {
@@ -657,13 +660,13 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
         // ⚠️ 危险警示命令不在这里放行——它在上面的只读判断之后、且规则 5 前仍需 Ask；
         //    为保持"危险永不自动放行"的硬边界，这里先挡一道：有警示就落到规则 5 去 Ask。
         if mode == ApprovalMode::AutoApprove
-            && policy.class.auto_approved_in_auto_mode()
+            && class_value.auto_approved_in_auto_mode()
             && input.existing_warning.is_none()
         {
             return ShadowDecision {
                 class,
                 outcome: Outcome::Allow,
-                reason: format!("{}（帮我批准档自动放行）", policy.class.label()),
+                reason: format!("{}（帮我批准档自动放行）", class_value.label()),
             };
         }
         // 原因只说"为什么要问你"（例如"跑命令"）。
@@ -672,7 +675,7 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
         return ShadowDecision {
             class,
             outcome: Outcome::Ask,
-            reason: policy.class.label().to_string(),
+            reason: class_value.label().to_string(),
         };
     }
 
@@ -691,7 +694,7 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
     // 批量（本次调用 ≥3 个文件 / 本轮第 3 个文件）**可以**被"本次会话都允许"吞掉：
     // 用户已经说过"这个目录里的改动我放心"，此时还要他第 3、4、5… 个文件各点一次，
     // 只会把人逼回"每次都点允许"，反而失去护栏的意义。
-    if policy.class.mutates_project() {
+    if class_value.mutates_project() {
         if input.files_in_call >= BATCH_FILE_THRESHOLD {
             return ShadowDecision {
                 class,
@@ -712,19 +715,19 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
     }
 
     // 7. 按档位
-    match (policy.class, mode) {
+    match (class_value, mode) {
         (ToolClass::CreateFile | ToolClass::ModifyContent, ApprovalMode::AutoApprove) => {
             ShadowDecision {
                 class,
                 outcome: Outcome::Allow,
-                reason: format!("{}（帮我批准档自动放行）", policy.class.label()),
+                reason: format!("{}（帮我批准档自动放行）", class_value.label()),
             }
         }
         (ToolClass::CreateFile | ToolClass::ModifyContent, ApprovalMode::RequestApproval) => {
             ShadowDecision {
                 class,
                 outcome: Outcome::Ask,
-                reason: format!("{}（请求审批档）", policy.class.label()),
+                reason: format!("{}（请求审批档）", class_value.label()),
             }
         }
         // 命令类在"帮我批准"档放行（规则 4 已拦截含警示的命令；此处是命令类无警示时的放行路径，
@@ -737,7 +740,7 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
         _ => ShadowDecision {
             class,
             outcome: Outcome::Allow,
-            reason: policy.class.label().to_string(),
+            reason: class_value.label().to_string(),
         },
     }
 }
@@ -851,24 +854,19 @@ mod tests {
 
     #[test]
     fn background_asks_in_request_mode_and_silent_in_auto_mode() {
-        // 2026-09-19 沐拍板调整：请求审批档后台恒问（每次人确认）；
-        // 帮我批准档后台放行（"别烦我"语义 + 修补 RunCommand run_in_background 路径不一致）。
+        // 2026-09-19 沐拍板调整；2026-11-20 合并独立后台工具后，由
+        // RunCommand + run_in_background=true 派生同一口径：
+        // 请求审批档后台恒问（每次人确认）；帮我批准档后台放行（"别烦我"语义）。
+        let input = JudgementInput {
+            background_run: true,
+            ..allow_input()
+        };
         assert_eq!(
-            judge(
-                "StartBackgroundCommand",
-                ApprovalMode::RequestApproval,
-                &allow_input()
-            )
-            .outcome,
+            judge("RunCommand", ApprovalMode::RequestApproval, &input).outcome,
             Outcome::Ask
         );
         assert_eq!(
-            judge(
-                "StartBackgroundCommand",
-                ApprovalMode::AutoApprove,
-                &allow_input()
-            )
-            .outcome,
+            judge("RunCommand", ApprovalMode::AutoApprove, &input).outcome,
             Outcome::Allow
         );
     }
@@ -877,11 +875,12 @@ mod tests {
     fn dangerous_background_is_never_auto_approved() {
         // A 的硬边界同样覆盖后台：带危险警示的后台命令在帮我批准档也必须问
         let input = JudgementInput {
+            background_run: true,
             existing_warning: Some("检测到递归强制删除".to_string()),
             ..allow_input()
         };
         assert_eq!(
-            judge("StartBackgroundCommand", ApprovalMode::AutoApprove, &input).outcome,
+            judge("RunCommand", ApprovalMode::AutoApprove, &input).outcome,
             Outcome::Ask
         );
     }

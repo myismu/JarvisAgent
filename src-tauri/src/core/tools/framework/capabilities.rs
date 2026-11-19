@@ -24,7 +24,7 @@ pub struct Capabilities {
     pub read: bool,
     /// 修改文件（WriteFile / EditFile / ApplyPatch / DeleteFile / RenameFile）
     pub write: bool,
-    /// 执行命令（RunCommand / StartBackgroundCommand）
+    /// 执行命令（RunCommand，含 run_in_background 后台模式）
     pub run_commands: bool,
     /// 任务编排（CreateTask / UpdateTask / DeleteTask / UpdateTodos）
     pub orchestrate: bool,

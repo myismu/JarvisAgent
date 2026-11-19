@@ -379,7 +379,7 @@ Rust emit("chat-content")  ──→ useAgentEvents.listen() ──→ sessionSt
 | 目录 | ListDirectory, SearchRepo | 列目录、生成仓库地图 |
 | 搜索 | SearchText, FindFiles | 文本搜索（grep）、文件名搜索（glob） |
 | 符号 | FindSymbol, ReadSymbol, FindReferences, CodeSearch | 符号定位、读定义、查引用 |
-| Shell | RunCommand, StartBackgroundCommand, CheckBackgroundCommand | 命令执行、后台服务、状态检查（git 读写统一走 RunCommand） |
+| Shell | RunCommand, CheckBackgroundCommand | 命令执行（含 run_in_background 后台模式）、后台状态检查（git 读写统一走 RunCommand） |
 | 任务 | CreateTask, UpdateTask, DeleteTask, ListTasks, GetTask, SummarizeTasks | 持久化任务图 CRUD |
 | 待办 | UpdateTodos | 轻量待办清单 |
 | 子代理 | RunSubagent, RunSubagentsSequentially | 委派子代理、启动调度器 |

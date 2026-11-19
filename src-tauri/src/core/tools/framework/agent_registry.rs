@@ -47,7 +47,8 @@ const GENERAL_TOOLS: &[&str] = &[
     "DeleteFile",
     "RenameFile",
     "RunCommand",
-    // StartBackgroundCommand 不给子代理：后台服务由主 Agent 统一管理（registry.rs 意图过滤同口径），
+    // 后台服务由主 Agent 统一管理：2026-11-20 将 StartBackgroundCommand 并入 RunCommand 后，
+    // 禁令由 tools::subagent_background_block_message 在分发层按入参拦截（run_in_background=true 即拒）。
     // CheckBackgroundCommand 保留——只读探测后台输出，不违反"统一管理启动"
     "CheckBackgroundCommand",
 ];
@@ -397,8 +398,8 @@ mod tests {
         assert!(names.contains(&"EditFile"));
         assert!(names.contains(&"EditNotebook"));
         assert!(names.contains(&"RunCommand"));
-        // 后台服务锁：子代理（含 implementation）不许启动后台服务，主 Agent 统一管理
-        assert!(!names.contains(&"StartBackgroundCommand"));
+        // 后台服务锁已下沉为入参级规则：RunCommand 仍在名单（前台命令要用），
+        // 但 run_in_background=true 会被 tools::subagent_background_block_message 拒绝
     }
 
     #[test]
@@ -415,7 +416,8 @@ mod tests {
         assert!(names.contains(&"SearchText"));
         assert!(!names.contains(&"EditFile"));
         assert!(!names.contains(&"EditNotebook"));
-        assert!(!names.contains(&"StartBackgroundCommand"));
+        // 只读过滤下写工具全部收走，RunCommand 也在其中
+        assert!(!names.contains(&"RunCommand"));
     }
 
     #[test]
@@ -433,7 +435,11 @@ mod tests {
     /// 子代理提示词里**故意点名禁止**的工具（写法是"无权/不可用"，不是"要用"）。
     ///
     /// 除这些之外，提示词里出现的任何已注册工具名都必须真的授权给它。
-    const PROMPT_NAMED_BUT_DENIED: &[&str] = &["StartBackgroundCommand"];
+    ///
+    /// 目前为空：原条目 StartBackgroundCommand 已于 2026-11-20 并入 RunCommand，
+    /// "子代理不得起后台"改由入参级运行时规则表达（见 tools::subagent_background_block_message）。
+    /// 机制保留——将来再有"提示词点名但故意不给"的工具时放进这里。
+    const PROMPT_NAMED_BUT_DENIED: &[&str] = &[];
 
     /// 提示词与工具名单的一致性护栏（2026-09-21 事故的正面锁）。
     ///
@@ -486,7 +492,6 @@ mod tests {
             "ApplyPatch",
             "DeleteFile",
             "RenameFile",
-            "StartBackgroundCommand",
         ] {
             assert!(
                 !agent.tools.contains(&tool),

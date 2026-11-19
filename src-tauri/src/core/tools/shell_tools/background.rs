@@ -3,8 +3,7 @@
 //! 提供长周期 Shell 任务的后台执行和状态检查功能。
 //!
 //! ## Key Exports
-//! - background_run_internal(): 内部调用后台运行逻辑
-//! - background_run(): 工具入口：后台执行长时间运行的命令
+//! - background_run_internal(): 内部调用后台运行逻辑（唯一后台入口，由 RunCommand 的 run_in_background 模式调用）
 //! - check_background(): 工具入口：检查后台任务状态
 //!
 //! ## Dependencies
@@ -12,66 +11,28 @@
 //! - External: serde_json, tauri
 
 use super::super::framework;
-use super::super::framework::permission::is_within_workspace;
-use super::utils::*;
 
 /// 内部函数：后台执行命令（委托 BackgroundManager）。
 ///
 /// `exec_dir` 由调用方解析好再传（2026-09-21 起）：原先这里只接 workspace，
 /// 于是 RunCommand 的 `dir` 参数在后台模式下会被静默忽略 —— 模型以为换了目录，
 /// 实际仍在工作区根目录跑。
+///
+/// `session_id` 于 2026-11-20 合并 StartBackgroundCommand 后补齐：后台任务必须
+/// 带会话归属（完成通知与任务面板都按它路由），不再允许匿名任务。
 pub async fn background_run_internal(
     app: &tauri::AppHandle,
     cmd: &str,
     exec_dir: &std::path::Path,
+    session_id: &str,
 ) -> String {
     crate::infra::background::BackgroundManager::run(
         app.clone(),
         cmd.to_string(),
         Some(exec_dir.to_string_lossy().into_owned()),
-        None,
-    )
-    .await
-}
-
-/// 后台执行长时间运行的命令（独立工具，保留供 UI 直接触发）
-pub async fn background_run(
-    app: &tauri::AppHandle,
-    input: &serde_json::Value,
-    session_id: &str,
-) -> framework::ToolCallResult {
-    let cmd = input["command"].as_str().unwrap_or("");
-    let dir = input["dir"].as_str().map(|s| s.to_string());
-
-    let ws = get_workspace(app, session_id).await;
-
-    // 如果是沙箱会话，验证 dir
-    if let Some(ref workspace) = ws {
-        if let Some(ref d) = dir {
-            if !is_within_workspace(d, Some(workspace)) {
-                return framework::ToolCallResult::blocked(format!(
-                    "沙箱限制：指定的目录 '{}' 不在沙箱内。",
-                    d
-                ));
-            }
-        }
-    }
-
-    // 如果没有提供路径，则用工作目录
-    let exec_dir = if let Some(d) = dir {
-        Some(d)
-    } else {
-        ws.map(|p| p.to_string_lossy().into_owned())
-    };
-
-    let output = crate::infra::background::BackgroundManager::run(
-        app.clone(),
-        cmd.to_string(),
-        exec_dir,
         Some(session_id.to_string()),
     )
-    .await;
-    framework::ToolCallResult::ok(output)
+    .await
 }
 
 /// 检查后台任务状态

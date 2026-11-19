@@ -19,7 +19,7 @@ pub mod security;
 pub mod types;
 pub mod utils;
 
-pub use background::{background_run, check_background};
+pub use background::check_background;
 pub use execution::run_shell;
 
 use crate::core::tools::framework::registry::ToolDef;
@@ -42,10 +42,9 @@ crate::define_tools! {
                     "properties": {
                         "command": {"type": "string", "description": if cfg!(target_os = "windows") { "要执行的 PowerShell 命令" } else { "要执行的 bash 命令" }},
                         "description": {"type": "string", "description": "一句话说明命令用途（显示在权限确认中）"},
-                        // dir 于 2026-09-21 补齐：提示词两处早就写着 RunCommand 有这个参数，
-                        // 实现却一直没读（命令恒在工作区根目录跑）；而沙箱禁止 cd、
-                        // 子代理又没有 StartBackgroundCommand 权限，导致"在子目录跑 npm install"
-                        // 根本做不到。现按 StartBackgroundCommand 的同款口径实现。
+                        // dir 于 2026-09-21 补齐，前台与后台模式共用同一套解析与沙箱校验。
+                        // 2026-11-20 起 StartBackgroundCommand 并入本工具：长周期服务统一用
+                        // run_in_background=true + dir，不再有第二个后台入口。
                         "dir": {"type": "string", "description": dir_param_description()},
                         "timeout": {"type": "integer", "description": "超时秒数，默认 120，范围 5-600"},
                         "run_in_background": {"type": "boolean", "description": "是否后台执行。长周期任务（如开发服务器）必须设为 true。"}
@@ -56,33 +55,6 @@ crate::define_tools! {
             should_defer: false,
             is_read_only: false,
             is_concurrency_safe: false,
-            is_enabled: true,
-        },
-        ToolDef {
-            name: "StartBackgroundCommand",
-            description: "在后台执行长时间运行的命令（独立入口）",
-            search_hint: "background long running server dev",
-            category: "命令执行",
-            schema: json!({
-                "name": "StartBackgroundCommand",
-                // 末句原写"推荐优先使用 RunCommand 的 run_in_background 参数"，方向反了
-                // （2026-09-21 修正）：两者是**分工**而非替代 —— RunCommand 的后台模式固定
-                // 在工作区根目录执行（background_run_internal 传的是 session workspace），
-                // 只有本工具能用 dir 指定子目录。backend/ + frontend/ 这类结构必须用本工具，
-                // 原句会把模型引向一个做不到的方案。
-                "description": "在后台执行长时间运行的命令（如启动前端 npm run dev、后端服务器等）。执行后立刻返回任务ID，不阻塞对话。与 RunCommand 的 run_in_background 的分工：本工具可用 dir 指定工作目录，需要进子目录启动时必须用本工具；RunCommand 的后台模式固定在工作区根目录执行。",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "command": {"type": "string", "description": "要执行的具体命令（如 npm run dev）"},
-                        "dir": {"type": "string", "description": dir_param_description()}
-                    },
-                    "required": ["command", "dir"]
-                }
-            }),
-            should_defer: false,
-            is_read_only: false,
-            is_concurrency_safe: true,
             is_enabled: true,
         },
         ToolDef {

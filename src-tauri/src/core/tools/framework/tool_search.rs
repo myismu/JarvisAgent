@@ -672,7 +672,8 @@ mod tests {
         let core = get_core_tool_definitions(&ToolFilter::allow_all());
         let names: Vec<&str> = core.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"RunCommand"));
-        assert!(names.contains(&"StartBackgroundCommand"));
+        // StartBackgroundCommand 已于 2026-11-20 并入 RunCommand（run_in_background=true），不再单独注册
+        assert!(!names.contains(&"StartBackgroundCommand"));
         assert!(names.contains(&"CheckBackgroundCommand"));
         assert!(!names.contains(&"RunGitCommand"));
     }
