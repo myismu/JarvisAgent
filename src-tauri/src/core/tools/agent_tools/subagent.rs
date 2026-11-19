@@ -64,13 +64,14 @@ fn summarize_tool_input(name: &str, input: &serde_json::Value) -> String {
             let pattern = input["pattern"].as_str().unwrap_or("?");
             format!("{}", pattern)
         }
-        "SearchRepo" | "CodeSearch" => {
+        "SearchRepo" => {
             let query = input["query"].as_str().unwrap_or("?");
             format!("\"{}\"", query)
         }
-        "FindSymbol" | "FindReferences" => {
-            let sym = input["name"].as_str().unwrap_or("?");
-            format!("{}", sym)
+        "SymbolSearch" => {
+            let sym = input["symbol"].as_str().unwrap_or("?");
+            let op = input["operation"].as_str().unwrap_or("?");
+            format!("{} {}", op, sym)
         }
         "RunCommand" => {
             let cmd = input["command"].as_str().unwrap_or("?");

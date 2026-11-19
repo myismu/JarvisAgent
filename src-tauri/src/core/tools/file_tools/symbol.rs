@@ -410,6 +410,43 @@ fn symbol_block_range(lines: &[&str], start_idx: usize) -> (usize, usize) {
     (start_idx, lines.len().saturating_sub(1))
 }
 
+/// SymbolSearch 支持的三种查询类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SymbolOperation {
+    Definition,
+    References,
+    Block,
+}
+
+fn parse_operation(raw: &str) -> Option<SymbolOperation> {
+    match raw {
+        "definition" => Some(SymbolOperation::Definition),
+        "references" => Some(SymbolOperation::References),
+        "block" => Some(SymbolOperation::Block),
+        _ => None,
+    }
+}
+
+/// SymbolSearch 统一入口：按 `operation` 分发到定义查找 / 引用查找 / 代码块读取。
+///
+/// 2026-11-20 由 FindSymbol / FindReferences / ReadSymbol 三工具合并而来（CodeSearch 退役）：
+/// 三者本就共用同一套符号识别引擎，拆成多个工具只会增加模型的选择负担与描述 token。
+pub async fn symbol_search(
+    app: &tauri::AppHandle,
+    input: &serde_json::Value,
+    session_id: &str,
+) -> framework::ToolCallResult {
+    match parse_operation(input["operation"].as_str().unwrap_or("")) {
+        Some(SymbolOperation::Definition) => find_symbol(app, input, session_id).await,
+        Some(SymbolOperation::References) => find_references(app, input, session_id).await,
+        Some(SymbolOperation::Block) => read_symbol(app, input, session_id).await,
+        None => framework::ToolCallResult::error(
+            "SymbolSearch 错误: operation 必须是 definition、references 或 block 之一。"
+                .to_string(),
+        ),
+    }
+}
+
 pub async fn find_references(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
@@ -418,7 +455,7 @@ pub async fn find_references(
     let symbol = input["symbol"].as_str().unwrap_or("").trim();
     if symbol.is_empty() {
         return framework::ToolCallResult::error(
-            "FindReferences 错误: symbol 不能为空。".to_string(),
+            "SymbolSearch(references) 错误: symbol 不能为空。".to_string(),
         );
     }
 
@@ -435,7 +472,7 @@ pub async fn find_references(
     // 目录不存在就明确报错：静默返回"未找到"会把"路径写错"伪装成"符号不存在"
     if !search_dir.exists() {
         return framework::ToolCallResult::error(format!(
-            "FindReferences 错误: 搜索目录不存在 —— {}",
+            "SymbolSearch(references) 错误: 搜索目录不存在 —— {}",
             search_dir.display()
         ));
     }
@@ -480,7 +517,9 @@ pub async fn find_symbol(
 ) -> framework::ToolCallResult {
     let symbol = input["symbol"].as_str().unwrap_or("").trim();
     if symbol.is_empty() {
-        return framework::ToolCallResult::error("FindSymbol 错误: symbol 不能为空。".to_string());
+        return framework::ToolCallResult::error(
+            "SymbolSearch(definition) 错误: symbol 不能为空。".to_string(),
+        );
     }
 
     let dir = input["dir"].as_str().unwrap_or(".");
@@ -497,7 +536,7 @@ pub async fn find_symbol(
     // 同上：目录不存在时显式报错，避免与"符号确实不存在"混淆
     if !search_dir.exists() {
         return framework::ToolCallResult::error(format!(
-            "FindSymbol 错误: 搜索目录不存在 —— {}",
+            "SymbolSearch(definition) 错误: 搜索目录不存在 —— {}",
             search_dir.display()
         ));
     }
@@ -536,119 +575,6 @@ pub async fn find_symbol(
     framework::ToolCallResult::ok(result)
 }
 
-pub async fn code_search(
-    app: &tauri::AppHandle,
-    input: &serde_json::Value,
-    session_id: &str,
-) -> framework::ToolCallResult {
-    let query = input["query"].as_str().unwrap_or("").trim();
-    if query.is_empty() {
-        return framework::ToolCallResult::error("CodeSearch 错误: query 不能为空。".to_string());
-    }
-
-    let dir = input["dir"].as_str().unwrap_or(".");
-    let limit = input_usize(input, "limit").unwrap_or(30).min(100);
-    let ws = get_workspace(app, session_id).await;
-    if let Err(e) = ensure_path_permission(app, dir, "组合代码搜索", ws.as_deref()).await {
-        return framework::ToolCallResult::error(e);
-    }
-
-    let search_dir = resolve_dir(dir, ws.as_deref());
-    // 同上：目录不存在时显式报错，避免与"确实没有匹配代码"混淆
-    if !search_dir.exists() {
-        return framework::ToolCallResult::error(format!(
-            "CodeSearch 错误: 搜索目录不存在 —— {}",
-            search_dir.display()
-        ));
-    }
-    let mut include_patterns = input_patterns(input, "include");
-    let exclude_patterns = input_patterns(input, "exclude");
-    let ignore_dirs = input_string_list(input, "ignore_dirs");
-    let file_type = input["type"]
-        .as_str()
-        .or_else(|| input["file_type"].as_str());
-    if include_patterns.is_empty() {
-        include_patterns.push("**/*".to_string());
-    }
-    let options = SymbolSearchOptions {
-        include_patterns: &include_patterns,
-        exclude_patterns: &exclude_patterns,
-        ignore_dirs: &ignore_dirs,
-        file_type,
-    };
-
-    let mut files = Vec::new();
-    if search_dir.is_file() {
-        files.push(search_dir.clone());
-    } else {
-        collect_files_with_options(&search_dir, options.ignore_dirs, &mut files);
-    }
-    files.retain(|path| passes_options(path, &search_dir, &options));
-    files.sort_by_key(|path| search_path_rank(path));
-
-    let symbol_candidates =
-        find_symbol_candidates(&search_dir, query, SymbolKind::Any, limit, &options);
-
-    let query_lower = query.to_lowercase();
-    let mut text_matches = Vec::new();
-    for path in &files {
-        let Ok(decoded) = read_text_preserve_encoding(path) else {
-            continue;
-        };
-        for (idx, line) in decoded.content.lines().enumerate() {
-            if line.to_lowercase().contains(&query_lower) {
-                text_matches.push((path.clone(), idx + 1, line.trim().to_string()));
-                if text_matches.len() >= limit {
-                    break;
-                }
-            }
-        }
-        if text_matches.len() >= limit {
-            break;
-        }
-    }
-
-    if symbol_candidates.is_empty() && text_matches.is_empty() && files.is_empty() {
-        return framework::ToolCallResult::ok(format!("未找到与 '{}' 相关的代码结果。", query));
-    }
-
-    let mut result = format!("CodeSearch results for '{}':\n", query);
-    if !symbol_candidates.is_empty() {
-        result.push_str("\n[Symbols - 可直接 ReadSymbol]\n");
-        for candidate in symbol_candidates {
-            result.push_str(&format!(
-                "{}:{} [{} confidence={}] {}\n  next: ReadSymbol path=\"{}\" symbol=\"{}\"\n",
-                display_path(&candidate.path),
-                candidate.line_number,
-                kind_label(candidate.kind),
-                candidate.confidence,
-                candidate.signature,
-                display_path(&candidate.path),
-                query
-            ));
-        }
-    }
-
-    if !text_matches.is_empty() {
-        result.push_str("\n[Text matches - 可直接 ReadFile]\n");
-        for (path, line_number, line) in text_matches {
-            let start = line_number.saturating_sub(3).max(1);
-            let end = line_number + 3;
-            result.push_str(&format!(
-                "{}:{} {}\n  next: ReadFile path=\"{}\" start_line={} end_line={}\n",
-                display_path(&path),
-                line_number,
-                line,
-                display_path(&path),
-                start,
-                end
-            ));
-        }
-    }
-
-    framework::ToolCallResult::ok(result)
-}
-
 pub async fn read_symbol(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
@@ -658,7 +584,7 @@ pub async fn read_symbol(
     let symbol = input["symbol"].as_str().unwrap_or("").trim();
     if path.is_empty() || symbol.is_empty() {
         return framework::ToolCallResult::error(
-            "ReadSymbol 错误: path 和 symbol 不能为空。".to_string(),
+            "SymbolSearch(block) 错误: path 和 symbol 不能为空。".to_string(),
         );
     }
 
@@ -705,7 +631,7 @@ pub async fn read_symbol(
     for (idx, line) in lines.iter().enumerate().take(end_idx + 1).skip(start_idx) {
         result.push_str(&format!("{:4} | {}\n", idx + 1, line));
     }
-    // 先读后改：ReadSymbol 返回的是未经修改的原文片段（真实认知），计入已读。
+    // 先读后改：SymbolSearch(block) 返回的是未经修改的原文片段（真实认知），计入已读。
     // 指纹同样算在全量内容上（decoded.content），与 EditFile 校验口径一致。
     // 注意：ReadFileSkeleton 只返回加工后的签名摘要、不算"看过"，刻意不在此列。
     record_file_read(app, session_id, &exec_path, &decoded.content).await;
@@ -715,6 +641,21 @@ pub async fn read_symbol(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_only_the_three_documented_operations() {
+        assert_eq!(
+            parse_operation("definition"),
+            Some(SymbolOperation::Definition)
+        );
+        assert_eq!(
+            parse_operation("references"),
+            Some(SymbolOperation::References)
+        );
+        assert_eq!(parse_operation("block"), Some(SymbolOperation::Block));
+        assert_eq!(parse_operation("find"), None, "旧工具名不是合法 operation");
+        assert_eq!(parse_operation(""), None);
+    }
 
     #[test]
     fn detects_typescript_function() {
@@ -755,7 +696,7 @@ mod tests {
     /// 端到端回归护栏：不打 include / exclude 规则时，必须能在真实目录里找到符号定义。
     ///
     /// 旧实现把"空 exclude"算成"排除所有文件"，文件列表被清空，
-    /// 于是这个最普通的调用形态必然返回空——FindSymbol 等四个工具就是这样集体失效的。
+    /// 于是这个最普通的调用形态必然返回空——SymbolSearch 等工具就是这样集体失效的。
     #[test]
     fn finds_symbol_without_any_patterns() {
         let dir = std::env::temp_dir().join(format!("jarvis_symbol_it_{}", std::process::id()));

@@ -35,6 +35,6 @@ pub use read::{read_file, read_file_skeleton};
 pub use registry::register_tools;
 pub use rename::rename_file;
 pub use search::{search_in_dir, search_repo};
-pub use symbol::{code_search, find_references, find_symbol, read_symbol};
+pub use symbol::{find_references, find_symbol, read_symbol, symbol_search};
 pub use workspace::{commit_pending_snapshot, has_pending_patches};
 pub use write::write_file;

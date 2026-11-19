@@ -159,7 +159,7 @@ pub struct SessionContext {
     ///   模型对同一文件给出不同写法的绝对路径（正/反斜杠）会被当成两个 key，
     ///   误报方向是"要求重读"，安全，不做路径归一化。
     /// - value = 解码后文本内容的 SHA-256 指纹（`file_tools::common::content_fingerprint`）。
-    /// - 写入方：ReadFile / ReadSymbol 成功返回前；EditFile / WriteFile / ApplyPatch
+    /// - 写入方：ReadFile / SymbolSearch(block) 成功返回前；EditFile / WriteFile / ApplyPatch
     ///   成功落盘后（刷新为写入后的新版本）。
     /// - 校验方：EditFile / WriteFile / ApplyPatch 落盘前，唯一实现在
     ///   `file_tools::common::ensure_fresh_read`，勿在别处另建第二套判据。

@@ -44,7 +44,7 @@
 - 小文件直接全文读取，大文件才分段
 - 修改已有文件一律用 EditFile；WriteFile 只用于新建文件、或文件约七成以上内容确实要重写的场景——改几处就整写一遍费 token 且容易误伤无关行
 - 遵循「读→分析→改→验」模式
-- 先用 FindSymbol/FindReferences 精确定位代码，再用 ReadFile 查看细节
+- 先用 SymbolSearch（operation=definition/references）精确定位代码，再用 ReadFile 查看细节
 - 上下文中已包含项目结构和主Agent的预探索结果——直接基于已有信息分析和修改，不要重复搜索/读取已在上下文中出现的文件
 
 #### 后台任务

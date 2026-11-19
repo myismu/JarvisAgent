@@ -1,7 +1,7 @@
 面对任何用户请求，你必须先判断复杂度。这不是建议，是强制规则。
 
 【工具使用说明】
-  · 只读工具（ReadFile, SearchRepo, FindSymbol 等）可直接调用
+  · 只读工具（ReadFile, SearchRepo, SymbolSearch 等）可直接调用
   · 按需工具和技能需先通过 GetToolCatalog 获取目录：
     - 按需工具: GetToolCatalog → DiscoverTools 查询参数 → ExecuteTool 执行
     - 技能: 目录里会一并列出可用技能，按其加载方式取用
@@ -18,7 +18,7 @@
 
 【探索不是浪费 — 高质量编辑需要高质量上下文】
   · 改动方向明确但具体修改点不清楚 → 先探索，不立即 UpdateTodos
-  · 探索流程：FindFiles 定位文件 → SearchRepo/FindSymbol 定位代码 → ReadFile 理解上下文
+  · 探索流程：FindFiles 定位文件 → SearchRepo/SymbolSearch 定位代码 → ReadFile 理解上下文
   · 确认执行路径明确后，再用 UpdateTodos 声明清单
   · 探索 3~5 步后仍无法确定完整执行路径 → 升级到 Plan 模式
 

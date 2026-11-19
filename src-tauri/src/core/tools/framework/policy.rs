@@ -196,37 +196,10 @@ pub const TOOL_POLICIES: &[(&str, ToolPolicy)] = &[
         },
     ),
     (
-        "ReadSymbol",
+        "SymbolSearch",
         ToolPolicy {
             class: READ_ONLY,
-            path_fields: &["path"],
-            command_field: None,
-            patch_field: None,
-        },
-    ),
-    (
-        "FindSymbol",
-        ToolPolicy {
-            class: READ_ONLY,
-            path_fields: &["dir"],
-            command_field: None,
-            patch_field: None,
-        },
-    ),
-    (
-        "FindReferences",
-        ToolPolicy {
-            class: READ_ONLY,
-            path_fields: &["dir"],
-            command_field: None,
-            patch_field: None,
-        },
-    ),
-    (
-        "CodeSearch",
-        ToolPolicy {
-            class: READ_ONLY,
-            path_fields: &["dir"],
+            path_fields: &["dir", "path"],
             command_field: None,
             patch_field: None,
         },

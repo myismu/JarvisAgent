@@ -77,7 +77,7 @@ pub const PROMPT_FILES: &[PromptFileMeta] = &[
     PromptFileMeta {
         path: "base_p1.md",
         display_name: "探索工具选择",
-        description: "文件探索的工具优先级：FindFiles → SearchRepo → FindSymbol → ReadFile",
+        description: "文件探索的工具优先级：FindFiles → SearchRepo → SymbolSearch → ReadFile",
         category: PromptCategory::Base,
         goes_into_system: true,
     },

@@ -481,7 +481,7 @@ pub(super) fn search_path_rank(path: &Path) -> (usize, usize, String) {
 // 返回 true"（无规则 = 全通过）。用在 include 上是对的，但调用方写成
 // `!matches_any_glob(..., exclude_patterns)` —— 于是"没有排除规则"被算成
 // `!true = false`，**每个文件都被判定为被排除**，文件列表被清空，
-// FindSymbol / FindReferences / CodeSearch / SearchRepo 一律返回"未找到"。
+// SymbolSearch / SearchRepo 一律返回"未找到"。
 //
 // 该 bug 自 2026-05-05 起存在，且因为 symbol.rs 与 search.rs 各抄了一份，
 // 只修一份也治不好。现在只此一处实现，并把两个方向拆成名字自明的函数：
@@ -750,7 +750,7 @@ fn freshness_error(recorded: Option<&str>, current_fingerprint: &str) -> Option<
 
 /// 记录一次「模型看到了这个文件的这个版本」。
 ///
-/// 写入点：ReadFile / ReadSymbol 成功返回前；三个写改工具成功落盘后
+/// 写入点：ReadFile / SymbolSearch(block) 成功返回前；三个写改工具成功落盘后
 /// （此时传**写入后的新内容**，刷新认知，连续编辑不会误报）。
 pub(super) async fn record_file_read(
     app: &tauri::AppHandle,
@@ -1020,7 +1020,7 @@ mod tests {
     // ============ 搜索过滤：空规则语义（回归护栏）============
     //
     // 背景：`!matches_any_glob(空)` 曾把"没有排除规则"算成"排除所有文件"，
-    // 导致 FindSymbol / FindReferences / CodeSearch / SearchRepo 四个工具
+    // 导致 SymbolSearch / SearchRepo 两个工具
     // 在不传 exclude 时一律返回"未找到"（自 2026-05-05 起，持续四个半月）。
 
     fn path_of(s: &str) -> PathBuf {
