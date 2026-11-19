@@ -9,7 +9,7 @@
  * - 自动检查失败保持静默（离线启动不该弹错），手动检查才把原因展示出来；
  * - 下载安装完成后不自动重启，由用户点「重启应用」——避免打断进行中的会话。
  */
-import { ref } from 'vue';
+import { ref, shallowRef } from 'vue';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
@@ -18,7 +18,13 @@ const isDev = import.meta.env.DEV;
 
 const currentVersion = ref('');
 const checking = ref(false);
-const update = ref<Update | null>(null);
+/**
+ * Update 实例继承自 Resource，内部用 #私有字段 保存 Rust 侧句柄，downloadAndInstall
+ * 等方法通过 this.rid 访问。必须用 shallowRef 存原始实例：Vue 的深层响应式代理会让
+ * 方法里的 this 变成 Proxy，访问 #私有字段时报
+ * "Cannot read private member from an object whose class did not declare it"。
+ */
+const update = shallowRef<Update | null>(null);
 const upToDate = ref(false);
 const downloading = ref(false);
 const installed = ref(false);
@@ -57,10 +63,19 @@ async function checkForUpdate(manual = false): Promise<void> {
   try {
     const found = await check();
     if (found) {
+      const previous = update.value;
       update.value = found;
+      if (previous && previous !== found && !installed.value) {
+        // 释放不再展示的旧句柄，避免 Rust 侧资源随重复检查累积
+        previous.close().catch(() => {});
+      }
       if (!dismissedThisRun) modalVisible.value = true;
     } else {
+      const previous = update.value;
       update.value = null;
+      if (previous && !installed.value) {
+        previous.close().catch(() => {});
+      }
       if (manual) upToDate.value = true;
     }
   } catch (e) {
