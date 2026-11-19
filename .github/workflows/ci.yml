@@ -3,6 +3,10 @@ name: CI
 
 on:
   push:              # 任何分支推送都跑
+    # 发版标签不走 CI：标签指向的 master 提交已通过 CI，且 Release 流程自带
+    # cargo test --release 与前端构建（tauri-action 的 beforeBuildCommand）
+    tags-ignore:
+      - "v*"
   pull_request:      # PR 提交时跑
   workflow_dispatch: # 支持在网页上手动点按钮重跑
 
