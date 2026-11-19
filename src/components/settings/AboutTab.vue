@@ -55,6 +55,10 @@ const statusText = computed(() => {
           {{ updater.checking.value ? t('settings.about.checking') : t('settings.about.check') }}
         </button>
       </div>
+      <div class="about-row">
+        <span class="about-label">{{ t('settings.about.channel') }}</span>
+        <span class="about-value">{{ t('settings.about.channelValue') }}</span>
+      </div>
       <div v-if="statusText" class="about-status">{{ statusText }}</div>
     </div>
 
