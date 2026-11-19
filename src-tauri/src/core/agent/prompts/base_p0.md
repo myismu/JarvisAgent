@@ -31,7 +31,7 @@
 
 #### 禁止操作依赖目录
 
-- 绝对禁止使用任何工具（ReadFile/SearchText/FindFiles/ListDirectory/RunCommand/dir/tree/find/ls 等）递归遍历或搜索 node_modules、.git、target、dist、build、__pycache__ 等依赖/构建产物目录
+- 绝对禁止使用任何工具（ReadFile/SearchRepo/FindFiles/ListDirectory/RunCommand/dir/tree/find/ls 等）递归遍历或搜索 node_modules、.git、target、dist、build、__pycache__ 等依赖/构建产物目录
 - 这些目录包含数万甚至数十万个文件，递归操作会立即撑爆上下文导致会话不可逆损坏
 - 需要了解项目依赖时，读 package.json / Cargo.toml / requirements.txt 等清单文件，不要列目录
 - 违反此规则会导致上下文被数十万行文件列表淹没、API 调用失败、会话卡死！

@@ -13,4 +13,4 @@
 
 #### 文件读写必须走专用工具
 
-- 读文件用 ReadFile / SearchText / FindFiles；写、改、删、改名用 WriteFile / EditFile / ApplyPatch / DeleteFile / RenameFile
+- 读文件与搜索用 ReadFile / SearchRepo / FindFiles；写、改、删、改名用 WriteFile / EditFile / ApplyPatch / DeleteFile / RenameFile

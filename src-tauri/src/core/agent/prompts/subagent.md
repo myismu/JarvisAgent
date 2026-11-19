@@ -36,7 +36,7 @@
 
 #### 文件读写必须走专用工具（硬规则）
 
-- 读文件用 ReadFile / SearchText / FindFiles；写/改/删/改名用 WriteFile / EditFile / ApplyPatch / DeleteFile / RenameFile
+- 读文件与搜索用 ReadFile / SearchRepo / FindFiles；写/改/删/改名用 WriteFile / EditFile / ApplyPatch / DeleteFile / RenameFile
 - 想确认文件内容是否正确，直接用 ReadFile 读，不要用命令做字节级检查
 
 #### 策略

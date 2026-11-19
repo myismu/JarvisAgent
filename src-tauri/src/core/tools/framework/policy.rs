@@ -214,15 +214,6 @@ pub const TOOL_POLICIES: &[(&str, ToolPolicy)] = &[
         },
     ),
     (
-        "SearchText",
-        ToolPolicy {
-            class: READ_ONLY,
-            path_fields: &["path", "dir"],
-            command_field: None,
-            patch_field: None,
-        },
-    ),
-    (
         "FindFiles",
         ToolPolicy {
             class: READ_ONLY,

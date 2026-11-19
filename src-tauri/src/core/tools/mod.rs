@@ -454,7 +454,6 @@ pub async fn dispatch_core_tool(
         "ListDirectory" => file_tools::list_directory(app, input, session_id).await,
         "SearchRepo" => file_tools::search_repo(app, input, session_id).await,
         "FindFiles" => search_tools::glob(app, input, session_id).await,
-        "SearchText" => search_tools::grep(app, input, session_id).await,
         "EditNotebook" => notebook_tools::notebook_edit(app, input, session_id).await,
         "ReadFile" => file_tools::read_file(app, input, session_id).await,
         "ReadFileSkeleton" => file_tools::read_file_skeleton(app, input, session_id).await,

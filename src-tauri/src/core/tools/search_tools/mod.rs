@@ -1,8 +1,10 @@
-//! # claude_code_tools.rs — Claude Code 风格搜索工具
+//! # search_tools/mod.rs — 文件搜索工具
 //!
-//! 提供两个只读、并发安全的搜索工具：
+//! 提供只读、并发安全的文件搜索工具：
 //! - `glob`: 按 glob 模式查找文件路径，结果按修改时间倒序排列
-//! - `grep`: 按正则表达式搜索文件内容，支持文件过滤、输出模式、上下文和分页
+//!
+//! （原 Claude Code Grep 风格的 SearchText 已于 2026-11-20 退役：实测其高阶参数从未被使用，
+//! 内容搜索统一走 SearchRepo，保留两份实现只会造成模型的选择摇摆。）
 
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -14,8 +16,6 @@ use super::framework::registry::ToolDef;
 use crate::core::tools::framework;
 
 const GLOB_DEFAULT_LIMIT: usize = 100;
-const GREP_DEFAULT_HEAD_LIMIT: usize = 250;
-const GREP_MAX_COLUMNS: usize = 500;
 
 const SKIP_DIRS: &[&str] = &[
     ".git",
@@ -73,18 +73,6 @@ const SKIP_DIRS: &[&str] = &[
     "Library",
     "Caches",
 ];
-const BINARY_EXTENSIONS: &[&str] = &[
-    "png", "ico", "icns", "jpg", "jpeg", "gif", "webp", "mp3", "mp4", "wav", "woff", "woff2",
-    "ttf", "eot", "pdf", "zip", "gz", "tar", "rar", "7z", "exe", "dll", "so", "dylib", "class",
-    "jar", "wasm",
-];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GrepOutputMode {
-    Content,
-    FilesWithMatches,
-    Count,
-}
 
 async fn get_workspace(app: &tauri::AppHandle, session_id: &str) -> Option<PathBuf> {
     if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
@@ -139,49 +127,10 @@ fn should_skip_dir_with_overrides(path: &Path, ignore_dirs: &[String]) -> bool {
         .unwrap_or(false)
 }
 
-fn is_binary_like(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| BINARY_EXTENSIONS.contains(&ext.to_lowercase().as_str()))
-        .unwrap_or(false)
-}
-
-fn collect_files_with_ignore(
-    root: &Path,
-    include_binary: bool,
-    ignore_dirs: &[String],
-    files: &mut Vec<PathBuf>,
-) {
-    if root.is_file() {
-        if include_binary || !is_binary_like(root) {
-            files.push(root.to_path_buf());
-        }
-        return;
-    }
-
-    let entries = match std::fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(_) => return,
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if should_skip_dir_with_overrides(&path, ignore_dirs) {
-                continue;
-            }
-            collect_files_with_ignore(&path, include_binary, ignore_dirs, files);
-        } else if path.is_file() && (include_binary || !is_binary_like(&path)) {
-            files.push(path);
-        }
-    }
-}
-
 /// 遍历目录树，在遍历过程中内联匹配文件和目录的 glob pattern。
 /// 使用 `&mut usize limit` 引用计数实现早停：每匹配一项减一，归零立即返回。
 ///
-/// 与 `collect_files_with_ignore`（收集全部后再过滤）不同，此函数
-/// 在遍历阶段完成所有过滤，避免对巨型目录树的全量收集。
+/// 此函数在遍历阶段完成所有过滤，避免对巨型目录树的全量收集。
 ///
 /// `limit` 为 0 时不会收集任何条目（调用方应避免此情况）。
 fn collect_files_glob(
@@ -581,14 +530,6 @@ pub(crate) fn looks_like_definition_line(line: &str) -> bool {
         || trimmed.starts_with("pub trait ")
 }
 
-fn truncate_columns(text: &str) -> String {
-    let mut result: String = text.chars().take(GREP_MAX_COLUMNS).collect();
-    if text.chars().count() > GREP_MAX_COLUMNS {
-        result.push_str("...");
-    }
-    result
-}
-
 fn value_as_usize(input: &serde_json::Value, key: &str) -> Option<usize> {
     let value = input.get(key)?;
     if let Some(value) = value.as_u64() {
@@ -597,148 +538,6 @@ fn value_as_usize(input: &serde_json::Value, key: &str) -> Option<usize> {
     value
         .as_str()
         .and_then(|value| value.trim().parse::<usize>().ok())
-}
-
-fn value_as_bool(input: &serde_json::Value, key: &str, default: bool) -> bool {
-    let Some(value) = input.get(key) else {
-        return default;
-    };
-    if let Some(value) = value.as_bool() {
-        return value;
-    }
-    value
-        .as_str()
-        .map(|value| matches!(value.to_lowercase().as_str(), "true" | "1" | "yes"))
-        .unwrap_or(default)
-}
-
-fn parse_output_mode(input: &serde_json::Value) -> Result<GrepOutputMode, String> {
-    match input["output_mode"]
-        .as_str()
-        .unwrap_or("files_with_matches")
-    {
-        "content" => Ok(GrepOutputMode::Content),
-        "files_with_matches" => Ok(GrepOutputMode::FilesWithMatches),
-        "count" => Ok(GrepOutputMode::Count),
-        other => Err(format!(
-            "无效 output_mode: {}。可选值为 content、files_with_matches、count。",
-            other
-        )),
-    }
-}
-
-fn apply_head_limit<T: Clone>(
-    items: &[T],
-    head_limit: Option<usize>,
-    offset: usize,
-    default_limit: usize,
-) -> (Vec<T>, Option<usize>) {
-    let start = offset.min(items.len());
-    if head_limit == Some(0) {
-        return (items[start..].to_vec(), None);
-    }
-
-    let effective_limit = head_limit.unwrap_or(default_limit);
-    let end = (start + effective_limit).min(items.len());
-    let limited = items[start..end].to_vec();
-    let applied_limit =
-        (items.len().saturating_sub(start) > effective_limit).then_some(effective_limit);
-    (limited, applied_limit)
-}
-
-fn format_limit_info(applied_limit: Option<usize>, offset: usize) -> String {
-    let mut parts = Vec::new();
-    if let Some(limit) = applied_limit {
-        parts.push(format!("limit: {}", limit));
-    }
-    if offset > 0 {
-        parts.push(format!("offset: {}", offset));
-    }
-    parts.join(", ")
-}
-
-fn format_content_line(
-    path: &Path,
-    workspace: Option<&Path>,
-    line_number: Option<usize>,
-    text: &str,
-    show_line_numbers: bool,
-) -> String {
-    let display = display_path(path, workspace);
-    let text = truncate_columns(text.trim_end());
-    if show_line_numbers {
-        if let Some(line_number) = line_number {
-            return format!("{}:{}:{}", display, line_number, text);
-        }
-    }
-    format!("{}:{}", display, text)
-}
-
-fn file_has_match(content: &str, re: &regex::Regex, multiline: bool) -> bool {
-    if multiline {
-        re.is_match(content)
-    } else {
-        content.lines().any(|line| re.is_match(line))
-    }
-}
-
-fn count_file_matches(content: &str, re: &regex::Regex, multiline: bool) -> usize {
-    if multiline {
-        re.find_iter(content).count()
-    } else {
-        content.lines().filter(|line| re.is_match(line)).count()
-    }
-}
-
-fn line_number_for_byte(content: &str, byte_index: usize) -> usize {
-    content[..byte_index.min(content.len())]
-        .bytes()
-        .filter(|byte| *byte == b'\n')
-        .count()
-        + 1
-}
-
-fn collect_content_matches(
-    path: &Path,
-    content: &str,
-    re: &regex::Regex,
-    multiline: bool,
-    before: usize,
-    after: usize,
-    show_line_numbers: bool,
-    workspace: Option<&Path>,
-) -> Vec<String> {
-    if multiline {
-        return re
-            .find_iter(content)
-            .map(|matched| {
-                let line_number = line_number_for_byte(content, matched.start());
-                let text = matched.as_str().replace('\n', "\\n");
-                format_content_line(path, workspace, Some(line_number), &text, show_line_numbers)
-            })
-            .collect();
-    }
-
-    let lines: Vec<&str> = content.lines().collect();
-    let mut include = vec![false; lines.len()];
-    for (idx, line) in lines.iter().enumerate() {
-        if re.is_match(line) {
-            let start = idx.saturating_sub(before);
-            let end = (idx + after + 1).min(lines.len());
-            for slot in include.iter_mut().take(end).skip(start) {
-                *slot = true;
-            }
-        }
-    }
-
-    lines
-        .iter()
-        .enumerate()
-        .filter(|(idx, _)| include[*idx])
-        .map(|(idx, line)| {
-            format_content_line(path, workspace, Some(idx + 1), line, show_line_numbers)
-        })
-        .collect()
 }
 
 /// Claude Code 风格 Glob：按文件名 glob 模式快速查找文件。
@@ -831,218 +630,6 @@ pub async fn glob(
     framework::ToolCallResult::ok(lines.join("\n"))
 }
 
-/// Claude Code 风格 Grep：使用正则表达式搜索文件内容。
-pub async fn grep(
-    app: &tauri::AppHandle,
-    input: &serde_json::Value,
-    session_id: &str,
-) -> framework::ToolCallResult {
-    let pattern = input["pattern"].as_str().unwrap_or("").trim();
-    if pattern.is_empty() {
-        return framework::ToolCallResult::error("Grep 错误: pattern 不能为空。".to_string());
-    }
-
-    let output_mode = match parse_output_mode(input) {
-        Ok(mode) => mode,
-        Err(e) => return framework::ToolCallResult::error(e),
-    };
-
-    let raw_path = input["path"].as_str();
-    let workspace = get_workspace(app, session_id).await;
-    let base = match resolve_path(raw_path, workspace.as_deref()) {
-        Ok(path) => path,
-        Err(e) => return framework::ToolCallResult::error(e),
-    };
-
-    if let Err(e) =
-        ensure_resolved_path_permission(app, raw_path, &base, "Grep 搜索", workspace.as_deref())
-            .await
-    {
-        return framework::ToolCallResult::error(e);
-    }
-
-    if !base.exists() {
-        return framework::ToolCallResult::error(format!(
-            "Path does not exist: {}",
-            base.display()
-        ));
-    }
-
-    let mut builder = regex::RegexBuilder::new(pattern);
-    builder.case_insensitive(value_as_bool(input, "-i", false));
-    let multiline = value_as_bool(input, "multiline", false);
-    if multiline {
-        builder.multi_line(true).dot_matches_new_line(true);
-    }
-    let re = match builder.build() {
-        Ok(re) => re,
-        Err(e) => return framework::ToolCallResult::error(format!("正则表达式无效: {}", e)),
-    };
-
-    let include_patterns = input_patterns(input, "glob");
-    let mut extra_include_patterns = input_patterns(input, "include");
-    let exclude_patterns = input_patterns(input, "exclude");
-    let ignore_dirs = input_string_list(input, "ignore_dirs");
-    let file_type = input["type"]
-        .as_str()
-        .or_else(|| input["file_type"].as_str());
-    let head_limit = value_as_usize(input, "head_limit");
-    let offset = value_as_usize(input, "offset").unwrap_or(0);
-    let show_line_numbers = value_as_bool(input, "-n", true);
-
-    let context = value_as_usize(input, "context").or_else(|| value_as_usize(input, "-C"));
-    let before = context.or_else(|| value_as_usize(input, "-B")).unwrap_or(0);
-    let after = context.or_else(|| value_as_usize(input, "-A")).unwrap_or(0);
-
-    let mut files = Vec::new();
-    collect_files_with_ignore(&base, false, &ignore_dirs, &mut files);
-    let glob_base = if base.is_file() {
-        base.parent().unwrap_or(&base)
-    } else {
-        &base
-    };
-    extra_include_patterns.extend(include_patterns);
-    files.retain(|path| {
-        matches_search_filters(
-            path,
-            glob_base,
-            &extra_include_patterns,
-            &exclude_patterns,
-            file_type,
-        )
-    });
-    sort_for_code_search(&mut files);
-
-    match output_mode {
-        GrepOutputMode::Content => {
-            let mut matched_lines = Vec::new();
-            let mut definition_lines = Vec::new();
-            for path in &files {
-                if let Ok(content) = std::fs::read_to_string(path) {
-                    let lines = collect_content_matches(
-                        path,
-                        &content,
-                        &re,
-                        multiline,
-                        before,
-                        after,
-                        show_line_numbers,
-                        workspace.as_deref(),
-                    );
-                    for line in lines {
-                        if looks_like_definition_line(
-                            line.rsplit_once(':').map(|(_, text)| text).unwrap_or(&line),
-                        ) {
-                            definition_lines.push(line);
-                        } else {
-                            matched_lines.push(line);
-                        }
-                    }
-                }
-            }
-            definition_lines.extend(matched_lines);
-            let lines = definition_lines;
-
-            let (limited, applied_limit) =
-                apply_head_limit(&lines, head_limit, offset, GREP_DEFAULT_HEAD_LIMIT);
-            let limit_info = format_limit_info(applied_limit, offset);
-            let mut result = if limited.is_empty() {
-                "No matches found".to_string()
-            } else {
-                limited.join("\n")
-            };
-            if !limit_info.is_empty() {
-                result.push_str(&format!(
-                    "\n\n[Showing results with pagination = {}]",
-                    limit_info
-                ));
-            }
-            framework::ToolCallResult::ok(result)
-        }
-        GrepOutputMode::Count => {
-            let mut count_lines = Vec::new();
-            for path in &files {
-                if let Ok(content) = std::fs::read_to_string(path) {
-                    let count = count_file_matches(&content, &re, multiline);
-                    if count > 0 {
-                        count_lines.push(format!(
-                            "{}:{}",
-                            display_path(path, workspace.as_deref()),
-                            count
-                        ));
-                    }
-                }
-            }
-            let (limited, applied_limit) =
-                apply_head_limit(&count_lines, head_limit, offset, GREP_DEFAULT_HEAD_LIMIT);
-            let total_matches = limited
-                .iter()
-                .filter_map(|line| line.rsplit_once(':'))
-                .filter_map(|(_, count)| count.parse::<usize>().ok())
-                .sum::<usize>();
-            let limit_info = format_limit_info(applied_limit, offset);
-            let mut result = if limited.is_empty() {
-                "No matches found".to_string()
-            } else {
-                limited.join("\n")
-            };
-            result.push_str(&format!(
-                "\n\nFound {} total {} across {} {}.{}",
-                total_matches,
-                if total_matches == 1 {
-                    "occurrence"
-                } else {
-                    "occurrences"
-                },
-                limited.len(),
-                if limited.len() == 1 { "file" } else { "files" },
-                if limit_info.is_empty() {
-                    String::new()
-                } else {
-                    format!(" with pagination = {}", limit_info)
-                }
-            ));
-            framework::ToolCallResult::ok(result)
-        }
-        GrepOutputMode::FilesWithMatches => {
-            let mut matches = Vec::new();
-            for path in files {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    if file_has_match(&content, &re, multiline) {
-                        matches.push(path);
-                    }
-                }
-            }
-            sort_for_code_search(&mut matches);
-            let (limited, applied_limit) =
-                apply_head_limit(&matches, head_limit, offset, GREP_DEFAULT_HEAD_LIMIT);
-            let limit_info = format_limit_info(applied_limit, offset);
-            if limited.is_empty() {
-                return framework::ToolCallResult::ok("No files found".to_string());
-            }
-            let filenames: Vec<String> = limited
-                .iter()
-                .map(|path| display_path(path, workspace.as_deref()))
-                .collect();
-            framework::ToolCallResult::ok(format!(
-                "Found {} {}{}\n{}",
-                filenames.len(),
-                if filenames.len() == 1 {
-                    "file"
-                } else {
-                    "files"
-                },
-                if limit_info.is_empty() {
-                    String::new()
-                } else {
-                    format!(" {}", limit_info)
-                },
-                filenames.join("\n")
-            ))
-        }
-    }
-}
-
 // --- 工具注册 ---
 crate::define_tools! {
     pub fn register_tools(registry) {
@@ -1099,96 +686,6 @@ crate::define_tools! {
             is_concurrency_safe: true,
             is_enabled: true,
         },
-        ToolDef {
-            name: "SearchText",
-            description: "使用正则表达式搜索文件内容",
-            search_hint: "grep ripgrep regex search file contents text pattern",
-            category: "系统",
-            schema: json!({
-                "name": "SearchText",
-                "description": "A powerful search tool for file contents, modeled after Claude Code Grep. Supports regex syntax, glob/type filters, output modes, context lines, case-insensitive search, multiline search, and pagination.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {
-                            "type": "string",
-                            "description": "The regular expression pattern to search for in file contents"
-                        },
-                        "path": {
-                            "type": "string",
-                            "description": "File or directory to search in. Defaults to the current workspace directory."
-                        },
-                        "glob": {
-                            "type": "string",
-                            "description": "Glob pattern to include files (e.g. \"*.js\", \"*.{ts,tsx}\"). Multiple patterns can be separated by spaces or commas. Alias-like behavior with include."
-                        },
-                        "include": {
-                            "type": "string",
-                            "description": "Additional include glob filter. Example: src/** or **/*.{ts,tsx}."
-                        },
-                        "exclude": {
-                            "type": "string",
-                            "description": "Exclude glob filter. Example: **/*.test.ts or dist/**."
-                        },
-                        "output_mode": {
-                            "type": "string",
-                            "enum": ["content", "files_with_matches", "count"],
-                            "description": "Output mode: \"content\" shows matching lines, \"files_with_matches\" shows only file paths (default), \"count\" shows match counts."
-                        },
-                        "-B": {
-                            "type": "integer",
-                            "description": "Number of lines to show before each match. Requires output_mode: \"content\"."
-                        },
-                        "-A": {
-                            "type": "integer",
-                            "description": "Number of lines to show after each match. Requires output_mode: \"content\"."
-                        },
-                        "-C": {
-                            "type": "integer",
-                            "description": "Alias for context."
-                        },
-                        "context": {
-                            "type": "integer",
-                            "description": "Number of lines to show before and after each match. Requires output_mode: \"content\"."
-                        },
-                        "-n": {
-                            "type": "boolean",
-                            "description": "Show line numbers in content output. Defaults to true."
-                        },
-                        "-i": {
-                            "type": "boolean",
-                            "description": "Case insensitive search."
-                        },
-                        "type": {
-                            "type": "string",
-                            "description": "File type to search. Common types: js, py, rust, go, java, ts, json, md."
-                        },
-                        "ignore_dirs": {
-                            "type": ["string", "array"],
-                            "items": {"type": "string"},
-                            "description": "Additional directory names to ignore, as comma/space separated string or string array."
-                        },
-                        "head_limit": {
-                            "type": "integer",
-                            "description": "Limit output to first N lines/entries. Defaults to 250. Pass 0 for unlimited."
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "description": "Skip first N lines/entries before applying head_limit. Defaults to 0."
-                        },
-                        "multiline": {
-                            "type": "boolean",
-                            "description": "Enable multiline mode where . matches newlines and patterns can span lines. Defaults to false."
-                        }
-                    },
-                    "required": ["pattern"]
-                }
-            }),
-            should_defer: true,
-            is_read_only: true,
-            is_concurrency_safe: true,
-            is_enabled: true,
-        },
     }
 }
 
@@ -1216,14 +713,6 @@ mod tests {
             split_glob_patterns("*.{ts,tsx} *.rs,*.go"),
             vec!["*.{ts,tsx}", "*.rs", "*.go"]
         );
-    }
-
-    #[test]
-    fn test_apply_head_limit_default_and_offset() {
-        let items = vec![1, 2, 3, 4, 5];
-        let (limited, applied) = apply_head_limit(&items, None, 1, 2);
-        assert_eq!(limited, vec![2, 3]);
-        assert_eq!(applied, Some(2));
     }
 
     #[test]

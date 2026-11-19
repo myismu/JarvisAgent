@@ -390,7 +390,7 @@ mod tests {
         assert!(read_only_deny_reason("ApplyPatch", &json!({ "patch": "x" }), &facts).is_some());
         // 读类不受影响
         assert!(read_only_deny_reason("ReadFile", &json!({ "path": "a.ts" }), &facts).is_none());
-        assert!(read_only_deny_reason("SearchText", &json!({ "path": "a" }), &facts).is_none());
+        assert!(read_only_deny_reason("SearchRepo", &json!({ "dir": "a" }), &facts).is_none());
     }
 
     #[test]

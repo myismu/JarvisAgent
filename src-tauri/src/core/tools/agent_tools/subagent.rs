@@ -48,18 +48,6 @@ fn summarize_tool_input(name: &str, input: &serde_json::Value) -> String {
                 format!("{}", path)
             }
         }
-        "SearchText" => {
-            let pattern = input["pattern"].as_str().unwrap_or("?");
-            if let Some(dir) = input["path"].as_str() {
-                if !dir.is_empty() {
-                    format!("\"{}\" 在 {}", pattern, dir)
-                } else {
-                    format!("\"{}\"", pattern)
-                }
-            } else {
-                format!("\"{}\"", pattern)
-            }
-        }
         "FindFiles" => {
             let pattern = input["pattern"].as_str().unwrap_or("?");
             format!("{}", pattern)
@@ -113,18 +101,6 @@ fn summarize_tool_result(name: &str, content: &str) -> String {
                 let line_count = content.lines().count();
                 if line_count > 5 {
                     format!("{} 行内容", line_count)
-                } else {
-                    String::new()
-                }
-            }
-        }
-        "SearchText" => {
-            if content.contains("No files found") || content.contains("No matches") {
-                "无匹配".to_string()
-            } else {
-                let file_count = content.lines().filter(|l| l.contains(':')).count();
-                if file_count > 0 {
-                    format!("{} 个文件匹配", file_count)
                 } else {
                     String::new()
                 }

@@ -22,7 +22,6 @@ const GENERAL_TOOLS: &[&str] = &[
     "LoadSkill",
     "ListDirectory",
     "FindFiles",
-    "SearchText",
     "SearchRepo",
     "ReadFile",
     "ReadFileSkeleton",
@@ -54,7 +53,6 @@ const VERIFICATION_TOOLS: &[&str] = &[
     "LoadSkill",
     "ListDirectory",
     "FindFiles",
-    "SearchText",
     "SearchRepo",
     "ReadFile",
     "ReadFileSkeleton",
@@ -374,7 +372,7 @@ mod tests {
             .collect();
         // 工具集应与收敛前的 general / explore / review 逐字节相同
         assert!(names.contains(&"ReadFile"));
-        assert!(names.contains(&"SearchText"));
+        assert!(names.contains(&"SearchRepo"));
         assert!(!names.contains(&"EditFile"));
         assert!(!names.contains(&"RunCommand"));
     }
@@ -407,7 +405,7 @@ mod tests {
             .collect();
 
         assert!(names.contains(&"ReadFile"));
-        assert!(names.contains(&"SearchText"));
+        assert!(names.contains(&"SearchRepo"));
         assert!(!names.contains(&"EditFile"));
         assert!(!names.contains(&"EditNotebook"));
         // 只读过滤下写工具全部收走，RunCommand 也在其中
