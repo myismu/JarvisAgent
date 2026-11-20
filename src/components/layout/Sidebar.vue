@@ -288,7 +288,10 @@ const openProject = async () => {
 };
 
 const openSkillManager = () => {
-  // 再点一次返回聊天：按钮同时充当“当前视图”指示
+  // 再点一次返回聊天：按钮同时充当“当前视图”指示。
+  // 这里刻意不动 sessionStore.activeSessionId —— 它是消息渲染 / running 状态 /
+  // 上下文快照的宿主，置空等于把当前会话卸载掉。两个选中态的问题在模板的
+  // active 判定条件里解决（会话高亮只在聊天视图下成立），不靠改状态。
   appView.toggleSkillManager();
 };
 
@@ -624,7 +627,7 @@ onUnmounted(() => {
               <li
                 v-for="session in group.sessions"
               :key="session.id"
-              :class="['session-item', { active: session.id === sessionStore.activeSessionId }]"
+              :class="['session-item', { active: appView.isChatView && session.id === sessionStore.activeSessionId }]"
               @click="editingSessionId !== session.id && switchToSession(session.id)"
             >
               <div class="session-main-row">
@@ -679,7 +682,7 @@ onUnmounted(() => {
           <li
             v-for="session in standaloneSessions"
             :key="session.id"
-            :class="['session-item', { active: session.id === sessionStore.activeSessionId }]"
+            :class="['session-item', { active: appView.isChatView && session.id === sessionStore.activeSessionId }]"
             @click="editingSessionId !== session.id && switchToSession(session.id)"
           >
             <div class="session-main-row">
@@ -951,11 +954,14 @@ onUnmounted(() => {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
 }
 
-/* 技能管理按钮同时表示“当前处于技能视图” */
+/* 技能管理按钮的选中态 = “当前处于技能视图”，样式与聊天视图下会话项的选中态同源，
+   两者互斥由内容区视图决定：进入技能视图时聊天视图的会话高亮前提不再成立 */
 .skill-btn.active {
-  background: var(--glass-bg-light);
-  border: 1px solid var(--accent-blue);
-  color: var(--accent-blue);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  color: var(--text-main);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
 }
 
 .project-header {

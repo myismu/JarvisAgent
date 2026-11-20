@@ -9,30 +9,30 @@
   /* 表面层级（全部实心：层级靠底色区分，不靠半透明 + 模糊） */
   --bg-dark: #ffffff;
   --bg-panel: #ffffff;
-  --bg-sidebar: #f9f9f9;
-  --surface-1: #f4f4f4;
-  --surface-2: #ececec;
+  --bg-sidebar: #f7f7f7;
+  --surface-1: #eeeeee;
+  --surface-2: #e5e5e5;
   --surface-overlay: #ffffff;
-  --border-color: #e3e3e3;
-  --border-strong: #cfcfcf;
+  --border-color: #d3d3d3;
+  --border-strong: #b5b5b5;
 
   /* 文本四档：主 / 次主 / 次级（AA）/ 辅助 */
-  --text-main: #0d0d0d;
-  --text-soft: #2e2e2e;
-  --text-muted: #5c5c5c;
-  --text-faint: #8a8a8a;
+  --text-main: #1a1a1a;
+  --text-soft: #3a3a3a;
+  --text-muted: #525252;
+  --text-faint: #7a7a7a;
   --text-inverse: #ffffff;
 
   /* 主按钮：中性黑白，蓝色只留给链接与焦点 */
-  --btn-primary-bg: #0d0d0d;
-  --btn-primary-bg-hover: #2e2e2e;
+  --btn-primary-bg: #1a1a1a;
+  --btn-primary-bg-hover: #3a3a3a;
   --btn-primary-fg: #ffffff;
 
   /* 语义色：蓝=链接/焦点，绿=成功，红=错误，黄=警告 */
   --accent-blue: #2563eb;
   --accent-blue-hover: #1d4ed8;
-  --accent-green: #16a34a;
-  --accent-red: #dc2626;
+  --accent-green: #15803d;
+  --accent-red: #b91c1c;
   --text-on-danger: #ffffff;
   --surface-strong: #ffffff;
   --surface-danger: #dc2626;
@@ -130,24 +130,24 @@
 
 /* --- 2. 暗色模式变量 --- */
 body.dark-mode {
-  --bg-dark: #1a1a1a;
-  --bg-panel: #1a1a1a;
-  --bg-sidebar: #141414;
-  --surface-1: #262626;
-  --surface-2: #303030;
-  --surface-overlay: #262626;
-  --border-color: #333333;
-  --border-strong: #454545;
+  --bg-dark: #0f0f0f;
+  --bg-panel: #0f0f0f;
+  --bg-sidebar: #0a0a0a;
+  --surface-1: #1a1a1a;
+  --surface-2: #242424;
+  --surface-overlay: #1a1a1a;
+  --border-color: #2a2a2a;
+  --border-strong: #3a3a3a;
 
-  --text-main: #f2f2f2;
-  --text-soft: #d4d4d4;
-  --text-muted: #a3a3a3;
-  --text-faint: #737373;
-  --text-inverse: #0d0d0d;
+  --text-main: #e5e5e5;
+  --text-soft: #c8c8c8;
+  --text-muted: #8f8f8f;
+  --text-faint: #606060;
+  --text-inverse: #0f0f0f;
 
-  --btn-primary-bg: #f2f2f2;
-  --btn-primary-bg-hover: #d4d4d4;
-  --btn-primary-fg: #0d0d0d;
+  --btn-primary-bg: #e5e5e5;
+  --btn-primary-bg-hover: #c8c8c8;
+  --btn-primary-fg: #0f0f0f;
 
   --accent-blue: #60a5fa;
   --accent-blue-hover: #93c5fd;
