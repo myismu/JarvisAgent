@@ -139,6 +139,17 @@ const pointRate = (point: CacheHitPoint): number => {
 
 const cacheTrend = computed<CacheHitPoint[]>(() => (props.snapshot?.cacheHistory ?? []).slice(-10));
 
+/** 趋势只在异常时展示：稳态下它是一排"一切正常"的零信息柱子。
+   异常 = 最近一轮（已起命中的轮次）命中率 < 80%，或较上一轮骤降 > 20pt。
+   预热轮（hitTokens=0）不参与判断 —— 会话初期缓存未热是正常生理现象。 */
+const cacheTrendAnomaly = computed(() => {
+  const pts = cacheTrend.value.filter((p) => (p.hitTokens || 0) > 0);
+  if (pts.length < 2) return false;
+  const last = pointRate(pts[pts.length - 1]);
+  const prev = pointRate(pts[pts.length - 2]);
+  return last < 80 || prev - last > 20;
+});
+
 const cacheTrendSummary = computed(() => {
   const list = cacheTrend.value;
   if (!list.length) return '';
@@ -311,7 +322,8 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
       <div class="context-hero" :class="`tone-${usageTone}`">
         <div>
           <div class="context-kicker">
-            Context Budget
+            <!-- 分区标题由外层 AgentPanel 的「上下文预算」承担，这里只保留来源标记，
+                 否则"CONTEXT / 上下文预算 / Context Budget"三层标题说同一件事 -->
             <span class="context-source-tag" :class="contextMeasured ? 'is-measured' : 'is-estimated'">
               {{ contextMeasured ? t('monitor.context.measuredTag') : t('monitor.context.estimatedTag') }}
             </span>
@@ -399,7 +411,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
           : t('monitor.context.cacheWarmup') }}
       </div>
 
-      <div v-if="cacheTrend.length >= 2" class="context-cache-trend">
+      <div v-if="cacheTrendAnomaly" class="context-cache-trend">
         <div class="trend-head">
           <span>{{ t('monitor.context.cacheTrend') }}</span>
           <strong>{{ cacheTrendSummary }}</strong>
@@ -413,55 +425,30 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
             :title="pointTitle(point)"
           >
             <span class="trend-fill" :style="{ height: `${Math.max(pointRate(point), 4)}%` }" />
-            <span class="trend-rate">{{ pointRate(point) }}</span>
+            <!-- 柱内不再标数字：7+ 根柱子各塞一个数字是纯噪音，精确值放 title（悬停可见） -->
             <!-- 轮次只标首尾：10 根全标会挤成一团，精确轮次在 title 里 -->
             <span v-if="index === 0 || index === cacheTrend.length - 1" class="trend-loop">
               L{{ point.loopCount }}
             </span>
           </div>
         </div>
+        <!-- 模块只在异常时出现，必须附带"为什么出现"，否则用户不知道这图突然冒出来是什么意思 -->
+        <div class="trend-anomaly-note">{{ t('monitor.context.cacheTrendAnomalyNote') }}</div>
       </div>
     </div>
 
-    <div class="context-visual-grid">
-      <div class="context-chart-card">
-        <div class="donut" aria-hidden="true">
-          <svg viewBox="0 0 42 42">
-            <circle class="donut-track" cx="21" cy="21" r="15.9" />
-            <circle
-              v-for="section in sectionViews"
-              :key="section.key"
-              class="donut-segment"
-              cx="21"
-              cy="21"
-              r="15.9"
-              :stroke="section.color"
-              :stroke-dasharray="`${section.percent} ${100 - section.percent}`"
-              :stroke-dashoffset="section.dashOffset"
-            />
-          </svg>
-          <div class="donut-center">
-            <strong>{{ sectionViews.length }}</strong>
-            <span>{{ t('monitor.context.sources') }}</span>
-          </div>
-        </div>
-        <div class="context-chart-copy">
-          <span>{{ t('monitor.context.dominantSource') }}</span>
-          <strong v-if="dominantSection">{{ dominantSection.label }}</strong>
-          <p v-if="dominantSection">
-            {{ t('monitor.context.dominantShare', { tokens: formatToken(dominantSection.estimatedTokens), percent: dominantSection.percent }) }}
-          </p>
-          <p v-else>{{ t('monitor.context.noSources') }}</p>
-        </div>
+    <div class="context-section-list">
+      <!-- 最大来源：原来是甜甜圈图，但"4 来源"信息量太低、占比明细行里已有占比条，
+           收成明细区上方一行小字即可 -->
+      <div v-if="dominantSection" class="context-dominant-line">
+        {{ t('monitor.context.dominantSource') }} · <strong>{{ dominantSection.label }}</strong>
+        <span>{{ t('monitor.context.dominantShare', { tokens: formatToken(dominantSection.estimatedTokens), percent: dominantSection.percent }) }}</span>
       </div>
 
       <!-- 分区明细只能靠本地分词器估算：厂商 API 只回总量，不回"消息 / 工具 / 系统提示词各占多少"。
            所以这里必须显式说明，避免用户拿分区之和去核对上面的实测总量。 -->
       <div class="context-estimate-note">{{ t('monitor.context.sectionsEstimatedHint') }}</div>
 
-    </div>
-
-    <div class="context-section-list">
       <div class="context-detail-header">
         <span class="context-detail-label">{{ t('monitor.context.details') }}</span>
         <button
@@ -529,7 +516,8 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 .context-inspector {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  /* 卡片去除后，分区之间靠更大的留白分组（原 12px 是给描边卡片用的间距） */
+  gap: 22px;
   min-width: 0;
 }
 
@@ -537,8 +525,7 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
    原因：面板内容宽只有 ~578px，先切两列、右列里再切两列，最终每格只剩 ~110px，
    装不下"标签 + 值"这一行 —— 只能把字号压到 0.6rem 以下、让文字换行挤压。
    改单列后宽度还给内容，字号也才有条件回到可读区间。 */
-.context-top-grid,
-.context-visual-grid {
+.context-top-grid {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -550,14 +537,9 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   font-size: 0.72rem;
 }
 
-.context-hero,
-.context-chart-card,
-.context-stat-card,
-.context-section-item {
-  border: 1px solid var(--border-color);
-  background: var(--glass-bg);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-}
+/* === 扁平化（与设置页同一口径）===
+   监控面板主角是数字，不是卡片：去掉描边/底色/阴影的"卡片套卡片"，
+   分区靠留白与发丝线分隔，状态色只出现在"值"上（见下方 cache-* 规则）。 */
 
 .context-hero {
   position: relative;
@@ -565,17 +547,16 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
-  padding: 14px;
-  border-radius: 12px;
-  background: var(--glass-bg);
+  padding: 2px 2px 0;
 }
 
+/* 占用偏高/告急时hero区淡染色：这是状态信号，保留但压到很弱 */
 .context-hero.tone-warning {
-  background: color-mix(in srgb, var(--accent-blue) 5%, var(--glass-bg));
+  background: color-mix(in srgb, var(--accent-blue) 4%, transparent);
 }
 
 .context-hero.tone-critical {
-  background: color-mix(in srgb, var(--accent-red) 6%, var(--glass-bg));
+  background: color-mix(in srgb, var(--accent-red) 5%, transparent);
 }
 
 .context-kicker,
@@ -773,18 +754,19 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   background: color-mix(in srgb, var(--accent-red) 22%, transparent);
 }
 
-/* auto-fit + 最小格宽 150px：格子放不下就自动落单列，而不是硬切两列。
-   这样"全局字号调大"或"窗口拖窄"都不会再把卡片挤成两行（每张卡的标签要 ~110px） */
+/* auto-fit + 最小格宽 104px：面板 ~578px 时五个指标正好一行排满，
+   避免 3+2 两行右下角空洞；窗口拖窄时自动落行 */
 .context-overview-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  /* 统计带：上下发丝线夹出一条"指标区"，格子本身无卡片 */
+  border-top: 1px solid var(--glass-border-subtle);
+  border-bottom: 1px solid var(--glass-border-subtle);
 }
 
 .context-stat-card {
   min-width: 0;
-  padding: 9px;
-  border-radius: 10px;
+  padding: 10px 12px 10px 2px;
 }
 
 .context-stat-card span {
@@ -804,18 +786,10 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   font-variant-numeric: tabular-nums;
 }
 
-/* 缓存命中卡片：命中=绿、预热=蓝、未知=灰；颜色只做辅助，语义靠文案 */
-.context-stat-card.cache-hit {
-  border-color: color-mix(in srgb, var(--accent-green) 42%, var(--border-color));
-  background: color-mix(in srgb, var(--accent-green) 8%, var(--glass-bg));
-}
-
+/* 缓存命中：状态色只落在数值上（命中=绿、预热=蓝、未知=灰），
+   不再整卡染色 —— 绿色是"状态健康"的语义色，不是装饰 */
 .context-stat-card.cache-hit strong {
   color: var(--accent-green);
-}
-
-.context-stat-card.cache-warmup {
-  border-color: color-mix(in srgb, var(--accent-blue) 34%, var(--border-color));
 }
 
 .context-stat-card.cache-warmup strong {
@@ -843,10 +817,15 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 
 .context-cache-trend {
   margin-top: 8px;
-  padding: 9px;
-  border-radius: 10px;
-  border: 1px solid var(--border-color);
-  background: var(--glass-bg);
+  padding: 0 2px;
+}
+
+/* 异常说明：跟随警示语义色 */
+.trend-anomaly-note {
+  margin-top: 4px;
+  color: var(--text-warning);
+  font-size: 0.72rem;
+  line-height: 1.5;
 }
 
 .trend-head {
@@ -867,12 +846,12 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 
 /* 高度 46px 太矮：命中率 81%~99% 在这一高度里只差 8px，等于看不出差别 ——
    画了一根"看起来是量化图、实际读不出量"的柱子，比不画更糟。
-   提到 86px（其中 16px 留给轮次标），柱区 70px，再补一条 50% 基线做参照 */
+   柱区 64px（含 16px 轮次标留白），再补一条 50% 基线做参照 */
 .trend-bars {
   display: flex;
   align-items: flex-end;
   gap: 4px;
-  height: 86px;
+  height: 64px;
   padding-bottom: 16px;
 }
 
@@ -897,20 +876,23 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   pointer-events: none;
 }
 
+/* 柱体瘦身 + 中性化：命中率趋势是次要指标，不该是全页最吵的元素。
+   默认灰蓝细柱；只有"命中率异常偏低（<50%）"才上警示色 —— 颜色即语义。 */
 .trend-fill {
   display: block;
-  width: 100%;
-  border-radius: 4px;
-  background: var(--accent-blue);
+  width: 55%;
+  margin-inline: auto;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--text-muted) 40%, transparent);
   transition: height 0.25s ease;
 }
 
 .trend-slot.cache-hit .trend-fill {
-  background: var(--accent-green);
+  background: color-mix(in srgb, var(--accent-blue) 45%, var(--text-muted) 40%);
 }
 
 .trend-slot.cache-partial .trend-fill {
-  background: var(--accent-blue);
+  background: var(--text-warning);
 }
 
 /* 预热态（0 命中）用斜纹：它和"命中了但很低"是两件事，不能长得一样。
@@ -921,18 +903,6 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
     color-mix(in srgb, var(--text-muted) 55%, transparent) 0 3px,
     transparent 3px 6px
   );
-}
-
-.trend-rate {
-  position: absolute;
-  inset: auto 0 2px 0;
-  text-align: center;
-  color: var(--text-main);
-  font-size: 0.72rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
-  pointer-events: none;
 }
 
 /* 轮次标：画在槽下方的留白里（.trend-bars 的 padding-bottom 就是为此留的）。
@@ -948,85 +918,27 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   pointer-events: none;
 }
 
-.context-chart-card {
-  display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
-  align-items: center;
-  gap: 14px;
-  padding: 12px;
-  border-radius: 12px;
-}
-
-.donut {
-  position: relative;
-  width: 86px;
-  height: 86px;
-}
-
-.donut svg {
-  width: 100%;
-  height: 100%;
-  transform: rotate(-90deg);
-}
-
-.donut-track,
-.donut-segment {
-  fill: none;
-  stroke-width: 4;
-}
-
-.donut-track {
-  stroke: color-mix(in srgb, var(--text-muted) 14%, transparent);
-}
-
-.donut-segment {
-  transition: stroke-dasharray 180ms ease-out;
-}
-
-.donut-center {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-}
-
-.donut-center strong {
-  color: var(--text-main);
-  font-size: 1rem;
-  line-height: 1;
-}
-
-.donut-center span {
-  margin-top: 2px;
+/* 最大来源一行：替代原甜甜圈模块 */
+.context-dominant-line {
+  padding: 0 2px;
   color: var(--text-muted);
-  font-size: 0.66rem;
+  font-size: 0.72rem;
+  line-height: 1.5;
 }
 
-.context-chart-copy {
-  min-width: 0;
-}
-
-.context-chart-copy strong {
-  display: block;
-  margin-top: 4px;
-  overflow: hidden;
+.context-dominant-line strong {
   color: var(--text-main);
-  font-size: 0.86rem;
-  font-weight: var(--fw-heavy);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-weight: var(--fw-bold);
 }
 
-.context-chart-copy p {
-  margin: 4px 0 0;
-  line-height: 1.45;
+.context-dominant-line span {
+  margin-left: 4px;
+  font-variant-numeric: tabular-nums;
 }
 
 .context-estimate-note {
-  margin: 8px 0 6px;
+  margin: 4px 0 2px;
+  padding: 0 2px;
   color: var(--text-muted);
   font-size: 0.72rem;
   line-height: 1.45;
@@ -1118,9 +1030,18 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
 }
 
+.context-section-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 明细分区：去卡片，行与行之间发丝线分隔（同设置页口径） */
 .context-section-item {
-  border-radius: 8px;
-  overflow: hidden;
+  border-bottom: 1px solid var(--glass-border-subtle);
+}
+
+.context-section-item:last-child {
+  border-bottom: none;
 }
 
 /* summary 改成纵向两行：第一行"名称 + 项数 + token + 占比"，第二行占比条。
@@ -1131,9 +1052,10 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   flex-direction: column;
   gap: 6px;
   min-height: 40px;
-  padding: 8px 10px;
+  padding: 10px 2px;
   cursor: pointer;
   list-style: none;
+  border-radius: 4px;
 }
 
 .context-section-item summary::-webkit-details-marker {
@@ -1163,7 +1085,10 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   flex-shrink: 0;
   margin-left: auto;
   white-space: nowrap;
-  font-weight: var(--fw-bold);
+  /* 监控页数字是主角：右侧读数加重加大，标签反而弱化 */
+  color: var(--text-main);
+  font-size: 0.78rem;
+  font-weight: var(--fw-heavy);
   font-variant-numeric: tabular-nums;
 }
 

@@ -734,28 +734,24 @@ const backgroundStatusLabel = (status: string): string => {
   background: var(--glass-bg-light);
 }
 
-/* 权限状态条 */
+/* 权限状态条：扁平为一行文字条，与下方监控区同一平面；
+   有待处理请求时的蓝色染底保留（那是状态信号），仅去掉描边卡片感 */
 .perm-status-bar {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 14px;
-  margin: 0 12px;
-  border-radius: 8px;
-  background: var(--glass-bg-light);
-  border: 1px solid var(--border-color);
+  padding: 8px 2px;
+  margin: 0 2px;
+  border-bottom: 1px solid var(--glass-border-subtle);
   color: var(--text-muted);
   font-size: 0.78rem;
   transition: all 0.15s;
 }
 .perm-status-bar.allowed {
-  background: var(--glass-bg-light);
-  border-color: var(--border-color);
   color: var(--text-soft);
 }
 .perm-status-bar.pending {
-  background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
-  border-color: color-mix(in srgb, var(--accent-blue) 20%, transparent);
+  background: color-mix(in srgb, var(--accent-blue) 6%, transparent);
   color: var(--accent-blue);
 }
 .perm-status-bar svg { flex-shrink: 0; }
@@ -919,13 +915,11 @@ const backgroundStatusLabel = (status: string): string => {
   overflow: auto;
 }
 
+/* 监控分区去卡片化（与设置页/上下文明细同一口径）：
+   外层不再套描边大框，分区靠小标题 + 留白分隔，整页一个平面 */
 .monitor-section {
   min-width: 0;
-  border: 1px solid var(--border-color);
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--glass-bg) 82%, transparent);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.1);
-  padding: 12px;
+  padding: 4px 2px;
 }
 
 .context-section {

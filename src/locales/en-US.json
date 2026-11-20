@@ -407,6 +407,7 @@
       "cacheWarmup": "Warming up: the first 1–2 requests miss (normal); it starts hitting on the 3rd",
       "cacheSource": "field {source}",
       "cacheTrend": "Cache hit trend (per loop)",
+      "cacheTrendAnomalyNote": "Hit rate anomaly — the context was likely rebuilt (compaction / model switch / prompt change). Worth a look if unexpected.",
       "cacheLoop": "Loop {loop}",
       "cacheWarning": "Compacting will change the context structure, invalidating the prompt cache for this session. The next request may consume significantly more tokens and take longer.\n\nCurrent {tokens} tokens, continue?",
       "sources": "Sources",
