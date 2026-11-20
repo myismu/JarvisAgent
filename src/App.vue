@@ -309,14 +309,14 @@ onBeforeUnmount(() => {
           <!-- 会话工具栏只属于聊天视图：沙箱徽标/状态灯/监控入口都是会话级内容；
                技能管理页有自己的页头，不再复用这一行 -->
           <div v-if="appView.isChatView" class="tab-bar">
-            <div v-if="projectName" class="tab-bar-project" :title="t('app.sandboxBoundaryTitle', { dir: session.workingDirectory })">
+            <div v-if="projectName" class="tab-bar-project sandboxed" :title="t('app.sandboxBoundaryTitle', { dir: session.workingDirectory })">
               <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
               </svg>
               <span>{{ projectName }}</span>
             </div>
             <!-- 非沙箱会话（未挂项目）：显式标出无边界，避免用户误以为存在目录限制 -->
-            <div v-else class="tab-bar-project" :title="t('app.noSandboxTitle')">
+            <div v-else class="tab-bar-project no-sandbox" :title="t('app.noSandboxTitle')">
               <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="3" y="11" width="18" height="11" rx="2" />
                 <path d="M7 11V7a5 5 0 0 1 9.9-1" />
@@ -552,6 +552,17 @@ onBeforeUnmount(() => {
 .tab-bar-project svg {
   flex-shrink: 0;
   opacity: 0.85;
+}
+
+/* 沙箱语义色：挂项目 = 绿（有边界，安全）；非沙箱 = 琥珀（无边界，留意）。
+   色相只落在图标与文字上，底色保持中性，避免工具条变花。 */
+.tab-bar-project.sandboxed {
+  color: var(--accent-green);
+}
+
+.tab-bar-project.no-sandbox {
+  color: var(--text-warning);
+  border-style: dashed;
 }
 
 .status-indicator {

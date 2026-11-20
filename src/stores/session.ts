@@ -169,6 +169,11 @@ export const useSessionStore = defineStore("session", () => {
   const pendingReadOnly = ref<boolean | null>(null);
   const workingDirectory = ref<string | null>(null);
 
+  /// 欢迎页快捷指令 → 输入框的待填草稿：WelcomeScreen 与 TerminalInput 是兄弟组件
+  /// （分别在 ChatArea / App.vue 下），用 store 做这个一次性交接，TerminalInput
+  /// 消费后立即清空（不持久化，不写历史）。
+  const inputDraft = ref<string | null>(null);
+
   function getSessionView(sessionId: string | null | undefined) {
     const key = getSessionKey(sessionId);
     if (!sessionViews.value[key]) {
@@ -353,6 +358,7 @@ export const useSessionStore = defineStore("session", () => {
     pendingThinkingEnabled,
     pendingReadOnly,
     workingDirectory,
+    inputDraft,
     totalInputTokens,
     totalOutputTokens,
     totalCacheHitTokens,

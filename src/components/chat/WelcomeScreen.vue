@@ -5,14 +5,39 @@
 仅一次淡入动画；环/核心/光标持续微动效，prefers-reduced-motion 下降级为静态。
 
 ## Constraints
-- 纯展示，无交互（pointer-events: none）
+- 整体无交互（pointer-events: none），仅快捷指令按钮自身恢复可点
 - 反应环为纯 SVG + CSS 动画，无新依赖
 - ① 字标/光标/标志主色参数在此微调
 -->
 <script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useSessionStore } from '../../stores/session'
 
-const { t } = useI18n()
+const { t, tm } = useI18n()
+const session = useSessionStore()
+
+/** 快捷指令：渐隐轮换展示，点击即填入输入框（草稿由 TerminalInput 消费后清空） */
+const hints = computed(() => tm('welcome.hints') as string[])
+const hintIndex = ref(0)
+const hintPaused = ref(false)
+let hintTimer: ReturnType<typeof setInterval> | null = null
+
+onMounted(() => {
+  hintTimer = setInterval(() => {
+    if (hintPaused.value || hints.value.length < 2) return
+    hintIndex.value = (hintIndex.value + 1) % hints.value.length
+  }, 4500)
+})
+
+onBeforeUnmount(() => {
+  if (hintTimer) clearInterval(hintTimer)
+})
+
+function useHint() {
+  const hint = hints.value[hintIndex.value]
+  if (hint) session.inputDraft = hint
+}
 </script>
 
 <template>
@@ -31,6 +56,20 @@ const { t } = useI18n()
     </div>
     <div class="welcome-title">JARVIS<span class="cursor">_</span></div>
     <div class="welcome-text">{{ t('welcome.ready') }}</div>
+    <button
+      v-if="hints.length"
+      class="welcome-hint"
+      type="button"
+      :title="t('welcome.hintPrefix')"
+      @click="useHint"
+      @mouseenter="hintPaused = true"
+      @mouseleave="hintPaused = false"
+    >
+      <span class="welcome-hint-prefix">{{ t('welcome.hintPrefix') }}</span>
+      <Transition name="hint-fade" mode="out-in">
+        <span :key="hintIndex" class="welcome-hint-text">{{ hints[hintIndex] }}</span>
+      </Transition>
+    </button>
   </div>
 </template>
 
@@ -108,6 +147,63 @@ const { t } = useI18n()
   color: var(--text-muted);
   font-size: 0.8667rem;
   margin-top: 8px;
+}
+
+/* 快捷指令：比就绪提示再弱一档，hover 时才"浮"出来邀请点击。
+   容器是 pointer-events:none，这里单独恢复。 */
+.welcome-hint {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 4px 12px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--text-faint);
+  font-size: 0.8rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.welcome-hint:hover {
+  background: var(--glass-bg-light);
+  border-color: var(--glass-border-subtle);
+  color: var(--text-muted);
+}
+
+.welcome-hint-prefix {
+  flex-shrink: 0;
+  color: var(--accent-blue);
+  opacity: 0.75;
+}
+
+.welcome-hint-prefix::after {
+  content: "：";
+}
+
+.welcome-hint-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+
+.hint-fade-enter-active,
+.hint-fade-leave-active {
+  transition: opacity 280ms ease, transform 280ms ease;
+}
+
+.hint-fade-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.hint-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 
 @keyframes welcomeFadeIn {

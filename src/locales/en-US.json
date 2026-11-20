@@ -9,7 +9,14 @@
     "noSandboxTitle": "Non-sandbox session (no project bound): no directory boundary; the agent may use absolute paths anywhere. File writes and commands still follow permission settings."
   },
   "welcome": {
-    "ready": "Ready to serve you, sir."
+    "ready": "Ready to serve you, sir.",
+    "hintPrefix": "Try",
+    "hints": [
+      "Walk me through what this project does and how it's organized",
+      "Review the recent changes for potential issues",
+      "Translate the README into English and polish it",
+      "Write a beginner's guide for this repository"
+    ]
   },
   "sidebar": {
     "newSession": "New chat",

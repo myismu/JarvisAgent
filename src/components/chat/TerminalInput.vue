@@ -96,6 +96,17 @@ const isRunning = computed(() =>
   session.getSessionView(session.activeSessionId).status === 'RUNNING'
 );
 
+// 欢迎页快捷指令：一次性草稿，填入后清空并聚焦（见 session store 的 inputDraft 注释）
+watch(() => session.inputDraft, (draft) => {
+  if (!draft) return;
+  userInput.value = draft;
+  session.inputDraft = null;
+  nextTick(() => {
+    inputRef.value?.focus();
+    handleInput();
+  });
+});
+
 const sessionTokenTotal = computed(() => (session.totalInputTokens || 0) + (session.totalOutputTokens || 0));
 
 /**

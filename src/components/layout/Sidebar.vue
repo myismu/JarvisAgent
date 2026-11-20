@@ -663,7 +663,7 @@ onUnmounted(() => {
               </div>
               <div class="session-meta-row">
                 <span>{{ formatSessionTime(session.updatedAt) }}</span>
-                <span v-if="formatSessionTokens(session)">{{ formatSessionTokens(session) }}</span>
+                <span v-if="formatSessionTokens(session)" class="session-tokens">{{ formatSessionTokens(session) }}</span>
               </div>
             </li>
           </ul>
@@ -718,7 +718,7 @@ onUnmounted(() => {
             </div>
             <div class="session-meta-row">
               <span>{{ formatSessionTime(session.updatedAt) }}</span>
-              <span v-if="formatSessionTokens(session)">{{ formatSessionTokens(session) }}</span>
+              <span v-if="formatSessionTokens(session)" class="session-tokens">{{ formatSessionTokens(session) }}</span>
             </div>
           </li>
         </ul>
@@ -733,7 +733,7 @@ onUnmounted(() => {
             <path d="M10 12h4"></path>
           </svg>
           <span class="project-name">{{ t('sidebar.recentlyDeleted') }}</span>
-          <span class="project-count">{{ deletedSessions.length }}</span>
+          <span class="project-count archived">{{ deletedSessions.length }}</span>
         </div>
         <ul v-if="showDeleted" class="session-list">
           <li v-for="s in deletedSessions" :key="s.id" class="session-item deleted-item">
@@ -1028,6 +1028,13 @@ body.dark-mode .project-header {
   border: 1px solid var(--glass-border-subtle);
 }
 
+/* 归档区计数：与活跃计数区分——虚线边 + 更弱的字色，读作"不活跃存量" */
+.project-count.archived {
+  background: transparent;
+  border-style: dashed;
+  color: var(--text-faint);
+}
+
 .project-new-btn,
 .project-delete-btn {
   display: none;
@@ -1171,7 +1178,8 @@ body.dark-mode .project-header {
   display: flex;
   gap: 8px;
   padding-left: 0;
-  color: var(--text-muted);
+  /* 元信息整行再降一档（faint）：让标题在列表里绝对主导，时间/token 只作余光信息 */
+  color: var(--text-faint);
   font-size: 0.62rem;
   font-weight: 400;
   white-space: nowrap;
@@ -1181,6 +1189,12 @@ body.dark-mode .project-header {
 .session-meta-row span {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* token 读数：等宽数字 + 再弱半档，与文字形的时间区分开 */
+.session-meta-row .session-tokens {
+  font-family: var(--font-mono);
+  opacity: 0.75;
 }
 .session-item:hover {
   background: var(--glass-bg-light);
