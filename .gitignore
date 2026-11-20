@@ -19,6 +19,7 @@ dist-ssr
 !.vscode/extensions.json
 .idea
 .claude/
+.cursor/
 .trae/
 .qoder/
 .workbuddy/
