@@ -1475,7 +1475,7 @@ const save = async () => {
   --sel-fill: color-mix(in srgb, var(--text-main) 76%, var(--surface-strong));
   background: var(--surface-strong);
   border: 1px solid var(--glass-border);
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-lg);
   width: min(1080px, calc(100vw - 48px));
   max-width: 96vw;
   height: min(800px, calc(100vh - 48px));
@@ -1496,8 +1496,8 @@ const save = async () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  min-height: 58px;
-  padding: 14px 22px 14px 24px;
+  min-height: 48px;
+  padding: 10px 18px 10px 20px;
   border-bottom: 1px solid var(--glass-border);
   background: var(--surface-strong);
 }
@@ -1515,7 +1515,7 @@ const save = async () => {
 
 .settings-header h3 {
   margin: 0;
-  font-size: 1.1rem;
+  font-size: 1rem;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
@@ -1706,7 +1706,7 @@ const save = async () => {
 
 .settings-body {
   height: 100%;
-  padding: 24px 32px;
+  padding: 24px 36px;
   overflow-y: auto;
 }
 
@@ -1720,7 +1720,7 @@ const save = async () => {
 .tab-content {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 36px;
   max-width: 800px;
   margin: 0 auto;
 }
@@ -1735,48 +1735,93 @@ const save = async () => {
   width: 100%;
 }
 
+/* === 行式布局（企业级设置页口径）===
+   去卡片化：分区之间只靠间距与小标题区分，不再用底色+描边的大卡片。
+   每个分区 = 小标题 + 若干"标签居左 / 控件居右"的设置行，行间发丝线分隔。 */
 .setting-card {
-  background: var(--surface-strong);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-lg);
-  padding: 20px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
 }
 
+/* 分区小标题：弱化处理（小字 + 弱色 + 字距），读作"分组标签"而非"卡片标题" */
 .card-header {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 20px;
-  color: var(--text-main);
-  border-bottom: 1px solid var(--glass-border-subtle);
-  padding-bottom: 12px;
+  margin-bottom: 2px;
+  color: var(--text-faint);
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+/* 行式布局里图标是噪音，分区靠文字分组即可 */
+.card-header svg {
+  display: none;
 }
 
 .card-header h4 {
   margin: 0;
-  font-size: 1rem;
-  font-weight: 700;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
 }
 
+/* 设置行：标签居左、控件居右；描述文字折到下一整行。
+   行间用发丝线分隔，最后一行无线。 */
 .setting-item {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 18px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 24px;
+  row-gap: 6px;
+  margin-bottom: 0;
+  padding: 12px 2px;
+  border-bottom: 1px solid var(--glass-border-subtle);
 }
 
-.setting-item:last-child { margin-bottom: 0; }
+.setting-item:last-child {
+  margin-bottom: 0;
+  border-bottom: none;
+}
 
 .setting-item label {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 0.8667rem;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text-main);
 }
 
+/* 描述折行到标签下方（整行宽），不与控件抢右侧空间 */
+.setting-item .setting-desc {
+  flex-basis: 100%;
+  order: 99;
+}
+
+/* 嵌套设置行（预设页 max_tokens）与能力徽章：独占一整行，
+   嵌套行不再画发丝线（外层已有），避免双线 */
+.setting-item .setting-item {
+  flex-basis: 100%;
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.setting-item > .capability-badges {
+  flex-basis: 100%;
+  order: 50;
+}
+
+/* 右侧控件区：不再拉满整行，收缩为固定档位的右对齐控件 */
 .setting-item input, .setting-item select {
-  width: 100%;
-  height: 38px;
+  flex: 0 1 320px;
+  width: auto;
+  min-width: 220px;
+  height: 32px;
   padding: 0 12px;
   background-color: var(--glass-bg-light);
   border: 1px solid var(--glass-border);
@@ -1784,6 +1829,24 @@ const save = async () => {
   color: var(--text-main);
   font-size: 0.8667rem;
   transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s;
+}
+
+/* 包装类控件（下拉/滑杆/开关组等）右对齐且不被压缩。
+   注意 .toggle-switch 本身也是 label，必须整体覆盖 flex，否则会被标签规则撑开。 */
+.setting-item > .custom-select,
+.setting-item > .display-mode-toggle,
+.setting-item > .toggle-switch,
+.setting-item > .theme-toggle-btn,
+.setting-item > .font-size-control {
+  flex: 0 0 auto;
+}
+
+.setting-item > .custom-select {
+  min-width: 200px;
+}
+
+.setting-item > .font-size-control {
+  width: 220px;
 }
 
 .setting-item select {
@@ -2276,8 +2339,8 @@ body.dark-mode .model-status-hint.hint-deprecated { color: #fbbf24; }
 }
 
 .settings-footer {
-  min-height: 64px;
-  padding: 12px 24px;
+  min-height: 52px;
+  padding: 10px 20px;
   border-top: 1px solid var(--glass-border);
   display: flex;
   justify-content: space-between;
@@ -2289,9 +2352,9 @@ body.dark-mode .model-status-hint.hint-deprecated { color: #fbbf24; }
   background: var(--sel-fill);
   color: var(--surface-strong);
   border: none;
-  padding: 10px 24px;
+  padding: 7px 18px;
   border-radius: 8px;
-  font-size: 0.9333rem;
+  font-size: 0.8667rem;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;
@@ -2299,7 +2362,6 @@ body.dark-mode .model-status-hint.hint-deprecated { color: #fbbf24; }
 
 .save-btn:hover:not(:disabled) {
   opacity: 0.9;
-  transform: translateY(-1px);
 }
 
 .save-btn:disabled {
