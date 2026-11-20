@@ -33,6 +33,8 @@ dist-ssr
 
 # JarvisAgent Runtime Data
 data/
+.acl-recovery/
+.staging/
 .sessions/
 .tasks/
 .logs/
