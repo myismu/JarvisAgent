@@ -300,18 +300,15 @@ onBeforeUnmount(() => {
 <template>
   <main class="editor-container">
     <div class="editor-window">
-      <TitleBar :sidebar-collapsed="sidebarCollapsed" />
+      <TitleBar :sidebar-collapsed="sidebarCollapsed" @toggle-sidebar="sidebarCollapsed = !sidebarCollapsed" />
 
       <div class="editor-body">
         <Sidebar :collapsed="sidebarCollapsed" @open-settings="showSettings = true" />
 
         <div class="main-content">
-          <div class="tab-bar">
-            <button class="sidebar-toggle" @click="sidebarCollapsed = !sidebarCollapsed" :title="sidebarCollapsed ? t('app.expandSidebar') : t('app.collapseSidebar')">
-              <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                <polyline :points="sidebarCollapsed ? '9 18 15 12 9 6' : '15 18 9 12 15 6'"></polyline>
-              </svg>
-            </button>
+          <!-- 会话工具栏只属于聊天视图：沙箱徽标/状态灯/监控入口都是会话级内容；
+               技能管理页有自己的页头，不再复用这一行 -->
+          <div v-if="appView.isChatView" class="tab-bar">
             <div v-if="projectName" class="tab-bar-project" :title="t('app.sandboxBoundaryTitle', { dir: session.workingDirectory })">
               <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
@@ -534,27 +531,8 @@ onBeforeUnmount(() => {
   align-items: center;
   border-bottom: 1px solid var(--glass-border);
   flex-shrink: 0;
-  padding: 0 4px;
+  padding: 0 8px;
   position: relative;
-}
-
-.sidebar-toggle {
-  background: transparent;
-  border: 1px solid transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 4px 8px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-md);
-  transition: all var(--transition-fast);
-  -webkit-app-region: no-drag;
-}
-.sidebar-toggle:hover {
-  color: var(--accent-blue);
-  background: var(--glass-bg-light);
-  border-color: var(--glass-border-subtle);
 }
 
 .tab-bar-project {

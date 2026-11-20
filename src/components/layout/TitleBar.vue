@@ -1,10 +1,16 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n';
 import { useWindow } from '../../composables/useWindow';
 
+const { t } = useI18n();
 const { closeWindow, minimizeWindow, maximizeWindow } = useWindow();
 
 defineProps<{
   sidebarCollapsed: boolean;
+}>()
+
+const emit = defineEmits<{
+  (e: 'toggle-sidebar'): void
 }>()
 </script>
 
@@ -15,6 +21,16 @@ defineProps<{
       <span class="control minimize" @click="minimizeWindow"></span>
       <span class="control maximize" @click="maximizeWindow"></span>
     </div>
+    <!-- 侧边栏收放属于全局窗口层，与窗口控制同层；不放进会话工具栏 -->
+    <button
+      class="sidebar-toggle"
+      @click="emit('toggle-sidebar')"
+      :title="sidebarCollapsed ? t('app.expandSidebar') : t('app.collapseSidebar')"
+    >
+      <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <polyline :points="sidebarCollapsed ? '9 18 15 12 9 6' : '15 18 9 12 15 6'"></polyline>
+      </svg>
+    </button>
     <div
       class="window-title"
       :class="{
@@ -66,6 +82,27 @@ defineProps<{
 .control.close { background-color: #ff5f56; }
 .control.minimize { background-color: #ffbd2e; }
 .control.maximize { background-color: #27c93f; }
+
+/* 侧边栏收放：全局窗口层控件（与会话工具栏同一行的“沙箱徽标”等不同层） */
+.sidebar-toggle {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  margin-right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  transition: all var(--transition-fast);
+  -webkit-app-region: no-drag;
+}
+.sidebar-toggle:hover {
+  color: var(--accent-blue);
+  background: var(--glass-bg-light);
+  border-color: var(--glass-border-subtle);
+}
 
 .window-title {
   flex: 1;

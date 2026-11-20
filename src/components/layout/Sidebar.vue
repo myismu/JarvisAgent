@@ -241,6 +241,7 @@ const submitRenameSession = async (sessionId: string) => {
 };
 
 const prepareNewSession = async (projectId: string | null = null) => {
+  appView.showChat(); // 新建/打开项目本质是进入聊天视图，技能页下也必须切回
   try {
     sessionStore.activeSessionId = null;
     await invoke('clear_active_session_id');
@@ -287,7 +288,8 @@ const openProject = async () => {
 };
 
 const openSkillManager = () => {
-  appView.showSkillManager();
+  // 再点一次返回聊天：按钮同时充当“当前视图”指示
+  appView.toggleSkillManager();
 };
 
 // 在项目下新建对话
@@ -360,9 +362,12 @@ const syncProfileFromSession = async (meta: {
 
 // 切换会话
 const switchToSession = async (id: string) => {
+  // 视图切换与会话切换正交：点击任何会话都先回到聊天视图，
+  // 包括点击当前已激活的会话——此前 showChat 放在早退之后，
+  // 从技能页点击当前会话会停在技能页。
+  appView.showChat();
   if (id === sessionStore.activeSessionId) return;
   try {
-    appView.showChat(); // 切换会话时返回聊天视图
     const meta = await invoke<any>('switch_session', { id });
     sessionStore.activeSessionId = id;
     sessionStore.workingDirectory = meta.workingDirectory || null;
@@ -564,7 +569,12 @@ onUnmounted(() => {
             </svg>
             <span>{{ t('sidebar.openProject') }}</span>
           </button>
-          <button type="button" class="new-session-btn skill-btn" @click.stop="openSkillManager()">
+          <button
+            type="button"
+            class="new-session-btn skill-btn"
+            :class="{ active: appView.isSkillManagerView }"
+            @click.stop="openSkillManager()"
+          >
             <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
               <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
             </svg>
@@ -939,6 +949,13 @@ onUnmounted(() => {
   background: var(--glass-bg-light);
   border: 1px solid var(--glass-border);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+/* 技能管理按钮同时表示“当前处于技能视图” */
+.skill-btn.active {
+  background: var(--glass-bg-light);
+  border: 1px solid var(--accent-blue);
+  color: var(--accent-blue);
 }
 
 .project-header {
