@@ -964,6 +964,82 @@ const processDroppedFiles = async (paths: string[]) => {
   });
 };
 
+/**
+ * 从文件名推断图片 MIME。
+ *
+ * 资源管理器里"复制文件"再粘贴时，WebView2 给出的 DataTransferItem.type 可能为空，
+ * 此时只能靠扩展名兜底；推断不出来就当作不是图片，放行默认粘贴。
+ */
+const inferImageMime = (name: string): string | null => {
+  const ext = name.split('.').pop()?.toLowerCase() || '';
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  if (ext === 'png') return 'image/png';
+  if (ext === 'gif') return 'image/gif';
+  if (ext === 'webp') return 'image/webp';
+  return null;
+};
+
+/**
+ * 粘贴剪贴板图片（Ctrl+V）。
+ *
+ * 拖拽拿到的是文件路径（Tauri 原生事件），剪贴板截图是内存位图、没有路径，
+ * 所以必须从 paste 事件的 clipboardData 里取 File，再汇入与拖拽相同的压缩管线。
+ *
+ * 非视觉模型没有"仅传路径"的退路（位图无路径可传），这里只提示不附加；
+ * 且不拦截默认行为，剪贴板若同时带文本，文本仍能正常粘贴。
+ */
+const handlePaste = async (event: ClipboardEvent) => {
+  const items = event.clipboardData?.items;
+  if (!items) return;
+
+  let file: File | null = null;
+  let mimeType = '';
+  for (const item of Array.from(items)) {
+    if (item.kind !== 'file') continue;
+    const candidate = item.getAsFile();
+    if (!candidate) continue;
+    const mime = item.type.startsWith('image/') ? item.type : inferImageMime(candidate.name);
+    if (mime) {
+      file = candidate;
+      mimeType = mime;
+      break;
+    }
+  }
+  // 没有图片项：可能是纯文本粘贴，交给 textarea 默认行为
+  if (!file) return;
+
+  if (!canModelVision.value) {
+    showVisionWarning.value = true;
+    return;
+  }
+
+  // 必须在事件同步阶段拦截，否则 await 之后默认粘贴已经执行
+  event.preventDefault();
+
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const compressed = await compressImage(bytes, mimeType);
+    // 剪贴板图片没有真实路径：生成一个仅用于缩略图展示与悬停提示的名字
+    const ext = compressed.mimeType === 'image/png' ? 'png' : 'jpg';
+    const now = new Date();
+    const stamp = [now.getHours(), now.getMinutes(), now.getSeconds()]
+      .map((n) => String(n).padStart(2, '0'))
+      .join('');
+    mediaFiles.value.push({
+      path: `粘贴图片-${stamp}.${ext}`,
+      type: 'image',
+      url: URL.createObjectURL(file),
+      base64: compressed.base64,
+      naturalWidth: compressed.naturalWidth,
+      naturalHeight: compressed.naturalHeight,
+      compressedWidth: compressed.compressedWidth,
+      compressedHeight: compressed.compressedHeight,
+    });
+  } catch (e) {
+    console.error('Failed to paste image:', e);
+  }
+};
+
 onMounted(async () => {
   await loadConfig();
   // 档位/模式控件以会话状态为准（刷新后恢复显示）
@@ -1404,6 +1480,7 @@ const handleRecallEdit = async () => {
           :disabled="isCompacting"
           @input="handleInput"
           @keydown="handleKeydown"
+          @paste="handlePaste"
         ></textarea>
 
         <button v-if="isCompacting" class="send-btn compacting-state" disabled :title="'上下文压缩中'">
