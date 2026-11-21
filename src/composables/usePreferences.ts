@@ -47,6 +47,12 @@ interface UiPreferences {
   agentPanelPosition: AgentPanelPosition;
   compactMode: boolean;
   sidebarCollapsed: boolean;
+  /** 会话列表「项目」总区块折叠（一次收起所有项目分组） */
+  sidebarProjectsCollapsed: boolean;
+  /** 会话列表「独立会话」区块折叠 */
+  sidebarStandaloneCollapsed: boolean;
+  /** 被折叠的项目分组 id（只存折叠的，默认展开） */
+  sidebarCollapsedProjectIds: string[];
   agentPanelVisible: boolean;
   agentAudience: AgentAudience;
   agentWorkMode: AgentWorkMode;
@@ -91,6 +97,16 @@ interface UiPreferences {
   imageMaxWidth: number;
   imageMaxHeight: number;
   imageQuality: number;
+  /**
+   * 未发送的输入草稿：`sessionId → 原文`。
+   *
+   * 存在意义：输入框是常驻组件（`App.vue` 里的 `<TerminalInput />` 无 key），
+   * 切会话时实例不重建，`userInput` 是组件内 ref——不按会话隔离就会出现
+   * 「A 里打了一半，切到 B 还留着，一回车发错会话」。
+   *
+   * 键 `__new__` 表示尚未落库的新会话。
+   */
+  inputDrafts: Record<string, string>;
 }
 
 /**
@@ -125,6 +141,9 @@ const defaults: UiPreferences = {
   agentPanelPosition: "right",
   compactMode: false,
   sidebarCollapsed: false,
+  sidebarProjectsCollapsed: false,
+  sidebarStandaloneCollapsed: false,
+  sidebarCollapsedProjectIds: [],
   agentPanelVisible: false,
   agentAudience: "developer",
   agentWorkMode: "edit",
@@ -141,6 +160,7 @@ const defaults: UiPreferences = {
   imageMaxWidth: IMAGE_COMPRESS_TIERS.standard.maxWidth,
   imageMaxHeight: IMAGE_COMPRESS_TIERS.standard.maxHeight,
   imageQuality: IMAGE_COMPRESS_TIERS.standard.quality,
+  inputDrafts: {},
 };
 
 function normalizePrefs(
@@ -175,7 +195,39 @@ function normalizePrefs(
   // —— 旧版默认 15 落在旧挡位 12/14/16/18 之外，正是这个状态。
   // 口径与 normalizeImageCompress 一致：以落库的数值为准，反推出最接近的挡位。
   result.fontSize = snapToNearestPreset(Number(result.fontSize) || defaults.fontSize, FONT_SIZE_PRESETS);
+  normalizeInputDrafts(result);
   return result;
+}
+
+/**
+ * 输入草稿单条长度上限（字符）。
+ *
+ * 超出上限的草稿**不落盘**：`app-config.json` 在窗口拖动、缩放时会被整份重写，
+ * 一条几万字的草稿会把每次重写的体积拉大可观。取舍很直白——两万字以上的未发送
+ * 输入极少见，而它一旦切走就丢；这里宁愿丢它，也不愿拖累整个偏好文件的写入。
+ */
+export const INPUT_DRAFT_MAX_CHARS = 20_000;
+
+/**
+ * 净化草稿表：挡掉非字符串、空串和超长条目。
+ *
+ * 需要这层是因为 `save_ui_preferences` 是**全量替换结构体**，而这份 JSON 是可以被
+ * 手改的。脏值一旦进来，会被原样写回磁盘并持续传给后端，所以读的时候就收敛掉。
+ */
+function normalizeInputDrafts(result: UiPreferences) {
+  const source = result.inputDrafts;
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    result.inputDrafts = {};
+    return;
+  }
+  const clean: Record<string, string> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (typeof key !== "string" || !key) continue;
+    if (typeof value !== "string" || !value) continue;
+    if (value.length > INPUT_DRAFT_MAX_CHARS) continue;
+    clean[key] = value;
+  }
+  result.inputDrafts = clean;
 }
 
 /**
@@ -207,6 +259,14 @@ function normalizeImageCompress(result: UiPreferences) {
 }
 
 const prefs = ref<UiPreferences>({ ...defaults });
+/**
+ * 后端偏好是否已经拉取完成。
+ *
+ * 存在意义：异步加载意味着任何在 setup 里"读一次"偏好并缓存到本地 ref 的写法
+ * 都会错过真实值。需要做一次性迁移或本地快照的调用方（如 Sidebar 迁移旧
+ * localStorage）用 `watch(prefsReady, ...)` 等就绪后再读，才能拿到库里的值。
+ */
+export const prefsReady = ref(false);
 let loaded = false;
 let watchersInitialized = false;
 
@@ -266,6 +326,7 @@ async function loadFromBackend() {
   }
   applyAll(prefs.value);
   loaded = true;
+  prefsReady.value = true;
   if (migrated) scheduleSave();
 }
 
@@ -290,6 +351,12 @@ function startWatchers() {
   watch(() => prefs.value.compactMode, (val) => { applyCompactMode(val); scheduleSave(); });
   watch(() => prefs.value.agentPanelPosition, () => scheduleSave());
   watch(() => prefs.value.sidebarCollapsed, () => scheduleSave());
+  watch(() => prefs.value.sidebarProjectsCollapsed, () => scheduleSave());
+  watch(() => prefs.value.sidebarStandaloneCollapsed, () => scheduleSave());
+  // 项目分组折叠列表是整体替换写入的；deep 兼顾将来改成原地增删的写法
+  watch(() => prefs.value.sidebarCollapsedProjectIds, () => scheduleSave(), { deep: true });
+  // 输入草稿同理：整体替换，deep 兼容将来可能的原地改写法
+  watch(() => prefs.value.inputDrafts, () => scheduleSave(), { deep: true });
   watch(() => prefs.value.agentPanelVisible, () => scheduleSave());
   watch(() => prefs.value.agentAudience, () => scheduleSave());
   watch(() => prefs.value.agentWorkMode, () => scheduleSave());
@@ -387,6 +454,36 @@ export function usePreferences() {
   return {
     get sidebarCollapsed() { return prefs.value.sidebarCollapsed; },
     setSidebarCollapsed: (val: boolean) => { prefs.value.sidebarCollapsed = val; },
+    // 会话列表内的分层折叠：与上面的「整个侧边栏收起」是两层，互不影响
+    get sidebarProjectsCollapsed() { return prefs.value.sidebarProjectsCollapsed; },
+    setSidebarProjectsCollapsed: (val: boolean) => { prefs.value.sidebarProjectsCollapsed = val; },
+    get sidebarStandaloneCollapsed() { return prefs.value.sidebarStandaloneCollapsed; },
+    setSidebarStandaloneCollapsed: (val: boolean) => { prefs.value.sidebarStandaloneCollapsed = val; },
+    get sidebarCollapsedProjectIds() { return prefs.value.sidebarCollapsedProjectIds; },
+    // 整体替换而非原地修改：偏好对象是快照式落库的，原地改 Set/数组不利于 watch 比对
+    setSidebarCollapsedProjectIds: (ids: string[]) => { prefs.value.sidebarCollapsedProjectIds = [...ids]; },
+    /** 读某个会话的未发送草稿；没有则返回空串 */
+    getInputDraft: (sessionId: string) => prefs.value.inputDrafts?.[sessionId] ?? '',
+    /**
+     * 写某个会话的未发送草稿。
+     *
+     * 空文本等同于删除；与当前值相同的写入直接忽略——切会话时每次都会调到这里，
+     * 不比对就会无意义地触发一轮 `scheduleSave`。
+     *
+     * 超长文本不写入（见 `INPUT_DRAFT_MAX_CHARS`）：宁可切走即丢，也不拖累
+     * `app-config.json` 的整份重写。
+     */
+    setInputDraft: (sessionId: string, text: string) => {
+      const current = prefs.value.inputDrafts ?? {};
+      if (text === (current[sessionId] ?? '')) return;
+      const next = { ...current };
+      if (!text || text.length > INPUT_DRAFT_MAX_CHARS) {
+        delete next[sessionId];
+      } else {
+        next[sessionId] = text;
+      }
+      prefs.value.inputDrafts = next;
+    },
     get agentPanelVisible() { return prefs.value.agentPanelVisible; },
     setAgentPanelVisible: (val: boolean) => { prefs.value.agentPanelVisible = val; },
     get fontSize() { return prefs.value.fontSize; },

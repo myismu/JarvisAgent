@@ -16,7 +16,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useSessionStore } from '../../stores/session';
 import { useChatStore } from '../../stores/chat';
 import { useAgentStore } from '../../stores/agent';
-import { usePreferences } from '../../composables/usePreferences';
+import { usePreferences, prefsReady } from '../../composables/usePreferences';
 import { useThinkingMode } from '../../composables/useThinkingMode';
 import { isThinkingToggleDisabled, type ThinkingCaps } from '../../utils/thinking';
 import { resolveContextTokens } from '../../utils/contextUsage';
@@ -95,6 +95,46 @@ const uiPrefs = usePreferences();
 const isRunning = computed(() =>
   session.getSessionView(session.activeSessionId).status === 'RUNNING'
 );
+
+// ── 未发送草稿：按会话隔离 ──
+//
+// 输入框是**常驻组件**（App.vue 里的 `<TerminalInput />` 没有 key），切会话时实例
+// 不重建，`userInput` 不会自动清空。不做隔离的话，在 A 里打了一半切到 B，文字会
+// 留在 B 的输入框里——一回车就发错了会话。
+//
+// 存储分两层：`uiPrefs` 里的 `inputDrafts` 同时是内存态和落盘态（data/app-config.json），
+// 所以不再另建一份 Map——两份状态只会产生不一致。
+const NEW_SESSION_DRAFT_KEY = '__new__';
+const draftKeyOf = (sessionId: string | null) => sessionId || NEW_SESSION_DRAFT_KEY;
+
+function restoreDraftForCurrentSession() {
+  // 偏好加载完成前用户已经开始打字时不覆盖：真实输入优先于历史草稿
+  if (userInput.value) return;
+  userInput.value = uiPrefs.getInputDraft(draftKeyOf(session.activeSessionId));
+  nextTick(() => {
+    adjustHeight();
+  });
+}
+
+// 偏好是异步拉的：早于它返回就读只会拿到默认值（草稿全空）
+watch(prefsReady, (ready) => {
+  if (ready) restoreDraftForCurrentSession();
+}, { immediate: true });
+
+watch(() => session.activeSessionId, (next, prev) => {
+  // 先把旧会话的现场存起来，再取新会话的
+  uiPrefs.setInputDraft(draftKeyOf(prev), userInput.value);
+  userInput.value = uiPrefs.getInputDraft(draftKeyOf(next));
+  // 附件不跨会话：base64 体积大，且图跟的是具体任务，串到下一个会话没有意义
+  mediaFiles.value.forEach(m => {
+    if (m.url) URL.revokeObjectURL(m.url);
+  });
+  mediaFiles.value = [];
+  showVisionWarning.value = false;
+  nextTick(() => {
+    adjustHeight();
+  });
+});
 
 // 欢迎页快捷指令：一次性草稿，填入后清空并聚焦（见 session store 的 inputDraft 注释）
 watch(() => session.inputDraft, (draft) => {
@@ -731,7 +771,7 @@ const agentReadOnly = ref(false);
 const toggleReadOnly = async () => {
   const next = !agentReadOnly.value;
   const prev = agentReadOnly.value;
-  workModeWarning.value = "";
+  workModeWarning.value = '';
   try {
     if (session.activeSessionId) {
       await invoke('set_agent_read_only', { sessionId: session.activeSessionId, enabled: next });
@@ -750,28 +790,62 @@ const toggleReadOnly = async () => {
 /**
  * 权限档位只改档位，**不碰工作模式**（两条轴分开：一个是"问得多严"，一个是"先出方案还是直接干"）。
  *
- * 拨动只改**界面值**并记进 pending，**不立刻写 session**：会话级值统一在"发送消息"
- * 时落库（`chat.ts ensureActiveSessionForSend`）。拨完没发消息就切走 = 没表态，
- * 切回来仍是 session 表里的原值。
+ * 两个分支，判据是「会话是否已存在」：
+ * - **已有会话**：立即写后端（`set_session_approval_mode`）。它会落库、广播
+ *   `approval-mode-changed`，并把**已经挂起的权限卡**按新档位重判
+ *   （`sweep_pending_on_mode_change`）。运行期间切档必须走这条路——只记 pending、
+ *   等发消息才落库的话，当前这一轮仍按旧档位判定（切了等于没切）。
+ * - **无会话态**（尚未发首条消息，会话还不存在）：只记 pending，创建会话时由
+ *   `chat.ts flushPendingSessionPrefs` 统一转交。
+ *
+ * 乐观更新：点完立刻换显示，后端拒绝时回滚并提示，避免「点了没反应」。
  */
-const applyApprovalMode = (mode: AgentApprovalMode) => {
+const applyApprovalMode = async (mode: AgentApprovalMode) => {
   showApprovalMenu.value = false;
-  if (mode === currentApprovalMode.value) {
-    return;
-  }
-  session.pendingApprovalMode = mode;
+  if (mode === currentApprovalMode.value) return;
+  const prev = currentApprovalMode.value;
+  workModeWarning.value = '';
   currentApprovalMode.value = mode;
+  try {
+    const sid = session.activeSessionId;
+    if (sid) {
+      await invoke('set_session_approval_mode', { sessionId: sid, mode });
+      // 已经落库：pending 若还留着，下次发送会用旧意图把刚写的值盖回去
+      session.pendingApprovalMode = null;
+    } else {
+      session.pendingApprovalMode = mode;
+    }
+  } catch (e) {
+    currentApprovalMode.value = prev;
+    workModeWarning.value = String(e);
+    console.error('Failed to switch approval mode:', e);
+  }
 };
 
 /**
  * 工作模式只改模式（编辑 / 规划），**不碰权限档位**。
- * 与档位同构：只改界面值 + 记 pending，写 session 推迟到发送消息时。
+ * 与档位同构：已有会话立即写后端（否则运行期间切模式同样「切了等于没切」），
+ * 无会话态才记 pending，等首条消息创建会话时转交。
  */
-const applyWorkMode = (mode: AgentUserMode) => {
+const applyWorkMode = async (mode: AgentUserMode) => {
   showWorkModeMenu.value = false;
   if (mode === currentWorkMode.value) return;
-  session.pendingWorkMode = mode;
+  const prev = currentWorkMode.value;
+  workModeWarning.value = '';
   currentWorkMode.value = mode;
+  try {
+    const sid = session.activeSessionId;
+    if (sid) {
+      await invoke('set_session_work_mode', { sessionId: sid, mode });
+      session.pendingWorkMode = null;
+    } else {
+      session.pendingWorkMode = mode;
+    }
+  } catch (e) {
+    currentWorkMode.value = prev;
+    workModeWarning.value = String(e);
+    console.error('Failed to switch work mode:', e);
+  }
 };
 
 /**
@@ -822,7 +896,7 @@ const syncPermissionFromSession = async () => {
 watch(() => session.activeSessionId, syncPermissionFromSession);
 
 const hideWorkModeWarning = () => {
-  workModeWarning.value = "";
+  workModeWarning.value = '';
 };
 
 const closeMenuOnOutsideClick = (e: MouseEvent) => {
@@ -1199,6 +1273,8 @@ const handleSubmit = () => {
     // 这样即使 UI 投影短暂过期（如能力查询未返回）也污染不到真实请求。
     chat.sendToJarvis(msg, null, imageBase64List);
     userInput.value = '';
+    // 草稿使命到此结束：只在发送成功时清空（失败路径由 recall 机制负责回填）
+    uiPrefs.setInputDraft(draftKeyOf(session.activeSessionId), '');
     mediaFiles.value.forEach(m => {
       if (m.url) URL.revokeObjectURL(m.url);
     });

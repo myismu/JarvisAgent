@@ -53,6 +53,22 @@ pub struct UiPreferences {
     pub compact_mode: bool,
     #[serde(default)]
     pub sidebar_collapsed: bool,
+    /// 侧边栏「项目」总区块是否折叠（一次收起所有项目分组）。
+    ///
+    /// 与 `sidebar_collapsed`（整个侧边栏收起）是两个不同层次：本字段只管
+    /// 会话列表里的项目分组。这组状态早期存在前端 localStorage，换机器或
+    /// 清缓存就丢；现已并入 UI 偏好统一落库。
+    #[serde(default)]
+    pub sidebar_projects_collapsed: bool,
+    /// 侧边栏「独立会话」区块是否折叠
+    #[serde(default)]
+    pub sidebar_standalone_collapsed: bool,
+    /// 被折叠的项目分组 id 列表。
+    ///
+    /// 只存「折叠的」：默认展开，新增项目自动可见。用 id 而非名称——
+    /// 项目可重命名，id 才是稳定标识。
+    #[serde(default)]
+    pub sidebar_collapsed_project_ids: Vec<String>,
     #[serde(default)]
     pub agent_panel_visible: bool,
     #[serde(default = "default_agent_audience")]
@@ -117,6 +133,17 @@ pub struct UiPreferences {
     /// （token 只由宽高决定），做成档位只会增加用户负担。
     #[serde(default = "default_image_quality")]
     pub image_quality: f32,
+    /// 未发送的输入草稿：`sessionId → 原文`。
+    ///
+    /// 草稿是输入框的**编辑态**，不是会话的业务数据，因此不放进 `sessions` 表：
+    /// 那张表是会话列表查询的主表，加长 TEXT 字段会拖累每次列表查询的行宽；
+    /// 另外它也不需要按键级写库——只在切会话和发送完成时各写一次。
+    ///
+    /// 键用 `__new__` 表示「尚未落库的新会话」（`activeSessionId` 为 `None`）。
+    /// 与 `sidebarCollapsedProjectIds` 同理，**整体替换**写入而不是原地改：偏好对象
+    /// 是快照式落库的，原地改不利于前端 `watch` 比对。
+    #[serde(default)]
+    pub input_drafts: std::collections::HashMap<String, String>,
     /// 向后兼容：读取旧 agent_display_mode 字段
     #[serde(default)]
     agent_display_mode: Option<String>,
@@ -188,6 +215,9 @@ impl Default for UiPreferences {
             agent_panel_position: "right".to_string(),
             compact_mode: false,
             sidebar_collapsed: false,
+            sidebar_projects_collapsed: false,
+            sidebar_standalone_collapsed: false,
+            sidebar_collapsed_project_ids: Vec::new(),
             agent_panel_visible: false,
             agent_audience: "developer".to_string(),
             agent_work_mode: "edit".to_string(),
@@ -199,6 +229,7 @@ impl Default for UiPreferences {
             image_max_width: 1568,
             image_max_height: 896,
             image_quality: 0.8,
+            input_drafts: std::collections::HashMap::new(),
             agent_display_mode: None,
             agent_message_opacity: 0,
             user_message_opacity: 100,
