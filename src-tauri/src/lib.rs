@@ -183,6 +183,7 @@ pub fn run() {
             command::session::open_project,
             command::session::list_projects,
             command::session::delete_project,
+            command::session::rename_project,
             command::session::switch_session,
             command::session::delete_session,
             command::session::list_deleted_sessions,

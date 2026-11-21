@@ -11,7 +11,7 @@
 -->
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n';
-import { ref, onMounted, onUnmounted, computed } from 'vue';
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue';
 import type { SessionMeta, ProjectMeta } from '../../types';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -22,6 +22,7 @@ import { useAppViewStore } from '../../stores/appView';
 import { useAgentEvents } from '../../composables/useAgentEvents';
 import { loadSessionThinking } from '../../composables/useThinkingMode';
 import { useWindow } from '../../composables/useWindow';
+import { usePreferences, prefsReady } from '../../composables/usePreferences';
 import { showToast } from '../../composables/useToast';
 import ConfirmModal from '../common/ConfirmModal.vue';
 
@@ -43,7 +44,57 @@ const { notifyMonitorSessionChanged } = useWindow();
 
 // 项目管理状态
 const projects = ref<ProjectMeta[]>([]);
-const collapsedProjects = ref<Set<string>>(new Set());
+// 折叠状态统一落库到 UiPreferences（data/app-config.json），不再用 localStorage：
+// 它确实是“用户的界面偏好”，换机器/清缓存不该丢失。
+const prefs = usePreferences();
+const collapsedProjects = computed(
+  () => new Set(prefs.sidebarCollapsedProjectIds),
+);
+// 项目区总折叠 / 独立会话区折叠（computed 双向桥接后端偏好，异步加载完成后自动生效）
+const projectsSectionCollapsed = computed({
+  get: () => prefs.sidebarProjectsCollapsed,
+  set: (val: boolean) => prefs.setSidebarProjectsCollapsed(val),
+});
+const standaloneCollapsed = computed({
+  get: () => prefs.sidebarStandaloneCollapsed,
+  set: (val: boolean) => prefs.setSidebarStandaloneCollapsed(val),
+});
+// 项目行内重命名
+const editingProjectId = ref<string | null>(null);
+const editingProjectName = ref('');
+
+// 旧版本的折叠状态存在 localStorage，这里做一次性迁移：
+// 等后端偏好就绪后再读（两边都异步，早读只能读到默认值），
+// 只在后端尚无值时才写入，避免覆盖另一窗口已经迁移过的状态。
+const SIDEBAR_COLLAPSED_KEY = 'jarvis_sidebar_collapsed';
+watch(
+  prefsReady,
+  (ready) => {
+    if (!ready) return;
+    const savedRaw = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
+    if (!savedRaw) return;
+    try {
+      const saved = JSON.parse(savedRaw);
+      const hasBackendState =
+        prefs.sidebarProjectsCollapsed ||
+        prefs.sidebarStandaloneCollapsed ||
+        prefs.sidebarCollapsedProjectIds.length > 0;
+      if (!hasBackendState) {
+        prefs.setSidebarProjectsCollapsed(!!saved.projects);
+        prefs.setSidebarStandaloneCollapsed(!!saved.standalone);
+        if (Array.isArray(saved.projectIds)) {
+          prefs.setSidebarCollapsedProjectIds(
+            saved.projectIds.filter((id: unknown): id is string => typeof id === 'string'),
+          );
+        }
+      }
+    } catch {
+      // 旧值解析失败就忽略，保持后端状态（默认展开）
+    }
+    localStorage.removeItem(SIDEBAR_COLLAPSED_KEY);
+  },
+  { immediate: true },
+);
 
 // 会话管理状态
 const sessions = ref<SessionMeta[]>([]);
@@ -69,11 +120,11 @@ const projectSessions = computed(() => {
 });
 
 const toggleProject = (projectId: string) => {
-  if (collapsedProjects.value.has(projectId)) {
-    collapsedProjects.value.delete(projectId);
-  } else {
-    collapsedProjects.value.add(projectId);
-  }
+  // 后端偏好是快照式落库：算好新集合整体写回，不原地改 Set
+  const next = new Set(prefs.sidebarCollapsedProjectIds);
+  if (next.has(projectId)) next.delete(projectId);
+  else next.add(projectId);
+  prefs.setSidebarCollapsedProjectIds([...next]);
 };
 
 const isSessionRunning = (sessionId: string): boolean => {
@@ -237,6 +288,36 @@ const submitRenameSession = async (sessionId: string) => {
   } catch (err) {
     console.error('重命名会话失败:', err);
     showSessionActionMessage(t('sidebar.renameError', { error: formatErrorMessage(err) }), 'error');
+  }
+};
+
+const startRenameProject = (project: ProjectMeta, event: Event) => {
+  event.stopPropagation();
+  editingProjectId.value = project.id;
+  editingProjectName.value = project.name;
+};
+
+const cancelRenameProject = () => {
+  editingProjectId.value = null;
+  editingProjectName.value = '';
+};
+
+const submitRenameProject = async (projectId: string) => {
+  // 去重守卫：enter 与 blur 可能接连触发，取消后也不该再提交
+  if (editingProjectId.value !== projectId) return;
+  const name = editingProjectName.value.trim();
+  if (!name) {
+    showSessionActionMessage(t('sidebar.renameRequired'), 'error');
+    return;
+  }
+  cancelRenameProject();
+  try {
+    await invoke('rename_project', { id: projectId, name });
+    await loadProjects();
+    showSessionActionMessage(t('sidebar.renamedProject'));
+  } catch (err) {
+    console.error('重命名项目失败:', err);
+    showSessionActionMessage(t('sidebar.renameProjectError', { error: formatErrorMessage(err) }), 'error');
   }
 };
 
@@ -589,8 +670,29 @@ onUnmounted(() => {
         </div>
 
         <!-- 项目分组 -->
+        <!-- 项目总区块：一次折叠全部项目分组（不含独立会话） -->
+        <div
+          v-if="projects.length > 0"
+          class="project-header projects-section-header"
+          @click="projectsSectionCollapsed = !projectsSectionCollapsed"
+        >
+          <svg
+            viewBox="0 0 24 24" width="8" height="8" stroke="currentColor" stroke-width="2.5" fill="none"
+            class="project-chevron"
+            :class="{ collapsed: projectsSectionCollapsed }"
+          >
+            <polyline points="9 18 15 12 9 6"></polyline>
+          </svg>
+          <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="project-icon">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+          </svg>
+          <span class="project-name">{{ t('sidebar.projectsSection') }}</span>
+          <span class="project-count">{{ projects.length }}</span>
+        </div>
+
+        <template v-if="!projectsSectionCollapsed">
         <template v-for="group in projectSessions" :key="group.project.id">
-          <div class="project-header" @click="toggleProject(group.project.id)">
+          <div class="project-header project-group-header" @click="toggleProject(group.project.id)">
             <svg
               viewBox="0 0 24 24" width="8" height="8" stroke="currentColor" stroke-width="2.5" fill="none"
               class="project-chevron"
@@ -601,8 +703,15 @@ onUnmounted(() => {
             <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="project-icon">
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
             </svg>
-            <span class="project-name">{{ group.project.name }}</span>
+            <input v-if="editingProjectId === group.project.id" v-model="editingProjectName" class="session-title-input" maxlength="40" @click.stop @keydown.enter.prevent="submitRenameProject(group.project.id)" @keydown.esc.prevent="cancelRenameProject" @blur="submitRenameProject(group.project.id)" />
+            <span v-else class="project-name">{{ group.project.name }}</span>
             <span class="project-count">{{ group.sessions.length }}</span>
+            <button class="project-rename-btn" @click.stop="startRenameProject(group.project, $event)" :title="t('sidebar.renameProject')">
+              <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" stroke-width="2" fill="none">
+                <path d="M12 20h9"></path>
+                <path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path>
+              </svg>
+            </button>
             <button class="project-new-btn" @click.stop="createProjectSession(group.project.id)" :title="t('sidebar.newProjectSession')">
               <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none">
                 <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -669,16 +778,20 @@ onUnmounted(() => {
           </ul>
           </Transition>
         </template>
+        </template>
 
         <!-- 独立会话 -->
-        <div class="project-header standalone-header">
+        <div class="project-header projects-section-header standalone-header" @click="standaloneCollapsed = !standaloneCollapsed">
+          <svg viewBox="0 0 24 24" width="8" height="8" stroke="currentColor" stroke-width="2.5" fill="none" class="project-chevron" :class="{ collapsed: standaloneCollapsed }">
+            <polyline points="9 18 15 12 9 6"></polyline>
+          </svg>
           <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none" class="project-icon">
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
           </svg>
           <span class="project-name">{{ t('sidebar.standaloneSessions') }}</span>
           <span class="project-count">{{ standaloneSessions.length }}</span>
         </div>
-        <ul v-if="standaloneSessions.length > 0" class="session-list">
+        <ul v-if="!standaloneCollapsed && standaloneSessions.length > 0" class="session-list">
           <li
             v-for="session in standaloneSessions"
             :key="session.id"
@@ -726,7 +839,7 @@ onUnmounted(() => {
 
       <!-- 归档区：归档的会话（消息 / 快照 / 回收站都还在），可一键取消或彻底删除 -->
       <div v-if="deletedSessions.length > 0">
-        <div class="project-header" @click="showDeleted = !showDeleted">
+        <div class="project-header projects-section-header" @click="showDeleted = !showDeleted">
           <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="project-icon">
             <rect width="20" height="5" x="2" y="3" rx="1"></rect>
             <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"></path>
@@ -984,8 +1097,7 @@ body.dark-mode .project-header {
 }
 
 .standalone-header {
-  cursor: default;
-  font-weight: 400 !important;
+  cursor: pointer;
 }
 
 .project-header:not(.standalone-header):hover {
@@ -1035,6 +1147,7 @@ body.dark-mode .project-header {
   color: var(--text-faint);
 }
 
+.project-rename-btn,
 .project-new-btn,
 .project-delete-btn {
   display: none;
@@ -1049,6 +1162,7 @@ body.dark-mode .project-header {
   transition: all var(--transition-fast);
 }
 
+.project-header:not(.standalone-header):hover .project-rename-btn,
 .project-header:not(.standalone-header):hover .project-new-btn,
 .project-header:not(.standalone-header):hover .project-delete-btn {
   display: inline-flex;
@@ -1128,7 +1242,58 @@ body.dark-mode .project-header {
 }
 
 .standalone-header {
-  cursor: default;
+  cursor: pointer;
+}
+
+/* ── 会话列表层级 ─────────────────────────────────────────────
+   三层：分区标题（项目 / 独立会话 / 最近删除）> 项目分组 > 会话。
+   靠字号、颜色强度与缩进区分——侧边栏宽度有限，层级不清时用户一眼分不出
+   “哪个是可折叠的分区、哪个是项目”。
+   分区标题用弱色小字 + 底部分隔线，视觉上“切段”而不是“条目”；
+   项目分组保持可点击条目的 hover 反馈，但缩进一级。 */
+.project-header.projects-section-header {
+  margin: 12px 0 2px;
+  padding: 6px 8px 6px 2px;
+  border: none;
+  border-bottom: 1px solid var(--glass-border-subtle);
+  border-radius: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+
+/* 分区标题 hover 只提亮颜色，不加底色——它不可选中，只是分类标识 */
+.project-header.projects-section-header:hover {
+  background: transparent;
+  border-color: transparent;
+  border-bottom-color: var(--glass-border);
+  color: var(--text-muted);
+}
+
+.project-header.projects-section-header .project-icon {
+  width: 11px;
+  height: 11px;
+  opacity: 0.55;
+}
+
+.project-header.project-group-header {
+  padding-left: 10px;
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+body.dark-mode .project-header.projects-section-header {
+  color: rgba(255, 255, 255, 0.42);
+}
+
+body.dark-mode .project-header.projects-section-header:hover {
+  color: rgba(255, 255, 255, 0.68);
+}
+
+/* 项目区总折叠头：一次收起全部项目分组，独立会话不受影响 */
+.projects-section-header {
+  cursor: pointer;
 }
 
 .session-empty-state {

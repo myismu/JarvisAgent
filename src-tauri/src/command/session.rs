@@ -236,6 +236,16 @@ pub async fn delete_project(id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 重命名项目。
+///
+/// 入口在侧边栏项目标题行 —— 用户点标题旁的改名按钮进入就地编辑，提交后走这里。
+/// 只改展示名：`path`、`updated_at` 都不动，理由见
+/// `repository::rename_project` 的文档注释。
+#[tauri::command]
+pub async fn rename_project(id: String, name: String) -> Result<session::ProjectMeta, String> {
+    crate::core::session::repository::rename_project(&id, &name)
+}
+
 #[tauri::command]
 pub async fn switch_session(
     id: String,

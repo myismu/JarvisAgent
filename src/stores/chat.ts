@@ -367,9 +367,10 @@ export const useChatStore = defineStore("chat", () => {
   /**
    * 把"会话界面当前的模式/档位/只读选择"（pending）转交给指定会话。
    *
-   * 写 session 的时机刻意推迟到**发送消息**这一刻：界面上拨动只改显示值，不动
-   * session 表也不动设置默认值；拨完没发消息就切走 = 没表态，作废（由
-   * TerminalInput 的 syncPermissionFromSession 在切入会话时清空 pending）。
+   * 只负责**无会话态**的 pending：已有会话的拨动由 TerminalInput 立即写后端，
+   * 不经过这里；只有"会话尚未创建"时拨下的选择才等到此刻转交。
+   * 
+   * 拨了不发消息就切走仍算没表态，切入会话时会被 syncPermissionFromSession 清空。
    *
    * 两条路径共用：① 新建会话（先创建再转交）② 已有会话（直接转交）。
    * 应用失败不阻断发送，只记日志。

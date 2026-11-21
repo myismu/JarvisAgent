@@ -117,8 +117,19 @@ impl PermissionDecision {
     }
 }
 
+/// `..` 只有作为**独立路径段**才算目录遍历。
+///
+/// 反例：`v1..v2.md`、`my..file.txt` 这类文件名里的连续点不是遍历；命令里的
+/// `30..42` 也不是。以前用 `contains("..")` 一刀切，把这两类合法输入全拒了。
+///
+/// 本函数是**唯一口径**：文件工具闸门（`is_path_safe`）与命令路径检查
+/// （`shell_tools::check_command_paths`）都调它，避免两处判定漂移。
+pub fn has_parent_dir_segment(path: &str) -> bool {
+    path.replace('\\', "/").split('/').any(|seg| seg == "..")
+}
+
 pub fn is_path_safe(path_str: &str) -> bool {
-    !path_str.contains("..")
+    !has_parent_dir_segment(path_str)
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -413,6 +424,21 @@ mod decision_tests {
         assert!(note.contains("这个文件保留"));
         assert!(note.contains("不要用等价写法重试"));
         assert!(note.contains("改用不触犯该限制的方案"));
+    }
+
+    #[test]
+    fn dotted_file_names_are_not_traversal() {
+        // 文件名里的连续点不是路径遍历（以前 contains("..") 会把它们全拒）
+        for path in ["v1..v2.md", "my..file.txt", "E:\\proj\\a..b"] {
+            assert!(super::is_path_safe(path), "不该判定为不安全：{}", path);
+        }
+    }
+
+    #[test]
+    fn parent_segments_are_still_rejected() {
+        for path in ["../x", "a/../../b", "E:\\proj\\..\\outside", ".."] {
+            assert!(!super::is_path_safe(path), "应判定为不安全：{}", path);
+        }
     }
 
     #[test]

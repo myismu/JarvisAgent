@@ -14,6 +14,63 @@ use reqwest::header::CONTENT_TYPE;
 use std::path::{Path, PathBuf};
 use tauri::Emitter;
 
+/// 摘要入参的字符上限（按字符而非字节：中文按字节会提前很多被截断）。
+const COMPACT_INPUT_MAX_CHARS: usize = 400_000;
+/// 入参窗口的头部配额。开头往往放着任务目标与约束，全留给尾部会丢掉“为什么做”。
+const COMPACT_INPUT_HEAD_CHARS: usize = 120_000;
+/// 摘要输出的 token 预算。
+///
+/// 这里**刻意给足**：全压之后摘要就是模型对过去唯一的记忆，写薄了等于丢历史。
+/// 1.6 万 token 约合 1 万汉字；压缩后重算这点内容的成本，远小于信息丢失的代价。
+/// 若某模型的输出上限低于此值，命中截断会由 `stop_reason` 检测并打日志。
+const COMPACT_SUMMARY_MAX_TOKENS: i32 = 16_000;
+
+fn take_head(s: &str, count: usize) -> &str {
+    s.char_indices()
+        .nth(count)
+        .map(|(i, _)| &s[..i])
+        .unwrap_or(s)
+}
+
+fn take_tail(s: &str, count: usize) -> &str {
+    let total = s.chars().count();
+    if total <= count {
+        return s;
+    }
+    s.char_indices()
+        .nth(total - count)
+        .map(|(i, _)| &s[i..])
+        .unwrap_or("")
+}
+
+/// 把超长转录压进摘要入参窗口：头尾各留一段，中间标注省略量。
+///
+/// 旧实现是 `&json[len - 150000..]`，两个问题：按**字节**切，切点落在 UTF-8 多字节
+/// 字符中间会 panic（中文对话几乎必踩）；只留尾部则会丢掉对话开头的任务目标与约束。
+fn compact_input_window(json: &str) -> String {
+    let total = json.chars().count();
+    if total <= COMPACT_INPUT_MAX_CHARS {
+        return json.to_string();
+    }
+    let head = take_head(json, COMPACT_INPUT_HEAD_CHARS);
+    let tail = take_tail(json, COMPACT_INPUT_MAX_CHARS - COMPACT_INPUT_HEAD_CHARS);
+    format!(
+        "{}\n\n[... 中间省略 {} 字符（多为重复的过程性输出）...]\n\n{}",
+        head,
+        total - COMPACT_INPUT_MAX_CHARS,
+        tail
+    )
+}
+
+/// 摘要目标字数：约为被压内容的 2.5%，夹在 [600, 2500]。
+///
+/// 为什么按比例而不写死：摘要长度应随任务体量伸缩。3k 字符的小任务写 2500 字是浪费，
+/// 150k 字符的长会话压成 600 字则必然丢掉未完成项。上界 2500 与输出预算（4000 token）
+/// 对齐，下界 600 保证再简单的任务也有篇幅把八个小节写完。
+fn summary_target_chars(source_chars: usize) -> usize {
+    (source_chars / 30).clamp(800, 10_000)
+}
+
 /// 使用 tiktoken 精确计算 token 数，tokenizer 不可用时退化为 chars/4 估算
 pub fn estimate_tokens(messages: &[Message]) -> usize {
     let mut text_buf = String::new();
@@ -173,35 +230,48 @@ async fn call_summarize_llm(
         }
     }
 
-    let summarized_text = if json_content.len() > 150000 {
-        format!(
-            "(truncated...){}",
-            &json_content[json_content.len() - 150000..]
-        )
-    } else {
-        json_content.clone()
-    };
+    let summarized_text = compact_input_window(&json_content);
+    // 目标字数按实际送入的内容规模算，而不是拍一个固定值
+    let target_chars = summary_target_chars(summarized_text.chars().count());
 
     let summary_prompt = format!(
-        "Summarize this conversation for continuity. Include:\n\
-         1) What was accomplished (specific files modified, commands run)\n\
-         2) Current state (what's working, what's broken, what's in progress)\n\
-         3) Key technical decisions made and WHY\n\
-         4) Any error messages encountered and how they were resolved\n\
-         5) Preserve exact code snippets, file paths, and API signatures where present\n\
-         6) If the conversation shows tasks that were explicitly requested, list which ones are \
-         DONE and which ones are still UNFINISHED (including anything half-applied, \
-         pending verification, or blocked on a decision). Only include this list if such tasks \
-         actually exist — do not invent items or pad with generic statements.\n\
-         Be concise but prioritize technical precision over brevity. \
-         Never drop an unfinished task in order to save space.\n\n{}",
+        "Compress the conversation below into a HANDOFF NOTE for another agent that must \
+         continue the work without reading the transcript.\n\
+         \n\
+         Write in the same language as the conversation. Output EXACTLY these sections, in \
+         this order, and keep every section even when empty (write 无):\n\
+         \n\
+         ## 当前目标\n\
+         ## 已完成（已验证）\n\
+         ## 已完成（未验证）\n\
+         ## 进行中\n\
+         ## 待确认 / 未决\n\
+         ## 项目事实与约定\n\
+         ## 关键决策与原因\n\
+         ## 关键文件与符号\n\
+         ## 环境与命令\n\
+         \n\
+         Rules:\n\
+         - 每条写清：做了什么、在哪个文件/函数、结果如何（测试通过 / 报错原文）。\n\
+         - 严格区分已验证与未验证：真的跑过测试或命令才算已验证。\n\
+         - 进行中与待确认的事项一条都不能删，宁可压缩措辞。\n\
+         - 路径、函数名、命令、错误信息保持原样，不要改写。\n\
+         - 尽量详细：目标约 {} 字，写不下就继续写，不要为省字数删条目或把内容概括成一句话。\n\
+         - 每个已完成任务至少写：目标、改动的文件/函数、验证方式与结果（命令原文 + 关键输出）、失败过的尝试及原因。\n\
+         - 项目事实与约定：写清架构不变式、用户偏好、目录与命名习惯、已定的技术选型，接手者不必重新推演。\n\
+         - 不要在条目中间截断，不要输出未闭合的列表或代码块。\n\
+         - 只有重复的过程性输出（相同的报错、重复读到的同一文件）可以合并，任务事实一条不能少。\n\
+         \n\
+         Conversation:\n\
+         {}",
+        target_chars,
         summarized_text
     );
 
     let request_body = AnthropicRequest {
         model: model_id.to_string(),
-        max_tokens: 2000,
-        system: "You are a technical conversation summarizer. Your job is to compress chat history while preserving all information needed for an AI coding agent to continue work without losing context. Prioritize: file paths, code snippets, error messages, technical decisions, current task state, and — above all — any task that was requested but not yet finished. Never omit an unfinished task to save space. If in doubt, include it.".to_string(),
+        max_tokens: COMPACT_SUMMARY_MAX_TOKENS,
+        system: "You are a technical handoff summarizer for an AI coding agent. You compress chat history into a structured handoff note. Accuracy beats brevity: never drop an unfinished task, a pending decision, or the verified/unverified distinction in order to save space. Preserve file paths, symbols, commands and error strings verbatim. Never end the output mid-item: a truncated handoff is worse than a shorter one.".to_string(),
         messages: vec![Message::User {
             content: Content::Single(summary_prompt),
         }],
@@ -222,7 +292,7 @@ async fn call_summarize_llm(
                 translate_messages_to_openai(&request_body.system, &request_body.messages);
             let openai_req = OpenAIRequest {
                 model: model_id.to_string(),
-                max_tokens: Some(2000),
+                max_tokens: Some(COMPACT_SUMMARY_MAX_TOKENS),
                 messages: openai_msgs,
                 tools: None,
                 stream: false,
@@ -289,6 +359,26 @@ async fn call_summarize_llm(
             "Failed to get summary text".to_string(),
         ));
     };
+
+    // 截断检测：「够不够详细」不能靠读摘要猜。命中上限时留一条日志，
+    // 便于回头判断该调输出预算，还是该降目标字数。
+    let truncated = if is_openai {
+        body["choices"]
+            .as_array()
+            .and_then(|c| c.first())
+            .and_then(|c| c["finish_reason"].as_str())
+            == Some("length")
+    } else {
+        body["stop_reason"].as_str() == Some("max_tokens")
+    };
+    if truncated {
+        println!(
+            "[compact] 摘要被输出预算截断：已写 {} 字 / 预算 {} token（目标 {} 字）",
+            text.chars().count(),
+            COMPACT_SUMMARY_MAX_TOKENS,
+            target_chars
+        );
+    }
 
     Ok(text)
 }
@@ -728,4 +818,52 @@ pub async fn run_memory_curator(app: tauri::AppHandle, config: AgentConfig, sess
     }
 
     println!("[MEMORY] --- Memory Curator Finished ---");
+}
+
+#[cfg(test)]
+mod compact_window_tests {
+    use super::*;
+
+    /// 超长中文输入不能 panic，且必须同时保住开头与结尾。
+    /// （旧实现按字节取尾，切点落在汉字中间时会直接 panic）
+    #[test]
+    fn window_keeps_head_and_tail_without_panicking() {
+        let head_marker = "任务目标：重构压缩摘要";
+        let tail_marker = "最后状态：测试通过";
+        let filler = "过程性输出".repeat(150_000);
+        let input = format!("{}{}{}", head_marker, filler, tail_marker);
+
+        let window = compact_input_window(&input);
+
+        assert!(window.starts_with(head_marker));
+        assert!(window.ends_with(tail_marker));
+        assert!(window.contains("中间省略"));
+        assert!(window.chars().count() < COMPACT_INPUT_MAX_CHARS + 100);
+    }
+
+    /// 窗口必须落在合法字符边界上。
+    #[test]
+    fn window_is_bounded_on_char_boundaries() {
+        let input = "汉字".repeat(300_000);
+        let window = compact_input_window(&input);
+        assert!(window.chars().count() > 0);
+        assert!(window.chars().count() < COMPACT_INPUT_MAX_CHARS + 100);
+        // 能构造成 &str 并成功遍历，即证明没有在 UTF-8 中间切开
+        assert_eq!(window.chars().count(), window.to_string().chars().count());
+    }
+
+    /// 未超限时原样返回。
+    #[test]
+    fn short_input_passes_through() {
+        let input = "短对话";
+        assert_eq!(compact_input_window(input), input);
+    }
+
+    /// 目标字数随任务体量伸缩，并被夹在 [800, 10000]。
+    #[test]
+    fn target_length_scales_with_source() {
+        assert_eq!(summary_target_chars(2_000), 800);
+        assert_eq!(summary_target_chars(40_000), 1_333);
+        assert_eq!(summary_target_chars(400_000), 10_000);
+    }
 }

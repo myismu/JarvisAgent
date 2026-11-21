@@ -29,6 +29,81 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 const MAX_SHELL_OUTPUT_LEN: usize = 50000;
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
+/// 判断命令里是否存在**真正落盘**的输出重定向。
+///
+/// `>` / `>>` 后紧跟 `&` 是文件描述符复制（`1>&2` / `2>&1`），只改输出流、不写文件，
+/// 因此不算重定向。以前的 `contains('>')` 一刀切把 `cmd /c "echo log 1>&2"` 误判成写盘。
+///
+/// 只认 ASCII 字节，与 `is_file_mutation_command` 里 `to_lowercase()` 后的口径一致；
+/// 两侧（本模块与 readonly.rs）必须共用本函数，避免判定漂移。
+pub(super) fn has_file_redirect(cmd: &str) -> bool {
+    let b = cmd.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'>' {
+            // `>>` 追加写：跳过第二个 '>' 再看后面是否是 '&'
+            let after = if b.get(i + 1) == Some(&b'>') { i + 2 } else { i + 1 };
+            if b.get(after) != Some(&b'&') {
+                return true;
+            }
+            // `1>&2` / `2>&1`：复制型重定向，不落盘，跳过
+            i = after + 1;
+            continue;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// 取出命令的「段首命令名」，供别名判定使用。
+///
+/// 按 `;`、`|`、换行、`&&` 切段，每段取第一个 token；遇到 `cmd /c` /
+/// `powershell -command` 包装则跳过开关取真正的命令名。
+///
+/// 为什么不用 `contains("del ")`：那样 `rg "del "`、`git log --grep="rm "`
+/// 这类**参数里的字样**也会被当成删除命令拦住。
+fn command_names(cmd: &str) -> Vec<String> {
+    let normalized = cmd.replace("&&", ";");
+    normalized
+        .split(|c| c == ';' || c == '|' || c == '\n')
+        .filter_map(|seg| {
+            let mut tokens = seg.split_whitespace();
+            let mut first = tokens
+                .next()?
+                .trim_matches(|c| c == '"' || c == '\'')
+                .to_string();
+            let lower = first.to_lowercase();
+            if matches!(lower.as_str(), "cmd" | "powershell" | "pwsh") {
+                for tok in tokens {
+                    let t = tok.trim_matches(|c| c == '"' || c == '\'');
+                    if t.starts_with('/') || t.starts_with('-') {
+                        continue;
+                    }
+                    first = t.to_string();
+                    break;
+                }
+            }
+            Some(first)
+        })
+        .collect()
+}
+
+/// 裸别名（del / rm / mv / ren / cp）只有作为**段首命令**才算文件操作。
+fn has_alias_command(cmd: &str, aliases: &[&str]) -> bool {
+    command_names(cmd)
+        .iter()
+        .any(|name| aliases.iter().any(|a| name.eq_ignore_ascii_case(a)))
+}
+
+/// 是否包含目录切换命令。按**段首命令名**判定，不用 contains：
+/// 否则 `rg "cd "`、`Select-String "cd "` 这类参数里的字样会被误拦（而且是硬拦）。
+pub(super) fn is_dir_change_command(cmd: &str) -> bool {
+    has_alias_command(
+        cmd,
+        &["cd", "sl", "chdir", "set-location", "push-location"],
+    )
+}
+
 /// 检测命令是否为文件修改操作，拦截并引导 Agent 使用专用文件工具
 ///
 /// 对 `pub` 是给权限"只观察"模块复用：观察阶段要按同一套结论记录"本该拒绝"，
@@ -101,17 +176,15 @@ pub fn is_file_mutation_command(cmd: &str) -> Option<&'static str> {
         return Some("请使用 WriteFile 或 EditFile 工具，不要用 PowerShell cmdlet 写文件");
     }
     // New-Item -ItemType File 创建文件需拦，-ItemType Directory 放行
-    if lower.contains("new-item") && lower.contains("file") {
+    // 只看 `-itemtype file`：以前的 `contains("file")` 会被路径/参数里的 file 字样误伤
+    if lower.contains("new-item") && lower.contains("-itemtype file") {
         return Some("请使用 WriteFile 工具，不要用 New-Item 创建文件");
     }
-    if lower.contains("remove-item")
-        || lower.contains("del ")
-        || lower.contains("rm ")
-        || lower.contains("rmdir ")
-    {
+    if lower.contains("remove-item") || has_alias_command(&lower, &["del", "rm", "rmdir", "deltree"]) {
         return Some("请使用 DeleteFile 工具，不要用 shell 命令删除文件");
     }
-    if (lower.contains(">") || lower.contains(">>"))
+    // 只算真正落盘的重定向：`1>&2` / `2>&1` 这类 fd 复制不算（见 has_file_redirect）
+    if has_file_redirect(&lower)
         && !lower.contains("git ")
         && !lower.contains("npm ")
         && !lower.contains("cargo ")
@@ -121,12 +194,11 @@ pub fn is_file_mutation_command(cmd: &str) -> Option<&'static str> {
     }
     if lower.contains("move-item")
         || lower.contains("rename-item")
-        || lower.contains("ren ")
-        || lower.contains("mv ")
+        || has_alias_command(&lower, &["ren", "rename", "mv", "move"])
     {
         return Some("请使用 RenameFile 工具，不要用 shell 命令重命名文件");
     }
-    if lower.contains("copy-item") || lower.contains("cp ") {
+    if lower.contains("copy-item") || has_alias_command(&lower, &["cp", "copy"]) {
         return Some("请使用 WriteFile 工具创建文件，不要用 shell 命令复制文件");
     }
     None
@@ -245,8 +317,7 @@ pub async fn run_shell(
         }
 
         let lower_cmd = cmd.to_lowercase();
-        let dir_change_keywords = ["cd ", "sl ", "chdir ", "set-location", "push-location"];
-        if dir_change_keywords.iter().any(|k| lower_cmd.contains(k)) {
+        if is_dir_change_command(&lower_cmd) {
             return framework::ToolCallResult::blocked(
                 "沙箱限制：禁止在沙箱会话中使用目录切换命令（cd/Set-Location）。".to_string(),
             );
@@ -478,6 +549,61 @@ mod file_mutation_tests {
     }
 
     #[test]
+    fn dir_change_detection_ignores_arguments() {
+        use super::is_dir_change_command;
+        // 真命令：段首是目录切换命令
+        assert!(is_dir_change_command("cd sub"));
+        assert!(is_dir_change_command("npm install && cd sub"));
+        assert!(is_dir_change_command("set-location sub"));
+        // 参数里的字样：不该被当成切目录（以前 contains("cd ") 会硬拦）
+        assert!(!is_dir_change_command(r#"rg "cd " src/"#));
+        assert!(!is_dir_change_command(r#"Select-String "cd " a.txt"#));
+        assert!(!is_dir_change_command("Get-ChildItem a.txt"));
+    }
+
+    #[test]
+    fn allows_aliases_that_only_appear_inside_arguments() {
+        // 参数里的 `del ` / `rm ` 字样不是删除命令（以前 contains("del ") 会误拦）
+        for cmd in [
+            r#"rg "del " src/"#,
+            r#"git log --grep="rm ""#,
+            r#"Get-Content a.txt | Select-String "cp ""#,
+        ] {
+            assert!(
+                is_file_mutation_command(cmd).is_none(),
+                "参数里的字样不该被当成文件操作：{}",
+                cmd
+            );
+        }
+    }
+
+    #[test]
+    fn still_blocks_bare_alias_commands() {
+        for cmd in [
+            "del a.txt",
+            "rm -rf build",
+            "rmdir empty",
+            "mv a.txt b.txt",
+            "ren a.txt b.txt",
+            "cp a.txt b.txt",
+            r#"cmd /c del a.txt"#,
+        ] {
+            assert!(
+                is_file_mutation_command(cmd).is_some(),
+                "裸别名作为段首命令时仍应拦住：{}",
+                cmd
+            );
+        }
+    }
+
+    #[test]
+    fn new_item_judges_by_itemtype() {
+        // 建目录放行，建文件拦下；不再用 contains("file") 这种全串模糊判定
+        assert!(is_file_mutation_command("New-Item -ItemType Directory -Path build").is_none());
+        assert!(is_file_mutation_command("New-Item -ItemType File -Path a.txt").is_some());
+    }
+
+    #[test]
     fn does_not_block_dotnet_reads_or_plain_reads() {
         // 只读的 .NET 调用不属于"改文件"，不该被这条规则拦（是否询问由权限策略决定）
         for cmd in [
@@ -490,6 +616,38 @@ mod file_mutation_tests {
             assert!(
                 is_file_mutation_command(cmd).is_none(),
                 "不该拦下只读命令：{}",
+                cmd
+            );
+        }
+    }
+
+    /// fd 复制型重定向（`1>&2` / `2>&1`）只改输出流、不落盘，不算写文件
+    #[test]
+    fn allows_fd_redirection() {
+        for cmd in [
+            r#"cmd /c "echo log 1>&2""#,
+            "echo hi 2>&1",
+            r#"cmd /c "exit 3" 2>&1"#,
+        ] {
+            assert!(
+                is_file_mutation_command(cmd).is_none(),
+                "fd 复制重定向不算写文件，不该被拦：{}",
+                cmd
+            );
+        }
+    }
+
+    /// 收紧粒度后真正的重定向写盘仍必须拦下
+    #[test]
+    fn still_blocks_real_file_redirect() {
+        for cmd in [
+            "echo hi > a.txt",
+            "echo hi >> a.txt",
+            "Get-Content a.txt > b.txt",
+        ] {
+            assert!(
+                is_file_mutation_command(cmd).is_some(),
+                "真正的重定向写文件必须被拦：{}",
                 cmd
             );
         }

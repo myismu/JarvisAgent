@@ -29,6 +29,21 @@
 /// UTF-8 输出前缀：不设它，npm 等工具的中文输出会以 GBK 字节进入会话变成乱码。
 const PS_UTF8_PREFIX: &str = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ";
 
+/// 退出码归一口径：脚本入口清空 `$LASTEXITCODE`，出口**显式 exit**。
+///
+/// 为什么必须显式：`powershell -Command "<script>"` 的退出码默认由脚本执行期间
+/// 是否写过错误流推断。原生命令把正常日志写到 stderr（`cargo` / `npm` 都这样），
+/// 经 `2>&1` 会被包装成 ErrorRecord，PowerShell 随即以 1 退出——于是「测试全过」
+/// 被判成构建失败。反面同理：脚本末尾多一条成功语句，真实失败又会被吞掉。
+///
+/// 入口置 `$null` 是为了纯 cmdlet 命令不读到上一条原生命令残留的退出码。
+const PS_EXIT_PREFIX: &str = "$global:LASTEXITCODE = $null; ";
+
+/// 出口归一：有原生命令就以它的退出码为准，否则退回 `$?`。
+const PS_EXIT_SUFFIX: &str = "; $__code = $LASTEXITCODE; \
+     if ($null -ne $__code) { exit $__code }; \
+     if ($?) { exit 0 } else { exit 1 }";
+
 /// 段间守卫：前一段失败（`$?` 为 false）则终止整个命令。
 /// `$LASTEXITCODE` 只在**原生命令**（npm/cargo/git…）执行后才有值；
 /// 为 `null`（纯 cmdlet 失败）时兜底 `exit 1`，避免把失败伪装成成功。
@@ -93,11 +108,13 @@ pub fn split_on_double_ampersand(command: &str) -> Vec<String> {
 ///
 /// - 单段（绝大多数）：UTF-8 前缀 + 原命令，行为与改造前完全一致；
 /// - 含 `&&` 的多段：展开为 `seg1; <失败守卫>; seg2; <失败守卫>; seg3`，
-///   在 PS 5.1 上还原 `&&` 的"前段失败即停"语义，且整体退出码 = 失败段的退出码。
+///   在 PS 5.1 上还原 `&&` 的"前段失败即停"语义；无论单段还是多段，
+///   末尾都追加 [`PS_EXIT_SUFFIX`] 显式 exit，避免 PowerShell 用 stderr
+///   推断退出码（详见该常量的注释）。
 pub fn build_windows_ps_command(command: &str) -> String {
     let segments = split_on_double_ampersand(command);
     if segments.len() <= 1 {
-        return format!("{}{}", PS_UTF8_PREFIX, command);
+        return format!("{}{}{}{}", PS_EXIT_PREFIX, PS_UTF8_PREFIX, command, PS_EXIT_SUFFIX);
     }
     let mut parts: Vec<String> = Vec::with_capacity(segments.len() * 2);
     for (idx, seg) in segments.iter().enumerate() {
@@ -107,7 +124,13 @@ pub fn build_windows_ps_command(command: &str) -> String {
             parts.push(PS_FAIL_GUARD.to_string());
         }
     }
-    format!("{}{}", PS_UTF8_PREFIX, parts.join("; "))
+    format!(
+        "{}{}{}{}",
+        PS_EXIT_PREFIX,
+        PS_UTF8_PREFIX,
+        parts.join("; "),
+        PS_EXIT_SUFFIX
+    )
 }
 
 /// 子进程创建口径：统一不弹控制台窗口。
@@ -204,24 +227,32 @@ mod tests {
     #[test]
     fn ps_command_single_segment() {
         let out = build_windows_ps_command("npm install");
-        assert!(out.starts_with(PS_UTF8_PREFIX));
-        assert!(out.ends_with("npm install"));
-        assert!(!out.contains("exit $LASTEXITCODE"));
+        assert!(out.starts_with(PS_EXIT_PREFIX));
+        assert!(out.contains(PS_UTF8_PREFIX));
+        assert!(out.contains("npm install"));
+        // 末尾必须显式 exit，否则 PowerShell 会用 stderr 推断退出码
+        assert!(out.ends_with(PS_EXIT_SUFFIX));
     }
 
     #[test]
     fn ps_command_expands_ampersand_chain() {
         let out = build_windows_ps_command("npm install && npm start");
-        assert!(out.starts_with(PS_UTF8_PREFIX));
+        assert!(out.starts_with(PS_EXIT_PREFIX));
         // 顺序：seg1 → 守卫 → seg2，守卫只出现在段间
-        let tail = out.trim_start_matches(PS_UTF8_PREFIX).to_string();
+        let tail = out
+            .trim_start_matches(PS_EXIT_PREFIX)
+            .trim_start_matches(PS_UTF8_PREFIX)
+            .trim_end_matches(PS_EXIT_SUFFIX);
         assert_eq!(tail, format!("npm install; {}; npm start", PS_FAIL_GUARD));
     }
 
     #[test]
     fn ps_command_three_segments_two_guards() {
         let out = build_windows_ps_command("a && b && c");
-        let tail = out.trim_start_matches(PS_UTF8_PREFIX).to_string();
+        let tail = out
+            .trim_start_matches(PS_EXIT_PREFIX)
+            .trim_start_matches(PS_UTF8_PREFIX)
+            .trim_end_matches(PS_EXIT_SUFFIX);
         assert_eq!(
             tail,
             format!("a; {}; b; {}; c", PS_FAIL_GUARD, PS_FAIL_GUARD)
@@ -232,8 +263,44 @@ mod tests {
     fn ps_command_quoted_chain_untouched() {
         // 引号内的 && 不展开：整条仍是单段
         let out = build_windows_ps_command(r#"echo "a && b""#);
-        assert!(out.ends_with(r#"echo "a && b""#));
+        assert!(out.contains(r#"echo "a && b""#));
         assert!(!out.contains(PS_FAIL_GUARD));
+    }
+
+    /// 测试用：用本机 PowerShell 执行构造好的脚本，返回进程退出码。
+    #[cfg(windows)]
+    async fn run_ps(script: &str) -> i32 {
+        let out = tokio::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", script])
+            .no_window()
+            .output()
+            .await
+            .expect("powershell 启动失败");
+        out.status.code().unwrap_or(-1)
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn stderr_output_does_not_flip_exit_code() {
+        // 原生命令成功、但向 stderr 写日志（cargo / npm 的常态）时退出码必须仍是 0。
+        // 这条守的就是「测试全过却被判成构建失败」那个假阴性。
+        let script = build_windows_ps_command(r#"cmd /c "echo log 1>&2""#);
+        assert_eq!(run_ps(&script).await, 0);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn real_failure_survives_trailing_success_statement() {
+        // 失败之后追加一条成功语句，不能把退出码洗成 0（假阳性）
+        let script = build_windows_ps_command(r#"cmd /c "exit 3"; Write-Output done"#);
+        assert_eq!(run_ps(&script).await, 3);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn native_exit_code_is_propagated() {
+        let script = build_windows_ps_command(r#"cmd /c "exit 7""#);
+        assert_eq!(run_ps(&script).await, 7);
     }
 
     /// 测试用：构造一条输出 `ok` 的跨平台命令

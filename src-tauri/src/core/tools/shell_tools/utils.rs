@@ -11,7 +11,7 @@
 //! - Internal: crate::core::tools::framework::permission::is_within_workspace
 //! - External: tauri::Manager
 
-use super::super::framework::permission::is_within_workspace;
+use super::super::framework::permission::{has_parent_dir_segment, is_within_workspace};
 use tauri::Manager;
 
 pub async fn get_workspace(app: &tauri::AppHandle, session_id: &str) -> Option<std::path::PathBuf> {
@@ -109,12 +109,39 @@ pub fn format_shell_output(
         result.push_str(&format!("STDERR:\n{}", stderr_trimmed));
     }
 
-    // 截断：保留头部，尾部截断
-    if result.len() > max_chars {
-        let keep = max_chars.saturating_sub(100); // 留出截断提示空间
-        let truncated_chars = result.len() - keep;
-        result.truncate(keep);
-        result.push_str(&format!("\n\n[输出已截断，省略 {} 字符]", truncated_chars));
+    // 截断：头尾各留一段，只留头部会把尾部（错误摘要/失败原因）丢掉。
+    // 计数与切分都按「字符」而非字节，切点必须落在 UTF-8 字符边界上。
+    let total_chars = result.chars().count();
+    if total_chars > max_chars {
+        let keep = max_chars.saturating_sub(120); // 留出截断提示空间
+        let head = keep * 2 / 3;
+        let tail = keep - head;
+
+        // 头部：第 head 个字符的起始字节位（回溯到 <= head 的最近字符边界）
+        let head_end = result
+            .char_indices()
+            .nth(head)
+            .map(|(i, _)| i)
+            .unwrap_or(result.len());
+        // 尾部：从末尾回溯 tail 个字符，取 >= len-tail 的最近字符边界
+        let tail_start = if tail == 0 {
+            result.len()
+        } else {
+            result
+                .char_indices()
+                .rev()
+                .nth(tail - 1)
+                .map(|(i, _)| i)
+                .unwrap_or(0)
+                .max(head_end)
+        };
+
+        let omitted = total_chars.saturating_sub(head + tail);
+        let mut truncated = String::with_capacity(head_end + (result.len() - tail_start) + 64);
+        truncated.push_str(&result[..head_end]);
+        truncated.push_str(&format!("\n\n[输出已截断，中间省略 {} 字符]\n\n", omitted));
+        truncated.push_str(&result[tail_start..]);
+        return truncated;
     }
 
     result
@@ -202,6 +229,14 @@ fn strip_redirection_prefix(token: &str) -> &str {
         return token[1..].trim_start();
     }
     token
+}
+
+/// `..` 只有作为独立路径段才算遍历，`30..42` / `a..b` 不算。
+/// 反斜杠统一按分隔符处理，避免 `..\secret` 这类 Windows 写法漏判。
+fn has_parent_segment(token: &str) -> bool {
+    // 与文件工具的路径闸门共用同一实现（framework::permission），
+    // 避免「命令里拦、文件工具里不拦」这类口径漂移
+    has_parent_dir_segment(token)
 }
 
 pub fn check_command_paths(cmd: &str, workspace: &std::path::Path) -> Result<(), String> {
@@ -372,8 +407,8 @@ pub fn check_command_paths(cmd: &str, workspace: &std::path::Path) -> Result<(),
                 ));
             }
         }
-        // 检查相对路径遍历：包含 ".."
-        else if trimmed.contains("..") {
+        // 检查相对路径遍历：`..` 必须是独立路径段（30..42 / a..b 不算遍历）
+        else if has_parent_segment(&trimmed) {
             let combined = workspace.join(&trimmed);
             if !is_within_workspace(&combined.to_string_lossy(), Some(workspace)) {
                 return Err(format!(
@@ -441,5 +476,71 @@ pub fn shell_tool_description() -> &'static str {
         "执行 Windows PowerShell 命令。支持管道、脚本。可通过 run_in_background 启动长周期任务（如 npm run dev）。只读命令（dir/type/git status 等）自动放行无需确认。输出超过 50000 字符自动截断。exit code 含义自动解读（findstr:1=无匹配, robocopy:0-7=成功）。不支持文件写入/删除/重命名：用 [System.IO.File] 方法、Set-Content/Out-File/Add-Content/New-Item 或 shell 重定向 > 落盘都会被拦下，请改用 WriteFile/EditFile/DeleteFile/RenameFile 等专用工具（只有它们有沙箱边界检查、改动快照与回滚）。"
     } else {
         "执行 Unix bash 命令。支持管道、脚本。可通过 run_in_background 启动长周期任务（如 npm run dev）。只读命令（ls/cat/git status 等）自动放行无需确认。输出超过 50000 字符自动截断。exit code 含义自动解读（grep:1=无匹配, diff:1=不同）。不支持文件写入/删除/重命名（echo >、tee、sed -i 等都会被拦下），请改用 WriteFile/EditFile/DeleteFile/RenameFile 等专用工具（只有它们有沙箱边界检查、改动快照与回滚）。"
+    }
+}
+
+#[cfg(test)]
+mod path_and_truncation_tests {
+    use super::{check_command_paths, format_shell_output};
+    use std::path::Path;
+
+    fn ws() -> &'static Path {
+        Path::new("C:\\workspace")
+    }
+
+    /// `30..42` 这类数字区间/普通单词里的 `..` 不是路径遍历，不该被判越权
+    #[test]
+    fn dot_dot_inside_numbers_or_words_is_not_traversal() {
+        for cmd in ["echo 30..42", "echo 1..100", "echo a..b"] {
+            assert!(
+                check_command_paths(cmd, ws()).is_ok(),
+                "不该被判越权路径：{}",
+                cmd
+            );
+        }
+    }
+
+    /// 真正的父目录段仍必须拦下（反斜杠/正斜杠/单独 `..` 三种写法）
+    #[test]
+    fn real_parent_segments_are_still_blocked() {
+        for cmd in [r"type ..\secret", "type a/../../b", "type .."] {
+            assert!(
+                check_command_paths(cmd, ws()).is_err(),
+                "应拦下越权路径：{}",
+                cmd
+            );
+        }
+    }
+
+    /// 截断后头部与尾部都要保留（尾部常是错误摘要），中间给省略提示
+    #[test]
+    fn truncation_keeps_head_and_tail() {
+        let stdout = format!("HEAD_MARK{}{}TAIL_MARK", "a".repeat(900), "b".repeat(900));
+        assert!(stdout.len() > 200);
+
+        let out = format_shell_output("echo", &stdout, "", 0, 200);
+        assert!(out.starts_with("[exit code: 0 (成功)]"), "exit code 语义行应在最前");
+        assert!(out.contains("HEAD_MARK"), "头部应保留");
+        assert!(out.contains("TAIL_MARK"), "尾部应保留：{}", out);
+        assert!(out.contains("中间省略"), "应有中间省略提示：{}", out);
+    }
+
+    /// 多字节字符（中文/emoji）截断不得落在字符中间导致 panic
+    #[test]
+    fn truncation_is_utf8_safe() {
+        let stdout = format!("开始{}结尾🚀", "中文测试😀".repeat(400));
+        let out = format_shell_output("echo", &stdout, "错误😀失败", 1, 200);
+
+        assert!(out.starts_with("[exit code: 1"));
+        assert!(out.contains("开始"));
+        assert!(out.contains("🚀"));
+        assert!(out.contains("中间省略"));
+    }
+
+    /// 短输出（<= max_chars）保持原有格式，不加省略提示
+    #[test]
+    fn short_output_is_untouched() {
+        let out = format_shell_output("echo", "hi", "", 0, 200);
+        assert_eq!(out, "[exit code: 0 (成功)]\nSTDOUT:\nhi");
     }
 }

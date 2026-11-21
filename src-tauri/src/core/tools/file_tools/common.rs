@@ -730,6 +730,33 @@ pub(super) fn content_fingerprint(content: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// 把路径归一成「会话指纹表」的键：统一分隔符 + 剥离 Windows 长路径前缀 + Windows 下小写。
+///
+/// 为什么必须有这层归一：模型在同一个会话里可能用 `E:\\a\\b.rs` 和 `E:/a/b.rs` 两种写法
+/// 指向同一个文件。旧实现直接拿路径原串当 HashMap 键，两种写法被当成两个不同的文件，
+/// 表现就是「换个分隔符再改，报本会话尚未读过」的误判。
+///
+/// 为什么不 canonicalize：
+/// 1. canonicalize 需要真实 I/O，路径不存在时直接返回 Err —— 而 WriteFile / ApplyPatch
+///    新建文件的场景下，校验时目标文件本来就还不存在，走 I/O 会把正常新建判成失败；
+/// 2. 它还会解析符号链接与 8.3 短名，把「同一文件」映射到真实路径，但也会带来额外开销与
+///    平台差异，本闸门只需要「模型两次写的字面路径是否同一个」这一层等价，纯字符串归一足够。
+///
+/// 为什么 Windows 下统一小写：NTFS / FAT32 文件名不区分大小写，`E:\\Proj\\Main.rs` 与
+/// `e:\\proj\\main.rs` 是同一个文件，不统一小写就会出现同一文件两个键、误报「尚未读过」。
+/// 非 Windows 文件系统区分大小写，保持原样。
+fn path_key(path: &str) -> String {
+    // 剥掉 Windows 扩展长度路径前缀 \\?\（与 resolve_path 的 strip_extended_path_prefix 同口径），
+    // 再把正斜杠统一成反斜杠
+    let normalized = path.strip_prefix(r"\\?\").unwrap_or(path).replace('/', "\\");
+
+    if cfg!(windows) {
+        normalized.to_lowercase()
+    } else {
+        normalized
+    }
+}
+
 /// 纯判定（供单测与 `_on_ctx` 复用）：
 /// - 无记录 → 要求先读；
 /// - 记录与当前指纹不一致 → 文件在读取后被外部修改，要求重读；
@@ -797,7 +824,8 @@ async fn record_file_read_on_ctx(
     ctx.read_file_fingerprints
         .lock()
         .await
-        .insert(path.to_string(), fingerprint);
+        // 键走 path_key 归一，保证 `E:\\a\\b` 与 `E:/a/b` 落到同一个键上
+        .insert(path_key(path), fingerprint);
 }
 
 /// `ensure_fresh_read` 的核心（不依赖 AppHandle，供单测构造全链路场景）。
@@ -806,7 +834,12 @@ async fn ensure_fresh_read_on_ctx(
     path: &str,
     current_content: &str,
 ) -> Result<(), String> {
-    let recorded = ctx.read_file_fingerprints.lock().await.get(path).cloned();
+    let recorded = ctx
+        .read_file_fingerprints
+        .lock()
+        .await
+        .get(&path_key(path))
+        .cloned();
     match freshness_error(recorded.as_deref(), &content_fingerprint(current_content)) {
         Some(err) => Err(format!("{} (文件: {})", err, path)),
         None => Ok(()),
@@ -1015,6 +1048,35 @@ mod tests {
         // 写改工具成功落盘后刷新为新版本 v3 → 紧接着的下一条编辑不误报
         record_file_read_on_ctx(&ctx, path, "v3").await;
         assert!(ensure_fresh_read_on_ctx(&ctx, path, "v3").await.is_ok());
+    }
+
+    /// 同一文件换分隔符写法（`E:\\proj\\main.rs` vs `E:/proj/main.rs`）必须命中同一个键：
+    /// 记录时用反斜杠、校验时用正斜杠，仍应放行，而不是报「本会话尚未读过」。
+    #[tokio::test]
+    async fn same_file_across_separators_is_one_key() {
+        let ctx = crate::infra::state::state::SessionContext::new("test-session".into());
+
+        record_file_read_on_ctx(&ctx, "E:\\proj\\main.rs", "v1").await;
+        assert!(
+            ensure_fresh_read_on_ctx(&ctx, "E:/proj/main.rs", "v1")
+                .await
+                .is_ok(),
+            "换分隔符写法仍应指向同一条读取记录"
+        );
+    }
+
+    /// 归一不能过度合并：不同文件必须各自独立，记录 a.rs 不能放行对 b.rs 的修改。
+    #[tokio::test]
+    async fn different_paths_stay_isolated() {
+        let ctx = crate::infra::state::state::SessionContext::new("test-session".into());
+
+        record_file_read_on_ctx(&ctx, "E:\\proj\\a.rs", "v1").await;
+        assert!(
+            ensure_fresh_read_on_ctx(&ctx, "E:\\proj\\b.rs", "v1")
+                .await
+                .is_err(),
+            "另一个文件没有读取记录，必须被拦下"
+        );
     }
 
     // ============ 搜索过滤：空规则语义（回归护栏）============

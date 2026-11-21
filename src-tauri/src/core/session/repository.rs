@@ -1271,6 +1271,25 @@ pub fn get_project_path(project_id: &str) -> Result<Option<String>, String> {
     })
 }
 
+/// 按 id 读单个项目元数据。
+///
+/// 与 [`get_project_by_path`] 共用同一份列清单与行映射，保证「重命名后返回的对象」
+/// 与列表页拿到的字段口径完全一致（含 `session_count`）。
+pub fn get_project(id: &str) -> Result<Option<crate::core::session::ProjectMeta>, String> {
+    crate::infra::db::with_connection(|conn| {
+        conn.query_row(
+            &format!(
+                "SELECT {} FROM projects p WHERE p.id = ?1",
+                PROJECT_META_COLUMNS
+            ),
+            [id],
+            project_meta_from_row,
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    })
+}
+
 pub fn get_project_by_path(
     path: &str,
 ) -> Result<Option<crate::core::session::ProjectMeta>, String> {
@@ -1360,6 +1379,43 @@ pub fn delete_project(id: &str) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         Ok(())
     })
+}
+
+/// 重命名项目：**只改展示名，不移动磁盘目录**。
+///
+/// 为什么只改 `name` 而不碰 `path`：
+/// - 会话沙箱的工作目录是由 `projects.path` 派生出来的（见 `get_project_path`），
+///   路径一改就等于把已有会话的工作根换掉，历史消息里的相对路径、工具调用记录
+///   全都会指向旧位置，语义被悄悄改写；
+/// - 快照 / 回收站里存的是按会话与文件路径拼出来的引用，移动目录会让这些引用
+///   变成悬空指针，且没有迁移机制能把它们重新对上；
+/// - 用户改名的真实诉求只是「列表里看着顺眼」，与磁盘上的目录名无关。
+///
+/// 同理这里**不更新 `updated_at`**：重命名不是实际工作进展，不该让项目在
+/// 「按最近活跃排序」的列表里跳到最前面。只动 `name` 一列。
+pub fn rename_project(id: &str, name: &str) -> Result<crate::core::session::ProjectMeta, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("项目名不能为空".into());
+    }
+    if trimmed.chars().count() > 40 {
+        return Err("项目名不能超过 40 个字符".into());
+    }
+    crate::infra::db::with_connection(|conn| {
+        let changed = conn
+            .execute(
+                "UPDATE projects SET name = ?2 WHERE id = ?1",
+                rusqlite::params![id, trimmed],
+            )
+            .map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Err("项目不存在".into());
+        }
+        Ok(())
+    })?;
+    // 读回首元数据（含 session_count），口径与列表页一致；get_project 自己再拿一次连接，
+    // 所以必须等上面的 with_connection 闭包结束之后再调，避免重入。
+    get_project(id)?.ok_or_else(|| "项目不存在".into())
 }
 
 /// 从 `projects` 的一行还原项目元数据（**按列名取值**，口径同上）。

@@ -142,7 +142,11 @@ pub fn is_readonly_command_windows(cmd: &str) -> bool {
         return false;
     }
     // 输出重定向到文件（> 但不是 > $null 和 > NUL 和 > /dev/null）
-    if cmd.contains('>') {
+    //
+    // 入口判定与 execution.rs 共用 has_file_redirect：`>` / `>>` 后紧跟 `&` 是文件描述符
+    // 复制（`1>&2` / `2>&1`），不落盘，不该让整条命令丢掉"只读"身份。
+    // 两处口径必须一致，改一处就要同步另一处。
+    if super::execution::has_file_redirect(cmd) {
         // 提取 > 后面的内容，检查是否为安全的空重定向
         if let Some(gt_pos) = cmd.find('>') {
             let after = cmd[gt_pos + 1..].trim_start();

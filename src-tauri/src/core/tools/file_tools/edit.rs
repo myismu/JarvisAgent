@@ -30,6 +30,92 @@ use crate::core::tools::notebook_tools::notebook_guard::{
     is_notebook_path, looks_like_notebook_json, notebook_text_edit_rejection,
 };
 
+/// 行尾归一化视图：把 CRLF / 孤立 CR 统一成 LF，并保留「视图字节 → 原始字节」映射。
+///
+/// 为什么需要它：磁盘文件可能是 CRLF / LF 混合（历史编辑、外部工具都会造成），
+/// 而模型给出的 `old_text` 通常是 LF。直接做字节级 `matches` 会因为一个不可见的
+/// `\r` 全盘落空，报错还指向「内容对不上」，把排查引到错误的方向。
+/// 这里只在**匹配**时用 LF 视图，替换仍落在原始区间上，因此不会把整个文件的行尾改掉。
+struct EolView {
+    text: String,
+    /// 视图字节下标 → 原始字节下标；长度恒为 text.len() + 1
+    map: Vec<usize>,
+}
+
+impl EolView {
+    fn new(raw: &str) -> Self {
+        let bytes = raw.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut map = Vec::with_capacity(bytes.len() + 1);
+        let mut i = 0;
+        while i < bytes.len() {
+            map.push(i);
+            if bytes[i] == b'\r' {
+                out.push(b'\n');
+                i += if bytes.get(i + 1) == Some(&b'\n') { 2 } else { 1 };
+            } else {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+        map.push(bytes.len());
+        // 只删掉了 \r，其余字节原样保留，UTF-8 序列依然合法
+        Self {
+            text: String::from_utf8(out).unwrap_or_default(),
+            map,
+        }
+    }
+
+    fn raw_range(&self, start: usize, end: usize) -> std::ops::Range<usize> {
+        self.map[start]..self.map[end]
+    }
+}
+
+/// 在原始内容中查找 `old_text` 的全部匹配区间（容忍行尾差异）。
+///
+/// 先做字节级精确匹配（纯 LF 或 old_text 自带 CRLF 时最快），一处都没有时才退到
+/// 行尾归一化视图。`limit` 用于「只取第一处」的场景，避免为一条编辑扫全文件。
+fn find_edit_ranges(
+    raw: &str,
+    old_text: &str,
+    limit: Option<usize>,
+) -> Vec<std::ops::Range<usize>> {
+    if old_text.is_empty() {
+        return Vec::new();
+    }
+    let mut ranges = Vec::new();
+    let mut from = 0;
+    while let Some(pos) = raw[from..].find(old_text) {
+        let start = from + pos;
+        let end = start + old_text.len();
+        ranges.push(start..end);
+        if limit.is_some_and(|n| ranges.len() >= n) {
+            return ranges;
+        }
+        from = end.max(start + 1);
+    }
+    if !ranges.is_empty() {
+        return ranges;
+    }
+
+    let view = EolView::new(raw);
+    let needle = normalize_line_endings(old_text);
+    if needle.is_empty() {
+        return ranges;
+    }
+    let mut from = 0;
+    while let Some(pos) = view.text[from..].find(&needle) {
+        let start = from + pos;
+        let end = start + needle.len();
+        ranges.push(view.raw_range(start, end));
+        if limit.is_some_and(|n| ranges.len() >= n) {
+            return ranges;
+        }
+        from = end.max(start + 1);
+    }
+    ranges
+}
+
 struct SingleEdit {
     old_text: String,
     new_text: String,
@@ -107,11 +193,12 @@ fn validate_single_edit<'a>(
         ));
     }
 
-    let match_count = content.matches(&edit.old_text).count();
+    let match_count = find_edit_ranges(content, &edit.old_text, None).len();
 
     if match_count == 0 {
-        let normalized_content = normalize_quotes(content);
-        let normalized_old = normalize_quotes(&edit.old_text);
+        // 行尾也一并归一化：跨行片段在 CRLF 文件里会因 \r 而漏判
+        let normalized_content = normalize_quotes(&normalize_line_endings(content));
+        let normalized_old = normalize_quotes(&normalize_line_endings(&edit.old_text));
         if normalized_content.contains(&normalized_old) {
             return Err(format!(
                 "编辑失败: {} 未在 {} 中找到精确匹配的旧文本块，但发现引号风格不一致。\n文件使用弯引号，请使用相同的引号风格重试。",
@@ -166,6 +253,26 @@ fn validate_single_edit<'a>(
 
 /// 对所有编辑应用替换（所有校验通过后才调用）
 fn apply_edits(content: &str, edits: &[SingleEdit]) -> String {
+    // 纯 LF 文件没有行尾歧义，直接走原来的字节级替换，保持既有行为与性能
+    if !content.contains('\r') {
+        return apply_edits_exact(content, edits);
+    }
+    let mut result = content.to_string();
+    for edit in edits {
+        let limit = if edit.replace_all { None } else { Some(1) };
+        // 定位可以容忍行尾差异，但落盘一律 LF：与 .gitattributes 的 eol=lf
+        // 以及 write.rs 的口径保持一致，避免工具继续制造混合行尾。
+        // 倒序替换保证前面的偏移不受影响。
+        let mut ranges = find_edit_ranges(&result, &edit.old_text, limit);
+        while let Some(range) = ranges.pop() {
+            result.replace_range(range, &edit.new_text);
+        }
+    }
+    result
+}
+
+/// 精确字节级替换（不含行尾容忍）：纯 LF 文件的快路径。
+fn apply_edits_exact(content: &str, edits: &[SingleEdit]) -> String {
     let mut result = content.to_string();
     for edit in edits {
         if edit.replace_all {
@@ -394,6 +501,72 @@ mod tests {
         ];
         let result = super::apply_edits(content, &edits);
         assert_eq!(result, "HEAD\nbody\nFOOT");
+    }
+
+    #[test]
+    fn eol_view_maps_bytes_to_raw_offsets() {
+        // 视图下标必须能准确映回原始字节，否则替换会切在半个 \r\n 上
+        let view = super::EolView::new("a\r\nb");
+        assert_eq!(view.raw_range(0, 3), 0..4);
+    }
+
+    #[test]
+    fn pure_lf_file_uses_exact_path() {
+        // 纯 LF 文件走原来的字节级替换，不应因行尾处理引入额外开销或改变行为
+        let content = "a\nb\nc";
+        let ranges = super::find_edit_ranges(content, "a\nb", None);
+        assert_eq!(ranges, vec![0..3]);
+    }
+
+    #[test]
+    fn lf_old_text_matches_crlf_content() {
+        // 模型给的 old_text 是 LF，文件是 CRLF：应当能定位到原始区间（含 \r\n）
+        let content = "a\r\nb\r\nc";
+        let ranges = super::find_edit_ranges(content, "a\nb", None);
+        assert_eq!(ranges, vec![0..4]);
+    }
+
+    #[test]
+    fn edit_writes_lf_even_in_crlf_file() {
+        // 定位容忍行尾差异，但落盘一律 LF：与 .gitattributes 的 eol=lf 口径一致
+        let content = "a\r\nb\r\nc";
+        let edits = vec![super::SingleEdit {
+            old_text: "a\nb".into(),
+            new_text: "x\ny".into(),
+            replace_all: false,
+        }];
+        assert_eq!(super::apply_edits(content, &edits), "x\ny\r\nc");
+    }
+
+    #[test]
+    fn mixed_file_edits_write_lf() {
+        // 定位要能跨过混合行尾，但落盘统一 LF
+        let content = "a\nb\nc\r\nd\r\ne";
+        let edits = vec![
+            super::SingleEdit {
+                old_text: "a\nb".into(),
+                new_text: "x\ny".into(),
+                replace_all: false,
+            },
+            super::SingleEdit {
+                old_text: "c\nd".into(),
+                new_text: "z\nw".into(),
+                replace_all: false,
+            },
+        ];
+        assert_eq!(super::apply_edits(content, &edits), "x\ny\nz\nw\r\ne");
+    }
+
+    #[test]
+    fn replace_all_covers_multi_line_crlf_matches() {
+        // replace_all + 跨行匹配：两处 CRLF 区间都要命中，且写回 LF
+        let content = "a\r\nb\r\nX\r\na\r\nb";
+        let edits = vec![super::SingleEdit {
+            old_text: "a\nb".into(),
+            new_text: "c\nd".into(),
+            replace_all: true,
+        }];
+        assert_eq!(super::apply_edits(content, &edits), "c\nd\r\nX\r\nc\nd");
     }
 
     #[test]
