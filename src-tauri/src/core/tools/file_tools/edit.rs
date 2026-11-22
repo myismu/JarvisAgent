@@ -158,11 +158,21 @@ fn resolve_edits(input: &serde_json::Value) -> Vec<SingleEdit> {
             })
             .collect()
     } else {
-        vec![SingleEdit {
-            old_text: resolve_old_text(input),
-            new_text: resolve_new_text(input),
-            replace_all: input["replace_all"].as_bool().unwrap_or(false),
-        }]
+        // 单条模式：只有确实给了 old_text 才构造一条编辑。
+        //
+        // 之前这里是无条件构造，哪怕整个参数对象是空的也会返回一条「空编辑」，
+        // 于是 `edits.is_empty()` 的守卫永远不触发，参数缺失被伪装成
+        // 「读不到文件」（真实事故：args 丢失后报 os error 3，查了很久）。
+        let old_text = resolve_old_text(input);
+        if old_text.is_empty() {
+            Vec::new()
+        } else {
+            vec![SingleEdit {
+                old_text,
+                new_text: resolve_new_text(input),
+                replace_all: input["replace_all"].as_bool().unwrap_or(false),
+            }]
+        }
     }
 }
 
@@ -317,6 +327,40 @@ fn apply_edits_exact(content: &str, edits: &[SingleEdit]) -> Result<String, Stri
     Ok(result)
 }
 
+/// 描述工具入参的顶层形状：只列 key 与 JSON 类型，**不记录任何内容**。
+///
+/// 用途：参数在到达工具前被改写成非对象时，`path` 会退化成空串，
+/// 而错误只会显示「读不到文件」。把形状带进错误文案，一次复现就能判断
+/// 是「字段没送到」还是「整个 args 不是对象」，不必再去翻审计日志。
+fn describe_input_shape(input: &serde_json::Value) -> String {
+    fn type_name(value: &serde_json::Value) -> &'static str {
+        match value {
+            serde_json::Value::Null => "null",
+            serde_json::Value::Bool(_) => "bool",
+            serde_json::Value::Number(_) => "number",
+            serde_json::Value::String(_) => "string",
+            serde_json::Value::Array(_) => "array",
+            serde_json::Value::Object(_) => "object",
+        }
+    }
+
+    match input {
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<String> = map
+                .iter()
+                .map(|(key, value)| format!("{}:{}", key, type_name(value)))
+                .collect();
+            keys.sort();
+            if keys.is_empty() {
+                "空对象".to_string()
+            } else {
+                keys.join(", ")
+            }
+        }
+        other => format!("非对象({})", type_name(other)),
+    }
+}
+
 /// 基于搜索替换编辑文件（唯一性检查 + 引号归一化 + TOCTOU 防护 + 自动快照）
 /// 支持 `edits` 数组批量编辑，向后兼容单条 `old_text`/`new_text`
 pub async fn edit_file(
@@ -328,10 +372,26 @@ pub async fn edit_file(
     let edits = resolve_edits(input);
     let is_batch = edits.len() > 1;
 
+    // 参数形态守卫（2026-11-23）：路径为空时立刻报参数问题，而不是继续往下走。
+    //
+    // 背景：args 在到达工具前若被改写成非对象，`resolve_path` 退回空串，
+    // `resolve_exec_path` 把空串 join 到工作区根目录，`fs::read` 读一个目录
+    // 得到 ERROR_PATH_NOT_FOUND，错误最终显示成「无法读取文件」——
+    // 现象与「文件不存在」完全一样，但真正原因是参数没送到。
+    if path.trim().is_empty() {
+        return framework::ToolCallResult::error(format!(
+            "编辑失败: 缺少必填参数 'path'（收到的参数: {}）。\
+             经 ExecuteTool 调用时，参数必须写在 args 里，例如 \
+             ExecuteTool(name=\"EditFile\", args={{\"path\":\"文件路径\",\"old_text\":\"...\",\"new_text\":\"...\"}})。",
+            describe_input_shape(input)
+        ));
+    }
+
     if edits.is_empty() {
-        return framework::ToolCallResult::error(
-            "编辑失败: 缺少 old_text 或 edits 参数".to_string(),
-        );
+        return framework::ToolCallResult::error(format!(
+            "编辑失败: 缺少 old_text 或 edits 参数（收到的参数: {}）",
+            describe_input_shape(input)
+        ));
     }
 
     if is_unc_path(&path) {
