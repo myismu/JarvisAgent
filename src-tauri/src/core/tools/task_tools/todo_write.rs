@@ -85,6 +85,47 @@ fn todo_id_for(item: &serde_json::Value, index: usize, content: &str) -> String 
         })
 }
 
+/// 把一次 UpdateTodos 的条目并入清单组，返回本次归属的组 id。
+///
+/// 归属判定：传入条目的 id 与哪一组有交集，就更新哪一组（组内整体替换）；
+/// 没有交集则新建一组追加。这是「追加」与「状态更新」能共存的关键——
+/// 纯 push 会让改状态变成重复条目，纯覆盖则会丢历史清单。
+///
+/// 抽成纯函数是为了可测：`todo_write` 本体要 `AppHandle` 与 `SessionManager`，
+/// 单测里造不出来，而这段归属判定恰恰是本工具唯一有分支的语义。
+fn apply_todo_update(groups: &mut Vec<TodoGroup>, todos: Vec<TodoItem>) -> Option<String> {
+    let incoming: std::collections::HashSet<&str> =
+        todos.iter().map(|t| t.id.as_str()).collect();
+    let target = groups
+        .iter()
+        .position(|g| g.items.iter().any(|i| incoming.contains(i.id.as_str())));
+
+    match target {
+        Some(idx) => {
+            // 调度器写入的进度不在模型输入里，合并时不能被冲掉
+            let mut merged = todos;
+            for item in &mut merged {
+                if item.progress.is_none() {
+                    if let Some(old) = groups[idx].items.iter().find(|o| o.id == item.id) {
+                        item.progress = old.progress.clone();
+                    }
+                }
+            }
+            let id = groups[idx].id.clone();
+            groups[idx].items = merged;
+            Some(id)
+        }
+        None => {
+            let id = todos
+                .first()
+                .map(|t| t.id.clone())
+                .unwrap_or_else(|| format!("group-{}", groups.len() + 1));
+            groups.push(TodoGroup { id: id.clone(), items: todos });
+            Some(id)
+        }
+    }
+}
+
 fn parse_todos(input: &serde_json::Value) -> Result<Vec<TodoItem>, String> {
     let todos = input["todos"]
         .as_array()
@@ -157,40 +198,7 @@ pub async fn todo_write(
     if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         let mut groups = ctx.todos.lock().await;
-
-        // 归属判定：传入条目的 id 与哪一组有交集，就更新哪一组（组内替换）；
-        // 没有交集则新建一组追加。这是“追加”与“状态更新”能共存的关键——
-        // 纯 push 会让改状态变成重复条目，纯覆盖则会丢历史清单。
-        let incoming: std::collections::HashSet<&str> =
-            todos.iter().map(|t| t.id.as_str()).collect();
-        let target = groups
-            .iter()
-            .position(|g| g.items.iter().any(|i| incoming.contains(i.id.as_str())));
-
-        match target {
-            Some(idx) => {
-                // 调度器写入的进度不在模型输入里，合并时不能被冲掉
-                let mut merged = todos;
-                for item in &mut merged {
-                    if item.progress.is_none() {
-                        if let Some(old) = groups[idx].items.iter().find(|o| o.id == item.id) {
-                            item.progress = old.progress.clone();
-                        }
-                    }
-                }
-                replaced_group = Some(groups[idx].id.clone());
-                groups[idx].items = merged;
-            }
-            None => {
-                let id = todos
-                    .first()
-                    .map(|t| t.id.clone())
-                    .unwrap_or_else(|| format!("group-{}", groups.len() + 1));
-                replaced_group = Some(id.clone());
-                groups.push(TodoGroup { id, items: todos });
-            }
-        }
-
+        replaced_group = apply_todo_update(&mut groups, todos);
         groups_snapshot = groups.clone();
     }
 
@@ -224,7 +232,90 @@ pub async fn todo_write(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infra::types::models::TodoProgress;
     use serde_json::json;
+
+    fn item(id: &str, status: TodoStatus) -> TodoItem {
+        TodoItem {
+            id: id.to_string(),
+            content: format!("task {}", id),
+            active_form: format!("doing {}", id),
+            status,
+            progress: None,
+        }
+    }
+
+    fn group(id: &str, items: Vec<TodoItem>) -> TodoGroup {
+        TodoGroup {
+            id: id.to_string(),
+            items,
+        }
+    }
+
+    #[test]
+    fn update_with_overlapping_ids_replaces_that_group() {
+        let mut groups = vec![group(
+            "g1",
+            vec![
+                item("a", TodoStatus::Pending),
+                item("b", TodoStatus::Pending),
+            ],
+        )];
+
+        let replaced = apply_todo_update(
+            &mut groups,
+            vec![
+                item("a", TodoStatus::Completed),
+                item("b", TodoStatus::Pending),
+            ],
+        );
+
+        assert_eq!(replaced.as_deref(), Some("g1"));
+        assert_eq!(groups.len(), 1, "命中已有组时不应新建");
+        assert_eq!(groups[0].items.len(), 2);
+        assert_eq!(groups[0].items[0].status, TodoStatus::Completed);
+    }
+
+    #[test]
+    fn update_without_overlap_appends_new_group() {
+        let mut groups = vec![group("g1", vec![item("a", TodoStatus::Completed)])];
+
+        let replaced = apply_todo_update(&mut groups, vec![item("c", TodoStatus::Pending)]);
+
+        assert_eq!(replaced.as_deref(), Some("c"), "新组 id 取首条目 id");
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].items.len(), 1, "旧组不应被覆盖");
+        assert_eq!(groups[1].items[0].id, "c");
+    }
+
+    #[test]
+    fn progress_survives_model_update() {
+        let mut existing = item("a", TodoStatus::InProgress);
+        existing.progress = Some(TodoProgress { done: 2, total: 5 });
+        let mut groups = vec![group("g1", vec![existing])];
+
+        // 模型重发同一批条目时不会带 progress（parse_todos 恒置 None）
+        apply_todo_update(&mut groups, vec![item("a", TodoStatus::InProgress)]);
+
+        assert_eq!(
+            groups[0].items[0].progress,
+            Some(TodoProgress { done: 2, total: 5 }),
+            "调度器写入的进度不能被模型输入冲掉"
+        );
+    }
+
+    #[test]
+    fn all_done_group_is_not_cleared() {
+        let mut groups = vec![group("g1", vec![item("a", TodoStatus::Completed)])];
+
+        apply_todo_update(&mut groups, vec![item("b", TodoStatus::Completed)]);
+
+        assert_eq!(groups.len(), 2, "已完成的组也要保留，否则前端无从折叠展示");
+        assert_eq!(groups[0].items.len(), 1);
+        assert!(groups
+            .iter()
+            .all(|g| g.items.iter().all(|i| i.status == TodoStatus::Completed)));
+    }
 
     #[test]
     fn test_parse_todos_requires_single_in_progress() {
