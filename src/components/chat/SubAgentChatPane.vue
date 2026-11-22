@@ -454,8 +454,11 @@ onMounted(async () => {
           </button>
         </div>
 
-        <!-- 执行过程与主对话同款：一条连续时间线，不套折叠、不按轮次分组。 -->
-        <ExecutionTimeline v-if="timelineSplit.execItems.length" :items="timelineSplit.execItems" compact />
+        <!-- 执行过程与主对话同款：一条连续时间线，不套折叠、不按轮次分组。
+             auto-expand-rows：子 Agent 轨迹要看的是现场（正在想什么 / 正在跑什么），
+             所以流式中的思考块与有正文的工具行自动展开；主对话不传这个 prop。
+             不要删：删了子 Agent 面板就只剩一排摘要行，现场感知彻底丢失。 -->
+        <ExecutionTimeline v-if="timelineSplit.execItems.length" :items="timelineSplit.execItems" compact auto-expand-rows />
         <!-- 最终回答用正文口径（不压缩），与执行过程形成层级差 -->
         <ExecutionTimeline v-if="timelineSplit.finalItems.length" :items="timelineSplit.finalItems" />
 

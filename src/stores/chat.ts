@@ -124,6 +124,37 @@ async function refreshContextSnapshot(sessionId: string) {
 }
 
 /**
+ * 取本轮刚结束那次 run 的时长（毫秒）。
+ *
+ * 为什么要回查 `agentRuns`，而不是在前端记一个起点：
+ * 1. 口径必须与刷新后一致 —— 刷新的历史快照由后端下发，前端不可能再把它对齐到一个本地计数器；
+ * 2. 本轮的「开始」发生在后端（含等待授权/退避这类不应计入的时长），只有后端时间戳是准的。
+ *
+ * 匹配方式是本轮用户消息的 `messageId`（后端在 `start_run` 时就把它写在 run 上），
+ * 同一条用户消息可能有多个 run（续跑），取 `startedAt` 最新的那个。
+ *
+ * 扣掉 `waitMs`（非 Agent 责任时长，已由后端落库在 run 上）后夹到 0 以上：
+ * 时间戳来自墙上时钟，理论上不会为负，但跨进程/系统校时后不保证。
+ *
+ * @returns 毫秒数；拿不到完成态 run（未收到收尾事件、续跑无用户消息等）时返回 null。
+ */
+function resolveRunDurationMs(sessionId: string, messageId?: string | null): number | null {
+  if (!messageId) return null;
+  const runs = Object.values(useAgentStore().agentRuns).filter(
+    (run) => run.sessionId === sessionId && run.messageId === messageId && run.finishedAt,
+  );
+  if (!runs.length) return null;
+  // 续跑会基于同一条用户消息另起一个 run：最新开始的才是本轮的真实收尾
+  const run = runs.reduce((latest, item) =>
+    item.startedAt > latest.startedAt ? item : latest,
+  );
+  // `waitMs` 由后端落库在 run 上（AgentRun.waitMs），为 NULL 表示这一轮没有等待，按 0 计。
+  const waitMs = Math.max(0, run.waitMs ?? 0);
+  const elapsed = (run.finishedAt ?? run.startedAt) - run.startedAt;
+  return Math.max(0, elapsed - waitMs);
+}
+
+/**
  * `get_session_messages_paged` 的返回类型（与后端 `PagedSessionMessages` 字段一一对应）。
  *
  * - `oldestSeq`：本页最老消息的 seq，作为上滑翻页游标；
@@ -934,6 +965,9 @@ export const useChatStore = defineStore("chat", () => {
       const sessionCacheHitTokens = res.session_cache_hit_tokens ?? (res as any).sessionCacheHitTokens ?? 0;
       const sessionCacheMissTokens = res.session_cache_miss_tokens ?? (res as any).sessionCacheMissTokens ?? 0;
       
+      // 本轮时长：从后端落库的 run 时间戳算（见 resolveRunDurationMs）。
+      // 必须在 buildAgentTurnSnapshot 之前取：写进快照后，界面就不必再靠本地时钟计时。
+      const turnDurationMs = resolveRunDurationMs(sessionIdAtStart, res.user_message_id);
       // 先拍快照（保留执行过程），再清空 live 缓冲区
       const snapshot = buildAgentTurnSnapshot(
         requestView.currentTurn,
@@ -942,6 +976,7 @@ export const useChatStore = defineStore("chat", () => {
         res.status,
         interruptedNoticeKey,
         interruptedNoticeDetail,
+        turnDurationMs,
       );
       session.clearSessionBuffers(sessionIdAtStart);
 

@@ -22,6 +22,7 @@
 //! - 用户消息关联检查点 ID，支持前端回滚按钮
 
 use crate::core::session;
+use crate::core::orchestration::agent_runs::AgentRun;
 use crate::infra::state::state::*;
 use crate::infra::types::models::*;
 use std::collections::HashMap;
@@ -103,6 +104,13 @@ pub struct AgentTurnSnapshot {
     /// 文案统一由前端语言包提供，与运行期 `JarvisResult::notice_i18n_key` 同源。
     #[serde(skip_serializing_if = "Option::is_none")]
     notice_i18n_key: Option<String>,
+    /// 本轮**净执行用时**（毫秒）：run 的 `started_at → finished_at`，再扣掉等待用户决策的时间。
+    ///
+    /// `None` = 拿不到可信口径（旧数据没有 run 关联、或该轮尚未收尾）。
+    /// 前端只在有值时显示「用时 N 秒」，不再自己按条目时间戳推算——
+    /// 那种推算会因「文本块时间戳 = 块开始时刻」而把最后一段长回答整段漏掉。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_ms: Option<u64>,
     created_at: u64,
 }
 
@@ -211,6 +219,118 @@ fn user_display_content(content: &Content) -> String {
             }
             parts.trim_end().to_string()
         }
+    }
+}
+
+/// 把一轮对应的所有 run 合并成**净执行**毫秒数（扣掉等待用户决策的时间）。
+///
+/// 规则：
+/// - 没有 run、或任一 run 尚未收尾（`finished_at` 为空）→ `None`：运行中的轮次不显示用时，
+///   由前端的实时读秒负责；
+/// - 起点取最早 `started_at`、终点取最晚 `finished_at`：中断后续跑会以同一 message_id
+///   另起一条 run，只看最后一条会漏掉前半段；
+/// - 再扣掉各 run 的 `wait_ms`（`None` = 旧行未统计，按 0 处理）。
+fn aggregate_run_duration(runs: &[AgentRun]) -> Option<u64> {
+    if runs.is_empty() {
+        return None;
+    }
+    let mut started = u64::MAX;
+    let mut finished = 0u64;
+    let mut wait_ms = 0u64;
+    for run in runs {
+        // 任一 run 还没收尾，整轮就按「未结束」处理（? 会让整个函数返回 None）
+        let end = run.finished_at?;
+        started = started.min(run.started_at);
+        finished = finished.max(end);
+        wait_ms = wait_ms.saturating_add(run.wait_ms.unwrap_or(0));
+    }
+    if started == u64::MAX {
+        return None;
+    }
+    Some(finished.saturating_sub(started).saturating_sub(wait_ms))
+}
+
+/// 按用户消息 ID 查这一轮的用时；消息 ID 缺失或查库失败返回 `None`。
+fn run_duration_ms(message_id: Option<&str>) -> Option<u64> {
+    let id = message_id?;
+    let runs = crate::core::orchestration::agent_run_repository::list_runs_by_message_id(id).ok()?;
+    aggregate_run_duration(&runs)
+}
+
+#[cfg(test)]
+mod duration_tests {
+    use super::aggregate_run_duration;
+    use crate::core::orchestration::agent_runs::{AgentRun, AgentRunStatus};
+
+    fn run(started: u64, finished: Option<u64>, wait: Option<u64>) -> AgentRun {
+        AgentRun {
+            run_id: format!("ar_{started}"),
+            session_id: "s1".to_string(),
+            status: AgentRunStatus::Completed,
+            loop_count: 1,
+            input_tokens: 0,
+            output_tokens: 0,
+            started_at: started,
+            updated_at: finished.unwrap_or(started),
+            finished_at: finished,
+            last_safe_point: None,
+            summary: None,
+            resumable: false,
+            resumed_from_run_id: None,
+            message_id: Some("m1".to_string()),
+            interrupt_kind: None,
+            wait_ms: wait,
+        }
+    }
+
+    /// 没有任何 run：不显示用时（旧数据 / 非 Agent 轮次）
+    #[test]
+    fn empty_runs_yield_none() {
+        assert_eq!(aggregate_run_duration(&[]), None);
+    }
+
+    /// 还有 run 没收尾：整轮按未结束处理
+    #[test]
+    fn unfinished_run_yields_none() {
+        assert_eq!(aggregate_run_duration(&[run(1_000, None, Some(0))]), None);
+        assert_eq!(
+            aggregate_run_duration(&[run(1_000, Some(2_000), Some(0)), run(2_100, None, None)]),
+            None
+        );
+    }
+
+    /// 扣除等待用户的时长
+    #[test]
+    fn wait_is_subtracted() {
+        assert_eq!(
+            aggregate_run_duration(&[run(1_000, Some(11_000), Some(4_000))]),
+            Some(6_000)
+        );
+        // 旧行的 wait_ms 为 None：按 0 处理（墙钟口径）
+        assert_eq!(
+            aggregate_run_duration(&[run(1_000, Some(11_000), None)]),
+            Some(10_000)
+        );
+    }
+
+    /// 续跑：起点取最早、终点取最晚，等待按时长相加
+    #[test]
+    fn resumed_runs_span_from_earliest_to_latest() {
+        let runs = vec![
+            run(1_000, Some(5_000), Some(0)),
+            run(6_000, Some(12_000), Some(1_000)),
+        ];
+        // 12000 - 1000 = 11000，再扣等待 1000 = 10000
+        assert_eq!(aggregate_run_duration(&runs), Some(10_000));
+    }
+
+    /// 等待超过总跨度（时钟异常 / 脏数据）时夹到 0，不产生负值回绕
+    #[test]
+    fn wait_larger_than_span_saturates_to_zero() {
+        assert_eq!(
+            aggregate_run_duration(&[run(1_000, Some(2_000), Some(5_000))]),
+            Some(0)
+        );
     }
 }
 
@@ -663,6 +783,9 @@ async fn extract_session_messages_window(
     // 旧的 result.len() 位置编号在每页都从 0 开始，头部插入后 key 大量重复，
     // Vue diff 整表重建导致翻页时界面闪烁）
     let mut last_seen_seq: Option<usize> = None;
+    // 当前 pending assistant 归属的那条用户消息 ID：收口时用它回查 run 算用时。
+    // 只在遇到用户消息时更新，算完即被下一条覆盖。
+    let mut pending_run_message_id: Option<String> = None;
 
     for (_, _, seq, msg, source, kind) in &render_messages {
         current_ts += 1;
@@ -699,6 +822,9 @@ async fn extract_session_messages_window(
                 if !pending_assistant.is_empty() {
                     pending_assistant.status = "FINISH".to_string();
                     pending_assistant.version = 1;
+                    // 用时按**这一轮的用户消息**回查 run：pending assistant 总是跟在该用户消息之后
+                    pending_assistant.duration_ms =
+                        run_duration_ms(pending_run_message_id.as_deref());
                     if pending_assistant.created_at == 0 {
                         pending_assistant.created_at = current_ts;
                     }
@@ -755,6 +881,8 @@ async fn extract_session_messages_window(
 
                 visible_user_index += 1;
                 loop_idx = 1;
+                // 下一段 pending assistant 归属于这条新用户消息
+                pending_run_message_id = message.message_id.clone();
             }
             Message::Assistant { content } => {
                 if !is_renderable_source(*source) {
@@ -789,6 +917,8 @@ async fn extract_session_messages_window(
     if !pending_assistant.is_empty() {
         pending_assistant.status = "FINISH".to_string();
         pending_assistant.version = 1;
+        // 最后一轮的用时同样按它归属的用户消息回查
+        pending_assistant.duration_ms = run_duration_ms(pending_run_message_id.as_deref());
         if pending_assistant.created_at == 0 {
             pending_assistant.created_at = current_ts;
         }

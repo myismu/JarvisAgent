@@ -23,7 +23,6 @@ import type {
   AgentCurrentTurn,
   AgentDisplayMode,
 } from "../../types";
-import type { DevTimelineItem } from "../../utils/agentTurnRender";
 import { usePreferences } from "../../composables/usePreferences";
 import ExecutionPanel from "./ExecutionPanel.vue";
 import ExecutionTimeline from "./ExecutionTimeline.vue";
@@ -32,17 +31,17 @@ import StreamingMarkdown from "../common/StreamingMarkdown.vue";
 const props = defineProps<{
   turn: AgentCurrentTurn;
   displayMode: AgentDisplayMode;
-  showStatus: boolean;
+  /** 运行中已用秒数（由 `useRunElapsed` 读秒，父组件传入） */
   elapsed: number;
-  paused: boolean;
   /** 本轮状态（RUNNING / CANCELLED / ERROR 等），仅用于折叠头的状态文案 */
   status?: string;
 }>();
 
-// 「默认展开思考过程」偏好：思考块与「执行过程」面板的展开初值，两种显示模式都生效。
+// 「运行中展开执行过程」偏好（单一开关，轮次结束后一律收起，见 usePreferences 里
+// expandExecutionWhileRunning 的注释）。这里的 computed 只是把偏好读成响应式值：
 // 必须在 computed 求值时经偏好对象访问（getter），解构成变量会退化成一次性快照。
 const uiPrefs = usePreferences();
-const expandThinkingDefault = computed(() => uiPrefs.defaultExpandThinking);
+const expandExecutionWhileRunning = computed(() => uiPrefs.expandExecutionWhileRunning);
 
 // 这里原有「从正文剥离中断标记」的正则与 splitInterruptMarker，2026-09-21 删除。
 // 理由（别再把它加回来）：
@@ -65,13 +64,6 @@ const rawAssistantText = computed(() =>
 const assistantText = rawAssistantText;
 
 const hasAssistantText = computed(() => assistantText.value.trim().length > 0);
-const hasExecution = computed(() => {
-  return Boolean(
-    props.turn.thinkingBlocks.some((block) => block.content.trim()) ||
-      props.turn.toolCalls.length > 0 ||
-      props.turn.logs.some((log) => log.content.trim()),
-  );
-});
 
 const isDeveloperMode = computed(() => props.displayMode === "developer");
 
@@ -112,26 +104,16 @@ const timelineSplit = computed(() => {
 });
 const hasDeveloperSegments = computed(() => developerTimeline.value.length > 0);
 
-/** 时间线条目的结束时刻：工具的 updatedAt 才是调用结束时间。 */
-function timelineTimestamp(item: DevTimelineItem): number {
-  return item.type === "tool"
-    ? item.tool.updatedAt || item.tool.timestamp
-    : item.timestamp;
-}
-
 /**
  * 本轮执行用时（秒）。
- * - 运行中：由父组件每秒递增的 `elapsed` 提供；
- * - 已结束（含历史消息）：用本轮第一条与最后一条事件的时间差计算。
- *   `turn.startedAt` 在历史快照里是快照生成时间，不能用，故以条目时间戳为准。
+ * - 运行中：父组件用 `useRunElapsed` 读秒（基准是后端 run.startedAt）；
+ * - 已结束（含历史消息）：直接取后端在轮次收尾时写入的 `durationMs`。
+ *   不再用「首尾条目时间戳相减」推算——历史快照里工具 updatedAt 可能缺失，
+ *   推算值会偏小甚至为 0，而后端口径是 run 的 start → finished 真实跨度。
  */
 const executionDurationSecs = computed(() => {
   if (props.turn.isRunning) return Math.max(props.elapsed, 0);
-  const stamps = developerTimeline.value
-    .map(timelineTimestamp)
-    .filter((ts) => ts > 0);
-  if (!stamps.length) return 0;
-  return Math.max(0, Math.round((Math.max(...stamps) - Math.min(...stamps)) / 1000));
+  return Math.max(0, Math.round((props.turn.durationMs ?? 0) / 1000));
 });
 
 const executionStateLabel = computed(() => {
@@ -164,12 +146,16 @@ const executionSummaryText = computed(() => {
 <template>
   <div
     class="agent-turn"
-    :class="[displayMode, { 'waiting-only': !hasAssistantText && !hasExecution && showStatus }]"
+    :class="displayMode"
   >
     <!-- 开发者模式 -->
     <div v-if="isDeveloperMode && hasDeveloperSegments">
-      <!-- 执行过程折叠面板放上面：思考块在其内部，偏好要求展开思考时面板必须随之展开，否则看不见 -->
-      <details v-if="timelineSplit.execItems.length > 0" class="dev-execution-fold" :open="props.turn.isRunning || expandThinkingDefault">
+      <!-- 执行过程折叠面板放上面：思考块在其内部，面板展开才能看见。
+           :open 只由「本轮运行中 且 开关开启」决定——
+           1. 运行中不再无条件展开（原先写死 props.turn.isRunning，开发者模式下永远展开、开关失效）；
+           2. 轮次结束（isRunning=false）无论开关如何都收起，历史消息同理。
+           不要改回 `props.turn.isRunning || 开关`：那样关掉开关也照样展开，开关就成了摆设。 -->
+      <details v-if="timelineSplit.execItems.length > 0" class="dev-execution-fold" :open="props.turn.isRunning && expandExecutionWhileRunning">
         <summary class="dev-execution-summary">
           <span>{{ executionSummaryText }}</span>
           <svg class="dev-execution-chevron" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -200,14 +186,6 @@ const executionSummaryText = computed(() => {
 .agent-turn {
   position: relative;
   width: 100%;
-}
-
-.agent-turn.waiting-only {
-  min-width: auto;
-  min-height: 34px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-start;
 }
 
 .agent-turn:not(.developer) .agent-turn-answer {

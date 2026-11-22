@@ -224,6 +224,20 @@ pub struct SessionContext {
     /// 清空它 = 让当前会话**立刻**用上最新开关，代价是掉一次 cache ——
     /// 由用户显式点"应用到当前会话"触发，所以那个代价是知情的、可接受的。
     pub tool_filter: Mutex<Option<crate::core::tools::framework::registry::ToolFilter>>,
+    /// 本 run 里**等用户做决策**的时间区间：每次弹出权限卡记一段（弹卡 → 拿到结论 / 被打断）。
+    ///
+    /// 为什么用 `Instant`：单调时钟，不受系统时间被调整的影响；用毫秒时间戳做差会在
+    /// 改系统时间的机器上算出负数/巨值。
+    ///
+    /// 为什么用**同步锁** `StdMutex` 而不是 tokio 的 `Mutex`：区间的关闭点有可能落在
+    /// `Drop` 里（future 被取消、子代理任务超时被 drop），`Drop` 是同步上下文，
+    /// 拿不到异步锁（`.await` 不可用）。区间只在收尾时被读走，锁竞争极低。
+    ///
+    /// 为什么存**区间**而不是一个累加标量：并行工具可能同时弹出多张权限卡，
+    /// 那几段时间是**重叠**的（用户一次点击同时放行多张卡），按请求累加会把同一段
+    /// 时间算两遍。收尾时对这些区间求**并集**才是真实的人类确认耗时
+    /// （合并逻辑见 `agent_runs::merged_wait_ms`）。
+    pub run_wait_intervals: StdMutex<Vec<(std::time::Instant, std::time::Instant)>>,
 }
 
 impl SessionContext {
@@ -254,7 +268,49 @@ impl SessionContext {
             agent_read_only: Mutex::new(false),
             system_prompt_cache: Mutex::new(None),
             tool_filter: Mutex::new(None),
+            run_wait_intervals: StdMutex::new(Vec::new()),
         }
+    }
+
+    /// 记录一段"等待用户决策"的区间（弹卡 → 拿到结论）。
+    ///
+    /// 同步方法：调用方可能是 `WaitIntervalGuard::drop`（future 被取消、子代理超时、
+    /// 进程收尾），那里没有异步运行时，只能走同步锁。
+    /// 中毒时取回内部值继续（丢一段统计好过让收尾 panic）。
+    pub fn push_wait_interval(&self, start: std::time::Instant, end: std::time::Instant) {
+        let mut guard = self
+            .run_wait_intervals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.push((start, end));
+    }
+
+    /// 取走本 run 已记录的等待区间并清空，返回**并集**毫秒数。
+    ///
+    /// "取走"是刻意的：同一次 run 的收尾函数可能被调用多次
+    /// （例如 `cancel_run` 落状态之后，finalize 还会盖 `closed` 图章），
+    /// 区间若不清空就会被重复计入等待耗时。
+    pub async fn take_run_wait_ms(&self) -> u64 {
+        let intervals = {
+            let mut guard = self
+                .run_wait_intervals
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut *guard)
+        }; // 锁在此释放：区间合并是纯计算，没必要占着锁
+        crate::core::orchestration::agent_runs::merged_wait_ms(intervals)
+    }
+
+    /// 丢弃已累计的等待区间。
+    ///
+    /// 新一轮 run 启动前调用：区间表挂在**会话**上（`SessionContext`），
+    /// 若不清空，上一轮没被收尾取走的残留会被算进本轮（等待耗时虚高）。
+    pub async fn clear_run_wait(&self) {
+        let mut guard = self
+            .run_wait_intervals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.clear();
     }
 
     /// 原子登记当前执行；`Err(true)` 表示上一轮正在停止，`Err(false)` 表示仍在运行。

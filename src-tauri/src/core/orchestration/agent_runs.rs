@@ -5,7 +5,7 @@
 //! 起点由 `agent_runs.message_id` 锚定，顺序由 `(run_id, loop_index)` 决定。
 
 use std::collections::HashSet;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
@@ -80,6 +80,14 @@ pub struct AgentRun {
     /// 收尾写下，供渲染与发送拼回标记），本列是 **run 级**（这次运行为何结束）。
     /// 前者服务"单条消息怎么显示"，后者服务"整次运行怎么恢复/判定"。
     pub interrupt_kind: Option<String>,
+    /// 本 run 的**等待耗时**（毫秒）：工具执行前等用户审批累计消耗的时间。
+    ///
+    /// - `None` = **未统计等待**（早于 v26 迁移的旧行，或收尾路径未走统计逻辑）；
+    /// - `Some(ms)` = 真实等待毫秒数（可能是 0：全程无需审批）。
+    ///
+    /// 为什么不把 0 当成“没等过”：模型耗时与人类确认耗时必须分开统计，
+    /// 否则审批慢会被算进执行耗时，评测结论失真。
+    pub wait_ms: Option<u64>,
 }
 
 /// 一个 loop 的落库记录（「每轮一行」）。
@@ -164,6 +172,8 @@ pub fn start_run(
         resumed_from_run_id,
         message_id,
         interrupt_kind: None,
+        // 新 run 从 0 起累计等待（0 = 确实还没等过，与旧行的 NULL“未统计”区分）
+        wait_ms: Some(0),
     };
     let _ = write_run(&run);
     emit_run(app, &run);
@@ -231,6 +241,9 @@ pub fn mark_stale_runs_interrupted(
             // 可续跑性改由"该 run 是否已有轮次记录"决定（v15 起无 checkpoint）：
             // 有 events 说明跑过至少一轮，context 可从 events 重放。
             run.resumable = has_loop_events(&run.run_id);
+            // ⚠️ 不写 `wait_ms`：此处没有活动会话上下文（run 已失联），
+            // 那些等待区间早就跟进程一起没了——语义是「未统计等待」，
+            // 保持 NULL 而不是编一个 0（0 = 确实没等过）。
         }) {
             emit_run(app, &run);
         }
@@ -259,6 +272,7 @@ pub fn mark_running_interrupted_on_exit() {
             run.summary = Some(EXIT_INTERRUPTED_SUMMARY.to_string());
             run.interrupt_kind = Some(InterruptKind::AppClosed.as_str().to_string());
             run.resumable = has_loop_events(&run.run_id);
+            // 同上：退出路径没有活着的会话上下文，等待耗时无法回算，保持 NULL（未统计）
         });
     }
 }
@@ -411,12 +425,62 @@ fn has_loop_events(run_id: &str) -> bool {
     !load_loop_events(run_id).is_empty()
 }
 
+/// 把"等待用户决策"的区间们合并成**并集**总耗时时长（毫秒）。
+///
+/// ## 为什么必须取并集，而不是把每个请求的耗时相加
+///
+/// 工具是**并行**执行的。一次审批可能同时弹出多张权限卡（并行工具各自在等），
+/// 用户看完后一口气把它们全部点掉——那几段等待在时间轴上**大部分是重叠的**。
+/// 按请求逐个累加，同一段真实时间会被算好几遍，得出"用户等了 40 秒"而实际只等了
+/// 12 秒的虚高结论（评测里会把人类确认耗时归因到模型头上）。
+///
+/// ## 合并规则
+///
+/// 1. 按起点升序排序；
+/// 2. 后一段的起点 `<=` 当前段的终点就是"重叠或相接"（`<=` 里的等号处理
+///    首尾相接的两张卡：用户点完一张、下一张紧接着弹出，中间没有空档）；
+/// 3. 相接/重叠则把终点撑到 `max`（包含关系——后一段完全被当前段包含时终点不动）；
+/// 4. 只累加**合并后的段长**。
+///
+/// 零长度或反向区间（`end <= start`，时钟读数异常）直接丢弃：它们对总时长无贡献，
+/// 留着只会在边界上干扰合并判定。
+///
+/// 纯函数、无副作用：区间已经在调用方（`SessionContext::take_run_wait_ms`）里被取走清空。
+pub fn merged_wait_ms(intervals: Vec<(Instant, Instant)>) -> u64 {
+    let mut spans: Vec<(Instant, Instant)> = intervals
+        .into_iter()
+        .filter(|(start, end)| end > start)
+        .collect();
+    if spans.is_empty() {
+        return 0;
+    }
+    spans.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut total = Duration::ZERO;
+    let (mut cur_start, mut cur_end) = spans[0];
+    for (start, end) in spans.into_iter().skip(1) {
+        if start <= cur_end {
+            // 重叠或首尾相接：并入当前段（终点只往右扩，不回收）
+            if end > cur_end {
+                cur_end = end;
+            }
+        } else {
+            total += cur_end - cur_start;
+            cur_start = start;
+            cur_end = end;
+        }
+    }
+    total += cur_end - cur_start;
+    total.as_millis() as u64
+}
+
 pub fn complete_run(
     app: &tauri::AppHandle,
     run_id: &str,
     input_tokens: u64,
     output_tokens: u64,
     summary: Option<String>,
+    wait_ms: u64,
 ) {
     finish_run(
         app,
@@ -426,6 +490,7 @@ pub fn complete_run(
         output_tokens,
         summary,
         None,
+        wait_ms,
     );
 }
 
@@ -435,6 +500,7 @@ pub fn cancel_run(
     input_tokens: u64,
     output_tokens: u64,
     summary: Option<String>,
+    wait_ms: u64,
 ) {
     finish_run(
         app,
@@ -444,6 +510,7 @@ pub fn cancel_run(
         output_tokens,
         summary,
         Some(InterruptKind::UserCancel),
+        wait_ms,
     );
 }
 
@@ -455,7 +522,13 @@ pub fn cancel_run(
 /// ⚠️ 不再接收 `error` 文本：它此前只写 `agent_runs.error` 列（只写不读，已于 v19
 /// 删除）。失败原因仍可在 `agent_run_events.error`（每轮一行）里查到；
 /// run 级只保留**类型**（`interrupt_kind = PipelineError`）。
-pub fn fail_run(app: &tauri::AppHandle, run_id: &str, input_tokens: u64, output_tokens: u64) {
+pub fn fail_run(
+    app: &tauri::AppHandle,
+    run_id: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+    wait_ms: u64,
+) {
     finish_run(
         app,
         run_id,
@@ -464,6 +537,7 @@ pub fn fail_run(app: &tauri::AppHandle, run_id: &str, input_tokens: u64, output_
         output_tokens,
         None,
         Some(InterruptKind::PipelineError),
+        wait_ms,
     );
 }
 
@@ -480,6 +554,7 @@ pub fn interrupt_run(
     kind: InterruptKind,
     input_tokens: u64,
     output_tokens: u64,
+    wait_ms: u64,
 ) {
     finish_run(
         app,
@@ -489,6 +564,7 @@ pub fn interrupt_run(
         output_tokens,
         None,
         Some(kind),
+        wait_ms,
     );
 }
 
@@ -832,13 +908,23 @@ pub fn mark_run_recovered(run_id: &str) -> Result<(), String> {
 /// 收尾声明完成，run 不再是恢复候选。save 与盖章之间若崩溃（毫秒级窗口），
 /// run 停留 `Interrupted` 被门卫捞出，由 `messages_equivalent` 的剥标记比对
 /// 兜底（双保险），不会重复补内容。
-pub fn mark_run_closed(app: &tauri::AppHandle, run_id: &str) {
+pub fn mark_run_closed(app: &tauri::AppHandle, run_id: &str, wait_ms: u64) {
     if let Ok(run) = update_run_by_id(run_id, |run| {
         run.status = AgentRunStatus::Closed;
         run.resumable = false;
         if run.finished_at.is_none() {
             run.finished_at = Some(now_millis());
         }
+        // ⚠️ 这里用**累加**而不是覆盖：
+        //
+        // `mark_run_closed` 紧跟在某个收尾函数之后（`cancel_run` / `interrupt_run`）
+        // 才被调用，而那些函数已经取走过一次区间（取走即清空，对应那笔已经落库）。
+        // 若这里直接覆盖，本次 take 拿到的是空集（0ms），会把刚写好的真实等待耗时
+        // 抹成 0。用累加则：两次 take 拿到的是**互不相交**的区间集合
+        // （take 即清空），相加正好是本 run 的完整等待耗时。
+        //
+        // 无任何等待时 `run.wait_ms` 保持 0（start_run 初始值），语义正确。
+        run.wait_ms = Some(run.wait_ms.unwrap_or(0) + wait_ms);
     }) {
         emit_run(app, &run);
     }
@@ -852,6 +938,7 @@ fn finish_run(
     output_tokens: u64,
     summary: Option<String>,
     kind: Option<InterruptKind>,
+    wait_ms: u64,
 ) {
     if let Ok(run) = update_run_by_id(run_id, |run| {
         run.status = status.clone();
@@ -862,6 +949,10 @@ fn finish_run(
         // 中断类型落枚举字符串（None = 正常结束，不覆盖既有值以外的东西）
         run.interrupt_kind = kind.map(|k| k.as_str().to_string());
         run.resumable = status == AgentRunStatus::Interrupted;
+        // 等待用户审批的净耗时（区间并集，见 `merged_wait_ms`）。
+        // 调用方已在收尾那一刻把区间**取走并清空**，这里直接写入即可：
+        // 取走语义保证了同一次 run 不会被重复计费（见 `SessionContext::take_run_wait_ms`）。
+        run.wait_ms = Some(wait_ms);
     }) {
         emit_run(app, &run);
     }
@@ -914,6 +1005,102 @@ fn now_millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod wait_merge_tests {
+    //! 等待区间的**并集**合并纯函数防回归。
+    //!
+    //! 背景：并行工具可同时弹多张权限卡，等待区间大量重叠。
+    //! 按请求累加会把同一段时间算多遍（典型误差：两张卡重叠 8s，累加会多算 8s），
+    //! 所以这里锁死"区间取并集"的合并规则。
+    use super::merged_wait_ms;
+    use std::time::{Duration, Instant};
+
+    /// 以固定基准时刻构造区间，避开 `Instant::now()` 的不可控偏移
+    fn span(base: Instant, start_ms: u64, end_ms: u64) -> (Instant, Instant) {
+        (base + Duration::from_millis(start_ms), base + Duration::from_millis(end_ms))
+    }
+
+    fn base() -> Instant {
+        Instant::now()
+    }
+
+    /// 单区间：原样返回段长
+    #[test]
+    fn single_interval() {
+        let b = base();
+        assert_eq!(merged_wait_ms(vec![span(b, 0, 3_000)]), 3_000);
+    }
+
+    /// 无重叠（中间有空档）：相加，空档不计
+    #[test]
+    fn disjoint_intervals_add_up() {
+        let b = base();
+        let ms = merged_wait_ms(vec![span(b, 0, 1_000), span(b, 3_000, 5_000)]);
+        assert_eq!(ms, 3_000, "1s + 2s，中间的 2s 空档不计入");
+    }
+
+    /// 完全重叠（两个请求同起同落）：只算一次
+    #[test]
+    fn identical_intervals_count_once() {
+        let b = base();
+        let ms = merged_wait_ms(vec![span(b, 0, 5_000), span(b, 0, 5_000)]);
+        assert_eq!(ms, 5_000);
+    }
+
+    /// 完全包含（小区间被大区间盖住）：只算大区间
+    #[test]
+    fn contained_interval_does_not_double_count() {
+        let b = base();
+        let ms = merged_wait_ms(vec![span(b, 0, 5_000), span(b, 1_000, 4_000)]);
+        assert_eq!(ms, 5_000);
+    }
+
+    /// 部分重叠：并集 = 起点最早到终点最晚
+    #[test]
+    fn partial_overlap_merges_into_union() {
+        let b = base();
+        let ms = merged_wait_ms(vec![span(b, 0, 3_000), span(b, 2_000, 5_000)]);
+        assert_eq!(ms, 5_000, "重叠 1s，并集 0..5000");
+    }
+
+    /// 首尾**相接**（前一张刚点完，下一张紧接着弹）：合并，不算两遍
+    #[test]
+    fn touching_intervals_merge() {
+        let b = base();
+        let ms = merged_wait_ms(vec![span(b, 0, 1_000), span(b, 1_000, 2_500)]);
+        assert_eq!(ms, 2_500);
+    }
+
+    /// 乱序输入（真实场景：区间按结束顺序 push）：排序后仍得同一结果
+    #[test]
+    fn unsorted_input_is_sorted_before_merge() {
+        let b = base();
+        let ms = merged_wait_ms(vec![span(b, 3_000, 6_000), span(b, 1_000, 9_000)]);
+        assert_eq!(ms, 8_000, "1..9000 与 3000..6000 的并集 = 8000");
+    }
+
+    /// 并行多卡叠加：两段 10s、重叠 5s → 15s（按请求累加会错算成 20s）
+    #[test]
+    fn parallel_cards_overlap_is_counted_once() {
+        let b = base();
+        let ms = merged_wait_ms(vec![span(b, 0, 10_000), span(b, 5_000, 15_000)]);
+        assert_eq!(ms, 15_000);
+    }
+
+    /// 零长度与反向区间（时钟读数异常）直接丢弃
+    #[test]
+    fn degenerate_intervals_are_dropped() {
+        let b = base();
+        assert_eq!(merged_wait_ms(vec![]), 0);
+        assert_eq!(merged_wait_ms(vec![span(b, 1_000, 1_000)]), 0);
+        assert_eq!(merged_wait_ms(vec![span(b, 2_000, 1_000)]), 0);
+        assert_eq!(
+            merged_wait_ms(vec![span(b, 1_000, 1_000), span(b, 0, 500)]),
+            500
+        );
+    }
 }
 
 #[cfg(test)]

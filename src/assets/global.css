@@ -362,24 +362,18 @@ body.dark-mode {
 
 /* 开发者模式轨迹的 `.dev-*` 样式已统一收口到 AgentTurn.vue（scoped），此处不再保留副本 */
 
-/* ── 旧版开发者视图（保留向后兼容，已废弃） ── */
-.agent-developer-view {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 8px 0;
-}
-
+/* ── 旧版开发者视图 ──
+   本块原有的旧版开发者视图容器类与日志卡片类已于 2026-11 删除：
+   组件里不再产生这两个类名，留着只会误导。
+   下面仍在使用（思考块 / 工具组 / 执行面板）的选择器保留。 */
 .agent-thinking-block,
 .agent-tool-call,
-.agent-execution-logs,
 .agent-execution-panel {
   margin: 2px 0;
 }
 
 .agent-execution-panel > summary,
-.agent-thinking-block > summary,
-.agent-execution-logs > summary {
+.agent-thinking-block > summary {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -392,13 +386,11 @@ body.dark-mode {
 }
 
 .agent-execution-panel > summary:hover,
-.agent-thinking-block > summary:hover,
-.agent-execution-logs > summary:hover {
+.agent-thinking-block > summary:hover {
   color: var(--text-main);
 }
 
-.agent-thinking-block > div,
-.agent-execution-logs > div {
+.agent-thinking-block > div {
   padding-left: 14px;
   margin-left: 3px;
   margin-top: 2px;
@@ -516,8 +508,7 @@ body.dark-mode {
 .agent-tool-child-row.running { color: var(--text-muted); }
 
 .agent-tool-field,
-.agent-tool-log,
-.agent-execution-log {
+.agent-tool-log {
   margin: 4px 0;
   padding-left: 12px;
   color: var(--text-muted);

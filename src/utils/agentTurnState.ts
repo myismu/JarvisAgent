@@ -373,6 +373,15 @@ export function buildAgentTurnSnapshot(
   noticeI18nKey?: string,
   /** 状态标注的补充数据（原样展示，如具体错误文本） */
   noticeDetail?: string,
+  /**
+   * 本轮总时长（毫秒）。**前端不自己计时**，由调用方从后端落库的
+   * `agent_runs.started_at` / `finished_at` 差值算好传进来 ——
+   * 刷新后的历史快照走的是同一条口径，两边数值才能一致。
+   *
+   * 缺省 / null：本轮时长未知（如续跑路径没有对应的用户消息、
+   * 或本次 run 尚未收到收尾事件），此时不写字段，界面不显示时长。
+   */
+  durationMs?: number | null,
 ): AgentTurnSnapshot {
   completeAgentCurrentTurn({ currentTurn: turn });
 
@@ -423,6 +432,8 @@ export function buildAgentTurnSnapshot(
     // 那条"已 30 秒未收到数据"会残留在快照里（明明已经成功完成）。
     noticeI18nKey,
     noticeDetail,
+    // 时长同上：只落调用方给的确定值，不让快照自己按 createdAt 反推
+    durationMs: durationMs ?? undefined,
     finalContent,
     createdAt: now(),
   };

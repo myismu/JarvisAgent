@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import { ref, onMounted, nextTick, computed, watch, onUnmounted } from 'vue';
+import { ref, onMounted, nextTick, computed, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useSessionStore } from '../../stores/session';
 import { useChatStore } from '../../stores/chat';
 import { usePermissionStore } from '../../stores/permission';
+import { useAgentStore } from '../../stores/agent';
 import { usePreferences } from '../../composables/usePreferences';
+import { useRunElapsed } from '../../composables/useRunElapsed';
 import { invoke } from '@tauri-apps/api/core';
 import ConfirmModal from '../common/ConfirmModal.vue';
 import AgentTurn from './AgentTurn.vue';
 import AgentTurnNotice from './AgentTurnNotice.vue';
-import ThinkingStatus from './ThinkingStatus.vue';
 import SessionTaskBoard from './SessionTaskBoard.vue';
 import TodoPanel from './TodoPanel.vue';
 import WelcomeScreen from './WelcomeScreen.vue';
@@ -54,6 +55,7 @@ const { t } = useI18n();
 const session = useSessionStore();
 const chat = useChatStore();
 const perm = usePermissionStore();
+const agent = useAgentStore();
 const prefs = usePreferences();
 const responseAreaRef = ref<HTMLElement | null>(null);
 /** 视口是否贴底：滚动事件与程序化落底共同维护的统一事实源。 */
@@ -101,24 +103,12 @@ function hasBubblePayload(
 }
 
 const hasBubbleContent = computed(() => hasBubblePayload(currentTurn.value));
-const isWaitingForUser = computed(() => {
-  return Boolean(perm.planProposal || perm.permissionRequest);
-});
-
-const showInlineStatus = computed(() => {
-  if (isWaitingForUser.value) return false;
-  const view = session.currentSessionView;
-  return Boolean(
-    view.runStartTime &&
-    (view.streamActive || (session.isCurrentSessionRunning && !hasCurrentTurnContent.value))
-  );
-});
 
 // 控制 Live Turn 显示/隐藏
 const showAgentTurn = ref(false);
 
 watch(
-  () => hasCurrentTurnContent.value || showInlineStatus.value,
+  hasCurrentTurnContent,
   (shouldShow) => {
     if (shouldShow) {
       showAgentTurn.value = true;
@@ -130,10 +120,16 @@ watch(
   { immediate: true }
 );
 
-const thinkingElapsed = ref(0);
-let thinkingTimer: ReturnType<typeof setInterval> | null = null;
-let waitStartMs = 0;
-let accumulatedWaitMs = 0;
+// 运行中用时的唯一事实源：后端 `agent_runs.started_at`。
+// 不再自己维护开始时刻与累计等待量（旧实现里那套状态跨会话、跨轮次，
+// 一旦某条路径漏重置就会接着上一轮的数字读）。
+const runningAgentRun = computed(
+  () => agent.currentAgentRuns.find((run) => run.status === 'running') ?? null,
+);
+// 权限卡弹出期间冻结读秒：等待用户决策的时间不属于执行用时。
+// 方案审批（planProposal）不参与冻结——本轮在提交方案时已结束，不会在读秒。
+const awaitingDecision = computed(() => Boolean(perm.permissionRequest));
+const { elapsed: runElapsed } = useRunElapsed(runningAgentRun, awaitingDecision);
 
 // 将 AgentTurnSnapshot 转换为 AgentCurrentTurn 格式（供 AgentTurn 组件渲染历史消息）
 // 注意：**新增快照字段时必须同步到这里**，否则该字段在界面永远不生效
@@ -141,7 +137,7 @@ let accumulatedWaitMs = 0;
 //
 // 缓存：同一个 snapshot 对象 → 同一个 turn 对象。
 // 动机：历史消息在模板里写的是 :turn="convertSnapshotToTurn(...)"。若每次调用都新建对象，
-// 则 ChatArea 每次重渲染（运行期约 1 Hz，节拍来自 thinkingElapsed）都会让全部历史
+// 则 ChatArea 每次重渲染（运行期约 1 Hz，节拍来自 useRunElapsed 的读秒）都会让全部历史
 // AgentTurn 的 turn prop 引用变化，使 shouldUpdateComponent 判定「props 变了」并整块
 // 重渲染这些子树（代价 O(历史条数)）。缓存后同一 snapshot 恒返回同一引用，该开销归零。
 // 用 WeakMap 而非 Map：snapshot 被回收时条目自动消失，无需手动清理。
@@ -174,56 +170,13 @@ function convertSnapshotToTurn(snapshot: AgentTurnSnapshot): AgentCurrentTurn {
     // 后端只给 i18n key，这里用语言包成句 —— 切语言时这条标注会跟着变。
     notice: noticeTextFromBackend(snapshot.noticeI18nKey, snapshot.noticeDetail),
     startedAt: snapshot.createdAt,
+    // 轮次真实用时（毫秒）：折叠头「用时 N 秒」直接读它，不再用首尾时间戳差推算
+    durationMs: snapshot.durationMs,
   };
 
   turnCache.set(snapshot, turn);
   return turn;
 }
-
-const updateThinkingElapsed = () => {
-  const view = session.getSessionView(session.activeSessionId);
-  if (!view.runStartTime) { thinkingElapsed.value = 0; return; }
-  const elapsed = Date.now() - view.runStartTime - accumulatedWaitMs;
-  thinkingElapsed.value = Math.max(0, Math.floor(elapsed / 1000));
-};
-
-watch(showInlineStatus, (running) => {
-  if (running) {
-    updateThinkingElapsed();
-    thinkingTimer = setInterval(updateThinkingElapsed, 1000);
-  } else {
-    if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
-    thinkingElapsed.value = 0;
-    waitStartMs = 0;
-    accumulatedWaitMs = 0;
-  }
-});
-
-// 等待用户决策期间暂停读秒
-watch(isWaitingForUser, (waiting) => {
-  if (waiting) {
-    waitStartMs = Date.now();
-  } else if (waitStartMs > 0) {
-    accumulatedWaitMs += Date.now() - waitStartMs;
-    waitStartMs = 0;
-  }
-});
-
-watch(() => session.activeSessionId, () => {
-  if (showInlineStatus.value) {
-    updateThinkingElapsed();
-    if (!thinkingTimer) {
-      thinkingTimer = setInterval(updateThinkingElapsed, 1000);
-    }
-  } else {
-    if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
-    thinkingElapsed.value = 0;
-  }
-});
-
-onUnmounted(() => {
-  if (thinkingTimer) clearInterval(thinkingTimer);
-});
 
 const expandedUserMsgs = ref(new Set<string>());
 
@@ -918,9 +871,7 @@ onMounted(() => {
             <AgentTurn
               :turn="convertSnapshotToTurn(message.snapshot)"
               :display-mode="prefs.agentAudience.value"
-              :show-status="false"
               :elapsed="0"
-              :paused="false"
               :status="message.snapshot.status"
             />
           </div>
@@ -932,19 +883,15 @@ onMounted(() => {
 
       <!-- Live 当前 Turn -->
       <div v-if="showAgentTurn" class="chat-message agent-message current-turn-message">
-        <!-- 气泡只在"有正文"或"运行中要占位"时渲染；
-             只有 notice（如上游静默零产出）时不渲染气泡，让它单独出现在外面 -->
+        <!-- 气泡只在有真内容时渲染；只有 notice（如上游静默零产出）时让它单独出现在外面 -->
         <div
-          v-if="hasBubbleContent || showInlineStatus"
+          v-if="hasBubbleContent"
           class="message-content current-turn-content"
-          :class="{ 'waiting-only': !hasBubbleContent }"
         >
           <AgentTurn
             :turn="currentTurn"
             :display-mode="prefs.agentAudience.value"
-            :show-status="showInlineStatus"
-            :elapsed="thinkingElapsed"
-            :paused="isWaitingForUser"
+            :elapsed="runElapsed"
             :status="session.currentSessionView.status"
           />
         </div>
@@ -957,7 +904,6 @@ onMounted(() => {
           {{ chat.memoryNotice }}
         </div>
       </Transition>
-      <ThinkingStatus :running="showInlineStatus" :elapsed="thinkingElapsed" :paused="isWaitingForUser" />
     </div>
 
     <Teleport to="body">

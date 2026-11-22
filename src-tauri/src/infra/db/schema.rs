@@ -11,7 +11,7 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 25;
+pub const SCHEMA_VERSION: i64 = 26;
 
 /// v24：用子 Agent 逐轮轨迹替代仅归档溢出事件的旧表。
 fn migrate_v24_subagent_trace(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -60,6 +60,51 @@ fn migrate_v25_subagent_trace_run_label(conn: &Connection) -> Result<(), rusqlit
             [],
         )?;
     }
+    Ok(())
+}
+
+/// v26：为 `agent_runs` 增加可空列 `wait_ms`（本 run 的**等待耗时**，毫秒）。
+///
+/// ## 语义
+/// 记录这一次运行里「工具执行前等用户审批」累计消耗的时间，用于把模型耗时与
+/// 人类确认耗时区分开（否则审批慢会被算进执行耗时，评测结论失真）。
+///
+/// ## 为什么可空而不是 `NOT NULL DEFAULT 0`
+/// `0` 会被读成「等待耗时为零」，与「根本没有统计过」混为一谈；
+/// 可空才能让上层区分两种情况：
+/// - `NULL` = **未统计等待**（早于本次迁移的旧行，或收尾路径没走统计逻辑）；
+/// - `Some(ms)` = 本次运行的真实等待毫秒数（可能是 0：全程无需审批）。
+///
+/// 刻意**不回填**：旧行没有可依据的历史数据，回填 0 等于编造「没等过」。
+///
+/// ⚠️ 列**追加在末尾**，不改动既有列顺序（`RUN_COLUMNS` 的既有下标语义不受影响）。
+fn migrate_v26_run_wait_ms(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // ⚠️ 表可能不存在（迁移测试的最小桩库只建 sessions/app_state；
+    // 早期版本库也未必有 agent_runs），先探表再探列，
+    // 否则 `ALTER TABLE` 一个不存在的表会直接报 "no such table"（与 v17/v20 同源的坑）。
+    if !db_table_exists(conn, "agent_runs")? {
+        return Ok(());
+    }
+
+    let has_wait_ms = {
+        let mut stmt = conn.prepare("PRAGMA table_info(agent_runs)")?;
+        let found = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .any(|column| column == "wait_ms");
+        found
+    };
+    if !has_wait_ms {
+        conn.execute("ALTER TABLE agent_runs ADD COLUMN wait_ms INTEGER", [])?;
+    }
+
+    // 历史消息重建用时需要按 message_id 反查 run（`list_runs_by_message_id`）。
+    // 这条路径在每次翻页/重载时对每一轮都会跑一次，没索引就是全表扇描；
+    // `IF NOT EXISTS` 保证重复执行安全（与列存在性检查同为幂等）。
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_runs_message_id ON agent_runs(message_id)",
+        [],
+    )?;
     Ok(())
 }
 
@@ -1387,6 +1432,9 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             migrate_v25_subagent_trace_run_label(conn)
                 .map_err(|e| format!("v25 迁移失败: {}", e))?;
         }
+        if current_version < 26 {
+            migrate_v26_run_wait_ms(conn).map_err(|e| format!("v26 迁移失败: {}", e))?;
+        }
     }
 
     conn.execute_batch(
@@ -1465,6 +1513,8 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             resumable INTEGER NOT NULL DEFAULT 0,
             resumed_from_run_id TEXT,
             interrupt_kind TEXT,
+            -- v26：等待耗时（毫秒）。NULL = 未统计等待（见 migrate_v26_run_wait_ms）
+            wait_ms INTEGER,
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
 
@@ -1620,6 +1670,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_session_messages_session_message_id ON session_messages(session_id, message_id);
         CREATE INDEX IF NOT EXISTS idx_session_messages_visible_seq ON session_messages(session_id, hidden_at, recalled_at, source, seq);
         CREATE INDEX IF NOT EXISTS idx_agent_runs_session_started ON agent_runs(session_id, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_message_id ON agent_runs(message_id);
         CREATE INDEX IF NOT EXISTS idx_agent_run_events_run_loop ON agent_run_events(run_id, loop_index);
         CREATE INDEX IF NOT EXISTS idx_agent_run_events_session_time ON agent_run_events(session_id, started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_subagent_trace_runs_session ON subagent_trace_runs(session_id, started_at);
@@ -2632,6 +2683,100 @@ mod tests {
             tree_again_value["nodes"]["snap_1"]["createdAt"],
             serde_json::json!(1_700_000_000_000i64),
             "重复初始化不得二次放大 JSON 内时间字段"
+        );
+    }
+
+    /// v26：v25 老库（`agent_runs` 无 `wait_ms`）升级后必须补上可空列，
+    /// 且旧行留 NULL（= 未统计等待，不得回填 0 伪装成“没等过”）。
+    #[test]
+    fn v26_migration_adds_agent_runs_wait_ms_nullable() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        // v25 形态的 agent_runs（除 wait_ms 外列齐全）：
+        // 必须带 session_id / started_at —— 建表 DDL 里的索引会引用它们。
+        conn.execute_batch(
+            "CREATE TABLE agent_runs (
+                run_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                message_id TEXT,
+                loop_count INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                started_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                finished_at INTEGER,
+                last_safe_point TEXT,
+                summary TEXT,
+                resumable INTEGER NOT NULL DEFAULT 0,
+                resumed_from_run_id TEXT,
+                interrupt_kind TEXT
+            );
+            CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO app_state(key, value) VALUES('schema_version', '25');
+            INSERT INTO agent_runs(run_id, session_id, status, loop_count, input_tokens,
+                output_tokens, started_at, updated_at)
+                VALUES('ar_old', 's1', 'completed', 2, 100, 50, 1, 2);",
+        )
+        .expect("create legacy v25 schema");
+
+        assert!(
+            !column_exists(&conn, "agent_runs", "wait_ms"),
+            "前提：v25 库不应有 wait_ms 列"
+        );
+
+        init_schema(&conn).expect("upgrade v25 -> v26");
+
+        assert!(
+            column_exists(&conn, "agent_runs", "wait_ms"),
+            "v26 迁移必须补上 agent_runs.wait_ms"
+        );
+        // 旧行不得被回填：NULL 才能表达“未统计等待”
+        let wait: Option<i64> = conn
+            .query_row(
+                "SELECT wait_ms FROM agent_runs WHERE run_id = 'ar_old'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("旧行必须保留");
+        assert_eq!(wait, None, "旧行 wait_ms 必须保持 NULL（未统计等待）");
+
+        // 版本号推进到 26
+        let version: i64 = conn
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM app_state WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read version");
+        assert!(version >= 26, "v26 升级后版本号至少到 26（实际 {}）", version);
+
+        // 幂等：再次初始化不得报 duplicate column，且不破坏已有值
+        conn.execute("UPDATE agent_runs SET wait_ms = 1234 WHERE run_id = 'ar_old'", [])
+            .expect("set wait_ms");
+        init_schema(&conn).expect("re-init idempotent");
+        let after: Option<i64> = conn
+            .query_row(
+                "SELECT wait_ms FROM agent_runs WHERE run_id = 'ar_old'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("re-read");
+        assert_eq!(after, Some(1234), "重复初始化不得清掉 wait_ms");
+    }
+
+    /// v26 的建表 DDL 必须自带 `wait_ms`（新库不跑迁移也要与升级后同构）
+    #[test]
+    fn fresh_ddl_declares_agent_runs_wait_ms() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        init_schema(&conn).expect("fresh schema");
+        assert!(
+            column_exists(&conn, "agent_runs", "wait_ms"),
+            "新建库的 agent_runs 必须包含 wait_ms"
+        );
+        assert_eq!(
+            column_type(&conn, "agent_runs", "wait_ms"),
+            "INTEGER",
+            "wait_ms 必须是毫秒整数列"
         );
     }
 }

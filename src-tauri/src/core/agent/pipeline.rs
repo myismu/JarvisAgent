@@ -1301,6 +1301,10 @@ impl PipelineState {
         );
         // 步骤 6：在 agent_runs 表登记本次 run（实时进度 + 崩溃恢复用）
         // （不再传用户消息文本：它只曾用于 v19 删掉的 user_message_preview 列）
+        //
+        // 先清空等待区间：区间表挂在**会话**上，上一轮若没被收尾取走（例如异常退出
+        // 导致收尾函数没跑到），残留区间会被算进本轮的 `wait_ms`，让"人类确认耗时"虚高。
+        self.ctx.clear_run_wait().await;
         self.run_id = agent_runs::start_run(&self.app, &self.sid, None, user_message_id);
         // 步骤 7：标记当前 run 为活跃。
         //
@@ -2338,6 +2342,8 @@ impl PipelineState {
                 self.req_input_tokens,
                 self.req_output_tokens,
                 Some(self.final_answer.chars().take(180).collect()),
+                // 本轮等待用户审批的净耗时（区间并集；取走即清空）
+                self.ctx.take_run_wait_ms().await,
             );
         } else if interrupted_reason.is_some() {
             // 方案 6：主动收尾（取消/错误中止/看门狗）已在此前把 run 置为
@@ -2348,7 +2354,14 @@ impl PipelineState {
             // 因标记只在消息层而误判缺失、重复补同一段（2302e81c）。
             // 若 save 与盖章之间崩溃（毫秒级窗口），run 停留 Interrupted
             // 被门卫捞出，由 messages_equivalent 的剥标记比对兜底。
-            agent_runs::mark_run_closed(&self.app, &self.run_id);
+            //
+            // `mark_run_closed` 内部对 wait_ms 做**累加**：上面两条收尾函数
+            // （cancel_run / interrupt_run）已经把区间取走过一次（已落库），
+            // 这里再 take 拿到的是空集，累加即无副作用；但若本路径**没有**
+            // 先前的收尾函数（例如"达到回合上限且未获续跑授权"是直接 break 出循环），
+            // 这里就是唯一一次取走区间的机会。
+            let wait_ms = self.ctx.take_run_wait_ms().await;
+            agent_runs::mark_run_closed(&self.app, &self.run_id, wait_ms);
         }
 
         let session_input_tokens = session_meta
@@ -2485,6 +2498,8 @@ impl PipelineState {
             InterruptKind::PipelineError,
             self.req_input_tokens,
             self.req_output_tokens,
+            // 等待用户审批的净耗时（区间并集；取走即清空）
+            self.ctx.take_run_wait_ms().await,
         );
 
         // 4. 中断后立即持久化，保证用户刷新后仍能看到保留的内容与中断标记
@@ -2755,6 +2770,8 @@ impl PipelineState {
             self.req_input_tokens,
             self.req_output_tokens,
             Some(self.final_answer.clone()),
+            // 等待用户审批的净耗时（区间并集；取走即清空）
+            self.ctx.take_run_wait_ms().await,
         );
         println!("[JARVIS] 已把中断轮内容与提示合并落库（interrupted）");
     }
@@ -2866,6 +2883,8 @@ impl PipelineState {
             InterruptKind::StreamTimeout,
             self.req_input_tokens,
             self.req_output_tokens,
+            // 等待用户审批的净耗时（区间并集；取走即清空）
+            self.ctx.take_run_wait_ms().await,
         );
     }
 
@@ -3630,6 +3649,8 @@ impl PipelineState {
                             &self.run_id,
                             self.req_input_tokens,
                             self.req_output_tokens,
+                            // 等待用户审批的净耗时（区间并集；取走即清空）
+                            self.ctx.take_run_wait_ms().await,
                         );
                         return Err(error.into());
                     }
@@ -3648,6 +3669,8 @@ impl PipelineState {
                     &self.run_id,
                     self.req_input_tokens,
                     self.req_output_tokens,
+                    // 等待用户审批的净耗时（区间并集；取走即清空）
+                    self.ctx.take_run_wait_ms().await,
                 );
                 Err(e.into())
             }

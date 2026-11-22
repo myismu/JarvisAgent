@@ -43,7 +43,17 @@ function applyImageTier(prefs: UiPreferences, tier: ImageCompressTier) {
 interface UiPreferences {
   fontSize: number;
   autoScroll: boolean;
-  defaultExpandThinking: boolean;
+  /**
+   * 轮次运行中是否展开「执行过程」。
+   *
+   * 开启（默认）：本轮进行中展开执行过程，但**只显示摘要行**（「执行中 · 用时 X · X 步」
+   * 下方的思考、工具调用、日志摘要），每行内容仍需用户自己点开；
+   * 关闭：运行中也只剩摘要头那一行。
+   *
+   * ⚠️ 与「本轮是否结束」无关：轮次结束后执行过程一律收起，历史消息也一律收起。
+   * 它只管**运行中**这一段时间窗口的表现，因此改动它不会影响已完成的历史渲染。
+   */
+  expandExecutionWhileRunning: boolean;
   agentPanelPosition: AgentPanelPosition;
   sidebarCollapsed: boolean;
   /** 会话列表「项目」总区块折叠（一次收起所有项目分组） */
@@ -136,7 +146,7 @@ function snapToNearestPreset(value: number, presets: readonly number[]): number 
 const defaults: UiPreferences = {
   fontSize: 15,
   autoScroll: true,
-  defaultExpandThinking: false,
+  expandExecutionWhileRunning: true,
   agentPanelPosition: "right",
   sidebarCollapsed: false,
   sidebarProjectsCollapsed: false,
@@ -161,10 +171,31 @@ const defaults: UiPreferences = {
   inputDrafts: {},
 };
 
+/**
+ * 按 defaults 的键集裁剪入参：未声明的键（改名/退役字段）一律丢弃。
+ *
+ * 与 `normalizeInputDrafts` 同属「读的时候就收敛」这一层：这份 JSON 可以被手改，
+ * 旧版本也会留下废弃键，脏值一旦进了 prefs 就会被原样写回磁盘。
+ */
+function pickKnownKeys(
+  value: Partial<UiPreferences> & { agentDisplayMode?: string; agentReadOnly?: boolean },
+): Partial<UiPreferences> {
+  const source = value as Record<string, unknown>;
+  const picked: Record<string, unknown> = {};
+  for (const key of Object.keys(defaults)) {
+    if (key in source) picked[key] = source[key];
+  }
+  return picked as Partial<UiPreferences>;
+}
+
 function normalizePrefs(
   value: Partial<UiPreferences> & { agentDisplayMode?: string; agentReadOnly?: boolean },
 ): UiPreferences {
-  const result = { ...defaults, ...value };
+  // 只取 defaults 里声明过的键：偏好是**全量替换**式落库的，`{ ...defaults, ...value }`
+  // 会把后端返回的历史遗留键（改名/退役前的字段）原样带回来，再被下一次保存写回磁盘，
+  // 废弃字段于是永远清不掉。这里是「旧字段」的统一删除点，不需要为每个改名单独写迁移。
+  const known = pickKnownKeys(value);
+  const result = { ...defaults, ...known };
   // 向后兼容：旧 agentDisplayMode 值自动迁移
   if (value.agentDisplayMode !== undefined && !value.agentAudience) {
     result.agentAudience = value.agentDisplayMode === "developer" ? "developer" : "user";
@@ -402,7 +433,7 @@ function startWatchers() {
   watch(() => prefs.value.agentApprovalMode, () => scheduleSave());
   watch(() => prefs.value.thinkingDefault, () => scheduleSave());
   watch(() => prefs.value.locale, () => scheduleSave());
-  watch(() => prefs.value.defaultExpandThinking, () => scheduleSave());
+  watch(() => prefs.value.expandExecutionWhileRunning, () => scheduleSave());
   // 崩溃保护只是给后端读的开关：没有 DOM 副作用，落到后端即可
   watch(() => prefs.value.crashProtection, () => scheduleSave());
   watch(() => prefs.value.autoScroll, () => scheduleSave());
@@ -538,8 +569,8 @@ export function usePreferences() {
     setThinkingDefault: (val: ThinkingDefault) => { prefs.value.thinkingDefault = parseThinkingDefault(val); },
     locale,
     setLocale: (val: AppLocale) => { prefs.value.locale = normalizeLocale(val); },
-    get defaultExpandThinking() { return prefs.value.defaultExpandThinking; },
-    setDefaultExpandThinking: (val: boolean) => { prefs.value.defaultExpandThinking = val; },
+    get expandExecutionWhileRunning() { return prefs.value.expandExecutionWhileRunning; },
+    setExpandExecutionWhileRunning: (val: boolean) => { prefs.value.expandExecutionWhileRunning = val; },
     get autoScroll() { return prefs.value.autoScroll; },
     setAutoScroll: (val: boolean) => { prefs.value.autoScroll = val; },
     get agentPanelPosition() { return prefs.value.agentPanelPosition; },

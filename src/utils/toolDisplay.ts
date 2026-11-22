@@ -478,11 +478,17 @@ export function isSubAgentToolGroup(group: ToolCallGroup) {
   return group.category === "subagent" || group.tools.some((tool) => isSubAgentToolName(tool.name));
 }
 
-export function shouldOpenToolGroup(group: ToolCallGroup, mode: AgentDisplayMode) {
+export function shouldOpenToolGroup(group: ToolCallGroup, _mode: AgentDisplayMode) {
+  // 折叠口径（2026-11 改造后）：**行内一律不自展开**。
+  //   - 没正文的分组不展开（展开也是空白）；
+  //   - error 分组展开，失败现场是用户必须看到的信息；
+  //   - 其余情况（运行中 / 待定 / 已完成 / 开发者模式）全部收起，由用户自己点开。
+  // 原先的「开发者模式始终展开」与「用户模式运行中展开」两条分支已删除：
+  // 那两条会把工具细节无条件铺开，与“外层由开关控制、行内由用户控制”的新口径冲突。
+  //
+  // 为什么还留着 mode 形参（以 `_` 开头是因为 tsconfig 开了 noUnusedParameters）：
+  // 调用方（ToolCallGroup）仍按 (group, mode) 两参调用，保留位置便于将来再引入
+  // 按视图区分的口径时不用改签名；而且它清楚标出了“这里曾经与视图相关”。
   if (!hasToolGroupDetails(group)) return false;
-  if (group.status === "error") return true;
-  // 开发者模式：始终展开，看到全部细节
-  if (mode === "developer") return true;
-  // 用户模式：仅运行中展开
-  return ["running", "pending"].includes(group.status);
+  return group.status === "error";
 }

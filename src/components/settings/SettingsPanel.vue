@@ -330,12 +330,12 @@
                   <div class="setting-desc">{{ t(`settings.general.reflection${reflectionMode === 'always' ? 'Always' : reflectionMode === 'off' ? 'Off' : 'Smart'}Desc`) }}</div>
                 </div>
                 <div class="setting-item">
-                  <label>{{ t('settings.general.defaultExpandThinking') }}</label>
+                  <label>{{ t('settings.general.expandExecutionWhileRunning') }}</label>
                   <label class="toggle-switch">
-                    <input type="checkbox" :checked="defaultExpandThinking" @change="setDefaultExpandThinking(($event.target as HTMLInputElement).checked)" />
+                    <input type="checkbox" :checked="expandExecutionWhileRunning" @change="setExpandExecutionWhileRunning(($event.target as HTMLInputElement).checked)" />
                     <span class="toggle-slider"></span>
                   </label>
-                  <div class="setting-desc">{{ t('settings.general.defaultExpandThinkingDesc') }}</div>
+                  <div class="setting-desc">{{ t('settings.general.expandExecutionWhileRunningDesc') }}</div>
                 </div>
               </div>
 
@@ -706,8 +706,9 @@ const fontSizePresets = [
   { value: FONT_SIZE_PRESETS[2], label: 'settings.general.sizeL' },
   { value: FONT_SIZE_PRESETS[3], label: 'settings.general.sizeXL' },
 ]
-const defaultExpandThinking = computed(() => uiPrefs.defaultExpandThinking)
-const setDefaultExpandThinking = (val: boolean) => uiPrefs.setDefaultExpandThinking(val)
+// 「运行中展开执行过程」：只管轮次运行期间的表现，本轮结束后一律收起
+const expandExecutionWhileRunning = computed(() => uiPrefs.expandExecutionWhileRunning)
+const setExpandExecutionWhileRunning = (val: boolean) => uiPrefs.setExpandExecutionWhileRunning(val)
 const autoScroll = computed(() => uiPrefs.autoScroll)
 const setAutoScroll = (val: boolean) => uiPrefs.setAutoScroll(val)
 // 崩溃保护（实时保存）：纯后端口径开关，前端只负责落到偏好里

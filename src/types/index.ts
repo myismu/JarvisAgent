@@ -433,6 +433,13 @@ export interface AgentCurrentTurn {
    */
   noticeKind?: AgentNoticeKind;
   startedAt: number | null;
+  /**
+   * 本轮已结束时的总时长（毫秒），**唯一来源是后端**。
+   *
+   * 运行中为 null / 缺省——实时秒数由前端 `useRunElapsed` 按 `startedAt` 推算，
+   * 结束后改用后端落库的确定值，避免前端本地时钟与后端计时口径对不上。
+   */
+  durationMs?: number | null;
 }
 
 export interface AgentTurnSnapshot {
@@ -447,6 +454,13 @@ export interface AgentTurnSnapshot {
   noticeI18nKey?: string;
   /** 状态标注的补充数据（原样展示、不翻译，如具体错误文本） */
   noticeDetail?: string;
+  /**
+   * 本轮总时长（毫秒），后端落库值。
+   *
+   * 历史快照不重新计时：前端只把它格式化后显示，不再用 `createdAt` 反推。
+   * 缺省 / null 表示后端没有记录该字段（旧数据），此时不显示时长。
+   */
+  durationMs?: number | null;
   createdAt: number;
 }
 
@@ -474,6 +488,14 @@ export interface AgentRun {
   summary?: string | null;
   /** run 级中断类型（枚举字符串，见后端 InterruptKind）；未中断为 null */
   interruptKind?: string | null;
+  /**
+   * 本轮**非 Agent 责任时长**的累计值（毫秒），由后端给：等待用户批准、
+   * 上游重试退避、限流等待等。前端计时（`useRunElapsed`）把它从流逝时间里扣掉，
+   * 保证「耗时」只反映 Agent 真正在干活的时间。
+   *
+   * 缺省 / null 视为 0；后端在运行中会持续增大该值。
+   */
+  waitMs?: number | null;
   resumable: boolean;
   resumedFromRunId?: string | null;
 }

@@ -18,10 +18,11 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { emit, listen } from '@tauri-apps/api/event';
 import { useWindow } from '../../composables/useWindow';
 import { useAgentEvents } from '../../composables/useAgentEvents';
+import { useRunElapsed } from '../../composables/useRunElapsed';
 import { useSessionStore } from '../../stores/session';
 import { useAgentStore } from '../../stores/agent';
 import { usePermissionStore } from '../../stores/permission';
-import type { BackgroundTask, PlanDocument, SessionContextSnapshot, SubAgentTraceEvent } from '../../types';
+import type { AgentRun, BackgroundTask, PlanDocument, SessionContextSnapshot, SubAgentTraceEvent } from '../../types';
 import ContextInspector from './ContextInspector.vue';
 
 const session = useSessionStore();
@@ -149,15 +150,37 @@ const { persistCurrentWindowState } = useWindow();
 const { t } = useI18n();
 const props = defineProps<{ standalone?: boolean }>();
 
-const elapsed = ref(0);
 const backgroundTasks = ref<BackgroundTask[]>([]);
 const dismissingTasks = ref<Set<string>>(new Set());
-let timer: ReturnType<typeof setInterval> | null = null;
 let backgroundTimer: ReturnType<typeof setInterval> | null = null;
 
 const panelVisible = computed(() => props.standalone || agent.showAgentPanel);
 const standalone = computed(() => props.standalone);
 const currentContextSnapshot = computed(() => agent.currentContextSnapshot);
+
+/**
+ * 标题旁本轮秒数的数据源：本会话**正在跑**的那条 `AgentRun`。
+ *
+ * 只取后端下发的 `startedAt`（缺这条事件时返回 null，秒表自然显示 0），
+ * 不在这里自行记录起点 —— 面板是后打开的，它没有能力知道这轮何时开始。
+ */
+const activeRunForElapsed = computed<AgentRun | null>(() => {
+  if (!session.isCurrentSessionRunning) return null;
+  return agent.currentAgentRuns.find((item) => item.status === 'running') ?? null;
+});
+
+/**
+ * 标题旁秒数。
+ *
+ * 复用 `useRunElapsed`（与聊天气泡同一实现），不再自建 `setInterval` 计数器：
+ * 同一轮在气泡和面板里必须显示同一个秒数，各写一套计数器必然漂移
+ * （打开面板的时机不同，起点就不同）。
+ *
+ * 等待用户授权期间冻结：那段时间 Agent 没在干活，不该记进耗时。
+ * 第二个入参必须是 `Ref<boolean>`（composable 内部 watch 它），不能传函数。
+ */
+const isWaitingForPermission = computed(() => permission.permissionRequest !== null);
+const { elapsed: runElapsedSeconds } = useRunElapsed(activeRunForElapsed, isWaitingForPermission);
 
 const refreshContextSnapshot = async (sessionId?: string) => {
   const targetSessionId = sessionId ?? session.activeSessionId;
@@ -183,7 +206,12 @@ const formatTime = (seconds: number): string => {
   return minutes > 0 ? `${minutes}:${rest.toString().padStart(2, '0')}` : `${rest}s`;
 };
 
-const formatDuration = (timestamp?: number | null): string => {
+/**
+ * 时间点 → 「多久以前」（配合 `monitor.ago` / `monitor.updatedAgo` 使用）。
+ *
+ * 入参是**时刻**，所以要用 `Date.now()` 相减。
+ */
+const formatAgo = (timestamp?: number | null): string => {
   if (!timestamp) return t('monitor.justNow');
   // 后端时间戳为秒级 Unix time，JS Date.now() 为毫秒
   const ts = timestamp < 1e12 ? timestamp * 1000 : timestamp;
@@ -194,10 +222,31 @@ const formatDuration = (timestamp?: number | null): string => {
   return `${Math.floor(minutes / 60)}h`;
 };
 
+/**
+ * 时长（**毫秒差值**）→ 可读文本。
+ *
+ * 与 `formatAgo` 的区别是入参语义：这里给的是「持续了多久」，不是「何时发生」。
+ * 此前两者共用一个函数，`finishedAt - startedAt` 被当成时间戳再减 `Date.now()`，
+ * 于是分钟级的任务显示成几十万小时。
+ */
+const formatDurationMs = (ms?: number | null): string => {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return '0s';
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const restSeconds = totalSeconds % 60;
+  if (minutes < 60) return restSeconds ? `${minutes}m${restSeconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return restMinutes ? `${hours}h${restMinutes}m` : `${hours}h`;
+};
+
 const formatCountdown = (run: { status: string; startedAt: number; timeoutSecs: number }): string => {
   if (run.status !== 'running') return '';
   if (!run.startedAt || !run.timeoutSecs) return '';
-  void elapsed.value; // 每 1s 刷新，利用现有 timer
+  // 倒计时不是独立 ref：复用秒表的每秒刷新带动本函数重算（秒表本身只在
+  // 「有 run」时走表，而倒计时也只在 running 时显示，两者生命周期一致）
+  void runElapsedSeconds.value;
   const deadline = run.startedAt + run.timeoutSecs * 1000;
   const remaining = Math.max(0, Math.floor((deadline - Date.now()) / 1000));
   if (!isFinite(remaining)) return '';
@@ -345,16 +394,6 @@ const clearAllDoneTasks = async () => {
   }
 };
 
-watch(() => session.isCurrentSessionRunning, (running) => {
-  if (running) {
-    elapsed.value = 0;
-    timer = setInterval(() => { elapsed.value++; }, 1000);
-  } else if (timer) {
-    clearInterval(timer);
-    timer = null;
-  }
-}, { immediate: true });
-
 // 监听后台任务完成事件（Tauri 推送，0 延迟，替代轮询的即时通路）
 listen("bg-task-done", () => {
   refreshBackgroundTasks();
@@ -374,7 +413,7 @@ watch(panelVisible, (visible) => {
 }, { immediate: true });
 
 onUnmounted(() => {
-  if (timer) clearInterval(timer);
+  // 秒表的定时器由 `useRunElapsed` 自己在 scope 销毁时清理，这里只管后台任务轮询
   if (backgroundTimer) clearInterval(backgroundTimer);
 });
 
@@ -416,7 +455,7 @@ const backgroundStatusLabel = (status: string): string => {
             class="panel-status-dot state-light"
             :class="`is-${panelLightState}`"
           ></span>
-          <span v-if="session.isCurrentSessionRunning" class="elapsed-time">{{ formatTime(elapsed) }}</span>
+          <span v-if="session.isCurrentSessionRunning" class="elapsed-time">{{ formatTime(runElapsedSeconds) }}</span>
         </div>
         <button class="close-btn" type="button" :aria-label="t('monitor.close')" @click="closePanel">
           <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
@@ -573,12 +612,13 @@ const backgroundStatusLabel = (status: string): string => {
 
                   <!-- 时间信息 -->
                   <div class="detail-time">
-                    <span>{{ t('monitor.ago', { duration: formatDuration(run.startedAt) }) }}前启动</span>
+                    <span>{{ t('monitor.ago', { duration: formatAgo(run.startedAt) }) }}启动</span>
                     <span class="sep">·</span>
-                    <span>{{ t('monitor.updatedAgo', { duration: formatDuration(run.updatedAt) }) }}</span>
+                    <span>{{ t('monitor.updatedAgo', { duration: formatAgo(run.updatedAt) }) }}</span>
                     <template v-if="run.finishedAt">
                       <span class="sep">·</span>
-                      <span>耗时 {{ formatDuration(run.startedAt ? Math.max(0, run.finishedAt - run.startedAt) : null) }}</span>
+                      <!-- 时长 = finishedAt - startedAt（毫秒差值），走时长格式化，不能再当时间戳 -->
+                      <span>耗时 {{ formatDurationMs(run.startedAt ? run.finishedAt - run.startedAt : null) }}</span>
                     </template>
                   </div>
 
@@ -666,7 +706,7 @@ const backgroundStatusLabel = (status: string): string => {
                 </div>
                 <p>{{ plan.content }}</p>
                 <div class="monitor-item-meta">
-                  <span>{{ t('monitor.updatedAgo', { duration: formatDuration(plan.updatedAt) }) }}</span>
+                  <span>{{ t('monitor.updatedAgo', { duration: formatAgo(plan.updatedAt) }) }}</span>
                 </div>
               </div>
             </div>

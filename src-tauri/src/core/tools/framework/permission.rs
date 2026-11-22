@@ -287,6 +287,13 @@ pub async fn request_permission_with_origin(
         id: id.clone(),
     };
 
+    // 等待区间：从"卡片即将推给前端"这一刻开始计时，直到拿到结论/被打断。
+    //
+    // 放在 emit **之前**是刻意的：emit 之后用户可能已经看到卡片并立刻点击，
+    // 起点晚于 emit 会漏计这一小段（虽小但白送不用）。
+    // 提前返回的"本会话都允许"分支已在上面直接 return，不会开区间。
+    let mut wait_guard = WaitIntervalGuard::new(ctx.clone());
+
     let _ = app.emit(
         "permission-request",
         json!({
@@ -320,6 +327,10 @@ pub async fn request_permission_with_origin(
                 reason: "权限通道已关闭".to_string(),
             }),
     };
+
+    // 正常路径：显式关闭等待区间（把"人类确认耗时"记进会话，收尾时取并集写 wait_ms）。
+    // 异常路径（future 被 drop）由 WaitIntervalGuard::drop 兜底。
+    wait_guard.finish();
 
     // 正常路径下 resolve_permission 已经取走条目并广播了 permission-resolved；
     // 只有取消/通道关闭这类异常路径还留着条目，这里负责清理并通知前端撤卡，
@@ -386,6 +397,56 @@ impl Drop for PendingPermissionGuard {
                 }
             }
         }
+    }
+}
+
+/// "等用户做决策"的时间区间守卫：持有起点，`finish()` 或 `Drop` 时把区间写进会话。
+///
+/// ## 为什么必须用 Drop 兜底
+///
+/// 权限等待是**没有超时**的（见模块头注释）。能结束它的只有三件事，其中一件
+/// 根本不会走到函数体后面的代码：
+/// - 用户点击 → 走到 `select!` 分支 → `finish()`；
+/// - 本轮取消 → 同上；
+/// - **调用方的 future 被整个 drop**（子代理任务撞上调度器超时、任务被撤、线程退出）
+///   → 栈展开时只有 `Drop` 会执行。
+///
+/// 漏关的区间会让 `agent_runs.wait_ms` 少算，所以宁可重复关闭也要兜底——
+/// `closed` 标志保证"显式关闭"与"Drop 兜底"只生效一次（区间不能计两遍）。
+struct WaitIntervalGuard {
+    /// 会话上下文：区间表挂在它上面（`run_wait_intervals`，同步锁）
+    ctx: Arc<SessionContext>,
+    /// 区间起点（弹卡时刻）
+    start: std::time::Instant,
+    /// 是否已关闭（幂等标志）
+    closed: bool,
+}
+
+impl WaitIntervalGuard {
+    fn new(ctx: Arc<SessionContext>) -> Self {
+        Self {
+            ctx,
+            start: std::time::Instant::now(),
+            closed: false,
+        }
+    }
+
+    /// 显式关闭区间（拿到结论 / 被打断的正常路径）。重复调用无害。
+    fn finish(&mut self) {
+        if self.closed {
+            return;
+        }
+        self.closed = true;
+        // 同步锁直接写入：即使处在 Drop 里（无异步运行时）也能落区间
+        self.ctx
+            .push_wait_interval(self.start, std::time::Instant::now());
+    }
+}
+
+impl Drop for WaitIntervalGuard {
+    fn drop(&mut self) {
+        // 幂等：正常路径已经 finish 过，这里什么都不做
+        self.finish();
     }
 }
 

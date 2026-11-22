@@ -22,10 +22,11 @@ use crate::core::orchestration::agent_runs::{AgentRun, AgentRunLoopEvent, AgentR
 /// ⚠️ 列顺序与 [`run_from_row`] 的**下标硬编码**必须一一对应；
 /// 任何增删列都要同时改这两处（v15 已删除三个 live 列；
 /// v19 删除只写不读的 `user_message_preview` / `error`；
-/// v20 追加 `interrupt_kind`——**追加在末尾**，故 0..=13 的下标不受影响）。
+/// v20 追加 `interrupt_kind`、v26 追加 `wait_ms`——**均追加在末尾**，
+/// 故既有列的下标不受影响）。
 const RUN_COLUMNS: &str = "run_id, session_id, status, message_id, loop_count, \
      input_tokens, output_tokens, started_at, updated_at, finished_at, last_safe_point, \
-     summary, resumable, resumed_from_run_id, interrupt_kind";
+     summary, resumable, resumed_from_run_id, interrupt_kind, wait_ms";
 
 pub fn upsert_run(run: &AgentRun) -> Result<(), String> {
     crate::infra::db::with_connection(|conn| {
@@ -33,8 +34,8 @@ pub fn upsert_run(run: &AgentRun) -> Result<(), String> {
             "INSERT INTO agent_runs(
                 run_id, session_id, status, message_id, loop_count, input_tokens, output_tokens,
                 started_at, updated_at, finished_at, last_safe_point,
-                summary, resumable, resumed_from_run_id, interrupt_kind
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                summary, resumable, resumed_from_run_id, interrupt_kind, wait_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
             ON CONFLICT(run_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 status = excluded.status,
@@ -49,7 +50,8 @@ pub fn upsert_run(run: &AgentRun) -> Result<(), String> {
                 summary = excluded.summary,
                 resumable = excluded.resumable,
                 resumed_from_run_id = excluded.resumed_from_run_id,
-                interrupt_kind = excluded.interrupt_kind",
+                interrupt_kind = excluded.interrupt_kind,
+                wait_ms = excluded.wait_ms",
             params![
                 run.run_id,
                 run.session_id,
@@ -66,6 +68,8 @@ pub fn upsert_run(run: &AgentRun) -> Result<(), String> {
                 if run.resumable { 1 } else { 0 },
                 run.resumed_from_run_id,
                 run.interrupt_kind,
+                // NULL = 未统计等待（见 schema.rs 的 migrate_v26_run_wait_ms）
+                run.wait_ms.map(|v| v as i64),
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -95,6 +99,31 @@ pub fn list_runs(session_id: Option<&str>) -> Result<Vec<AgentRun>, String> {
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())?
         };
+        Ok(rows)
+    })
+}
+
+/// 按**用户消息 ID**取出这一轮的全部 run（中断后续跑会以同一 message_id 另起一条）。
+///
+/// 为什么不复用 `find_by_message_id`：它只取 `started_at DESC LIMIT 1`，
+/// 续跑场景下会丢掉中断前的前半段，历史消息算出来的用时会明显偏短。
+/// 调用方（`command::history`）拿整组去算最早起点到最晚终点。
+pub fn list_runs_by_message_id(message_id: &str) -> Result<Vec<AgentRun>, String> {
+    if message_id.is_empty() {
+        return Ok(Vec::new());
+    }
+    crate::infra::db::with_connection(|conn| {
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {} FROM agent_runs WHERE message_id = ?1 ORDER BY started_at",
+                RUN_COLUMNS
+            ))
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([message_id], run_from_row)
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
         Ok(rows)
     })
 }
@@ -377,6 +406,10 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<AgentRun> {
         resumable: row.get::<_, i64>("resumable")? != 0,
         resumed_from_run_id: row.get("resumed_from_run_id")?,
         interrupt_kind: row.get("interrupt_kind")?,
+        // NULL = 未统计等待（旧行 / 未走统计路径），不是“等待为 0”
+        wait_ms: row
+            .get::<_, Option<i64>>("wait_ms")?
+            .map(|value| value.max(0) as u64),
     })
 }
 
@@ -544,6 +577,7 @@ mod run_columns_tests {
             "resumable",
             "resumed_from_run_id",
             "interrupt_kind",
+            "wait_ms",
         ] {
             assert!(
                 columns.contains(&name),
@@ -552,8 +586,8 @@ mod run_columns_tests {
         }
         assert_eq!(
             columns.len(),
-            15,
-            "列数应为 15，实际 {}：{columns:?}",
+            16,
+            "列数应为 16，实际 {}：{columns:?}",
             columns.len()
         );
     }
