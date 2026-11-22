@@ -1455,26 +1455,8 @@ onMounted(() => {
   margin-bottom: 0.25em;
 }
 
-/* ── 紧凑模式（类挂在 <html> 上，由「常规设置 → 紧凑模式」驱动）──
-   必须放在组件 scoped 样式里：:deep() 是 Vue 的编译期指令，写进全局样式表会被
-   浏览器当非法选择器整条丢弃（这些规则曾放在 global.css 导致开关完全无效）；
-   放回组件内，多一层 .compact-mode 的特异性也稳定压过本文件的基础规则。 */
-.compact-mode .response-text :deep(.chat-message) {
-  margin-bottom: 8px;
-}
-.compact-mode .response-text :deep(.message-content) {
-  padding: 8px 14px;
-}
-.compact-mode .response-area {
-  padding-top: 8px;
-}
-.compact-mode .response-text :deep(p) {
-  margin-bottom: 0.35em;
-}
-.compact-mode .response-text :deep(pre) {
-  padding: 8px;
-  margin-bottom: 0.35em;
-}
+/* 约束：:deep() 是 Vue 的编译期指令，只能写在组件 scoped 样式里；
+   写进 global.css 会被浏览器当非法选择器整条丢弃（曾踩过这个坑）。 */
 
 .rollback-menu {
   position: fixed;

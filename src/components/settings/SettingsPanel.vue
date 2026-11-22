@@ -195,14 +195,6 @@
                   <div class="setting-desc">{{ t('settings.general.fontSizeDesc') }}</div>
                 </div>
                 <div class="setting-item">
-                  <label>{{ t('settings.general.compactMode') }}</label>
-                  <label class="toggle-switch">
-                    <input type="checkbox" :checked="compactMode" @change="setCompactMode(($event.target as HTMLInputElement).checked)" />
-                    <span class="toggle-slider"></span>
-                  </label>
-                  <div class="setting-desc">{{ t('settings.general.compactModeDesc') }}</div>
-                </div>
-                <div class="setting-item">
                   <label>{{ t('settings.general.agentMessageOpacity') }}</label>
                   <div class="font-size-control">
                     <div class="slider-track-wrap">
@@ -723,8 +715,6 @@ const crashProtection = computed(() => uiPrefs.crashProtection)
 const setCrashProtection = (val: boolean) => uiPrefs.setCrashProtection(val)
 const agentPanelPosition = computed(() => uiPrefs.agentPanelPosition)
 const setAgentPanelPosition = (val: AgentPanelPosition) => uiPrefs.setAgentPanelPosition(val)
-const compactMode = computed(() => uiPrefs.compactMode)
-const setCompactMode = (val: boolean) => uiPrefs.setCompactMode(val)
 const agentMessageOpacity = computed(() => uiPrefs.agentMessageOpacity)
 const setAgentMessageOpacity = (val: number) => uiPrefs.setAgentMessageOpacity(val)
 const userMessageOpacity = computed(() => uiPrefs.userMessageOpacity)

@@ -45,7 +45,6 @@ interface UiPreferences {
   autoScroll: boolean;
   defaultExpandThinking: boolean;
   agentPanelPosition: AgentPanelPosition;
-  compactMode: boolean;
   sidebarCollapsed: boolean;
   /** 会话列表「项目」总区块折叠（一次收起所有项目分组） */
   sidebarProjectsCollapsed: boolean;
@@ -139,7 +138,6 @@ const defaults: UiPreferences = {
   autoScroll: true,
   defaultExpandThinking: false,
   agentPanelPosition: "right",
-  compactMode: false,
   sidebarCollapsed: false,
   sidebarProjectsCollapsed: false,
   sidebarStandaloneCollapsed: false,
@@ -276,10 +274,6 @@ function applyFontSize(size: number) {
   document.documentElement.style.fontSize = `${size}px`;
 }
 
-function applyCompactMode(compact: boolean) {
-  document.documentElement.classList.toggle("compact-mode", compact);
-}
-
 function applyMessageOpacity() {
   document.documentElement.style.setProperty("--agent-message-opacity", String(prefs.value.agentMessageOpacity ?? 0));
   document.documentElement.style.setProperty("--user-message-opacity", String(prefs.value.userMessageOpacity ?? 100));
@@ -287,7 +281,6 @@ function applyMessageOpacity() {
 
 function applyAll(p: UiPreferences) {
   applyFontSize(p.fontSize);
-  applyCompactMode(p.compactMode);
   applyMessageOpacity();
 }
 
@@ -393,7 +386,6 @@ function startWatchers() {
   watchersInitialized = true;
 
   watch(() => prefs.value.fontSize, (val) => { applyFontSize(val); scheduleSave(); });
-  watch(() => prefs.value.compactMode, (val) => { applyCompactMode(val); scheduleSave(); });
   watch(() => prefs.value.agentPanelPosition, () => scheduleSave());
   watch(() => prefs.value.sidebarCollapsed, () => scheduleSave());
   watch(() => prefs.value.sidebarProjectsCollapsed, () => scheduleSave());
@@ -552,8 +544,6 @@ export function usePreferences() {
     setAutoScroll: (val: boolean) => { prefs.value.autoScroll = val; },
     get agentPanelPosition() { return prefs.value.agentPanelPosition; },
     setAgentPanelPosition: (val: AgentPanelPosition) => { prefs.value.agentPanelPosition = val; },
-    get compactMode() { return prefs.value.compactMode; },
-    setCompactMode: (val: boolean) => { prefs.value.compactMode = val; },
     get agentMessageOpacity() { return prefs.value.agentMessageOpacity; },
     setAgentMessageOpacity: (val: number) => { prefs.value.agentMessageOpacity = Math.round(val); },
     get userMessageOpacity() { return prefs.value.userMessageOpacity; },

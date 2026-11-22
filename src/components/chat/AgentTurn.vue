@@ -146,7 +146,7 @@ function toolLightClass(status: string): string {
         <summary class="dev-execution-summary">执行过程（{{ timelineSplit.execItems.length }} 步）</summary>
         <div class="dev-layout">
           <template v-for="(item, i) in timelineSplit.execItems" :key="`exec-${item.type}-${item.timestamp}-${i}`">
-            <StreamingMarkdown v-if="item.type === 'text'" :content="item.content" />
+            <StreamingMarkdown v-if="item.type === 'text'" class="dev-text" :content="item.content" />
             <details v-else-if="item.type === 'thinking'" class="dev-thinking" :class="{ streaming: item.streaming }" :open="item.streaming || expandThinkingDefault">
               <summary class="dev-thinking-summary"><span class="dev-state-light state-light" :class="item.streaming ? 'is-running' : 'is-done'"></span><span class="dev-thinking-label">{{ describeThinkingStatic(item.content) }}</span></summary>
               <div class="dev-thinking-body"><StreamingMarkdown :content="item.content" /></div>
@@ -165,7 +165,7 @@ function toolLightClass(status: string): string {
       </details>
       <!-- 最后回答放下面 -->
       <template v-for="(item, i) in timelineSplit.finalItems" :key="`final-${item.type}-${item.timestamp}-${i}`">
-        <StreamingMarkdown v-if="item.type === 'text'" :content="item.content" />
+        <StreamingMarkdown v-if="item.type === 'text'" class="dev-text" :content="item.content" />
         <details v-else-if="item.type === 'thinking'" class="dev-thinking" :class="{ streaming: item.streaming }" :open="item.streaming || expandThinkingDefault">
           <summary class="dev-thinking-summary"><span class="dev-state-light state-light" :class="item.streaming ? 'is-running' : 'is-done'"></span><span class="dev-thinking-label">{{ describeThinkingStatic(item.content) }}</span></summary>
           <div class="dev-thinking-body"><StreamingMarkdown :content="item.content" /></div>
@@ -238,7 +238,10 @@ function toolLightClass(status: string): string {
 .dev-layout {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  /* 2026-11-22 收紧：原先 gap 2px + 各条自身padding，一条约 32px，
+     执行过程一长就显得很疏。现改为 gap 0 + 条目 padding 压到 1~2px，
+     一条约 24px，行与行贴紧（dsh / deepseek-tui 那种紧凑列表观感）。 */
+  gap: 0;
   padding-bottom: 24px;
   margin: 4px 0;
   max-width: 100%;
@@ -249,6 +252,51 @@ function toolLightClass(status: string): string {
   margin: 0;
 }
 
+/* 执行过程里的正文段落收紧（2026-11-22）。
+ *
+ * 真正的空白大头在这里，不在条目自身的 padding：`item.type === 'text'` 的项
+ * 渲染成 StreamingMarkdown，其 `.md-paragraph` 带 `margin: 9px 0`，而 dev-layout
+ * 是 flex 容器 —— **子元素 margin 不会折叠**，于是每个正文段落实打实吃掉 18px。
+ *
+ * 为什么必须把特异性顶到这个高度：`ChatArea.vue` 曾有一条
+ * `.compact-mode .response-text p { margin-bottom: 0.35em }`（(0,3,1)），把本条
+ * 规则的 margin-bottom 反向覆盖成 4.9875px —— devtools 里看到 margin-top 已归零、
+ * margin-bottom 却仍是 0.35em，就是它。紧凑模式已于 2026-11-22 整体删除（开关、
+ * 状态、文案、样式规则都不在了），但这条特异性要求**仍要保留**：响应区内任何
+ * 针对 `p` 的规则都可能再次出现，一旦压低一级就会被默默吃掉。
+ *
+ * line-height / font-size 也一起对齐到摘要行（2026-11-22 再收一档）：
+ * 段落正文原为 14.25px × 1.72 = 24.5px，而思考/工具摘要行是 12px —— 两种字号
+ * 混排时不管怎么压 margin 都「看着不齐」（dsh 那种密度的来源是所有行同一字号、
+ * 同一行高）。这里统一到 0.8rem(=12px) × 1.45 ≈ 17.4px，与摘要行的 1.4 同档。
+ *
+ * 选择器补上 `.dev-layout` 一档 → (0,4,0)：只带 `.dev-execution-fold` 前缀时
+ * 仅 (0,3,0)，在「一个 class + 一个 p 元素」这类规则（(0,1,1) 及以上）面前
+ * 会输得很冤。
+ */
+.dev-execution-fold .dev-layout .dev-text :deep(.md-paragraph) {
+  margin: 0;
+  line-height: 1.45;
+  font-size: 0.8rem;
+}
+.dev-execution-fold .dev-text :deep(.md-ul),
+.dev-execution-fold .dev-text :deep(.md-ol) {
+  margin: 0;
+}
+
+/* 段落以外的块（列表 / 引用 / 标题）继承 `.streaming-markdown` 容器的 1.72，
+ * 单靠上面那条只能压住 p。这里统一到 1.45，避免列表行比正文段落松一档。 */
+.dev-execution-fold .dev-text :deep(.streaming-markdown) {
+  line-height: 1.45;
+}
+
+/* 思考摘要行 / 工具行同样收紧行高：它们没写 line-height，会继承全局 1.72，
+ * 12px 字号被拉到 ~20.6px。1.4 下约 16.8px，与上面的正文档位一致。 */
+.dev-execution-fold .dev-layout .dev-thinking-summary,
+.dev-execution-fold .dev-layout .dev-tool-summary {
+  line-height: 1.4;
+}
+
 /* 状态圆点：配色与呼吸节奏全部由全局 .state-light 的四态决定，这里只定尺寸。
    8px 是开发者视图的基准 —— 与旁边等宽工具名（0.82rem）视觉齐平。 */
 .dev-state-light {
@@ -257,7 +305,9 @@ function toolLightClass(status: string): string {
 
 /* 思考块 */
 .dev-thinking {
-  padding: 6px 0;
+  /* 上下 padding 归零（2026-11-22）：先收到 2px 仍觉疏，索性只留文字行高，
+     行与行贴紧。基线仍与工具行一致（工具行上下也是 0）。 */
+  padding: 0;
   max-width: 100%;
   overflow: hidden;
 }
@@ -270,7 +320,7 @@ function toolLightClass(status: string): string {
   list-style: none;
   color: var(--text-muted);
   font-size: 0.8rem;
-  padding: 2px 0;
+  padding: 0;
 }
 .dev-thinking-summary::-webkit-details-marker {
   display: none;
@@ -279,8 +329,10 @@ function toolLightClass(status: string): string {
   color: var(--text-soft);
 }
 .dev-thinking-body {
-  margin-top: 8px;
-  padding: 10px 14px;
+  /* 展开态也保持密（2026-11-22）：8px/10-14px → 4px/6-10px，展开一块思考
+     不再把执行过程撑出一段明显的空白带。 */
+  margin-top: 4px;
+  padding: 6px 10px;
   border-left: 2px solid var(--glass-border-subtle);
   background: var(--msg-block-tint);
   font-size: 0.82rem;
@@ -306,7 +358,9 @@ function toolLightClass(status: string): string {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 8px;
+  /* 上下 5px → 2px → 0（2026-11-22）：只保留左右 8px 用于 hover 底色的横向留白。
+     可点区域变矮，但这里是桌面端列表，不靠触控热区。 */
+  padding: 0 8px;
   cursor: pointer;
   user-select: none;
   list-style: none;

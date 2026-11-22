@@ -49,6 +49,15 @@ pub struct UiPreferences {
     pub default_expand_thinking: bool,
     #[serde(default = "default_agent_panel_position")]
     pub agent_panel_position: String,
+    /// 【已退役·保留字段不删】紧凑模式已从前端整体拆除。
+    ///
+    /// 1) 前端不再发送该字段：设置项开关、状态、文案已全部删除，`save_ui_preferences`
+    ///    全量替换时这里只会回落为默认值 `false`；
+    /// 2) 保留字段是为了老 app-config.json 能照常反序列化——结构体缺字段会直接报错，
+    ///    而 `#[serde(default)]` 已兜住新配置里的缺省，二者缺一不可；
+    /// 3) 与上面的 `code_font_size` 同一处理方式：前端不再发送、后端仍保留字段，
+    ///    只为兼容历史配置文件。后端逻辑不读它（只负责透传存储），
+    ///    可随下一次配置结构迁移一并删除。
     #[serde(default)]
     pub compact_mode: bool,
     #[serde(default)]
