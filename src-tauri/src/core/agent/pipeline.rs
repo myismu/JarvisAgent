@@ -227,6 +227,45 @@ fn should_emit_waiting_hint(silent_secs: u64, already_sent: bool) -> bool {
     silent_secs >= crate::core::agent::stream::waiting_hint_secs() && !already_sent
 }
 
+/// 收到新数据（或本轮不再等数据）时的统一处理：复位静默计时，并清掉前端的等待提示。
+///
+/// ## 为什么必须发清除事件
+///
+/// 2026-11-22 用户实测：上游恢复、正文继续生成后，气泡下方「已等待 N 秒未收到数据…」
+/// 仍一直挂着，直到整轮 loop 结束才消失。前端 `currentTurn.notice` 是**单向写入**
+/// 的字段（写入点只有 `waiting_hint` / `retry` / `reflection` 三处，无任何自清逻辑），
+/// 只有换 turn 时才整体丢弃 —— 所以「已经恢复」这件事必须由后端显式告知。
+///
+/// ## 为什么用 swap 而不是普通读
+///
+/// 本函数在**每一个 SSE 帧**到达时都会被调用，帧密度极高。`swap(false)` 兼作闸门：
+/// 只有「刚才确实发过提示」的那一次才 emit，其余帧只读不写；同时它顺带复位
+/// 本段静默期的标记，让长时间静默之后的再次静默仍能提示。
+fn touch_and_clear(
+    last_tick_ms: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+    hint_sent: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    app: &tauri::AppHandle,
+    sid: &str,
+    loop_count: usize,
+) {
+    use std::sync::atomic::Ordering;
+    last_tick_ms.store(now_millis(), Ordering::Relaxed);
+    if !hint_sent.swap(false, Ordering::Relaxed) {
+        return;
+    }
+    // 与 `retry` 的清除同一语义：等待提示是**过程性状态**，恢复后必须收掉。
+    // `kinds` 带来源标记，前端只清它自己写的那一类，不误伤反思标注与中断说明。
+    let _ = app.emit(
+        "agent-step",
+        json!({
+            "type": "notice_clear",
+            "kinds": ["waiting_hint"],
+            "sessionId": sid,
+            "loopCount": loop_count
+        }),
+    );
+}
+
 /// 等待上游响应期间的"进度提示"看门狗句柄。
 ///
 /// 上游深度思考、网络迟滞、或**收到响应头后正文长时间静默**时，界面上
@@ -260,15 +299,17 @@ struct WaitingHint {
 
 impl WaitingHint {
     /// 收到一帧数据（或请求刚发出）时调用，重置静默计时并允许再次提示
-    fn touch(&self) {
-        self.last_tick_ms
-            .store(now_millis(), std::sync::atomic::Ordering::Relaxed);
-        self.hint_sent
-            .store(false, std::sync::atomic::Ordering::Relaxed);
+    fn touch(&self, app: &tauri::AppHandle, sid: &str, loop_count: usize) {
+        touch_and_clear(&self.last_tick_ms, &self.hint_sent, app, sid, loop_count);
     }
 
-    /// 本轮结束，停止看门狗
-    fn finish(&self) {
+    /// 本轮结束，停止看门狗。
+    ///
+    /// 结束前同样走一次 `touch_and_clear`：本轮不会再等上游数据了，
+    /// 界面上挂着的「已等待 N 秒」提示必须收掉，否则会一直挂到整轮 loop 结束
+    /// （用户实测反馈的同一问题）。
+    fn finish(&self, app: &tauri::AppHandle, sid: &str, loop_count: usize) {
+        touch_and_clear(&self.last_tick_ms, &self.hint_sent, app, sid, loop_count);
         self.done.store(true, std::sync::atomic::Ordering::Relaxed);
         self.handle.abort();
     }
@@ -1359,13 +1400,13 @@ impl PipelineState {
             // 响应头很快返回，真正的静默几乎都发生在正文阶段。
             let response = match api_outcome {
                 Ok(Some(r)) => {
-                    progress_watchdog.touch();
+                    progress_watchdog.touch(&self.app, &self.sid, self.total_loop_count + 1);
                     Some(r)
                 }
                 // 提前退出（取消）：统一交给下面的 `let Some(...) else` 分支停看门狗并 continue
                 Ok(None) => None,
                 Err(e) => {
-                    progress_watchdog.finish();
+                    progress_watchdog.finish(&self.app, &self.sid, self.total_loop_count + 1);
                     // API 调用失败 → 记录诊断日志后返回 Err
                     println!("[JARVIS] API 调用失败，终止主循环: {}", e);
                     let messages_json = {
@@ -1385,15 +1426,24 @@ impl PipelineState {
 
             // 流读取期间到达的帧会通过 on_frame 续期，真正空闲才提示。
             // 本轮结束（无论哪条路径）都必须 finish，否则会残留任务。
+            //
+            // ⚠️ 2026-11-22 修：这里原先只 store 计时、**不复位 `hint_sent`**，
+            // 于是一轮流里第一段静默发过提示后，后面再静默永远不会再提示
+            // （与 `touch()` 的注释口径不一致，属漏改）。现统一走 `touch_and_clear`：
+            // 既复位标记，又在确实提示过时通知前端清除。
             let frame_tick = Some({
                 let tick = progress_watchdog.last_tick_ms.clone();
+                let sent = progress_watchdog.hint_sent.clone();
+                let tick_app = self.app.clone();
+                let tick_sid = self.sid.clone();
+                let tick_loop = self.total_loop_count + 1;
                 std::sync::Arc::new(move || {
-                    tick.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
+                    touch_and_clear(&tick, &sent, &tick_app, &tick_sid, tick_loop);
                 }) as std::sync::Arc<dyn Fn() + Send + Sync>
             });
 
             let Some(response) = response else {
-                progress_watchdog.finish();
+                progress_watchdog.finish(&self.app, &self.sid, self.total_loop_count + 1);
                 continue;
             };
             // 步骤 7：SSE 流式解析 —— 边收边推前端、累积工具参数分片
@@ -1486,7 +1536,7 @@ impl PipelineState {
 
             // 本轮流读取已结束：停掉等待提示看门狗（含重试流）。
             // 后面还有工具执行/下一轮循环，此处收尾最贴合"不再等上游数据"的语义。
-            progress_watchdog.finish();
+            progress_watchdog.finish(&self.app, &self.sid, self.total_loop_count + 1);
 
             // 上游失联 → 保留现场并结束本轮，把决策权交还用户
             // （服务恢复后一句"继续"即可接上）。

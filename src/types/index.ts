@@ -248,6 +248,15 @@ export interface BackgroundTask {
 
 // === Agent 执行追踪类型 ===
 
+/**
+ * 状态标注（气泡下方小字）的**来源**，用于精确清除。
+ *
+ * 2026-11-22 新增。背景：`notice` 是单向写入的字段，重试/等待这类**过程态**
+ * 在事情办成后并无任何自清机制，会一直挂到整轮 loop 结束。现在后端在恢复点发
+ * `notice_clear`，前端据 `kinds` 只清对应来源，不误伤仍在有效的反思标注。
+ */
+export type AgentNoticeKind = "waiting_hint" | "retry" | "reflection";
+
 export type AgentStepType =
   | "thinking"
   | "plan"
@@ -264,7 +273,14 @@ export type AgentStepType =
   | "cancelled"
   | "interrupted"
   /** 长时间未收到数据时的等待提示（渲染为气泡下方小字，不写正文） */
-  | "waiting_hint";
+  | "waiting_hint"
+  /**
+   * 过程态标注的**清除**信号（后端在恢复点发出）。
+   *
+   * 触发时机：API 重试成功拿到响应头、SSE 收到新数据、本轮不再等上游数据。
+   * 前端收到后清掉 `currentTurn.notice` 里对应来源的标注。
+   */
+  | "notice_clear";
 
 export interface AgentStep {
   type: AgentStepType;
@@ -299,6 +315,13 @@ export interface AgentStep {
   silentSecs?: number;
   remainSecs?: number;
   waitSecs?: number;
+  /**
+   * `notice_clear` 要清除的标注来源，仅 `type === "notice_clear"` 时存在。
+   *
+   * 为什么不无条件清空：反思标注（`reflection`）不在重试恢复的语义范围内，
+   * 无条件清会把「要求改进」这句仍然有效的信息一并抹掉。
+   */
+  kinds?: AgentNoticeKind[];
   timestamp: number;
 }
 
@@ -394,6 +417,13 @@ export interface AgentCurrentTurn {
    * `useAgentEvents` 现场用语言包拼好）——两者在这里统一成最终展示文本。
    */
   notice?: string;
+  /**
+   * 当前 `notice` 的来源，供 `notice_clear` 精确匹配。
+   *
+   * 仅在**运行期**写入（历史快照不带）：历史里的标注已经是定论，
+   * 不该被运行中的清除事件影响。
+   */
+  noticeKind?: AgentNoticeKind;
   startedAt: number | null;
 }
 

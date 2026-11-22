@@ -103,6 +103,9 @@ export function createEmptyAgentCurrentTurn(): AgentCurrentTurn {
     toolCalls: [],
     logs: [],
     notice: undefined,
+    // 清除信号（`notice_clear`）靠这个字段精确匹配来源，新建 turn 时必须一并置空，
+    // 否则上一轮的来源标记会残留下来，导致清除时误匹配（2026-11-22）。
+    noticeKind: undefined,
     startedAt: null,
   };
 }

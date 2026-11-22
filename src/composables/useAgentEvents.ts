@@ -732,11 +732,16 @@ export function useAgentEvents() {
       // 语言包拼 —— 它曾经直接发中文 `content`，英文界面下会冒中文。
       // 与中断类标注（后端发 `notice.*` key、由 `noticeTextFromBackend` 成句）
       // 共用同一个语言包命名空间，两处措辞口径统一。
+      //
+      // ⚠️ 2026-11-22：写入时**必须带 `noticeKind`**。notice 是单向写入的字段，
+      // 进程态标注在事情办成后没有任何自清机制（会一直挂到整轮 loop 结束）；
+      // 清除由后端的 `notice_clear` 驱动，它按来源精确匹配，没这个标记就清不掉。
       if (step.type === "waiting_hint") {
         view.currentTurn.notice = t("notice.waitingHint", {
           silent: step.silentSecs ?? 0,
           remain: step.remainSecs ?? 0,
         });
+        view.currentTurn.noticeKind = "waiting_hint";
         view.streamActive = true;
         view.hydrated = true;
         syncActiveSessionView(sessionId, true);
@@ -748,9 +753,25 @@ export function useAgentEvents() {
           attempt: step.attempt ?? 0,
           max: step.max ?? 0,
         });
+        view.currentTurn.noticeKind = "retry";
         view.streamActive = true;
         view.hydrated = true;
         syncActiveSessionView(sessionId, true);
+        return;
+      }
+      // 过程态标注的**清除**信号：后端在“重试成功拿到响应头”“SSE 收到新数据”
+      // “本轮不再等上游数据”三个恢复点发出。
+      // 只清**同来源**的标注 —— 重试恢复不该顺手抹掉「反思审查要求改进」这类
+      // 仍然有效的提示；noticeKind 不匹配就保持原样。
+      if (step.type === "notice_clear") {
+        const kinds = step.kinds ?? [];
+        const currentKind = view.currentTurn.noticeKind;
+        if (view.currentTurn.notice && currentKind && kinds.includes(currentKind)) {
+          view.currentTurn.notice = undefined;
+          view.currentTurn.noticeKind = undefined;
+          view.currentTurn.revision += 1;
+          syncActiveSessionView(sessionId, true);
+        }
         return;
       }
       // 反思审查的判定：**只报「判为需要改进」**（not_ok）。
@@ -767,6 +788,7 @@ export function useAgentEvents() {
           view.currentTurn.notice = detail
             ? `${t("input.reflectionFlagged")} — ${detail}`
             : t("input.reflectionFlagged");
+          view.currentTurn.noticeKind = "reflection";
         }
         view.streamActive = true;
         view.hydrated = true;

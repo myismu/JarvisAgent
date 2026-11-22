@@ -248,6 +248,24 @@ pub async fn api_call_with_retry(
             Ok(response) => {
                 let status = response.status();
                 if status.is_success() || status.as_u16() == 200 {
+                    // 重试成功后必须**主动清除**前端的重试提示。
+                    //
+                    // 2026-11-22 用户实测：第 1 次重试就成功时，界面上
+                    // 「API 调用失败，1 秒后进行第 1/3 次重试…」会一直挂到整轮 loop
+                    // 结束。根因不在后端 —— 提示确实发出过，但前端 `currentTurn.notice`
+                    // 是**单向写入**的字段，没有任何「已恢复」的信号来清它；成功之后
+                    // 也不会再有下一次 retry 事件覆盖它（没有下一次了）。
+                    //
+                    // 故恢复点由后端显式发一条清除事件，前端按 kind 精确清
+                    // （只清 retry，不碰等待提示与反思标注）。
+                    let _ = app.emit(
+                        "agent-step",
+                        json!({
+                            "type": "notice_clear",
+                            "kinds": ["retry"],
+                            "sessionId": session_id
+                        }),
+                    );
                     return Ok(response);
                 }
                 // 429 Rate Limit：按服务器建议的等待时间重试
