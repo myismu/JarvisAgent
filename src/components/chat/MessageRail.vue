@@ -9,8 +9,9 @@
 //      摘录取 .user-text 原文（排除"展开全部"按钮等杂音），预览卡 = 会话目录。
 //      选 DOM 而非消息数据作为数据源：天然与渲染结果一一对应（点击跳转、
 //      高亮定位都靠元素）。
-//   2. 画横线：**固定小间距**（~10px 一格）紧凑排布并垂直居中（Codex 同款），
-//      条目极多时间距压缩到最小 4px，永不溢出；悬停时横线弹性变长。
+//   2. 画横线：**固定小间距**（~13px 一格）紧凑排布并垂直居中（Codex 同款），
+//      条目极多时间距逐级压缩（低于 5px 时横线同步变细），永不溢出；悬停时横线弹性变长。
+//      导航条本体只占视口高度的 80%（上下各留 10%），见 RAIL_HEIGHT_RATIO。
 //   3. 联动：滚动容器 scroll 事件 + MutationObserver（rAF 节流）→
 //      以视口上部 35% 处为探测线，最后越过探测线的条目（= 当前所在章节）即高亮；
 //      点击横线 scrollTo 对应章节开头；悬停延迟 150ms 弹出摘要预览卡。
@@ -43,7 +44,8 @@ const props = defineProps<{ container: HTMLElement | null }>();
 
 const RAIL_PAD = 16; // 导航条上下内边距
 const PITCH_MAX = 13; // ① 块上下间距上限（px）——整体越疏间隔越大
-const PITCH_MIN = 5; // ① 块上下间距下限（px），条目极多时压缩防溢出
+const PITCH_MIN = 5; // ① 块上下间距下限（px），条目极多时先压到这里，再压就得同步缩细横线
+const RAIL_HEIGHT_RATIO = 0.8; // 导航条高度占滚动视口的比例（上下各留 10% 空白）
 
 const items = ref<RailItem[]>([]);
 const activeIndex = ref(-1);
@@ -69,6 +71,20 @@ const railScale = computed(() => {
   const fontFactor = (prefs.fontSize || 15) / 15;
   const heightFactor = Math.sqrt(railHeight.value / 700);
   return Math.min(1.5, Math.max(0.85, fontFactor * heightFactor)); // ⑤ 整体缩放范围
+});
+
+// 导航条只占视口高度的 80% 并垂直居中：原先直接等于 clientHeight，条目一多就贴到视口
+// 最顶/最底，视觉上顶天立地、也不便和左右内容区分边界；上下各留 10% 后整列更像
+// 一段居中的目录。
+const railBoxHeight = computed(() => Math.round(railHeight.value * RAIL_HEIGHT_RATIO));
+
+// 横线粗细联动（--rail-density）：pitch 停在 pitchMin 及以上时 density = 1（正常粗细）；
+// 条目多到必须压破 pitchMin 时才随之线性降到 0.5。
+// 为什么需要：3.5px 高的横线配 2px 间距会互相吞掉，整排糊成一条黑带，看不清分段；
+// 间距越小横向同步变细，分段感才守得住。
+const railDensity = computed(() => {
+  const floor = Math.max(PITCH_MIN * railScale.value, 0.001);
+  return Math.min(1, Math.max(0.5, railPitch.value / floor));
 });
 
 // 悬停邻近联动（Codex 式）：宽度用**基准宽度的倍率**表达而非固定 px——
@@ -122,14 +138,22 @@ function refresh() {
     next.push({ el: msgEl, excerpt: pickExcerpt(msgEl), topPx: 0 });
   });
 
-  // 固定小间距紧凑排下：pitch 夹在 [PITCH_MIN, PITCH_MAX]，整组在导航条内垂直居中；
+  // 固定小间距紧凑排下：pitch 三段式收敛，整组在导航条内垂直居中；
   // 条目极多撑不下时从顶部开始排
   const n = next.length;
-  const innerH = Math.max(railHeight.value - RAIL_PAD * 2, 0);
+  // 可用高度按「80% 导航条」算，而不是整个视口
+  const innerH = Math.max(railBoxHeight.value - RAIL_PAD * 2, 0);
   // 间距同样随界面缩放
   const pitchMax = PITCH_MAX * railScale.value;
   const pitchMin = PITCH_MIN * railScale.value;
-  const pitch = n > 1 ? Math.min(pitchMax, Math.max(pitchMin, innerH / n)) : pitchMax;
+  // 三段式：① 先取 min(pitchMax, innerH/n)（尽量疏，但不超出可用高度）
+  //        ② 若结果已低于 pitchMin，但 n*pitchMin 仍排得下 → 夹回 pitchMin
+  //        ③ 连 pitchMin 都排不下 → 直接留在 innerH/n，不再夹下限
+  // 关键是 ③：保证 n*pitch <= innerH 恒成立，条目再多也不溢出视口。
+  // 这里刻意不做跳采样（不丢条目）：导航条是「会话目录」，缺条目会让用户以为那几轮
+  // 对话不存在；挤一点仍可点击、仍能悬停预览，比丢章节更可信。
+  let pitch = n > 1 ? Math.min(pitchMax, innerH / n) : pitchMax;
+  if (n > 1 && pitch < pitchMin && n * pitchMin <= innerH) pitch = pitchMin;
   const totalH = n * pitch;
   const start = totalH < innerH ? RAIL_PAD + (innerH - totalH) / 2 : RAIL_PAD;
   railPitch.value = pitch;
@@ -259,7 +283,15 @@ onUnmounted(detach);
 
 <template>
   <div v-show="!tooNarrow && items.length > 1" class="rail-sticky">
-    <div class="message-rail" :style="{ height: railHeight + 'px', '--rail-scale': railScale }">
+    <div
+      class="message-rail"
+      :style="{
+        height: railBoxHeight + 'px',
+        top: (railHeight - railBoxHeight) / 2 + 'px',
+        '--rail-scale': railScale,
+        '--rail-density': railDensity,
+      }"
+    >
       <div
         v-for="(item, i) in items"
         :key="i"
@@ -304,12 +336,12 @@ onUnmounted(detach);
 .message-rail {
   position: absolute;
   left: 14px; /* ⑥ 与左侧边栏保持间隔，不贴边 */
-  top: 0;
+  top: 0; /* 实际垂直居中偏移由内联 style 覆盖（(railHeight - railBoxHeight) / 2） */
   width: 16px;
   display: block;
 }
 
-/* 横线命中区：高度绑定当前间距（上限 10px），只覆盖横线自身附近，
+/* 横线命中区：高度绑定当前间距（上限 13px），只覆盖横线自身附近，
    不会让整排变成一个大按钮 */
 .rail-hit {
   position: absolute;
@@ -325,8 +357,9 @@ onUnmounted(detach);
 .rail-dash {
   flex: none; /* 关键：flex 子项默认 flex-shrink:1，会把 width 强行压回命中区宽度，
                  任何悬停伸长都被 flex 吃掉——必须禁用收缩 */
-  height: calc(3.5px * var(--rail-scale, 1)); /* ③ 块粗细 */
-  border-radius: calc(4.25px * var(--rail-scale, 1));
+  /* ③ 块粗细：再乘 --rail-density（1~0.5），间距被压破下限时横线同步变细 */
+  height: calc(3.5px * var(--rail-scale, 1) * var(--rail-density, 1));
+  border-radius: calc(4.25px * var(--rail-scale, 1) * var(--rail-density, 1));
   background: var(--text-muted);
   opacity: 0.85;
   transform-origin: left center;
@@ -340,7 +373,8 @@ onUnmounted(detach);
 }
 
 .rail-dash.active {
-  height: calc(4.5px * var(--rail-scale, 1)); /* ③ active 块粗细 */
+  /* ③ active 块粗细：同样随密度变细 */
+  height: calc(4.5px * var(--rail-scale, 1) * var(--rail-density, 1));
   background: var(--text-main);
   opacity: 1;
 }
