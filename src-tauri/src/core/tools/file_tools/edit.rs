@@ -205,8 +205,12 @@ fn validate_single_edit<'a>(
                 label, path
             ));
         }
+        // 走到这一行说明「必须先读」那道闸门已经过了：未读或读后过期会在
+        // common.rs 的 freshness_error 处直接中止，根本到不了这里。
+        // 所以失败原因是内容对不上，不是“没读文件”——文案必须据实说，
+        // 笼统让人去 read_file 会把排查方向带偏到“重读”上，而问题在 old_text 本身。
         return Err(format!(
-            "编辑失败: {} 未在 {} 中找到指定的旧文本块。\n请使用 read_file 先查看文件的实际内容",
+            "编辑失败: {} 未在 {} 中找到与 old_text 逐字一致的片段（本次已通过读取校验，失败原因是内容对不上，不是没读过文件）。\n常见原因：缩进或空白不同、换行符差异、全角/半角或引号风格不同、old_text 与实际内容不一致（例如误把 new_text 当成了 old_text）。\n请重新 ReadFile 取当前内容逐字符核对，或缩小 old_text 范围（仍保持 3~5 行）后重试。",
             label, path
         ));
     }
@@ -251,37 +255,66 @@ fn validate_single_edit<'a>(
     Ok(match_count)
 }
 
-/// 对所有编辑应用替换（所有校验通过后才调用）
-fn apply_edits(content: &str, edits: &[SingleEdit]) -> String {
+/// 应用阶段找不到 old_text 时的统一报错。
+///
+/// 这个错误只可能出现在批量编辑里：单条的 old_text 刚在校验阶段命中过，
+/// 而校验与应用之间内容没有变化。所以文案直接指向「前面的编辑改写了它」。
+fn apply_miss_error(batch_size: usize, idx: usize, old_text: &str) -> String {
+    let label = if batch_size > 1 {
+        format!("edits[{}]", idx)
+    } else {
+        "old_text".to_string()
+    };
+    let preview: String = old_text.chars().take(40).collect();
+    format!(
+        "编辑中止: {} 在应用阶段找不到 old_text —— 该片段大概率已被前面的编辑改写。\n批量编辑的每条 old_text 都是对着原文件校验的，若前一条的 new_text 覆盖了后一条的 old_text 所在区域，就会出现这种冲突。\n请拆分提交，或调整顺序/范围使各条互不重叠。\n冲突片段（前 40 字）：{}",
+        label, preview
+    )
+}
+
+/// 对所有编辑应用替换（所有校验通过后才调用）。
+///
+/// 返回 Err 而不是跳过：批量编辑中，前一条的 new_text 可能吃掉后一条的 old_text，
+/// 而校验阶段两条都是对着**原始内容**比对的，所以都能通过。旧实现在应用阶段
+/// 找不到就跳过那一条、整体仍报成功——用户以为改了三处，实际只落了两处，
+/// 且 `total_replacements` 还会按校验结果谎报数量。这是数据完整性问题，
+/// 宁可整次中止让用户重来，也不能静默丢改动。
+fn apply_edits(content: &str, edits: &[SingleEdit]) -> Result<String, String> {
     // 纯 LF 文件没有行尾歧义，直接走原来的字节级替换，保持既有行为与性能
     if !content.contains('\r') {
         return apply_edits_exact(content, edits);
     }
     let mut result = content.to_string();
-    for edit in edits {
+    for (idx, edit) in edits.iter().enumerate() {
         let limit = if edit.replace_all { None } else { Some(1) };
         // 定位可以容忍行尾差异，但落盘一律 LF：与 .gitattributes 的 eol=lf
         // 以及 write.rs 的口径保持一致，避免工具继续制造混合行尾。
         // 倒序替换保证前面的偏移不受影响。
         let mut ranges = find_edit_ranges(&result, &edit.old_text, limit);
+        if ranges.is_empty() {
+            return Err(apply_miss_error(edits.len(), idx, &edit.old_text));
+        }
         while let Some(range) = ranges.pop() {
             result.replace_range(range, &edit.new_text);
         }
     }
-    result
+    Ok(result)
 }
 
 /// 精确字节级替换（不含行尾容忍）：纯 LF 文件的快路径。
-fn apply_edits_exact(content: &str, edits: &[SingleEdit]) -> String {
+fn apply_edits_exact(content: &str, edits: &[SingleEdit]) -> Result<String, String> {
     let mut result = content.to_string();
-    for edit in edits {
+    for (idx, edit) in edits.iter().enumerate() {
+        if !result.contains(&edit.old_text) {
+            return Err(apply_miss_error(edits.len(), idx, &edit.old_text));
+        }
         if edit.replace_all {
             result = result.replace(&edit.old_text, &edit.new_text);
         } else {
             result = result.replacen(&edit.old_text, &edit.new_text, 1);
         }
     }
-    result
+    Ok(result)
 }
 
 /// 基于搜索替换编辑文件（唯一性检查 + 引号归一化 + TOCTOU 防护 + 自动快照）
@@ -356,8 +389,11 @@ pub async fn edit_file(
                 }
             }
 
-            // 所有校验通过 → 原子替换
-            let updated_content = apply_edits(&content, &edits);
+            // 所有校验通过 → 原子替换（应用阶段再撞车就整次中止，不写盘）
+            let updated_content = match apply_edits(&content, &edits) {
+                Ok(c) => c,
+                Err(e) => return framework::ToolCallResult::error(e),
+            };
 
             // TOCTOU 防护
             if let (Some(orig_mtime), Ok(current_meta)) = (read_mtime, std::fs::metadata(&path)) {
@@ -500,7 +536,7 @@ mod tests {
             },
         ];
         let result = super::apply_edits(content, &edits);
-        assert_eq!(result, "HEAD\nbody\nFOOT");
+        assert_eq!(result.unwrap(), "HEAD\nbody\nFOOT");
     }
 
     #[test]
@@ -535,7 +571,7 @@ mod tests {
             new_text: "x\ny".into(),
             replace_all: false,
         }];
-        assert_eq!(super::apply_edits(content, &edits), "x\ny\r\nc");
+        assert_eq!(super::apply_edits(content, &edits).unwrap(), "x\ny\r\nc");
     }
 
     #[test]
@@ -554,7 +590,7 @@ mod tests {
                 replace_all: false,
             },
         ];
-        assert_eq!(super::apply_edits(content, &edits), "x\ny\nz\nw\r\ne");
+        assert_eq!(super::apply_edits(content, &edits).unwrap(), "x\ny\nz\nw\r\ne");
     }
 
     #[test]
@@ -566,7 +602,7 @@ mod tests {
             new_text: "c\nd".into(),
             replace_all: true,
         }];
-        assert_eq!(super::apply_edits(content, &edits), "c\nd\r\nX\r\nc\nd");
+        assert_eq!(super::apply_edits(content, &edits).unwrap(), "c\nd\r\nX\r\nc\nd");
     }
 
     #[test]
@@ -578,6 +614,33 @@ mod tests {
             replace_all: true,
         }];
         let result = super::apply_edits(content, &edits);
-        assert_eq!(result, "b b b");
+        assert_eq!(result.unwrap(), "b b b");
+    }
+
+    #[test]
+    fn conflicting_batch_edit_aborts_instead_of_silently_skipping() {
+        // 前一条的 new_text 吃掉了后一条的 old_text：两条对着原文件都能匹配，
+        // 但应用阶段第二条必然找不到。旧实现会静默跳过并仍报成功，
+        // 用户看到「改了两处」而磁盘上只落了一处。
+        let content = "line1\nSECTION\nline3\n";
+        let edits = vec![
+            super::SingleEdit {
+                old_text: "line1\nSECTION".into(),
+                new_text: "REPLACED".into(),
+                replace_all: false,
+            },
+            super::SingleEdit {
+                old_text: "SECTION\nline3".into(),
+                new_text: "OTHER".into(),
+                replace_all: false,
+            },
+        ];
+
+        let err = super::apply_edits(content, &edits).unwrap_err();
+        assert!(
+            err.contains("edits[1]"),
+            "报错应点名冲突的那一条编辑: {}",
+            err
+        );
     }
 }
