@@ -466,7 +466,11 @@ export function hasToolDetails(tool: AgentToolCallView) {
 }
 
 export function hasToolGroupDetails(group: ToolCallGroup) {
-  return group.count > 1 || group.actions.length > 0 || group.tools.some(hasToolDetails);
+  // error 分组一律算「有内容」：失败本身就是要看的事件。
+  // 后端可能只落了失败状态、没有参数/输出/错误文本，若只按正文判断，
+  // 这种分组会被认为无可展开内容，折叠入口与自动展开（见 shouldOpenToolGroup）全部失效。
+  // 与 ExecutionTimeline 的 rowExpandable 保持同一口径。
+  return group.status === "error" || group.count > 1 || group.actions.length > 0 || group.tools.some(hasToolDetails);
 }
 
 export function isSubAgentToolName(name: string) {

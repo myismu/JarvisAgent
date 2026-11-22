@@ -50,6 +50,18 @@ function hasToolBody(tool: AgentToolCallView): boolean {
   return Boolean(tool.input || tool.output || tool.error);
 }
 
+/**
+ * 工具行是否可展开：有正文，或者本次调用失败。
+ *
+ * 为什么失败要单独算「可展开」：失败本身就是要看的事件——即使后端一个字都没记下来
+ * （参数 / 输出 / 错误全空），用户也需要点开确认「这里确实没有信息」；
+ * 如果沿用 hasToolBody 收走入口，失败行会变成一条既没有箭头又没有原因的哑行。
+ * 展开后的空白由 dev-tool-missing 兜底说明。
+ */
+function rowExpandable(tool: AgentToolCallView): boolean {
+  return hasToolBody(tool) || tool.status === 'error';
+}
+
 function toolStatusLabel(status: string): string {
   if (status === 'completed') return '完成';
   if (status === 'running') return '执行中';
@@ -103,14 +115,16 @@ function rowIconKind(item: DevTimelineItem): ExecutionRowIconKind {
         <summary class="dev-thinking-summary"><span class="dev-row-icon-wrap"><ExecutionRowIcon class="dev-row-kind-icon" :kind="rowIconKind(item)" /><ExecutionRowIcon class="dev-row-chevron" kind="chevron" /></span><span class="dev-row-kind">思考</span><span class="dev-row-dot" aria-hidden="true"></span><span class="dev-thinking-label">{{ describeThinkingStatic(item.content) }}</span></summary>
         <div class="dev-thinking-body"><StreamingMarkdown :content="item.content" /></div>
       </details>
-      <!-- 工具行同理：autoExpandRows 且正在流式、且确实有可展开正文时才自动展开。
-           hasToolBody 同时控制箭头渲染与 :open——没有正文的行展开后是一片空白。 -->
-      <details v-else-if="item.type === 'tool'" class="dev-tool" :class="[item.tool.status]" :open="autoExpandRows && item.streaming && hasToolBody(item.tool)">
-        <summary class="dev-tool-summary"><span class="dev-row-icon-wrap"><ExecutionRowIcon class="dev-row-kind-icon" :kind="rowIconKind(item)" /><ExecutionRowIcon v-if="hasToolBody(item.tool)" class="dev-row-chevron" kind="chevron" /></span><code class="dev-tool-name" :class="{ 'is-pseudo-task': item.tool.id.startsWith('task_') }">{{ toolDisplayName(item.tool) }}</code><span class="dev-row-dot" aria-hidden="true"></span><span class="dev-tool-action">{{ toolActionLabel(item.tool.name, item.tool.status, item.tool) }}</span><span class="dev-tool-status">{{ toolStatusLabel(item.tool.status) }}</span></summary>
-        <div v-if="item.tool.input || item.tool.output || item.tool.error" class="dev-tool-body">
+      <!-- 工具行同理：autoExpandRows 且正在流式、且确实可展开时才自动展开。
+           rowExpandable 同时控制箭头渲染与 :open：有正文才展开，失败行即便正文全空也保留入口。 -->
+      <details v-else-if="item.type === 'tool'" class="dev-tool" :class="[item.tool.status]" :open="autoExpandRows && item.streaming && rowExpandable(item.tool)">
+        <summary class="dev-tool-summary"><span class="dev-row-icon-wrap"><ExecutionRowIcon class="dev-row-kind-icon" :kind="rowIconKind(item)" /><ExecutionRowIcon v-if="rowExpandable(item.tool)" class="dev-row-chevron" kind="chevron" /></span><code class="dev-tool-name" :class="{ 'is-pseudo-task': item.tool.id.startsWith('task_') }">{{ toolDisplayName(item.tool) }}</code><span class="dev-row-dot" aria-hidden="true"></span><span class="dev-tool-action">{{ toolActionLabel(item.tool.name, item.tool.status, item.tool) }}</span><span class="dev-tool-status">{{ toolStatusLabel(item.tool.status) }}</span></summary>
+        <div v-if="rowExpandable(item.tool)" class="dev-tool-body">
           <div v-if="item.tool.input" class="dev-tool-section"><div class="dev-tool-section-label">参数</div><StreamingMarkdown :content="item.tool.input" /></div>
           <div v-if="item.tool.output && !item.tool.error" class="dev-tool-section"><div class="dev-tool-section-label">输出</div><StreamingMarkdown :content="item.tool.output" /></div>
           <div v-if="item.tool.error" class="dev-tool-section error"><div class="dev-tool-section-label">未成功</div><StreamingMarkdown :content="item.tool.error" /></div>
+          <!-- 三段全空（典型是后端只记了失败状态、没记任何内容）：给出说明，避免点开一片空白 -->
+          <div v-if="!hasToolBody(item.tool)" class="dev-tool-missing">后端未记录本次调用的详细信息（参数 / 输出 / 错误均为空）。</div>
         </div>
       </details>
       <!-- 日志行：与思考 / 工具行同一套折叠行结构（摘要行 + 缩进内嵌体）。
@@ -221,7 +235,7 @@ function rowIconKind(item: DevTimelineItem): ExecutionRowIconKind {
 .dev-row-chevron {
   opacity: 0;
 }
-/* 箭头只在「确实有可展开正文」的工具行渲染（见 hasToolBody）。
+/* 箭头只在可展开的工具行渲染（见 rowExpandable：有正文，或调用失败）。
    没有箭头的行若仍按 hover 隐去类型图标，图标位会变成一块空白——
    那不是交互提示，是掉了一块。所以工具行的 hover 用 :has(箭头) 限定范围。 */
 .dev-tool-summary:has(.dev-row-chevron):hover .dev-row-kind-icon,
@@ -416,6 +430,11 @@ function rowIconKind(item: DevTimelineItem): ExecutionRowIconKind {
 }
 .dev-tool-section.error .dev-tool-section-label {
   color: var(--text-soft);
+}
+/* 可展开但无正文时的兜底说明（失败行保留入口，这里说明为什么是空的） */
+.dev-tool-missing {
+  font-size: 0.75rem;
+  color: var(--text-muted);
 }
 
 /* 执行日志：与思考行完全同构的折叠行（摘要行 22px + 缩进内嵌体）

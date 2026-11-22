@@ -243,13 +243,31 @@ export function appendAgentExecutionLog(
   bump(turn);
 }
 
-function updateLatestToolByName(
+/**
+ * 按调用 id 精确更新工具调用视图。
+ *
+ * 工具名**不是唯一标识**：同一轮里连续两次 `RunCommand` 会留下两个同名条目，
+ * 只按名字反查会把结果写到别人身上（2026-11 真实事故：`tool_error` 命中了后一条，
+ * 错误显示在错误的工具卡上）。所以主路径是 `toolCallId` 精确匹配。
+ *
+ * 按名字从后往前找**只是旧数据兜底**：历史快照 / 老后端的事件没有 id，
+ * 此时退一步至少能把结果挂到最近一条同名条目上。
+ *
+ * @returns 是否命中（false 表示需要由调用方新建条目）
+ */
+function updateTool(
   turn: AgentCurrentTurn,
+  toolCallId: string | undefined,
   name: string | undefined,
   patch: Partial<AgentToolCallView>,
 ) {
-  if (!name) return false;
-  const item = [...turn.toolCalls].reverse().find((tool) => tool.name === name);
+  const id = (toolCallId ?? "").trim();
+  let item = id ? turn.toolCalls.find((tool) => tool.id === id) : undefined;
+  if (!item) {
+    if (!name) return false;
+    // 旧数据兜底：取最后一条同名条目
+    item = [...turn.toolCalls].reverse().find((tool) => tool.name === name);
+  }
   if (!item) return false;
   Object.assign(item, patch, { updatedAt: now() });
   return true;
@@ -261,21 +279,25 @@ export function applyAgentStepToCurrentTurn(
 ) {
   const turn = view.currentTurn;
   if (step.type === "tool_call") {
-    const updated = updateLatestToolByName(turn, step.tool, {
+    const updated = updateTool(turn, step.toolCallId, step.tool, {
       input: step.content,
       status: "running",
     });
     if (!updated && step.tool) {
-      upsertAgentToolCall(view, `step_${nextId("tool")}`, step.tool, "running", turn.loop);
-      updateLatestToolByName(turn, step.tool, { input: step.content });
+      // 新建条目**必须**用事件里的调用 id（存在时）：后续 tool_result / tool_error
+      // 是按 id 寻址的，这里若换成前端临时 id，结果事件就永远匹配不上（只能退回按名字兜底，
+      // 同名工具又会互相覆盖）。
+      const id = (step.toolCallId ?? "").trim() || `step_${nextId("tool")}`;
+      upsertAgentToolCall(view, id, step.tool, "running", turn.loop);
+      updateTool(turn, id, step.tool, { input: step.content });
     }
   } else if (step.type === "tool_result") {
-    updateLatestToolByName(turn, step.tool, {
+    updateTool(turn, step.toolCallId, step.tool, {
       output: step.content,
       status: "completed",
     });
   } else if (step.type === "tool_error") {
-    updateLatestToolByName(turn, step.tool, {
+    updateTool(turn, step.toolCallId, step.tool, {
       error: step.error,
       output: step.content,
       status: "error",

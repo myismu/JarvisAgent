@@ -189,6 +189,9 @@ pub async fn execute_tool_calls(
                         json!({
                             "type": "tool_error",
                             "tool": name,
+                            // 事件必须带调用 id：前端按 id 精确寻址工具调用，
+                            // 仅靠工具名会让同一轮内的同名工具互相覆盖（2026-11 真实事故）。
+                            "toolCallId": id.clone(),
                             "error": format!("{}", err),
                             "content": failure,
                             "output_summary": format!("参数解析失败: {}", err),
@@ -371,11 +374,13 @@ pub async fn execute_tool_calls(
         );
 
         let is_error = status == "error";
+        // 事件必须带调用 id，否则前端只能按工具名匹配，同一轮内同名工具会互相覆盖（2026-11 真实事故）。
         let _ = app.emit(
             "agent-step",
             json!({
                 "type": if is_error { "tool_error" } else { "tool_result" },
                 "tool": result.name,
+                "toolCallId": result.tool_use_id.clone(),
                 "content": result.output,
                 "error": if is_error { Some(result.output.clone()) } else { None },
                 "sessionId": sid,

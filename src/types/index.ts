@@ -293,6 +293,15 @@ export type AgentStepType =
 export interface AgentStep {
   type: AgentStepType;
   tool?: string;
+  /**
+   * 后端 `agent-step` 工具事件（tool_call / tool_result / tool_error）携带的
+   * **调用唯一标识**，与 `AgentToolCallView.id` 同源（后端 tool_use_id）。
+   *
+   * 为什么必须有：工具名不唯一 —— 同一轮里连续两次 `RunCommand` 会产生两个同名条目，
+   * 只按名字反查会把结果写到另一条上。前端据此精确寻址；字段缺失时
+   * （旧数据 / 老后端）才退回按名字兜底。
+   */
+  toolCallId?: string;
   content?: string;
   error?: string;
   task?: string;

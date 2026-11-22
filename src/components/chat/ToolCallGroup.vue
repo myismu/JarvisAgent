@@ -35,6 +35,13 @@ const { t } = useI18n();
 const toolKey = (tool: AgentToolCallView, index: number) => `${tool.id}-${index}`;
 
 const technicalOpen = (group: ToolCallGroup) => group.status === "error";
+
+/**
+ * 分组里每个工具都没有可展示正文（参数 / 输出 / 错误 / 日志全空）。
+ * 典型场景：后端只落了失败状态，没落任何内容。展开后会是空白，需要一句说明。
+ * 判定与 ExecutionTimeline 的口径不同：那边“失败就算可展开”，这里问的是“有没有东西可写”。
+ */
+const hasAnyToolDetails = (group: ToolCallGroup) => group.tools.some((tool) => hasToolDetails(tool));
 </script>
 
 <template>
@@ -94,6 +101,7 @@ const technicalOpen = (group: ToolCallGroup) => group.status === "error";
     <details class="agent-tool-technical" :open="technicalOpen(group)">
       <summary>{{ t('execution.details', { count: group.count }) }}</summary>
       <div class="agent-tool-group-items">
+        <div v-if="!hasAnyToolDetails(group)" class="agent-tool-group-missing">后端未记录本次调用的详细信息（参数 / 输出 / 错误均为空）。</div>
         <div
           v-for="(tool, index) in group.tools"
           :key="toolKey(tool, index)"
@@ -199,6 +207,12 @@ const technicalOpen = (group: ToolCallGroup) => group.status === "error";
 
 .agent-tool-child {
   padding-left: 10px;
+}
+
+/* 展开体里所有工具都没有正文时的兜底说明，与 ExecutionTimeline 的 .dev-tool-missing 同一句文案 */
+.agent-tool-group-missing {
+  font-size: 0.75rem;
+  color: var(--text-muted);
 }
 
 .agent-tool-child-row {
