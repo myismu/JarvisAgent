@@ -119,6 +119,24 @@ watch(
 );
 
 /**
+ * 「已发出、后端还没回包」的空窗期。
+ *
+ * watch(hasCurrentTurnContent) 在首个事件到达前不会打开 showAgentTurn，
+ * 于是在「消息已发出」与「首个正文 / 工具事件」之间，界面是完全没有内容的——
+ * 二阶段计数耗时长时这段空窗被放大，用户会以为消息没发出去。
+ * status 在 send() 里就已置 RUNNING，比任何内容事件都早，用它把这段窗口托住。
+ *
+ * 两种视图都放开：开发者视图靠折叠头显示「执行中 · 1 步」，
+ * 普通视图靠 ExecutionPanel 的摘要行显示「处理中」。
+ * 两者在无内容时都不会出空气泡（ExecutionPanel 已同步支持空态）。
+ */
+const awaitingFirstEvent = computed(
+  () =>
+    !showAgentTurn.value &&
+    session.currentSessionView.status === "RUNNING",
+);
+
+/**
  * 渲染用的消息列表 = 历史消息 + 当前 live 轮次。
  *
  * 为什么要把两者合并成一个 v-for：live 轮次原先走独立的 `v-if(showAgentTurn)` 块，
@@ -136,7 +154,7 @@ watch(
 const renderMessages = computed(() => {
   const stored = chat.messages;
   const liveId = session.currentSessionView.liveTurnId;
-  if (!showAgentTurn.value || !liveId) return stored;
+  if ((!showAgentTurn.value && !awaitingFirstEvent.value) || !liveId) return stored;
   if (stored.some((message: any) => message.id === liveId)) return stored;
   return [...stored, { id: liveId, role: "agent", live: true }];
 });
@@ -894,13 +912,15 @@ onMounted(() => {
              live 项由 renderMessages 追加在列表末尾，key 与收尾后的正式消息一致，
              所以收尾时 Vue 会 patch 复用这棵子树，而不是卸载再挂载（那会闪一下）。 -->
         <div v-else-if="message.role === 'agent' && (message.live || message.snapshot)" class="chat-message agent-message" :data-msg-id="message.id">
-          <!-- 只有状态标注、没有正文的轮次不渲染气泡：notice 在气泡外，气泡会是个空盒子 -->
-          <div v-if="hasBubblePayload(turnOfMessage(message))" class="message-content current-turn-content">
+          <!-- 只有状态标注、没有正文的轮次不渲染气泡：notice 在气泡外，气泡会是个空盒子。
+               例外：空窗期（已发出、后端未回包）要靠气泡里的状态行给用户反馈。 -->
+          <div v-if="hasBubblePayload(turnOfMessage(message)) || (message.live && awaitingFirstEvent)" class="message-content current-turn-content">
             <AgentTurn
               :turn="turnOfMessage(message)"
               :display-mode="prefs.agentAudience.value"
               :elapsed="message.live ? runElapsed : 0"
               :status="message.live ? session.currentSessionView.status : message.snapshot.status"
+              :awaiting="message.live && awaitingFirstEvent"
             />
           </div>
           <!-- 状态标注刻意放在气泡**外面**：它是这一轮的运行状态，不是模型说的话。
@@ -908,7 +928,7 @@ onMounted(() => {
                live 时才传 running，历史轮次没有「运行中」这个概念。 -->
           <AgentTurnNotice
             :notice="turnOfMessage(message).notice"
-            :running="message.live ? currentTurn.isRunning : undefined"
+            :running="message.live ? currentTurn.isRunning || awaitingFirstEvent : undefined"
           />
         </div>
       </template>

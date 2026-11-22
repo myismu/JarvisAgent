@@ -35,6 +35,13 @@ const props = defineProps<{
   elapsed: number;
   /** 本轮状态（RUNNING / CANCELLED / ERROR 等），仅用于折叠头的状态文案 */
   status?: string;
+  /**
+   * 空窗期：消息已发出、后端还没有任何事件回来。
+   *
+   * 此时 `turn.isRunning` 仍是 false（它由事件驱动），但界面上必须有
+   * 「执行中 · 1 步」的反馈，否则数据量大、二阶段计数慢时会被当成没生效。
+   */
+  awaiting?: boolean;
 }>();
 
 // 「运行中展开执行过程」偏好（单一开关，轮次结束后一律收起，见 usePreferences 里
@@ -42,6 +49,21 @@ const props = defineProps<{
 // 必须在 computed 求值时经偏好对象访问（getter），解构成变量会退化成一次性快照。
 const uiPrefs = usePreferences();
 const expandExecutionWhileRunning = computed(() => uiPrefs.expandExecutionWhileRunning);
+
+/**
+ * 本轮是否处于「运行中」——包含**已发出但后端还没回包**的空窗期。
+ *
+ * `turn.isRunning` 只在事件到达时才被置 true（startAgentTurn / appendAgentText 等），
+ * 所以发送后到首个事件之间它仍是 false。父组件的 `awaiting` 表示「已发出、尚无事件」，
+ * 两个条件取或，空窗期的状态行（执行中 · 1 步）才出得来。
+ *
+ * 为什么不直接看 `status === 'RUNNING'`：历史快照的 status 由后端落库值原样带回，
+ * 用字符串判定一旦遇到 RUNNING 的历史记录，就会把已结束的轮次显示成「执行中」。
+ * 由调用方显式给出「空窗期」，判定依据只保留一处。
+ *
+ * 只用于**状态行与渲染门槛**，不参与 timelineSplit 的拆分。
+ */
+const isLive = computed(() => props.turn.isRunning || Boolean(props.awaiting));
 
 // 执行过程折叠的展开状态。
 //
@@ -57,9 +79,9 @@ const expandExecutionWhileRunning = computed(() => uiPrefs.expandExecutionWhileR
 const isExecOpen = ref(false);
 
 watch(
-  [() => props.turn.isRunning, expandExecutionWhileRunning],
-  ([running, expand]) => {
-    isExecOpen.value = running && expand;
+  [isLive, expandExecutionWhileRunning],
+  ([live, expand]) => {
+    isExecOpen.value = live && expand;
   },
   { immediate: true },
 );
@@ -140,12 +162,12 @@ const hasDeveloperSegments = computed(() => developerTimeline.value.length > 0);
  *   推算值会偏小甚至为 0，而后端口径是 run 的 start → finished 真实跨度。
  */
 const executionDurationSecs = computed(() => {
-  if (props.turn.isRunning) return Math.max(props.elapsed, 0);
+  if (isLive.value) return Math.max(props.elapsed, 0);
   return Math.max(0, Math.round((props.turn.durationMs ?? 0) / 1000));
 });
 
 const executionStateLabel = computed(() => {
-  if (props.turn.isRunning) return "执行中";
+  if (isLive.value) return "执行中";
   const status = (props.status ?? "").toUpperCase();
   if (status === "CANCELLED") return "已停止";
   if (status === "INTERRUPTED") return "已中断";
@@ -166,7 +188,9 @@ const executionSummaryText = computed(() => {
   if (executionDurationSecs.value > 0) {
     parts.push(`用时 ${formatDuration(executionDurationSecs.value)}`);
   }
-  parts.push(`${timelineSplit.value.execItems.length} 步`);
+  // 空窗期还没有任何过程条目，但一条用户消息必然至少跑一个 loop：
+  // 显示 0 步会让人以为没启动，这里兑底为 1。条目数口径本身不变。
+  parts.push(`${Math.max(1, timelineSplit.value.execItems.length)} 步`);
   return parts.join(" · ");
 });
 </script>
@@ -177,13 +201,13 @@ const executionSummaryText = computed(() => {
     :class="displayMode"
   >
     <!-- 开发者模式 -->
-    <div v-if="isDeveloperMode && hasDeveloperSegments">
+    <div v-if="isDeveloperMode && (hasDeveloperSegments || isLive)">
       <!-- 执行过程折叠面板放上面：思考块在其内部，面板展开才能看见。
            展开状态由 isExecOpen 控制（规则见 script 里的注释）：
            运行中按开关展开，轮次结束一律收起，历史消息同理。
            不用原生 <details>：它无法做高度过渡，收起会瞬间塌陷。 -->
       <div
-        v-if="timelineSplit.execItems.length > 0"
+        v-if="timelineSplit.execItems.length > 0 || isLive"
         class="dev-execution-fold"
         :class="{ open: isExecOpen }"
       >
@@ -202,6 +226,8 @@ const executionSummaryText = computed(() => {
         <div :id="execBodyId" class="dev-execution-body">
           <div class="dev-execution-body-inner">
             <ExecutionTimeline :items="timelineSplit.execItems" compact />
+            <!-- 空窗期：折叠头已出现但还没有任何过程条目，给一句占位而不是让内容区空着 -->
+            <div v-if="timelineSplit.execItems.length === 0" class="dev-execution-waiting">等待模型响应…</div>
           </div>
         </div>
       </div>
@@ -303,6 +329,14 @@ const executionSummaryText = computed(() => {
 .dev-execution-body-inner {
   min-height: 0;
   overflow: hidden;
+}
+
+/* 空窗期占位：与摘要行同一套字号与灰度，避免看起来像一条新的执行条目 */
+.dev-execution-waiting {
+  padding: 2px 8px;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--text-muted);
 }
 
 

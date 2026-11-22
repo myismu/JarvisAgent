@@ -43,14 +43,20 @@ const isDeveloperMode = computed(() => props.mode === "developer");
 // 解构成局部变量会把 getter 读成挂载时的一次性快照，开关变化后已挂载的面板不再响应。
 const uiPrefs = usePreferences();
 /**
- * 执行过程面板是否展开：**只**看「本轮运行中 且 开关开启」。
+ * 执行过程面板是否展开：**本轮运行中 且 开关开启 且 已有执行内容**。
  *
  * 原先是 `isDeveloperMode || 偏好`，于是开发者模式下永远展开，开关完全失效；
  * 而口径要求是单一开关管一切：开着就在运行中展开，关掉就只剩摘要头那一行，
  * 轮次结束一律收起（running=false 时这里恒为 false）。
  * 不要改回把 isDeveloperMode 并进来。
+ *
+ * 第三个条件（已有内容）是 2026-11-23 加的：空窗期（消息已发出、后端还没回包）
+ * 面板会渲染但内容为空，展开后就是一个空盒子。此时只留摘要行就够——
+ * summaryText 已经写着「处理中」，用户的诉求是看见反向，不是看见一块空白。
  */
-const shouldExpand = computed(() => props.running && uiPrefs.expandExecutionWhileRunning);
+const shouldExpand = computed(
+  () => props.running && uiPrefs.expandExecutionWhileRunning && hasExecution.value,
+);
 
 /**
  * 日志单行摘要（tag + 正文）：模板里 tag 与 text 各取一次，统一入口便于阅读。
@@ -74,11 +80,13 @@ const summaryText = computed(() => {
 
 <template>
   <details
-    v-if="hasExecution"
+    v-if="hasExecution || running"
     class="agent-execution-panel"
     :class="[mode, { running }]"
     :open="shouldExpand"
   >
+    <!-- 空窗期：只有摘要行（「处理中」），不展开也不给内容区，
+         避免在没有任何执行内容时展开成一个空盒子。 -->
     <summary>
       <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="3"></circle>
