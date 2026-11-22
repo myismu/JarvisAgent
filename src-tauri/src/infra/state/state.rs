@@ -20,8 +20,8 @@
 //! - `SessionManager::get_or_create()` 会自动从 SQLite 加载历史数据
 
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
+use tokio::sync::{watch, Mutex, RwLock};
 
 use crate::core::rollback::session_manager::SnapshotManagerRegistry;
 use crate::infra::types::models::SessionMemory;
@@ -117,10 +117,22 @@ pub struct PendingPermission {
         tokio::sync::oneshot::Sender<crate::core::tools::framework::permission::PermissionDecision>,
 }
 
+/// 当前会话中正在运行的一次主 Agent 执行。
+///
+/// `id` 标识这一轮执行，不是会话 ID；完成通知供停止命令和方案审批等待真正收尾。
+pub struct ActiveSessionExecution {
+    pub id: String,
+    pub cancel_token: tokio_util::sync::CancellationToken,
+    finished: watch::Sender<bool>,
+}
+
 pub struct SessionContext {
     pub id: String,
     pub memory: Mutex<SessionMemory>,
-    pub cancel_token: Mutex<Option<tokio_util::sync::CancellationToken>>,
+    /// 同一会话的执行占用、执行编号和取消令牌合并在同一把锁内，避免检查与占用分离。
+    pub active_execution: StdMutex<Option<ActiveSessionExecution>>,
+    /// 串行化执行登记与会话历史撤回，避免撤回过程中启动新执行。
+    pub execution_gate: Mutex<()>,
     pub active_run_id: Mutex<Option<String>>,
     /// 会话的待办清单**分组**。
     ///
@@ -219,7 +231,8 @@ impl SessionContext {
         Self {
             id,
             memory: Mutex::new(SessionMemory::default()),
-            cancel_token: Mutex::new(None),
+            active_execution: StdMutex::new(None),
+            execution_gate: Mutex::new(()),
             active_run_id: Mutex::new(None),
             todos: Mutex::new(Vec::new()),
             workspace: Mutex::new(None),
@@ -242,6 +255,108 @@ impl SessionContext {
             system_prompt_cache: Mutex::new(None),
             tool_filter: Mutex::new(None),
         }
+    }
+
+    /// 原子登记当前执行；`Err(true)` 表示上一轮正在停止，`Err(false)` 表示仍在运行。
+    pub async fn try_start_execution(
+        self: &Arc<Self>,
+        id: String,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<ExecutionLease, bool> {
+        let _gate = self.execution_gate.lock().await;
+        let mut active = self.lock_active_execution();
+        if let Some(current) = active.as_ref() {
+            return Err(current.cancel_token.is_cancelled());
+        }
+
+        let (finished, _) = watch::channel(false);
+        *active = Some(ActiveSessionExecution {
+            id: id.clone(),
+            cancel_token,
+            finished,
+        });
+        Ok(ExecutionLease {
+            ctx: self.clone(),
+            id,
+            released: false,
+        })
+    }
+
+    /// 只允许本轮执行释放自己的占用，避免旧轮结束时清掉新轮状态。
+    pub fn finish_execution(&self, id: &str) -> bool {
+        let finished = {
+            let mut active = self.lock_active_execution();
+            if active.as_ref().map(|execution| execution.id.as_str()) != Some(id) {
+                return false;
+            }
+            active.take().map(|execution| execution.finished)
+        };
+
+        if let Some(finished) = finished {
+            finished.send_replace(true);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 请求停止当前执行并返回其编号；实际释放占用由执行管线收尾负责。
+    pub fn request_execution_cancel(&self) -> Option<String> {
+        let active = self.lock_active_execution();
+        active.as_ref().map(|execution| {
+            execution.cancel_token.cancel();
+            execution.id.clone()
+        })
+    }
+
+    /// 等待指定执行完成。若它已经结束或被后续执行替代，不会等待其他轮次。
+    pub async fn wait_for_execution(&self, id: &str) {
+        let mut finished = {
+            let active = self.lock_active_execution();
+            match active.as_ref().filter(|execution| execution.id == id) {
+                Some(execution) => execution.finished.subscribe(),
+                None => return,
+            }
+        };
+
+        loop {
+            if *finished.borrow_and_update() {
+                return;
+            }
+            if finished.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// 等待当前执行收尾，供方案审批后续跑等必须串行的入口使用。
+    pub async fn wait_for_active_execution(&self) {
+        let execution_id = self
+            .lock_active_execution()
+            .as_ref()
+            .map(|execution| execution.id.clone());
+        if let Some(execution_id) = execution_id {
+            self.wait_for_execution(&execution_id).await;
+        }
+    }
+
+    /// 克隆当前执行的取消令牌，供工具与权限等待逻辑共享本轮取消信号。
+    pub fn current_cancel_token(&self) -> Option<tokio_util::sync::CancellationToken> {
+        self.lock_active_execution()
+            .as_ref()
+            .map(|execution| execution.cancel_token.clone())
+    }
+
+    /// 查询当前会话是否有执行占用。
+    pub fn has_active_execution(&self) -> bool {
+        self.lock_active_execution().is_some()
+    }
+
+    /// 执行占用锁只保护短小的状态读写；若异常时中毒，取回内部状态继续收尾。
+    fn lock_active_execution(&self) -> StdMutexGuard<'_, Option<ActiveSessionExecution>> {
+        self.active_execution
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// 取本会话的工具开关快照；尚未快照时从配置读一次并固化。
@@ -323,6 +438,42 @@ impl SessionContext {
                     a.scope == scope
                 }
         })
+    }
+}
+
+/// 执行生命周期守卫：正常收尾显式释放，异常退出时由 Drop 取消并释放本轮占用。
+pub struct ExecutionLease {
+    ctx: Arc<SessionContext>,
+    id: String,
+    released: bool,
+}
+
+impl ExecutionLease {
+    /// 正常收尾时释放占用；Drop 是异常退出时的兜底。
+    pub fn finish(&mut self) {
+        if !self.released {
+            self.ctx.finish_execution(&self.id);
+            self.released = true;
+        }
+    }
+}
+
+impl Drop for ExecutionLease {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        // 异常退出时先广播取消，通知共享此令牌的子任务收束，再释放本轮槽位。
+        if let Some(execution) = self
+            .ctx
+            .lock_active_execution()
+            .as_ref()
+            .filter(|execution| execution.id == self.id)
+        {
+            execution.cancel_token.cancel();
+        }
+        self.ctx.finish_execution(&self.id);
+        self.released = true;
     }
 }
 

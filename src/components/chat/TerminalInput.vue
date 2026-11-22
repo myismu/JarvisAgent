@@ -1300,15 +1300,39 @@ const handleSubmit = () => {
       .map(m => m.base64);
     // 不再回传本地的思考开关值：本轮 thinking 由后端按 sessionId + 会话档位自行裁决，
     // 这样即使 UI 投影短暂过期（如能力查询未返回）也污染不到真实请求。
-    chat.sendToJarvis(msg, null, imageBase64List);
+    const submittedMediaFiles = [...mediaFiles.value];
+    const sendPromise = chat.sendToJarvis(msg, null, imageBase64List);
     userInput.value = '';
-    // 草稿使命到此结束：只在发送成功时清空（失败路径由 recall 机制负责回填）
+    // 清空当前草稿；若后端尚未接收本轮，会在 Promise 返回后恢复原文和附件。
     uiPrefs.setInputDraft(draftKeyOf(session.activeSessionId), '');
-    mediaFiles.value.forEach(m => {
-      if (m.url) URL.revokeObjectURL(m.url);
-    });
     mediaFiles.value = [];
     showVisionWarning.value = false;
+    void sendPromise.then((outcome) => {
+      const retryDraft = outcome?.retryDraft;
+      if (retryDraft) {
+        const retrySessionId = retryDraft.sessionId;
+        const retryDraftKey = draftKeyOf(retrySessionId);
+        if (retrySessionId === session.activeSessionId) {
+          // 发送等待期间用户若又输入了内容，保留两段文本和附件，不覆盖新草稿。
+          userInput.value = userInput.value
+            ? `${retryDraft.text}\n\n${userInput.value}`
+            : retryDraft.text;
+          uiPrefs.setInputDraft(retryDraftKey, userInput.value);
+          mediaFiles.value = [...submittedMediaFiles, ...mediaFiles.value];
+          showVisionWarning.value = mediaFiles.value.length > 0;
+          nextTick(() => {
+            inputRef.value?.focus();
+            adjustHeight();
+          });
+          return;
+        }
+        // 切换会话期间被拒绝：把文本放回原会话草稿，附件 URL 仍需释放。
+        uiPrefs.setInputDraft(retryDraftKey, retryDraft.text);
+      }
+      submittedMediaFiles.forEach(m => {
+        if (m.url) URL.revokeObjectURL(m.url);
+      });
+    });
     nextTick(() => {
       adjustHeight();
     });

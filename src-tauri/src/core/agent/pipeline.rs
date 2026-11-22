@@ -83,6 +83,8 @@ struct PipelineState {
     app: tauri::AppHandle,
     sid: String,
     ctx: Arc<crate::infra::state::state::SessionContext>,
+    /// 生命周期守卫：正常收尾时释放，异常退出时清理本轮占用。
+    execution_lease: crate::infra::state::state::ExecutionLease,
     cancel_token: tokio_util::sync::CancellationToken,
     request_workspace: Option<std::path::PathBuf>,
     cfg: AgentConfig,
@@ -796,23 +798,27 @@ impl PipelineState {
 
         let sid = session_id.clone();
         let ctx = session_manager.get_or_create(&session_id).await;
-        // 步骤 1：会话占用检查 —— 同一会话已有任务在执行（或正在停止）时拒绝新请求。
-        //
-        // 只看「令牌是否存在」，不看是否已取消：`cancel_jarvis` 不再提前清空令牌，
-        // 已取消但仍在收尾的管线（工具批次、历史落库）依旧占用会话。
-        // 若把"已取消"当成空闲，新旧两条管线会并发写同一份会话历史。
-        let active_cancel = ctx.cancel_token.lock().await.clone();
-        if let Some(token) = active_cancel {
-            let message = if token.is_cancelled() {
-                "上一轮正在停止中，请稍候再发送。"
-            } else {
-                "当前会话已有任务正在执行，请等待完成或先停止当前任务。"
-            };
-            return Err(AgentError::Session(message.to_string()));
-        }
-        // 步骤 2：创建本次执行的取消令牌并挂载到会话（用户随时可停止）
+        // 步骤 1：用同一把会话锁完成“检查并占用”，并给本轮分配独立编号。
+        // 取消信号和占用状态一起登记，避免并发请求同时通过检查、互相覆盖令牌。
+        let execution_id = format!("ex_{}", uuid::Uuid::new_v4());
         let cancel_token = tokio_util::sync::CancellationToken::new();
-        *ctx.cancel_token.lock().await = Some(cancel_token.clone());
+        let mut execution_lease = match ctx
+            .try_start_execution(execution_id.clone(), cancel_token.clone())
+            .await
+        {
+            Ok(lease) => lease,
+            Err(is_stopping) => {
+                return Err(if is_stopping {
+                    AgentError::ExecutionStopping(
+                        "上一轮正在停止中，请等待完成后再发送。".to_string(),
+                    )
+                } else {
+                    AgentError::ExecutionBusy(
+                        "当前会话已有任务正在执行，请等待完成或先停止当前任务。".to_string(),
+                    )
+                })
+            }
+        };
 
         // 步骤 3：记录本次请求的工作区（文件操作 / 沙箱边界根目录）
         let request_workspace = ctx.workspace.lock().await.clone();
@@ -826,7 +832,7 @@ impl PipelineState {
         // 校验层按沙箱 join 放行、执行层却找不到文件，模型会在错误目录里打转。
         if let Some(ws) = &request_workspace {
             if !ws.exists() {
-                *ctx.cancel_token.lock().await = None;
+                execution_lease.finish();
                 return Err(AgentError::Session(format!(
                     "会话绑定的项目目录已不存在: {}（可能已被删除或移动）。请重建会话并重新挂载项目后再试。",
                     ws.display()
@@ -839,7 +845,7 @@ impl PipelineState {
         let cfg = app_cfg.active_config();
 
         if cfg.api_key.is_empty() {
-            *ctx.cancel_token.lock().await = None;
+            execution_lease.finish();
             return Err(AgentError::Config(
                 "未配置 API Key，请在设置中填写".to_string(),
             ));
@@ -1055,6 +1061,7 @@ impl PipelineState {
             app,
             sid,
             ctx,
+            execution_lease,
             cancel_token,
             request_workspace,
             cfg,
@@ -2368,7 +2375,7 @@ impl PipelineState {
                 *active_run_id = None;
             }
         }
-        *self.ctx.cancel_token.lock().await = None;
+        self.execution_lease.finish();
 
         println!(
             "[JARVIS] finalize：status={}，notice={:?}，content 长度={}",
@@ -2409,7 +2416,7 @@ impl PipelineState {
     // ─── 主循环辅助方法 ───
 
     /// 异常收尾：把中断原因记录到审计层与诊断层，**保留已产生的内容与历史**，
-    /// 并清理运行状态（清空 active_run_id、释放取消令牌，保证下次可重新执行）。
+    /// 并清理运行状态（清空 active_run_id、释放本轮执行槽，保证下次可重新执行）。
     ///
     /// 历史演进说明：旧实现只做「记错误 → fail_run → 返回 Err」，现场全部丢弃。
     /// 由于 `run_pipeline_inner` 在此之后直接 `return Err`，`finalize()` 不会执行，
@@ -2421,7 +2428,7 @@ impl PipelineState {
     /// 只写入 agent_runs.error 与 agent_run_events。
     async fn abort_after_error(&mut self, error: &AgentError) {
         if self.run_id.is_empty() {
-            *self.ctx.cancel_token.lock().await = None;
+            self.execution_lease.finish();
             return;
         }
 
@@ -2507,7 +2514,7 @@ impl PipelineState {
                 *active_run_id = None;
             }
         }
-        *self.ctx.cancel_token.lock().await = None;
+        self.execution_lease.finish();
     }
 
     /// 中断收尾共用逻辑：**保留全部已持久化历史**，并把中断提示追加为一条
@@ -3624,7 +3631,6 @@ impl PipelineState {
                             self.req_input_tokens,
                             self.req_output_tokens,
                         );
-                        *self.ctx.cancel_token.lock().await = None;
                         return Err(error.into());
                     }
                 }
@@ -3643,7 +3649,6 @@ impl PipelineState {
                     self.req_input_tokens,
                     self.req_output_tokens,
                 );
-                *self.ctx.cancel_token.lock().await = None;
                 Err(e.into())
             }
         }

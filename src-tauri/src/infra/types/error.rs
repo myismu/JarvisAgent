@@ -41,6 +41,12 @@ pub enum AgentError {
     #[error("会话错误: {0}")]
     Session(String),
 
+    #[error("{0}")]
+    ExecutionBusy(String),
+
+    #[error("{0}")]
+    ExecutionStopping(String),
+
     #[error("操作已取消")]
     Cancelled,
 

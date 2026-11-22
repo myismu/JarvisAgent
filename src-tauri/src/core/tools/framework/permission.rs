@@ -304,7 +304,7 @@ pub async fn request_permission_with_origin(
 
     // 无限期等待：只有"用户给出决策""本轮取消""权限通道关闭"能结束等待。
     // 这里刻意不设 tokio::time::timeout —— 超时不是用户的决定，系统不能替用户拒绝。
-    let cancel = ctx.cancel_token.lock().await.clone();
+    let cancel = ctx.current_cancel_token();
     let decision = match cancel {
         Some(token) => tokio::select! {
             result = rx => result.unwrap_or_else(|_| PermissionDecision::Interrupted {

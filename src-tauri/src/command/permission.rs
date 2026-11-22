@@ -76,9 +76,9 @@ pub async fn resolve_permission(
     };
 
     // 产品层审批：方案决策只更新方案文档/清理权限通道，后续由前端发起新的用户轮次。
-    // 同时清理 cancel_token，确保审批续跑的 ask_jarvis 不会因 has_active_run 被拦截。
+    // 等待提交方案的执行完成收尾，再允许审批后的新轮次进入会话。
     if id.starts_with("plan_") {
-        *ctx.cancel_token.lock().await = None;
+        ctx.wait_for_active_execution().await;
         let _ = app.emit(
             "permission-resolved",
             serde_json::json!({
@@ -97,7 +97,8 @@ pub async fn resolve_permission(
         let pending = *ctx.loop_continuation_pending.lock().await;
         if pending {
             *ctx.loop_continuation_pending.lock().await = false;
-            *ctx.cancel_token.lock().await = None;
+            // channel 已关闭表示上一轮已结束；额外等占用释放，避免收尾与续跑并行。
+            ctx.wait_for_active_execution().await;
             let _ = app.emit(
                 "permission-resolved",
                 serde_json::json!({
@@ -135,14 +136,9 @@ pub async fn cancel_jarvis(
 ) -> Result<(), String> {
     println!("[JARVIS] 收到取消请求: {}", session_id);
     let ctx = session_manager.get_or_create(&session_id).await;
-    if let Some(token) = ctx.cancel_token.lock().await.as_ref() {
-        token.cancel();
-    }
-    // 刻意不在这里把令牌置 None（2026-11 修复）：
-    // 取消只是"请求停止"，本轮管线可能还卡在工具批次/历史落库里收尾。
-    // 提前清空会让 pipeline 的「同会话占用」检查误判为空闲——用户停止后
-    // 立刻发新消息，新旧两条管线会并发写同一份会话历史。
-    // 令牌由管线 finalize 在本轮真正结束时清除（pipeline.rs::finalize）。
+    let execution_id = ctx.request_execution_cancel();
+    // 这里只发出停止信号，不提前释放会话执行槽：本轮可能还在等待工具或写入历史。
+    // 执行槽由本轮生命周期守卫在正常收尾或异常退出时按执行编号释放，避免旧轮清掉新轮状态。
     // 结束所有等待用户决策的权限请求：标记为"中断"而不是"用户拒绝"，
     // 并逐条广播 permission-resolved，让界面上的权限卡立刻消失
     let pending = ctx
@@ -175,6 +171,10 @@ pub async fn cancel_jarvis(
             cancelled_subagents.len(),
             session_id
         );
+    }
+    // IPC 只有在整轮 loop、工具和持久化收尾完成后才返回，调用方可安全启动下一轮。
+    if let Some(execution_id) = execution_id {
+        ctx.wait_for_execution(&execution_id).await;
     }
     Ok(())
 }

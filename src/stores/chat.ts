@@ -24,6 +24,9 @@ function extractErrorMessage(err: unknown): string {
   const keys = Object.keys(obj);
   for (const key of keys) {
     const val = obj[key];
+    if (key === "ExecutionBusy" || key === "ExecutionStopping") {
+      return typeof val === "string" ? val : JSON.stringify(val);
+    }
     if (typeof val === "string") {
       const parsed = tryParseApiErrorBody(val);
       return parsed || `${key}: ${val}`;
@@ -41,6 +44,19 @@ function extractErrorMessage(err: unknown): string {
     return `${key}: ${JSON.stringify(val)}`;
   }
   return JSON.stringify(err);
+}
+
+/** 判断本次发送是否在后端登记执行前被会话占用闸门拒绝。 */
+function isExecutionAdmissionError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const obj = err as Record<string, unknown>;
+  if ("ExecutionBusy" in obj || "ExecutionStopping" in obj) return true;
+  return Object.values(obj).some(isExecutionAdmissionError);
+}
+
+interface SendToJarvisOutcome {
+  /** 只有后端尚未接收本轮时才返回；调用方应恢复输入，不把它当成已保存消息撤回。 */
+  retryDraft?: { sessionId: string | null; text: string };
 }
 
 function tryParseApiErrorBody(body: string): string | null {
@@ -688,15 +704,19 @@ export const useChatStore = defineStore("chat", () => {
    *     + 预设默认 + 模型能力自行裁决，前端不参与决策；
    *   - `true` / `false`：仅供程序化调用或测试强制指定单轮值。
    */
-  async function sendToJarvis(msg: string, thinkingOverride?: boolean | null, imageBase64List?: string[], resumeOnly = false, skipRunningCheck = false, uiDisplayMsg?: string) {
+  async function sendToJarvis(msg: string, thinkingOverride?: boolean | null, imageBase64List?: string[], resumeOnly = false, skipRunningCheck = false, uiDisplayMsg?: string): Promise<SendToJarvisOutcome | undefined> {
     const session = useSessionStore();
 
     if (!msg && (!imageBase64List || imageBase64List.length === 0)) return;
 
     if (!skipRunningCheck) {
       const currentView = session.getSessionView(session.activeSessionId);
-      if (currentView.status === 'RUNNING') {
-        await cancelJarvis(session.activeSessionId ?? undefined);
+      if (currentView.status === 'RUNNING' || currentView.stopping) {
+        // 停止命令直到上一轮完整收尾才返回；收尾失败时不继续并发发送。
+        const stopped = await cancelJarvis(session.activeSessionId ?? undefined);
+        if (!stopped) {
+          return { retryDraft: { sessionId: session.activeSessionId, text: msg } };
+        }
       }
     }
 
@@ -722,11 +742,12 @@ export const useChatStore = defineStore("chat", () => {
       view.status = "ERROR";
       triggerRender();
       scrollToBottomCb?.();
-      return;
+      return { retryDraft: { sessionId: session.activeSessionId, text: msg } };
     }
     sendGeneration[sessionIdAtStart] = (sendGeneration[sessionIdAtStart] || 0) + 1;
     const myGeneration = sendGeneration[sessionIdAtStart];
     const requestView = session.getSessionView(sessionIdAtStart);
+    const pendingUserMessageId = resumeOnly ? null : `pending_${crypto.randomUUID()}`;
 
     try {
       const recovered = await invoke<boolean>("recover_interrupted_session_messages", {
@@ -764,7 +785,7 @@ export const useChatStore = defineStore("chat", () => {
       // 纯属每发一条消息白拼一次。HTML 通道已整体删除。
       session.appendSessionMessage(sessionIdAtStart, {
         role: "user",
-        id: `user_${Date.now()}`,
+        id: pendingUserMessageId!,
         text: (uiDisplayMsg ?? msg) || "",
         images: imageBase64List && imageBase64List.length > 0 ? [...imageBase64List] : null,
       });
@@ -792,6 +813,9 @@ export const useChatStore = defineStore("chat", () => {
             displayMsg: uiDisplayMsg ?? null,
           });
 
+      // 停止旧轮后可能已经开始新轮；旧 IPC 回执不能再写入新轮的用户消息或状态。
+      if (myGeneration !== sendGeneration[sessionIdAtStart]) return;
+
       // 用后端返回值回填前端用户消息，使撤回按钮立即可见：
       // - messageId：后端为本轮用户消息分配的 UUID（发消息时前端只有本地占位 id）
       // - 回滚模式 / 检查点 id：Git 快照在收尾时才创建，发消息那一刻还不存在，
@@ -801,7 +825,7 @@ export const useChatStore = defineStore("chat", () => {
       if (!resumeOnly) {
         const msgs = requestView.messages;
         for (let i = msgs.length - 1; i >= 0; i--) {
-          if (msgs[i].role === "user" && !msgs[i].messageId) {
+          if (msgs[i].id === pendingUserMessageId) {
             if (res.user_message_id) msgs[i].messageId = res.user_message_id;
             // 与刷新路径同口径：本轮有文件补丁 → both（会话和代码撤回）；
             // 快照创建失败时 id 允许为空串（刷新路径同样会下发「both 但无 id」）
@@ -861,7 +885,9 @@ export const useChatStore = defineStore("chat", () => {
           // 必须挂在 generation 判断里：旧请求的取消回执不能清掉新请求的停止标记。
           requestView.stopping = false;
         }
-        requestView.cancelHandled = false;
+        if (myGeneration === sendGeneration[sessionIdAtStart]) {
+          requestView.cancelHandled = false;
+        }
         if (!sessionSwitched && myGeneration === sendGeneration[sessionIdAtStart]) {
           triggerRender();
           scrollToBottomCb?.();
@@ -953,12 +979,24 @@ export const useChatStore = defineStore("chat", () => {
       // agent 完成后主动拉取最新上下文快照，使监控面板的 Session Messages 包含完整最后一轮回复
       refreshContextSnapshot(sessionIdAtStart);
     } catch (err) {
-      session.clearSessionBuffers(sessionIdAtStart);
-      resetRenderState(sessionIdAtStart);
-
       console.error("[chat] ask_jarvis 失败，原始错误:", err);
       const errMsg = extractErrorMessage(err) || "未知错误";
       console.error("[chat] 格式化后:", errMsg);
+      const admissionRejected = isExecutionAdmissionError(err);
+
+      // 占用闸门在后端写入用户消息之前拒绝请求，只移除本次前端占位消息。
+      if (admissionRejected && pendingUserMessageId) {
+        const pendingIndex = requestView.messages.findIndex(
+          (message) => message.id === pendingUserMessageId,
+        );
+        if (pendingIndex >= 0) requestView.messages.splice(pendingIndex, 1);
+      }
+
+      // 已有更新一轮时，旧请求的错误回执不能清理新一轮的流数据或追加错误卡片。
+      if (myGeneration !== sendGeneration[sessionIdAtStart]) return;
+
+      session.clearSessionBuffers(sessionIdAtStart);
+      resetRenderState(sessionIdAtStart);
 
       // 构建错误快照，追加到 chat.messages（而非遗留字段 jarvisResponse）
       const snapshot = buildAgentTurnSnapshot(
@@ -974,7 +1012,7 @@ export const useChatStore = defineStore("chat", () => {
       });
 
       if (myGeneration === sendGeneration[sessionIdAtStart]) {
-        requestView.showRecallEdit = !resumeOnly;
+        requestView.showRecallEdit = false;
         requestView.status = "ERROR";
         requestView.activeRunId = null;
         requestView.streamActive = false;
@@ -984,6 +1022,9 @@ export const useChatStore = defineStore("chat", () => {
       if (sessionIdAtStart === session.activeSessionId) {
         triggerRender();
         scrollToBottomCb?.();
+      }
+      if (admissionRejected && !resumeOnly) {
+        return { retryDraft: { sessionId: sessionIdAtStart, text: msg } };
       }
     }
   }
@@ -1001,48 +1042,53 @@ export const useChatStore = defineStore("chat", () => {
    * `view.stopping` 在这里同步置起（早于任何 await），停止按钮据此显示 spinner
    * 并保持禁用，直到本轮真正收尾（`sendToJarvis` 的状态回落路径负责清除）。
    */
-  async function cancelJarvis(preferSessionId?: string): Promise<void> {
+  async function cancelJarvis(preferSessionId?: string): Promise<boolean> {
     const session = useSessionStore();
     const perm = usePermissionStore();
     const targetSid = preferSessionId ?? session.activeSessionId ?? undefined;
-    if (!targetSid) return;
+    if (!targetSid) return false;
     const view = session.sessionViews[targetSid];
     // 只允许停止正在运行的会话；已停止/未运行的视图不发送请求，
     // 避免取消指令"漂移"到无关会话。
-    if (!view || view.status !== 'RUNNING' || view.stopping) return;
+    if (!view || (view.status !== 'RUNNING' && !view.stopping)) return false;
     view.cancelHandled = false;
     view.stopping = true;
     perm.clearPermissions(targetSid);
     delete perm.planProposals[targetSid];
     try {
       await invoke("cancel_jarvis", { sessionId: targetSid });
+      return true;
     } catch (err) {
       // 命令失败（IPC 异常等）时撤回「停止中」，否则按钮会永远禁用
       view.stopping = false;
       console.error("取消执行失败:", err);
+      return false;
     }
   }
 
   async function recallAndEdit(): Promise<string> {
     const session = useSessionStore();
-    try {
-      const recalledText = await invoke<string>("recall_last_message", {
-        sessionId: session.activeSessionId,
-      });
-      const view = session.getSessionView(session.activeSessionId);
+    const sessionId = session.activeSessionId;
+    if (!sessionId) return "";
+    const view = session.getSessionView(sessionId);
+    const target = [...view.messages]
+      .reverse()
+      .find((message) => message.role === "user" && message.messageId);
+    if (!target) {
+      console.error("撤回失败：当前消息尚未保存，无法定位准确的撤回目标");
+      return "";
+    }
 
-      // 从 messages 数组中移除最后一条 agent 消息和用户消息
-      while (view.messages.length > 0) {
-        const last = view.messages[view.messages.length - 1];
-        if (last.role === "agent") {
-          view.messages.pop();
-        } else {
-          break;
-        }
-      }
-      if (view.messages.length > 0 && view.messages[view.messages.length - 1].role === "user") {
-        view.messages.pop();
-      }
+    try {
+      const recalledText = await invoke<string>("recall_message", {
+        sessionId,
+        messageId: target.messageId,
+        userMessageIndex: null,
+        pruneMetadataCutoff: null,
+      });
+      // 与后端按 messageId 截断保持一致，移除目标消息及其后的全部本地消息。
+      const targetIndex = view.messages.findIndex((message) => message.id === target.id);
+      if (targetIndex >= 0) view.messages.splice(targetIndex);
 
       // 这里此前还有一段在 `jarvisResponse`（HTML 字符串）上做 lastIndexOf 截断的代码 ——
       // 那个字段不被任何组件渲染，纯属白算；HTML 通道已整体删除。

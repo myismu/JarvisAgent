@@ -566,6 +566,11 @@ pub async fn recall_message(
     app: tauri::AppHandle,
 ) -> Result<String, String> {
     let ctx = session_manager.get_or_create(&session_id).await;
+    // 撤回期间持有执行槽：拒绝运行中的会话，并阻止新执行在截断历史时启动。
+    let _execution_guard = ctx.execution_gate.lock().await;
+    if ctx.has_active_execution() {
+        return Err("当前任务尚未结束，请等待任务停止后再撤回。".to_string());
+    }
     let stored_target =
         if let Some(message_id) = message_id.as_ref().filter(|id| !id.trim().is_empty()) {
             session::find_session_message_by_id(&session_id, message_id)?
@@ -650,10 +655,6 @@ pub async fn recall_message(
     }
 
     if is_empty {
-        if let Some(token) = ctx.cancel_token.lock().await.as_ref() {
-            token.cancel();
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         switch_away_and_delete_session(&session_id, &app).await?;
     } else {
         {
@@ -955,9 +956,7 @@ pub async fn list_agent_runs(
     let mut active_session_ids = std::collections::HashSet::new();
     for ctx in contexts {
         let is_active = ctx
-            .cancel_token
-            .lock()
-            .await
+            .current_cancel_token()
             .as_ref()
             .map(|token| !token.is_cancelled())
             .unwrap_or(false);

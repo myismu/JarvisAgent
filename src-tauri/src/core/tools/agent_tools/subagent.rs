@@ -433,7 +433,7 @@ pub async fn run_subagent(
     // 不依赖"取消请求正好赶在注册之后"这一时序假设。
     let parent_cancel = if let Some(manager) = app.try_state::<SessionManager>() {
         let ctx = manager.get_or_create(&session_id).await;
-        let token = ctx.cancel_token.lock().await.clone();
+        let token = ctx.current_cancel_token();
         token
     } else {
         None
