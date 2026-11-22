@@ -31,7 +31,7 @@ import {
   upsertAgentToolCall,
 } from "../utils/agentTurnState";
 import type {
-  TodoItem,
+  TodoGroup,
   TodoUpdatePayload,
   PermissionRequest,
   PlanProposal,
@@ -323,10 +323,10 @@ export function useAgentEvents() {
     try {
       const effectiveSid = sid ?? session.activeSessionId;
       if (!effectiveSid) return;
-      const todos = await invoke<TodoItem[]>("get_session_todos", { sessionId: effectiveSid });
-      agent.todosBySession = {
-        ...agent.todosBySession,
-        [effectiveSid]: todos,
+      const groups = await invoke<TodoGroup[]>("get_session_todos", { sessionId: effectiveSid });
+      agent.todoGroupsBySession = {
+        ...agent.todoGroupsBySession,
+        [effectiveSid]: groups,
       };
     } catch (err) {
       console.error("加载 todos 失败:", err);
@@ -436,11 +436,14 @@ export function useAgentEvents() {
       unlisteners.push(unlisten);
     }
 
-    // todos（按会话隔离）
+    // todos（按会话隔离，按组存储）
     await on<TodoUpdatePayload>("todo-update", (event) => {
-      const { todos, sessionId } = event.payload;
+      const { todos, groups, sessionId } = event.payload;
       if (sessionId) {
-        agent.todosBySession = { ...agent.todosBySession, [sessionId]: todos };
+        // 后端同时给扁平数组和分组；缺 groups 时退化成一个组（兼容旧事件）
+        const nextGroups =
+          groups ?? (todos.length > 0 ? [{ id: sessionId, items: todos }] : []);
+        agent.todoGroupsBySession = { ...agent.todoGroupsBySession, [sessionId]: nextGroups };
       }
       chat.triggerRender();
     });

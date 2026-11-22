@@ -32,6 +32,7 @@ defineProps<{
 
 <template>
   <div v-if="notice" class="turn-notice" :class="{ running }">
+    <span v-if="running" class="turn-notice-light state-light is-running"></span>
     {{ notice }}
   </div>
 </template>
@@ -58,19 +59,9 @@ defineProps<{
   gap: 8px;
 }
 
-.turn-notice.running::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  background: var(--text-muted);
-  animation: agent-pulse 1.5s ease-in-out infinite;
-}
-
-/* 与 AgentTurn.vue 里开发者模式状态点同款节拍（scoped 隔离，无法跨组件复用） */
-@keyframes agent-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+/* 过程态圆点的配色与呼吸节奏走全局 .state-light（is-running = 蓝 + 2s 呼吸）。
+   间距由 .turn-notice.running 的 gap 给，这里只管尺寸。 */
+.turn-notice-dot {
+  --light-size: 6px;
 }
 </style>

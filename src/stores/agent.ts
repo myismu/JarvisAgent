@@ -22,7 +22,7 @@ import type {
   SubAgentRun,
   SubAgentTraceEvent,
   SubAgentTraceRunSummary,
-  TodoItem,
+  TodoGroup,
 } from "../types";
 import { useSessionStore } from "./session";
 
@@ -34,16 +34,27 @@ export const useAgentStore = defineStore("agent", () => {
   const subAgentTraceRunsBySession = ref<Record<string, SubAgentTraceRunSummary[]>>({});
   const pinnedSubAgentTraceRunId = ref<string | null>(null);
   const contextSnapshots = ref<Record<string, SessionContextSnapshot>>({});
-  const todosBySession = ref<Record<string, TodoItem[]>>({});
+  /**
+   * 会话的待办清单**分组**（按会话隔离，纯内存）。
+   *
+   * 不存扁平数组：单层列表只能表达“当前那一份”，要么整体替换（历史丢失），
+   * 要么纯追加（状态更新变成重复条目）。
+   */
+  const todoGroupsBySession = ref<Record<string, TodoGroup[]>>({});
   const focusedTaskId = ref<number | null>(null);
   const showAgentPanel = ref(false);
 
-  const currentTodos = computed(() => {
+  const currentTodoGroups = computed(() => {
     const session = useSessionStore();
     const sessionId = session.activeSessionId;
     if (!sessionId) return [];
-    return todosBySession.value[sessionId] ?? [];
+    return todoGroupsBySession.value[sessionId] ?? [];
   });
+
+  /** 扁平视图：汇总统计用，也兼容老的调用方 */
+  const currentTodos = computed(() =>
+    currentTodoGroups.value.flatMap((group) => group.items),
+  );
 
   const agentSteps = computed(() => {
     const session = useSessionStore();
@@ -145,7 +156,8 @@ export const useAgentStore = defineStore("agent", () => {
   }
 
   return {
-    todosBySession,
+    todoGroupsBySession,
+    currentTodoGroups,
     currentTodos,
     agentSteps,
     agentRuns,

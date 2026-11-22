@@ -23,7 +23,8 @@ import { useI18n } from 'vue-i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { emit as tauriEmit } from '@tauri-apps/api/event';
 import ConfirmModal from '../common/ConfirmModal.vue';
-import { canManuallyCompact, COMPACT_MIN_MESSAGES, COMPACT_SUGGEST_PERCENT, isContextMeasured, resolveContextPercent, resolveContextTokens } from '../../utils/contextUsage';
+import { useSessionStore } from '../../stores/session';
+import { canManuallyCompact, COMPACT_MIN_MESSAGES, COMPACT_SUGGEST_PERCENT, COMPACT_TRIGGER_PERCENT, isContextMeasured, resolveContextPercent, resolveContextTokens } from '../../utils/contextUsage';
 import type { CacheHitPoint, ContextSectionSnapshot, SessionContextSnapshot } from '../../types';
 
 const props = defineProps<{
@@ -100,8 +101,18 @@ const contextUsagePercent = computed(() =>
 
 // ── 缓存命中 ──
 // 语义：null = 该模型/链路未报告（显示 --，绝不显示 0%）；0 = 报告了但本次未命中（预热期）
-const cacheHit = computed(() => props.snapshot?.cacheHitTokens ?? null);
-const cacheMiss = computed(() => props.snapshot?.cacheMissTokens ?? null);
+//
+// ⚠️ 口径：用**会话累计**（session store），与输入框的「累计命中」同源。
+// 原先取 snapshot 的单轮值，导致面板显示 99%、输入框显示 92%，用户合理认为坏了。
+// 单轮信息没有丢失——下面的缓存趋势图本来就是逐轮的。
+const session = useSessionStore();
+const cacheReported = computed(() => props.snapshot?.cacheHitTokens != null);
+const cacheHit = computed(() =>
+  cacheReported.value ? session.totalCacheHitTokens : null,
+);
+const cacheMiss = computed(() =>
+  cacheReported.value ? session.totalCacheMissTokens : null,
+);
 const cacheSource = computed(() => props.snapshot?.cacheSource ?? null);
 const cacheTotal = computed(() => {
   if (cacheHit.value === null) return null;
@@ -209,6 +220,51 @@ const usageTone = computed(() => {
   if (tokens >= 50_000) return 'critical';
   if (tokens >= 30_000) return 'warning';
   return 'safe';
+});
+
+// ── 上下文环形图 ──
+// 只画「已用 / 可用」两段，不把 sections 搬进来：分区来源曾经就是甜甜圈图，
+// 因为「4 个来源」信息量太低被删掉（见下方明细区注释）。明细已由 section 列表承担。
+const RING_RADIUS = 52;
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+
+const ringPercent = computed(() => contextUsagePercent.value ?? 0);
+const ringUsedLength = computed(
+  () => (Math.min(100, ringPercent.value) / 100) * RING_CIRCUMFERENCE,
+);
+
+/** 剩余可用 token（窗口未登记时为 null，不编数字） */
+const remainingTokens = computed(() => {
+  const max = maxContextTokens.value;
+  if (!max || max <= 0) return null;
+  return Math.max(0, max - totalTokens.value);
+});
+
+/**
+ * 自动压缩触发点在环上的占比。
+ *
+ * ⚠️ 不是 85% 的窗口：后端判据是 `(窗口 − 输出预算) × 85%`（infra/llm/context_budget.rs）。
+ * 121K 窗口 / 32K 输出预算下实际约 62.5%。直接按窗口画 85% 会严重误导。
+ */
+const compactTriggerPercent = computed(() => {
+  const max = maxContextTokens.value;
+  if (!max || max <= 0) return null;
+  const usable = max - (props.snapshot?.maxOutputTokens ?? 0);
+  if (usable <= 0) return null;
+  return Math.min(100, (usable / max) * COMPACT_TRIGGER_PERCENT);
+});
+
+/** 阈值刻度线：沿环外侧画一道径向短线 */
+const compactTriggerTick = computed(() => {
+  const percent = compactTriggerPercent.value;
+  if (percent === null) return null;
+  const rad = (((percent / 100) * 360 - 90) * Math.PI) / 180;
+  return {
+    x1: 60 + Math.cos(rad) * 45,
+    y1: 60 + Math.sin(rad) * 45,
+    x2: 60 + Math.cos(rad) * 59,
+    y2: 60 + Math.sin(rad) * 59,
+  };
 });
 
 const compacting = ref(false);
@@ -320,25 +376,61 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   <div v-if="snapshot" class="context-inspector">
     <div class="context-top-grid">
       <div class="context-hero" :class="`tone-${usageTone}`">
-        <div>
+        <div class="context-ring-wrap">
+          <svg class="context-ring" viewBox="0 0 120 120" role="img" :aria-label="usageLabel">
+            <circle class="ring-track" cx="60" cy="60" :r="RING_RADIUS" />
+            <circle
+              v-if="contextUsagePercent !== null"
+              class="ring-used"
+              cx="60"
+              cy="60"
+              :r="RING_RADIUS"
+              :stroke-dasharray="`${ringUsedLength} ${RING_CIRCUMFERENCE}`"
+              transform="rotate(-90 60 60)"
+            />
+            <!-- 自动压缩触发点：按 (窗口−输出预算)×85% 换算，不是窗口的 85% -->
+            <line
+              v-if="compactTriggerTick"
+              class="ring-tick"
+              :x1="compactTriggerTick.x1"
+              :y1="compactTriggerTick.y1"
+              :x2="compactTriggerTick.x2"
+              :y2="compactTriggerTick.y2"
+            />
+          </svg>
+          <div class="ring-center">
+            <strong>{{ contextUsagePercent !== null ? `${contextUsagePercent}%` : '—' }}</strong>
+            <span>{{ contextMeasured ? '' : '≈ ' }}{{ formatToken(totalTokens) }}</span>
+          </div>
+        </div>
+
+        <div class="context-hero-info">
           <div class="context-kicker">
-            <!-- 分区标题由外层 AgentPanel 的「上下文预算」承担，这里只保留来源标记，
-                 否则"CONTEXT / 上下文预算 / Context Budget"三层标题说同一件事 -->
-            <span class="context-source-tag" :class="contextMeasured ? 'is-measured' : 'is-estimated'">
+            <!-- 分区标题由外层 AgentPanel 的「上下文预算」承担，这里只保留来源标记 -->
+            <span
+              class="context-source-tag"
+              :class="contextMeasured ? 'is-measured' : 'is-estimated'"
+              :title="contextMeasured ? t('monitor.context.measuredHint') : t('monitor.context.estimatedHint')"
+            >
               {{ contextMeasured ? t('monitor.context.measuredTag') : t('monitor.context.estimatedTag') }}
             </span>
           </div>
-          <div class="context-token-value" :title="contextMeasured ? t('monitor.context.measuredHint') : t('monitor.context.estimatedHint')">
-            {{ contextMeasured ? '' : '≈ ' }}{{ formatToken(totalTokens) }}
+          <div class="context-budget-row">
+            <span>{{ t('monitor.context.used') }}</span>
+            <strong>{{ formatToken(totalTokens) }}</strong>
+          </div>
+          <div class="context-budget-row">
+            <span>{{ t('monitor.context.remaining') }}</span>
+            <strong>
+              {{ remainingTokens !== null ? formatToken(remainingTokens) : t('monitor.context.unknownContextWindow') }}
+            </strong>
+          </div>
+          <div class="context-budget-row">
+            <span>{{ t('monitor.context.outputBudget') }}</span>
+            <strong>{{ formatToken(snapshot.maxOutputTokens) }}</strong>
           </div>
           <div class="context-subtitle">
-            <template v-if="maxContextTokens">
-              / {{ formatNumber(maxContextTokens) }} {{ t('monitor.context.contextSuffix') }} · {{ contextUsagePercent }}%
-            </template>
-            <template v-else>
-              / {{ t('monitor.context.unknownContextWindow') }}
-            </template>
-            · {{ t('monitor.context.updated', { time: formatTime(snapshot.createdAt) }) }}
+            {{ t('monitor.context.updated', { time: formatTime(snapshot.createdAt) }) }}
           </div>
         </div>
         <div class="context-hero-actions">
@@ -392,16 +484,12 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
           <span>{{ t('monitor.context.contextWindow') }}</span>
           <strong>{{ formatNumber(maxContextTokens) }}</strong>
         </div>
-        <div v-if="contextUsagePercent !== null" class="context-stat-card">
-          <span>{{ t('monitor.context.usage') }}</span>
-          <strong>{{ contextUsagePercent }}%</strong>
-        </div>
         <div class="context-stat-card">
           <span>{{ t('monitor.context.providerActual') }}</span>
           <strong>{{ providerTotalTokens !== null ? formatToken(providerTotalTokens) : t('monitor.context.waitingUsage') }}</strong>
         </div>
         <div class="context-stat-card" :class="`cache-${cacheState}`">
-          <span>{{ t('monitor.context.cacheHit') }}</span>
+          <span>{{ t('monitor.context.cacheHitCumulative') }}</span>
           <strong :title="cacheTitle">{{ cacheRateLabel }}</strong>
         </div>
       </div>
@@ -544,9 +632,9 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 .context-hero {
   position: relative;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
   padding: 2px 2px 0;
 }
 
@@ -609,6 +697,81 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 
 .context-subtitle {
   margin-top: 3px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 上下文环形图 ── */
+.context-ring-wrap {
+  position: relative;
+  width: 104px;
+  height: 104px;
+  flex-shrink: 0;
+}
+.context-ring {
+  width: 104px;
+  height: 104px;
+  display: block;
+}
+.ring-track {
+  fill: none;
+  stroke: var(--glass-border);
+  stroke-width: 9;
+}
+.ring-used {
+  fill: none;
+  stroke: var(--accent-blue);
+  stroke-width: 9;
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.3s ease, stroke 0.3s ease;
+}
+.tone-warning .ring-used { stroke: #d99a2b; }
+.tone-critical .ring-used { stroke: var(--accent-red); }
+/* 自动压缩触发点：比进度弧更细的径向刻度，不抢主信息 */
+.ring-tick {
+  stroke: var(--text-main);
+  stroke-width: 2;
+  opacity: 0.5;
+}
+.ring-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  pointer-events: none;
+}
+.ring-center strong {
+  color: var(--text-main);
+  font-size: 1rem;
+  font-weight: var(--fw-heavy);
+  font-variant-numeric: tabular-nums;
+}
+.ring-center span {
+  color: var(--text-muted);
+  font-size: 0.62rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-hero-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.context-budget-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+.context-budget-row strong {
+  color: var(--text-main);
+  font-weight: var(--fw-heavy);
   font-variant-numeric: tabular-nums;
 }
 

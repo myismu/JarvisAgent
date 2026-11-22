@@ -29,6 +29,40 @@ const agent = useAgentStore();
 const permission = usePermissionStore();
 const { loadSubAgentTraceFromBackend } = useAgentEvents();
 
+/**
+ * 面板标题的状态灯：只有「执行中 / 等待授权」两态。
+ * 面板本来就只在 run 期间有意义，完成与异常由对话区的状态标注负责，
+ * 这里再显示终态会和下面的内容自相矛盾（面板写「监控」，却挂着结论文号）。
+ * 等待授权优先：run 在等用户决策时 status 仍是 RUNNING，按执行中显示会误导。
+ */
+const panelLightState = computed<'running' | 'waiting' | null>(() => {
+  if (permission.permissionRequest) return 'waiting';
+  return session.isCurrentSessionRunning ? 'running' : null;
+});
+
+/**
+ * 状态 → 全局状态灯的四态。
+ *
+ * 与卡片上原有的 status-* class 并存：那些管文字与边框配色，这里只管那颗点。
+ * pending 归入「等待」而不是「执行中」——子 Agent 挂起时真正在等的是
+ * 主 Agent 或用户，不是一个正在推进的任务。
+ * 未知状态返回空串，落到全局灯的中性默认色（不为未知状态编造颜色）。
+ */
+function lightForStatus(status: string): string {
+  if (status === 'running') return 'is-running';
+  if (status === 'pending') return 'is-waiting';
+  if (status === 'completed' || status === 'approved') return 'is-done';
+  if (
+    status === 'failed' ||
+    status === 'error' ||
+    status === 'rejected' ||
+    status === 'cancelled'
+  ) {
+    return 'is-error';
+  }
+  return '';
+}
+
 // ── 权限状态 ──
 const permissionAllowanceCount = ref(0)
 const permissionAllowances = ref<Array<{ kind: string; scope: string; label: string }>>([])
@@ -376,7 +410,11 @@ const backgroundStatusLabel = (status: string): string => {
       <div class="panel-header" data-tauri-drag-region>
         <div class="panel-title" data-tauri-drag-region>
           <span>{{ t('monitor.title') }}</span>
-          <span v-if="session.isCurrentSessionRunning" class="running-dot"></span>
+          <span
+            v-if="panelLightState"
+            class="panel-status-dot state-light"
+            :class="`is-${panelLightState}`"
+          ></span>
           <span v-if="session.isCurrentSessionRunning" class="elapsed-time">{{ formatTime(elapsed) }}</span>
         </div>
         <button class="close-btn" type="button" :aria-label="t('monitor.close')" @click="closePanel">
@@ -433,7 +471,6 @@ const backgroundStatusLabel = (status: string): string => {
         <section class="monitor-section context-section">
           <div class="monitor-section-head">
             <div>
-              <span class="monitor-kicker">Context</span>
               <strong>{{ t('monitor.contextBudget') }}</strong>
             </div>
           </div>
@@ -444,7 +481,6 @@ const backgroundStatusLabel = (status: string): string => {
           <section class="monitor-section subagents-section">
             <div class="monitor-section-head">
               <div>
-                <span class="monitor-kicker">Sub Agents</span>
                 <strong>{{ t('monitor.subAgents') }}</strong>
               </div>
               <span class="monitor-pill">{{ activeSubAgentCount }}/{{ agent.currentSubAgentRuns.length }}</span>
@@ -458,7 +494,7 @@ const backgroundStatusLabel = (status: string): string => {
               >
                 <!-- 卡片头部（始终可见） -->
                 <div class="subagent-header" @click="openSubAgentChat(run)" :title="t('monitor.subAgentChat.open')">
-                  <span class="status-dot"></span>
+                  <span class="monitor-state state-light state-static" :class="lightForStatus(run.status)"></span>
                   <strong>{{ run.label || run.runId }}</strong>
                   <span class="agent-type-badge" :title="`Agent: ${run.agentRole}`">{{ agentRoleLabel(run.agentRole) }}</span>
                   <span v-if="run.readOnly" class="readonly-badge" :title="t('monitor.readOnly')">R</span>
@@ -565,7 +601,6 @@ const backgroundStatusLabel = (status: string): string => {
           <section class="monitor-section">
             <div class="monitor-section-head">
               <div>
-                <span class="monitor-kicker">Background</span>
                 <strong>{{ t('monitor.backgroundTasks') }}</strong>
               </div>
               <span class="monitor-pill">{{ runningBackgroundCount }}/{{ backgroundTasks.length }}</span>
@@ -578,7 +613,7 @@ const backgroundStatusLabel = (status: string): string => {
                 :class="itemStatusClass(task.status)"
               >
                 <div class="monitor-item-main">
-                  <span class="status-dot"></span>
+                  <span class="monitor-state state-light state-static" :class="lightForStatus(task.status)"></span>
                   <strong>{{ backgroundTaskTitle(task) }}</strong>
                   <span>{{ backgroundStatusLabel(task.status) }}</span>
                   <button
@@ -612,7 +647,6 @@ const backgroundStatusLabel = (status: string): string => {
           <section class="monitor-section plans-section">
             <div class="monitor-section-head">
               <div>
-                <span class="monitor-kicker">Plans</span>
                 <strong>{{ t('monitor.plans') }}</strong>
               </div>
               <span class="monitor-pill">{{ permission.currentPlanDocuments.length }}</span>
@@ -625,7 +659,7 @@ const backgroundStatusLabel = (status: string): string => {
                 :class="planStatusClass(plan)"
               >
                 <div class="monitor-item-main">
-                  <span class="status-dot"></span>
+                  <span class="monitor-state state-light state-static" :class="lightForStatus(plan.status)"></span>
                   <strong>{{ plan.title }}</strong>
                   <span>{{ planStatusLabel(plan.status) }}</span>
                 </div>
@@ -695,17 +729,9 @@ const backgroundStatusLabel = (status: string): string => {
   font-weight: var(--fw-heavy);
 }
 
-.running-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: var(--text-muted);
-  animation: runningDotPulse 1.5s ease-in-out infinite;
-}
-
-@keyframes runningDotPulse {
-  0%, 100% { opacity: 0.45; }
-  50% { opacity: 1; }
+/* 标题旁的状态灯：尺寸与配色走全局 .state-light，这里不重复定义 */
+.panel-status-dot {
+  --light-size: 7px;
 }
 
 .elapsed-time {
@@ -953,17 +979,9 @@ const backgroundStatusLabel = (status: string): string => {
   gap: 2px;
 }
 
-.monitor-kicker {
-  color: var(--text-muted);
-  font-size: 0.66rem;
-  font-weight: var(--fw-heavy);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
 .monitor-section-head strong {
   color: var(--text-main);
-  font-size: 0.78rem;
+  font-size: 0.86rem;
   font-weight: var(--fw-heavy);
 }
 
@@ -1490,30 +1508,11 @@ const backgroundStatusLabel = (status: string): string => {
   line-height: 1.45;
 }
 
-.status-dot {
-  width: 7px;
-  height: 7px;
-  flex-shrink: 0;
-  border-radius: 999px;
-  background: var(--text-muted);
-}
-
-.status-running .status-dot,
-.status-pending .status-dot {
-  background: var(--text-muted);
-  animation: runningDotPulse 1.5s ease-in-out infinite;
-}
-
-.status-completed .status-dot,
-.status-approved .status-dot {
-  background: var(--accent-green);
-}
-
-.status-failed .status-dot,
-.status-error .status-dot,
-.status-rejected .status-dot,
-.status-cancelled .status-dot {
-  background: var(--accent-red);
+/* 列表行的状态灯：配色与静态节制走全局 .state-light，这里只定尺寸。
+   行内一律加 state-static —— 一行里已经有阶段 / 轮次 / 倒计时三个动态信号，
+   再让每颗灯一起呼吸，反而看不出哪一条真的在跑。 */
+.monitor-state {
+  --light-size: 7px;
 }
 
 /* 空态与 section 标题之间不再留一整行空白：标题带的 margin-bottom 已经够了 */

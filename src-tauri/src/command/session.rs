@@ -1335,7 +1335,7 @@ pub async fn cancel_subagent_run(
 pub async fn get_session_todos(
     session_id: String,
     session_manager: tauri::State<'_, SessionManager>,
-) -> Result<Vec<crate::infra::types::models::TodoItem>, String> {
+) -> Result<Vec<crate::infra::types::models::TodoGroup>, String> {
     let ctx = session_manager.get_or_create(&session_id).await;
     let todos = ctx.todos.lock().await;
     Ok(todos.clone())

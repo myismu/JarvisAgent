@@ -537,6 +537,102 @@ body.dark-mode {
   color: var(--text-muted);
 }
 
+/* --- 6. 状态灯（Agent 四态统一指示）---
+   复用点：侧边栏会话行、监控面板标题、开发者模式工具/思考点、状态标注圆点。
+   语义与配色（色相全部取自既有语义变量，不新增色）：
+     执行中 is-running → --accent-blue（进行中，无风险）
+     等待授权 is-waiting → --text-warning（要人介入，节奏比执行中快一档）
+     完成   is-done    → --accent-green（终态，不呼吸）
+     异常   is-error   → --accent-red（终态，不呼吸）
+   为什么只有前两态有光晕：呼吸=「还在变化」，终态继续动会被误读成仍在运行。
+   光晕用 ::after 单独扩散后淡出，不用 box-shadow —— 后者在 6~8px 的小点上会
+   糊成一团灰，且暗色模式还得再配一套阴影色。
+   尺寸由使用方给 --light-size（默认 7px），外边距由使用方的局部样式补。 */
+.state-light {
+  --light-color: var(--text-muted);
+  --light-size: 7px;
+  position: relative;
+  display: inline-block;
+  width: var(--light-size);
+  height: var(--light-size);
+  border-radius: 50%;
+  background: var(--light-color);
+  flex-shrink: 0;
+  transition: background var(--transition-fast);
+}
+
+.state-light::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--light-color);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.state-light.is-running {
+  --light-color: var(--accent-blue);
+  animation: stateLightBreathe 2s ease-in-out infinite;
+}
+.state-light.is-running::after {
+  animation: stateLightHalo 2s ease-out infinite;
+}
+
+/* 等待授权：节奏压到 1.4s，幅度更大 —— 「它在等你」需要比「它在干活」更抓眼 */
+.state-light.is-waiting {
+  --light-color: var(--text-warning);
+  animation: stateLightBreathe 1.4s ease-in-out infinite;
+}
+.state-light.is-waiting::after {
+  animation: stateLightHaloWide 1.4s ease-out infinite;
+}
+
+.state-light.is-done {
+  --light-color: var(--accent-green);
+}
+
+.state-light.is-error {
+  --light-color: var(--accent-red);
+}
+
+/* 列表场景的静态变体：一行里已经有别的动态信号（阶段 / 轮次 / 倒计时）时，
+   十几颗灯一起呼吸只会互相抵消，反而看不出哪个真的在跑。
+   四态靠颜色区分已经足够，动效只留给单点场景（顶栏 / 面板标题 / 当前步）。 */
+.state-light.state-static,
+.state-light.state-static::after {
+  animation: none;
+}
+.state-light.state-static::after {
+  display: none;
+}
+
+@keyframes stateLightBreathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+@keyframes stateLightHalo {
+  0% { transform: scale(1); opacity: 0.3; }
+  70%, 100% { transform: scale(2.2); opacity: 0; }
+}
+
+@keyframes stateLightHaloWide {
+  0% { transform: scale(1); opacity: 0.4; }
+  60%, 100% { transform: scale(2.8); opacity: 0; }
+}
+
+/* 系统开了「减少动态效果」：只留静态色相，四态靠颜色区分已经足够 */
+@media (prefers-reduced-motion: reduce) {
+  .state-light,
+  .state-light::after {
+    animation: none !important;
+  }
+  .state-light::after {
+    opacity: 0;
+  }
+}
+
 /* 共享动画 */
 @keyframes spin {
   to { transform: rotate(360deg); }

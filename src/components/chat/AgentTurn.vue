@@ -10,7 +10,8 @@
 - Internal: `../../types`（AgentCurrentTurn / AgentDisplayMode）
 
 ## Constraints
-- 工具失败为常规事件，用中性灰展示；红仅留给致命错误
+- 工具失败不再用中性灰：四态（执行中 / 完成 / 未成功 / 待定）靠同一个全局状态灯区分，
+  红只表示「这次调用没成功」，不再等同于致命错误
 -->
 <script setup lang="ts">
 import { computed } from "vue";
@@ -115,6 +116,22 @@ function toolStatusLabel(status: string): string {
   if (status === "error") return "未成功";
   return "";
 }
+
+/**
+ * 工具调用的状态灯取值。
+ *
+ * 旧实现里「执行中」与「未成功」都是同一个中性灰点（只有后者不呼吸），
+ * 扫一眼分不出来，只能逐行读右侧文字。改为全局状态灯的四态后：
+ * 蓝=还在跑、绿=完成、红=这次没成功。红不再等于致命错误 ——
+ * 灯只有 8px 且无光晕，不会把常规的失败重试渲染成事故。
+ * 未知/待定状态返回空串，落到中性默认色（不为未知状态编造颜色）。
+ */
+function toolLightClass(status: string): string {
+  if (status === "running") return "is-running";
+  if (status === "completed") return "is-done";
+  if (status === "error") return "is-error";
+  return "";
+}
 </script>
 
 <template>
@@ -131,18 +148,18 @@ function toolStatusLabel(status: string): string {
           <template v-for="(item, i) in timelineSplit.execItems" :key="`exec-${item.type}-${item.timestamp}-${i}`">
             <StreamingMarkdown v-if="item.type === 'text'" :content="item.content" />
             <details v-else-if="item.type === 'thinking'" class="dev-thinking" :class="{ streaming: item.streaming }" :open="item.streaming || expandThinkingDefault">
-              <summary class="dev-thinking-summary"><span class="dev-status-dot" :class="{ running: item.streaming }"></span><span class="dev-thinking-label">{{ describeThinkingStatic(item.content) }}</span></summary>
+              <summary class="dev-thinking-summary"><span class="dev-state-light state-light" :class="item.streaming ? 'is-running' : 'is-done'"></span><span class="dev-thinking-label">{{ describeThinkingStatic(item.content) }}</span></summary>
               <div class="dev-thinking-body"><StreamingMarkdown :content="item.content" /></div>
             </details>
             <details v-else-if="item.type === 'tool'" class="dev-tool" :class="[item.tool.status]" :open="item.streaming">
-              <summary class="dev-tool-summary"><span class="dev-status-dot" :class="item.tool.status"></span><code class="dev-tool-name">{{ toolDisplayName(item.tool) }}</code><span class="dev-tool-action">{{ toolActionLabel(item.tool.name, item.tool.status, item.tool) }}</span><span class="dev-tool-status">{{ toolStatusLabel(item.tool.status) }}</span></summary>
+              <summary class="dev-tool-summary"><span class="dev-state-light state-light" :class="toolLightClass(item.tool.status)"></span><code class="dev-tool-name">{{ toolDisplayName(item.tool) }}</code><span class="dev-tool-action">{{ toolActionLabel(item.tool.name, item.tool.status, item.tool) }}</span><span class="dev-tool-status">{{ toolStatusLabel(item.tool.status) }}</span></summary>
               <div v-if="item.tool.input || item.tool.output || item.tool.error" class="dev-tool-body">
                 <div v-if="item.tool.input" class="dev-tool-section"><div class="dev-tool-section-label">参数</div><StreamingMarkdown :content="item.tool.input" /></div>
                 <div v-if="item.tool.output && !item.tool.error" class="dev-tool-section"><div class="dev-tool-section-label">输出</div><StreamingMarkdown :content="item.tool.output" /></div>
                 <div v-if="item.tool.error" class="dev-tool-section error"><div class="dev-tool-section-label">未成功</div><StreamingMarkdown :content="item.tool.error" /></div>
               </div>
             </details>
-            <div v-else-if="item.type === 'log'" class="dev-log"><div class="dev-log-header"><span class="dev-status-dot"></span><span class="dev-log-title">输出 #{{ item.loop || 1 }}</span></div><div class="dev-log-body"><StreamingMarkdown :content="item.content" /></div></div>
+            <div v-else-if="item.type === 'log'" class="dev-log"><div class="dev-log-header"><span class="dev-state-light state-light is-done"></span><span class="dev-log-title">输出 #{{ item.loop || 1 }}</span></div><div class="dev-log-body"><StreamingMarkdown :content="item.content" /></div></div>
           </template>
         </div>
       </details>
@@ -150,18 +167,18 @@ function toolStatusLabel(status: string): string {
       <template v-for="(item, i) in timelineSplit.finalItems" :key="`final-${item.type}-${item.timestamp}-${i}`">
         <StreamingMarkdown v-if="item.type === 'text'" :content="item.content" />
         <details v-else-if="item.type === 'thinking'" class="dev-thinking" :class="{ streaming: item.streaming }" :open="item.streaming || expandThinkingDefault">
-          <summary class="dev-thinking-summary"><span class="dev-status-dot" :class="{ running: item.streaming }"></span><span class="dev-thinking-label">{{ describeThinkingStatic(item.content) }}</span></summary>
+          <summary class="dev-thinking-summary"><span class="dev-state-light state-light" :class="item.streaming ? 'is-running' : 'is-done'"></span><span class="dev-thinking-label">{{ describeThinkingStatic(item.content) }}</span></summary>
           <div class="dev-thinking-body"><StreamingMarkdown :content="item.content" /></div>
         </details>
         <details v-else-if="item.type === 'tool'" class="dev-tool" :class="[item.tool.status]" :open="item.streaming">
-          <summary class="dev-tool-summary"><span class="dev-status-dot" :class="item.tool.status"></span><code class="dev-tool-name">{{ toolDisplayName(item.tool) }}</code><span class="dev-tool-action">{{ toolActionLabel(item.tool.name, item.tool.status, item.tool) }}</span><span class="dev-tool-status">{{ toolStatusLabel(item.tool.status) }}</span></summary>
+          <summary class="dev-tool-summary"><span class="dev-state-light state-light" :class="toolLightClass(item.tool.status)"></span><code class="dev-tool-name">{{ toolDisplayName(item.tool) }}</code><span class="dev-tool-action">{{ toolActionLabel(item.tool.name, item.tool.status, item.tool) }}</span><span class="dev-tool-status">{{ toolStatusLabel(item.tool.status) }}</span></summary>
           <div v-if="item.tool.input || item.tool.output || item.tool.error" class="dev-tool-body">
             <div v-if="item.tool.input" class="dev-tool-section"><div class="dev-tool-section-label">参数</div><StreamingMarkdown :content="item.tool.input" /></div>
             <div v-if="item.tool.output && !item.tool.error" class="dev-tool-section"><div class="dev-tool-section-label">输出</div><StreamingMarkdown :content="item.tool.output" /></div>
             <div v-if="item.tool.error" class="dev-tool-section error"><div class="dev-tool-section-label">未成功</div><StreamingMarkdown :content="item.tool.error" /></div>
           </div>
         </details>
-        <div v-else-if="item.type === 'log'" class="dev-log"><div class="dev-log-header"><span class="dev-status-dot"></span><span class="dev-log-title">输出 #{{ item.loop || 1 }}</span></div><div class="dev-log-body"><StreamingMarkdown :content="item.content" /></div></div>
+        <div v-else-if="item.type === 'log'" class="dev-log"><div class="dev-log-header"><span class="dev-state-light state-light is-done"></span><span class="dev-log-title">输出 #{{ item.loop || 1 }}</span></div><div class="dev-log-body"><StreamingMarkdown :content="item.content" /></div></div>
       </template>
     </div>
 
@@ -232,22 +249,10 @@ function toolStatusLabel(status: string): string {
   margin: 0;
 }
 
-/* 状态圆点 */
-.dev-status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  background: var(--accent-green);
-  transition: background 0.2s;
-  display: inline-block;
-}
-.dev-status-dot.running {
-  background: var(--text-muted);
-  animation: agent-pulse 1.5s ease-in-out infinite;
-}
-.dev-status-dot.error {
-  background: var(--text-muted);
+/* 状态圆点：配色与呼吸节奏全部由全局 .state-light 的四态决定，这里只定尺寸。
+   8px 是开发者视图的基准 —— 与旁边等宽工具名（0.82rem）视觉齐平。 */
+.dev-state-light {
+  --light-size: 8px;
 }
 
 /* 思考块 */
@@ -460,18 +465,8 @@ function toolStatusLabel(status: string): string {
   line-height: 1.75;
 }
 
-/* 执行中状态的脉冲节拍：开发者模式的状态点与状态标注的过程态共用。
-   原名 dev-pulse —— 现在两处语义不同（一处是开发者视图，一处是普通视图），
-   故取中性名，避免后来者以为它只服务于开发者模式而另建一个同款。 */
-@keyframes agent-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
-}
-
-/* 从 global.css 迁入：此前与上面的同名规则各留一份副本，现统一收口到这里 */
-.dev-status-dot.completed {
-  background: var(--accent-green);
-}
+/* 状态灯的 breathing 已上提到 global.css（.state-light），
+   局部不再保留 agent-pulse：两处同名 keyframes 各自漂移过一次，只留一份。 */
 .dev-thinking.streaming .dev-thinking-label {
   color: var(--text-soft);
 }

@@ -1,6 +1,6 @@
 use crate::core::tools::framework;
 use crate::core::tools::framework::registry::ToolDef;
-use crate::infra::types::models::{TodoItem, TodoStatus};
+use crate::infra::types::models::{TodoGroup, TodoItem, TodoStatus};
 use serde_json::json;
 use tauri::{Emitter, Manager};
 
@@ -121,6 +121,8 @@ fn parse_todos(input: &serde_json::Value) -> Result<Vec<TodoItem>, String> {
             content: content.to_string(),
             active_form: active_form.to_string(),
             status,
+            // 进度只由调度器写，模型输入里即便带了也不采信
+            progress: None,
         });
     }
 
@@ -149,39 +151,74 @@ pub async fn todo_write(
         }
     };
 
-    let all_done = !todos.is_empty()
-        && todos
-            .iter()
-            .all(|todo| todo.status == TodoStatus::Completed);
-    let visible_todos = if all_done { Vec::new() } else { todos.clone() };
+    let mut replaced_group: Option<String> = None;
+    let mut groups_snapshot: Vec<TodoGroup> = Vec::new();
 
-    let old_todos =
-        if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
-            let ctx = manager.get_or_create(session_id).await;
-            let mut state = ctx.todos.lock().await;
-            let old = state.clone();
-            *state = visible_todos.clone();
-            old
-        } else {
-            Vec::new()
-        };
+    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
+        let ctx = manager.get_or_create(session_id).await;
+        let mut groups = ctx.todos.lock().await;
+
+        // 归属判定：传入条目的 id 与哪一组有交集，就更新哪一组（组内替换）；
+        // 没有交集则新建一组追加。这是“追加”与“状态更新”能共存的关键——
+        // 纯 push 会让改状态变成重复条目，纯覆盖则会丢历史清单。
+        let incoming: std::collections::HashSet<&str> =
+            todos.iter().map(|t| t.id.as_str()).collect();
+        let target = groups
+            .iter()
+            .position(|g| g.items.iter().any(|i| incoming.contains(i.id.as_str())));
+
+        match target {
+            Some(idx) => {
+                // 调度器写入的进度不在模型输入里，合并时不能被冲掉
+                let mut merged = todos;
+                for item in &mut merged {
+                    if item.progress.is_none() {
+                        if let Some(old) = groups[idx].items.iter().find(|o| o.id == item.id) {
+                            item.progress = old.progress.clone();
+                        }
+                    }
+                }
+                replaced_group = Some(groups[idx].id.clone());
+                groups[idx].items = merged;
+            }
+            None => {
+                let id = todos
+                    .first()
+                    .map(|t| t.id.clone())
+                    .unwrap_or_else(|| format!("group-{}", groups.len() + 1));
+                replaced_group = Some(id.clone());
+                groups.push(TodoGroup { id, items: todos });
+            }
+        }
+
+        groups_snapshot = groups.clone();
+    }
+
+    // 不再“全完成即清空”：已完成的组也要推给前端，否则前端无从折叠展示
+    let flat: Vec<TodoItem> = groups_snapshot
+        .iter()
+        .flat_map(|g| g.items.iter().cloned())
+        .collect();
 
     let _ = app.emit(
         "todo-update",
         serde_json::json!({
-            "todos": visible_todos,
+            "todos": flat,
+            "groups": groups_snapshot,
             "sessionId": session_id,
         }),
     );
 
-    framework::ToolCallResult::ok(serde_json::json!({
-        "success": true,
-        "oldTodos": old_todos,
-        "newTodos": todos,
-        "visibleTodos": visible_todos,
-        "result": "Todos have been modified successfully. Continue using UpdateTodos to track progress for this session."
-    })
-    .to_string())
+    framework::ToolCallResult::ok(
+        serde_json::json!({
+            "success": true,
+            "groupId": replaced_group,
+            "newTodos": flat,
+            "groups": groups_snapshot,
+            "result": "Todos have been modified successfully. Continue using UpdateTodos to track progress for this session."
+        })
+        .to_string(),
+    )
 }
 
 #[cfg(test)]

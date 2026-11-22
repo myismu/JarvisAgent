@@ -7,7 +7,8 @@
 - `App`: 应用根界面与会话工作区
 
 ## Constraints
-- 状态灯语义：running/interrupted/cancelled/idle 用中性灰，finish=绿，error=红（仅致命错误）
+- 状态灯四态：running=蓝（执行中）、waiting=琥珀（等待授权/方案审批）、finish=绿、error=红；
+  interrupted / cancelled / idle 保持中性灰（它们不是“结果”，不应用语义色）
 - 子 Agent 列表按当前会话的持久化轨迹索引恢复，详细事件按选中项懒加载
 -->
 <script setup lang="ts">
@@ -24,6 +25,7 @@ import { useSessionStore } from "./stores/session";
 import { useChatStore } from "./stores/chat";
 import { useAgentStore } from "./stores/agent";
 import { useAppViewStore } from "./stores/appView";
+import { usePermissionStore } from "./stores/permission";
 
 import TitleBar from "./components/layout/TitleBar.vue";
 import Sidebar from "./components/layout/Sidebar.vue";
@@ -44,13 +46,24 @@ const updater = useUpdater();
 let updateCheckTimer: ReturnType<typeof setTimeout> | null = null;
 const { t } = useI18n();
 const prefs = usePreferences();
-const sidebarCollapsed = ref(prefs.sidebarCollapsed);
+/**
+ * 侧栏折叠：直接桥接持久化偏好，不用 ref 拷一份。
+ *
+ * 原先这里是 `ref(prefs.sidebarCollapsed)` —— 一次性快照。偏好是异步加载的，
+ * 库里真实值（可能是 true）回来时，这个 ref 早已固定在启动时的默认值 false，
+ * 于是界面与磁盘长期不一致：关掉再开，侧栏总是展开的。
+ */
+const sidebarCollapsed = computed({
+  get: () => prefs.sidebarCollapsed,
+  set: (val: boolean) => { prefs.setSidebarCollapsed(val); },
+});
 useTheme(); // 初始化主题
 
 const session = useSessionStore();
 const chat = useChatStore();
 const agent = useAgentStore();
 const appView = useAppViewStore();
+const permission = usePermissionStore();
 const { initListeners, loadSubAgentRunsFromBackend, loadSubAgentTraceFromBackend } = useAgentEvents();
 const {
   openMonitorWindow,
@@ -179,6 +192,9 @@ const toggleAgentMonitor = async () => {
 };
 
 const rawStatus = computed(() => {
+  // 等待决策优先：权限请求与方案审批期间 status 仍是 RUNNING，
+  // 按「执行中」显示会让用户以为系统在转，实际卡住的是人。
+  if (permission.permissionRequest || permission.planProposal) return 'waiting';
   if (session.isCurrentSessionRunning) return 'running';
   if (session.currentSessionStatus === 'INTERRUPTED') return 'interrupted';
   if (session.currentSessionStatus === 'ERROR') return 'error';
@@ -234,10 +250,7 @@ watch([rawStatus, () => session.activeSessionId], ([status, activeSessionId], [p
   }
 });
 
-// 持久化侧栏折叠状态
-watch(sidebarCollapsed, (val) => {
-  prefs.setSidebarCollapsed(val);
-});
+// 侧栏折叠的持久化已由上面的 computed setter 负责，不再需要单独的 watch
 
 // 持久化 Agent 面板可见性
 watch(() => agent.showAgentPanel, (val) => {
@@ -599,9 +612,29 @@ onBeforeUnmount(() => {
 
 .status-indicator.error { color: var(--accent-red); }
 
-.status-indicator.running { color: var(--text-muted); }
-.status-indicator.running .status-core { animation: statusPulse 1.5s ease-in-out infinite; }
+/* 等待决策：节奏压到 1.4s、幅度更大 —— 「它在等你」需要比「它在干活」更抓眼 */
+.status-indicator.waiting { color: var(--text-warning); }
+.status-indicator.waiting .status-glow {
+  display: block;
+  fill: currentColor;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: statusGlowWide 1.4s ease-out infinite;
+}
+.status-indicator.waiting .status-core { animation: statusBreathe 1.4s ease-in-out infinite; }
 
+/* 执行中：蓝点 + 2s 呼吸外圈。用蓝不用绿 —— 绿色已被「完成」占用 */
+.status-indicator.running { color: var(--accent-blue); }
+.status-indicator.running .status-glow {
+  display: block;
+  fill: currentColor;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: statusGlow 2s ease-out infinite;
+}
+.status-indicator.running .status-core { animation: statusBreathe 2s ease-in-out infinite; }
+
+/* 中断 / 取消 / 空闲：不是「结果」，保持中性灰，不抢语义色 */
 .status-indicator.interrupted { color: var(--text-muted); }
 .status-indicator.interrupted .status-core { opacity: 0.85; }
 
@@ -655,8 +688,33 @@ onBeforeUnmount(() => {
   width: 100%;
 }
 
-@keyframes statusPulse {
-  0%, 100% { opacity: 0.45; }
-  50% { opacity: 1; }
+/* 内核呼吸：只改透明度不改尺寸，避免 5px 的实心点边绿发虚 */
+@keyframes statusBreathe {
+  0%, 100% { opacity: 0.9; }
+  50% { opacity: 0.45; }
+}
+
+/* 外圈扩散：从紧贴内核（r=5）扩到整个 viewBox 直径（r=10）后淡出。
+   两态共用同一套动作，只是时长不同 —— 差异本身已经在传递语义，
+   不需要再为等待态写一个形状不同的动画。 */
+@keyframes statusGlow {
+  0% { transform: scale(0.55); opacity: 0.3; }
+  70%, 100% { transform: scale(1.05); opacity: 0; }
+}
+
+@keyframes statusGlowWide {
+  0% { transform: scale(0.5); opacity: 0.4; }
+  60%, 100% { transform: scale(1.12); opacity: 0; }
+}
+
+/* 系统开了「减少动态效果」：四态靠颜色区分已经足够，光晕直接收起 */
+@media (prefers-reduced-motion: reduce) {
+  .status-indicator .status-core,
+  .status-indicator .status-glow {
+    animation: none;
+  }
+  .status-indicator .status-glow {
+    display: none;
+  }
 }
 </style>

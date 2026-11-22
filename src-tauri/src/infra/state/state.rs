@@ -122,7 +122,12 @@ pub struct SessionContext {
     pub memory: Mutex<SessionMemory>,
     pub cancel_token: Mutex<Option<tokio_util::sync::CancellationToken>>,
     pub active_run_id: Mutex<Option<String>>,
-    pub todos: Mutex<Vec<crate::infra::types::models::TodoItem>>,
+    /// 会话的待办清单**分组**。
+    ///
+    /// 一个会话可以有多个组（长任务里多轮规划），全内存态、不落库，关闭应用即清空。
+    /// 为什么不存 `Vec<TodoItem>`：单层列表只能表达“当前那一份”，要么整体替换（历史丢失），
+    /// 要么纯追加（状态更新变成重复条目），两种都不对。
+    pub todos: Mutex<Vec<crate::infra::types::models::TodoGroup>>,
     pub workspace: Mutex<Option<std::path::PathBuf>>,
     /// 待用户决策的权限请求。
     /// 发送端传的是结构化的 `PermissionDecision`，不是字符串——

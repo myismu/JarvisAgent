@@ -173,10 +173,32 @@ export interface TodoItem {
   activeForm: string;
   text?: string;
   status: "pending" | "in_progress" | "completed";
+  /** 子任务调度进度。仅当该条目正被 RunSubagentsSequentially 驱动时有值 */
+  progress?: TodoProgress | null;
+}
+
+/** 某条 todo 对应的子任务完成度 */
+export interface TodoProgress {
+  done: number;
+  total: number;
+}
+
+/**
+ * 一组待办清单。
+ *
+ * 一次 UpdateTodos 调用产生一组；条目 id 与已有组有交集时更新那一组，否则新建一组追加。
+ * 长会话里多轮清单因此能共存，而不会互相覆盖。
+ */
+export interface TodoGroup {
+  id: string;
+  items: TodoItem[];
 }
 
 export interface TodoUpdatePayload {
+  /** 所有组的条目扁平后的结果，兼容老消费者 */
   todos: TodoItem[];
+  /** 分组结构；新代码优先用它渲染 */
+  groups?: TodoGroup[];
   sessionId: string;
 }
 

@@ -4,7 +4,8 @@
 将同一轮中连续的工具调用合并为可折叠分组，降低会话噪音。
 
 ## Constraints
-- 状态色：completed=绿，running/error=中性灰
+- 状态色与全局状态灯同口径：completed=绿、running=蓝、error=红、其他=中性灰
+  （不要退回「running/error 都是灰」，否则一线里已跑完与报错看不出区别）
 -->
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
@@ -173,11 +174,11 @@ const technicalOpen = (group: ToolCallGroup) => group.status === "error";
 }
 
 .agent-tool-action-row.error {
-  color: var(--text-muted);
+  color: var(--accent-red);
 }
 
 .agent-tool-action-row.running {
-  color: var(--text-muted);
+  color: var(--accent-blue);
 }
 
 .agent-tool-action-summary {
@@ -214,11 +215,11 @@ const technicalOpen = (group: ToolCallGroup) => group.status === "error";
 }
 
 .agent-tool-child-row.error {
-  color: var(--text-muted);
+  color: var(--accent-red);
 }
 
 .agent-tool-child-row.running {
-  color: var(--text-muted);
+  color: var(--accent-blue);
 }
 
 .agent-tool-child-row code {

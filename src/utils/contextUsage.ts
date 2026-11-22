@@ -90,6 +90,15 @@ export const COMPACT_MIN_MESSAGES = 6;
 export const COMPACT_SUGGEST_PERCENT = 70;
 
 /**
+ * 自动压缩的触发百分比（**与后端同源**，仅用于在环形图上标阈值）。
+ *
+ * 判据是 `(窗口 − 输出预算) × 85%`（见 `infra/llm/context_budget.rs`），
+ * **不是**窗口的 85%：200K 窗口 / 32K 输出预算下实际在窗口的 71.4% 触发。
+ * 画阈值线时必须做这个换算，直接按窗口比例画会严重误导。
+ */
+export const COMPACT_TRIGGER_PERCENT = 85;
+
+/**
  * 手动压缩按钮能不能按。**判据是消息条数，不是 token 占比。**
  *
  * 分工：条数下限是防误触的**功能闸门**（用户主动点，后端会不会真干活由它决定）；

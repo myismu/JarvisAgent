@@ -777,6 +777,32 @@ pub struct TodoItem {
     /// Present continuous form shown while the item is in progress.
     pub active_form: String,
     pub status: TodoStatus,
+    /// 子任务调度进度（仅当该条目正在被 `RunSubagentsSequentially` 驱动时有值）。
+    ///
+    /// 存在意义：主 Agent 在调度器里阻塞期间无法调用 `UpdateTodos`，这条进度由调度器
+    /// 直接回写，否则用户在几十个子任务跑完前看不到任何变化。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<TodoProgress>,
+}
+
+/// 某条 todo 对应的子任务完成度。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoProgress {
+    pub done: usize,
+    pub total: usize,
+}
+
+/// 一组待办清单。
+///
+/// 一次 `UpdateTodos` 调用产生一组；后续调用如果条目 id 与某组有交集，就更新那一组
+/// （组内替换），否则新建一组追加。这样才能同时满足两件事：长会话里多轮清单共存，
+/// 以及同一轮内条目状态的更新。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoGroup {
+    pub id: String,
+    pub items: Vec<TodoItem>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

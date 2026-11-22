@@ -315,32 +315,77 @@ function migrateUiRedesign(p: UiPreferences): boolean {
   return true;
 }
 
-async function loadFromBackend() {
-  let migrated = false;
-  try {
-    const saved = await invoke<UiPreferences>("get_ui_preferences");
-    prefs.value = normalizePrefs(saved);
-    migrated = migrateUiRedesign(prefs.value);
-  } catch {
-    prefs.value = { ...defaults };
-  }
-  applyAll(prefs.value);
-  loaded = true;
-  prefsReady.value = true;
-  if (migrated) scheduleSave();
-}
-
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
 function scheduleSave() {
   if (!loaded) return;
   if (saveTimer !== null) clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
+  const timer = setTimeout(async () => {
     try {
       await invoke("save_ui_preferences", { preferences: prefs.value });
     } catch {
       // ignore save errors
+    } finally {
+      // 只清自己的令牌：写入期间可能已经排了新的 timer，
+      // 无条件置 null 会把那个新 timer 的「未落盘」状态误报成已落盘。
+      if (saveTimer === timer) saveTimer = null;
     }
   }, 200);
+  saveTimer = timer;
+}
+
+/**
+ * 从后端整份拉取偏好。
+ *
+ * `reason` 决定拉取失败时的行为：
+ * - `init`：首次加载，失败退回默认值（没有更好的选择）；
+ * - `remote`：收到 `ui-preferences-changed` 广播，失败就保持现状
+ *   （把界面推回默认值比不同步更糟）。
+ *
+ * 两道闸门是「侧边栏折叠点了又弹回」的根治点，去掉任一道都会复发：
+ *
+ * 1. **本地有未落盘的改动时不接受远端快照**。
+ *    该快照来自远端窗口「读到磁盘」的时刻，可能早于用户刚做的那次修改；
+ *    应用它等于把操作抹掉。表现就是「点一下，展开后立刻折叠」——
+ *    一次点击的效果被两次状态写抵消。
+ * 2. **归一化后与当前值完全相同则不赋值**。
+ *    `prefs.value` 整体替换会让 `sidebarCollapsedProjectIds` / `inputDrafts`
+ *    拿到新引用，watcher 因此误判「有变化」再存一次，
+ *    形成 save → emit → loadFromBackend → save 的 200ms 空转闭环。
+ *    那个闭环也是本地改动被反复覆盖的舞台。
+ */
+async function loadFromBackend(reason: "init" | "remote" = "init") {
+  if (reason === "remote" && saveTimer !== null) return;
+
+  let saved: UiPreferences;
+  try {
+    saved = await invoke<UiPreferences>("get_ui_preferences");
+  } catch (e) {
+    if (reason === "remote") return;
+    console.error("[Preferences] 加载失败，使用默认值:", e);
+    prefs.value = { ...defaults };
+    applyAll(prefs.value);
+    loaded = true;
+    prefsReady.value = true;
+    return;
+  }
+
+  // IPC 往返期间本地可能又产生了新的改动，落地前再判一次
+  if (reason === "remote" && saveTimer !== null) return;
+
+  const next = normalizePrefs(saved);
+  // 字段顺序由 defaults 决定，normalizePrefs 每次产出同一套键序，可以直接比字符串
+  if (JSON.stringify(next) === JSON.stringify(prefs.value)) {
+    loaded = true;
+    prefsReady.value = true;
+    return;
+  }
+
+  prefs.value = next;
+  applyAll(prefs.value);
+  loaded = true;
+  prefsReady.value = true;
+  if (migrateUiRedesign(prefs.value)) scheduleSave();
 }
 
 function startWatchers() {
@@ -353,10 +398,12 @@ function startWatchers() {
   watch(() => prefs.value.sidebarCollapsed, () => scheduleSave());
   watch(() => prefs.value.sidebarProjectsCollapsed, () => scheduleSave());
   watch(() => prefs.value.sidebarStandaloneCollapsed, () => scheduleSave());
-  // 项目分组折叠列表是整体替换写入的；deep 兼顾将来改成原地增删的写法
-  watch(() => prefs.value.sidebarCollapsedProjectIds, () => scheduleSave(), { deep: true });
-  // 输入草稿同理：整体替换，deep 兼容将来可能的原地改写法
-  watch(() => prefs.value.inputDrafts, () => scheduleSave(), { deep: true });
+  // 项目分组折叠列表是整体替换写入的，不要 deep：
+  // deep 会让「远端整份重载」这种引用替换也触发一次保存，
+  // 正是那条 save → emit → load 循环的燃料。
+  watch(() => prefs.value.sidebarCollapsedProjectIds, () => scheduleSave());
+  // 输入草稿同理：所有写入口都是整体替换，不存在就地修改
+  watch(() => prefs.value.inputDrafts, () => scheduleSave());
   watch(() => prefs.value.agentPanelVisible, () => scheduleSave());
   watch(() => prefs.value.agentAudience, () => scheduleSave());
   watch(() => prefs.value.agentWorkMode, () => scheduleSave());
@@ -411,9 +458,10 @@ function ensureInit() {
   });
 
   // 注册跨窗口同步
+  // 远端广播：走 remote 分支——失败保持现状，且本地有未落盘改动时不覆盖
   listen("ui-preferences-changed", async () => {
     try {
-      await loadFromBackend();
+      await loadFromBackend("remote");
     } catch {
       // ignore
     }

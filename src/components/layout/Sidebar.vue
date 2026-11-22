@@ -18,6 +18,7 @@ import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useSessionStore } from '../../stores/session';
 import { useChatStore } from '../../stores/chat';
+import { usePermissionStore } from '../../stores/permission';
 import { useAppViewStore } from '../../stores/appView';
 import { useAgentEvents } from '../../composables/useAgentEvents';
 import { loadSessionThinking } from '../../composables/useThinkingMode';
@@ -38,6 +39,8 @@ const { t } = useI18n();
 
 const sessionStore = useSessionStore();
 const chat = useChatStore();
+// 待决策权限是「会话级」数据，侧边栏要据此把运行点切成琥珀色
+const perm = usePermissionStore();
 const appView = useAppViewStore();
 const events = useAgentEvents();
 const { notifyMonitorSessionChanged } = useWindow();
@@ -130,6 +133,28 @@ const toggleProject = (projectId: string) => {
 const isSessionRunning = (sessionId: string): boolean => {
   return sessionStore.sessionViews[sessionId]?.status === "RUNNING";
 };
+
+/**
+ * 会话行的状态灯取值。优先级：等待授权 > 执行中 > 异常。
+ *
+ * 等待授权排在最前：一轮 run 在等用户点「允许」时 status 仍是 RUNNING，
+ * 如果按执行中显示，用户看不出「卡住的是我」。
+ * 异常只在没有 run 的时候显示：一轮失败后 status 留在 ERROR，下次发送才离开，
+ * 正好当「这个会话上次出过错」的残留标记。
+ */
+const sessionLightStates = computed<Record<string, 'running' | 'waiting' | 'error'>>(() => {
+  const states: Record<string, 'running' | 'waiting' | 'error'> = {};
+  for (const session of sessions.value) {
+    if ((perm.permissionRequests[session.id]?.length ?? 0) > 0) {
+      states[session.id] = 'waiting';
+      continue;
+    }
+    const status = sessionStore.sessionViews[session.id]?.status;
+    if (status === 'RUNNING') states[session.id] = 'running';
+    else if (status === 'ERROR') states[session.id] = 'error';
+  }
+  return states;
+});
 
 const formatSessionTime = (timestamp: number) => {
   const date = new Date(timestamp);
@@ -740,7 +765,11 @@ onUnmounted(() => {
               @click="editingSessionId !== session.id && switchToSession(session.id)"
             >
               <div class="session-main-row">
-                <span v-if="isSessionRunning(session.id)" class="session-running-dot"></span>
+                <span
+                v-if="sessionLightStates[session.id]"
+                class="session-state-light state-light"
+                :class="`is-${sessionLightStates[session.id]}`"
+              ></span>
                 <input
                   v-if="editingSessionId === session.id"
                   v-model="editingTitle"
@@ -799,7 +828,11 @@ onUnmounted(() => {
             @click="editingSessionId !== session.id && switchToSession(session.id)"
           >
             <div class="session-main-row">
-              <span v-if="isSessionRunning(session.id)" class="session-running-dot"></span>
+              <span
+                v-if="sessionLightStates[session.id]"
+                class="session-state-light state-light"
+                :class="`is-${sessionLightStates[session.id]}`"
+              ></span>
               <input
                 v-if="editingSessionId === session.id"
                 v-model="editingTitle"
@@ -1378,19 +1411,12 @@ body.dark-mode .session-item.active {
   color: rgba(255, 255, 255, 0.95);
 }
 
-.session-running-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--text-muted);
-  flex-shrink: 0;
+/* 会话行的状态灯：颜色与呼吸节奏全部由全局 .state-light 决定，
+   这里只管尺寸与间距。6px 比默认 7px 小一档 —— 它紧排在标题文字前，
+   再大会抢视线；侧边栏的信息主体是标题，不是这颗灯。 */
+.session-state-light {
+  --light-size: 6px;
   margin-right: 4px;
-  animation: sessionDotBlink 1.5s ease-in-out infinite;
-}
-
-@keyframes sessionDotBlink {
-  0%, 100% { opacity: 0.35; }
-  50% { opacity: 1; }
 }
 
 .session-title {
