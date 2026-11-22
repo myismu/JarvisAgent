@@ -26,6 +26,16 @@ const done = computed(() => todos.value.filter((t) => t.status === 'completed').
 const total = computed(() => todos.value.length);
 const inProgress = computed(() => todos.value.find((t) => t.status === 'in_progress'));
 
+/**
+ * 圆点只画**未完成**的：已完成的点每一条都是一个绿点，清单一长就把 pill 撑成一排，
+ * 而它们传递的信息完全重复（"已完成"已经由左侧的 done/total 计数表达）。
+ * 未完成的一共就几个点，反而能一眼看出“还剩多少、各是什么状态”。
+ */
+const unfinished = computed(() => todos.value.filter((t) => t.status !== 'completed'));
+
+/** 全部完成时连点也不留，收成「TODO 24/24」：此时无未完成项，无需分布信息 */
+const allDone = computed(() => total.value > 0 && done.value === total.value);
+
 const groupDoneCount = (group: TodoGroup) =>
   group.items.filter((t) => t.status === 'completed').length;
 
@@ -55,8 +65,11 @@ const progressText = computed(() => {
     <div v-if="visible" class="todo-bar">
       <div class="todo-bar-inner" @click="expanded = !expanded">
         <div class="todo-bar-main">
-          <span class="todo-dots">
-            <span v-for="t in todos" :key="t.id" class="todo-dot" :class="'dot-' + t.status"></span>
+          <!-- 全部完成：点已无信息量，收成一个带语义的计数标签（裸的 24/24 看不出是什么） -->
+          <span v-if="allDone" class="todo-label">TODO</span>
+          <!-- 未完成：只画未完成的点（pending / in_progress），已完成的量由计数承担 -->
+          <span v-else class="todo-dots">
+            <span v-for="t in unfinished" :key="t.id" class="todo-dot" :class="'dot-' + t.status"></span>
           </span>
           <span class="todo-count">{{ done }}/{{ total }}</span>
           <span v-if="inProgress" class="todo-current">
@@ -167,6 +180,14 @@ const progressText = computed(() => {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: var(--text-main);
+}
+
+/* 全部完成时替代圆点的标签：与计数同字号、同行为一个整体，
+   把被绿点占掉的语义位补回来（裸的 24/24 不说明这是什么）。 */
+.todo-label {
+  color: var(--text-muted);
+  font-weight: 600;
+  letter-spacing: 0.3px;
 }
 
 .todo-current {
