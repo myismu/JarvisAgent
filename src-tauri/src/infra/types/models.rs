@@ -624,6 +624,18 @@ pub struct SessionContextSnapshot {
     pub tool_schema_count: usize,
     pub tool_call_count: usize,
     pub tool_result_count: usize,
+    /// 图片块数量（Image block 数）。
+    ///
+    /// 与 `tool_call_count` / `tool_result_count` 同族：都是"这类内容块出现了几次"的
+    /// 顶层统计字段。它此前以 `attachments` 分区的形式存在，但那个分区的字符数/token 数
+    /// 与 `messages` 分区重复计入（图片块本来就在 messages 的 JSON 里），导致总量虚高；
+    /// 而"块数"也不是可加和的尺寸量。故收敛为顶层计数，分区只保留
+    /// system / messages / tools 三项（三者之和即总量）。
+    ///
+    /// `#[serde(default)]` 是硬要求：旧快照 JSON 里没有这个键，缺 default 会让
+    /// `repository::get_context_snapshot` 整条反序列化失败，监控面板直接空白。
+    #[serde(default)]
+    pub image_count: usize,
     pub sections: Vec<ContextSectionSnapshot>,
 }
 

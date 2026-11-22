@@ -423,6 +423,7 @@
       "dominantShare": "{tokens}, {percent}%",
       "noSources": "No context sources to analyze.",
       "sectionDetailMeta": "{chars} chars · {method}",
+      "imageCountNote": "{count} image blocks",
       "details": "Context details",
       "contentModeFormatted": "Formatted",
       "contentModeRaw": "Raw JSON",

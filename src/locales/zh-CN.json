@@ -423,6 +423,7 @@
       "dominantShare": "{tokens}，占 {percent}%",
       "noSources": "暂无可分析的上下文来源。",
       "sectionDetailMeta": "{chars} 字符 · {method}",
+      "imageCountNote": "含 {count} 个图片块",
       "details": "上下文明细",
       "contentModeFormatted": "格式化",
       "contentModeRaw": "原始 JSON",

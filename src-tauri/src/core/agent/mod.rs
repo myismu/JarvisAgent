@@ -17,6 +17,8 @@ use crate::infra::types::error::AgentError;
 use crate::infra::types::models::JarvisResult;
 
 mod context;
+// 对话上下文可读文本格式化（pipeline 与命令层共用的唯一实现）
+pub mod context_format;
 mod pipeline;
 pub mod prompts;
 mod reflection;

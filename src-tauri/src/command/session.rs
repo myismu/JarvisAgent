@@ -852,93 +852,12 @@ pub async fn get_session_context_snapshot(
     let ctx = session_manager.get_or_create(&session_id).await;
     let memory = ctx.memory.lock().await;
     if !memory.messages.is_empty() {
-        let messages_text = {
-            let mut out = String::new();
-            for (i, msg) in memory.messages.iter().enumerate() {
-                let idx = i + 1;
-                let role = match msg {
-                    Message::User { .. } => "User",
-                    Message::Assistant { .. } => "Assistant",
-                };
-                out.push_str(&format!("[{}] (msg {})\n", role, idx));
-                let content = match msg {
-                    Message::User { content } | Message::Assistant { content } => content,
-                };
-                match content {
-                    Content::Single(text) => {
-                        if !text.trim().is_empty() {
-                            out.push_str(text.trim());
-                            out.push('\n');
-                        }
-                    }
-                    Content::Multiple(blocks) => {
-                        for block in blocks {
-                            match block {
-                                ContentBlock::Text { text } => {
-                                    if !text.trim().is_empty() {
-                                        out.push_str(text.trim());
-                                        out.push('\n');
-                                    }
-                                }
-                                ContentBlock::ToolUse { name, input, .. } => {
-                                    let s = serde_json::to_string(input).unwrap_or_default();
-                                    let t = if s.len() > 120 {
-                                        let mut e = 120;
-                                        while e > 0 && !s.is_char_boundary(e) {
-                                            e -= 1;
-                                        }
-                                        &s[..e]
-                                    } else {
-                                        &s
-                                    };
-                                    out.push_str(&format!("  → {}({})\n", name, t));
-                                }
-                                ContentBlock::ToolResult {
-                                    tool_use_id,
-                                    content: tc,
-                                } => {
-                                    let sid = &tool_use_id[tool_use_id.len().saturating_sub(12)..];
-                                    let lines: Vec<&str> = tc.lines().collect();
-                                    let preview = if lines.len() > 2 {
-                                        format!("{}\n  …", lines[..2].join("\n"))
-                                    } else {
-                                        tc.clone()
-                                    };
-                                    out.push_str(&format!("  ← {}: {}\n", sid, preview));
-                                }
-                                ContentBlock::Thinking { thinking, .. } => {
-                                    let p = if thinking.len() > 80 {
-                                        let mut e = 80;
-                                        while e > 0 && !thinking.is_char_boundary(e) {
-                                            e -= 1;
-                                        }
-                                        &thinking[..e]
-                                    } else {
-                                        thinking
-                                    };
-                                    out.push_str(&format!("  … {}\n", p));
-                                }
-                                ContentBlock::Context { text } => {
-                                    // 动态上下文块（意图标签 / 能力边界 / 项目结构 / 用户画像）。
-                                    // 出网前会被 `materialize_context_blocks_for_wire` 翻译成普通
-                                    // Text 一并发出，所以它**真实占用** prompt token。
-                                    // 这里必须渲染，否则本命令重建出的 messages 段会系统性偏低，
-                                    // 与 `pipeline::build_context_estimate` 的口径对不上。
-                                    if !text.trim().is_empty() {
-                                        out.push_str("  ← [Context]\n");
-                                        out.push_str(text.trim());
-                                        out.push('\n');
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-                out.push('\n');
-            }
-            out
-        };
+        // 可读文本统一由 `context_format::format_messages_readable` 产出，
+        // 与 `pipeline::build_context_estimate` 的面板内容保持同一套排版，
+        // 否则压缩/刷新后的浮层文本会与实时视图对不上。
+        // 注意输入是**内存态** messages（含最后一轮 assistant 回复），不是落库的 history_snapshot。
+        let messages_text =
+            crate::core::agent::context_format::format_messages_readable(&memory.messages);
         let new_chars = messages_text.chars().count();
         let token_count =
             crate::infra::llm::token_count::count_text(&snapshot.model, &messages_text);

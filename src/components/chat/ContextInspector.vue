@@ -185,11 +185,24 @@ const pointTitle = (point: CacheHitPoint): string => {
   )} / ${formatToken(total)})${src}`;
 };
 
+/**
+ * 明细里不再按行展示的"历史分区"。
+ *
+ * 后端已把分区收敛为 system / messages / tools 三项（三者之和即总量），但**落库的旧快照**
+ * 里还留着 `attachments`（图片）与 `runtime`（tool_result / thinking）两个分区。
+ * 它们都不是体积来源，而是对 messages 内容的重复统计：继续按行显示会让"分区之和"
+ * 对不上总量，也会让用户以为删掉的内容还在占 token。故一并从明细里剔除：
+ * - `runtime`：数量信息由顶层 `toolCallCount` / `toolResultCount` 承担，直接丢弃；
+ * - `attachments`：它的 `itemCount` 是旧快照里唯一的图片数来源，留给 `imageCount` 兜底。
+ */
+const LEGACY_SECTION_KEYS = new Set(['runtime', 'attachments']);
+
 const sectionViews = computed<SectionView[]>(() => {
   const total = totalTokens.value;
   let cursor = 0;
   const raw = (props.snapshot?.sections ?? [])
-    .filter((section) => section.estimatedTokens > 0 || section.chars > 0);
+    .filter((section) => !LEGACY_SECTION_KEYS.has(section.key)
+      && (section.estimatedTokens > 0 || section.chars > 0));
   const rawTotal = raw.reduce((sum, section) => sum + Math.max(0, section.estimatedTokens), 0) || 1;
 
   return raw.map((section, index) => {
@@ -203,6 +216,21 @@ const sectionViews = computed<SectionView[]>(() => {
     cursor += share;
     return view;
   });
+});
+
+/**
+ * 图片块数量。
+ *
+ * 新快照直接读顶层 `imageCount`（后端 `image_count`）；旧快照没有该字段，那个数字
+ * 只存在于已废弃的 `attachments` 分区的 `itemCount` 里，故用它兜底。
+ * 注意判据是 `!= null` 而不是真值 —— `imageCount === 0` 是有效值（确实没有图片），
+ * 不能因此掉进兜底分支去读旧分区。
+ */
+const imageCount = computed(() => {
+  const direct = props.snapshot?.imageCount;
+  if (direct != null) return direct;
+  const legacy = (props.snapshot?.sections ?? []).find((section) => section.key === 'attachments');
+  return legacy?.itemCount ?? 0;
 });
 
 const dominantSection = computed(() => {
@@ -358,10 +386,63 @@ const usageLabel = computed(() => {
 });
 
 const copiedSection = ref<string | null>(null);
-const showRawContent = ref(true);
+
+// ── 明细展开状态（受控手风琴）──
+// 不再用 <details>：它收起时内容**仍挂在 DOM 里**（只是 display:none）。
+// 取消后端截断后 messages 一节可达几十万字符，收起状态照样要付渲染/排版成本。
+// 改成受控状态 + v-if：未展开的分区连 <pre> 节点都不存在。
+const expandedKeys = ref<Record<string, boolean>>({});
+
+const isExpanded = (key: string): boolean => expandedKeys.value[key] === true;
+
+const toggleSection = (key: string) => {
+  expandedKeys.value = { ...expandedKeys.value, [key]: !isExpanded(key) };
+};
+
+// ── 「原始 JSON」开关（按分区独立）──
+// rawContent 只有 messages 有，且与可读文本内容不同；system 没有 raw，
+// tools 的 content 与 raw 是同一份 pretty JSON —— 给它们一个永远无效的开关只是噪音。
+const rawKeys = ref<Record<string, boolean>>({});
+
+const isRawOpen = (key: string): boolean => rawKeys.value[key] === true;
+
+const toggleRaw = (key: string) => {
+  rawKeys.value = { ...rawKeys.value, [key]: !isRawOpen(key) };
+};
+
+/** 该分区的原始 JSON 是否与可读文本存在实际差异（有差异才配一个切换按钮）
+ *
+ * 算一次缓存在 computed 里，而不是每次渲染都 trim 两份大字符串：
+ * messages 的 raw 是完整 JSON，动辄几十万字符，每次展开/收起都重新 trim 太浪费。
+ */
+const rawDiffKeys = computed(() => {
+  const keys = new Set<string>();
+  for (const section of props.snapshot?.sections ?? []) {
+    const raw = section.rawContent;
+    if (raw && raw.trim() !== (section.content ?? '').trim()) keys.add(section.key);
+  }
+  return keys;
+});
+
+const hasRawDiff = (section: ContextSectionSnapshot): boolean => rawDiffKeys.value.has(section.key);
+
+/**
+ * 展开后实际渲染的文本。
+ *
+ * 默认就是后端给的 `content`（完整可读文本）；只有"已展开 + raw 开关打开 +
+ * 确实有差异"三条同时成立才换成原始 JSON，避免为一个不存在的差异渲染两份大字符串。
+ */
+const displayContent = (section: ContextSectionSnapshot): string => {
+  if (isExpanded(section.key) && isRawOpen(section.key) && hasRawDiff(section)) {
+    return section.rawContent as string;
+  }
+  return sectionContent(section);
+};
 
 const copySectionContent = async (section: ContextSectionSnapshot) => {
-  const text = showRawContent.value && section.rawContent ? section.rawContent : sectionContent(section);
+  // 复制取的是"最完整的那份数据"，不跟随界面的 raw/格式化开关：
+  // 有 rawContent 就用它，没有（system / tools）则回退可读文本。
+  const text = section.rawContent || sectionContent(section);
   try {
     await navigator.clipboard.writeText(text);
     copiedSection.value = section.key;
@@ -539,25 +620,37 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 
       <div class="context-detail-header">
         <span class="context-detail-label">{{ t('monitor.context.details') }}</span>
-        <button
-          class="raw-toggle-btn"
-          :class="{ active: showRawContent }"
-          @click="showRawContent = !showRawContent"
-          :title="showRawContent ? t('monitor.context.contentModeFormattedTitle') : t('monitor.context.contentModeRawTitle')"
-        >
-          {{ showRawContent ? t('monitor.context.contentModeFormatted') : t('monitor.context.contentModeRaw') }}
-        </button>
       </div>
-      <details
+      <!-- 受控手风琴：展开态由 expandedKeys 记录，内容用 v-if 挂载。
+           这里不能用 <details>：它收起时内容仍留在 DOM（只是不可见），
+           取消后端截断后单节可达几十万字符，收起照样要付渲染成本。 -->
+      <div
         v-for="section in sectionViews"
         :key="section.key"
         class="context-section-item"
       >
-        <summary>
+        <!-- summary 的替身：div + role=button，保留原版式（标题行 + 占比条两行） -->
+        <div
+          class="context-section-summary"
+          :class="{ expanded: isExpanded(section.key) }"
+          role="button"
+          tabindex="0"
+          :aria-expanded="isExpanded(section.key)"
+          @click="toggleSection(section.key)"
+          @keydown.enter.prevent="toggleSection(section.key)"
+          @keydown.space.prevent="toggleSection(section.key)"
+        >
           <span class="context-section-head">
+            <span class="context-chevron" :class="{ expanded: isExpanded(section.key) }" aria-hidden="true"></span>
             <span class="context-dot" :style="{ background: section.color }"></span>
             <span class="context-section-title">{{ section.label }}</span>
             <span class="context-section-count">{{ section.itemCount }}</span>
+            <!-- 图片块数只挂在 messages 行：图片块本来就是 messages 内容的一部分，
+                 它们不再单独成一个分区（否则会把同一份内容重复计入总量） -->
+            <span
+              v-if="section.key === 'messages' && imageCount > 0"
+              class="context-section-images"
+            >{{ t('monitor.context.imageCountNote', { count: imageCount }) }}</span>
             <span class="context-section-stat">
               {{ formatToken(section.estimatedTokens) }} · {{ Math.round(section.percent) }}%
             </span>
@@ -567,24 +660,37 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
           <span class="context-bar-track" aria-hidden="true">
             <span :style="{ width: Math.max(3, section.percent) + '%', background: section.color }"></span>
           </span>
-        </summary>
-        <div class="context-section-extra">
-          <span>{{ t('monitor.context.sectionDetailMeta', { chars: formatFullNumber(section.chars), method: methodLabel(section.tokenCountMethod) }) }}</span>
-          <span v-if="section.truncated">{{ t('monitor.context.truncated') }}</span>
         </div>
-        <div class="context-section-body">
-          <pre>{{ showRawContent && section.rawContent ? section.rawContent : sectionContent(section) }}</pre>
-          <div class="context-section-actions">
-            <button
-              class="copy-btn"
-              :class="{ copied: copiedSection === section.key }"
-              @click.stop="copySectionContent(section)"
-            >
-              {{ copiedSection === section.key ? t('common.copied') : t('common.copy') }}
-            </button>
+
+        <!-- 以下内容只在展开态挂载 -->
+        <template v-if="isExpanded(section.key)">
+          <div class="context-section-extra">
+            <span>{{ t('monitor.context.sectionDetailMeta', { chars: formatFullNumber(section.chars), method: methodLabel(section.tokenCountMethod) }) }}</span>
           </div>
-        </div>
-      </details>
+          <div class="context-section-body">
+            <div class="context-section-actions">
+              <!-- 只在“原始 JSON 与可读文本确实不同”时给开关（目前只有 messages） -->
+              <button
+                v-if="hasRawDiff(section)"
+                class="raw-toggle-btn"
+                :class="{ active: isRawOpen(section.key) }"
+                @click="toggleRaw(section.key)"
+                :title="isRawOpen(section.key) ? t('monitor.context.contentModeFormattedTitle') : t('monitor.context.contentModeRawTitle')"
+              >
+                {{ isRawOpen(section.key) ? t('monitor.context.contentModeFormatted') : t('monitor.context.contentModeRaw') }}
+              </button>
+              <button
+                class="copy-btn"
+                :class="{ copied: copiedSection === section.key }"
+                @click="copySectionContent(section)"
+              >
+                {{ copiedSection === section.key ? t('common.copied') : t('common.copy') }}
+              </button>
+            </div>
+            <pre>{{ displayContent(section) }}</pre>
+          </div>
+        </template>
+      </div>
     </div>
   </div>
 
@@ -1207,26 +1313,50 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
   border-bottom: none;
 }
 
-/* summary 改成纵向两行：第一行"名称 + 项数 + token + 占比"，第二行占比条。
-   占比条必须在 summary 内 —— summary 之外的内容在 details 收起时是隐藏的，
-   而占比正是收起状态下最该看见的信息（原实现把它画在另一处，等于同一份数据渲染两遍） */
-.context-section-item summary {
+/* summary 的替身（div + role=button）：版式与原 summary 完全一致 ——
+   纵向两行，第一行"名称 + 项数 + token + 占比"，第二行占比条。
+   占比条必须留在这一层：收起状态下它是最该看见的信息。 */
+.context-section-summary {
   display: flex;
   flex-direction: column;
   gap: 6px;
   min-height: 40px;
   padding: 10px 2px;
   cursor: pointer;
-  list-style: none;
+  user-select: none;
   border-radius: 4px;
 }
 
-.context-section-item summary::-webkit-details-marker {
-  display: none;
+.context-section-summary:hover {
+  background: var(--glass-bg-light);
 }
 
-.context-section-item summary:hover {
-  background: var(--glass-bg-light);
+.context-section-summary:focus-visible {
+  outline: 1px solid var(--accent-blue);
+  outline-offset: -1px;
+}
+
+/* 展开态指示：纯 CSS 三角（不引图标、不用 emoji），展开时转 90 度 */
+.context-chevron {
+  flex-shrink: 0;
+  width: 0;
+  height: 0;
+  border-left: 4px solid color-mix(in srgb, var(--text-muted) 80%, transparent);
+  border-top: 3px solid transparent;
+  border-bottom: 3px solid transparent;
+  transition: transform 0.15s ease;
+}
+
+.context-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+/* 图片块数：纯计数，不参与 token 合计，用弱色小字附在 messages 行 */
+.context-section-images {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 0.66rem;
+  white-space: nowrap;
 }
 
 .context-section-count {
@@ -1262,20 +1392,27 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 }
 
 .context-section-body {
-  position: relative;
-}
-
-.context-section-actions {
-  position: absolute;
-  top: 10px;
-  right: 12px;
   display: flex;
+  flex-direction: column;
   gap: 4px;
 }
 
+/* 操作行从"绝对定位浮在 pre 右上角"改成正常流：
+   原写法 .context-section-actions 与 .copy-btn 都写了 position:absolute，
+   两层偏移叠加、位置对不上；加进 raw 开关后会直接盖住正文首行。 */
+.context-section-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 2px 8px 0;
+}
+
 .context-section-item pre {
-  margin: 6px 8px 8px;
-  padding: 8px 60px 8px 8px;
+  /* max-height + overflow：取消截断后单节可达几十万字符，
+     不限高会把整个面板铺开成一面墙，也拖慢布局。 */
+  max-height: 60vh;
+  margin: 0 8px 8px;
+  padding: 8px;
   overflow: auto;
   color: var(--text-main);
   border: 1px solid var(--border-color);
@@ -1290,9 +1427,6 @@ const copySectionContent = async (section: ContextSectionSnapshot) => {
 }
 
 .copy-btn {
-  position: absolute;
-  top: 10px;
-  right: 12px;
   padding: 2px 6px;
   border: 1px solid var(--border-color);
   border-radius: 4px;

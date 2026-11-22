@@ -147,6 +147,14 @@ export interface SessionContextSnapshot {
   toolSchemaCount: number;
   toolCallCount: number;
   toolResultCount: number;
+  /**
+   * 图片块数量（Image block 数），对应后端的 `image_count`。
+   *
+   * 与 `toolCallCount` / `toolResultCount` 同族：都是"这类内容块出现了几次"的计数，
+   * 不参与分区体积合计。旧快照里没有这个键（后端用 `#[serde(default)]` 兼容），
+   * 前端消费时按 0 处理，并用已废弃的 `attachments` 分区兜底（见 `ContextInspector`）。
+   */
+  imageCount?: number;
   sections: ContextSectionSnapshot[];
 }
 

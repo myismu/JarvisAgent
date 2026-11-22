@@ -419,6 +419,15 @@ struct ContextEstimate {
     tool_schema_count: usize,
     tool_call_count: usize,
     tool_result_count: usize,
+    /// 图片块数量（Image block 数），与 tool_call_count / tool_result_count 同族。
+    ///
+    /// 它原先是靠一个独立的 `attachments` 分区表达的，但那个分区的
+    /// chars / estimated_tokens 与 `messages` 分区**重复计入** ——
+    /// 图片块本来就躺在 messages 的 JSON 里，再单开一段等于把同一份内容算两遍，
+    /// 总量虚高、`drift_percent` 跟着失真。而"块数"本身不是可加和的尺寸量，
+    /// 拿它当一个分区只会让「分区之和 = 总量」这条不变式失效。
+    /// 现在收敛为顶层计数：分区只剩 system / messages / tools，三者之和就是总量。
+    image_count: usize,
     sections: Vec<ContextSectionSnapshot>,
 }
 
@@ -3198,134 +3207,6 @@ impl PipelineState {
         self.prepare_history_snapshot_from_messages(messages, &sources, &interrupt_kinds)
     }
 
-    /// 将消息列表转换为人类可读的对话文本，用于上下文快照展示
-    fn format_messages_readable(messages: &[Message]) -> String {
-        let mut out = String::new();
-        for (i, msg) in messages.iter().enumerate() {
-            let idx = i + 1;
-            match msg {
-                Message::User { content } => {
-                    out.push_str(&format!("[User] (msg {})\n", idx));
-                    match content {
-                        Content::Single(text) => {
-                            let trimmed = text.trim();
-                            if !trimmed.is_empty() {
-                                out.push_str(trimmed);
-                                out.push('\n');
-                            }
-                        }
-                        Content::Multiple(blocks) => {
-                            for block in blocks {
-                                match block {
-                                    ContentBlock::Text { text } => {
-                                        let trimmed = text.trim();
-                                        if !trimmed.is_empty() {
-                                            out.push_str(trimmed);
-                                            out.push('\n');
-                                        }
-                                    }
-                                    ContentBlock::ToolResult {
-                                        tool_use_id,
-                                        content: tc,
-                                    } => {
-                                        let tc_lines: Vec<&str> = tc.lines().collect();
-                                        let preview = if tc_lines.len() > 3 {
-                                            format!("{}\n  …", tc_lines[..3].join("\n"))
-                                        } else {
-                                            tc_lines.join("\n")
-                                        };
-                                        let short_id =
-                                            &tool_use_id[tool_use_id.len().saturating_sub(12)..];
-                                        out.push_str(&format!(
-                                            "  ← ToolResult: {}\n    {}\n",
-                                            short_id, preview
-                                        ));
-                                    }
-                                    ContentBlock::Image { .. } => {
-                                        out.push_str("  ← [Image]\n");
-                                    }
-                                    ContentBlock::Context { text } => {
-                                        // 动态上下文块（意图标签 / 能力边界 / 项目结构 / 用户画像）。
-                                        // 出网前由 `materialize_context_blocks_for_wire` 翻译成普通 Text
-                                        // 一并发出，所以它**真实占用** prompt token，这里必须原样渲染。
-                                        // 早期版本落到 `_ => {}` 被静默丢弃，是估算偏低的原因之一。
-                                        let trimmed = text.trim();
-                                        if !trimmed.is_empty() {
-                                            out.push_str("  ← [Context]\n");
-                                            out.push_str(trimmed);
-                                            out.push('\n');
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                }
-                Message::Assistant { content } => {
-                    out.push_str(&format!("[Assistant] (msg {})\n", idx));
-                    match content {
-                        Content::Single(text) => {
-                            let trimmed = text.trim();
-                            if !trimmed.is_empty() {
-                                out.push_str(trimmed);
-                                out.push('\n');
-                            }
-                        }
-                        Content::Multiple(blocks) => {
-                            for block in blocks {
-                                match block {
-                                    ContentBlock::Text { text } => {
-                                        let trimmed = text.trim();
-                                        if !trimmed.is_empty() {
-                                            out.push_str(trimmed);
-                                            out.push('\n');
-                                        }
-                                    }
-                                    ContentBlock::ToolUse { id: _, name, input } => {
-                                        let input_str =
-                                            serde_json::to_string(input).unwrap_or_default();
-                                        let truncated = if input_str.len() > 200 {
-                                            let mut end = 200;
-                                            while end > 0 && !input_str.is_char_boundary(end) {
-                                                end -= 1;
-                                            }
-                                            format!("{}…", &input_str[..end])
-                                        } else {
-                                            input_str
-                                        };
-                                        out.push_str(&format!(
-                                            "  → ToolCall: {}({})\n",
-                                            name, truncated
-                                        ));
-                                    }
-                                    ContentBlock::Thinking { thinking, .. } => {
-                                        let preview = if thinking.len() > 80 {
-                                            let mut end = 80;
-                                            while end > 0 && !thinking.is_char_boundary(end) {
-                                                end -= 1;
-                                            }
-                                            format!("{}…", &thinking[..end])
-                                        } else {
-                                            thinking.clone()
-                                        };
-                                        out.push_str(&format!(
-                                            "  … Thinking: {}\n",
-                                            preview.replace('\n', " ")
-                                        ));
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            out.push('\n');
-        }
-        out
-    }
-
     /// 估算一次请求的上下文用量（消息 + 工具 schema，按分区统计），
     /// 结果用于前端上下文监控展示与压缩触发判断；
     /// 每个 section 记录独立字符数/token 数，方便 UI 定位占比。
@@ -3364,35 +3245,12 @@ impl PipelineState {
             }
         }
 
-        fn section_with_raw(
-            model_id: &str,
-            key: &str,
-            label: &str,
-            content: String,
-            item_count: usize,
-            raw: String,
-        ) -> ContextSectionSnapshot {
-            let chars = content.chars().count();
-            let token_count = crate::infra::llm::token_count::count_text(model_id, &content);
-            ContextSectionSnapshot {
-                key: key.to_string(),
-                label: label.to_string(),
-                chars,
-                estimated_tokens: token_count.tokens,
-                token_count_method: token_count.method.as_str().to_string(),
-                item_count,
-                content,
-                truncated: false,
-                raw_content: Some(raw),
-            }
-        }
-
         /// 计数口径与展示内容分离的版本：`content` 仍用可读文本（面板展示用），
         /// 但 `chars` / `estimated_tokens` 按 `count_text` 计算（真实 payload 口径）。
         ///
-        /// 2026-09-17 起 `messages` 分区改用这个：`format_messages_readable` 会把
-        /// `tool_result` 截断到 3 行、ToolUse 截到 200 字符、Thinking 截到 80 字符，
-        /// 而真实发出去的是完整内容 —— 拿截断文本计数会系统性低估
+        /// 2026-09-17 起 `messages` 分区改用这个：`context_format::format_messages_readable`
+        /// 产出的是可读文本（现已不截断，但仍是“给人看”的排版），而真实发出去的是完整 JSON
+        /// —— 两者字段、转义形式不同，拿可读文本计数会系统性低估
         /// （长会话实测 17.3k vs 实际 52.0k，约 3 倍），压缩该触发时不触发。
         fn section_with_raw_counting_full(
             model_id: &str,
@@ -3419,11 +3277,15 @@ impl PipelineState {
             }
         }
 
-        fn count_blocks(messages: &[Message]) -> (usize, usize, usize, usize) {
+        /// 统计各类内容块的出现次数，返回 `(tool_use, tool_result, image)`。
+        ///
+        /// 只统计这三类：它们各自是前端要单独展示的计数。thinking 块不再计数——
+        /// 它原来唯一的消费方是被删除的 `runtime` 分区（那个分区不占独立体积，
+        /// thinking 内容本身已经计入 messages），留着就是一个恒被丢弃的值。
+        fn count_blocks(messages: &[Message]) -> (usize, usize, usize) {
             let mut tool_calls = 0;
             let mut tool_results = 0;
             let mut images = 0;
-            let mut thinking = 0;
             for message in messages {
                 let Content::Multiple(blocks) = (match message {
                     Message::User { content } | Message::Assistant { content } => content,
@@ -3435,22 +3297,25 @@ impl PipelineState {
                         ContentBlock::ToolUse { .. } => tool_calls += 1,
                         ContentBlock::ToolResult { .. } => tool_results += 1,
                         ContentBlock::Image { .. } => images += 1,
-                        ContentBlock::Thinking { .. } => thinking += 1,
+                        // Text / Context / Thinking 都不计数，但必须穷尽列出：
+                        // 用 `_ => {}` 会让将来新增的块类型被静默漏计。
                         ContentBlock::Text { .. } => {}
                         ContentBlock::Context { .. } => {}
+                        ContentBlock::Thinking { .. } => {}
                     }
                 }
             }
-            (tool_calls, tool_results, images, thinking)
+            (tool_calls, tool_results, images)
         }
 
         // 直接数**未 strip** 的 history：Context 块会被翻译成 Text 发出去，必须计入。
-        let (tool_call_count, tool_result_count, image_count, thinking_count) =
-            count_blocks(history_snapshot);
-        let messages_text = Self::format_messages_readable(history_snapshot);
+        let (tool_call_count, tool_result_count, image_count) = count_blocks(history_snapshot);
+        let messages_text = crate::core::agent::context_format::format_messages_readable(history_snapshot);
         let messages_json = serde_json::to_string_pretty(history_snapshot).unwrap_or_default();
         let tools_json = serde_json::to_string_pretty(tools).unwrap_or_default();
-        let mut sections = vec![
+        // 分区固定为 system → messages → tools 三项，顺序不乱。
+        // 不再有 push，故无需 mut（曾因 attachments / runtime 追加分区而需要）。
+        let sections = vec![
             section(
                 &self.model_id,
                 "system",
@@ -3464,10 +3329,11 @@ impl PipelineState {
             // 上面的 `messages` 分区现在按未 strip 的 history 计数，已经包含它。
             // 保留独立分区等于把本轮动态上下文重复计一次，总量会虚高。
             // 需要看它有多大时，展开 `messages` 分区找 `[Context]` 段即可。
-            // ⚠️ 计数口径（2026-09-17 修）：`format_messages_readable` 会把 tool_result
-            // 截断到 3 行、ToolUse 截到 200 字符、Thinking 截到 80 字符 —— 那是**给人看**的
-            // 可读摘要。真实发给厂商的 payload 是完整内容，用截断文本计数会系统性低估
-            // （长会话实测 17.3k vs 实际 52.0k，约 3 倍），导致压缩该触发时不触发。
+            // ⚠️ 计数口径（2026-09-17 修）：`context_format::format_messages_readable`
+            // 产出的是**给人看**的可读排版（现已取消截断，但仍不是协议字段的严格 JSON：
+            // 枚举变体名、转义形式、字段集合都不一样）。真实发给厂商的 payload 是完整 JSON，
+            // 用可读文本计数会系统性低估（长会话实测 17.3k vs 实际 52.0k，约 3 倍），
+            // 导致压缩该触发时不触发。
             // 故：`content`（面板展示）继续用可读文本，`chars` / `estimated_tokens`
             // （判据消费）改用完整 JSON。
             section_with_raw_counting_full(
@@ -3479,36 +3345,25 @@ impl PipelineState {
                 history_snapshot.len(),
                 messages_json.clone(),
             ),
-            section_with_raw(
+            // tools 分区用 `section` 而不是 `section_with_raw`：它的 `content`
+            // 与 `raw` 本来就是同一份 pretty JSON，存两遍没有意义（只会让快照
+            // JSON 体积翻倍）。前端 copy 已兼容 raw 缺失，回落到 content。
+            section(
                 &self.model_id,
                 "tools",
                 "Tools Schema",
-                tools_json.clone(),
-                tools.len(),
                 tools_json,
+                tools.len(),
             ),
         ];
-        if image_count > 0 {
-            sections.push(section(
-                &self.model_id,
-                "attachments",
-                "Attachments / Images",
-                format!("当前请求中包含 {} 个图片块。本轮的图片会恢复为 base64，往轮图片折叠为文本摘要。", image_count),
-                image_count,
-            ));
-        }
-        if tool_result_count > 0 || thinking_count > 0 {
-            sections.push(section(
-                &self.model_id,
-                "runtime",
-                "Tool Results / Thinking",
-                format!(
-                    "tool_result: {}\nthinking: {}",
-                    tool_result_count, thinking_count
-                ),
-                tool_result_count + thinking_count,
-            ));
-        }
+        // 这里曾有 `attachments`（图片）与 `runtime`（tool_result / thinking）两个分区，
+        // 已删除。理由是它们**不是体积来源**，而是对 `messages` 内容的重复统计：
+        // 图片块、tool_result、thinking 本来就在 messages 的 JSON 里，
+        // 再各开一段只会把同一份内容计入两次，让分区之和大于真实 payload。
+        // 于是「分区之和 = 总量」这条不变式被破坏，压缩判据（读 total）与
+        // 面板逐项对照（读 sections）互相矛盾。
+        // 图片数改由顶层 `image_count` 字段承担，tool_result 数同理
+        // （`tool_result_count`），二者都是计数而非尺寸，不参与合计。
 
         let total_chars = sections.iter().map(|item| item.chars).sum();
         let estimated_tokens = sections.iter().map(|item| item.estimated_tokens).sum();
@@ -3519,6 +3374,7 @@ impl PipelineState {
             tool_schema_count: tools.len(),
             tool_call_count,
             tool_result_count,
+            image_count,
             sections,
         }
     }
@@ -3578,6 +3434,7 @@ impl PipelineState {
             tool_schema_count: estimate.tool_schema_count,
             tool_call_count: estimate.tool_call_count,
             tool_result_count: estimate.tool_result_count,
+            image_count: estimate.image_count,
             sections: estimate.sections,
         };
 
@@ -4512,7 +4369,7 @@ mod context_estimate_tests {
             ]),
         }];
 
-        let out = PipelineState::format_messages_readable(&messages);
+        let out = crate::core::agent::context_format::format_messages_readable(&messages);
 
         assert!(
             out.contains("项目结构索引占位"),
@@ -4543,7 +4400,7 @@ mod context_estimate_tests {
             ]),
         }];
 
-        let out = PipelineState::format_messages_readable(&messages);
+        let out = crate::core::agent::context_format::format_messages_readable(&messages);
         assert!(!out.contains("[Context]"), "空白上下文块不应渲染：\n{out}");
     }
 }
