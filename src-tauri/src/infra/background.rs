@@ -800,12 +800,13 @@ impl CompactingState {
         self.0.lock().unwrap().contains(session_id)
     }
 
-    pub fn set_compacting(&self, session_id: &str, active: bool) {
+    /// 原子更新单会话压缩状态；开始时返回 false 表示已有压缩任务占用。
+    pub fn set_compacting(&self, session_id: &str, active: bool) -> bool {
         let mut set = self.0.lock().unwrap();
         if active {
-            set.insert(session_id.to_string());
+            set.insert(session_id.to_string())
         } else {
-            set.remove(session_id);
+            set.remove(session_id)
         }
     }
 }

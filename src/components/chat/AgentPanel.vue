@@ -159,11 +159,12 @@ const panelVisible = computed(() => props.standalone || agent.showAgentPanel);
 const standalone = computed(() => props.standalone);
 const currentContextSnapshot = computed(() => agent.currentContextSnapshot);
 
-const refreshContextSnapshot = async () => {
-  if (!session.activeSessionId) return;
+const refreshContextSnapshot = async (sessionId?: string) => {
+  const targetSessionId = sessionId ?? session.activeSessionId;
+  if (!targetSessionId) return;
   try {
     const snapshot = await invoke<SessionContextSnapshot | null>('get_session_context_snapshot', {
-      sessionId: session.activeSessionId,
+      sessionId: targetSessionId,
     });
     agent.upsertContextSnapshot(snapshot);
   } catch { /* ignore */ }

@@ -96,6 +96,45 @@ const isRunning = computed(() =>
   session.getSessionView(session.activeSessionId).status === 'RUNNING'
 );
 
+// 压缩状态按对话维护；输入框只投影当前激活对话的状态。
+const compactingSessionIds = ref<Set<string>>(new Set());
+const compactingEventVersions = new Map<string, number>();
+const compactingQueryVersions = new Map<string, number>();
+const isCompacting = computed(() => {
+  const sessionId = session.activeSessionId;
+  return !!sessionId && compactingSessionIds.value.has(sessionId);
+});
+
+function applyCompactingStatus(sessionId: string, compacting: boolean) {
+  compactingEventVersions.set(sessionId, (compactingEventVersions.get(sessionId) ?? 0) + 1);
+  const next = new Set(compactingSessionIds.value);
+  if (compacting) next.add(sessionId);
+  else next.delete(sessionId);
+  compactingSessionIds.value = next;
+}
+
+async function syncCompactingStatus(sessionId: string) {
+  const queryVersion = (compactingQueryVersions.get(sessionId) ?? 0) + 1;
+  compactingQueryVersions.set(sessionId, queryVersion);
+  const eventVersion = compactingEventVersions.get(sessionId) ?? 0;
+  try {
+    const compacting = await invoke<boolean>('is_session_compacting', { sessionId });
+    // 查询期间若到达了新事件，查询结果已过时；同样丢弃较早发出的重复查询。
+    if (
+      compactingQueryVersions.get(sessionId) !== queryVersion
+      || (compactingEventVersions.get(sessionId) ?? 0) !== eventVersion
+    ) return;
+    const next = new Set(compactingSessionIds.value);
+    if (compacting) next.add(sessionId);
+    else next.delete(sessionId);
+    compactingSessionIds.value = next;
+  } catch { /* 保留最近一次已知状态 */ }
+}
+
+watch(() => session.activeSessionId, (sessionId) => {
+  if (sessionId) void syncCompactingStatus(sessionId);
+}, { immediate: true });
+
 // ── 未发送草稿：按会话隔离 ──
 //
 // 输入框是**常驻组件**（App.vue 里的 `<TerminalInput />` 没有 key），切会话时实例
@@ -1150,14 +1189,17 @@ onMounted(async () => {
     currentApprovalMode.value = event.payload.mode;
   });
   // 监听监控窗口上下文压缩状态，压缩期间禁用输入
-  unlistenCompacting = await listen<{ compacting: boolean }>('bg-compacting-changed', (event) => {
-    isCompacting.value = event.payload.compacting;
+  unlistenCompacting = await listen<{ sessionId: string; compacting: boolean }>('bg-compacting-changed', (event) => {
+    const payload = event.payload;
+    if (payload?.sessionId) applyCompactingStatus(payload.sessionId, payload.compacting);
+  });
+  unlistenSessionCompacted = await listen<{ sessionId: string }>('session-compacted', (event) => {
+    const sessionId = event.payload?.sessionId;
+    if (sessionId) applyCompactingStatus(sessionId, false);
   });
   // 挂载时主动查询后端，防止 F5 刷新丢失"压缩中"状态
   if (session.activeSessionId) {
-    try {
-      isCompacting.value = await invoke<boolean>('is_session_compacting', { sessionId: session.activeSessionId });
-    } catch { /* ignore */ }
+    await syncCompactingStatus(session.activeSessionId);
   }
 
   document.addEventListener('click', closeMenuOnOutsideClick);
@@ -1219,6 +1261,7 @@ onUnmounted(() => {
   if (unlistenConfig) unlistenConfig();
   if (unlistenWorkMode) unlistenWorkMode();
   if (unlistenCompacting) unlistenCompacting();
+  if (unlistenSessionCompacted) unlistenSessionCompacted();
 });
 
 onBeforeUnmount(() => {
@@ -1272,8 +1315,8 @@ const handleSubmit = () => {
   }
 };
 
-const isCompacting = ref(false);
 let unlistenCompacting: UnlistenFn | null = null;
+let unlistenSessionCompacted: UnlistenFn | null = null;
 
 /**
  * 「正在停止」：已发出停止请求、但本轮尚未真正收尾。

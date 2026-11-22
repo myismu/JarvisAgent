@@ -1279,6 +1279,26 @@ pub async fn get_session_todos(
     Ok(todos.clone())
 }
 
+/// 压缩命令的生命周期守卫：无论正常返回、报错还是异步任务被丢弃，都清除会话状态并广播结束。
+struct CompactingSessionGuard<'a> {
+    state: &'a crate::infra::background::CompactingState,
+    session_id: String,
+    app: tauri::AppHandle,
+}
+
+impl Drop for CompactingSessionGuard<'_> {
+    fn drop(&mut self) {
+        let _ = self.state.set_compacting(&self.session_id, false);
+        let _ = self.app.emit(
+            "bg-compacting-changed",
+            serde_json::json!({
+                "sessionId": self.session_id,
+                "compacting": false,
+            }),
+        );
+    }
+}
+
 #[tauri::command]
 pub async fn compact_conversation(
     session_id: String,
@@ -1286,9 +1306,23 @@ pub async fn compact_conversation(
     compacting: tauri::State<'_, crate::infra::background::CompactingState>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    compacting.set_compacting(&session_id, true);
+    if !compacting.set_compacting(&session_id, true) {
+        return Err("当前会话已有上下文压缩正在执行，请等待完成。".to_string());
+    }
+    let _ = app.emit(
+        "bg-compacting-changed",
+        serde_json::json!({
+            "sessionId": session_id,
+            "compacting": true,
+        }),
+    );
+    let guard = CompactingSessionGuard {
+        state: compacting.inner(),
+        session_id: session_id.clone(),
+        app: app.clone(),
+    };
     let result = compact_inner(&session_id, session_manager, &app).await;
-    compacting.set_compacting(&session_id, false);
+    drop(guard);
     result
 }
 

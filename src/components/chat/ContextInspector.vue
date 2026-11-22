@@ -33,7 +33,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: 'compacted'): void;
+  (e: 'compacted', sessionId: string): void;
 }>();
 
 const { t } = useI18n();
@@ -346,34 +346,65 @@ const triggerCompact = () => {
   showCompactConfirm.value = true;
 };
 
+let compactingQueryGeneration = 0;
+let compactToastGeneration = 0;
+
 const confirmCompact = async () => {
   showCompactConfirm.value = false;
-  if (!props.sessionId) return;
+  const compactSessionId = props.sessionId;
+  if (!compactSessionId) return;
+  // 压缩可能跨会话切换继续运行，后续结果都归属点击时捕获的会话。
+  // 使切换会话前发出的状态查询失效，避免旧查询覆盖本次压缩状态。
+  compactingQueryGeneration += 1;
+  const toastGeneration = ++compactToastGeneration;
   compacting.value = true;
   compactError.value = '';
   compactMessage.value = '';
-  tauriEmit('bg-compacting-changed', { compacting: true });
   try {
-    const result = await invoke<string>('compact_conversation', { sessionId: props.sessionId });
-    compactMessage.value = result;
-    setTimeout(() => { compactMessage.value = ''; }, 4000);
-    tauriEmit('session-compacted', { sessionId: props.sessionId });
-    emit('compacted');
+    const result = await invoke<string>('compact_conversation', { sessionId: compactSessionId });
+    if (props.sessionId === compactSessionId) {
+      compactMessage.value = result;
+      setTimeout(() => {
+        if (toastGeneration === compactToastGeneration) compactMessage.value = '';
+      }, 4000);
+    }
+    tauriEmit('session-compacted', { sessionId: compactSessionId });
+    emit('compacted', compactSessionId);
   } catch (err) {
-    compactError.value = String(err);
-    setTimeout(() => { compactError.value = ''; }, 6000);
+    if (props.sessionId === compactSessionId) {
+      compactError.value = String(err);
+      setTimeout(() => {
+        if (toastGeneration === compactToastGeneration) compactError.value = '';
+      }, 6000);
+    }
   } finally {
-    compacting.value = false;
-    tauriEmit('bg-compacting-changed', { compacting: false });
+    if (props.sessionId === compactSessionId) {
+      compacting.value = false;
+    }
   }
 };
 
 // 挂载时查询后端，恢复 F5 刷新前的压缩状态
+let compactingSessionQueryGeneration = 0;
 watch(() => props.sessionId, async (sid) => {
-  if (!sid) return;
+  const generation = ++compactingSessionQueryGeneration;
+  const queryGeneration = ++compactingQueryGeneration;
+  compactToastGeneration += 1;
+  compactMessage.value = '';
+  compactError.value = '';
+  if (!sid) {
+    compacting.value = false;
+    return;
+  }
   try {
     const active = await invoke<boolean>('is_session_compacting', { sessionId: sid });
-    compacting.value = active;
+    if (
+      generation === compactingSessionQueryGeneration
+      && queryGeneration === compactingQueryGeneration
+      && sid === props.sessionId
+    ) {
+      compacting.value = active;
+    }
   } catch { /* ignore */ }
 }, { immediate: true });
 
