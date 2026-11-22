@@ -40,6 +40,18 @@ jobs:
       - name: 安装前端依赖
         run: pnpm install --frozen-lockfile
 
+      # 发布公告放在仓库根的 RELEASE_NOTES.md，不写死在本文件里：
+      # 每次发版只改那个文件，workflow 保持稳定。
+      # 用 heredoc 写入 GITHUB_OUTPUT，多行内容不会被截成一行。
+      - name: 读取发布公告
+        id: notes
+        shell: pwsh
+        run: |
+          $body = Get-Content RELEASE_NOTES.md -Raw -Encoding utf8
+          "BODY<<__EOF__" >> $env:GITHUB_OUTPUT
+          $body >> $env:GITHUB_OUTPUT
+          "__EOF__" >> $env:GITHUB_OUTPUT
+
       - name: 构建并生成草稿 Release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -48,6 +60,6 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}   # 把 Release 挂到触发本次运行的标签上
           releaseName: "JarvisAgent v__VERSION__"   # __VERSION__ 自动替换为 tauri.conf.json 里的版本号
-          releaseBody: "JarvisAgent 桌面版。Windows 安装包见下方 Assets。"
+          releaseBody: ${{ steps.notes.outputs.BODY }}   # 公告内容来自 RELEASE_NOTES.md
           releaseDraft: true                # 草稿：只有你能看到，确认后再点发布
           prerelease: false
