@@ -130,7 +130,6 @@ chat/
 ├── AgentPanel.vue               # 右侧 Agent 执行流程总面板
 ├── AgentTurn.vue                # 单轮 Agent 回合展示
 ├── ExecutionPanel.vue           # 工具调用、执行日志、结果展示
-├── ThinkingStatus.vue           # thinking/思考状态展示
 ├── TodoPanel.vue                # 待办清单面板
 ├── ToolCallGroup.vue            # 工具调用分组展示
 ├── PermissionCard.vue           # 权限请求卡片
@@ -155,7 +154,7 @@ TerminalInput.vue
 - 修改消息列表样式：看 `ChatArea.vue`。
 - 修改用户输入体验：看 `TerminalInput.vue`。
 - 修改 Agent 执行过程展示：看 `AgentPanel.vue`、`AgentTurn.vue`、`ExecutionPanel.vue`。
-- 修改 thinking 展示：看 `ThinkingStatus.vue`。
+- 修改 thinking 展示：看 `AgentTurn.vue`、`ChatArea.vue`。
 - 修改空状态/欢迎页：看 `WelcomeScreen.vue`。
 
 ### 5.3 通用组件：`components/common/`
@@ -507,7 +506,7 @@ SnapshotTimeline.vue / CheckpointTimeline.vue
 | 修改聊天列表 | `components/chat/ChatArea.vue` |
 | 修改输入框 | `components/chat/TerminalInput.vue` |
 | 修改 Agent 执行面板 | `components/chat/AgentPanel.vue`、`components/chat/AgentTurn.vue`、`components/chat/ExecutionPanel.vue` |
-| 修改 thinking 展示 | `components/chat/ThinkingStatus.vue` |
+| 修改 thinking 展示 | `components/chat/AgentTurn.vue`、`components/chat/ChatArea.vue` |
 | 修改权限弹窗 | `components/common/PermissionModal.vue`、`stores/permission.ts` |
 | 修改计划审批面板 | `components/common/PlanPreviewPanel.vue`、`stores/permission.ts` |
 | 修改设置面板 | `components/settings/SettingsPanel.vue` |
