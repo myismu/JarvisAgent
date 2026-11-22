@@ -9,15 +9,17 @@ use std::path::PathBuf;
 
 // ── 提示词文件注册表（唯一事实源）──
 //
-// 13 个提示词文件的元数据清单，服务于设置页的「提示词」可视化编辑：
+// 提示词文件的元数据清单（13 个内置 + 1 个可选的个人规则），服务于设置页的「提示词」可视化编辑：
 // - 列表展示、分类分组、生效语义标注都以本表为准，**不扫描任何目录**；
-// - `path` 同时是磁盘覆盖层文件名（data/prompts/<path>）与编译期内置文件名
+// - `path` 同时是磁盘覆盖层文件名（data/prompts/<path>）与内置文件名
 //   （src/core/agent/prompts/<path>，经 `prompt!` 宏 include_str! 嵌入 exe）；
 // - 分类是显式字段，不从文件夹路径派生——路径是源码组织概念，分类是 UI 语义，
 //   今天对齐但解耦（挪文件夹不动 UI 分组）。
 //
-// 维护约定：加/删/改提示词文件 = 改本文件三处（md 本体、`prompt!` 引用、本表），
+// 维护约定：加/删/改内置提示词 = 改本文件三处（md 本体、`prompt!` 引用、本表），
 // `all_prompt_files_exist` 测试读本表做存在性断言，漏改编译期/测试期即暴露。
+// 可选文件（optional = true）没有出厂 md：只登记本表 + embedded_prompt 的空臂，
+// 存在性断言与内置非空断言都会跳过它。
 
 /// UI 分组（与设置页左侧列表一致）
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -32,6 +34,8 @@ pub enum PromptCategory {
     Os,
     /// 子代理
     Subagent,
+    /// 用户个人规则（跨项目；可选文件，没有出厂默认）
+    Personal,
 }
 
 impl PromptCategory {
@@ -42,6 +46,7 @@ impl PromptCategory {
             PromptCategory::Mode => "mode",
             PromptCategory::Os => "os",
             PromptCategory::Subagent => "subagent",
+            PromptCategory::Personal => "personal",
         }
     }
 }
@@ -57,15 +62,27 @@ pub struct PromptFileMeta {
     /// true = 进 system（会话内字节恒定，改动只对新会话生效）；
     /// false = 进动态上下文（每轮重发，改动下一轮即生效）。
     pub goes_into_system: bool,
+    /// true = 可选文件：没有出厂默认内容（纯用户文件），磁盘缺失/为空时整段不注入。
+    /// 现有内置提示词都是 false；目前只有 custom_rules.md 是 true。
+    pub optional: bool,
 }
 
 pub const PROMPT_FILES: &[PromptFileMeta] = &[
+    PromptFileMeta {
+        path: "custom_rules.md",
+        display_name: "个人开发规范",
+        description: "跨项目生效的用户自定义规则；没有出厂默认，内容为空时不注入",
+        category: PromptCategory::Personal,
+        goes_into_system: true,
+        optional: true,
+    },
     PromptFileMeta {
         path: "base_p0.md",
         display_name: "基础规则",
         description: "违反即出事故的硬禁令：权限纪律、工具调用格式、禁止读二进制/依赖目录",
         category: PromptCategory::Base,
         goes_into_system: true,
+        optional: false,
     },
     PromptFileMeta {
         path: "base_p0_write.md",
@@ -73,6 +90,7 @@ pub const PROMPT_FILES: &[PromptFileMeta] = &[
         description: "改动范围、遵循现有风格、复杂任务先出方案等写操作硬纪律",
         category: PromptCategory::Base,
         goes_into_system: true,
+        optional: false,
     },
     PromptFileMeta {
         path: "base_p1.md",
@@ -80,6 +98,7 @@ pub const PROMPT_FILES: &[PromptFileMeta] = &[
         description: "文件探索的工具优先级：FindFiles → SearchRepo → SymbolSearch → ReadFile",
         category: PromptCategory::Base,
         goes_into_system: true,
+        optional: false,
     },
     PromptFileMeta {
         path: "base_p1_write.md",
@@ -87,6 +106,7 @@ pub const PROMPT_FILES: &[PromptFileMeta] = &[
         description: "EditFile/WriteFile/ApplyPatch 的选择原则、启动服务、任务编排指南",
         category: PromptCategory::Base,
         goes_into_system: true,
+        optional: false,
     },
     PromptFileMeta {
         path: "base_p2.md",
@@ -94,6 +114,7 @@ pub const PROMPT_FILES: &[PromptFileMeta] = &[
         description: "渐进式探索：不自动深入、不过度操作",
         category: PromptCategory::Base,
         goes_into_system: true,
+        optional: false,
     },
     PromptFileMeta {
         path: "audience/user.md",
@@ -101,6 +122,7 @@ pub const PROMPT_FILES: &[PromptFileMeta] = &[
         description: "面向普通用户的措辞与详略（与开发者版二选一注入）",
         category: PromptCategory::Audience,
         goes_into_system: true,
+        optional: false,
     },
     PromptFileMeta {
         path: "audience/developer.md",
@@ -108,6 +130,7 @@ pub const PROMPT_FILES: &[PromptFileMeta] = &[
         description: "面向开发者的专业措辞（与普通用户版二选一注入）",
         category: PromptCategory::Audience,
         goes_into_system: true,
+        optional: false,
     },
     PromptFileMeta {
         path: "mode/edit.md",
@@ -115,6 +138,7 @@ pub const PROMPT_FILES: &[PromptFileMeta] = &[
         description: "编辑模式的行为规范（进动态上下文，改动下一轮即生效）",
         category: PromptCategory::Mode,
         goes_into_system: false,
+        optional: false,
     },
     PromptFileMeta {
         path: "mode/plan.md",
@@ -122,6 +146,7 @@ pub const PROMPT_FILES: &[PromptFileMeta] = &[
         description: "规划模式的行为规范（进动态上下文，改动下一轮即生效）",
         category: PromptCategory::Mode,
         goes_into_system: false,
+        optional: false,
     },
     PromptFileMeta {
         path: "os/windows.md",
@@ -129,6 +154,7 @@ pub const PROMPT_FILES: &[PromptFileMeta] = &[
         description: "PowerShell 5.1 语法约束（三个平台按编译目标选一个注入）",
         category: PromptCategory::Os,
         goes_into_system: true,
+        optional: false,
     },
     PromptFileMeta {
         path: "os/macos.md",
@@ -136,6 +162,7 @@ pub const PROMPT_FILES: &[PromptFileMeta] = &[
         description: "macOS/zsh 环境说明（三个平台按编译目标选一个注入）",
         category: PromptCategory::Os,
         goes_into_system: true,
+        optional: false,
     },
     PromptFileMeta {
         path: "os/linux.md",
@@ -143,6 +170,7 @@ pub const PROMPT_FILES: &[PromptFileMeta] = &[
         description: "Linux/bash 环境说明（三个平台按编译目标选一个注入）",
         category: PromptCategory::Os,
         goes_into_system: true,
+        optional: false,
     },
     PromptFileMeta {
         path: "subagent.md",
@@ -150,6 +178,7 @@ pub const PROMPT_FILES: &[PromptFileMeta] = &[
         description: "子代理的工具调用格式、验证纪律、禁止事项",
         category: PromptCategory::Subagent,
         goes_into_system: true,
+        optional: false,
     },
 ];
 
@@ -186,6 +215,8 @@ pub fn embedded_prompt(path: &str) -> &'static str {
         "os/macos.md" => prompt!("os/macos.md"),
         "os/linux.md" => prompt!("os/linux.md"),
         "subagent.md" => prompt!("subagent.md"),
+        // 可选个人规则没有出厂内容：磁盘无文件/为空时解析为空串，注入侧据此跳过。
+        "custom_rules.md" => "",
         _ => "",
     }
 }
@@ -381,6 +412,33 @@ fn sandbox_rules(workspace: &str) -> Vec<PromptRule> {
     )]
 }
 
+// ── 个人开发规范（可选文件）──
+
+/// 个人开发规范：用户显式写下的跨项目规则。
+///
+/// 该文件没有出厂默认（`optional`），磁盘缺失或内容为空时返回 None，整段不注入。
+/// 注入级别选 P1：它要压过产品默认的风格性建议与 `<user_profile>`，
+/// 但不能压过 P0 的安全/权限纪律，所以不能放进 P0。
+fn personal_rules_rule() -> Option<PromptRule> {
+    personal_rule_from(resolve_prompt("custom_rules.md").trim())
+}
+
+/// 可注入内容的纯函数（测试用；生产走 `personal_rules_rule`）。
+fn personal_rule_from(body: &str) -> Option<PromptRule> {
+    let body = body.trim();
+    if body.is_empty() {
+        return None;
+    }
+    Some(PromptRule::new(
+        PromptLevel::P1Important,
+        "个人开发规范",
+        format!(
+            "以下为用户显式指定的个人开发规范。在不违反本提示词 P0 安全纪律的前提下，本节优先于产品默认的风格性建议与用户画像。\n\n{}",
+            body
+        ),
+    ))
+}
+
 // ── 组装入口 ──
 
 pub fn get_system_prompt(
@@ -391,6 +449,11 @@ pub fn get_system_prompt(
     let mut rules: Vec<PromptRule> = Vec::new();
     rules.extend(base_rules(work_mode));
     rules.extend(audience_rules(audience));
+    // 个人开发规范：用户显式指定的跨项目规则；没有配置时整段不注入。
+    // P1（核心规范）——高于产品默认的风格建议与用户画像，低于 P0 安全纪律。
+    if let Some(rule) = personal_rules_rule() {
+        rules.push(rule);
+    }
     // 模式规则不进入 system：system 必须字节恒定才能最大化前缀缓存命中。
     // 模式 / 记忆 / 项目结构等易变状态统一放进每回合的“上下文快照”。
     rules.push(PromptRule::new(
@@ -449,6 +512,11 @@ pub fn get_subagent_system_prompt(cwd: &str, workspace: Option<&str>) -> String 
         rules.extend(sandbox_rules(ws));
     }
     rules.extend(os_rules());
+
+    // 子 Agent 会实际读写代码，个人开发规范同样适用；同样只在文件非空时注入。
+    if let Some(rule) = personal_rules_rule() {
+        rules.push(rule);
+    }
 
     render_prompt(&rules)
 }
@@ -603,6 +671,10 @@ mod tests {
         // 每个内置 md 都真实存在于源码目录——加文件漏注册/注册了没文件都在此暴露
         assert!(!PROMPT_FILES.is_empty(), "注册表不能为空");
         for meta in PROMPT_FILES {
+            // 可选文件没有出厂 md（纯用户文件），存在性断言不适用。
+            if meta.optional {
+                continue;
+            }
             let full = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("src/core/agent/prompts")
                 .join(meta.path);
@@ -628,12 +700,62 @@ mod tests {
     fn registry_embedded_not_empty() {
         // 注册表每一项都必须有对应的内置内容（embedded_prompt 的 match 臂漏加在此暴露）
         for meta in PROMPT_FILES {
+            // 可选文件本来就没有出厂内容，不参与“内置非空”断言。
+            if meta.optional {
+                continue;
+            }
             assert!(
                 !embedded_prompt(meta.path).trim().is_empty(),
                 "内置内容为空：注册表项 {} 缺少 embedded_prompt match 臂",
                 meta.path
             );
         }
+    }
+
+    // ── 个人开发规范（可选文件）──
+
+    #[test]
+    fn personal_rules_prompt_is_optional_without_embedded_default() {
+        let meta = PROMPT_FILES
+            .iter()
+            .find(|m| m.path == "custom_rules.md")
+            .expect("个人规则应登记在注册表");
+        assert!(meta.optional, "个人规则必须是可选文件");
+        assert!(meta.goes_into_system, "个人规则应进 system");
+        assert_eq!(meta.category.as_str(), "personal");
+        assert!(
+            embedded_prompt(meta.path).trim().is_empty(),
+            "个人规则不应有出厂默认内容"
+        );
+    }
+
+    #[test]
+    fn personal_rules_are_skipped_when_empty() {
+        // 未配置 = 磁盘无文件/空文件 → resolve 得到空串 → 不产生规则。
+        assert!(personal_rule_from("").is_none());
+        assert!(personal_rule_from("  \n\t ").is_none());
+    }
+
+    #[test]
+    fn personal_rules_are_injected_at_p1_when_configured() {
+        let rule = personal_rule_from("- 提交信息使用中文").expect("非空内容应产生规则");
+        assert_eq!(rule.title, "个人开发规范");
+        assert!(matches!(rule.level, PromptLevel::P1Important));
+        assert!(rule.body.contains("提交信息使用中文"));
+        // 优先级声明：P0 安全纪律高于个人规则，个人规则高于产品默认风格与画像。
+        assert!(rule.body.contains("P0"));
+        assert!(rule.body.contains("用户画像"));
+    }
+
+    #[test]
+    fn optional_prompt_missing_disk_resolves_empty() {
+        let dir = tmp_dir("optional");
+        let resolved = resolve_prompt_from(&dir, "custom_rules.md");
+        assert!(
+            resolved.trim().is_empty(),
+            "可选文件磁盘缺失时应解析为空串，而不是占位内容"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     // ── 磁盘覆盖解析（resolve_prompt_from：可注入目录的纯函数）──

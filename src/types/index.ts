@@ -806,10 +806,12 @@ export interface PromptMeta {
   path: string;
   displayName: string;
   description: string;
-  /** "base" | "audience" | "mode" | "os" | "subagent" */
+  /** "personal" | "base" | "audience" | "mode" | "os" | "subagent" */
   category: string;
   /** true = 进 system（新会话生效）；false = 进动态上下文（下一轮生效） */
   goesIntoSystem: boolean;
+  /** true = 可选文件：没有出厂默认，未配置时为空且不会被注入 */
+  optional: boolean;
   customized: boolean;
   sizeChars: number;
   /** 仅 os 分类有意义：当前编译平台的那一项 */
@@ -821,6 +823,8 @@ export interface PromptDetail {
   displayName: string;
   description: string;
   goesIntoSystem: boolean;
+  /** true = 可选文件：没有出厂默认，未配置时为空 */
+  optional: boolean;
   /** 当前生效版（磁盘版或内置版）——编辑器初始内容 */
   currentContent: string;
   /** 内置出厂版原文（恢复默认的参照） */

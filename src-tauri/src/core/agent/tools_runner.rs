@@ -41,6 +41,21 @@ struct ToolTaskResult {
     output_tokens: u64,
 }
 
+/// 取消时需要"强行中止"的工具名单。
+///
+/// 只收录长时间同步等待、且中断不会留下中间态的工具：
+/// - `RunCommand`：同步 shell 可能跑满超时（默认 120s、最长 600s）。
+///   中止后由 `execution.rs` 的子进程树守卫结束整棵进程树（含 npm/cargo 这类孙进程）。
+///
+/// 其余工具刻意不 abort：
+/// - 文件类工具毫秒级完成，其 ToolResult 必须等到并落库以保持配对完整；
+/// - `RunSubagent` / `RunSubagentsSequentially` 已能感知取消（子代理循环的
+///   取消检查点、调度器的 select），会自行返回"已取消"，
+///   强行 abort 反而会让子代理的监控记录失去收口机会。
+fn is_abortable_on_cancel(name: &str) -> bool {
+    name == "RunCommand"
+}
+
 /// 执行所有工具调用（并行模式）
 ///
 /// 三阶段流水线：
@@ -195,18 +210,47 @@ pub async fn execute_tool_calls(
     }
 
     // ========== 阶段 2：并行执行 ==========
+    //
+    // 2026-11 改造：从「spawn + join_all 死等」改为「JoinSet + select 监听取消」。
+    // 旧实现里取消令牌只在任务启动前看一眼：一旦工具开始执行（典型：RunCommand
+    // 可能跑满 120~600 秒、RunSubagent 在等子代理），用户点停止后主循环仍要等
+    // 全部工具返回才轮到下一轮开头的取消检查，观感就是"点了停止没反应"。
     let mut all_results = immediate_results;
 
-    if !spawn_tasks.is_empty() && !cancel_token.is_cancelled() {
-        let handles: Vec<_> = spawn_tasks
-            .into_iter()
-            .map(|task| {
+    if !spawn_tasks.is_empty() {
+        if cancel_token.is_cancelled() {
+            // 进入并行阶段前取消已到达：不再启动任何工具，直接补"已取消"结果。
+            // 必须补结果而不是丢弃：Assistant(ToolUse) 与 ToolResult 要成对落库，
+            // 否则下一轮请求会因残缺工具配对被上游拒绝。
+            for task in spawn_tasks {
+                all_results.push(ToolTaskResult {
+                    index: task.index,
+                    tool_use_id: task.tool_use_id,
+                    name: task.name,
+                    output: "已取消（用户停止本轮执行）".to_string(),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                });
+            }
+        } else {
+            // 任务元数据用于取消后补结果：被 abort 的任务不会返回任何数据，
+            // 需要按 index/tool_use_id 找回它是谁。
+            let task_metas: Vec<(usize, String, String)> = spawn_tasks
+                .iter()
+                .map(|task| (task.index, task.tool_use_id.clone(), task.name.clone()))
+                .collect();
+
+            let mut set = tokio::task::JoinSet::new();
+            // 只登记"取消时需要强行中止"的工具句柄（见 is_abortable_on_cancel）
+            let mut abortable: Vec<tokio::task::AbortHandle> = Vec::new();
+            for task in spawn_tasks {
                 let app_clone = app.clone();
                 let sid_clone = sid.to_string();
                 let intent_clone = intent.to_string();
                 let work_mode_clone = work_mode.to_string();
                 let cancel = cancel_token.clone();
-                tokio::spawn(async move {
+                let can_abort = is_abortable_on_cancel(&task.name);
+                let handle = set.spawn(async move {
                     // spawn 后立即检查取消
                     if cancel.is_cancelled() {
                         return ToolTaskResult {
@@ -216,7 +260,6 @@ pub async fn execute_tool_calls(
                             output: "已取消".to_string(),
                             input_tokens: 0,
                             output_tokens: 0,
-                            // flags removed from ToolTaskResult
                         };
                     }
                     let (output, si, so) = handle_tool_call_owned(
@@ -236,15 +279,53 @@ pub async fn execute_tool_calls(
                         input_tokens: si,
                         output_tokens: so,
                     }
-                })
-            })
-            .collect();
+                });
+                if can_abort {
+                    abortable.push(handle);
+                }
+            }
 
-        // join_all 收集所有结果
-        let spawned_results = futures_util::future::join_all(handles).await;
-        for result in spawned_results {
-            if let Ok(r) = result {
-                all_results.push(r);
+            let mut cancelled = false;
+            loop {
+                tokio::select! {
+                    biased;
+                    // 取消分支只在首次触发时执行：abort 之后不再监听，
+                    // 否则已取消的令牌会让 select 每轮都命中、变成忙循环。
+                    _ = cancel_token.cancelled(), if !cancelled => {
+                        cancelled = true;
+                        // 仅中止长时间等待型工具：文件类工具毫秒级完成，
+                        // 强行 abort 可能把一次写入留在中间态，而且它们的结果
+                        // 必须等到并落库；shell 命令中止后由 exec 层的
+                        // 子进程树守卫结束整棵进程树。
+                        for handle in &abortable {
+                            handle.abort();
+                        }
+                    }
+                    joined = set.join_next() => match joined {
+                        Some(Ok(result)) => all_results.push(result),
+                        // 任务 panic 或被 abort：结果缺失，下面按元数据补"已取消"
+                        Some(Err(_)) => {}
+                        None => break,
+                    }
+                }
+            }
+
+            // 被中止的工具不会返回结果：补一条"已取消"，保持工具配对完整
+            if cancelled {
+                let seen: std::collections::HashSet<usize> =
+                    all_results.iter().map(|result| result.index).collect();
+                for (index, tool_use_id, name) in task_metas {
+                    if !seen.contains(&index) {
+                        all_results.push(ToolTaskResult {
+                            index,
+                            tool_use_id,
+                            name,
+                            output: "已取消（用户停止本轮执行）".to_string(),
+                            input_tokens: 0,
+                            output_tokens: 0,
+                        });
+                    }
+                }
             }
         }
     }

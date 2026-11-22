@@ -15,6 +15,7 @@ import TodoPanel from './TodoPanel.vue';
 import WelcomeScreen from './WelcomeScreen.vue';
 import MessageRail from './MessageRail.vue';
 import { noticeTextFromBackend } from '../../utils/agentTurnState';
+import { plainUserText, isLongUserText } from '../../utils/userMessage';
 import type { PlanDocument, AgentTurnSnapshot, AgentCurrentTurn } from '../../types';
 
 interface RollbackPreviewFile {
@@ -226,15 +227,13 @@ onUnmounted(() => {
 
 const expandedUserMsgs = ref(new Set<string>());
 
+// 消息对象 → 纯文本。判定阈值统一放在 utils/userMessage，子 Agent 轨迹共用同一份。
 function getUserMsgText(message: any): string {
-  const raw = message.text ?? message.userContent ?? message.content ?? '';
-  return String(raw).replace(/<[^>]*>/g, '');
+  return plainUserText(message.text ?? message.userContent ?? message.content ?? '');
 }
 
 function isUserMsgLong(text: string): boolean {
-  if (!text) return false;
-  const plain = text.replace(/<[^>]*>/g, '').replace(/\n{3,}/g, '\n\n');
-  return plain.split('\n').length > 6 || plain.length > 500;
+  return isLongUserText(text);
 }
 
 function toggleUserMsgExpand(msgId: string) {
@@ -429,13 +428,16 @@ watch(currentSessionKey, (key) => {
 watch(
   () => [
     currentSessionKey.value,
-    session.currentSessionView.hydrated,
+    // 用生命周期状态而不是"是否有内容"：ready/stale 都代表"曾经载入过"，
+    // 可以立即落底；idle/loading 阶段则等到内容真正到位再锚定
+    session.currentSessionView.hydration,
     chat.messages.length,
     hasCurrentTurnContent.value,
   ],
-  async ([key, hydrated, msgCount, hasTurnContent]) => {
+  async ([key, hydration, msgCount, hasTurnContent]) => {
     if (pendingInitialScrollSessionKey.value !== key) return;
-    if (!hydrated && !msgCount && !hasTurnContent) return;
+    const loaded = hydration === 'ready' || hydration === 'stale';
+    if (!loaded && !msgCount && !hasTurnContent) return;
 
     pendingInitialScrollSessionKey.value = null;
     // 锚定期：列表不可见状态下稳定落底，完成后一次性显现（直接在最新消息）
@@ -780,8 +782,8 @@ const confirmRollback = async () => {
 
     try {
       try {
-        // 检查点回滚后重置式懒加载首屏（回滚已截断消息，分页游标一并重置）
-        await chat.loadSessionMessagesReset(sessionId);
+        // 回滚已截断会话消息：走入口三强制重载，分页首屏与游标一起重置
+        await chat.reloadSessionView(sessionId, 'rollback');
       } catch (err) {
         // 结构化加载失败，没有 HTML 兜底了（那条通道已删除，见 session store 的说明）：
         // 置一个标记，由界面显示可翻译的提示，而不是让用户对着空白猜
@@ -881,7 +883,7 @@ onMounted(() => {
               class="user-msg-toggle"
               @click="toggleUserMsgExpand(message.id)"
             >
-              {{ expandedUserMsgs.has(message.id) ? '收起' : '展开全部' }}
+              {{ expandedUserMsgs.has(message.id) ? t('chat.collapse') : t('chat.expandAll') }}
             </button>
           </div>
           <button
@@ -919,6 +921,7 @@ onMounted(() => {
               :show-status="false"
               :elapsed="0"
               :paused="false"
+              :status="message.snapshot.status"
             />
           </div>
           <!-- 状态标注刻意放在气泡**外面**：它是这一轮的运行状态，不是模型说的话。
@@ -942,6 +945,7 @@ onMounted(() => {
             :show-status="showInlineStatus"
             :elapsed="thinkingElapsed"
             :paused="isWaitingForUser"
+            :status="session.currentSessionView.status"
           />
         </div>
         <!-- running：当前轮才可能为 true，用来区分"还在进行中"的过程态 -->
@@ -1189,7 +1193,11 @@ onMounted(() => {
   margin-bottom: 0.75em;
 }
 
-.response-text :deep(details) {
+/* 以下通用样式只服务 Markdown 内容（StreamingMarkdown 渲染出来的 details /
+   summary / code）。必须限定在 .streaming-markdown 内：执行时间线的每一行也是
+   details / summary / code，如果不限定，会给时间线行加上 padding、外边距和
+   灰色胶囊底色（实测曾把 22px 的行撑到 37px，并顶掉组件自己的样式）。 */
+.response-text :deep(.streaming-markdown details) {
   margin: 12px 0;
   padding: 8px 12px;
   background: color-mix(in srgb, var(--glass-bg-light) calc(var(--agent-message-opacity, 0) * 1%), transparent);
@@ -1197,11 +1205,11 @@ onMounted(() => {
   transition: background-color var(--transition-fast);
 }
 
-.response-text :deep(details:hover) {
+.response-text :deep(.streaming-markdown details:hover) {
   background: color-mix(in srgb, var(--glass-bg) calc(var(--agent-message-opacity, 0) * 1%), transparent);
 }
 
-.response-text :deep(summary) {
+.response-text :deep(.streaming-markdown summary) {
   cursor: pointer;
   font-size: 0.85rem;
   font-weight: 500;
@@ -1211,11 +1219,11 @@ onMounted(() => {
   transition: color var(--transition-fast);
 }
 
-.response-text :deep(summary:hover) {
+.response-text :deep(.streaming-markdown summary:hover) {
   color: var(--text-main);
 }
 
-.response-text :deep(details[open]) {
+.response-text :deep(.streaming-markdown details[open]) {
   background: color-mix(in srgb, var(--glass-bg) calc(var(--agent-message-opacity, 0) * 1%), transparent);
 }
 
@@ -1263,7 +1271,9 @@ onMounted(() => {
   font-style: italic;
 }
 
-.response-text :deep(code) {
+/* 行内代码胶囊只给 Markdown 正文里的 code；执行时间线的工具名也是 code，
+   不能一起吃到底色和内边距（否则每行会被撑高、工具名变成灰色胶囊）。 */
+.response-text :deep(.streaming-markdown code) {
   padding: 2px 6px;
   color: var(--text-main);
   font-family: var(--font-mono);

@@ -462,7 +462,7 @@ async fn extract_session_messages(
     registry: &SnapshotRegistry,
 ) -> Result<Vec<SessionMessage>, String> {
     // 全量语义：窗口不设限（分页元数据被丢弃）
-    let (messages, _, _) =
+    let (messages, _, _, _) =
         extract_session_messages_window(session_id, session_manager, registry, None, None).await?;
     Ok(messages)
 }
@@ -476,6 +476,18 @@ pub struct PagedSessionMessages {
     pub has_more: bool,
     /// 本页最老消息的 seq（下次请求的游标）；页为空时为 None
     pub oldest_seq: Option<i64>,
+    /// 本页最新消息的 seq；页为空时为 None。
+    ///
+    /// 与 `oldest_seq` 的区别：`oldest_seq` 是**上滑游标**（向更早翻页），
+    /// `newest_seq` 是**本页窗口的最新边界**（首屏时即会话最新端；向前翻页时
+    /// 仍是那一页的尾部，不是会话最新端）。前端用它与后端 `total_count` 比较，
+    /// 判断本地窗口是否已经落后于数据库（stale）。
+    pub newest_seq: Option<i64>,
+    /// 该会话**可见消息**的总条数（与分页查询同一套可见性条件）。
+    ///
+    /// 注意口径是「消息条数」而不是「轮数」：`limit` 是轮数，一页可能装几十条消息。
+    /// 空会话为 0。
+    pub total_count: i64,
 }
 
 /// 懒加载核心：从 events 恢复后，按窗口取消息并走与全量完全相同的加工逻辑
@@ -490,7 +502,7 @@ async fn extract_session_messages_window(
     registry: &SnapshotRegistry,
     before_seq: Option<i64>,
     max_turns: Option<usize>,
-) -> Result<(Vec<SessionMessage>, bool, Option<i64>), String> {
+) -> Result<(Vec<SessionMessage>, bool, Option<i64>, Option<i64>), String> {
     // max_turns = None 表示全量语义（不分页）；Some(n) 表示按轮凑页（n = 每页轮数，
     // 默认 5：2K 屏一屏约 2-3 轮，每页约 2 屏内容，翻页节奏适中）
     let paged = max_turns.is_some();
@@ -521,8 +533,8 @@ async fn extract_session_messages_window(
     *ctx.memory.lock().await = memory.clone();
 
     if memory.messages.is_empty() && session::session_messages_count(session_id).unwrap_or(0) == 0 {
-        // 空会话：窗口版返回空页 + 无更早数据
-        return Ok((Vec::new(), false, None));
+        // 空会话：窗口版返回空页 + 无更早数据 + 两端 seq 均为空
+        return Ok((Vec::new(), false, None, None));
     }
 
     let linked_rollbacks = build_linked_rollbacks(session_id);
@@ -612,6 +624,11 @@ async fn extract_session_messages_window(
     // 窗口最老消息的 seq（分页游标）；memory 回退分支无 seq，返回 None
     let oldest_seq = render_messages
         .first()
+        .and_then(|(_, _, seq, _, _, _)| seq.map(|s| s as i64));
+    // 窗口最新消息的 seq（本页尾部边界）：同样是**本页**的最后一条，不是会话最新端 ——
+    // 向上翻页时这一页的尾部必然早于会话最新端，前端只拿首屏那一页的最值做比较。
+    let newest_seq = render_messages
+        .last()
         .and_then(|(_, _, seq, _, _, _)| seq.map(|s| s as i64));
 
     let display_messages = render_messages
@@ -792,7 +809,12 @@ async fn extract_session_messages_window(
         });
     }
 
-    Ok((result, has_more.unwrap_or(false), oldest_seq))
+    Ok((
+        result,
+        has_more.unwrap_or(false),
+        oldest_seq,
+        newest_seq,
+    ))
 }
 
 #[tauri::command]
@@ -864,7 +886,7 @@ pub async fn get_session_messages_paged(
         );
     }
     // limit 在此命令中语义为 **每页轮数**（默认 5 轮）
-    let (messages, has_more, oldest_seq) = extract_session_messages_window(
+    let (messages, has_more, oldest_seq, newest_seq) = extract_session_messages_window(
         &session_id,
         &session_manager,
         &registry,
@@ -872,10 +894,18 @@ pub async fn get_session_messages_paged(
         limit,
     )
     .await?;
+    // 可见消息总条数：与上面的窗口查询同一套可见性条件，前端据此判定本地窗口是否落后。
+    // 统计失败不阻断消息返回 —— 分页元数据缺失时给 0（前端按"未知"处理），
+    // 总比因为一次 COUNT 查询把整页内容丢掉要好。
+    let total_count = session::session_message_stats(&session_id)
+        .map(|(count, _)| count)
+        .unwrap_or(0);
     Ok(PagedSessionMessages {
         messages,
         has_more,
         oldest_seq,
+        newest_seq,
+        total_count,
     })
 }
 

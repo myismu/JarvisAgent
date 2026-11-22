@@ -796,18 +796,19 @@ impl PipelineState {
 
         let sid = session_id.clone();
         let ctx = session_manager.get_or_create(&session_id).await;
-        // 步骤 1：会话占用检查 —— 同一会话已有任务在执行时拒绝新请求
-        let has_active_run = ctx
-            .cancel_token
-            .lock()
-            .await
-            .as_ref()
-            .map(|token| !token.is_cancelled())
-            .unwrap_or(false);
-        if has_active_run {
-            return Err(AgentError::Session(
-                "当前会话已有任务正在执行，请等待完成或先停止当前任务。".to_string(),
-            ));
+        // 步骤 1：会话占用检查 —— 同一会话已有任务在执行（或正在停止）时拒绝新请求。
+        //
+        // 只看「令牌是否存在」，不看是否已取消：`cancel_jarvis` 不再提前清空令牌，
+        // 已取消但仍在收尾的管线（工具批次、历史落库）依旧占用会话。
+        // 若把"已取消"当成空闲，新旧两条管线会并发写同一份会话历史。
+        let active_cancel = ctx.cancel_token.lock().await.clone();
+        if let Some(token) = active_cancel {
+            let message = if token.is_cancelled() {
+                "上一轮正在停止中，请稍候再发送。"
+            } else {
+                "当前会话已有任务正在执行，请等待完成或先停止当前任务。"
+            };
+            return Err(AgentError::Session(message.to_string()));
         }
         // 步骤 2：创建本次执行的取消令牌并挂载到会话（用户随时可停止）
         let cancel_token = tokio_util::sync::CancellationToken::new();
@@ -1251,6 +1252,8 @@ impl PipelineState {
         // 步骤 4：注入后立即落库（防止崩溃丢消息）
         crate::core::session::save_session(&self.sid, &memory_after_user_message, None);
         let _ = self.app.emit("session-updated", ());
+        // 可见消息集合变了：让非活跃的会话视图标脏（前端切回时只重拉一次）
+        crate::core::session::notify_messages_changed(&self.app, &self.sid, "agent-commit");
 
         // 深度思考决策（整轮一次性决定，之后不再改变）
         //
@@ -2247,6 +2250,8 @@ impl PipelineState {
         };
         if let Some(ref meta) = session_meta {
             let _ = self.app.emit("session-updated", ());
+            // 回合收尾：末条消息与计数可能已变，统一在这里补一次变更通知
+            crate::core::session::notify_messages_changed(&self.app, &self.sid, "turn-finalize");
 
             // 自动命名：消息数足够且未命名过时，后台调 LLM 生成标题
             if !was_cancelled && meta.message_count >= 2 && meta.title_source == "default" {
@@ -2480,6 +2485,8 @@ impl PipelineState {
             let memory = self.ctx.memory.lock().await.clone();
             crate::core::session::save_session(&self.sid, &memory, None);
             let _ = self.app.emit("session-updated", ());
+            // 中断保留的半截内容已落库：同一条通知让其它视图标脏
+            crate::core::session::notify_messages_changed(&self.app, &self.sid, "interrupted");
         }
 
         // 5. 通知前端（与用户取消区分：type = interrupted）
@@ -3045,16 +3052,27 @@ impl PipelineState {
                 return;
             }
 
-            let compact_result = auto_compact(
-                &self.sid,
-                &mut session,
-                &self.client,
-                &self.api_key,
-                &self.base_url,
-                &self.cfg.utility_model,
-                self.api_format,
-            )
-            .await;
+            // 压缩调用也要能被打断：auto_compact 是**非流式** LLM 调用（整体超时
+            // 约 60 秒），旧实现里用户此时点停止，要等它返回才轮到取消检查。
+            // 取消时复用下方 Err 分支的收尾路径：把本轮区间原样拼回（它已被
+            // drain 出来，不能丢），由下一次循环开头的取消检查走正常中断收口。
+            let compact_result = tokio::select! {
+                biased;
+                _ = self.cancel_token.cancelled() => Err(
+                    crate::infra::types::error::MemoryError::CompactionFailed(
+                        "用户取消".to_string(),
+                    ),
+                ),
+                result = auto_compact(
+                    &self.sid,
+                    &mut session,
+                    &self.client,
+                    &self.api_key,
+                    &self.base_url,
+                    &self.cfg.utility_model,
+                    self.api_format,
+                ) => result,
+            };
 
             // 无论压缩成功与否，本轮区间都必须原样拼回
             match compact_result {

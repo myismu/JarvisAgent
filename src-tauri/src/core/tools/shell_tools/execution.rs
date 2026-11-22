@@ -204,6 +204,45 @@ pub fn is_file_mutation_command(cmd: &str) -> Option<&'static str> {
     None
 }
 
+/// 子进程树清理守卫。
+///
+/// `tokio::process::Child` 的 `kill_on_drop` 只结束**直接子进程**（这里是
+/// PowerShell/bash）。Windows 上命令常常再派生子进程（npm、cargo、dotnet 等），
+/// 父 shell 被结束后它们会变成孤儿继续运行、继续改文件——这正是用户点
+/// "停止生成"后命令仍在后台干活的来源。守卫在析构时用 `taskkill /T` 结束整棵树。
+///
+/// 声明位置必须在 `child` 之后：局部变量按声明逆序析构，保证先杀树（此时父进程
+/// 还活着，`/T` 才能找到子孙），再由 `kill_on_drop` 兜底直接子进程。
+struct ChildTreeGuard {
+    /// 直接子进程 PID；`None` = 进程已正常退出，无需再清理
+    pid: Option<u32>,
+}
+
+impl Drop for ChildTreeGuard {
+    fn drop(&mut self) {
+        if let Some(pid) = self.pid.take() {
+            kill_process_tree(pid);
+        }
+    }
+}
+
+/// 结束指定 PID 及其整棵进程树（仅 Windows 有额外实现）。
+#[cfg(windows)]
+fn kill_process_tree(pid: u32) {
+    use std::os::windows::process::CommandExt;
+    // CREATE_NO_WINDOW：避免停止时闪出一个黑框
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+}
+
+/// Unix 侧由 `kill_on_drop` 结束直接子进程；
+/// 进程组级的树清理需要额外建组，不在本次改造范围内。
+#[cfg(not(windows))]
+fn kill_process_tree(_pid: u32) {}
+
 /// 异步执行 shell 命令（按平台选择 PowerShell 或 bash），返回 (stdout, stderr, exit_code)
 async fn run_shell_async(cmd: &str, exec_dir: &std::path::Path) -> (String, String, i32) {
     let (shell, args) = if cfg!(target_os = "windows") {
@@ -230,9 +269,14 @@ async fn run_shell_async(cmd: &str, exec_dir: &std::path::Path) -> (String, Stri
         .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // 本轮 future 被丢弃（用户停止 / 超时）时结束直接子进程；
+        // 孙进程由下面的 ChildTreeGuard 负责
+        .kill_on_drop(true)
         .spawn()
     {
         Ok(mut child) => {
+            // 守卫先接管 PID：后续任何 await 点被 abort，Drop 都会清理整棵进程树
+            let mut tree_guard = ChildTreeGuard { pid: child.id() };
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
 
@@ -274,6 +318,8 @@ async fn run_shell_async(cmd: &str, exec_dir: &std::path::Path) -> (String, Stri
                 .await
                 .map(|s| s.code().unwrap_or(-1))
                 .unwrap_or(-1);
+            // 进程已正常退出：清掉 PID，避免 Drop 时误杀（PID 可能已被系统复用）
+            tree_guard.pid = None;
 
             (stdout_out, stderr_out, exit_code)
         }

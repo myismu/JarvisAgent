@@ -164,6 +164,21 @@ export function useAgentEvents() {
     view.currentTurn.revision += 1;
   }
 
+  /**
+   * 把后端 run 记录同步成视图的**运行态**（RUNNING / INTERRUPTED / 收口）。
+   *
+   * ⚠️ 本函数**不推进 `hydration`**（会话消息窗口的生命周期状态）。
+   *
+   * 历史教训（2026-11-23 定位）：这里原本在三条分支上都写了 `view.hydrated = true`，
+   * 布尔时代的语义是「视图有内容可渲染」。迁移到 `hydration` 状态机后，
+   * `markSessionReady` 的含义变成「消息窗口已与后端一致」，于是 `idle` 视图被无条件
+   * 提升为 `ready`：切会话时 `Sidebar.switchToSession` 先跑 `loadAgentRunsFromBackend`
+   * （会走到本函数），再跑 `ensureSessionViewLoaded` —— 后者看到 `ready` 直接 no-op，
+   * 首屏 `get_session_messages_paged` 一次都不发，界面停在空白 WelcomeScreen。
+   *
+   * 判据：run 状态与消息窗口是两个正交的事实源。只有真正把消息写进视图的路径
+   * （`replaceSessionMessages` / 事件补齐）才有资格置 `ready`。
+   */
   function applyAgentRunState(sessionId: string, runs: AgentRun[]) {
     const view = session.getSessionView(sessionId);
     const running = latestRun(runs, (run) => run.sessionId === sessionId && run.status === "running");
@@ -197,7 +212,7 @@ export function useAgentEvents() {
       if (prevRunId && prevRunId !== running.runId && view.messages.length === 0) {
         hydrateCurrentTurnFromRun(view, running);
       }
-      view.hydrated = true;
+      // 不置 ready：本分支只重建了 currentTurn（内存展示层），messages 仍是空的
       return;
     }
 
@@ -227,7 +242,7 @@ export function useAgentEvents() {
         hydrateCurrentTurnFromRun(view, interrupted);
       }
       view.currentTurn.isRunning = false;
-      view.hydrated = true;
+      // 同上：仅同步运行态，不代表消息窗口已对齐
       return;
     }
 
@@ -238,13 +253,14 @@ export function useAgentEvents() {
     view.currentTurn.isRunning = false;
     // run 正常收口：同上，清理未走完正式提交流程的流式态方案预览
     perm.clearStreamingPlanProposal(sessionId);
-    view.hydrated = true;
+    // 收口同样不置 ready：消息由 checkpoint-created / session-messages-changed
+    // 等落库事件驱动重载，那几条路径各自负责推进 hydration。
   }
 
-  async function refreshSessionHistory(sessionId: string) {
+  async function refreshSessionHistory(sessionId: string, reason: string) {
     try {
-      // 重置式懒加载首屏：与进入会话同口径（全量替换会让分页状态失效）
-      await chat.loadSessionMessagesReset(sessionId);
+      // 入口三：强制重载会话视图（分页首屏 + 重置分页游标）
+      await chat.reloadSessionView(sessionId, reason);
     } catch (err) {
       // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
       console.error("加载会话消息失败:", err);
@@ -348,7 +364,7 @@ export function useAgentEvents() {
       };
       applyAgentRunState(effectiveSid, runs);
       if (options.refreshHistory !== false) {
-        await refreshSessionHistory(effectiveSid);
+        await refreshSessionHistory(effectiveSid, 'agent-runs');
         applyAgentRunState(effectiveSid, runs);
         if (session.getSessionView(effectiveSid).messages.length !== beforeMsgCount) {
           chat.triggerRender();
@@ -502,8 +518,7 @@ export function useAgentEvents() {
       const sid = event.payload.sessionId ?? session.activeSessionId;
       if (sid) {
         perm.updatePlanProposalStreamingContent(sid, event.payload.content);
-        const view = session.getSessionView(sid);
-        view.hydrated = true;
+        session.markSessionReady(sid);
         syncActiveSessionView(sid, false);
       }
     });
@@ -534,7 +549,7 @@ export function useAgentEvents() {
           },
           sid
         );
-        view.hydrated = true;
+        session.markSessionReady(sid);
         syncActiveSessionView(sid, true);
       }
     });
@@ -609,7 +624,7 @@ export function useAgentEvents() {
       //   跨重启的持久化由 `agent_run_events` 承担，见 session.ts 的 loopStepCount 注释。）
       if (startedLoop) session.noteLoopStep(sessionId, startedLoop);
       view.streamActive = true;
-      view.hydrated = true;
+      session.markSessionReady(sessionId);
       syncActiveSessionView(sessionId, true);
     });
 
@@ -625,7 +640,7 @@ export function useAgentEvents() {
       view.tempBuffer += content;
       appendAgentText(view, content, "assistant", payloadLoop(event.payload));
       view.streamActive = true;
-      view.hydrated = true;
+      session.markSessionReady(sessionId);
       syncActiveSessionView(sessionId, true);
     });
 
@@ -643,7 +658,7 @@ export function useAgentEvents() {
       view.thinkingBuffer += content;
       appendAgentThinking(view, content, payloadLoop(event.payload));
       view.streamActive = true;
-      view.hydrated = true;
+      session.markSessionReady(sessionId);
       syncActiveSessionView(sessionId, true);
     });
 
@@ -666,7 +681,7 @@ export function useAgentEvents() {
         );
       }
       view.streamActive = true;
-      view.hydrated = true;
+      session.markSessionReady(sessionId);
       syncActiveSessionView(sessionId, true);
     });
 
@@ -683,7 +698,7 @@ export function useAgentEvents() {
         appendAgentExecutionLog(view, content, payloadLoop(event.payload));
       }
       view.streamActive = true;
-      view.hydrated = true;
+      session.markSessionReady(sessionId);
       syncActiveSessionView(sessionId, true);
     });
 
@@ -698,7 +713,7 @@ export function useAgentEvents() {
       view.toolBuffer += content;
       appendAgentExecutionLog(view, content, payloadLoop(event.payload));
       view.streamActive = true;
-      view.hydrated = true;
+      session.markSessionReady(sessionId);
       syncActiveSessionView(sessionId, true);
     });
 
@@ -713,7 +728,7 @@ export function useAgentEvents() {
       view.thinkingBuffer = "";
       finishAgentLoop(view, Boolean(has_tool));
       view.streamActive = has_tool;
-      view.hydrated = true;
+      session.markSessionReady(sessionId);
       syncActiveSessionView(sessionId, true);
     });
 
@@ -743,7 +758,7 @@ export function useAgentEvents() {
         });
         view.currentTurn.noticeKind = "waiting_hint";
         view.streamActive = true;
-        view.hydrated = true;
+        session.markSessionReady(sessionId);
         syncActiveSessionView(sessionId, true);
         return;
       }
@@ -755,7 +770,7 @@ export function useAgentEvents() {
         });
         view.currentTurn.noticeKind = "retry";
         view.streamActive = true;
-        view.hydrated = true;
+        session.markSessionReady(sessionId);
         syncActiveSessionView(sessionId, true);
         return;
       }
@@ -791,14 +806,14 @@ export function useAgentEvents() {
           view.currentTurn.noticeKind = "reflection";
         }
         view.streamActive = true;
-        view.hydrated = true;
+        session.markSessionReady(sessionId);
         syncActiveSessionView(sessionId, true);
         return;
       }
       const fullStep = { ...step, timestamp: Date.now() } as AgentStep;
       view.agentSteps.push(fullStep);
       applyAgentStepToCurrentTurn(view, fullStep);
-      view.hydrated = true;
+      session.markSessionReady(sessionId);
     });
 
     // subagent updated（节流批量更新，减轻 5s 心跳 × N 子 Agent 的渲染压力）
@@ -865,13 +880,134 @@ export function useAgentEvents() {
           canRollback: true,
         };
       }
-      view.hydrated = true;
+      session.markSessionReady(sessionId);
       // 会话仍在运行时不刷新消息——checkpoint 的部分回复会和 live currentTurn 重叠
       // ERROR 状态不刷新——错误消息仅在客户端 messages 中，刷新会冲掉
       if (view.status !== 'RUNNING' && view.status !== 'ERROR') {
-        await refreshSessionHistory(sessionId);
+        await refreshSessionHistory(sessionId, 'checkpoint');
       }
       syncActiveSessionView(sessionId, false);
+    });
+
+    // 会话消息落库变更（后端在「消息真正写进 DB」后广播）
+    //
+    // 这是**事件驱动的缓存失效**：事件只告诉我们「哪个会话的后端数据变了」，
+    // 拉到什么由 chat store 的 hydration 状态机裁决。
+    // 核心取舍：非活跃会话**只标脏、绝不发 IPC** —— 后台会话（别的窗口/后台任务
+    // 在那边写消息）爱怎么写都不影响前台的请求量，等用户切回来时由
+    // `ensureSessionViewLoaded` 消费 stale 态拉一次，切回只拉一次。
+    //
+    // 载荷是后端的固定契约 `{ sessionId, count, lastSeq, reason }`，前端不改名/不加字段：
+    // - `count`：本批写了多少条消息（只用于合并与日志，不参与判断）
+    // - `lastSeq`：本批最后一条消息的 seq（空批为 null）
+    // - `reason`：写入来源（如 turn-end / subagent / rollback），拼进审计用 reason
+    //
+    // 合并：同一微任务内同一会话的多次到达合成一条待办（见下方 pending 表）。
+    // 第二层去重由 chat store 的在途请求表兜底（并发重载复用同一个 Promise）。
+    //
+    // 手工验证（非活跃会话切回只拉一次）：
+    // 1. 打开会话 A，再切到会话 B（此时 A 非活跃，视图停在 ready）；
+    // 2. 在 B 里跑一轮落库次数多的任务（工具调用多），全程让 B 保持前台；
+    // 3. devtools 控制台应反复出现 A 的 `[chat] markSessionViewStale: session=A ...
+    //    hydration=ready->stale`，但**没有** A 的 `session-view load start`
+    //    （非活跃会话零 IPC）；
+    // 4. 切回 A：控制台应只出现**一条** `session-view load start/done: session=A`；
+    // 5. 事件在活跃会话 RUNNING 中到达时只标脏（`markSessionViewStale`，不重载），
+    //    回合收尾由既有路径（agent-run-updated / checkpoint-created 的强制重载）消费 stale。
+    type SessionMessagesChangedPayload = {
+      sessionId: string;
+      count: number;
+      lastSeq: number | null;
+      reason: string;
+    };
+
+    // 待处理表：sessionId → 合并后的一批变更（同一微任务内同会话只留一条）
+    const pendingMessagesChanged = new Map<
+      string,
+      { reason: string; count: number; lastSeq: number | null }
+    >();
+    let messagesChangedFlushScheduled = false;
+
+    /**
+     * 消费一批「消息变更」待办。
+     *
+     * 三种分支对应三种状态下的正确处置，注释在各分支上。
+     */
+    async function applySessionMessagesChanged(
+      sessionId: string,
+      batch: { reason: string; count: number; lastSeq: number | null },
+    ) {
+      const reason = `messages-changed:${batch.reason}`;
+      const view = session.getSessionView(sessionId);
+      console.debug(
+        `[events] session-messages-changed: session=${sessionId} count=${batch.count} lastSeq=${batch.lastSeq} reason=${reason} status=${view.status} hydration=${view.hydration}`,
+      );
+
+      // 分支一：会话正在跑（无论是否前台）→ 只标脏，不重载。
+      // 正在流式输出时前端有 live currentTurn（正文/思考/工具都在流式事件里追加），
+      // 此刻重载会和流式内容重叠成两份；回合结束时的既有收尾路径
+      // （agent-run-updated / checkpoint-created 里的强制重载）会消费这个 stale。
+      if (view.status === "RUNNING") {
+        chat.markSessionViewStale(sessionId, reason);
+        return;
+      }
+
+      // 分支二：活跃会话且不在运行 → 立刻与后端对齐（这一步才发 IPC）。
+      // 注意先置脏：`ensureSessionViewLoaded` 在 `ready` 态是零 IPC 的 no-op，
+      // 而事件已经明确告知「后端变了」，不置脏就白等。置脏只对 `ready` 生效
+      // （`idle`/`loading` 由 session store 忽略，它们本来就要走首屏/在途请求）。
+      if (sessionId === session.activeSessionId) {
+        if (view.hydration === "ready") {
+          chat.markSessionViewStale(sessionId, reason);
+        }
+        try {
+          // stale → 一次重载；loading → 复用同一在途 Promise；idle → 拉首屏
+          await chat.ensureSessionViewLoaded(sessionId, reason);
+        } catch (err) {
+          // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
+          console.error("加载会话消息失败:", err);
+          session.setSessionLoadError(sessionId, true);
+        }
+        return;
+      }
+
+      // 分支三：非活跃会话 → 只标脏，**不发 IPC**。
+      // 数据在后端已是权威，界面此刻没人看；等切回该会话时
+      // `active-session-changed` → `ensureSessionViewLoaded` 消费 stale 拉一次。
+      chat.markSessionViewStale(sessionId, reason);
+    }
+
+    /**
+     * 微任务级合并：同一事件在同一个微任务里多次到达（后端同一批写入连发多条）
+     * 时只保留一条待办，避免短时间重复重载。跨微任务的重复由 chat store 的在途请求表兜底。
+     */
+    function scheduleMessagesChangedFlush() {
+      if (messagesChangedFlushScheduled) return;
+      messagesChangedFlushScheduled = true;
+      queueMicrotask(() => {
+        messagesChangedFlushScheduled = false;
+        if (pendingMessagesChanged.size === 0) return;
+        const batches = Array.from(pendingMessagesChanged.entries());
+        pendingMessagesChanged.clear();
+        for (const [sessionId, batch] of batches) {
+          void applySessionMessagesChanged(sessionId, batch);
+        }
+      });
+    }
+
+    await on<SessionMessagesChangedPayload>("session-messages-changed", (event) => {
+      const p = event.payload;
+      if (!p?.sessionId) return;
+      const existing = pendingMessagesChanged.get(p.sessionId);
+      pendingMessagesChanged.set(p.sessionId, {
+        // reason 取最后一次（最新来源更能说明「为什么变」）。
+        // count / lastSeq 是**后端消息集合的快照值**，不是增量：合并时取最新值，
+        // 不能累加（累加会得到一个不存在于任何时刻的假计数）。
+        reason: p.reason || "unknown",
+        count: p.count ?? existing?.count ?? 0,
+        lastSeq: p.lastSeq ?? existing?.lastSeq ?? null,
+      });
+      scheduleMessagesChangedFlush();
     });
 
     // active session changed
@@ -917,14 +1053,14 @@ export function useAgentEvents() {
             cacheMiss: meta.totalCacheMissTokens || 0,
           });
 
-          if (!session.hasHydratedSessionView(nextActiveSessionId)) {
-            try {
-              await chat.loadSessionMessagesReset(nextActiveSessionId);
-            } catch (err) {
-              // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
-              console.error("加载会话消息失败:", err);
-              session.setSessionLoadError(nextActiveSessionId, true);
-            }
+          // 入口一：确保视图已装载（idle → 拉首屏，ready → 零 IPC，stale → 重拉）
+          // 不再自己判 `hasHydratedSessionView`，需不需要拉的裁决统一收进 chat store。
+          try {
+            await chat.ensureSessionViewLoaded(nextActiveSessionId, 'session-fallback');
+          } catch (err) {
+            // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
+            console.error("加载会话消息失败:", err);
+            session.setSessionLoadError(nextActiveSessionId, true);
           }
           await Promise.all([
             loadSubAgentRunsFromBackend(nextActiveSessionId),

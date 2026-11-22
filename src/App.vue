@@ -269,8 +269,9 @@ onMounted(async () => {
     const sid = event.payload.sessionId;
     if (!sid || sid !== session.activeSessionId) return;
     try {
-      // 压缩后重置式懒加载首屏（压缩不删 session_messages，全量拉取代价大）
-      await chat.loadSessionMessagesReset(sid);
+      // 压缩会重排历史（生成摘要并截断），属于「数据确实被后端改写」的场景：
+      // 走入口三强制重载，分页游标一并重置。
+      await chat.reloadSessionView(sid, 'compaction');
     } catch { /* ignore */ }
   });
   await initListeners();

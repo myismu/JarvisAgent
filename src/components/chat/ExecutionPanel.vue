@@ -191,4 +191,40 @@ const summaryText = computed(() => {
 .agent-execution-logs {
   margin: 8px 0;
 }
+
+/* 卡片外观原先由 ChatArea 的 `.response-text details` 统一下发；那条规则已收窄到
+ * Markdown 内容，组件在这里自己维护，避免与执行时间线的行互相干扰。 */
+.agent-execution-panel,
+.agent-thinking-block,
+.agent-execution-logs {
+  margin: 12px 0;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--glass-bg-light) calc(var(--agent-message-opacity, 0) * 1%), transparent);
+  border-radius: var(--radius-md);
+  transition: background-color var(--transition-fast);
+}
+.agent-execution-panel:hover,
+.agent-thinking-block:hover,
+.agent-execution-logs:hover,
+.agent-execution-panel[open],
+.agent-thinking-block[open],
+.agent-execution-logs[open] {
+  background: color-mix(in srgb, var(--glass-bg) calc(var(--agent-message-opacity, 0) * 1%), transparent);
+}
+.agent-execution-panel > summary,
+.agent-thinking-block > summary,
+.agent-execution-logs > summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  user-select: none;
+  outline: none;
+  transition: color var(--transition-fast);
+}
+.agent-execution-panel > summary:hover,
+.agent-thinking-block > summary:hover,
+.agent-execution-logs > summary:hover {
+  color: var(--text-main);
+}
 </style>

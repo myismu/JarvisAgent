@@ -731,26 +731,11 @@ const doSwitchProfile = async (id: string) => {
     if (activeProfile) {
       await checkModelCapabilities(activeProfile.config.mainModel);
     }
-    // 切模型后刷新历史，确保撤回锚点同步。
-    //
-    // ⚠️ 2026-11-22 改为分页首屏：原先这里用全量 `get_session_messages` +
-    // `replaceSessionMessages`，会把懒加载的 5 轮窗口一次性替换成整个会话，
-    // 而且不重置分页游标（之后上滑翻页会按旧游标重取）。
-    // 与进入会话、撤回、压缩后等路径统一成同一口径。
-    try {
-      if (session.activeSessionId) {
-        const view = session.getSessionView(session.activeSessionId);
-        if (view.status !== 'RUNNING') {
-          try {
-            await chat.loadSessionMessagesReset(session.activeSessionId);
-          } catch (err) {
-            // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
-            console.error('加载会话消息失败:', err);
-            session.setSessionLoadError(session.activeSessionId, true);
-          }
-        }
-      }
-    } catch { /* ignore */ }
+    // 切模型后**不刷新历史**：消息列表与撤回锚点都不随模型预设变化。
+    // 撤回锚点（messageId / rollbackCheckpointId）是会话消息自身的元数据，落在
+    // `session_messages`，与「当前用哪个模型」无关；这里原先的“切模型后重拉首屏”
+    // 只会在切预设时白拉一次 IPC + 把上滑加载的窗口归位。
+    // 真正需要重拉历史的四类场景（压缩 / 回滚 / 中断恢复 / 撤回）由各自主路径负责。
   } catch (e) {
     console.error('Failed to switch profile:', e);
   }
@@ -1145,30 +1130,14 @@ onMounted(async () => {
   }
 
   unlistenConfig = await listen('config-updated', async () => {
+    // **配置事件不参与消息刷新**：这里只重读配置（模型名 / 模型能力 / 预设列表）。
+    //
+    // 本事件不只由「保存配置 / 切模型」触发：后端 `align_active_profile_to_session`
+    // （command/session.rs）在**切换会话**时也会发它（两个会话预设不同时）。
+    // 原先这里顺带重拉一次历史，于是切会话时 Sidebar 刚加载好的 5 轮首屏会被
+    // 整个会话覆盖（用户实测：切到长对话后加载出绝大部分历史）。
+    // 消息加载已统一收口到 chat store 的三个入口，事件里不再插手。
     loadConfig();
-    // ⚠️ 2026-11-22：本事件不只由「保存配置 / 切模型」触发。
-    // `align_active_profile_to_session`（后端 command/session.rs）在**切换会话**时
-    // 也会发它——只要两个会话的模型预设不同（前端 syncProfileFromSession 触发对齐）。
-    //
-    // 原先这里用全量 `get_session_messages` 重灌历史，于是切会话时 Sidebar 刚加载好的
-    // 5 轮首屏会被整个会话覆盖（用户实测：切到长对话后加载出绝大部分历史）。
-    // 更糟的是一次覆盖后 `hydrated` 恒为 true，切走再切回也不会恢复成 5 轮。
-    //
-    // 改为与进入会话同一口径：分页首屏 + 同时重置分页游标。
-    try {
-      if (session.activeSessionId) {
-        const view = session.getSessionView(session.activeSessionId);
-        if (view.status !== 'RUNNING') {
-          try {
-            await chat.loadSessionMessagesReset(session.activeSessionId);
-          } catch (err) {
-            // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
-            console.error('加载会话消息失败:', err);
-            session.setSessionLoadError(session.activeSessionId, true);
-          }
-        }
-      }
-    } catch { /* ignore */ }
   });
 
   // 监听 Agent 自动切换 WorkMode 的事件
@@ -1303,18 +1272,29 @@ const handleSubmit = () => {
   }
 };
 
-const isCancelling = ref(false);
 const isCompacting = ref(false);
 let unlistenCompacting: UnlistenFn | null = null;
 
+/**
+ * 「正在停止」：已发出停止请求、但本轮尚未真正收尾。
+ *
+ * 状态挂在会话视图上（`view.stopping`）而不是组件局部变量：
+ * - 点击后立即生效，按钮显示 spinner 并禁用，防止用户以为没效果而反复点击；
+ * - 切走再切回同一会话，停止中的反馈仍然正确；
+ * - 直到 `sendToJarvis` 收尾（状态回落到 IDLE/ERROR）才结束，覆盖后端
+ *   「等工具批次结束才能停」的真实耗时，而不是只覆盖一次毫秒级的 IPC 往返。
+ *
+ * 注意这里**不叠加** `status === 'RUNNING'`：后端收尾时 `agent-run-updated`
+ * 会先把视图改成 INTERRUPTED，而 `ask_jarvis` 的取消回执稍后才到。
+ * 若此时就收起 spinner，输入框会短暂恢复成可发送状态，而上一轮其实还在
+ * 释放资源，新消息会被后端以"上一轮正在停止中"拒绝。
+ */
+const isStopping = computed(() => session.getSessionView(session.activeSessionId).stopping);
+
 const handleCancel = async () => {
-  if (isCancelling.value) return;
-  isCancelling.value = true;
-  try {
-    await chat.cancelJarvis();
-  } finally {
-    isCancelling.value = false;
-  }
+  // 按钮虽然 disabled，键盘触发/连点仍可能进来；停止中的重复点击直接忽略
+  if (isStopping.value) return;
+  await chat.cancelJarvis(session.activeSessionId ?? undefined);
 };
 
 const removeMediaFile = (index: number) => {
@@ -1593,14 +1573,14 @@ const handleRecallEdit = async () => {
             <path d="M12 2a10 10 0 0 1 10 10"></path>
           </svg>
         </button>
-        <button v-else-if="!isRunning" class="send-btn" :class="{ active: userInput.trim() || mediaFiles.length > 0 }" @click="handleSubmit" :title="t('input.send')">
+        <button v-else-if="!isRunning && !isStopping" class="send-btn" :class="{ active: userInput.trim() || mediaFiles.length > 0 }" @click="handleSubmit" :title="t('input.send')">
           <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <line x1="22" y1="2" x2="11" y2="13"></line>
             <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
           </svg>
         </button>
-        <button v-else class="send-btn active stop-state" @click="handleCancel" :title="t('input.stop')" :disabled="isCancelling">
-          <svg v-if="!isCancelling" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+        <button v-else class="send-btn active stop-state" @click="handleCancel" :title="t('input.stop')" :disabled="isStopping" :aria-busy="isStopping ? 'true' : undefined">
+          <svg v-if="!isStopping" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
           <svg v-else class="spinner-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10"></circle>
             <path d="M12 2a10 10 0 0 1 10 10"></path>

@@ -8,7 +8,7 @@
 - `SubAgentChatPane`: 子 Agent 列表选择与逐轮只读轨迹视图
 
 ## Dependencies
-- Internal: `../../types`, `../common/StreamingMarkdown.vue`
+- Internal: `../../types`, `../../utils/agentTurnRender`, `./ExecutionTimeline.vue`
 - External: `vue`, `vue-i18n`
 
 ## Constraints
@@ -18,8 +18,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { SubAgentConversationItem, SubAgentTraceEvent } from '../../types';
-import StreamingMarkdown from '../common/StreamingMarkdown.vue';
+import type { AgentToolCallView, AgentToolStatus, SubAgentConversationItem, SubAgentTraceEvent } from '../../types';
+import ExecutionTimeline from './ExecutionTimeline.vue';
+import { stripPseudoToolCalls, type DevTimelineItem } from '../../utils/agentTurnRender';
+import { isLongUserText } from '../../utils/userMessage';
 
 interface TraceRequest {
   model?: string | null;
@@ -46,6 +48,12 @@ interface TraceLoop {
   toolResults: TraceToolResult[];
 }
 
+/** 渲染视图：在 TraceLoop 上补出主对话同款的执行过程条目。 */
+interface LoopView extends TraceLoop {
+  /** 本轮响应映射成主对话同款的执行过程条目 */
+  timelineItems: DevTimelineItem[];
+}
+
 const props = defineProps<{
   runs: SubAgentConversationItem[];
   activeRunId: string | null;
@@ -59,8 +67,9 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 const transcriptRef = ref<HTMLElement | null>(null);
-const expandedRequestLoops = ref<Set<number>>(new Set());
-const expandedToolCalls = ref<Set<string>>(new Set());
+// 初始任务气泡的展开态。任务提示词经常是一整段长文本，默认折叠，避免把整轮
+// 执行内容顶出首屏；切换子 Agent 时随其他展开态一起重置（见下方 watch）。
+const expandedTask = ref(false);
 const selectedRun = computed(() => props.run);
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -91,7 +100,16 @@ function contentText(content: unknown): string {
     const type = asString(block.type);
     if (type === 'text' || type === 'context') return asString(block.text);
     if (type === 'thinking') return asString(block.thinking);
-    if (type === 'tool_result') return asString(block.content);
+    if (type === 'tool_use' || type === 'tool_call') {
+      const name = asString(block.name) || asString(asRecord(block.function)?.name) || 'tool';
+      const input = block.input ?? asRecord(block.function)?.arguments ?? null;
+      return `工具调用 ${name}\n${formatJson(input)}`;
+    }
+    if (type === 'tool_result') {
+      // tool_result 的 content 可能是字符串或内容块数组；递归取值，取不到再退回 JSON。
+      const inner = contentText(block.content).trim();
+      return inner || (block.content === undefined ? '' : formatJson(block.content));
+    }
     if (type === 'image') return '[图片]';
     return '';
   }).filter(Boolean).join('\n');
@@ -140,6 +158,135 @@ const loops = computed<TraceLoop[]>(() => {
   return [...byLoop.values()].sort((a, b) => a.loopIndex - b.loopIndex);
 });
 
+const loopViews = computed<LoopView[]>(() =>
+  loops.value.map((loop) => ({
+    ...loop,
+    timelineItems: buildLoopTimeline(loop),
+  })),
+);
+
+/** 所有轮次的执行条目按顺序拼成一条连续时间线，与主对话执行过程一致。 */
+const allTimelineItems = computed<DevTimelineItem[]>(() =>
+  loopViews.value.flatMap((loop) => loop.timelineItems),
+);
+
+/**
+ * 与 AgentTurn 相同的拆分口径：
+ * - 运行中：全部留在执行过程里；
+ * - 已结束：最后一段正文提升为最终回答，用正文口径渲染（颜色更重）。
+ */
+const timelineSplit = computed(() => {
+  const items = allTimelineItems.value;
+  if (selectedRun.value?.status === 'running') {
+    return { execItems: items, finalItems: [] as DevTimelineItem[] };
+  }
+  let lastTextIdx = -1;
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    if (items[i].type === 'text') {
+      lastTextIdx = i;
+      break;
+    }
+  }
+  if (lastTextIdx < 0) {
+    return { execItems: items, finalItems: [] as DevTimelineItem[] };
+  }
+  return {
+    execItems: items.filter((_, i) => i !== lastTextIdx),
+    finalItems: [items[lastTextIdx]],
+  };
+});
+
+/**
+ * 把一轮响应映射成主对话同款的执行时间线条目。
+ *
+ * 顺序以响应 blocks 的顺序为准（思考 / 正文 / 工具调用），这样文本和工具调用
+ * 能像主对话执行过程一样交错出现；工具结果按 tool_use_id 回填到对应工具上。
+ * 没有匹配到工具调用的结果（中断 / 旧数据）仍作为工具行保留，避免静默丢失。
+ */
+function buildLoopTimeline(loop: TraceLoop): DevTimelineItem[] {
+  const response = loop.response;
+  if (!response) return [];
+  const items: DevTimelineItem[] = [];
+  const usedResults = new Set<TraceToolResult>();
+
+  const pushThinking = (content: string, timestamp: number) => {
+    const text = content.trim();
+    if (text) items.push({ type: 'thinking', content: text, status: 'completed', streaming: false, timestamp });
+  };
+  const pushText = (content: string, timestamp: number) => {
+    const text = stripPseudoToolCalls(content).trim();
+    if (text) items.push({ type: 'text', content: text, timestamp });
+  };
+  const pushTool = (call: TraceToolCall, callIndex: number, timestamp: number) => {
+    const result = toolResultFor(loop, call, callIndex);
+    if (result) usedResults.add(result);
+    const status: AgentToolStatus = result ? (result.isError ? 'error' : 'completed') : 'running';
+    const tool: AgentToolCallView = {
+      id: call.id,
+      loop: loop.loopIndex,
+      name: call.name,
+      status,
+      input: call.input === undefined || call.input === null
+        ? undefined
+        : (typeof call.input === 'string' ? call.input : formatJson(call.input)),
+      output: result && !result.isError ? result.output : undefined,
+      error: result && result.isError ? result.output : undefined,
+      logs: [],
+      timestamp,
+      updatedAt: timestamp,
+    };
+    items.push({ type: 'tool', tool, streaming: false, timestamp });
+  };
+
+  const blocks = Array.isArray(response.blocks) ? response.blocks : [];
+  if (blocks.length > 0) {
+    let toolIndex = 0;
+    blocks.forEach((value, index) => {
+      const block = asRecord(value);
+      if (!block) return;
+      const type = asString(block.type);
+      if (type === 'text') {
+        pushText(asString(block.text), index);
+      } else if (type === 'thinking') {
+        pushThinking(asString(block.thinking), index);
+      } else if (type === 'tool_use' || type === 'tool_call') {
+        const functionCall = asRecord(block.function);
+        pushTool({
+          id: asString(block.id) || asString(block.tool_use_id) || `tool-${toolIndex}`,
+          name: asString(block.name) || asString(functionCall?.name) || 'Tool',
+          input: block.input ?? functionCall?.arguments ?? null,
+        }, toolIndex, index);
+        toolIndex += 1;
+      }
+    });
+  } else {
+    pushThinking(responseThinking(response), 0);
+    pushText(responseText(response), 1);
+    toolCalls(response).forEach((call, index) => pushTool(call, index, index + 2));
+  }
+
+  let orphanIndex = 0;
+  for (const result of loop.toolResults) {
+    if (usedResults.has(result)) continue;
+    const timestamp = blocks.length + orphanIndex;
+    const tool: AgentToolCallView = {
+      id: `orphan-${loop.loopIndex}-${orphanIndex}`,
+      loop: loop.loopIndex,
+      name: result.tool || 'Tool',
+      status: result.isError ? 'error' : 'completed',
+      output: result.isError ? undefined : result.output,
+      error: result.isError ? result.output : undefined,
+      logs: [],
+      timestamp,
+      updatedAt: timestamp,
+    };
+    items.push({ type: 'tool', tool, streaming: false, timestamp });
+    orphanIndex += 1;
+  }
+
+  return items;
+}
+
 const initialTask = computed(() => {
   const firstRequest = loops.value.find((loop) => loop.request)?.request?.payload;
   const messages = firstRequest?.messages;
@@ -150,6 +297,9 @@ const initialTask = computed(() => {
   }
   return selectedRun.value?.promptPreview || '';
 });
+
+// 与主对话共用同一套长消息判定（utils/userMessage）：两处阈值不会再漂移。
+const taskIsLong = computed(() => isLongUserText(initialTask.value));
 
 function responseText(response: Record<string, unknown> | null): string {
   if (!response) return '';
@@ -211,32 +361,6 @@ function statusLabel(run: SubAgentConversationItem | null): string {
   }
 }
 
-function toolStatusLabel(result: TraceToolResult | null): string {
-  if (!result) return t('monitor.subAgentChat.toolRunning');
-  return result.isError
-    ? t('monitor.subAgentChat.toolFailed')
-    : t('monitor.subAgentChat.toolCompleted');
-}
-
-function toolCallKey(loopIndex: number, call: TraceToolCall): string {
-  return `${loopIndex}:${call.id}`;
-}
-
-function updateExpandedSet<T>(target: { value: Set<T> }, key: T, expanded: boolean) {
-  const next = new Set(target.value);
-  if (expanded) next.add(key);
-  else next.delete(key);
-  target.value = next;
-}
-
-function onRequestToggle(loopIndex: number, event: Event) {
-  updateExpandedSet(expandedRequestLoops, loopIndex, (event.currentTarget as HTMLDetailsElement).open);
-}
-
-function onToolToggle(loopIndex: number, call: TraceToolCall, event: Event) {
-  updateExpandedSet(expandedToolCalls, toolCallKey(loopIndex, call), (event.currentTarget as HTMLDetailsElement).open);
-}
-
 function phaseLabel(phase: string): string {
   const localizedPhase = ({
     waiting_model: 'waitingModel',
@@ -267,8 +391,7 @@ watch(() => [props.activeRunId, props.events.length], () => {
 }, { flush: 'post' });
 
 watch(() => props.activeRunId, () => {
-  expandedRequestLoops.value = new Set();
-  expandedToolCalls.value = new Set();
+  expandedTask.value = false;
 });
 
 onMounted(async () => {
@@ -321,67 +444,20 @@ onMounted(async () => {
         <div class="subagent-transcript-content">
         <div v-if="initialTask" class="transcript-message user-message">
           <div class="message-role">{{ t('monitor.subAgentChat.task') }}</div>
-          <div class="user-bubble">{{ initialTask }}</div>
+          <div class="user-bubble" :class="{ collapsed: taskIsLong && !expandedTask }">{{ initialTask }}</div>
+          <button
+            v-if="taskIsLong"
+            class="user-msg-toggle"
+            @click="expandedTask = !expandedTask"
+          >
+            {{ expandedTask ? t('chat.collapse') : t('chat.expandAll') }}
+          </button>
         </div>
 
-        <article v-for="loop in loops" :key="loop.loopIndex" class="transcript-loop">
-          <div class="loop-divider"><span>{{ t('monitor.subAgentChat.loop', { count: loop.loopIndex }) }}</span></div>
-
-          <details v-if="loop.request" class="request-snapshot" :open="expandedRequestLoops.has(loop.loopIndex)" @toggle="onRequestToggle(loop.loopIndex, $event)">
-            <summary>
-              <span>{{ t('monitor.subAgentChat.requestContext') }}</span>
-              <span v-if="loop.request.model" class="request-model">{{ loop.request.model }}</span>
-            </summary>
-            <pre v-if="expandedRequestLoops.has(loop.loopIndex)">{{ formatJson(loop.request.payload) }}</pre>
-          </details>
-
-          <div v-if="responseThinking(loop.response)" class="assistant-thinking">
-            <details>
-              <summary>{{ t('monitor.subAgentChat.thinking') }}</summary>
-              <div class="thinking-content"><StreamingMarkdown :content="responseThinking(loop.response)" /></div>
-            </details>
-          </div>
-
-          <div v-if="responseText(loop.response)" class="transcript-message assistant-message">
-            <div class="message-role">{{ loop.request?.model || t('monitor.subAgentChat.title') }}</div>
-            <div class="assistant-content"><StreamingMarkdown :content="responseText(loop.response)" /></div>
-          </div>
-
-          <div v-for="(call, callIndex) in toolCalls(loop.response)" :key="call.id" class="tool-observation">
-            <details
-              class="tool-call-card"
-              :open="expandedToolCalls.has(toolCallKey(loop.loopIndex, call))"
-              @toggle="onToolToggle(loop.loopIndex, call, $event)"
-            >
-              <summary>
-                <code>{{ call.name }}</code>
-                <span class="tool-summary-label">
-                  {{ toolStatusLabel(toolResultFor(loop, call, callIndex)) }}
-                </span>
-              </summary>
-              <div v-if="expandedToolCalls.has(toolCallKey(loop.loopIndex, call))" class="tool-detail">
-                <div class="tool-detail-section">
-                  <span>{{ t('monitor.subAgentChat.parameters') }}</span>
-                  <pre>{{ formatJson(call.input) }}</pre>
-                </div>
-                <div v-if="toolResultFor(loop, call, callIndex)" class="tool-detail-section" :class="{ error: toolResultFor(loop, call, callIndex)?.isError }">
-                  <span>{{ t('monitor.subAgentChat.result') }}</span>
-                  <pre>{{ toolResultFor(loop, call, callIndex)?.output }}</pre>
-                </div>
-              </div>
-            </details>
-          </div>
-
-          <div
-            v-for="(result, index) in loop.toolResults.filter((item) => !toolCalls(loop.response).some((call, callIndex) => toolResultFor(loop, call, callIndex) === item))"
-            :key="`${result.toolUseId}-${index}`"
-            class="orphan-tool-result"
-          >
-            <strong>{{ result.tool }}</strong>
-            <span>{{ result.isError ? t('monitor.subAgentChat.toolFailed') : t('monitor.subAgentChat.toolResult') }}</span>
-            <pre>{{ result.output }}</pre>
-          </div>
-        </article>
+        <!-- 执行过程与主对话同款：一条连续时间线，不套折叠、不按轮次分组。 -->
+        <ExecutionTimeline v-if="timelineSplit.execItems.length" :items="timelineSplit.execItems" compact />
+        <!-- 最终回答用正文口径（不压缩），与执行过程形成层级差 -->
+        <ExecutionTimeline v-if="timelineSplit.finalItems.length" :items="timelineSplit.finalItems" />
 
         <div v-if="!loops.length" class="transcript-empty">
           <span v-if="selectedRun?.status === 'running'">{{ t('monitor.subAgentChat.loading') }}</span>
@@ -489,49 +565,35 @@ onMounted(async () => {
 .message-role { color: var(--text-muted); font-size: 0.72rem; font-weight: 700; }
 .user-message { align-items: flex-end; }
 .user-bubble { max-width: 85%; padding: 14px 22px; border-radius: var(--radius-xl); border-bottom-right-radius: 4px; background: rgba(var(--msg-bg-rgb), calc(var(--user-message-opacity) / 100)); color: var(--text-main); font-size: 0.95rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
-.assistant-content { max-width: 100%; color: var(--text-main); line-height: 1.65; overflow-wrap: anywhere; }
-.assistant-content :deep(p:last-child) { margin-bottom: 0; }
+/* 长任务折叠：与主对话一致的 180px 视窗 + 底部渐隐。
+   渐隐终点必须用气泡自身底色（同一个 --msg-bg-rgb 与不透明度），不能用面板底色：
+   气泡半透明时两者不是一个颜色，收尾处会露出一条明显的色带。 */
+.user-bubble.collapsed { position: relative; max-height: 180px; overflow: hidden; }
+.user-bubble.collapsed::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 48px;
+  background: linear-gradient(transparent, rgba(var(--msg-bg-rgb), calc(var(--user-message-opacity) / 100)));
+  pointer-events: none;
+}
+/* 展开/收起按钮与主对话同款（ChatArea 的 .user-msg-toggle）；
+   气泡列是右对齐，按钮作为列内子项自然落在右侧。 */
+.user-msg-toggle {
+  margin-top: 6px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--accent-blue);
+  font-family: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.user-msg-toggle:hover { color: var(--accent-blue-hover); text-decoration: underline; }
 
-.transcript-loop { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
-.loop-divider { display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 0.7rem; }
-.loop-divider::before,
-.loop-divider::after { content: ''; height: 1px; flex: 1; background: var(--glass-border-subtle); }
-
-.request-snapshot { border: 1px solid var(--glass-border-subtle); border-radius: 9px; background: color-mix(in srgb, var(--surface-strong) 35%, transparent); }
-.request-snapshot summary,
-.tool-call-card > summary,
-.assistant-thinking summary { display: flex; align-items: center; gap: 8px; padding: 9px 11px; color: var(--text-soft); cursor: pointer; list-style: none; font-size: 0.75rem; }
-.request-snapshot summary::-webkit-details-marker,
-.tool-call-card > summary::-webkit-details-marker,
-.assistant-thinking summary::-webkit-details-marker { display: none; }
-.request-snapshot summary::before,
-.tool-call-card > summary::before,
-.assistant-thinking summary::before { content: '▸'; color: var(--text-muted); transition: transform 120ms ease; }
-.request-snapshot[open] > summary::before,
-.tool-call-card[open] > summary::before,
-.assistant-thinking details[open] summary::before { transform: rotate(90deg); }
-.request-model { margin-left: auto; color: var(--text-muted); font-size: 0.7rem; }
-.request-snapshot pre,
-.tool-detail pre,
-.orphan-tool-result pre,
 .run-error pre { max-height: 320px; overflow: auto; margin: 0; padding: 11px 13px; border-top: 1px solid var(--glass-border-subtle); color: var(--text-soft); background: color-mix(in srgb, var(--bg-dark) 55%, transparent); font: 0.7rem/1.55 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-
-.assistant-thinking details { border-left: 2px solid color-mix(in srgb, var(--accent-blue) 45%, transparent); }
-.assistant-thinking summary { padding: 5px 9px; color: var(--text-muted); }
-.thinking-content { padding: 5px 12px 10px; color: var(--text-soft); font-size: 0.82rem; }
-.thinking-content :deep(p:last-child) { margin-bottom: 0; }
-
-.tool-observation { margin-left: 12px; border: 1px solid var(--glass-border-subtle); border-radius: 9px; background: color-mix(in srgb, var(--surface-strong) 30%, transparent); }
-.tool-call-card > summary { min-height: 38px; }
-.tool-call-card > summary code { color: var(--text-main); font: 600 0.76rem var(--font-mono); }
-.tool-summary-label { margin-left: auto; color: var(--text-muted); font-size: 0.7rem; }
-.tool-detail { border-top: 1px solid var(--glass-border-subtle); }
-.tool-detail-section > span { display: block; padding: 8px 11px 0; color: var(--text-muted); font-size: 0.68rem; font-weight: 700; }
-.tool-detail-section.error > span { color: var(--accent-red); }
-.tool-detail-section pre { border-top: 0; }
-.orphan-tool-result { display: flex; flex-direction: column; gap: 6px; margin-left: 12px; border: 1px solid var(--glass-border-subtle); border-radius: 9px; overflow: hidden; }
-.orphan-tool-result strong { padding: 9px 11px 0; color: var(--text-main); font: 600 0.76rem var(--font-mono); }
-.orphan-tool-result > span { padding: 0 11px; color: var(--text-muted); font-size: 0.7rem; }
 
 .transcript-empty { display: grid; min-height: 180px; place-items: center; color: var(--text-muted); font-size: 0.82rem; text-align: center; }
 .run-error { margin-top: 18px; border: 1px solid color-mix(in srgb, var(--accent-red) 35%, transparent); border-radius: 9px; overflow: hidden; }

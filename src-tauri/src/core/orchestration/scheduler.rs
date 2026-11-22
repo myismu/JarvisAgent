@@ -113,11 +113,26 @@ impl TaskScheduler {
         }
 
         // 3. 流式级联：完成一个 → 标记 → 立即查新解锁 → spawn → 继续
-        while let Some(result) = set.join_next().await {
-            if cancel_token.is_cancelled() {
-                println!("[SCHEDULER] 调度被取消");
-                break;
-            }
+        //
+        // 2026-11 改造：用 select 同时等待"下一个任务完成"和"用户取消"。
+        // 旧实现要等 join_next() 返回后才检查取消——子任务正卡在长命令里时，
+        // 用户点停止后调度器要等下一个任务结束才醒来。
+        let mut cancelled = false;
+        loop {
+            let joined = tokio::select! {
+                biased;
+                _ = cancel_token.cancelled() => {
+                    cancelled = true;
+                    // 中止仍在等待的子代理任务。子代理自己的取消令牌已由
+                    // cancel_jarvis 级联取消，监控面板会各自收口；
+                    // 这里不再等待它们逐个返回。
+                    set.abort_all();
+                    break;
+                }
+                joined = set.join_next() => joined,
+            };
+
+            let Some(result) = joined else { break };
 
             let (task_id, answer, si, so) = match result {
                 Ok(r) => r,
@@ -241,6 +256,16 @@ impl TaskScheduler {
         }
 
         // 4. 最终检查
+        if cancelled {
+            let remaining = tm.count_incomplete();
+            let summary = tm.summary().unwrap_or_default();
+            println!("[SCHEDULER] 调度被取消，{} 个任务未完成", remaining);
+            return (
+                format!("调度已取消：{} 个任务未能完成\n\n{}", remaining, summary),
+                _total_in,
+                total_out,
+            );
+        }
         let remaining = tm.count_incomplete();
         if remaining > 0 {
             let msg = format!(

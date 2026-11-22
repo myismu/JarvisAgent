@@ -361,6 +361,36 @@ async fn extract_subagent_context(
 /// **新子代理**从零再走一遍。这条护栏让"走不通"在 3 轮内收敛，并明确要求不要重复委派。
 const MAX_CONSECUTIVE_FAILED_LOOPS: u32 = 3;
 
+/// 取消检查：父级本轮令牌与子代理自身令牌任一取消，即视为取消。
+async fn cancel_requested(
+    app: &tauri::AppHandle,
+    run_id: &str,
+    parent: Option<&tokio_util::sync::CancellationToken>,
+) -> bool {
+    if let Some(token) = parent {
+        if token.is_cancelled() {
+            return true;
+        }
+    }
+    SubAgentMonitor::is_cancelled(app, run_id).await
+}
+
+/// 等待任一取消信号（父级 / 子代理自身）。供 select! 的取消分支使用。
+async fn wait_cancel(
+    parent: Option<&tokio_util::sync::CancellationToken>,
+    own: &tokio_util::sync::CancellationToken,
+) {
+    match parent {
+        Some(parent) => {
+            tokio::select! {
+                _ = parent.cancelled() => {}
+                _ = own.cancelled() => {}
+            }
+        }
+        None => own.cancelled().await,
+    }
+}
+
 /// 子代理执行引擎：独立 Agent Loop，支持只读/读写模式，返回 (结果, 输入token, 输出token)
 pub async fn run_subagent(
     app: tauri::AppHandle,
@@ -395,6 +425,20 @@ pub async fn run_subagent(
         None
     };
 
+    // 父级本轮取消令牌（会话上下文里的那一枚）。
+    //
+    // `cancel_jarvis` 会级联取消本会话所有运行中的子代理，但存在竞态窗口：
+    // 取消请求可能恰好发生在子代理注册（start_run）之前，级联会漏掉本次运行。
+    // 这里取父级令牌并在所有阻塞点直接监听，父级一取消，子代理立即收口，
+    // 不依赖"取消请求正好赶在注册之后"这一时序假设。
+    let parent_cancel = if let Some(manager) = app.try_state::<SessionManager>() {
+        let ctx = manager.get_or_create(&session_id).await;
+        let token = ctx.cancel_token.lock().await.clone();
+        token
+    } else {
+        None
+    };
+
     // 注册子代理运行记录
     let run_id = SubAgentMonitor::start_run(
         &app,
@@ -408,6 +452,19 @@ pub async fn run_subagent(
         parent_run_id,
     )
     .await;
+
+    // 竞态兜底：注册前父级就已取消 → 本次子代理不该再发起任何请求。
+    // 先 cancel_run 推送一次取消事件与摘要，再 acknowledge 释放令牌。
+    if parent_cancel
+        .as_ref()
+        .map(|token| token.is_cancelled())
+        .unwrap_or(false)
+    {
+        println!("[SUBAGENT] 父级已取消，子代理 {} 不再启动", run_id);
+        let _ = SubAgentMonitor::cancel_run(&app, &run_id).await;
+        SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
+        return ("子代理已取消。".to_string(), 0, 0);
+    }
 
     // 从 ConfigState 读取配置
     let app_cfg = app.state::<ConfigState>().0.lock().await.clone();
@@ -586,7 +643,7 @@ pub async fn run_subagent(
             return (msg, sub_input_tokens, sub_output_tokens);
         }
 
-        if SubAgentMonitor::is_cancelled(&app, &run_id).await {
+        if cancel_requested(&app, &run_id, parent_cancel.as_ref()).await {
             SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
             return (
                 "子代理已取消。".to_string(),
@@ -726,9 +783,55 @@ pub async fn run_subagent(
 
         crate::infra::llm::api_client::log_model_request(&model_id, &base_url, "子agent");
 
-        let response_res = req.json(&req_json).send().await;
+        // 响应头等待（2026-11 改造）：
+        // 1) 监听子代理自己的取消令牌 —— 旧实现是裸 send().await，上游迟迟不回
+        //    响应头时，用户点停止要等 TCP 层自己超时，主 Agent 也就一直卡在等子代理；
+        // 2) 补上响应头超时 —— 与主 Agent 共用同一常量，此前子代理这条请求完全没有时限。
+        let header_cancel_token = SubAgentMonitor::cancel_token(&app, &run_id).await;
+        let header_cancel_fallback = tokio_util::sync::CancellationToken::new();
+        let header_cancel = header_cancel_token
+            .as_ref()
+            .unwrap_or(&header_cancel_fallback);
+        let header_timeout = std::time::Duration::from_secs(
+            crate::infra::types::constants::API_RESPONSE_HEADER_TIMEOUT_SECS,
+        );
+        let response_res = tokio::select! {
+            biased;
+            _ = wait_cancel(parent_cancel.as_ref(), header_cancel) => {
+                SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
+                return (
+                    "子代理已取消。".to_string(),
+                    sub_input_tokens,
+                    sub_output_tokens,
+                );
+            }
+            timed = tokio::time::timeout(header_timeout, req.json(&req_json).send()) => {
+                match timed {
+                    Ok(res) => res,
+                    Err(_) => {
+                        let msg = format!(
+                            "Subagent request timed out: no response headers within {}s",
+                            crate::infra::types::constants::API_RESPONSE_HEADER_TIMEOUT_SECS
+                        );
+                        SubAgentMonitor::fail_run(
+                            &app,
+                            &run_id,
+                            msg.clone(),
+                            sub_input_tokens,
+                            sub_output_tokens,
+                        )
+                        .await;
+                        return (
+                            format!("子代理请求失败: {}", msg),
+                            sub_input_tokens,
+                            sub_output_tokens,
+                        );
+                    }
+                }
+            }
+        };
 
-        if SubAgentMonitor::is_cancelled(&app, &run_id).await {
+        if cancel_requested(&app, &run_id, parent_cancel.as_ref()).await {
             SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
             return (
                 "子代理已取消。".to_string(),
@@ -793,7 +896,7 @@ pub async fn run_subagent(
         .await;
 
         // 检查流式接收期间是否被取消
-        if SubAgentMonitor::is_cancelled(&app, &run_id).await {
+        if cancel_requested(&app, &run_id, parent_cancel.as_ref()).await {
             SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
             return (
                 "子代理已取消。".to_string(),
@@ -886,7 +989,7 @@ pub async fn run_subagent(
         }
 
         // 阶段 1：预处理（串行） — 解析参数、emit 事件、收集任务
-        if SubAgentMonitor::is_cancelled(&app, &run_id).await {
+        if cancel_requested(&app, &run_id, parent_cancel.as_ref()).await {
             SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
             return (
                 "子代理已取消。".to_string(),
@@ -1054,45 +1157,80 @@ pub async fn run_subagent(
             }
         }
 
-        // 阶段 2：并行执行
+        // 阶段 2：并行执行（2026-11 改造：JoinSet + select 监听取消）
+        //
+        // 旧实现 spawn + join_all 死等：子代理开跑工具后（典型：同步 shell 最长
+        // 600 秒），用户点停止要等整批工具跑完才轮到下一次取消检查。
         let mut all_results = immediate_results;
 
-        if !spawn_tasks.is_empty() && !SubAgentMonitor::is_cancelled(&app, &run_id).await {
-            let handles: Vec<_> = spawn_tasks
-                .into_iter()
-                .map(|task| {
-                    let app_clone = app.clone();
-                    let sid_clone = session_id.clone();
-                    // 把子代理身份带进日志与审计（agent_type = "subagent:<role>"），
-                    // 供 log-viewer / 审计区分"哪种类型的子代理在干活"（2026-09-20）
-                    let agent_tag = format!("subagent:{}", agent_role);
-                    tokio::spawn(async move {
-                        let (output, is_error) = handle_tool_call_inner_owned(
-                            app_clone.clone(),
-                            task.name.clone(),
-                            task.input.clone(),
-                            sid_clone,
-                            "SUBAGENT".to_string(), // intent：子代理执行的意图标记
-                            "edit".to_string(),     // 子agent使用 edit 模式
-                            agent_tag,              // agent_type：带子代理类型（2026-09-20）
-                        )
-                        .await;
-                        SubToolTaskResult {
-                            index: task.index,
-                            tool_use_id: task.tool_use_id,
-                            name: task.name,
-                            output,
-                            is_error,
-                        }
-                    })
-                })
-                .collect();
-
-            let spawned_results = futures_util::future::join_all(handles).await;
-            for result in spawned_results {
-                if let Ok(r) = result {
-                    all_results.push(r);
+        if !spawn_tasks.is_empty() && !cancel_requested(&app, &run_id, parent_cancel.as_ref()).await {
+            let mut set = tokio::task::JoinSet::new();
+            // 只登记同步 shell 命令：取消时它必须立刻停机（进程树由 exec 层守卫清理），
+            // 其余工具等待自然完成，避免把一次文件写入留在中间态。
+            let mut abortable: Vec<tokio::task::AbortHandle> = Vec::new();
+            for task in spawn_tasks {
+                let app_clone = app.clone();
+                let sid_clone = session_id.clone();
+                // 把子代理身份带进日志与审计（agent_type = "subagent:<role>"），
+                // 供 log-viewer / 审计区分"哪种类型的子代理在干活"（2026-09-20）
+                let agent_tag = format!("subagent:{}", agent_role);
+                let is_shell = task.name == "RunCommand";
+                let handle = set.spawn(async move {
+                    let (output, is_error) = handle_tool_call_inner_owned(
+                        app_clone.clone(),
+                        task.name.clone(),
+                        task.input.clone(),
+                        sid_clone,
+                        "SUBAGENT".to_string(), // intent：子代理执行的意图标记
+                        "edit".to_string(),     // 子agent使用 edit 模式
+                        agent_tag,              // agent_type：带子代理类型（2026-09-20）
+                    )
+                    .await;
+                    SubToolTaskResult {
+                        index: task.index,
+                        tool_use_id: task.tool_use_id,
+                        name: task.name,
+                        output,
+                        is_error,
+                    }
+                });
+                if is_shell {
+                    abortable.push(handle);
                 }
+            }
+
+            let batch_cancel_token = SubAgentMonitor::cancel_token(&app, &run_id).await;
+            let batch_cancel_fallback = tokio_util::sync::CancellationToken::new();
+            let batch_cancel = batch_cancel_token
+                .as_ref()
+                .unwrap_or(&batch_cancel_fallback);
+            let mut cancelled = false;
+            loop {
+                tokio::select! {
+                    biased;
+                    // 取消分支只触发一次：中止后不再监听，避免已取消的令牌忙循环
+                    _ = wait_cancel(parent_cancel.as_ref(), batch_cancel), if !cancelled => {
+                        cancelled = true;
+                        for handle in &abortable {
+                            handle.abort();
+                        }
+                    }
+                    joined = set.join_next() => match joined {
+                        Some(Ok(result)) => all_results.push(result),
+                        // 任务 panic 或被 abort：本轮整体已取消，结果不再使用
+                        Some(Err(_)) => {}
+                        None => break,
+                    }
+                }
+            }
+
+            if cancelled {
+                SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
+                return (
+                    "子代理已取消。".to_string(),
+                    sub_input_tokens,
+                    sub_output_tokens,
+                );
             }
         }
 
@@ -1109,7 +1247,7 @@ pub async fn run_subagent(
 
         let mut tool_results = Vec::new();
         for result in all_results {
-            if SubAgentMonitor::is_cancelled(&app, &run_id).await {
+            if cancel_requested(&app, &run_id, parent_cancel.as_ref()).await {
                 SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
                 return (
                     "子代理已取消。".to_string(),
@@ -1210,15 +1348,33 @@ pub async fn run_subagent(
                     .iter()
                     .map(|_| crate::infra::types::models::MessageSource::Chat)
                     .collect();
-                let _ = compact_messages(
-                    &mut temp_memory,
-                    &client,
-                    &api_key,
-                    &base_url,
-                    &cfg.utility_model,
-                    api_format_enum,
-                )
-                .await;
+                // 压缩是非流式 LLM 调用（整体超时约 60 秒），同样要能被取消。
+                // 临时 memory 是纯函数式副本，取消时直接丢弃即可，不影响真实会话。
+                let compact_cancel_token = SubAgentMonitor::cancel_token(&app, &run_id).await;
+                let compact_cancel_fallback = tokio_util::sync::CancellationToken::new();
+                let compact_cancel = compact_cancel_token
+                    .as_ref()
+                    .unwrap_or(&compact_cancel_fallback);
+                let cancelled_during_compact = tokio::select! {
+                    biased;
+                    _ = wait_cancel(parent_cancel.as_ref(), compact_cancel) => true,
+                    _ = compact_messages(
+                        &mut temp_memory,
+                        &client,
+                        &api_key,
+                        &base_url,
+                        &cfg.utility_model,
+                        api_format_enum,
+                    ) => false,
+                };
+                if cancelled_during_compact {
+                    SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
+                    return (
+                        "子代理已取消。".to_string(),
+                        sub_input_tokens,
+                        sub_output_tokens,
+                    );
+                }
                 messages = temp_memory.messages;
             }
         }

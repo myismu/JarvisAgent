@@ -756,6 +756,64 @@ pub fn session_messages_count(session_id: &str) -> Result<usize, String> {
     repository::session_messages_count(session_id)
 }
 
+/// 一次查询取回可见消息的总条数与最新 seq：`(total_count, newest_seq)`。
+///
+/// 可见性口径与分页查询一致（hidden / recalled / compact 全部排除），
+/// 供分页接口给前端补齐"后端总条数 + 后端最新 seq"，用于 stale 判定。
+pub fn session_message_stats(session_id: &str) -> Result<(i64, Option<i64>), String> {
+    repository::session_message_stats(session_id)
+}
+
+/// 广播「会话消息集合发生变化」。
+///
+/// 只在**可见消息条数或最新 seq 真的变了**时才发事件：同一轮里落库可能发生多次
+/// （注入用户消息、模式切换、回合收尾），逐次广播会让前端反复标脏、白拉首屏。
+/// 比较与去重收口在这里，调用方只需说明语义来源（`reason`）。
+///
+/// 为什么不挂进 `save_session`：它有 19 个调用点且签名不含 `AppHandle`，为发事件
+/// 改签名会把风险扩散到所有落库路径；而且其中不少调用（token 累计、方案文档落库）
+/// 并不改变可见消息集合。
+///
+/// 前端据此把非活跃会话标脏（`stale`），切回时只重载一次；活跃会话则等流式结束后
+/// 由既有收尾路径消费。事件名与字段见前端 `useAgentEvents` 的同名监听。
+pub fn notify_messages_changed(app: &tauri::AppHandle, session_id: &str, reason: &str) {
+    use tauri::Emitter;
+
+    /// 上一次广播时的 (可见条数, 最新 seq)，进程级缓存，用于抑制重复广播。
+    /// 会话被归档/删除后留一条无用记录，代价可忽略；会话 id 不复用，不会误判。
+    static LAST_SNAPSHOT: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, (i64, Option<i64>)>>,
+    > = std::sync::OnceLock::new();
+
+    let stats = match session_message_stats(session_id) {
+        Ok(v) => v,
+        // 统计失败不广播：拿不到权威计数时宁可沉默，也不发一个错误信号。
+        Err(_) => return,
+    };
+
+    let snapshots =
+        LAST_SNAPSHOT.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut guard = match snapshots.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    if guard.get(session_id).copied() == Some(stats) {
+        return;
+    }
+    guard.insert(session_id.to_string(), stats);
+    drop(guard);
+
+    let _ = app.emit(
+        "session-messages-changed",
+        serde_json::json!({
+            "sessionId": session_id,
+            "count": stats.0,
+            "lastSeq": stats.1,
+            "reason": reason,
+        }),
+    );
+}
+
 pub fn save_context_snapshot(
     snapshot: &crate::infra::types::models::SessionContextSnapshot,
 ) -> Result<(), String> {

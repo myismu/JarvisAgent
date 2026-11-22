@@ -1,7 +1,7 @@
 //! # prompt.rs — 提示词管理 Tauri 命令
 //!
-//! 设置页「提示词」tab 的后端：列出/查看/保存/重置 13 个提示词文件，
-//! 以及拼装后的 system 全文预览。
+//! 设置页「提示词」tab 的后端：列出/查看/保存/重置提示词文件
+//! （13 个内置 + 1 个可选的个人规则），以及拼装后的 system 全文预览。
 //!
 //! ## 架构（见 doc/提示词磁盘化-可视化编辑方案.md）
 //! - 内置版：`include_str!` 编译期嵌进 exe（出厂默认，兜底）；
@@ -29,6 +29,8 @@ pub struct PromptMeta {
     pub category: String,
     /// true = 进 system（新会话生效）；false = 进动态上下文（下一轮生效）
     pub goes_into_system: bool,
+    /// true = 可选文件：没有出厂默认，未配置时为空、不会被注入
+    pub optional: bool,
     /// 磁盘上是否有用户自定义版
     pub customized: bool,
     /// 当前生效版（磁盘版或内置版）的字符数
@@ -45,6 +47,8 @@ pub struct PromptDetail {
     pub display_name: String,
     pub description: String,
     pub goes_into_system: bool,
+    /// true = 可选文件：没有出厂默认，未配置时为空
+    pub optional: bool,
     /// 当前生效版（磁盘有则磁盘版，否则内置版）——编辑器初始内容
     pub current_content: String,
     /// 内置出厂版原文（"恢复默认"的预览参照）
@@ -83,6 +87,7 @@ pub async fn list_prompts() -> Result<Vec<PromptMeta>, String> {
                 description: meta.description.to_string(),
                 category: meta.category.as_str().to_string(),
                 goes_into_system: meta.goes_into_system,
+                optional: meta.optional,
                 customized: has_disk_override(meta.path),
                 size_chars: char_len(&current),
                 is_platform_active: is_platform_active(meta),
@@ -104,6 +109,7 @@ pub async fn get_prompt_detail(path: String) -> Result<PromptDetail, String> {
         display_name: meta.display_name.to_string(),
         description: meta.description.to_string(),
         goes_into_system: meta.goes_into_system,
+        optional: meta.optional,
         current_content: resolve_prompt(meta.path).into_owned(),
         embedded_content: embedded_prompt(meta.path).to_string(),
         customized,

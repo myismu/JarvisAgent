@@ -656,6 +656,48 @@ pub fn session_messages_count(session_id: &str) -> Result<usize, String> {
     })
 }
 
+/// 一次查询取回**可见消息**的总条数与最新 seq：`(total_count, newest_seq)`。
+///
+/// 用途：分页接口要给前端补齐"窗口边界 + 后端总条数"，前端据此判断本地窗口
+/// 是否已经落后于数据库（stale 判定）。如果分成两次查询（COUNT 一次、MAX 一次），
+/// 期间若有新消息落库，两次数值可能对不上（count 已含新消息、max 却是旧的）。
+///
+/// 可见性条件与 [`list_visible_session_messages`] /
+/// [`list_visible_session_messages_paged`] **完全一致**，不额外造过滤：
+/// - `hidden_at IS NULL`：被隐藏的（回滚/压缩孤儿行）不算；
+/// - `recalled_at IS NULL`：被撤回的不算；
+/// - `source != Compact`：压缩摘要不进界面窗口，也不算可见消息。
+///
+/// 空会话返回 `(0, None)` —— `MAX(seq)` 在没有行时本身就是 NULL。
+pub fn session_message_stats(session_id: &str) -> Result<(i64, Option<i64>), String> {
+    crate::infra::db::with_connection(|conn| session_message_stats_in(conn, session_id))
+}
+
+/// [`session_message_stats`] 的 connection 版。
+///
+/// 抽出来是为了能在测试里跑真实 SQL（不必依赖全局 DB 单例），
+/// 与 [`find_session_message_by_id_in`] 同一做法。
+fn session_message_stats_in(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<(i64, Option<i64>), String> {
+    conn.query_row(
+        "SELECT COUNT(*), MAX(seq) FROM session_messages
+         WHERE session_id = ?1
+           AND hidden_at IS NULL
+           AND recalled_at IS NULL
+           AND source != ?2",
+        params![session_id, MessageSource::Compact.as_db()],
+        |row| {
+            let count: i64 = row.get(0)?;
+            // 空结果集时 MAX(seq) 是 SQL NULL —— 正好映射成 None（= 本会话没有可见消息）
+            let newest_seq: Option<i64> = row.get(1)?;
+            Ok((count.max(0), newest_seq))
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// 从 `session_messages` 的一行还原消息。
 ///
 /// **一律按列名取值，不用列序号**。列序号方案要求"每一条 SELECT 的列清单与顺序都和这里的
@@ -1748,5 +1790,95 @@ mod turn_start_tests {
             MessageSource::Chat,
             "好的"
         )));
+    }
+}
+
+#[cfg(test)]
+mod message_stats_tests {
+    //! `session_message_stats` 的可见性口径护栏。
+    //!
+    //! 这个查询是分页接口 `totalCount` / `newestSeq` 的唯一数据源，前端拿它判断
+    //! 「本地窗口是否落后于后端」。口径一旦与分页查询不一致（比如漏了
+    //! `hidden_at` / `recalled_at` / `compact` 过滤），前端就会看到
+    //! 「总数比窗口多但怎么翻页都翻不出来」的假落后，反复重拉。
+
+    use super::*;
+    use crate::infra::types::models::Content;
+    use rusqlite::Connection;
+
+    fn init_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::infra::db::schema::init_schema(&conn).expect("建表");
+        conn.execute(
+            "INSERT INTO sessions(id, title, created_at, updated_at, message_count)
+             VALUES('s-stats', 't', 0, 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    /// 插一条消息（hidden / recalled 用布尔控制，便于逐条构造可见性组合）
+    fn insert(
+        conn: &Connection,
+        message_id: &str,
+        seq: i64,
+        source: MessageSource,
+        hidden: bool,
+        recalled: bool,
+    ) {
+        let json = serde_json::to_string(&Message::User {
+            content: Content::Single(message_id.to_string()),
+        })
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_messages(
+                session_id, message_id, seq, role, content_json,
+                created_at, updated_at, recalled_at, hidden_at, source
+             ) VALUES('s-stats', ?1, ?2, 'user', ?3, 0, 0, ?4, ?5, ?6)",
+            params![
+                message_id,
+                seq,
+                json,
+                if recalled { Some(1i64) } else { None },
+                if hidden { Some(1i64) } else { None },
+                source.as_db(),
+            ],
+        )
+        .unwrap();
+    }
+
+    /// 空会话：0 条、无最新 seq（`MAX(seq)` 是 SQL NULL）
+    #[test]
+    fn empty_session_reports_zero_and_no_newest_seq() {
+        let conn = init_conn();
+        assert_eq!(session_message_stats_in(&conn, "s-stats").unwrap(), (0, None));
+    }
+
+    /// 只统计可见消息：hidden / recalled / compact 三类都不计入
+    #[test]
+    fn only_visible_messages_are_counted() {
+        let conn = init_conn();
+        insert(&conn, "m0", 0, MessageSource::Chat, false, false);
+        insert(&conn, "m1", 1, MessageSource::Chat, true, false); // 被隐藏
+        insert(&conn, "m2", 2, MessageSource::Chat, false, true); // 被撤回
+        insert(&conn, "m3", 3, MessageSource::Compact, false, false); // 压缩摘要
+
+        let (count, newest) = session_message_stats_in(&conn, "s-stats").unwrap();
+        assert_eq!(count, 1, "只有 m0 可见");
+        assert_eq!(newest, Some(0), "最新可见 seq 不应被隐藏/撤回/压缩行抬高");
+    }
+
+    /// 正常会话：total = 可见条数，newest = 可见消息里的最大 seq
+    #[test]
+    fn reports_count_and_newest_seq_of_visible_messages() {
+        let conn = init_conn();
+        insert(&conn, "m0", 5, MessageSource::Chat, false, false);
+        insert(&conn, "m1", 6, MessageSource::Interrupted, false, false);
+
+        assert_eq!(
+            session_message_stats_in(&conn, "s-stats").unwrap(),
+            (2, Some(6))
+        );
     }
 }

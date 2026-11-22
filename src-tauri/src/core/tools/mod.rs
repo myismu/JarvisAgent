@@ -492,7 +492,20 @@ pub async fn dispatch_core_tool(
         // 任务调度器 — 同步等待所有任务完成，实时推送进度到前端
         "RunSubagentsSequentially" => {
             use crate::core::orchestration::scheduler::TaskScheduler;
-            let cancel_token = tokio_util::sync::CancellationToken::new();
+            use tauri::Manager;
+            // 取本轮主 Agent 的取消令牌（克隆与源共享取消状态）。
+            // 此前这里新建了一个永远不取消的令牌：经 ExecuteTool 代理调用时，
+            // 用户点"停止生成"对调度器完全无效，调度会一直跑到所有子任务结束。
+            // 令牌生命周期由管线管理，运行中必然存在；取不到时退回新令牌（无取消能力）。
+            let cancel_token = {
+                let sm = app.state::<crate::infra::state::state::SessionManager>();
+                let ctx = sm.get_or_create(session_id).await;
+                // 先落到局部变量：MutexGuard 是临时值，直接作为块尾表达式会让它
+                // 活到 ctx 之后才析构（E0597）
+                let token = ctx.cancel_token.lock().await.clone();
+                token
+            }
+            .unwrap_or_else(tokio_util::sync::CancellationToken::new);
             let (report, in_tokens, out_tokens) =
                 TaskScheduler::run_schedule(app, session_id, "", &cancel_token).await;
             return framework::ToolCallResult::ok(report).with_usage(in_tokens, out_tokens);

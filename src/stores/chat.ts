@@ -107,6 +107,22 @@ async function refreshContextSnapshot(sessionId: string) {
   } catch { /* 快照拉取不影响主流程 */ }
 }
 
+/**
+ * `get_session_messages_paged` 的返回类型（与后端 `PagedSessionMessages` 字段一一对应）。
+ *
+ * - `oldestSeq`：本页最老消息的 seq，作为上滑翻页游标；
+ * - `newestSeq`：本页最新消息的 seq；首屏那一页即**后端最新端**，写进 `loadedNewestSeq`
+ *   （空会话为 null）；
+ * - `totalCount`：该会话可见消息总条数（口径是消息数，不是轮数）。
+ */
+interface PagedSessionMessagesResponse {
+  messages: any[];
+  hasMore: boolean;
+  oldestSeq: number | null;
+  newestSeq: number | null;
+  totalCount: number;
+}
+
 export const useChatStore = defineStore("chat", () => {
   let scrollToBottomCb: ((force?: boolean) => void) | null = null;
   const sendGeneration: Record<string, number> = {};
@@ -123,7 +139,7 @@ export const useChatStore = defineStore("chat", () => {
       const session = useSessionStore();
       const view = session.getSessionView(session.activeSessionId);
       view.toolBuffer = value;
-      view.hydrated = true;
+      session.markSessionReady(session.activeSessionId);
     },
   });
 
@@ -136,7 +152,7 @@ export const useChatStore = defineStore("chat", () => {
       const session = useSessionStore();
       const view = session.getSessionView(session.activeSessionId);
       view.contentBuffer = value;
-      view.hydrated = true;
+      session.markSessionReady(session.activeSessionId);
     },
   });
 
@@ -149,7 +165,7 @@ export const useChatStore = defineStore("chat", () => {
       const session = useSessionStore();
       const view = session.getSessionView(session.activeSessionId);
       view.tempBuffer = value;
-      view.hydrated = true;
+      session.markSessionReady(session.activeSessionId);
     },
   });
 
@@ -162,7 +178,7 @@ export const useChatStore = defineStore("chat", () => {
       const session = useSessionStore();
       const view = session.getSessionView(session.activeSessionId);
       view.thinkingBuffer = value;
-      view.hydrated = true;
+      session.markSessionReady(session.activeSessionId);
     },
   });
 
@@ -175,7 +191,7 @@ export const useChatStore = defineStore("chat", () => {
       const session = useSessionStore();
       const view = session.getSessionView(session.activeSessionId);
       view.lastUserMessage = value;
-      view.hydrated = true;
+      session.markSessionReady(session.activeSessionId);
     },
   });
 
@@ -188,7 +204,7 @@ export const useChatStore = defineStore("chat", () => {
       const session = useSessionStore();
       const view = session.getSessionView(session.activeSessionId);
       view.showRecallEdit = value;
-      view.hydrated = true;
+      session.markSessionReady(session.activeSessionId);
     },
   });
 
@@ -201,7 +217,7 @@ export const useChatStore = defineStore("chat", () => {
       const session = useSessionStore();
       const view = session.getSessionView(session.activeSessionId);
       view.latestCheckpoint = value;
-      view.hydrated = true;
+      session.markSessionReady(session.activeSessionId);
     },
   });
 
@@ -214,7 +230,7 @@ export const useChatStore = defineStore("chat", () => {
       const session = useSessionStore();
       const view = session.getSessionView(session.activeSessionId);
       view.messages = value;
-      view.hydrated = true;
+      session.markSessionReady(session.activeSessionId);
     },
   });
 
@@ -463,20 +479,173 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /**
-   * 懒加载：进入会话 / 重置分页——拉取**最新 5 个完整轮**替换当前界面，
-   * 并记录分页游标。用于：切换会话首屏、启动恢复、中断恢复后、撤回后、压缩后。
+   * 首屏/重载的**并发去重表**：sessionId → 在途 Promise。
+   *
+   * 同一个会话只允许有一个首屏请求在飞：三个入口
+   * （`ensureSessionViewLoaded` / `reloadSessionView` / 迁移期的 `loadSessionMessagesReset`）
+   * 最终都汇到同一个实现，后来者拿到的是**同一个 Promise** —— 既不会重复发 IPC，
+   * 也不会出现「后到的响应覆盖先到的响应」把界面刷成半截。
+   *
+   * 验证方式：devtools 里对同一 sessionId 连续两次调用
+   * `await chat.ensureSessionViewLoaded(id, 'manual')`（不 await 第一次直接并发发起），
+   * 控制台应只出现一条 `session-view load start`，第二条是 `deduped`；
+   * 若两次都落在 idle 也会命中同一条在途任务。
+   */
+  const inFlightSessionLoads = new Map<string, Promise<void>>();
+
+  /**
+   * ⚠️ **仅供本 store 内部与迁移期使用，新调用方必须走三入口**
+   * （`ensureSessionViewLoaded` / `markSessionViewStale` / `reloadSessionView`）。
+   * 直接调用会绕过入口处的「该不该拉」裁决与状态机转移。
+   *
+   * 首屏/重载的**唯一实现**：拉取**最新 5 个完整轮**替换当前界面，并记录分页游标。
    * 注意后端 limit 语义 = 每页**轮数**（一条可渲染 user + 其后所有消息 = 一轮），
    * 长任务单轮几十条消息时页大小自适应，不会出现半轮。
+   *
+   * @param reason 审计用原因（只进日志，不参与逻辑）。调用方应写明「谁在什么场景下触发」。
    */
-  async function loadSessionMessagesReset(sessionId: string) {
+  async function loadSessionMessagesReset(sessionId: string, reason = "unspecified"): Promise<void> {
     const session = useSessionStore();
-    const res = await invoke<{ messages: any[]; hasMore: boolean; oldestSeq: number | null }>(
-      "get_session_messages_paged",
-      { sessionId, beforeSeq: null, limit: 5 },
+    const view = session.getSessionView(sessionId);
+
+    // 并发去重：同一会话已有请求在途 → 复用同一个 Promise，不再发第二次 IPC
+    const existing = inFlightSessionLoads.get(sessionId);
+    if (existing) {
+      console.debug(
+        `[chat] session-view load deduped: session=${sessionId} reason=${reason} (in-flight, hydration=${view.hydration})`,
+      );
+      return existing;
+    }
+
+    // 首屏请求在途：idle/stale → loading（已是 ready 时不动，后台重拉不闪空白）
+    const hydrationBefore = view.hydration;
+    session.markSessionLoading(sessionId);
+    const hydrationAfter = session.getSessionView(sessionId).hydration;
+    // 每次进入加载都留一条带状态转移的调试日志，便于审计
+    console.debug(
+      `[chat] session-view load start: session=${sessionId} reason=${reason} hydration=${hydrationBefore}->${hydrationAfter}`,
     );
-    session.replaceSessionMessages(sessionId, res.messages);
-    session.setSessionPaging(sessionId, res.oldestSeq, res.hasMore);
-    return res;
+
+    const task = (async () => {
+      try {
+        const res = await invoke<PagedSessionMessagesResponse>(
+          "get_session_messages_paged",
+          { sessionId, beforeSeq: null, limit: 5 },
+        );
+        // 整批替换内部会置 ready；调用方紧接着用真实游标覆盖分页边界
+        session.replaceSessionMessages(sessionId, res.messages);
+        // 分页边界：最老端 = 后端下发的 oldestSeq（上滑游标）；
+        // 最新端 = 后端下发的 newestSeq（首屏即会话最新端，空会话为 null）
+        session.setSessionPaging(sessionId, res.oldestSeq, res.hasMore, res.newestSeq);
+        console.debug(
+          `[chat] session-view load done: session=${sessionId} reason=${reason} messages=${res.messages.length} oldestSeq=${res.oldestSeq} newestSeq=${res.newestSeq} totalCount=${res.totalCount} hasMore=${res.hasMore} hydration=ready`,
+        );
+      } catch (err) {
+        // 失败：置 loadError，并把 hydration 回落 idle，让下一次 ensure 能重试
+        const failedView = session.getSessionView(sessionId);
+        failedView.loadError = true;
+        failedView.hydration = "idle";
+        failedView.staleReason = null;
+        console.error(
+          `[chat] session-view load failed: session=${sessionId} reason=${reason} hydration->idle`,
+          err,
+        );
+        throw err;
+      }
+    })();
+
+    inFlightSessionLoads.set(sessionId, task);
+    try {
+      await task;
+    } finally {
+      // 只删自己那一条：万一已被新请求替换，不能顺手把后来者的在途记录删掉
+      if (inFlightSessionLoads.get(sessionId) === task) {
+        inFlightSessionLoads.delete(sessionId);
+      }
+    }
+  }
+
+  /**
+   * 入口一：**确保**会话视图已装载（幂等，日常唯一该用的加载入口）。
+   *
+   * 状态机：
+   * - `idle`    → 发起首屏加载；
+   * - `loading` → 复用同一 in-flight Promise（不起第二个请求）；
+   * - `ready`   → 直接返回，不发 IPC；
+   * - `stale`   → 重载（窗口内容旧了，需要与后端对齐）。
+   *
+   * 无会话态（`__default__` 欢迎页）没有后端首屏可拉，传空 sessionId 直接返回。
+   *
+   * @param reason 审计用原因，例如 `switch-session`（点击切会话）/ `app-start`（启动恢复）/
+   *   `session-fallback`（事件驱动的会话回落）
+   */
+  async function ensureSessionViewLoaded(sessionId: string, reason: string): Promise<void> {
+    if (!sessionId) return;
+    const session = useSessionStore();
+    const view = session.getSessionView(sessionId);
+
+    switch (view.hydration) {
+      case "ready":
+        console.debug(
+          `[chat] ensureSessionViewLoaded: session=${sessionId} reason=${reason} hydration=ready (no-op)`,
+        );
+        return;
+      case "loading": {
+        const pending = inFlightSessionLoads.get(sessionId);
+        console.debug(
+          `[chat] ensureSessionViewLoaded: session=${sessionId} reason=${reason} hydration=loading (reuse in-flight=${!!pending})`,
+        );
+        // 正常情况下 loading 必然伴随一条在途任务；没有则说明状态是脏的（历史失败路径遗留），
+        // 直接补一次加载来自愈，而不是卡在 loading 永远不出内容。
+        if (pending) return pending;
+        return loadSessionMessagesReset(sessionId, `ensure(loading-recover):${reason}`);
+      }
+      case "stale":
+        console.debug(
+          `[chat] ensureSessionViewLoaded: session=${sessionId} reason=${reason} hydration=stale (reload, staleReason=${view.staleReason ?? "unknown"})`,
+        );
+        return loadSessionMessagesReset(sessionId, `ensure(stale):${reason}`);
+      default:
+        // 'idle'：还没向该会话要过消息 / 上次加载失败回落
+        console.debug(
+          `[chat] ensureSessionViewLoaded: session=${sessionId} reason=${reason} hydration=idle (load)`,
+        );
+        return loadSessionMessagesReset(sessionId, `ensure(idle):${reason}`);
+    }
+  }
+
+  /**
+   * 入口二：把会话视图**标脏**（只改状态与 staleReason，**不发 IPC**）。
+   *
+   * 用于「知道数据变了、但此刻不必立刻重拉」的场景（例如事件到达但会话不在前台）：
+   * 标脏后由随后的 `ensureSessionViewLoaded` 或下一次进入会话完成重拉。
+   * 合法的 `ready` → `stale` 转移由 session store 保证：`idle`/`loading` 时置脏会被忽略
+   * （它们本来就没有「已有内容」，强行置脏会让 `hasLoadedSessionView` 误判成载入过）。
+   */
+  function markSessionViewStale(sessionId: string, reason: string): void {
+    const session = useSessionStore();
+    const hydrationBefore = session.getSessionView(sessionId).hydration;
+    session.markSessionStale(sessionId, reason);
+    const hydrationAfter = session.getSessionView(sessionId).hydration;
+    console.debug(
+      `[chat] markSessionViewStale: session=${sessionId} reason=${reason} hydration=${hydrationBefore}->${hydrationAfter}`,
+    );
+  }
+
+  /**
+   * 入口三：**强制重载**会话视图（无视当前状态，除非已有同会话请求在途而改为复用）。
+   *
+   * 只在「四类数据确实被后端改写了」的场景调用（会话消息、分页边界、运行状态相关事件、
+   * 压缩/回滚等会重排历史的功能）；日常进入会话请用 `ensureSessionViewLoaded`，
+   * 否则每次挂载都白拉一次首屏。
+   *
+   * `ready` 态下走「后台重拉」：`markSessionLoading` 不会把 ready 降成 loading，
+   * 旧窗口继续渲染（不闪空白），响应到达后整批替换。
+   */
+  async function reloadSessionView(sessionId: string, reason: string): Promise<void> {
+    if (!sessionId) return;
+    console.debug(`[chat] reloadSessionView: session=${sessionId} reason=${reason} (forced)`);
+    return loadSessionMessagesReset(sessionId, `force:${reason}`);
   }
 
   /**
@@ -491,7 +660,7 @@ export const useChatStore = defineStore("chat", () => {
     view.pagedLoadingOlder = true;
     const start = Date.now();
     try {
-      const res = await invoke<{ messages: any[]; hasMore: boolean; oldestSeq: number | null }>(
+      const res = await invoke<PagedSessionMessagesResponse>(
         "get_session_messages_paged",
         { sessionId, beforeSeq: view.pagedOldestSeq, limit: 5 },
       );
@@ -564,8 +733,8 @@ export const useChatStore = defineStore("chat", () => {
         sessionId: sessionIdAtStart,
       });
       if (recovered) {
-        // 恢复落库的消息在尾部，必然包含在首屏窗口内：重拉首屏 + 重置分页游标
-        await loadSessionMessagesReset(sessionIdAtStart);
+        // 恢复落库的消息在尾部，必然包含在首屏窗口内：走入口三强制重载（首屏 + 分页游标重置）
+        await reloadSessionView(sessionIdAtStart, 'interrupt-recovery');
         session.clearSessionBuffers(sessionIdAtStart);
         resetRenderState(sessionIdAtStart);
       }
@@ -576,13 +745,15 @@ export const useChatStore = defineStore("chat", () => {
     requestView.latestCheckpoint = null;
     requestView.showRecallEdit = false;
     requestView.currentTurnStepsStart = requestView.agentSteps.length;
-    requestView.hydrated = true;
+    session.markSessionReady(sessionIdAtStart);
     requestView.status = "RUNNING";
     requestView.activeRunId = null;
     requestView.resumableRunId = null;
     requestView.runStartTime = Date.now();
     requestView.streamActive = false;
     requestView.cancelHandled = false;
+    // 新一轮开始：上一次的「停止中」标记到此失效
+    requestView.stopping = false;
     session.clearSessionBuffers(sessionIdAtStart);
     resetRenderState(sessionIdAtStart);
 
@@ -679,13 +850,16 @@ export const useChatStore = defineStore("chat", () => {
           resetRenderState(sessionIdAtStart);
           requestView.lastUserMessage = resumeOnly ? "" : msg;
           requestView.showRecallEdit = !resumeOnly;
-          requestView.hydrated = true;
+          session.markSessionReady(sessionIdAtStart);
         }
         if (myGeneration === sendGeneration[sessionIdAtStart]) {
           requestView.runStartTime = null;
           requestView.streamActive = false;
           requestView.status = "IDLE";
           requestView.activeRunId = null;
+          // 取消已真正收尾：按钮的「停止中」状态到此结束。
+          // 必须挂在 generation 判断里：旧请求的取消回执不能清掉新请求的停止标记。
+          requestView.stopping = false;
         }
         requestView.cancelHandled = false;
         if (!sessionSwitched && myGeneration === sendGeneration[sessionIdAtStart]) {
@@ -752,6 +926,7 @@ export const useChatStore = defineStore("chat", () => {
         requestView.streamActive = false;
         requestView.runStartTime = null;
         requestView.latestCheckpoint = null;
+        requestView.stopping = false;
       }
       session.appendSessionMessage(sessionIdAtStart, {
         role: "agent",
@@ -804,6 +979,7 @@ export const useChatStore = defineStore("chat", () => {
         requestView.activeRunId = null;
         requestView.streamActive = false;
         requestView.runStartTime = null;
+        requestView.stopping = false;
       }
       if (sessionIdAtStart === session.activeSessionId) {
         triggerRender();
@@ -812,23 +988,37 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /**
+   * 停止指定会话的执行。
+   *
+   * 目标会话的确定规则（2026-11 修复）：
+   * - 传入 `preferSessionId` 就用它；缺省就是当前激活会话；
+   * - **绝不**退化成「任意一个 RUNNING 会话」。旧实现缺省时按 `sessionViews`
+   *   的键顺序取第一个 RUNNING（键顺序 = 视图创建顺序，即最早打开过的会话），
+   *   多会话并行时停止指令会落到别的对话上——实测连点停止依次停掉了其他会话，
+   *   当前会话反而最后才停。
+   *
+   * `view.stopping` 在这里同步置起（早于任何 await），停止按钮据此显示 spinner
+   * 并保持禁用，直到本轮真正收尾（`sendToJarvis` 的状态回落路径负责清除）。
+   */
   async function cancelJarvis(preferSessionId?: string): Promise<void> {
     const session = useSessionStore();
     const perm = usePermissionStore();
-    // 优先取消指定会话，否则找到第一个正在运行的
-    const runningSid = (preferSessionId && session.sessionViews[preferSessionId]?.status === 'RUNNING')
-      ? preferSessionId
-      : Object.keys(session.sessionViews).find(
-          k => session.sessionViews[k].status === 'RUNNING' && k !== '__default__'
-        );
-    if (!runningSid) return;
-    const view = session.getSessionView(runningSid);
+    const targetSid = preferSessionId ?? session.activeSessionId ?? undefined;
+    if (!targetSid) return;
+    const view = session.sessionViews[targetSid];
+    // 只允许停止正在运行的会话；已停止/未运行的视图不发送请求，
+    // 避免取消指令"漂移"到无关会话。
+    if (!view || view.status !== 'RUNNING' || view.stopping) return;
     view.cancelHandled = false;
-    perm.clearPermissions(runningSid);
-    delete perm.planProposals[runningSid];
+    view.stopping = true;
+    perm.clearPermissions(targetSid);
+    delete perm.planProposals[targetSid];
     try {
-      await invoke("cancel_jarvis", { sessionId: runningSid });
+      await invoke("cancel_jarvis", { sessionId: targetSid });
     } catch (err) {
+      // 命令失败（IPC 异常等）时撤回「停止中」，否则按钮会永远禁用
+      view.stopping = false;
       console.error("取消执行失败:", err);
     }
   }
@@ -904,7 +1094,8 @@ export const useChatStore = defineStore("chat", () => {
         // ⚠️ 2026-11-22 改为分页首屏：原先用全量 `get_session_messages` +
         // `replaceSessionMessages`，会把懒加载窗口一次性替换成整个会话，
         // 且不重置分页游标。恢复执行与进入会话统一成同一口径。
-        await loadSessionMessagesReset(plan.sessionId);
+        // 已属于本 store 内部调用，直接用实现层（已在上方“ensure”入口声明口径）
+        await loadSessionMessagesReset(plan.sessionId, "resume-agent-run");
       } catch (err) {
         // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
         console.error("加载会话消息失败:", err);
@@ -947,7 +1138,14 @@ export const useChatStore = defineStore("chat", () => {
     dismissRecallEdit,
     cancelSubAgentRun,
     resumeAgentRun,
+    /**
+     * @internal 仅供本 store 内部与迁移期使用；新调用方必须走
+     * `ensureSessionViewLoaded` / `markSessionViewStale` / `reloadSessionView`。
+     */
     loadSessionMessagesReset,
     loadSessionMessagesOlder,
+    ensureSessionViewLoaded,
+    markSessionViewStale,
+    reloadSessionView,
   };
 });

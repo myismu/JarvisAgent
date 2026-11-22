@@ -19,7 +19,7 @@
         "minWidth": 1000,
         "minHeight": 700,
         "decorations": false,
-        "transparent": true
+        "transparent": false
       }
     ],
     "security": {

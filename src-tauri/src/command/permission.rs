@@ -138,7 +138,11 @@ pub async fn cancel_jarvis(
     if let Some(token) = ctx.cancel_token.lock().await.as_ref() {
         token.cancel();
     }
-    *ctx.cancel_token.lock().await = None;
+    // 刻意不在这里把令牌置 None（2026-11 修复）：
+    // 取消只是"请求停止"，本轮管线可能还卡在工具批次/历史落库里收尾。
+    // 提前清空会让 pipeline 的「同会话占用」检查误判为空闲——用户停止后
+    // 立刻发新消息，新旧两条管线会并发写同一份会话历史。
+    // 令牌由管线 finalize 在本轮真正结束时清除（pipeline.rs::finalize）。
     // 结束所有等待用户决策的权限请求：标记为"中断"而不是"用户拒绝"，
     // 并逐条广播 permission-resolved，让界面上的权限卡立刻消失
     let pending = ctx

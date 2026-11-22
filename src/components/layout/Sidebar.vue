@@ -447,26 +447,32 @@ const performDeleteProject = async (projectId: string) => {
 };
 
 /**
- * 把某会话记录的模型预设同步为**激活预设**（并落库）。
+ * 对齐「激活预设」与当前会话。
  *
- * 模型预设是会话级状态（`sessions.profile_id`），但后端 pipeline 每次读的是
- * `AppConfig.activeProfileId`。因此**任何"让某会话成为当前会话"的路径都必须调用这里**，
- * 否则后端会继续用上一个会话/全局默认的预设。
+ * **激活预设由后端负责**：`switch_session`（启动恢复也走它）在返回 meta 之前就把
+ * `AppConfig.active_profile_id` 按会话的 `profile_id` 对齐并落库（`align_active_profile_to_session`），
+ * 对齐值变化时后端自己广播 `config-updated`，输入栏据此重读模型名与能力。
+ * 所以正常路径前端**只读不写**，不再 `save_config_cmd` 双写一次——
+ * 双写除了多一次写盘 + 一次事件广播，还会与后端的对齐互相覆盖（谁后写谁生效）。
  *
- * 这条纪律是踩坑总结：启动恢复会话曾经漏掉这一步（只有点击切会话时同步），
- * 结果重启后模型预设回落到设置里的默认值，而会话里并没有消息能暴露这个不一致。
+ * 只有本文件的兜底分支（`switch_session` 抛错后回落到首个会话 / 取 active id 失败）
+ * 没有经过后端对齐，这里才补一次写盘，保证后端 pipeline 实际使用的预设
+ * 与界面显示的预设一致；**同值一律不写**（读回来比较，相同即早退）。
  */
 const syncProfileFromSession = async (meta: {
   profileId?: string | null;
   mainModel?: string | null;
 }) => {
-  const config = await invoke<any>('get_config');
-  if (meta.profileId) {
-    config.activeProfileId = meta.profileId;
-  } else {
-    config.activeProfileId = config.globalProfileId;
+  try {
+    const config = await invoke<any>('get_config');
+    const target = meta.profileId || config.globalProfileId;
+    if (!target || config.activeProfileId === target) return;
+    config.activeProfileId = target;
+    await invoke('save_config_cmd', { newConfig: config });
+  } catch (err) {
+    // 读/写配置失败不阻断切会话：后端对齐仍是主路径，这里只是兜底
+    console.warn('对齐会话预设失败:', err);
   }
-  await invoke('save_config_cmd', { newConfig: config });
 };
 
 // 切换会话
@@ -507,16 +513,15 @@ const switchToSession = async (id: string) => {
       events.loadContextSnapshotFromBackend(id),
     ]);
 
-    const view = sessionStore.getSessionView(id);
-    // 首次加载（view 新创建、无消息、无 live turn）时从 DB 初始化——懒加载首屏（最新 5 轮）
-    if (!view.hydrated) {
-      try {
-        await chat.loadSessionMessagesReset(id);
-      } catch (err) {
-        // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
-        console.error('加载会话消息失败:', err);
-        sessionStore.setSessionLoadError(id, true);
-      }
+    // 切会话时确保视图已装载：交给 chat store 的状态机裁决——
+    // `idle` 拉首屏、`loading` 复用在途请求、`ready` 直接返回、`stale` 重拉。
+    // 这里不再自己判 `hasLoadedSessionView`，判据统一收进 `ensureSessionViewLoaded`。
+    try {
+      await chat.ensureSessionViewLoaded(id, 'session-switch');
+    } catch (err) {
+      // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
+      console.error('加载会话消息失败:', err);
+      sessionStore.setSessionLoadError(id, true);
     }
 
     chat.triggerRender();
@@ -587,9 +592,10 @@ onMounted(async () => {
         await syncProfileFromSession(switchedMeta);
         void loadSessionThinking(activeId);
 
-        // 加载会话历史——懒加载首屏（最新 5 轮），上滑时按需加载更早历史
+        // 启动恢复：同上走 `ensureSessionViewLoaded`，状态机自己决定要不要拉首屏
+        //（首次启动是 idle → 拉首屏；HMR / 重复挂载时 ready → 零 IPC）
         try {
-          await chat.loadSessionMessagesReset(activeId);
+          await chat.ensureSessionViewLoaded(activeId, 'app-start');
         } catch (err) {
           // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
           console.error('加载会话消息失败:', err);

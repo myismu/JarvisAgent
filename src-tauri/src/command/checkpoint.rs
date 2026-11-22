@@ -530,6 +530,8 @@ pub async fn rollback_to_checkpoint(
         let memory = ctx.memory.lock().await.clone();
         crate::core::session::save_session(&session_id, &memory, None);
         let _ = app.emit("session-updated", ());
+        // 回滚截断了消息表（可能还改了可见性）：广播一次变更
+        crate::core::session::notify_messages_changed(&app, &session_id, "rollback");
     }
 
     // 有对象没能恢复时如实说明 —— 这个命令只回消息列表，就把它拼进列表末尾

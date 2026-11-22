@@ -414,6 +414,14 @@ export function toolCategoryLabel(name: string) {
   return categoryText(descriptor.category);
 }
 
+/**
+ * 按工具名取展示分类，供执行时间线选行首图标。
+ * 调用方若拿到的是 ExecuteTool 包装（延迟工具），先 unwrapDeferredTool。
+ */
+export function toolDisplayCategory(name: string): ToolDisplayCategory {
+  return descriptorForTools(name).category;
+}
+
 export function toolGroupActionLabel(group: ToolCallGroup) {
   return group.summary || defaultActionText(group.status);
 }

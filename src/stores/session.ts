@@ -10,6 +10,20 @@ interface LatestCheckpoint {
   canRollback: boolean;
 }
 
+/**
+ * 会话视图的**生命周期状态**（取代原先的布尔 `hydrated`）。
+ *
+ * - `idle`   ：还没向该会话要过消息（新建/清空视图后的初始态）
+ * - `loading`：首屏请求在途，界面应显示加载态而不是"空会话"
+ * - `ready`  ：窗口内容与后端一致，可直接渲染
+ * - `stale`  ：**曾经载入过**，但已知与后端不同步（例如新增消息/事件缺片），
+ *              旧内容仍可先渲染，随后需要重拉
+ *
+ * 用状态机而不是布尔的原因是布尔把"没加载过"和"加载失败/脏了"压成同一个 false，
+ * 调用方无法区分"该不该发请求"与"能不能先渲染旧内容"。
+ */
+export type SessionHydration = 'idle' | 'loading' | 'ready' | 'stale';
+
 export interface SessionViewState {
   status: string;
   messages: any[];
@@ -31,10 +45,30 @@ export interface SessionViewState {
   latestCheckpoint: LatestCheckpoint | null;
   agentSteps: any[];
   currentTurnStepsStart: number;
-  hydrated: boolean;
+  /** 视图生命周期状态；含义与合法转移见 `SessionHydration` 与各 `markSession*` 方法 */
+  hydration: SessionHydration;
+  /**
+   * 窗口最新端消息的 seq（后端分页响应 `newestSeq`）；null = 未知 / 空会话。
+   *
+   * 只在首屏/重载（`loadSessionMessagesReset`）时写入：那份响应取的是最新一页，
+   * 它的 `newestSeq` 就是**后端最新端**。向上翻页取的是更早的页，尾部 seq
+   * 必然小于它，不能拿来回写，否则「本地尾部是否已含后端最新消息」会假阴性。
+   */
+  loadedNewestSeq: number | null;
+  /** 置为 `stale` 的原因（审计用）；回到 `ready` 时清空 */
+  staleReason: string | null;
   runStartTime: number | null;
   streamActive: boolean;
   cancelHandled: boolean;
+  /**
+   * 已向该会话发出过停止请求、但本轮还没有真正收尾。
+   *
+   * 与 `status === 'RUNNING'` 配合使用：输入框的停止按钮据此显示 spinner 并禁用，
+   * 从点击一直持续到会话离开 RUNNING 为止。不能只用一个「等待 IPC 返回」的局部变量
+   * —— `cancel_jarvis` 命令只是置令牌就返回，毫秒级结束，spinner 一闪而过，
+   * 用户会以为没生效而反复点击。
+   */
+  stopping: boolean;
   activeRunId: string | null;
   resumableRunId: string | null;
   currentTurn: AgentCurrentTurn;
@@ -98,7 +132,7 @@ export interface SessionUsageTotals {
 
 const DEFAULT_SESSION_KEY = "__default__";
 
-function createEmptySessionView(hydrated = false): SessionViewState {
+function createEmptySessionView(hydration: SessionHydration = 'idle'): SessionViewState {
   return {
     status: "IDLE",
     messages: [],
@@ -112,10 +146,13 @@ function createEmptySessionView(hydrated = false): SessionViewState {
     latestCheckpoint: null,
     agentSteps: [],
     currentTurnStepsStart: 0,
-    hydrated,
+    hydration,
+    loadedNewestSeq: null,
+    staleReason: null,
     runStartTime: null,
     streamActive: false,
     cancelHandled: false,
+    stopping: false,
     activeRunId: null,
     resumableRunId: null,
     currentTurn: createEmptyAgentCurrentTurn(),
@@ -141,7 +178,8 @@ function getSessionKey(sessionId: string | null | undefined) {
 
 export const useSessionStore = defineStore("session", () => {
   const sessionViews = ref<Record<string, SessionViewState>>({
-    [DEFAULT_SESSION_KEY]: createEmptySessionView(true),
+    // 无会话态（欢迎页）没有"从后端载入"这回事，直接给 ready，避免界面把它当空会话
+    [DEFAULT_SESSION_KEY]: createEmptySessionView('ready'),
   });
   const activeSessionId = ref<string | null>(null);
   const pendingProjectId = ref<string | null>(null);
@@ -177,19 +215,68 @@ export const useSessionStore = defineStore("session", () => {
   function getSessionView(sessionId: string | null | undefined) {
     const key = getSessionKey(sessionId);
     if (!sessionViews.value[key]) {
-      sessionViews.value[key] = createEmptySessionView(false);
+      sessionViews.value[key] = createEmptySessionView();
     }
     return sessionViews.value[key];
   }
 
+  /**
+   * 该会话视图是否**曾经载入过**消息（`ready` / `stale` 都算）。
+   *
+   * 判据是"载入过"而不是"当前是干净的"：调用方用它决定要不要再发一次首屏请求，
+   * `stale` 表示内容旧了但已经渲染过，不该因为"不是 ready"就退回空白首屏。
+   */
+  function hasLoadedSessionView(sessionId: string | null | undefined) {
+    const hydration = sessionViews.value[getSessionKey(sessionId)]?.hydration;
+    return hydration === 'ready' || hydration === 'stale';
+  }
+
+  /**
+   * 旧名封装：仅作为过渡期薄封装保留，避免遗漏调用点（新代码请用 `hasLoadedSessionView`）。
+   *
+   * @deprecated 语义已从"hydrated 布尔"改为"是否载入过"，用新名表达真实含义。
+   */
   function hasHydratedSessionView(sessionId: string | null | undefined) {
-    const key = getSessionKey(sessionId);
-    return Boolean(sessionViews.value[key]?.hydrated);
+    return hasLoadedSessionView(sessionId);
+  }
+
+  /**
+   * 首屏请求发出时调用：`idle` / `stale` → `loading`。
+   *
+   * 非法转移防护：已经是 `ready` 时**不**回退到 `loading`。刷新（checkpoint 收尾、
+   * config 变更）走的是"后台重拉"，旧窗口仍然可用；若置成 loading，界面会先闪空白，
+   * 并行加载的守卫也会误判成"还没载入过"而重复发请求。
+   */
+  function markSessionLoading(sessionId: string | null | undefined) {
+    const view = getSessionView(sessionId);
+    if (view.hydration === 'ready') return;
+    view.hydration = 'loading';
+  }
+
+  /** 数据真正写入视图（整批替换/事件补齐）后调用：任何状态 → `ready`，并清空脏原因。 */
+  function markSessionReady(sessionId: string | null | undefined) {
+    const view = getSessionView(sessionId);
+    view.hydration = 'ready';
+    view.staleReason = null;
+  }
+
+  /**
+   * 标记窗口与后端不同步：`ready` → `stale`，并记下原因（审计/排查用）。
+   *
+   * 非法转移防护：只有 `ready` 才能变脏 —— `idle`/`loading` 本来就没有"已有的内容"，
+   * 强行置 stale 会让 `hasLoadedSessionView` 误判成"曾经载入过"，跳过首屏请求。
+   */
+  function markSessionStale(sessionId: string | null | undefined, reason: string) {
+    const view = getSessionView(sessionId);
+    if (view.hydration !== 'ready') return;
+    view.hydration = 'stale';
+    view.staleReason = reason;
   }
 
   function resetSessionView(sessionId: string | null | undefined) {
     const key = getSessionKey(sessionId);
-    sessionViews.value[key] = createEmptySessionView(true);
+    // 新建会话没有历史：直接 ready（同「无会话态」口径），首屏无需请求
+    sessionViews.value[key] = createEmptySessionView('ready');
   }
 
   function deleteSessionView(sessionId: string | null | undefined) {
@@ -227,7 +314,9 @@ export const useSessionStore = defineStore("session", () => {
       text: msg.text ?? (msg.role === 'user' ? msg.userContent?.replace(/<[^>]*>/g, '') : undefined),
     }));
     view.loadError = false;
-    view.hydrated = true;
+    // 整批替换完成 = 窗口就绪；上一次的脏原因到此失效
+    view.hydration = 'ready';
+    view.staleReason = null;
     // 分页游标一并复位（2026-11-22）：本函数是「整批替换」，新首屏从尾部开始，
     // 旧游标指向的位置已不在 `messages` 里。不复位的话，上滑翻页会按旧游标再取一次，
     // 表现为重复内容或直接跳到错误区间。
@@ -235,6 +324,9 @@ export const useSessionStore = defineStore("session", () => {
     // 因此这里只给一个安全默认值（无更早历史）；其他调用方若不设游标，也不会误拉取。
     view.pagedOldestSeq = null;
     view.pagedHasMore = false;
+    // 窗口**最新端** seq 同样由调用方随后补充（本页响应当前不返回 newestSeq），
+    // 这里给 null = 未知，调用方拿不到就保持未知，不要瞎猜成 0。
+    view.loadedNewestSeq = null;
     // 如果会话仍在运行，保留 currentTurn 避免和 checkpoint 快照产生重叠分裂
     if (view.status !== 'RUNNING') {
       view.contentBuffer = "";
@@ -268,10 +360,14 @@ export const useSessionStore = defineStore("session", () => {
     sessionId: string | null | undefined,
     oldestSeq: number | null,
     hasMore: boolean,
+    newestSeq: number | null = null,
   ) {
     const view = getSessionView(sessionId);
+    // 窗口最老端（上滑游标）
     view.pagedOldestSeq = oldestSeq;
     view.pagedHasMore = hasMore;
+    // 窗口最新端（用于判定"本地尾部是否已含后端最新消息"）；响应暂不提供时保持 null
+    if (newestSeq !== null) view.loadedNewestSeq = newestSeq;
   }
 
   function setSessionUsageTotals(sessionId: string | null | undefined, usage: SessionUsageTotals) {
@@ -371,7 +467,12 @@ export const useSessionStore = defineStore("session", () => {
     totalCacheHitTokens,
     totalCacheMissTokens,
     getSessionView,
+    hasLoadedSessionView,
+    /** @deprecated 过渡期旧名，等价于 `hasLoadedSessionView` */
     hasHydratedSessionView,
+    markSessionLoading,
+    markSessionReady,
+    markSessionStale,
     resetSessionView,
     deleteSessionView,
     clearSessionBuffers,

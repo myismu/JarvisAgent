@@ -1,9 +1,9 @@
 <!--
 # PromptsTab.vue — 设置页「提示词」tab
 
-可视化查看 + 编辑 13 个提示词文件。
+可视化查看 + 编辑提示词文件（13 个内置 + 1 个可选的个人开发规范）。
 列表以注册表为准；编辑保存写 data/prompts/（懒落盘）；
-恢复默认 = 删磁盘文件回落内置；预览展示拼装后的 system 全文。
+恢复默认 = 删磁盘文件回落内置（可选文件则是清空）；预览展示拼装后的 system 全文。
 
 ## Key Exports
 - `PromptsTab`: 提示词管理 tab 主组件
@@ -40,8 +40,10 @@ const previewMode = ref<'edit' | 'plan'>('edit');
 const previewLoading = ref(false);
 
 // 分组顺序与标题 i18n key（与后端 PromptCategory as_str 对齐）
-const CATEGORY_ORDER = ['base', 'audience', 'mode', 'os', 'subagent'] as const;
+// personal 放最前：个人规则优先级高于产品默认风格，也是用户最常回来改的一项。
+const CATEGORY_ORDER = ['personal', 'base', 'audience', 'mode', 'os', 'subagent'] as const;
 const CATEGORY_I18N: Record<string, string> = {
+  personal: 'settings.prompts.catPersonal',
   base: 'settings.prompts.catBase',
   audience: 'settings.prompts.catAudience',
   mode: 'settings.prompts.catMode',
@@ -117,7 +119,12 @@ const save = async () => {
 
 const reset = async () => {
   if (!selectedPath.value) return;
-  if (!confirm(t('settings.prompts.resetConfirm'))) return;
+  // 可选文件（个人规则）没有出厂内容，"恢复默认"实际是清空用户规则，确认文案要区分，
+  // 否则用户会误以为清空后仍会有一套内置规则继续生效。
+  const confirmKey = detail.value?.optional
+    ? 'settings.prompts.clearConfirm'
+    : 'settings.prompts.resetConfirm';
+  if (!confirm(t(confirmKey))) return;
   try {
     await invoke('reset_prompt', { path: selectedPath.value });
     prompts.value = await invoke<PromptMeta[]>('list_prompts');
@@ -197,7 +204,7 @@ const rePreview = async () => {
               <span class="sep">·</span>
               <span>{{ detail.goesIntoSystem ? t('settings.prompts.effNewSession') : t('settings.prompts.effNextTurn') }}</span>
               <span class="sep">·</span>
-              <span>{{ detail.customized ? t('settings.prompts.customVersion') : t('settings.prompts.embeddedVersion') }}</span>
+              <span>{{ detail.customized ? t('settings.prompts.customVersion') : (detail.optional ? t('settings.prompts.notConfigured') : t('settings.prompts.embeddedVersion')) }}</span>
             </div>
           </div>
           <div class="editor-actions">
@@ -205,7 +212,7 @@ const rePreview = async () => {
               v-if="detail.customized"
               class="btn ghost danger"
               @click="reset"
-            >{{ t('settings.prompts.resetDefault') }}</button>
+            >{{ detail.optional ? t('settings.prompts.clearRules') : t('settings.prompts.resetDefault') }}</button>
             <button class="btn primary" :disabled="!dirty || saving" @click="save">
               {{ saving ? t('settings.prompts.saving') : t('settings.prompts.save') }}
             </button>
@@ -216,12 +223,13 @@ const rePreview = async () => {
           v-model="editText"
           class="editor-textarea"
           spellcheck="false"
+          :placeholder="detail.optional && !detail.customized ? t('settings.prompts.personalPlaceholder') : ''"
           @input="onEdit"
         ></textarea>
 
         <div class="editor-footer">
           <span v-if="dirty">{{ t('settings.prompts.dirtyHint') }}</span>
-          <span v-else>{{ detail.customized ? t('settings.prompts.customizedHint') : t('settings.prompts.embeddedHint') }}</span>
+          <span v-else>{{ detail.customized ? t('settings.prompts.customizedHint') : (detail.optional ? t('settings.prompts.optionalHint') : t('settings.prompts.embeddedHint')) }}</span>
           <span class="eff-hint">{{ detail.goesIntoSystem ? t('settings.prompts.newSessionHint') : t('settings.prompts.nextTurnHint') }}</span>
         </div>
       </template>

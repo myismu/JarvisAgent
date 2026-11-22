@@ -246,11 +246,16 @@ pub async fn rename_project(id: String, name: String) -> Result<session::Project
     crate::core::session::repository::rename_project(&id, &name)
 }
 
+/// 切换活跃会话。
+///
+/// `app: tauri::AppHandle` 由 Tauri 自动注入（前端 `invoke('switch_session', { id })`
+/// 的参数表不变），仅用于在切换后对齐「激活预设」。
 #[tauri::command]
 pub async fn switch_session(
     id: String,
     session_manager: tauri::State<'_, SessionManager>,
     snapshot_registry: tauri::State<'_, SnapshotRegistry>,
+    app: tauri::AppHandle,
 ) -> Result<session::SessionMeta, String> {
     // 切换会话时释放旧会话的快照管理器缓存
     {
@@ -265,6 +270,16 @@ pub async fn switch_session(
         "[DEBUG] switch_session: id={}, working_directory={:?}",
         id, meta.working_directory
     );
+
+    // 会话激活态与激活预设由后端统一写入：这里按会话的 `profile_id` 对齐
+    // `AppConfig.active_profile_id`（pipeline 每次读的是后者，不对齐就会继续用
+    // 上一个会话/全局默认的预设）。前端只消费返回的 meta，不再双写配置文件，
+    // 也不再自己发 `config-updated`。
+    // 对齐函数内部有「目标值相同即早退」判断，不会产生无谓写盘与事件广播。
+    if let Some(state) = app.try_state::<crate::infra::config::config::ConfigState>() {
+        align_active_profile_to_session(&app, &state, meta.profile_id.as_deref());
+    }
+
     Ok(meta)
 }
 
@@ -274,7 +289,7 @@ pub async fn switch_session(
 /// 但 pipeline 每次读的是 `AppConfig.active_profile_id`。因此**任何"让某会话成为
 /// 当前会话"的后端路径都必须对齐一次**，否则后续请求会继续用上一个会话/全局默认的预设。
 ///
-/// 已覆盖的路径：启动恢复会话、点击切会话（前端 `syncProfileFromSession`）、
+/// 已覆盖的路径：启动恢复会话、点击切会话（本文件 `switch_session`，前端不再双写）、
 /// 删除会话后自动回落（本文件 `switch_away_and_delete_session`）。
 fn align_active_profile_to_session(
     app: &tauri::AppHandle,
@@ -656,6 +671,8 @@ pub async fn recall_message(
             }
         }
         let _ = app.emit("session-updated", ());
+        // 撤回会截断消息表：可见条数与最新 seq 同时变化，必须广播
+        crate::core::session::notify_messages_changed(&app, &session_id, "recall");
     }
 
     Ok(recalled_text)
@@ -1167,6 +1184,8 @@ pub async fn recover_interrupted_session_messages(
     };
     if recovered {
         let _ = app.emit("session-updated", ());
+        // 恢复补回的半截内容已由闸门内统一落库，这里广播一次可见集合变更
+        crate::core::session::notify_messages_changed(&app, &session_id, "recovery");
     }
     Ok(recovered)
 }
@@ -1265,9 +1284,10 @@ pub async fn compact_conversation(
     session_id: String,
     session_manager: tauri::State<'_, SessionManager>,
     compacting: tauri::State<'_, crate::infra::background::CompactingState>,
+    app: tauri::AppHandle,
 ) -> Result<String, String> {
     compacting.set_compacting(&session_id, true);
-    let result = compact_inner(&session_id, session_manager).await;
+    let result = compact_inner(&session_id, session_manager, &app).await;
     compacting.set_compacting(&session_id, false);
     result
 }
@@ -1275,6 +1295,7 @@ pub async fn compact_conversation(
 async fn compact_inner(
     session_id: &str,
     session_manager: tauri::State<'_, SessionManager>,
+    app: &tauri::AppHandle,
 ) -> Result<String, String> {
     let ctx = session_manager.get_or_create(session_id).await;
     let mut memory = ctx.memory.lock().await;
@@ -1322,6 +1343,8 @@ async fn compact_inner(
     drop(ctx);
 
     let _ = crate::core::session::save_session(session_id, &cloned, None);
+    // 压缩会隐藏被摘要的旧消息：可见条数变化，广播一次让其它视图标脏
+    crate::core::session::notify_messages_changed(app, session_id, "compaction");
     Ok("上下文已压缩。".to_string())
 }
 
