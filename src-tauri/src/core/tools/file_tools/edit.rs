@@ -464,9 +464,10 @@ pub async fn edit_file(
                         ))
                     } else {
                         framework::ToolCallResult::error(format!(
-                            "编辑并保存失败: {}{}",
+                            "编辑并保存失败: {}{}（目标路径: {}）",
                             e,
-                            sandbox_missing_hint(ws.as_deref())
+                            sandbox_missing_hint(ws.as_deref()),
+                            path
                         ))
                     }
                 }
@@ -481,9 +482,10 @@ pub async fn edit_file(
                 ))
             } else {
                 framework::ToolCallResult::error(format!(
-                    "编辑失败，无法读取文件: {}{}",
+                    "编辑失败，无法读取文件: {}{}（目标路径: {}）",
                     e,
-                    sandbox_missing_hint(ws.as_deref())
+                    sandbox_missing_hint(ws.as_deref()),
+                    path
                 ))
             }
         }
