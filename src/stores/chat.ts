@@ -901,8 +901,10 @@ export const useChatStore = defineStore("chat", () => {
         return;
       }
       try {
-        const messages = await invoke<any[]>("get_session_messages", { sessionId: plan.sessionId });
-        session.replaceSessionMessages(plan.sessionId, messages);
+        // ⚠️ 2026-11-22 改为分页首屏：原先用全量 `get_session_messages` +
+        // `replaceSessionMessages`，会把懒加载窗口一次性替换成整个会话，
+        // 且不重置分页游标。恢复执行与进入会话统一成同一口径。
+        await loadSessionMessagesReset(plan.sessionId);
       } catch (err) {
         // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
         console.error("加载会话消息失败:", err);

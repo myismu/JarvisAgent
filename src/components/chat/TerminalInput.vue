@@ -691,11 +691,16 @@ const switchProfile = async (id: string) => {
     }
   }
 
-  // 如果已有会话消息，切换模型会导致 prompt cache 失效，需确认
-  const currentSessionId = await invoke<string | null>('get_active_session_id').catch(() => null);
-  if (currentSessionId) {
-    const msgs = await invoke<any[]>('get_session_messages', { sessionId: currentSessionId }).catch(() => []);
-    if (msgs.length > 0) {
+  // 如果已有会话消息，切换模型会导致 prompt cache 失效，需确认。
+  //
+  // ⚠️ 2026-11-22：原先这里用全量 `get_session_messages` 只为判断「有没有消息」，
+  // 等于把整个会话拉过 IPC 再丢掉（后端还要跑恢复闸门 + 快照扫描 + turn 聚合）。
+  // 改用上下文快照里的 `messageCount`：后端每轮写入的会话消息数，按 sessionId
+  // 索引，切会话时已经加载。零 IPC，且语义更贴合 —— 缓存失效的前提就是
+  // 「这会话跑过请求」，从未跑过的会话快照为 null，正好按「无历史」处理。
+  if (session.activeSessionId) {
+    const snap = agent.currentContextSnapshot;
+    if ((snap?.messageCount ?? 0) > 0) {
       pendingProfileId.value = id;
       showProfileCacheWarning.value = true;
       return;
@@ -726,14 +731,18 @@ const doSwitchProfile = async (id: string) => {
     if (activeProfile) {
       await checkModelCapabilities(activeProfile.config.mainModel);
     }
-    // 切模型后刷新历史，确保撤回锚点同步
+    // 切模型后刷新历史，确保撤回锚点同步。
+    //
+    // ⚠️ 2026-11-22 改为分页首屏：原先这里用全量 `get_session_messages` +
+    // `replaceSessionMessages`，会把懒加载的 5 轮窗口一次性替换成整个会话，
+    // 而且不重置分页游标（之后上滑翻页会按旧游标重取）。
+    // 与进入会话、撤回、压缩后等路径统一成同一口径。
     try {
       if (session.activeSessionId) {
         const view = session.getSessionView(session.activeSessionId);
         if (view.status !== 'RUNNING') {
           try {
-            const messages = await invoke<any[]>('get_session_messages', { sessionId: session.activeSessionId });
-            session.replaceSessionMessages(session.activeSessionId, messages);
+            await chat.loadSessionMessagesReset(session.activeSessionId);
           } catch (err) {
             // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
             console.error('加载会话消息失败:', err);
@@ -1137,13 +1146,21 @@ onMounted(async () => {
 
   unlistenConfig = await listen('config-updated', async () => {
     loadConfig();
+    // ⚠️ 2026-11-22：本事件不只由「保存配置 / 切模型」触发。
+    // `align_active_profile_to_session`（后端 command/session.rs）在**切换会话**时
+    // 也会发它——只要两个会话的模型预设不同（前端 syncProfileFromSession 触发对齐）。
+    //
+    // 原先这里用全量 `get_session_messages` 重灌历史，于是切会话时 Sidebar 刚加载好的
+    // 5 轮首屏会被整个会话覆盖（用户实测：切到长对话后加载出绝大部分历史）。
+    // 更糟的是一次覆盖后 `hydrated` 恒为 true，切走再切回也不会恢复成 5 轮。
+    //
+    // 改为与进入会话同一口径：分页首屏 + 同时重置分页游标。
     try {
       if (session.activeSessionId) {
         const view = session.getSessionView(session.activeSessionId);
         if (view.status !== 'RUNNING') {
           try {
-            const messages = await invoke<any[]>('get_session_messages', { sessionId: session.activeSessionId });
-            session.replaceSessionMessages(session.activeSessionId, messages);
+            await chat.loadSessionMessagesReset(session.activeSessionId);
           } catch (err) {
             // 无 HTML 兜底（通道已删除）：置标记，界面显示可翻译的提示
             console.error('加载会话消息失败:', err);

@@ -228,6 +228,13 @@ export const useSessionStore = defineStore("session", () => {
     }));
     view.loadError = false;
     view.hydrated = true;
+    // 分页游标一并复位（2026-11-22）：本函数是「整批替换」，新首屏从尾部开始，
+    // 旧游标指向的位置已不在 `messages` 里。不复位的话，上滑翻页会按旧游标再取一次，
+    // 表现为重复内容或直接跳到错误区间。
+    // `loadSessionMessagesReset` 紧随其后会 `setSessionPaging` 覆盖成真实值，
+    // 因此这里只给一个安全默认值（无更早历史）；其他调用方若不设游标，也不会误拉取。
+    view.pagedOldestSeq = null;
+    view.pagedHasMore = false;
     // 如果会话仍在运行，保留 currentTurn 避免和 checkpoint 快照产生重叠分裂
     if (view.status !== 'RUNNING') {
       view.contentBuffer = "";
