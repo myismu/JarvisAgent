@@ -380,6 +380,72 @@ export function noticeTextFromBackend(
   return `${base} ${i18n.global.t("notice.detail", { detail: extra })}`;
 }
 
+/**
+ * 把后端最终回执的正文合并进快照的正文块，保证既不丢尾部、也不重复。
+ *
+ * 背景（为什么不能按时间戳裁剪）：
+ * 快照里的正文来自两个源 —— 前端流式累积的 `textBlocks`（每个 loop 一段），
+ * 以及后端在本轮收尾时返回的 `finalContent`（整轮最终正文）。
+ * 这里曾经有过一版「删掉所有时间戳早于最后一次工具调用的正文块」的实现，
+ * 名义上是去重，实际上：
+ *   1. `finalContent` 原先只在 `textBlocks` 全空时才追加，两源不可能同时存在，
+ *      那段裁剪的净效果只是把真实的中间叙述删掉；
+ *   2. 后端重建历史（`history.rs` 的 `append_assistant_content`）逐条保留所有正文块，
+ *      前端一裁剪，「刚结束」就比「刷新后」少内容，同一条数据出现两套口径。
+ *
+ * 所以这里改为按内容对齐，只处理最终正文与已有正文的重叠：
+ *   - 已有正文为空 → 追加整段；
+ *   - 已有正文已包含最终正文（相等或以它结尾）→ 不追加；
+ *   - 最终正文以已有正文为前缀 → 只把差集接到最后一个正文块末尾，避免前半段重复；
+ *   - 其余（两段文本有实质差异）→ 追加整段，此时 `finalContent` 才是完整版本。
+ *
+ * 「哪一段是最终回答」**不在这里判断** —— 那是渲染层 `timelineSplit` 的职责。
+ * 快照层只保证正文完整且不重复；判断只保留一处，否则两层各判一次必然漂移。
+ */
+function mergeFinalText(textBlocks: AgentTextBlock[], finalContent: string, loop: number) {
+  const final = finalContent.trim();
+  if (!final) return;
+
+  const visible = textBlocks.map((block) => block.content).join("").trim();
+
+  // 1) 没有任何流式正文：整段补进来（模型只返回最终内容、没有过程流的场景）。
+  if (!visible) {
+    textBlocks.push({
+      id: nextId("text_final"),
+      loop: Math.max(loop, 1),
+      kind: "assistant",
+      content: final,
+      status: "done",
+      timestamp: now(),
+    });
+    return;
+  }
+
+  // 2) 最终正文已被流式正文覆盖（完全相等，或流式正文以它结尾）：不重复追加。
+  if (visible === final || visible.endsWith(final)) return;
+
+  // 3) 最终正文 = 已有正文 + 尾部补充：只把差集接到最后一个块末尾，不能整段再追加一遍。
+  if (final.startsWith(visible)) {
+    const tail = final.slice(visible.length);
+    if (tail.trim()) {
+      const last = textBlocks[textBlocks.length - 1];
+      last.content = `${last.content}${tail}`;
+    }
+    return;
+  }
+
+  // 4) 其余情况：流式文本与最终文本不是同一版本（流式被截断、或后端重写了整段）。
+  //    此时 finalContent 才是完整版本，整段追加，且**不删除**任何已有的过程叙述。
+  textBlocks.push({
+    id: nextId("text_final"),
+    loop: Math.max(loop, 1),
+    kind: "assistant",
+    content: final,
+    status: "done",
+    timestamp: now(),
+  });
+}
+
 export function buildAgentTurnSnapshot(
   turn: AgentCurrentTurn,
   finalContent: string,
@@ -412,27 +478,12 @@ export function buildAgentTurnSnapshot(
   const toolCalls = turn.toolCalls.map(cloneToolCall);
   const logs = turn.logs.map(cloneLog);
 
-  const visibleText = textBlocks.map((block) => block.content).join("").trim();
-  if (finalContent.trim() && !visibleText) {
-    textBlocks.push({
-      id: nextId("text_final"),
-      loop: Math.max(turn.loop, 1),
-      kind: "assistant",
-      content: finalContent,
-      status: "done",
-      timestamp: now(),
-    });
-  }
+  // 正文合并：只补差集、不裁过程（详见 mergeFinalText 的注释）。
+  // 这里**不再**按「最后一次工具调用的时间戳」删除正文块 —— 那会让中间叙述
+  // 在刚结束时消失、刷新后又出现（后端重建不裁剪）。
+  mergeFinalText(textBlocks, finalContent, turn.loop);
 
   const hasExecution = thinkingBlocks.length > 0 || toolCalls.length > 0 || logs.length > 0;
-  if (toolCalls.length > 0) {
-    const latestToolTs = Math.max(...toolCalls.map((tool) => tool.timestamp));
-    for (let i = textBlocks.length - 1; i >= 0; i--) {
-      if (textBlocks[i].timestamp < latestToolTs) {
-        textBlocks.splice(i, 1);
-      }
-    }
-  }
   if (fallbackExecution.trim() && !hasExecution) {
     logs.push({
       id: nextId("log_fallback"),

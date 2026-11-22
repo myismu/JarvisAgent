@@ -102,8 +102,6 @@ function hasBubblePayload(
   );
 }
 
-const hasBubbleContent = computed(() => hasBubblePayload(currentTurn.value));
-
 // 控制 Live Turn 显示/隐藏
 const showAgentTurn = ref(false);
 
@@ -119,6 +117,34 @@ watch(
   },
   { immediate: true }
 );
+
+/**
+ * 渲染用的消息列表 = 历史消息 + 当前 live 轮次。
+ *
+ * 为什么要把两者合并成一个 v-for：live 轮次原先走独立的 `v-if(showAgentTurn)` 块，
+ * 收尾时「append 历史消息 + 清空 live 缓冲区」让两棵树分属不同分支，
+ * Vue 只能卸载旧树、挂载新树 —— 整段 Markdown 重新解析
+ * （StreamingMarkdown 的 frozenBoundary / frozenTokens 是实例内局部缓存），
+ * 表现为内容闪一下、口径跳变。
+ *
+ * 合并后同一轮在列表里用同一个 key（`view.liveTurnId`，收尾时由 chat.ts
+ * 的 agentMessageId 沿用），Vue 会 patch 复用组件实例，DOM 与缓存都保住。
+ *
+ * 去重是必需的：append 与 showAgentTurn 的更新不在同一个同步调用里，
+ * 若正式消息已出现在 messages 中，虚拟项必须立刻退场，否则 key 重复。
+ */
+const renderMessages = computed(() => {
+  const stored = chat.messages;
+  const liveId = session.currentSessionView.liveTurnId;
+  if (!showAgentTurn.value || !liveId) return stored;
+  if (stored.some((message: any) => message.id === liveId)) return stored;
+  return [...stored, { id: liveId, role: "agent", live: true }];
+});
+
+/** 消息 → 本轮 turn：live 项用内存 currentTurn，历史项用快照转换（带 WeakMap 缓存） */
+function turnOfMessage(message: any): AgentCurrentTurn {
+  return message.live ? currentTurn.value : convertSnapshotToTurn(message.snapshot);
+}
 
 // 运行中用时的唯一事实源：后端 `agent_runs.started_at`。
 // 不再自己维护开始时刻与累计等待量（旧实现里那套状态跨会话、跨轮次，
@@ -803,7 +829,7 @@ onMounted(() => {
         {{ t('chat.loadFailed') }}
       </div>
       <!-- 结构化消息列表（Vue 组件渲染） -->
-      <template v-for="(message, index) in chat.messages" :key="message.id">
+      <template v-for="(message, index) in renderMessages" :key="message.id">
         <!-- 用户消息 -->
         <div
           v-if="message.role === 'user'"
@@ -864,40 +890,28 @@ onMounted(() => {
             </svg>
           </button>
         </div>
-        <!-- Agent 消息 -->
-        <div v-else-if="message.role === 'agent' && message.snapshot" class="chat-message agent-message" :data-msg-id="message.id">
+        <!-- Agent 消息：历史快照与 live 轮次走**同一条**渲染语句。
+             live 项由 renderMessages 追加在列表末尾，key 与收尾后的正式消息一致，
+             所以收尾时 Vue 会 patch 复用这棵子树，而不是卸载再挂载（那会闪一下）。 -->
+        <div v-else-if="message.role === 'agent' && (message.live || message.snapshot)" class="chat-message agent-message" :data-msg-id="message.id">
           <!-- 只有状态标注、没有正文的轮次不渲染气泡：notice 在气泡外，气泡会是个空盒子 -->
-          <div v-if="hasBubblePayload(message.snapshot)" class="message-content current-turn-content">
+          <div v-if="hasBubblePayload(turnOfMessage(message))" class="message-content current-turn-content">
             <AgentTurn
-              :turn="convertSnapshotToTurn(message.snapshot)"
+              :turn="turnOfMessage(message)"
               :display-mode="prefs.agentAudience.value"
-              :elapsed="0"
-              :status="message.snapshot.status"
+              :elapsed="message.live ? runElapsed : 0"
+              :status="message.live ? session.currentSessionView.status : message.snapshot.status"
             />
           </div>
           <!-- 状态标注刻意放在气泡**外面**：它是这一轮的运行状态，不是模型说的话。
-               放气泡内会跟着 padding 缩进，看起来像模型正文的一部分。 -->
-          <AgentTurnNotice :notice="noticeTextFromBackend(message.snapshot.noticeI18nKey, message.snapshot.noticeDetail)" />
-        </div>
-      </template>
-
-      <!-- Live 当前 Turn -->
-      <div v-if="showAgentTurn" class="chat-message agent-message current-turn-message">
-        <!-- 气泡只在有真内容时渲染；只有 notice（如上游静默零产出）时让它单独出现在外面 -->
-        <div
-          v-if="hasBubbleContent"
-          class="message-content current-turn-content"
-        >
-          <AgentTurn
-            :turn="currentTurn"
-            :display-mode="prefs.agentAudience.value"
-            :elapsed="runElapsed"
-            :status="session.currentSessionView.status"
+               放气泡内会跟着 padding 缩进，看起来像模型正文的一部分。
+               live 时才传 running，历史轮次没有「运行中」这个概念。 -->
+          <AgentTurnNotice
+            :notice="turnOfMessage(message).notice"
+            :running="message.live ? currentTurn.isRunning : undefined"
           />
         </div>
-        <!-- running：当前轮才可能为 true，用来区分"还在进行中"的过程态 -->
-        <AgentTurnNotice :notice="currentTurn.notice" :running="currentTurn.isRunning" />
-      </div>
+      </template>
       <Transition name="notice-fade">
         <div v-if="chat.memoryNotice" class="memory-notice" @click="chat.memoryNotice = null">
           <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>

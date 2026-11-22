@@ -325,6 +325,18 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /**
+   * 本轮 agent 消息的 id。
+   *
+   * 必须与 ChatArea 给 live 轮次用的 vnode key 一致（`view.liveTurnId`）：
+   * 收尾时正式消息沿用同一个 id，Vue 才会 patch 复用同一个组件实例；
+   * 换成 `agent_${Date.now()}` 会让整棵子树卸载重建（Markdown 重新解析，闪一下）。
+   * liveTurnId 为空时退回时间戳，只为兜底不产出 undefined id。
+   */
+  function agentMessageId(view: { liveTurnId: string | null }) {
+    return view.liveTurnId ?? `agent_${Date.now()}`;
+  }
+
   // 渲染 tick，用于触发流式滚动
   const renderTick = ref(0);
 
@@ -354,6 +366,8 @@ export const useChatStore = defineStore("chat", () => {
         const requestView = session.getSessionView(sid);
         requestView.status = "RUNNING";
         requestView.streamActive = false;
+        // 续跑是新一轮：重新生成本轮 live 标识，收尾消息与它保持同一个 vnode key。
+        requestView.liveTurnId = `live_${crypto.randomUUID()}`;
         const res = await invoke<JarvisResult>("resume_jarvis", {
           sessionId: sid,
           reason: result.resumeWith,
@@ -368,7 +382,7 @@ export const useChatStore = defineStore("chat", () => {
             res.notice_i18n_key ?? undefined,
             res.notice_detail ?? undefined,
           );
-          session.appendSessionMessage(sid, { role: "agent", id: `agent_${Date.now()}`, snapshot });
+          session.appendSessionMessage(sid, { role: "agent", id: agentMessageId(requestView), snapshot });
           session.clearSessionBuffers(sid);
           resetRenderState(sid);
         }
@@ -762,7 +776,7 @@ export const useChatStore = defineStore("chat", () => {
       const view = session.getSessionView(null);
       session.appendSessionMessage(null, {
         role: "agent",
-        id: `agent_${Date.now()}`,
+        id: agentMessageId(view),
         snapshot: buildAgentTurnSnapshot(
           view.currentTurn,
           `**执行出错：${errMsg}**`,
@@ -779,6 +793,10 @@ export const useChatStore = defineStore("chat", () => {
     const myGeneration = sendGeneration[sessionIdAtStart];
     const requestView = session.getSessionView(sessionIdAtStart);
     const pendingUserMessageId = resumeOnly ? null : `pending_${crypto.randomUUID()}`;
+    // 本轮 live 渲染的稳定 id：请求开始时生成一次，收尾时正式消息沿用同一个值。
+    // ChatArea 用它作 vnode key，保证收尾时是 patch 复用而不是卸载重建
+    // （见 SessionViewState.liveTurnId 的注释）。
+    requestView.liveTurnId = `live_${crypto.randomUUID()}`;
 
     try {
       const recovered = await invoke<boolean>("recover_interrupted_session_messages", {
@@ -898,7 +916,7 @@ export const useChatStore = defineStore("chat", () => {
               // 在不同刷新时机下会显示两种说法
               "notice.userCancel",
             );
-            session.appendSessionMessage(sessionIdAtStart, { role: "agent", id: `agent_${Date.now()}`, snapshot: canceledSnapshot });
+            session.appendSessionMessage(sessionIdAtStart, { role: "agent", id: agentMessageId(requestView), snapshot: canceledSnapshot });
           }
           requestView.latestCheckpoint = null;
           session.clearSessionBuffers(sessionIdAtStart);
@@ -935,7 +953,7 @@ export const useChatStore = defineStore("chat", () => {
         );
         requestView.latestCheckpoint = null;
         session.clearSessionBuffers(sessionIdAtStart);
-        session.appendSessionMessage(sessionIdAtStart, { role: "agent", id: `agent_${Date.now()}`, snapshot: clarificationSnapshot });
+        session.appendSessionMessage(sessionIdAtStart, { role: "agent", id: agentMessageId(requestView), snapshot: clarificationSnapshot });
         resetRenderState(sessionIdAtStart);
         if (myGeneration === sendGeneration[sessionIdAtStart]) {
           requestView.streamActive = false;
@@ -991,7 +1009,7 @@ export const useChatStore = defineStore("chat", () => {
       }
       session.appendSessionMessage(sessionIdAtStart, {
         role: "agent",
-        id: `agent_${Date.now()}`,
+        id: agentMessageId(requestView),
         snapshot,
       });
 
@@ -1042,7 +1060,7 @@ export const useChatStore = defineStore("chat", () => {
       );
       session.appendSessionMessage(sessionIdAtStart, {
         role: "agent",
-        id: `agent_${Date.now()}`,
+        id: agentMessageId(requestView),
         snapshot,
       });
 

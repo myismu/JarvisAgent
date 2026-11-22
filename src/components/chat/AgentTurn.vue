@@ -14,7 +14,7 @@
   红只表示「这次调用没成功」，不再等同于致命错误
 -->
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import {
   stripPseudoToolCalls,
   buildDeveloperTimeline,
@@ -42,6 +42,30 @@ const props = defineProps<{
 // 必须在 computed 求值时经偏好对象访问（getter），解构成变量会退化成一次性快照。
 const uiPrefs = usePreferences();
 const expandExecutionWhileRunning = computed(() => uiPrefs.expandExecutionWhileRunning);
+
+// 执行过程折叠的展开状态。
+//
+// 不用原生 <details> 的理由：它无法对高度做过渡，收起时内容会瞬间塌陷 ——
+// 这正是「输出完自动收起」时最后一段视觉跳变的来源。改成受控折叠后，
+// 内容容器用 grid-template-rows 0fr → 1fr 过渡，收起是动画而不是塌一下。
+//
+// 展开规则（与 usePreferences 里 expandExecutionWhileRunning 的注释一致）：
+// - 运行中：由开关决定（关掉开关就只剩摘要头一行）；
+// - 轮次结束（含历史消息）：无论开关如何都收起；
+// - 手动点击可临时切换，但阶段变化（开跑 / 收尾 / 开关变更）会按上面的规则复位，
+//   避免上一轮的手动展开态带到下一轮。
+const isExecOpen = ref(false);
+
+watch(
+  [() => props.turn.isRunning, expandExecutionWhileRunning],
+  ([running, expand]) => {
+    isExecOpen.value = running && expand;
+  },
+  { immediate: true },
+);
+
+/** 折叠内容区的 id：同一页面有多轮，必须唯一，aria-controls 才不会指向别人的内容 */
+const execBodyId = `dev-execution-body-${Math.random().toString(36).slice(2, 9)}`;
 
 // 这里原有「从正文剥离中断标记」的正则与 splitInterruptMarker，2026-09-21 删除。
 // 理由（别再把它加回来）：
@@ -87,19 +111,23 @@ const developerTimeline = computed(() =>
 
 const timelineSplit = computed(() => {
   const items = developerTimeline.value;
-  // 本轮还在运行中 → 不分离，全部留在执行过程里
-  // 只有本轮彻底结束（!isRunning）才把最后一个 text 提升为"最后回答"
-  if (props.turn.isRunning) {
+  // 拆分判据：**只看时间线末尾是不是正文**，与本轮是否运行中无关。
+  //
+  // 为什么不再用 isRunning：运行中正在流式输出、且位于末尾的那段文字，就是最终回答。
+  // 用 isRunning 判断会把它一直关在折叠内（compact 口径：小字号 + muted 灰），
+  // 收尾瞬间再搬到折叠外（正文口径），同一段文字换一遍字号/颜色/行高，
+  // 而且节点会从一棵子树搬到另一棵子树，表现为「闪一下」。
+  //
+  // 为什么必须要求「末尾」而不是「最后一个 text」：text 之后若还有 tool / thinking / log，
+  // 说明它只是中间叙述，提前提升会让工具调用跑到「最终回答」区域外面
+  // （0e11c85 修过这个问题）。被下一轮 loop 接续时，正文自动回落到执行过程内。
+  const last = items[items.length - 1];
+  if (!last || last.type !== "text") {
     return { execItems: items, finalItems: [] as typeof items };
   }
-  let lastTextIdx = -1;
-  for (let i = items.length - 1; i >= 0; i--) {
-    if (items[i].type === "text") { lastTextIdx = i; break; }
-  }
-  if (lastTextIdx < 0) return { execItems: items, finalItems: [] as typeof items };
   return {
-    execItems: items.filter((_, i) => i !== lastTextIdx),
-    finalItems: [items[lastTextIdx]],
+    execItems: items.slice(0, -1),
+    finalItems: [last],
   };
 });
 const hasDeveloperSegments = computed(() => developerTimeline.value.length > 0);
@@ -151,19 +179,32 @@ const executionSummaryText = computed(() => {
     <!-- 开发者模式 -->
     <div v-if="isDeveloperMode && hasDeveloperSegments">
       <!-- 执行过程折叠面板放上面：思考块在其内部，面板展开才能看见。
-           :open 只由「本轮运行中 且 开关开启」决定——
-           1. 运行中不再无条件展开（原先写死 props.turn.isRunning，开发者模式下永远展开、开关失效）；
-           2. 轮次结束（isRunning=false）无论开关如何都收起，历史消息同理。
-           不要改回 `props.turn.isRunning || 开关`：那样关掉开关也照样展开，开关就成了摆设。 -->
-      <details v-if="timelineSplit.execItems.length > 0" class="dev-execution-fold" :open="props.turn.isRunning && expandExecutionWhileRunning">
-        <summary class="dev-execution-summary">
+           展开状态由 isExecOpen 控制（规则见 script 里的注释）：
+           运行中按开关展开，轮次结束一律收起，历史消息同理。
+           不用原生 <details>：它无法做高度过渡，收起会瞬间塌陷。 -->
+      <div
+        v-if="timelineSplit.execItems.length > 0"
+        class="dev-execution-fold"
+        :class="{ open: isExecOpen }"
+      >
+        <button
+          type="button"
+          class="dev-execution-summary"
+          :aria-expanded="isExecOpen"
+          :aria-controls="execBodyId"
+          @click="isExecOpen = !isExecOpen"
+        >
           <span>{{ executionSummaryText }}</span>
           <svg class="dev-execution-chevron" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <polyline points="6 9 12 15 18 9"></polyline>
           </svg>
-        </summary>
-        <ExecutionTimeline :items="timelineSplit.execItems" compact />
-      </details>
+        </button>
+        <div :id="execBodyId" class="dev-execution-body">
+          <div class="dev-execution-body-inner">
+            <ExecutionTimeline :items="timelineSplit.execItems" compact />
+          </div>
+        </div>
+      </div>
       <!-- 最后回答放下面 -->
       <ExecutionTimeline v-if="timelineSplit.finalItems.length > 0" :items="timelineSplit.finalItems" />
     </div>
@@ -214,34 +255,54 @@ const executionSummaryText = computed(() => {
   overflow: hidden;
 }
 .dev-execution-fold:hover,
-.dev-execution-fold[open] {
+.dev-execution-fold.open {
   background: color-mix(in srgb, var(--glass-bg) calc(var(--agent-message-opacity, 0) * 1%), transparent);
 }
 .dev-execution-summary {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  /* button 默认样式清零：外观完全由这里定义，不继承浏览器按钮的边框 / 底色 / 字体 */
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
   font-size: 0.75rem;
   /* 不再加粗：折叠头只是信息标签，层级低于执行过程和最终回答 */
   font-weight: 400;
   color: var(--text-muted);
   cursor: pointer;
   user-select: none;
-  list-style: none;
-}
-.dev-execution-summary::-webkit-details-marker {
-  display: none;
+  /* 下边距也加过渡：否则收起瞬间下方正文会被顶上去一截 */
+  transition: margin-bottom 0.18s ease;
 }
 .dev-execution-chevron {
   flex-shrink: 0;
   opacity: 0.7;
   transition: transform 0.15s ease;
 }
-.dev-execution-fold[open] > .dev-execution-summary .dev-execution-chevron {
+.dev-execution-fold.open > .dev-execution-summary .dev-execution-chevron {
   transform: rotate(180deg);
 }
-.dev-execution-fold[open] > .dev-execution-summary {
+.dev-execution-fold.open > .dev-execution-summary {
   margin-bottom: 8px;
+}
+
+/* 折叠内容的高度过渡：grid-template-rows 0fr → 1fr。
+   不用 max-height：内容可能很长，max-height 需要一个猜出来的上限，
+   猜小了截断、猜大了动画速度不对；0fr/1fr 不需要知道具体高度。
+   内层必须 overflow: hidden，grid 的行高收缩才能把内容裁掉。 */
+.dev-execution-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.18s ease;
+}
+.dev-execution-fold.open .dev-execution-body {
+  grid-template-rows: 1fr;
+}
+.dev-execution-body-inner {
+  min-height: 0;
+  overflow: hidden;
 }
 
 

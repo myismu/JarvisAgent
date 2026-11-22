@@ -71,6 +71,17 @@ export interface SessionViewState {
   stopping: boolean;
   activeRunId: string | null;
   resumableRunId: string | null;
+  /**
+   * 当前 live 轮次的稳定标识：**每次请求开始时生成、收尾后保留**。
+   *
+   * 用途：ChatArea 把 live 轮次当作消息列表的末项渲染时，用它作 vnode key；
+   * 收尾时正式消息沿用同一个 id，Vue 才会 patch 复用同一个组件实例
+   * （否则整棵子树卸载重建，Markdown 重新解析，表现为闪一下）。
+   *
+   * 每轮必须唯一：同一会话连续两轮不能相同，否则会与上一轮的历史消息 key 冲突；
+   * 续跑（resume）也要重新生成，因为上一轮的 agent 消息已经在列表里了。
+   */
+  liveTurnId: string | null;
   currentTurn: AgentCurrentTurn;
   throttling: boolean;
   lastRenderAt: number;
@@ -155,6 +166,7 @@ function createEmptySessionView(hydration: SessionHydration = 'idle'): SessionVi
     stopping: false,
     activeRunId: null,
     resumableRunId: null,
+    liveTurnId: null,
     currentTurn: createEmptyAgentCurrentTurn(),
     throttling: false,
     lastRenderAt: 0,
