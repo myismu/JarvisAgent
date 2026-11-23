@@ -994,30 +994,6 @@ pub fn save_session(
     meta
 }
 
-/// 逐请求累加会话用量，返回累加后的累计值（`None` = 会话不存在/已归档）。
-///
-/// ⚠️ **已不在生产路径上（2026-11）**：主循环与子 Agent 现在都走
-/// [`usage::record_request_usage`]——它把"插明细 + 累加累计 + 推事件"放在一个事务里。
-/// 本函数只累加、不写明细，单独使用会让"明细求和 ≠ 累计值"，账对不平且不报错。
-/// 保留它仅作为底层裸累加原语（无明细场景/测试），日后不应再从业务里调用。
-#[deprecated(
-    note = "唯一写入口是 usage::record_request_usage（明细与累计同事务）；本函数只累加不写明细"
-)]
-pub fn accumulate_session_token_usage(
-    id: &str,
-    delta: TokenUsageDelta,
-) -> Result<Option<SessionTokenTotals>, String> {
-    repository::accumulate_session_token_usage(
-        id,
-        SessionTokenTotals {
-            input: delta.input,
-            output: delta.output,
-            cache_hit: delta.cache_hit,
-            cache_miss: delta.cache_miss,
-        },
-    )
-}
-
 /// 读取会话的用量账本（按来源分组的明细汇总）。
 ///
 /// 数据源是 `request_usage` 明细表（v28），不是 `sessions.total_*`：
