@@ -26,6 +26,8 @@ use crate::core::agent::prompts::get_subagent_system_prompt;
 use crate::core::agent::{process_stream, StreamConfig};
 use crate::core::orchestration::subagents::{SubAgentMonitor, SubAgentPhase};
 use crate::core::session::memory::{compact_messages, estimate_tokens};
+use crate::core::session::usage::record_request_usage;
+use crate::core::session::{RequestUsageRecord, UsageSource};
 use crate::core::tools::file_tools::generate_repo_map;
 use crate::infra::config::config::ConfigState;
 use crate::infra::llm::adapters::parse_streamed_tool_input;
@@ -391,7 +393,73 @@ async fn wait_cancel(
     }
 }
 
+/// 把子 Agent **单次请求**的用量写入明细与会话累计（`source = subagent`）。
+///
+/// ## 为什么必须在每 loop 就写
+/// 子 Agent 有自己独立的 Agent Loop，不经过主流程（`pipeline.rs`）的逐请求路径。
+/// 若改成回合收尾由父层一次性补交，会同时坏两件事：
+/// - 父层手里只有“本轮子 Agent 总量”这一个数，补交就是**主循环之外的额外一笔**，
+///   一旦哪天父层又把总用量整体交一次，子 Agent 的账就被双计（静默且无报错）；
+/// - 用户中途取消时收尾可能整体跳过，已真实花掉的 token 就永久不入账。
+///
+/// ## 写入口径
+/// 唯一写入口是 [`record_request_usage`]：它在**同一个事务**里插明细并累加
+/// `sessions.total_*`，所以“明细求和 == 累计值”恒成立。缓存两列**原样透传**：
+/// `None` = 这家未上报（落 NULL），`Some(0)` = 真没命中——两者语义不同，不编造 0。
+/// 这里刻意不做主流程那套端点能力推断（`usage_memory`）：子 Agent 的读数就是
+/// 它自己那一次响应的读数，不做跨请求推断。
+///
+/// 写失败只记日志、不中断子 Agent：账本问题不应把正在跑的任务打吹。
+fn record_subagent_turn_usage(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    run_id: &str,
+    loop_count: usize,
+    model_id: &str,
+    agent_role: &str,
+    task_id: Option<i32>,
+    result: &crate::core::agent::StreamResult,
+) {
+    // 厂商一次 usage 都没上报时（两个数都是 0）不写：
+    // 写一条 0/0 的明细只会把“请求次数”推高，对账本没有信息量。
+    if result.input_tokens == 0 && result.output_tokens == 0 {
+        return;
+    }
+
+    let mut record = RequestUsageRecord::new(session_id.to_string(), UsageSource::Subagent)
+        // loop_index 用 1 基序号，与 `process_stream` 收到/日志里的 loop 号同口径
+        .run(run_id.to_string(), Some((loop_count + 1) as u32))
+        .agent_role(agent_role.to_string())
+        .model_id(model_id.to_string())
+        .tokens(result.input_tokens, result.output_tokens)
+        .cache(
+            result.cache_hit_tokens,
+            result.cache_miss_tokens,
+            result.cache_source,
+        );
+    // 任务系统的 task_id 是 i32，明细表存字符串（与其它来源统一用文本主键）。
+    // `parent_tool_use_id` 当前拿不到：`run_subagent` 的入参里没有工具调用 id
+    //（那个 id 留在 RunSubagent 的 dispatch 层），故留空；按 run/role 仍可归集。
+    if let Some(id) = task_id {
+        record = record.task_id(id.to_string());
+    }
+
+    if let Err(err) = record_request_usage(app, record) {
+        crate::jarvis_warn!("SUBAGENT", "failed to record request usage: {}", err);
+    }
+}
+
 /// 子代理执行引擎：独立 Agent Loop，支持只读/读写模式，返回 (结果, 输入token, 输出token)
+///
+/// ## 返回的 token 数是什么
+/// 是**本次子代理全部轮次**的输入/输出总量，用途只有两个：
+/// - 子代理监控面板/`agent_runs` 汇总里的“这个子任务花了多少”；
+/// - `ExecuteTool` → `tools_runner` → `pipeline` 的展示链路。
+///
+/// 它**不参与** `sessions.total_*`：会话账本由本文件每轮调用的
+/// [`record_subagent_turn_usage`] 直写（明细 + 累计同事务）。调用方拿这两个数
+/// 只是为了展示，**不得**再当成增量交给任何入库接口（包括 `save_session`）——
+/// 那会把同一笔账记两遍。
 pub async fn run_subagent(
     app: tauri::AppHandle,
     prompt: String,
@@ -894,6 +962,23 @@ pub async fn run_subagent(
             },
         )
         .await;
+
+        // ── 请求级入账（本 loop 一拿到 usage 就写）──
+        //
+        // 位置很关键：必须早于下面的取消检查。流已经跑完，这次请求的 token 就是
+        // **已经花掉的成本**；若放到取消/异常分支之后，用户点停止的那一刻就会丢掉
+        // 最后一轮的用量。之后各条返回路径（取消、空转提前收口、轮次上限、正常）
+        // 一律**只读** `sub_input_tokens/sub_output_tokens`，不得再交一次。
+        record_subagent_turn_usage(
+            &app,
+            &session_id,
+            &run_id,
+            loop_count,
+            &model_id,
+            &agent_role,
+            task_id,
+            &stream_result,
+        );
 
         // 检查流式接收期间是否被取消
         if cancel_requested(&app, &run_id, parent_cancel.as_ref()).await {

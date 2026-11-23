@@ -20,6 +20,7 @@ import { usePreferences, prefsReady } from '../../composables/usePreferences';
 import { useThinkingMode } from '../../composables/useThinkingMode';
 import { isThinkingToggleDisabled, type ThinkingCaps } from '../../utils/thinking';
 import { resolveContextTokens } from '../../utils/contextUsage';
+import { createEmptySessionUsageBreakdown } from '../../utils/usageBreakdown';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { readFile } from '@tauri-apps/plugin-fs';
@@ -189,6 +190,20 @@ watch(() => session.inputDraft, (draft) => {
 const sessionTokenTotal = computed(() => (session.totalInputTokens || 0) + (session.totalOutputTokens || 0));
 
 /**
+ * 会话用量的按来源分组快照（主对话 / 子 Agent / 系统开销 / 未上报请求）。
+ *
+ * 只负责转交给浮层 `CacheHitTooltip`，本组件**不做任何聚合**：
+ * 分组口径由后端 `UsageSource` 决定，归一化（缺字段补 0）在 `utils/usageBreakdown.ts`。
+ * 两处重新聚合就会多出第三套口径，和累计值对不上时没人能说清谁对。
+ *
+ * 取不到时回退到「归零 + hasDetail=false」的占位：浮层靠这个标志
+ * 退回只显示累计值，**不会把缺明细画成三层 0**（那会被读成「主对话没花 token」）。
+ */
+const usageBreakdown = computed(
+  () => session.currentSessionView?.sessionUsageBreakdown ?? createEmptySessionUsageBreakdown(),
+);
+
+/**
  * 当前上下文占用。
  *
  * 口径统一在 `utils/contextUsage.ts`（右侧监控面板 `ContextInspector.vue` 用的是同一个函数）：
@@ -216,6 +231,10 @@ const contextWindow = computed(() => agent.currentContextSnapshot?.maxContextTok
  * 与「本次上下文」**共用同一个分子**（`contextTokens`，provider 实测优先）——同一行里
  * 百分比、已用、窗口三者必须自洽，若这里改用估算值就会出现"已用 / 窗口"与百分比对不上。
  *
+ * 读数**把口径词「本次上下文」写在最前面**：概览栏上的缓存读数是会话累计
+ * （「累计命中」），而环里这个是最近一次请求的 prompt。两个词都在不 hover 时可见，
+ * 才不会被读混 —— 之前裸的「212.5K / 300.0K」就和累计量级太像了。
+ *
  * ⚠️ **未扣输出预算**：环与读数展示的是「已用 / 窗口」，没有为下一次回复的 `max_tokens` 预留。
  * （此前快照里的 `maxOutputTokens` 是硬编码常量、不可信，故无从扣减；2026-09-17 起该字段已与
  * 请求体 `max_tokens` 同源，技术上前提具备。扣不扣是**口径选择**——「占窗口多少」还是「还剩多少可输入」，
@@ -226,10 +245,10 @@ const contextUsageLabel = computed(() => {
   const used = formatToken(contextTokens.value);
   const max = contextWindow.value;
   if (!max) {
-    return `${used} ${t('input.tokenContextUsed')} · ${t('input.tokenWindowUnknown')}`;
+    return `${t('input.tokenContext')} ${used} · ${t('input.tokenWindowUnknown')}`;
   }
   const percent = Math.min(100, Math.round((contextTokens.value / max) * 1000) / 10);
-  return `${percent.toFixed(1)}% · ${used} / ${formatToken(max)} ${t('input.tokenContextUsed')}`;
+  return `${t('input.tokenContext')} ${percent.toFixed(1)}% · ${used} / ${formatToken(max)}`;
 });
 
 /** 进度环的圆周长（r=9，必须与模板里 `<circle r>` 一致，否则环会画不满/溢出） */
@@ -273,9 +292,14 @@ const contextRingDash = computed(() => {
  *   并且避开了单次口径的已知偏差（多 loop 回合里单次只反映**最后一个 loop**，
  *   而那时前缀最暖 → 系统性偏乐观。实测同一次会话「本次 81%」vs「累计 88%」）。
  *
- * 会话累计的输入 / 输出 / 合计收进浮层；浮层「本次请求」组保留单次命中率，
- * 于是"单次 vs 累计"在界面上构成完整对照：栏上「本次上下文 + 累计命中」，
- * 浮层「本次请求 + 会话累计」。
+ * 会话累计的输入 / 输出 / 合计收进浮层，并在浮层里按「主对话 / 子 Agent / 系统开销」
+ * 三层拆开（谁把 token 花掉的，在概览位上看不出来，只能进浮层）；
+ * 浮层「本次请求」组保留单次命中率，于是"单次 vs 累计"在界面上构成完整对照：
+ * 栏上「本次上下文 + 累计命中」，浮层「本次请求 + 会话累计」。
+ *
+ * 栏上两个标签的措辞**必须带口径词**（「本次上下文」/「累计命中」），并且不引入
+ * 价格与成本概念：同一份用量在不同厂商/不同套餐下的计价规则不同，界面不做换算，
+ * 只报 token 与命中率这两个可核实的量。
  *
  * 为什么口径词必须写进标签本身，而不是靠浮层的分组标题承担：
  * 概览栏**没有分组标题**，浮层的口径对照要 hover 之后才出现。实测反馈就是——
@@ -1709,6 +1733,7 @@ const handleRecallEdit = async () => {
             :session-total-tokens="sessionTokenTotal"
             :session-cache-hit-tokens="session.totalCacheHitTokens"
             :session-cache-miss-tokens="session.totalCacheMissTokens"
+            :breakdown="usageBreakdown"
           />
         </span>
         <!-- 主 Agent 进度（第几轮 · 本轮第几次工具调用）+ 最近一次请求的吞吐。

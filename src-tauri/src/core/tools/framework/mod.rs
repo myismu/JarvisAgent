@@ -89,10 +89,13 @@ impl ToolCallResult {
 
     /// 附加本次调用的 token 用量（链式调用）。
     ///
-    /// 目前只有 RunSubagent 会产生非零值：子代理跑的是独立 Agent Loop，
-    /// 它的用量不经过逐请求的 provider usage 快照，只能靠工具返回值带回主循环
-    /// （见 `pipeline` 里 `req_sub_input_tokens` 的说明）。按需工具统一经
-    /// ExecuteTool → dispatch 执行，若不在这条链路上透传，用量会在 ExecuteTool 那层丢掉。
+    /// 目前只有 RunSubagent 会产生非零值：子代理跑的是独立 Agent Loop，它把
+    /// 自己的用量带回主线程只为了**展示**（监控面板、`agent_runs` 回合汇总）。
+    /// ⚠️ 它不是账本：子代理每一轮已经自己把明细与会话累计写进了库
+    /// （`subagent.rs::record_subagent_turn_usage`），上层若把这些值当增量
+    /// 再入库一次，同一笔用量就会被计两遍。
+    /// 按需工具统一经 ExecuteTool → dispatch 执行，若不在这条链路上透传，
+    /// 展示层（以及回归对比用的 `req_sub_*` 诊断值）就拿不到这两个数。
     pub fn with_usage(mut self, input_tokens: u64, output_tokens: u64) -> Self {
         self.input_tokens = input_tokens;
         self.output_tokens = output_tokens;

@@ -475,6 +475,7 @@ pub async fn consolidate_memory(
     );
 
     let Some(new_content) = session_memory::rewrite_global_memory(
+        app,
         session_id,
         &config,
         MEMORY_CURATOR_SYSTEM,

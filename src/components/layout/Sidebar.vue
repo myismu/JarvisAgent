@@ -25,7 +25,6 @@ import { loadSessionThinking } from '../../composables/useThinkingMode';
 import { useWindow } from '../../composables/useWindow';
 import { usePreferences, prefsReady } from '../../composables/usePreferences';
 import { showToast } from '../../composables/useToast';
-import ConfirmModal from '../common/ConfirmModal.vue';
 
 defineProps<{
   collapsed: boolean;
@@ -205,9 +204,9 @@ const pickDirectory = async () => {
   }
 };
 
-// 加载会话列表和项目列表
+// 加载会话列表、项目列表与归档计数
 const loadAll = async () => {
-  await Promise.all([loadSessions(), loadProjects(), loadDeletedSessions()]);
+  await Promise.all([loadSessions(), loadProjects(), loadArchivedCount()]);
 };
 
 const loadProjects = async () => {
@@ -219,62 +218,31 @@ const loadProjects = async () => {
 };
 
 /**
- * 最近删除（软删除的会话）。
+ * 归档会话数量（侧边栏只显示一个计数徽标）。
  *
- * 删除会话现在是**软删除**：只打 `deleted_at` 标记，消息 / 快照 / 回收站全部保留，
- * 所以在这里能一键恢复（恢复后回滚也照常可用）。
+ * 归档列表、恢复与彻底删除都搬到了独立的归档页（`appView.showArchive()`）。
+ * 侧边栏不再持有归档列表，只通过 `count_deleted_sessions` 取一个数字：
+ * 列表数据只有归档页需要，侧边栏拉全量既浪费 IPC，也让「最近删除」这类
+ * 折叠块一直挤占会话列表的空间。
  */
-const deletedSessions = ref<Array<{ id: string; title: string; updatedAt: number }>>([]);
-const showDeleted = ref(false);
+const archivedCount = ref(0);
 
-const loadDeletedSessions = async () => {
+const loadArchivedCount = async () => {
   try {
-    deletedSessions.value = await invoke<Array<{ id: string; title: string; updatedAt: number }>>(
-      'list_deleted_sessions',
-    );
+    archivedCount.value = await invoke<number>('count_deleted_sessions');
   } catch (err) {
-    console.error('加载已删除会话失败:', err);
-  }
-};
-
-const restoreDeletedSession = async (id: string) => {
-  try {
-    await invoke('restore_session', { id });
-    await Promise.all([loadSessions(), loadDeletedSessions()]);
-    showSessionActionMessage(t('sidebar.restored'));
-  } catch (err) {
-    showSessionActionMessage(t('sidebar.restoreError', { error: formatErrorMessage(err) }), 'error');
+    console.error('加载归档会话数量失败:', err);
   }
 };
 
 /**
- * 彻底删除：真删会话行 + 清快照数据 + 清回收站目录，不可恢复。
+ * 打开归档页。
  *
- * 销毁性操作，所以走二次确认（与删除会话同一套 ConfirmModal 用法）。
+ * 与「技能管理」入口同理：只切视图，刻意不动 `sessionStore.activeSessionId` ——
+ * 它是消息渲染 / running 状态 / 上下文快照的宿主，置空等于把当前会话卸载掉。
  */
-const pendingPurgeSession = ref<{ id: string; title: string } | null>(null);
-const purgeSessionLoading = ref(false);
-
-const purgeDeletedSession = (s: { id: string; title: string }, event: Event) => {
-  event.stopPropagation();
-  pendingPurgeSession.value = { id: s.id, title: s.title };
-};
-
-const confirmPurgeSession = async () => {
-  const pending = pendingPurgeSession.value;
-  if (!pending) return;
-  purgeSessionLoading.value = true;
-  try {
-    await invoke('purge_session', { id: pending.id });
-    await loadDeletedSessions();
-    showSessionActionMessage(t('sidebar.purged'));
-  } catch (err) {
-    console.error('彻底删除会话失败:', err);
-    showSessionActionMessage(formatErrorMessage(err), 'error');
-  } finally {
-    purgeSessionLoading.value = false;
-    pendingPurgeSession.value = null;
-  }
+const openArchive = () => {
+  appView.showArchive();
 };
 
 // 会话列表：后端 `list_sessions` 不收参数，全量拉回后按项目分组展示。
@@ -408,7 +376,9 @@ const createProjectSession = async (projectId: string) => {
   if (project) sessionStore.workingDirectory = project.path;
 };
 
-// 删除项目
+// 关闭项目 = 归档项目（可恢复）。
+// 名字仍叫 deleteProject 是为了不动模板调用点；语义已由后端 `archive_project` 承担：
+// 同一事务里给项目与名下会话打 `deleted_at`，快照与回收站原样保留，归档页可恢复。
 const confirmingDeleteProjectId = ref<string | null>(null);
 
 const deleteProject = (projectId: string, event: Event) => {
@@ -416,6 +386,7 @@ const deleteProject = (projectId: string, event: Event) => {
   if (confirmingDeleteProjectId.value === projectId) {
     performDeleteProject(projectId);
   } else {
+    // 仍然保留二次点击：虽然可恢复，但误触会让整组会话从列表里消失，代价不小
     confirmingDeleteProjectId.value = projectId;
     setTimeout(() => {
       if (confirmingDeleteProjectId.value === projectId) {
@@ -427,21 +398,14 @@ const deleteProject = (projectId: string, event: Event) => {
 
 const performDeleteProject = async (projectId: string) => {
   confirmingDeleteProjectId.value = null;
-  const activeInProject = sessionStore.activeSessionId
-    && sessions.value.find(s => s.id === sessionStore.activeSessionId && s.projectId === projectId);
   try {
-    await invoke('delete_project', { id: projectId });
-    if (activeInProject) {
-      sessionStore.activeSessionId = null;
-      sessionStore.workingDirectory = null;
-      sessionStore.resetSessionView(null);
-      sessionStore.setSessionUsageTotals(null, {});
-      chat.resetRenderState();
-      chat.triggerRender();
-    }
+    await invoke('archive_project', { id: projectId });
+    // 活动会话属于该项目时，后端会广播 `active-session-changed`（带 deletedSessionId）
+    // 完成「切到 fallback + 对齐预设 + 重载消息视图」，这里不再手动 resetSessionView /
+    // chat.resetRenderState —— 那套只清界面不换会话，会留下半状态。
     await loadAll();
   } catch (err) {
-    console.error('删除项目失败:', err);
+    console.error('归档项目失败:', err);
     showSessionActionMessage(formatErrorMessage(err), 'error');
   }
 };
@@ -652,9 +616,12 @@ onMounted(async () => {
   });
 
   unlistenUpdated = await listen('session-updated', () => {
-    loadSessions();
-    // 软删除也走这个事件（删会话会广播它），所以"最近删除"要一起刷新
-    loadDeletedSessions();
+    // 归档（软删除）与恢复都会广播这个事件。这里必须三个数据源同批刷新，不能只拉会话：
+    // 恢复一个会话会连带把它所属的归档项目一起复活，项目列表不重拉的话，
+    // 该会话虽然有 projectId，但项目不在 projects 里，于是既进不了 projectSessions
+    // （只收录 projectId 能在 projects 中找到的会话），也进不了 standaloneSessions
+    // （只收录没有 projectId 的会话），最终在侧边栏完全不可见。
+    loadAll();
   });
 });
 
@@ -694,6 +661,24 @@ onUnmounted(() => {
               <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
             </svg>
             <span>{{ t('sidebar.skillManager') }}</span>
+          </button>
+          <!-- 归档入口：垃圾桶图标 + 存量徽标。归档页集中承担列表 / 恢复 / 彻底删除，
+               所以侧边栏这里不再有折叠块，也不再有任何彻底删除入口 —— 销毁性操作
+               必须离开主界面，避免用户在图方便时误点。 -->
+          <button
+            type="button"
+            class="new-session-btn archive-btn"
+            :class="{ active: appView.isArchiveView }"
+            :title="t('sidebar.recentlyDeleted')"
+            @click.stop="openArchive()"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <rect width="20" height="5" x="2" y="3" rx="1"></rect>
+              <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"></path>
+              <path d="M10 12h4"></path>
+            </svg>
+            <span>{{ t('sidebar.recentlyDeleted') }}</span>
+            <span v-if="archivedCount > 0" class="archive-count">{{ archivedCount }}</span>
           </button>
         </div>
         <div v-if="sessions.length === 0 && projects.length === 0" class="session-empty-state">
@@ -753,7 +738,7 @@ onUnmounted(() => {
               class="project-delete-btn"
               :class="{ confirming: confirmingDeleteProjectId === group.project.id }"
               @click="deleteProject(group.project.id, $event)"
-              :title="confirmingDeleteProjectId === group.project.id ? t('common.confirm') : t('sidebar.deleteProject')"
+              :title="confirmingDeleteProjectId === group.project.id ? t('common.confirm') : t('sidebar.deleteProjectHint')"
             >
               <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" stroke-width="2" fill="none">
                 <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -875,41 +860,8 @@ onUnmounted(() => {
           </li>
         </ul>
       </div>
-
-      <!-- 归档区：归档的会话（消息 / 快照 / 回收站都还在），可一键取消或彻底删除 -->
-      <div v-if="deletedSessions.length > 0">
-        <div class="project-header projects-section-header" @click="showDeleted = !showDeleted">
-          <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="project-icon">
-            <rect width="20" height="5" x="2" y="3" rx="1"></rect>
-            <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"></path>
-            <path d="M10 12h4"></path>
-          </svg>
-          <span class="project-name">{{ t('sidebar.recentlyDeleted') }}</span>
-          <span class="project-count archived">{{ deletedSessions.length }}</span>
-        </div>
-        <ul v-if="showDeleted" class="session-list">
-          <li v-for="s in deletedSessions" :key="s.id" class="session-item deleted-item">
-            <div class="session-main-row">
-              <!-- title 提示：标题超宽被省略号截断后，悬停仍能看到完整文本 -->
-              <span class="session-title" :title="s.title || t('sidebar.newSession')">{{ s.title || t('sidebar.newSession') }}</span>
-              <button
-                type="button"
-                class="restore-btn"
-                :title="t('sidebar.restoreSession')"
-                @click.stop="restoreDeletedSession(s.id)"
-              >{{ t('sidebar.restoreSession') }}</button>
-              <button
-                type="button"
-                class="restore-btn purge-btn"
-                :title="t('sidebar.purgeSession')"
-                @click="purgeDeletedSession(s, $event)"
-              >{{ t('sidebar.purgeSession') }}</button>
-            </div>
-          </li>
-        </ul>
       </div>
 
-      </div>
       <div class="sidebar-footer">
         <button type="button" class="footer-action" @click="emit('open-settings')" :title="t('sidebar.settingsTitle')">
           <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
@@ -919,50 +871,12 @@ onUnmounted(() => {
           <span>{{ t('sidebar.settings') }}</span>
         </button>
       </div>
-
-      <!-- 彻底删除确认：真删 + 清快照 + 清回收站，不可恢复。
-           归档本身不弹确认（可逆），只有这一步不可逆，所以确认框保留在这里。 -->
-      <ConfirmModal
-        :open="pendingPurgeSession !== null"
-        :title="t('sidebar.purgeSession')"
-        :message="t('sidebar.purgeSessionConfirm', { name: pendingPurgeSession?.title || '' })"
-        :confirm-text="t('sidebar.purgeSession')"
-        confirm-kind="danger"
-        :loading="purgeSessionLoading"
-        @confirm="confirmPurgeSession"
-        @cancel="pendingPurgeSession = null"
-      />
     </div>
   </div>
 
 </template>
 
 <style scoped>
-/* 归档区里的条目：整行淡一点，右侧给"取消归档 / 彻底删除"两个文字按钮 */
-.deleted-item {
-  opacity: 0.85;
-}
-.restore-btn {
-  flex-shrink: 0;
-  margin-left: auto;
-  padding: 2px 8px;
-  font-size: 0.7333rem;
-  border-radius: 4px;
-  border: 1px solid var(--glass-border);
-  background: var(--glass-bg);
-  color: var(--text-soft);
-  cursor: pointer;
-  transition: var(--transition-fast);
-}
-.restore-btn:hover {
-  color: var(--text-main);
-  background: var(--glass-bg-light);
-}
-/* 彻底删除：销毁性操作，用红色区分，别和"恢复"挨着却看不出轻重 */
-.purge-btn:hover {
-  color: var(--accent-red);
-  border-color: var(--accent-red);
-}
 .sidebar {
   width: 250px;
   background: var(--glass-bg);
@@ -1106,14 +1020,28 @@ onUnmounted(() => {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
 }
 
-/* 技能管理按钮的选中态 = “当前处于技能视图”，样式与聊天视图下会话项的选中态同源，
-   两者互斥由内容区视图决定：进入技能视图时聊天视图的会话高亮前提不再成立 */
-.skill-btn.active {
+/* 视图入口按钮（技能管理 / 归档）的选中态 = “当前处于该视图”，样式与聊天视图下会话项的选中态同源，
+   两者互斥由内容区视图决定：进入技能视图 / 归档页时聊天视图的会话高亮前提不再成立 */
+.skill-btn.active,
+.archive-btn.active {
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
   color: var(--text-main);
   font-weight: 600;
   box-shadow: var(--shadow-sm);
+}
+
+/* 归档入口的数量徽标：弱化处理——虚线边 + 弱字色，读作“不活跃存量”，
+   不与按钮文字抢视线；数量为 0 时模板直接不渲染 */
+.archive-count {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 1px 6px;
+  font-size: 0.65rem;
+  font-family: var(--font-mono);
+  border-radius: 10px;
+  border: 1px dashed var(--glass-border-subtle);
+  color: var(--text-faint);
 }
 
 .project-header {
@@ -1177,13 +1105,6 @@ body.dark-mode .project-header {
   padding: 1px 6px;
   border-radius: 10px;
   border: 1px solid var(--glass-border-subtle);
-}
-
-/* 归档区计数：与活跃计数区分——虚线边 + 更弱的字色，读作"不活跃存量" */
-.project-count.archived {
-  background: transparent;
-  border-style: dashed;
-  color: var(--text-faint);
 }
 
 .project-rename-btn,

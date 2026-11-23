@@ -16,6 +16,7 @@ pub mod memory;
 pub mod repository;
 pub mod resource_repository;
 pub mod thinking;
+pub mod usage;
 
 use crate::infra::types::models::{
     Content, ContentBlock, ImageSource, Message, MessageSource, PlanDocument, SessionMemory,
@@ -132,9 +133,58 @@ pub struct SessionMeta {
     /// 回溯修改它。这是与 `profile_id`（随会话走的模型预设）对称的"随会话走的推理档"。
     #[serde(default)]
     pub thinking_mode: bool,
+    /// 归档时间（**毫秒**，Unix epoch）。`None` = 未归档。
+    ///
+    /// 列名 `deleted_at` 是「删除」时代的遗留，语义早已是归档：v27 起归档项目会把
+    /// 名下会话统一打上**同一个**时间戳（见 `repository::archive_project`），
+    /// 归档页据此展示「何时归档」。
+    ///
+    /// 刻意**不加** `skip_serializing_if`：前端要靠 `deletedAt: null` 与「字段缺失」区分
+    /// 「未归档」与「后端没给这个字段」，省略会让两者在前端混成一种状态。
+    #[serde(default)]
+    pub deleted_at: Option<u64>,
+    /// 所属项目名（从 `projects.name` 派生，仅读）。
+    ///
+    /// 归档页要回答「这条会话原本属于哪个项目」——项目归档后已不在项目列表里，
+    /// 前端拿不到名字就没法分组展示。无项目（独立会话）时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
+}
+
+/// 批量操作中单个 id 的失败原因。
+///
+/// 批量恢复/批量删除**不允许整批回滚**：用户勾了 10 条、其中 1 条已被别的窗口
+/// 处理掉，剩下的 9 条仍应完成。失败项逐条回报，界面才能精确提示「哪几条没成功」。
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchOpFailure {
+    pub id: String,
+    /// 失败原因（面向用户的中文短句，直接展示）
+    pub reason: String,
+}
+
+/// 批量操作结果。
+///
+/// 三个字段各自独立，不从彼此推导：
+/// - `succeeded_ids`：真正被改动成功的目标 id；
+/// - `failed`：未成功的目标 id 及原因；
+/// - `restored_project_ids`：**副作用**结果——恢复会话时连带复活的归档项目。
+///   它与前两者没有必然数量关系（一次恢复可能复活 0 个、也可能复活 1 个），
+///   所以必须单独回报，不能靠前端猜。
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchOpResult {
+    pub succeeded_ids: Vec<String>,
+    pub failed: Vec<BatchOpFailure>,
+    pub restored_project_ids: Vec<String>,
 }
 
 /// 一次 pipeline 运行产生的用量增量，由 `save_session` 累加进会话累计值。
+///
+/// ⚠️ 2026-11 起**生产路径不再产生非零增量**：主循环与子 Agent 的每一次请求
+/// 都在当下由 `usage::record_request_usage` 写入明细并累加累计值。
+/// 回合收尾再补交一次就是重复计数（明细行数会少于累计口径能解释的量）。
+/// 参数本身保留：`save_session` 有 19 个调用点，现有调用一律传 `None`。
 ///
 /// 抽成结构体而不是四元组：四个字段都是 u64，元组传错顺序编译器不会拦，
 /// 而"把未命中数写进命中列"这种错只能靠人眼发现。
@@ -151,12 +201,273 @@ pub struct TokenUsageDelta {
 ///
 /// 与 `TokenUsageDelta` 分开是因为两者语义相反、不可互换：把「增量」当「总量」
 /// 发出去，前端会把累计值覆盖成某一轮的零头，数字会莫名其妙地缩水。
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionTokenTotals {
     pub input: u64,
     pub output: u64,
     pub cache_hit: u64,
     pub cache_miss: u64,
+}
+
+/// 一次请求用量的**来源**：这批 token 是被谁烧掉的。
+///
+/// 明细表 `request_usage.source` 列存的就是 [`UsageSource::as_str`] 的返回值。
+/// 枚举 ↔ 字符串的转换**只**走 `as_str` / `from_str` 一对函数（与 `MessageSource`
+/// 同一套口径），不另立第二套映射——两套映射迟早会漂移，而漂移之后
+/// “子 Agent 的账算进了主循环”这类错误不会报错，只会静静地算错数。
+///
+/// ⚠️ 本枚举**确实**派生了 `Serialize`（事件载荷与命令回包需要它），
+/// 因此多了一套 serde 映射；`usage_tests::usage_source_serde_matches_as_str`
+/// 把两者钉死，新增变体时忘改任何一边都会变红。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageSource {
+    /// 主 Agent 的主循环（每个 loop 一次模型请求）
+    Main,
+    /// 子 Agent（独立循环，不经过主流程的逐请求路径）
+    Subagent,
+    /// 反思机制（回合结束后的自我评估请求）
+    Reflection,
+    /// 上下文压缩（摘要生成请求）
+    Compact,
+    /// 会话自动命名（utility 模型请求）
+    SessionName,
+    /// 记忆管理员（会话结束后提炼长期记忆的请求）
+    MemoryCurator,
+}
+
+impl UsageSource {
+    /// 落库形态（`request_usage.source` 列的值）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Main => "main",
+            Self::Subagent => "subagent",
+            Self::Reflection => "reflection",
+            Self::Compact => "compact",
+            Self::SessionName => "session_name",
+            Self::MemoryCurator => "memory_curator",
+        }
+    }
+
+    /// 从落库形态还原。
+    ///
+    /// **未知值一律报错**，不静默降级：聚合结果会被当成“账本”给用户看，
+    /// 把拼错的值兑成 `Main` 等于把子 Agent 的开销报成主循环的，
+    /// 错得安静且无法从数字上察觉。
+    pub fn from_str(raw: &str) -> Result<Self, String> {
+        match raw {
+            "main" => Ok(Self::Main),
+            "subagent" => Ok(Self::Subagent),
+            "reflection" => Ok(Self::Reflection),
+            "compact" => Ok(Self::Compact),
+            "session_name" => Ok(Self::SessionName),
+            "memory_curator" => Ok(Self::MemoryCurator),
+            other => Err(format!(
+                "未知的 request_usage.source 取值「{}」——可能漏了迁移，或数据被外部改写",
+                other
+            )),
+        }
+    }
+
+    /// 全部取值（测试与前端选项列表用；顺序即展示顺序）。
+    pub fn all() -> [Self; 6] {
+        [
+            Self::Main,
+            Self::Subagent,
+            Self::Reflection,
+            Self::Compact,
+            Self::SessionName,
+            Self::MemoryCurator,
+        ]
+    }
+}
+
+/// **一次**模型请求的用量明细（`request_usage` 表的一行）。
+///
+/// 为什么不要无脑用元组/参数列表：字段多达十几个，且 `input/output`、
+/// `cache_hit/cache_miss` 都是 `u64`——元组传错顺序编译器不拦，
+/// 只有人眼能从数字上看出“命中数写进未命中列”。
+///
+/// 构造用 builder（[`RequestUsageRecord::new`] + 链式方法）：
+/// 各个调用点需要的字段不一样（主循环有 run/loop，压缩/命名没有），
+/// 全字段构造函数会逼着每个调用点写一长串 `None`，改天加字段就是全局改。
+#[derive(Debug, Clone)]
+pub struct RequestUsageRecord {
+    pub session_id: String,
+    /// 所属 run（`agent_runs.run_id`）。压缩/命名等不属于任何 run 时为 `None`。
+    pub run_id: Option<String>,
+    /// run 内的循环序号。子 Agent 用**自己**的循环序号，与父 run 无关。
+    pub loop_index: Option<u32>,
+    /// 这次请求的发起方（主循环 / 子 Agent / 压缩……）
+    pub source: UsageSource,
+    /// 触发这次请求的工具调用 id（子 Agent 溯源用：哪个 `tool_use` 起的子任务）
+    pub parent_tool_use_id: Option<String>,
+    /// 执行者角色（如 `main` / `subagent:code-review`），仅作展示与排查用
+    pub agent_role: Option<String>,
+    /// 关联的会话任务 id（任务系统的 task_id）
+    pub task_id: Option<String>,
+    /// 实际使用的模型 id（代理/预设切换后以实际下发的为准）
+    pub model_id: Option<String>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    /// 缓存命中 / 未命中：`None` = **厂商这次没上报**，与 `Some(0)` 严格区分
+    pub cache_hit_tokens: Option<u64>,
+    pub cache_miss_tokens: Option<u64>,
+    /// 缓存读数的口径来源（如 `deepseek` / `anthropic` / `context`），排查用
+    pub cache_source: Option<String>,
+    /// 落库时间（**毫秒**）。`None` = 写入时取当前时间（测试可显式指定）
+    pub created_at: Option<u64>,
+}
+
+impl RequestUsageRecord {
+    /// 新记录：只有会话与来源是必填项，其余字段按场景链式补。
+    pub fn new(session_id: impl Into<String>, source: UsageSource) -> Self {
+        Self {
+            session_id: session_id.into(),
+            run_id: None,
+            loop_index: None,
+            source,
+            parent_tool_use_id: None,
+            agent_role: None,
+            task_id: None,
+            model_id: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_hit_tokens: None,
+            cache_miss_tokens: None,
+            cache_source: None,
+            created_at: None,
+        }
+    }
+
+    /// 归属到某个 run 的第几个 loop。
+    pub fn run(mut self, run_id: impl Into<String>, loop_index: Option<u32>) -> Self {
+        self.run_id = Some(run_id.into());
+        self.loop_index = loop_index;
+        self
+    }
+
+    /// 触发这次请求的工具调用 id（子 Agent 溯源链）。
+    pub fn parent_tool_use_id(mut self, value: impl Into<String>) -> Self {
+        self.parent_tool_use_id = Some(value.into());
+        self
+    }
+
+    /// 执行者角色。
+    pub fn agent_role(mut self, value: impl Into<String>) -> Self {
+        self.agent_role = Some(value.into());
+        self
+    }
+
+    /// 关联的会话任务 id。
+    pub fn task_id(mut self, value: impl Into<String>) -> Self {
+        self.task_id = Some(value.into());
+        self
+    }
+
+    /// 实际使用的模型 id。
+    pub fn model_id(mut self, value: impl Into<String>) -> Self {
+        self.model_id = Some(value.into());
+        self
+    }
+
+    /// 本次请求的输入/输出 token（厂商上报的**本次**值，不是累计）。
+    pub fn tokens(mut self, input: u64, output: u64) -> Self {
+        self.input_tokens = input;
+        self.output_tokens = output;
+        self
+    }
+
+    /// 缓存读数：两个值必须同真同假（厂商要么都报，要么都不报）；
+    /// 只给一个时按“未上报”处理，宁可丢一个读数，也不编一个 0 出来。
+    pub fn cache(
+        mut self,
+        hit: Option<u64>,
+        miss: Option<u64>,
+        source: Option<&str>,
+    ) -> Self {
+        match (hit, miss) {
+            (Some(hit), Some(miss)) => {
+                self.cache_hit_tokens = Some(hit);
+                self.cache_miss_tokens = Some(miss);
+                self.cache_source = source.map(|s| s.to_string());
+            }
+            _ => {
+                self.cache_hit_tokens = None;
+                self.cache_miss_tokens = None;
+                self.cache_source = None;
+            }
+        }
+        self
+    }
+
+    /// 显式指定落库时间（毫秒）；不调则写入时取当前时间。
+    pub fn at(mut self, created_at: u64) -> Self {
+        self.created_at = Some(created_at);
+        self
+    }
+}
+
+/// 按来源汇总的一段账（对应 `request_usage` 的一行 `GROUP BY source`）。
+///
+/// `unreported_*` 两个字段是**可空语义的携带者**：
+/// 展示层要能说“这 3 次请求厂商没报缓存，涉及 12k 输入 token”，
+/// 而不是把它们的缓存当成 0 算进命中率分母。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSourceBreakdown {
+    pub source: UsageSource,
+    pub request_count: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    /// 已上报的命中/未命中之和（未上报的请求不参与，也不按 0 计入）
+    pub cache_hit_tokens: u64,
+    pub cache_miss_tokens: u64,
+    /// 缓存字段未上报的请求数
+    pub unreported_requests: u64,
+    /// 这些未上报请求对应的输入 token 合计（让“不知道”也有量级）
+    pub unreported_input_tokens: u64,
+}
+
+/// 一个会话的用量账本（按来源分组 + 总计）。
+///
+/// `has_detail = false` 表示**该会话没有任何明细行**（早于 v28 的历史会话），
+/// 此时数字全为 0。调用方必须靠这个标志区分“真的没用过 token”与“没明细可拆”——
+/// 把后者当 0 展示会让用户以为历史会话白嫆。此时若要展示总量，
+/// 应回退到 `sessions.total_*`（本结构体不重复携带，避免两处口径打架）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageBreakdown {
+    pub session_id: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_hit_tokens: u64,
+    pub cache_miss_tokens: u64,
+    /// 明细行数（= 请求次数）
+    pub request_count: u64,
+    pub unreported_requests: u64,
+    pub unreported_input_tokens: u64,
+    /// 是否存在明细（`false` = 历史会话，数字不可信）
+    pub has_detail: bool,
+    pub sources: Vec<UsageSourceBreakdown>,
+}
+
+impl UsageBreakdown {
+    /// 没有任何明细时的空账本（`has_detail = false`）。
+    pub fn empty(session_id: &str) -> Self {
+        Self {
+            session_id: session_id.to_string(),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: 0,
+            request_count: 0,
+            unreported_requests: 0,
+            unreported_input_tokens: 0,
+            has_detail: false,
+            sources: Vec::new(),
+        }
+    }
 }
 
 /// 获取当前时间戳（**毫秒**，Unix epoch）。
@@ -259,6 +570,9 @@ pub fn create_session(project_id: Option<String>) -> SessionMeta {
         // 新会话的思考档位先落一个保守占位 `false`；
         // 真正的初值在第一条消息时由 `pipeline::start_run` 按"设置默认 + 模型能力"解析后写入。
         thinking_mode: false,
+        // 新建的会话一定不在归档列表里，也没有「项目名」这个派生值可填
+        deleted_at: None,
+        project_name: None,
     };
     let memory = SessionMemory::default();
     let _ = repository::upsert_session(&meta, &memory);
@@ -460,6 +774,8 @@ pub fn save_session(
                 project_id: None,
                 working_directory: None,
                 thinking_mode: false,
+                deleted_at: None,
+                project_name: None,
             };
         }
     };
@@ -680,14 +996,13 @@ pub fn save_session(
 
 /// 逐请求累加会话用量，返回累加后的累计值（`None` = 会话不存在/已归档）。
 ///
-/// 与 `save_session(…, Some(delta))` 的分工：
-/// - **主 Agent 的每个 loop** 走这里，拿到 usage 就立刻落库并推事件，
-///   这样概览栏的「累计命中」在回合进行中也会刷新，而不是等整轮结束。
-/// - **子代理**（`tools/agent_tools/subagent.rs` 有独立循环，不经过 pipeline 的
-///   逐请求路径）仍由回合收尾的 `save_session` 补一次增量。
-///
-/// 取消的回合不需要特殊处理：已完成的那几次请求在发生时就已累加，
-/// 不再依赖收尾那一步（旧实现把整轮 delta 押在收尾，取消时直接丢掉整轮）。
+/// ⚠️ **已不在生产路径上（2026-11）**：主循环与子 Agent 现在都走
+/// [`usage::record_request_usage`]——它把"插明细 + 累加累计 + 推事件"放在一个事务里。
+/// 本函数只累加、不写明细，单独使用会让"明细求和 ≠ 累计值"，账对不平且不报错。
+/// 保留它仅作为底层裸累加原语（无明细场景/测试），日后不应再从业务里调用。
+#[deprecated(
+    note = "唯一写入口是 usage::record_request_usage（明细与累计同事务）；本函数只累加不写明细"
+)]
 pub fn accumulate_session_token_usage(
     id: &str,
     delta: TokenUsageDelta,
@@ -701,6 +1016,15 @@ pub fn accumulate_session_token_usage(
             cache_miss: delta.cache_miss,
         },
     )
+}
+
+/// 读取会话的用量账本（按来源分组的明细汇总）。
+///
+/// 数据源是 `request_usage` 明细表（v28），不是 `sessions.total_*`：
+/// 后者只有四个总数，拆不出“谁烧的”。无明细的历史会话返回
+/// `has_detail = false`，调用方据此回退到 `SessionMeta::total_*`。
+pub fn get_session_usage_breakdown(session_id: &str) -> Result<UsageBreakdown, String> {
+    repository::get_session_usage_breakdown(session_id)
 }
 
 /// 加载指定会话的完整数据
@@ -960,6 +1284,39 @@ pub fn restore_session(id: &str) -> Result<(), String> {
 /// 已归档的会话列表（界面「归档」区入口用）。
 pub fn list_deleted_sessions() -> Result<Vec<SessionMeta>, String> {
     repository::list_deleted_sessions()
+}
+
+/// 归档项目：项目本身 + 名下所有未归档会话在**同一事务**里打上归档时间戳。
+///
+/// 返回被归档的会话数；项目不存在或已归档时报错（此时事务整体回滚，
+/// 不会留下「会话已归档、项目还在」的半成品状态）。
+///
+/// 与旧的 `delete_project` 硬删路径的区别：这里是**软删**，可从「归档」区撤销，
+/// 所以快照与回收站产物一律保留（见 [`purge_rollback_artifacts`] 的说明）。
+/// 硬删项目那条路径（删项目行 + 删名下会话行）已在 v27 随归档改造整体移除，
+/// 项目不再有「真删」入口 —— 彻底删除只发生在会话级（[`hard_delete_session`] / `purge_sessions`）。
+pub fn archive_project(project_id: &str, now: u64) -> Result<u64, String> {
+    repository::archive_project(project_id, now as i64)
+}
+
+/// 取消归档项目（只清 `projects.deleted_at`，名下会话仍需逐条恢复）。
+pub fn restore_project(project_id: &str) -> Result<(), String> {
+    repository::restore_project(project_id)
+}
+
+/// 批量取消归档会话；若其所属项目也处于归档状态，同事务内一并复活。
+pub fn restore_sessions(ids: &[String]) -> Result<BatchOpResult, String> {
+    repository::restore_sessions(ids)
+}
+
+/// 批量**彻底删除**归档会话（行 + 回滚侧产物）。
+pub fn purge_sessions(ids: &[String]) -> Result<BatchOpResult, String> {
+    repository::purge_sessions(ids)
+}
+
+/// 归档会话总数（归档页角标）。
+pub fn count_deleted_sessions() -> Result<usize, String> {
+    repository::count_deleted_sessions()
 }
 
 /// 清掉某会话的回滚侧产物（快照数据 + 回收站目录）—— **只给硬删除路径调用**。

@@ -11,7 +11,12 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 26;
+/// 当前 schema 版本。改这个常量时必须同时做三件事：
+/// 1. 写一个 `migrate_vNN_*` 迁移函数（老库靠它补结构）；
+/// 2. 在 `init_schema` 的版本分支链末尾追加 `current_version < NN` 分支；
+/// 3. 把新结构同步进 `init_schema` 末尾的建表 DDL（新库不跑迁移，DDL 就是它的全部结构）。
+/// 三者缺一，新库与升级库的结构就会分叉。
+pub const SCHEMA_VERSION: i64 = 28;
 
 /// v24：用子 Agent 逐轮轨迹替代仅归档溢出事件的旧表。
 fn migrate_v24_subagent_trace(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -104,6 +109,95 @@ fn migrate_v26_run_wait_ms(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_agent_runs_message_id ON agent_runs(message_id)",
         [],
+    )?;
+    Ok(())
+}
+
+/// v27：为 `projects` 增加可空列 `deleted_at`（项目**归档**标记，毫秒时间戳）。
+///
+/// ## 语义
+/// `NULL` = 正常项目；`Some(ms)` = 该项目已被用户归档，值是归档那一刻的时间戳。
+/// 归档属于**软删**：只打标记、不删行。物理 `DELETE FROM projects` 会把
+/// `sessions.project_id` 按外键 `ON DELETE SET NULL` 打空，
+/// 「哪个会话原本属于哪个项目」这段历史从此不可恢复——而快照、回收站都需要它。
+///
+/// ## 为什么可空而不是 `NOT NULL DEFAULT 0`
+/// 与 v26 的 `agent_runs.wait_ms` 同理：`0` 会被读成「1970 年归档」这样一个具体时刻，
+/// 与「从未归档」混为一谈；只有可空才能让上层干净地区分「在用的项目」与「已归档的项目」。
+///
+/// 刻意**不回填**：历史项目没有发生过归档动作，回填任何值都是编造，一律留 `NULL`。
+///
+/// ⚠️ 列**追加在末尾**，不改动既有列顺序。
+fn migrate_v27_project_archive(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // ⚠️ 必须先探表：迁移测试的最小桩库只有 `app_state`（没有 `projects`），
+    // 早期版本库也未必有 `projects`（v10 才引入该表），
+    // 直接 `ALTER TABLE projects` 一个不存在的表会报 "no such table"（与 v17/v20/v26 同源的坑）。
+    if !db_table_exists(conn, "projects")? {
+        return Ok(());
+    }
+
+    let has_deleted_at = {
+        let mut stmt = conn.prepare("PRAGMA table_info(projects)")?;
+        let found = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .any(|column| column == "deleted_at");
+        found
+    };
+    // 探列而不是无条件 ALTER：迁移可能被重复执行（版本号读取异常、手工重跑），
+    // 重复 `ADD COLUMN` 会直接报 "duplicate column name"。
+    if !has_deleted_at {
+        conn.execute("ALTER TABLE projects ADD COLUMN deleted_at INTEGER", [])?;
+    }
+    Ok(())
+}
+
+/// v28：新增 `request_usage` 表——**逐请求**的 token 用量明细。
+///
+/// ## 为什么需要这张表
+/// `sessions.total_*` 只是四个累加计数器，一旦累加就没有任何维度可拆：
+/// 分不清哪部分 token 是子 Agent 烧掉的、哪部分是压缩/反思/自动命名烧掉的，
+/// 也分不清某次请求厂商到底报没报缓存字段。要回答这些问题只能把**每一次请求**落一行。
+///
+/// ## 与 `sessions.total_*` 的关系
+/// 明细表是**原始凭据**，`sessions.total_*` 是**派生汇总**。两者由
+/// `core::session::usage::record_request_usage` 在**同一个事务**里一起写，
+/// 不允许任何路径只写其中一边（否则「明细加起来 ≠ 累计值」这种账永远对不平）。
+///
+/// ## `cache_hit_tokens` / `cache_miss_tokens` 为什么可空
+/// `NULL` = **厂商这次没上报缓存字段**，与 `0`（上报了、就是零）是两件事：
+/// 前者在展示层应显示「未报告」，后者应显示「0%」。合并成 `NOT NULL DEFAULT 0`
+/// 等于把「不知道」伪装成「确定为零」，命中率会被系统性低估。
+/// 汇总查询里「未上报请求数 / 未上报输入 token」正是靠 `IS NULL` 判出来的。
+fn migrate_v28_request_usage(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // 全部 `IF NOT EXISTS`：迁移可能被重复执行（版本号读取异常、手工重跑），
+    // 重复建表/建索引必须无副作用。
+    //
+    // 外键指向 `sessions(id)`：会话**彻底删除**时明细随 `ON DELETE CASCADE` 一起清掉；
+    // 归档（`deleted_at` 非空）只打标记，明细保留——归档可撤销，账不能丢。
+    // SQLite 允许先建带外键的表、后建被引用表（外键在 DML 时才校验），
+    // 因此本迁移在建表 DDL 之前执行也不会报错。
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS request_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            run_id TEXT,
+            loop_index INTEGER,
+            source TEXT NOT NULL,
+            parent_tool_use_id TEXT,
+            agent_role TEXT,
+            task_id TEXT,
+            model_id TEXT,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_hit_tokens INTEGER,
+            cache_miss_tokens INTEGER,
+            cache_source TEXT,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+         );
+         CREATE INDEX IF NOT EXISTS idx_request_usage_session_time
+            ON request_usage(session_id, created_at);",
     )?;
     Ok(())
 }
@@ -1435,6 +1529,12 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
         if current_version < 26 {
             migrate_v26_run_wait_ms(conn).map_err(|e| format!("v26 迁移失败: {}", e))?;
         }
+        if current_version < 27 {
+            migrate_v27_project_archive(conn).map_err(|e| format!("v27 迁移失败: {}", e))?;
+        }
+        if current_version < 28 {
+            migrate_v28_request_usage(conn).map_err(|e| format!("v28 迁移失败: {}", e))?;
+        }
     }
 
     conn.execute_batch(
@@ -1449,7 +1549,9 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             name TEXT NOT NULL,
             path TEXT NOT NULL UNIQUE,
             created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
+            updated_at INTEGER NOT NULL,
+            -- v27：项目归档时间（毫秒）。NULL = 未归档（见 migrate_v27_project_archive）
+            deleted_at INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS sessions (
@@ -1539,6 +1641,27 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
             updated_at INTEGER NOT NULL,
             UNIQUE(run_id, loop_index),
             FOREIGN KEY(run_id) REFERENCES agent_runs(run_id) ON DELETE CASCADE,
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        );
+
+        -- v28：逐请求 token 用量明细（原始凭据；`sessions.total_*` 是它的派生汇总）。
+        -- `cache_*_tokens` 可空：NULL = 厂商未上报（与 0 严格区分，见 migrate_v28_request_usage）。
+        CREATE TABLE IF NOT EXISTS request_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            run_id TEXT,
+            loop_index INTEGER,
+            source TEXT NOT NULL,
+            parent_tool_use_id TEXT,
+            agent_role TEXT,
+            task_id TEXT,
+            model_id TEXT,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_hit_tokens INTEGER,
+            cache_miss_tokens INTEGER,
+            cache_source TEXT,
+            created_at INTEGER NOT NULL,
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
 
@@ -1673,6 +1796,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_agent_runs_message_id ON agent_runs(message_id);
         CREATE INDEX IF NOT EXISTS idx_agent_run_events_run_loop ON agent_run_events(run_id, loop_index);
         CREATE INDEX IF NOT EXISTS idx_agent_run_events_session_time ON agent_run_events(session_id, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_request_usage_session_time ON request_usage(session_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_subagent_trace_runs_session ON subagent_trace_runs(session_id, started_at);
         CREATE INDEX IF NOT EXISTS idx_subagent_trace_events_run_loop ON subagent_trace_events(run_id, loop_index);
         CREATE INDEX IF NOT EXISTS idx_session_context_snapshots_updated ON session_context_snapshots(updated_at DESC);
@@ -2778,5 +2902,403 @@ mod tests {
             "INTEGER",
             "wait_ms 必须是毫秒整数列"
         );
+    }
+
+    /// 统计某列在表里出现几次：用于证明重复迁移没有靠 `ADD COLUMN` 堆出第二列。
+    fn column_occurrences(conn: &Connection, table: &str, column: &str) -> usize {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({})", table))
+            .expect("prepare table_info");
+        stmt.query_map([], |row| row.get::<_, String>(1))
+            .expect("query table_info")
+            .filter_map(Result::ok)
+            .filter(|name| name == column)
+            .count()
+    }
+
+    /// v27：迁移测试的最小桩库（只有 `app_state`，**没有 projects 表**）必须放行。
+    ///
+    /// 真实痛点：测试桩库与早期库都可能缺 `projects`（v10 才引入），
+    /// 无条件 `ALTER TABLE projects` 会直接炸 "no such table"，
+    /// 让整条迁移链在新库/桩库上寸步难行。
+    #[test]
+    fn v27_migration_tolerates_missing_projects_table() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        conn.execute_batch(
+            "CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO app_state(key, value) VALUES('schema_version', '26');",
+        )
+        .expect("create minimal stub db");
+
+        // 1) 直接调用迁移函数：缺表必须返回 Ok
+        migrate_v27_project_archive(&conn).expect("缺 projects 表时必须跳过而不是报错");
+
+        // 2) 走真实入口：v27 在建表 DDL **之前**执行，此刻表仍不存在，同样不得报错
+        init_schema(&conn).expect("最小桩库升级不得报错");
+        assert!(
+            column_exists(&conn, "projects", "deleted_at"),
+            "升级完成后 projects 必须有 deleted_at 列"
+        );
+    }
+
+    /// v27：v26 老库（`projects` 无 `deleted_at`）升级后必须补上可空列，
+    /// 且已有项目留 NULL（= 从未归档，不得回填任何值伪造归档动作）。
+    #[test]
+    fn v27_migration_adds_projects_deleted_at_nullable() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        // v26 形态的 projects（无 deleted_at），并预置一条存量项目
+        conn.execute_batch(
+            "CREATE TABLE projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                path TEXT NOT NULL UNIQUE,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO app_state(key, value) VALUES('schema_version', '26');
+            INSERT INTO projects(id, name, path, created_at, updated_at)
+                VALUES('p_old', '老项目', 'C:/tmp/old', 1, 2);",
+        )
+        .expect("create legacy v26 schema");
+
+        assert!(
+            !column_exists(&conn, "projects", "deleted_at"),
+            "前提：v26 库不应有 deleted_at 列"
+        );
+
+        init_schema(&conn).expect("upgrade v26 -> v27");
+
+        assert!(
+            column_exists(&conn, "projects", "deleted_at"),
+            "v27 迁移必须补上 projects.deleted_at"
+        );
+        assert_eq!(
+            column_type(&conn, "projects", "deleted_at"),
+            "INTEGER",
+            "deleted_at 必须是毫秒整数列"
+        );
+        // 存量行不得被回填：NULL 才能表达「从未归档」
+        let archived: Option<i64> = conn
+            .query_row(
+                "SELECT deleted_at FROM projects WHERE id = 'p_old'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("老项目必须保留");
+        assert_eq!(archived, None, "存量项目 deleted_at 必须保持 NULL");
+
+        // 版本号推进到 27
+        let version: i64 = conn
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM app_state WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read version");
+        assert!(
+            version >= 27,
+            "v27 升级后版本号至少到 27（实际 {}）",
+            version
+        );
+
+        // 幂等：直接重复调用迁移函数，探列逻辑必须挡住第二次 ADD COLUMN
+        // （只测 init_schema 不够——版本号已推进，第二次根本不会走迁移分支）
+        migrate_v27_project_archive(&conn).expect("重复迁移不得报 duplicate column");
+        migrate_v27_project_archive(&conn).expect("重复迁移仍然幂等");
+        assert_eq!(
+            column_occurrences(&conn, "projects", "deleted_at"),
+            1,
+            "重复迁移不得堆出第二个 deleted_at 列"
+        );
+
+        // 真实建库入口再跑一遍：不报错，也不清掉归档时间
+        conn.execute(
+            "UPDATE projects SET deleted_at = 1700000000000 WHERE id = 'p_old'",
+            [],
+        )
+        .expect("set archived");
+        init_schema(&conn).expect("re-init idempotent");
+        assert_eq!(
+            column_occurrences(&conn, "projects", "deleted_at"),
+            1,
+            "重复初始化不得重复加列"
+        );
+        let after: Option<i64> = conn
+            .query_row(
+                "SELECT deleted_at FROM projects WHERE id = 'p_old'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("re-read");
+        assert_eq!(after, Some(1_700_000_000_000), "重复初始化不得清掉归档时间");
+    }
+
+    /// v27 的建表 DDL 必须自带 `deleted_at`（新库不跑迁移也要与升级后同构）
+    #[test]
+    fn fresh_ddl_declares_projects_deleted_at() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        init_schema(&conn).expect("fresh schema");
+        assert!(
+            column_exists(&conn, "projects", "deleted_at"),
+            "新建库的 projects 必须包含 deleted_at"
+        );
+        assert_eq!(
+            column_type(&conn, "projects", "deleted_at"),
+            "INTEGER",
+            "deleted_at 必须是毫秒时间戳列"
+        );
+    }
+
+    // ── v28：request_usage 逐请求用量明细 ──
+
+    /// 某列是否允许 NULL（`PRAGMA table_info` 第 4 列 notnull：0 = 可空）。
+    ///
+    /// v28 的核心契约就是「缓存两列**必须可空**」—— 可空才能区分「厂商未上报」与「0」。
+    fn column_nullable(conn: &Connection, table: &str, column: &str) -> bool {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({})", table))
+            .expect("prepare table_info");
+        let rows: Vec<(String, i64)> = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, i64>(3)?))
+            })
+            .expect("query table_info")
+            .filter_map(Result::ok)
+            .collect();
+        rows.into_iter()
+            .find(|(name, _)| name == column)
+            .map(|(_, not_null)| not_null == 0)
+            .unwrap_or_else(|| panic!("列 {} 不存在于表 {}", column, table))
+    }
+
+    /// 索引是否存在（按名字查 `sqlite_master`）。
+    fn index_exists(conn: &Connection, index: &str) -> bool {
+        conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='index' AND name=?1",
+            [index],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+        .unwrap_or(false)
+    }
+
+    /// 空库建表：不跑任何迁移，仅靠建表 DDL 就必须建出 `request_usage` 及其索引。
+    ///
+    /// 同时钉死 v28 最关键的列契约：缓存两列可空、其余统计列 NOT NULL。
+    #[test]
+    fn v28_fresh_db_creates_request_usage_table() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        init_schema(&conn).expect("fresh schema");
+
+        assert!(table_exists(&conn, "request_usage"), "新库建表 DDL 必须建出 request_usage");
+        for column in [
+            "id",
+            "session_id",
+            "run_id",
+            "loop_index",
+            "source",
+            "parent_tool_use_id",
+            "agent_role",
+            "task_id",
+            "model_id",
+            "input_tokens",
+            "output_tokens",
+            "cache_hit_tokens",
+            "cache_miss_tokens",
+            "cache_source",
+            "created_at",
+        ] {
+            assert!(
+                column_exists(&conn, "request_usage", column),
+                "request_usage 缺少列 {column}"
+            );
+        }
+
+        // 缓存两列可空：NULL = 厂商未上报，必须与 0（上报了就是零）严格区分
+        assert!(
+            column_nullable(&conn, "request_usage", "cache_hit_tokens"),
+            "cache_hit_tokens 必须可空（NULL = 厂商未上报）"
+        );
+        assert!(
+            column_nullable(&conn, "request_usage", "cache_miss_tokens"),
+            "cache_miss_tokens 必须可空（NULL = 厂商未上报）"
+        );
+        // token 主列不可空：没拿到 usage 的路径不应该写明细
+        assert!(!column_nullable(&conn, "request_usage", "input_tokens"));
+        assert!(!column_nullable(&conn, "request_usage", "output_tokens"));
+        assert!(!column_nullable(&conn, "request_usage", "source"));
+
+        assert!(
+            index_exists(&conn, "idx_request_usage_session_time"),
+            "缺少 (session_id, created_at) 索引，汇总查询会全表扇描"
+        );
+
+        // 重复初始化幂等：不报错，且索引不会堆出第二份
+        init_schema(&conn).expect("re-init idempotent");
+        assert!(table_exists(&conn, "request_usage"));
+    }
+
+    /// v27 老库升级到 v28：必须补出 `request_usage` 表，版本号推进到 28，
+    /// 且升级后能真正插入一行（外键指向已存在的 sessions，不报约束错）。
+    #[test]
+    fn v28_migration_creates_request_usage_on_v27_db() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        // v27 形态的最小库：只有 app_state / sessions（request_usage 尚不存在）
+        //
+        // 注意：桩库必须带被索引引用的列（profile_id / project_id 等），否则
+        // init_schema 建索引（idx_sessions_profile_updated / idx_sessions_project）
+        // 时会报 no such column。这里的列清单按真实 v27 形态补齐（v14/v17 同源坑）。
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                message_count INTEGER NOT NULL,
+                is_smart_named INTEGER NOT NULL DEFAULT 0,
+                profile_id TEXT,
+                total_input_tokens INTEGER NOT NULL DEFAULT 0,
+                total_output_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
+                title_source TEXT NOT NULL DEFAULT 'default',
+                project_id TEXT,
+                deleted_at INTEGER,
+                thinking_mode INTEGER NOT NULL DEFAULT 0,
+                work_mode TEXT,
+                approval_mode TEXT,
+                agent_audience TEXT
+            );
+            CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO app_state(key, value) VALUES('schema_version', '27');
+            INSERT INTO sessions(id, title, created_at, updated_at, message_count, profile_id)
+                VALUES('s1', '老会话', 1, 1, 0, 'default');",
+        )
+        .expect("create legacy v27 schema");
+
+        assert!(!table_exists(&conn, "request_usage"), "前提：v27 库不应有 request_usage");
+
+        init_schema(&conn).expect("upgrade v27 -> v28");
+
+        assert!(
+            table_exists(&conn, "request_usage"),
+            "v28 迁移必须补出 request_usage 表"
+        );
+
+        let version: i64 = conn
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM app_state WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read version");
+        assert!(
+            version >= 28,
+            "v28 升级后版本号至少到 28（实际 {}）",
+            version
+        );
+
+        // 升级后可用：插一行带 NULL 缓存字段的明细（证明列真的可空）
+        conn.execute(
+            "INSERT INTO request_usage(session_id, source, input_tokens, output_tokens, created_at)
+             VALUES('s1', 'main', 1000, 20, 1700000000000)",
+            [],
+        )
+        .expect("升级后必须能写入明细行");
+        let cache: (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT cache_hit_tokens, cache_miss_tokens FROM request_usage WHERE session_id = 's1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("read row");
+        assert_eq!(cache, (None, None), "未上报的缓存字段必须落 NULL，不得写成 0");
+
+        // 重复初始化：表与数据都不得被动过
+        init_schema(&conn).expect("re-init idempotent");
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM request_usage", [], |r| r.get(0))
+            .expect("count rows");
+        assert_eq!(count, 1, "重复初始化不得动明细数据");
+    }
+
+    /// 迁移函数自身幂等：反复调用不得报「table already exists」，也不得堆出第二个索引。
+    ///
+    /// 只测 `init_schema` 不够——版本号一旦推进，第二次根本不会进迁移分支，
+    /// 重复执行的幂等性必须直接摁住迁移函数本身才算验过。
+    #[test]
+    fn v28_migration_is_repeatable() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        conn.execute_batch(
+            "CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO app_state(key, value) VALUES('schema_version', '27');",
+        )
+        .expect("create minimal stub db");
+
+        migrate_v28_request_usage(&conn).expect("首次建表");
+        migrate_v28_request_usage(&conn).expect("重复迁移不得报错");
+        migrate_v28_request_usage(&conn).expect("重复迁移仍然幂等");
+
+        assert!(table_exists(&conn, "request_usage"));
+        assert_eq!(
+            column_occurrences(&conn, "request_usage", "cache_hit_tokens"),
+            1,
+            "重复迁移不得堆出第二个 cache_hit_tokens 列"
+        );
+        assert!(index_exists(&conn, "idx_request_usage_session_time"));
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_request_usage_session_time'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count index");
+        assert_eq!(index_count, 1, "重复迁移不得堆出第二个同名索引");
+    }
+
+    /// 会话彻底删除时明细必须级联清掉；归档（`deleted_at` 非空）不得删明细。
+    ///
+    /// 这条契约直接决定「删了会话还留下残余 token 账」这类脏数据是否会发生。
+    #[test]
+    fn v28_request_usage_cascades_on_session_delete() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        // init_schema 不负责开外键（那是运行期 configure_connection 的事），测试里手动开
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .expect("enable foreign_keys");
+        init_schema(&conn).expect("fresh schema");
+        conn.execute_batch(
+            "INSERT INTO sessions(id, title, created_at, updated_at, message_count)
+                VALUES('s_del', '待删会话', 1, 1, 0);
+             INSERT INTO sessions(id, title, created_at, updated_at, message_count, deleted_at)
+                VALUES('s_arch', '已归档会话', 1, 1, 0, 1700000000000);
+             INSERT INTO request_usage(session_id, source, input_tokens, output_tokens, created_at)
+                VALUES('s_del', 'main', 10, 1, 1), ('s_arch', 'main', 20, 2, 2);",
+        )
+        .expect("seed rows");
+
+        // 归档只是打标记：明细必须留着（归档可撤销，账不能丢）
+        conn.execute("UPDATE sessions SET deleted_at = 1700000000001 WHERE id = 's_arch'", [])
+            .expect("archive session");
+        let arch_rows: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM request_usage WHERE session_id = 's_arch'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count archived rows");
+        assert_eq!(arch_rows, 1, "归档不得清掉明细");
+
+        // 彻底删除：明细必须跟着走
+        conn.execute("DELETE FROM sessions WHERE id = 's_del'", [])
+            .expect("delete session");
+        let del_rows: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM request_usage WHERE session_id = 's_del'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count deleted rows");
+        assert_eq!(del_rows, 0, "会话彻底删除后明细必须级联清掉");
     }
 }

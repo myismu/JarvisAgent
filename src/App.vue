@@ -37,7 +37,9 @@ import ToastHost from "./components/common/ToastHost.vue";
 import UpdatePrompt from "./components/common/UpdatePrompt.vue";
 import SettingsPanel from "./components/settings/SettingsPanel.vue";
 import { useUpdater } from "./composables/useUpdater";
+// 视图级页面组件：整页接管主内容区（与聊天工作区互斥）
 import SkillManager from "./components/skill/SkillManager.vue";
+import ArchiveManager from "./components/archive/ArchiveManager.vue";
 import SubAgentChatPane from "./components/chat/SubAgentChatPane.vue";
 import type { SubAgentConversationItem } from "./types";
 
@@ -362,6 +364,11 @@ onBeforeUnmount(() => {
 
           <template v-if="appView.isSkillManagerView">
             <SkillManager />
+          </template>
+          <!-- 归档管理视图：已归档会话列表（恢复 / 彻底删除）。
+               与技能管理同级，独占主内容区；聊天区的输入框、权限卡等会话级元素都不渲染 -->
+          <template v-else-if="appView.isArchiveView">
+            <ArchiveManager />
           </template>
           <template v-else>
             <div class="conversation-workspace">

@@ -200,6 +200,7 @@ pub async fn execute_review(
     });
 
     // 调用审查 Agent（非流式，不带 tools）
+    // 返回体里带了 usage，但审查判断只关心正文，先取 text；记账由后续任务接管。
     let response = api_client::call_llm_with_messages(
         client,
         api_key,
@@ -210,7 +211,8 @@ pub async fn execute_review(
         review_messages,
         512, // 审查回复不需要太长
     )
-    .await?;
+    .await?
+    .text;
 
     // 解析判断结果
     Ok(parse_reflection_response(&response))

@@ -192,6 +192,88 @@ pub fn extract_base_tokens(usage: &Value) -> (Option<u64>, Option<u64>) {
     (input, output)
 }
 
+// ───────────────────────── 非流式调用的 usage 快照 ─────────────────────────
+
+/// 一次非流式（`stream: false`）调用的 token 用量，口径已按协议家族归一。
+///
+/// **为什么需要这个结构**：此前非流式辅助调用（会话标题生成、记忆整理、反思审查）
+/// 只把响应正文取走，厂商上报的 `usage` 被整块丢弃 —— 这些调用在账面上是"零消耗"，
+/// 与主链路（流式，已由 `UsageObservation` 记账）的统计口径对不上。
+/// 本结构把用量**带出来**，但只做翻译、不做记账：落库 / 汇总由调用方决定。
+///
+/// 字段口径与流式完全一致（同一个 `UsageObservation` 产出）：
+/// - OpenAI 家族：`input_tokens` = `prompt_tokens`（已含命中部分）；
+/// - Anthropic 家族：`input_tokens` = `cache_read_input_tokens` + `input_tokens`
+///   （该家族 `input_tokens` 只是未命中部分，直接当总量用会偏小，见 `resolve_request_tokens`）。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LlmUsage {
+    /// 输入 token（已归一，可直接与流式读数比较）
+    pub input_tokens: u64,
+    /// 输出 token（两家同名同义，无需归一）
+    pub output_tokens: u64,
+    /// 缓存命中 token；`None` = 该厂商未上报缓存字段（**不是 0**）
+    pub cache_hit_tokens: Option<u64>,
+    /// 缓存未命中 token；`None` = 既未直接给也无法推导
+    pub cache_miss_tokens: Option<u64>,
+    /// 命中字段名（排查"这家为什么显示未知"用）；未识别时为 `None`
+    pub cache_source: Option<String>,
+}
+
+/// 从响应 JSON 的顶层 `usage` 对象提取归一后的用量。
+///
+/// 返回 `None` 的两种情况（都必须透出"未上报"，**不得伪造 0**）：
+/// 1. 响应里没有 `usage`（或它不是对象）；
+/// 2. `usage` 存在但一个已知字段都没取到（空对象 / 全是未知命名）。
+///
+/// `cache_style` 取自注册表 `cacheUsageStyle`，与流式链路共用同一个覆盖开关，
+/// 保证同一模型在流式与非流式下识别出同一个缓存字段。
+///
+/// Rust 语法注（Java 类比）：`Option<&Value>` 是"可能为 null 的引用"，
+/// 用 `?` 提前返回相当于 Java 的 `if (x == null) return null;`。
+pub fn extract_llm_usage(
+    usage: Option<&Value>,
+    api_format: crate::infra::llm::api_format::ApiFormat,
+    cache_style: Option<String>,
+) -> Option<LlmUsage> {
+    let usage = usage?;
+    if !usage.is_object() {
+        return None;
+    }
+    // 复用流式累积器：协议家族判断（取哪个字段名、输入怎么归一）与缓存探测全在它里面，
+    // 这里只观测"一帧" usage —— 非流式响应本身就只有一帧，无需另写一套字段名。
+    let mut obs = UsageObservation::for_format(api_format, cache_style);
+    obs.observe(usage);
+    let (hit, miss, source) = obs.cache_snapshot();
+    let (base_input, base_output) = extract_base_tokens(usage);
+    // 一个已知字段都没读到 ⇒ 视为未上报（全 0 会被读成"这次请求零消耗"，是编数）
+    if base_input.is_none() && base_output.is_none() && source.is_none() {
+        return None;
+    }
+
+    let (resolved_input, resolved_output) = obs.resolve();
+    // 兜底：`resolve()` 只认本协议的基础字段名（OpenAI 家族认 `prompt_tokens`）。
+    // 若中转站在该出口用了另一族命名，主字段缺失时会落 0 —— 那是"未上报"被误当成 0，
+    // 故仅在解析结果为 0 时退回 `extract_base_tokens` 的跨家族读数（两族命名都认）。
+    let input_tokens = if resolved_input == 0 {
+        base_input.unwrap_or(0)
+    } else {
+        resolved_input
+    };
+    let output_tokens = if resolved_output == 0 {
+        base_output.unwrap_or(0)
+    } else {
+        resolved_output
+    };
+
+    Some(LlmUsage {
+        input_tokens,
+        output_tokens,
+        cache_hit_tokens: hit,
+        cache_miss_tokens: miss,
+        cache_source: source.map(str::to_string),
+    })
+}
+
 // ───────────────────────── 流式 usage 观测累积器 ─────────────────────────
 
 /// 本次请求的 usage 读数累积器（字段级 last-wins）。
@@ -500,6 +582,134 @@ mod tests {
         assert_eq!(
             extract_cache_usage_with_style(&mixed, Some(" NESTED ")).source,
             "prompt_tokens_details.cached_tokens"
+        );
+    }
+}
+
+/// 非流式 `LlmUsage` 提取的测试（样本为真机实测响应的 usage 片段）。
+///
+/// 这里刻意从**完整响应 JSON 字符串**解析后取 `usage`，而不是直接构造 usage 对象：
+/// 非流式链路的入口就是"解析后的响应体"，测试要锁住的正是这条取数路径。
+#[cfg(test)]
+mod llm_usage_tests {
+    use super::*;
+    use crate::infra::llm::api_format::ApiFormat;
+
+    /// OpenAI 家族：`input_tokens` = `prompt_tokens`（已含命中部分，不得再相加），
+    /// 未命中由 `total - hit` 推导（`derived`，与流式同口径）。
+    #[test]
+    fn openai_response_usage_is_extracted() {
+        let body: Value = serde_json::from_str(
+            r#"{
+                "id": "chatcmpl-x",
+                "choices": [{ "index": 0, "message": { "role": "assistant", "content": "标题" }, "finish_reason": "stop" }],
+                "usage": {
+                    "prompt_tokens": 1726,
+                    "completion_tokens": 24,
+                    "total_tokens": 1750,
+                    "prompt_tokens_details": { "cached_tokens": 1536 }
+                }
+            }"#,
+        )
+        .expect("响应 JSON 应可解析");
+
+        let usage = extract_llm_usage(body.get("usage"), ApiFormat::OpenAI, None)
+            .expect("带 usage 的响应必须解析出用量");
+        assert_eq!(usage.input_tokens, 1726, "OpenAI 的 prompt_tokens 即总输入");
+        assert_eq!(usage.output_tokens, 24);
+        assert_eq!(usage.cache_hit_tokens, Some(1536));
+        assert_eq!(
+            usage.cache_miss_tokens,
+            Some(190),
+            "未命中应由 total - hit 推导"
+        );
+        assert_eq!(
+            usage.cache_source.as_deref(),
+            Some("prompt_tokens_details.cached_tokens")
+        );
+    }
+
+    /// Anthropic 家族：`input_tokens` 只是未命中部分，必须补成 `hit + miss`（1726），
+    /// 与同一个 prompt 的 OpenAI 出口读出同一个数。
+    #[test]
+    fn anthropic_response_usage_is_normalized() {
+        let body: Value = serde_json::from_str(
+            r#"{
+                "id": "msg_x",
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "text", "text": "OK" }],
+                "usage": {
+                    "input_tokens": 190,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 1536,
+                    "output_tokens": 19
+                }
+            }"#,
+        )
+        .expect("响应 JSON 应可解析");
+
+        let usage = extract_llm_usage(body.get("usage"), ApiFormat::Anthropic, None)
+            .expect("带 usage 的响应必须解析出用量");
+        assert_eq!(
+            usage.input_tokens, 1726,
+            "Anthropic 的输入必须归一为命中 + 未命中"
+        );
+        assert_eq!(usage.output_tokens, 19);
+        assert_eq!(usage.cache_hit_tokens, Some(1536));
+        assert_eq!(usage.cache_miss_tokens, Some(190));
+        assert_eq!(
+            usage.cache_source.as_deref(),
+            Some("cache_read_input_tokens")
+        );
+    }
+
+    /// 缓存字段缺失时保持未知，基础 token 照常给出（不许把未知缓存画成 0 命中）。
+    #[test]
+    fn missing_cache_fields_stay_unknown() {
+        let body: Value = serde_json::from_str(
+            r#"{ "usage": { "prompt_tokens": 1694, "completion_tokens": 24, "total_tokens": 1718 } }"#,
+        )
+        .expect("响应 JSON 应可解析");
+        let usage = extract_llm_usage(body.get("usage"), ApiFormat::OpenAI, None)
+            .expect("基础 token 存在即为有效用量");
+        assert_eq!(usage.input_tokens, 1694);
+        assert_eq!(usage.output_tokens, 24);
+        assert_eq!(usage.cache_hit_tokens, None, "未知不得写成 Some(0)");
+        assert_eq!(usage.cache_miss_tokens, None);
+        assert_eq!(usage.cache_source, None);
+    }
+
+    /// 注册表覆盖（`cacheUsageStyle`）与非流式链路同样生效。
+    #[test]
+    fn registry_style_override_applies_to_non_stream() {
+        let body: Value = serde_json::from_str(
+            r#"{ "usage": { "prompt_tokens": 1730, "completion_tokens": 24, "cached_tokens": 1536 } }"#,
+        )
+        .expect("响应 JSON 应可解析");
+        let auto =
+            extract_llm_usage(body.get("usage"), ApiFormat::OpenAI, None).expect("应解析出用量");
+        assert_eq!(auto.cache_source.as_deref(), Some("cached_tokens"));
+        // 明确标注"这家不报告缓存"时，直接判未知（省掉探测）
+        let off = extract_llm_usage(body.get("usage"), ApiFormat::OpenAI, Some("none".into()))
+            .expect("基础 token 仍在，用量有效");
+        assert_eq!(off.cache_hit_tokens, None);
+        assert_eq!(off.input_tokens, 1730);
+    }
+
+    /// 无 usage / usage 是空对象 ⇒ `None`（未上报），绝不返回全 0 的 `LlmUsage`。
+    #[test]
+    fn absent_or_empty_usage_returns_none() {
+        assert_eq!(extract_llm_usage(None, ApiFormat::OpenAI, None), None);
+        let empty = Value::Object(serde_json::Map::new());
+        assert_eq!(
+            extract_llm_usage(Some(&empty), ApiFormat::Anthropic, None),
+            None
+        );
+        let unknown_fields = Value::String("not-an-object".into());
+        assert_eq!(
+            extract_llm_usage(Some(&unknown_fields), ApiFormat::OpenAI, None),
+            None
         );
     }
 }

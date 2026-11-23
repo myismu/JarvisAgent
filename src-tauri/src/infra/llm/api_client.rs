@@ -6,6 +6,10 @@
 //! - `call_llm_simple`: 简单的非流式单轮调用
 //! - `call_llm_with_messages`: 非流式多轮调用（审查 Agent 等场景）
 //!
+//! 两个非流式调用都返回 `LlmCompletion`（正文 + 厂商上报的 `usage`）。
+//! 历史上它们只返回 `String`，把响应里的 `usage` 整块丢弃，导致辅助调用
+//! 在 token 账面上是"零消耗"；如今把用量透出，但**只翻译不记账**（落库由调用方决定）。
+//!
 //! 自动处理不同 API 格式的认证头和版本头。
 //!
 //! ## 依赖
@@ -26,10 +30,33 @@ use serde_json::json;
 use tauri::Emitter;
 
 use crate::infra::llm::api_format::ApiFormat;
+use crate::infra::llm::usage::{extract_llm_usage, LlmUsage};
 use crate::infra::types::constants::{
     API_NON_STREAM_TIMEOUT_SECS, HTTP_CONNECT_TIMEOUT_SECS, HTTP_TCP_KEEPALIVE_SECS,
 };
 use crate::infra::types::error::ApiError;
+
+/// 非流式调用的返回体：模型正文 + 厂商上报的用量。
+///
+/// **为什么不再直接返回 `String`**：`String` 只能承载正文，响应的 `usage` 字段
+/// 在解析后就被丢弃，调用方无从知道这次调用消耗了多少 token。改成结构体后，
+/// 正文语义完全不变（`completion.text` 就是原来的字符串），只是多带一个可选的用量。
+///
+/// `usage` 为 `None` 表示**厂商没有上报**，调用方不得按 0 记账（与 usage.rs
+/// "未知 ≠ 0" 的既有口径一致）。
+pub struct LlmCompletion {
+    /// 模型正文（与改造前的 `String` 返回值完全一致）
+    pub text: String,
+    /// 归一后的用量；`None` = 响应未携带可识别的 `usage`
+    pub usage: Option<LlmUsage>,
+}
+
+impl LlmCompletion {
+    /// 只取正文（给"暂时不关心用量"的调用点用，保持原有行为）
+    pub fn into_text(self) -> String {
+        self.text
+    }
+}
 
 /// 统一构造 HTTP 客户端（带连接超时与 TCP keepalive）。
 ///
@@ -316,7 +343,8 @@ pub async fn api_call_with_retry(
 
 /// 简单的非流式单轮 LLM 调用
 ///
-/// 用于意图分类等不需要流式输出的场景
+/// 用于意图分类等不需要流式输出的场景。
+/// 返回值由 `String` 改为 `LlmCompletion`（正文 + usage），原因见本模块文件头注释。
 pub async fn call_llm_simple(
     client: &reqwest::Client,
     api_key: &str,
@@ -326,7 +354,7 @@ pub async fn call_llm_simple(
     system_prompt: &str,
     user_message: &str,
     max_tokens: i32,
-) -> Result<String, ApiError> {
+) -> Result<LlmCompletion, ApiError> {
     use crate::infra::types::models::*;
 
     let request_body = AnthropicRequest {
@@ -409,13 +437,24 @@ pub async fn call_llm_simple(
             .to_string()
     };
 
-    Ok(text)
+    // 用量从**已解析的响应 JSON** 取（两个协议都在顶层 `usage`）。
+    // 字段识别与口径归一完全复用 usage.rs（含 Anthropic 家族 input = 命中 + 未命中），
+    // 不在这里另写一套字段名；`cacheUsageStyle` 走注册表，与流式链路同一个覆盖开关。
+    // 响应未带 usage 时得到 None —— 不伪造 0。
+    let usage = extract_llm_usage(
+        parsed.get("usage"),
+        api_format,
+        crate::infra::llm::registry::cache_usage_style_for(model_id),
+    );
+
+    Ok(LlmCompletion { text, usage })
 }
 
 /// 非流式多轮 LLM 调用（审查 Agent 等场景）
 ///
 /// 与 `call_llm_simple` 类似，但接受完整的消息历史而非单条 user message。
 /// 不注入 tools，不开启 thinking，适用于反思审查等轻量判断场景。
+/// 返回值同样带上 usage（调用方可只取 `.text`，行为与改造前一致）。
 pub async fn call_llm_with_messages(
     client: &reqwest::Client,
     api_key: &str,
@@ -425,7 +464,7 @@ pub async fn call_llm_with_messages(
     system_prompt: &str,
     messages: Vec<crate::infra::types::models::Message>,
     max_tokens: i32,
-) -> Result<String, ApiError> {
+) -> Result<LlmCompletion, ApiError> {
     use crate::infra::types::models::*;
 
     let request_body = AnthropicRequest {
@@ -505,7 +544,17 @@ pub async fn call_llm_with_messages(
             .to_string()
     };
 
-    Ok(text)
+    // 用量从**已解析的响应 JSON** 取（两个协议都在顶层 `usage`）。
+    // 字段识别与口径归一完全复用 usage.rs（含 Anthropic 家族 input = 命中 + 未命中），
+    // 不在这里另写一套字段名；`cacheUsageStyle` 走注册表，与流式链路同一个覆盖开关。
+    // 响应未带 usage 时得到 None —— 不伪造 0。
+    let usage = extract_llm_usage(
+        parsed.get("usage"),
+        api_format,
+        crate::infra::llm::registry::cache_usage_style_for(model_id),
+    );
+
+    Ok(LlmCompletion { text, usage })
 }
 
 #[cfg(test)]

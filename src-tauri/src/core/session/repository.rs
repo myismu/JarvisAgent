@@ -16,7 +16,13 @@
 use rusqlite::{params, OptionalExtension, Row};
 use std::collections::HashMap;
 
-use crate::core::session::{SessionMeta, SessionTokenTotals};
+use crate::core::session::{
+    BatchOpFailure, BatchOpResult, RequestUsageRecord, SessionMeta, SessionTokenTotals,
+    UsageBreakdown, UsageSource, UsageSourceBreakdown,
+};
+// 父模块（session）的私有时间戳函数：子模块可以直接用，但需要显式导入。
+// `insert_request_usage_in` 在“调用方没指定 created_at”时用它取当前毫秒。
+use super::now_ts;
 use crate::infra::types::models::{Message, MessageSource, SessionContextSnapshot, SessionMemory};
 
 #[derive(Debug, Clone)]
@@ -103,60 +109,249 @@ pub fn upsert_session(meta: &SessionMeta, memory: &SessionMemory) -> Result<(), 
 /// 读出来再写回去会和并发写入打架，也会把期间别人的累加抹掉。
 /// 这里直接用 SQL 的 `x = x + ?` 做原子累加。
 ///
-/// 落点：`pipeline::update_provider_usage_snapshot`，即每个 loop 拿到 usage 之后。
-/// 回合收尾的 `save_session` 只再补**子代理**那部分增量——子代理走独立循环
-/// （`tools/agent_tools/subagent.rs`），不经过上面那个函数。
+/// 落点：`core::session::usage::record_request_usage`（明细 + 累计同事务）。
+/// 主循环与子 Agent 的每一次请求都走那条路径，回合收尾不再补交任何增量。
 ///
 /// 返回 `None` 表示会话不存在或已归档（`deleted_at` 非空），调用方据此跳过事件推送。
+#[deprecated(
+    note = "生产路径请用 usage::record_request_usage（本函数只累加、不写明细）"
+)]
 pub fn accumulate_session_token_usage(
     session_id: &str,
     delta: SessionTokenTotals,
 ) -> Result<Option<SessionTokenTotals>, String> {
-    crate::infra::db::with_connection(|conn| {
-        let affected = conn
-            .execute(
-                "UPDATE sessions SET
-                    total_input_tokens = total_input_tokens + ?2,
-                    total_output_tokens = total_output_tokens + ?3,
-                    total_cache_hit_tokens = total_cache_hit_tokens + ?4,
-                    total_cache_miss_tokens = total_cache_miss_tokens + ?5
-                 WHERE id = ?1 AND deleted_at IS NULL",
-                params![
-                    session_id,
-                    delta.input as i64,
-                    delta.output as i64,
-                    delta.cache_hit as i64,
-                    delta.cache_miss as i64,
-                ],
-            )
-            .map_err(|e| e.to_string())?;
+    crate::infra::db::with_connection(|conn| add_session_token_totals_in(conn, session_id, delta))
+}
 
-        if affected == 0 {
-            return Ok(None);
-        }
+/// [`accumulate_session_token_usage`] 的 connection 版（可在测试里跑真实 SQL）。
+///
+/// 参数是 `&Connection` 而不是 `&Transaction`：`Transaction` 会 deref 到 `Connection`，
+/// 因此也能在事务上下文里用（`record_request_usage` 就是这么复用它以保证
+/// “明细与累计在同一个事务里”）。
+///
+/// 返回 `None` = 会话不存在或已归档（`deleted_at` 非空），调用方据此跳过事件推送。
+pub(super) fn add_session_token_totals_in(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    delta: SessionTokenTotals,
+) -> Result<Option<SessionTokenTotals>, String> {
+    let affected = conn
+        .execute(
+            "UPDATE sessions SET
+                total_input_tokens = total_input_tokens + ?2,
+                total_output_tokens = total_output_tokens + ?3,
+                total_cache_hit_tokens = total_cache_hit_tokens + ?4,
+                total_cache_miss_tokens = total_cache_miss_tokens + ?5
+             WHERE id = ?1 AND deleted_at IS NULL",
+            params![
+                session_id,
+                delta.input as i64,
+                delta.output as i64,
+                delta.cache_hit as i64,
+                delta.cache_miss as i64,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
 
-        // 同一把连接里紧接着读回，拿到的是本次累加之后的值，
-        // 供调用方原样推给前端（前端是整值覆盖，不是自己再累加一遍）。
-        let totals = conn
-            .query_row(
-                "SELECT total_input_tokens, total_output_tokens,
-                        total_cache_hit_tokens, total_cache_miss_tokens
-                 FROM sessions WHERE id = ?1",
-                [session_id],
-                |row| {
-                    Ok(SessionTokenTotals {
-                        input: row.get::<_, i64>(0)?.max(0) as u64,
-                        output: row.get::<_, i64>(1)?.max(0) as u64,
-                        cache_hit: row.get::<_, i64>(2)?.max(0) as u64,
-                        cache_miss: row.get::<_, i64>(3)?.max(0) as u64,
-                    })
-                },
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
+    if affected == 0 {
+        return Ok(None);
+    }
 
-        Ok(totals)
-    })
+    // 同一把连接里紧接着读回，拿到的是本次累加之后的值，
+    // 供调用方原样推给前端（前端是整值覆盖，不是自己再累加一遍）。
+    let totals = conn
+        .query_row(
+            "SELECT total_input_tokens, total_output_tokens,
+                    total_cache_hit_tokens, total_cache_miss_tokens
+             FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| {
+                Ok(SessionTokenTotals {
+                    input: row.get::<_, i64>(0)?.max(0) as u64,
+                    output: row.get::<_, i64>(1)?.max(0) as u64,
+                    cache_hit: row.get::<_, i64>(2)?.max(0) as u64,
+                    cache_miss: row.get::<_, i64>(3)?.max(0) as u64,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    Ok(totals)
+}
+
+// ── 请求级用量明细（v28）──
+//
+// 本段的职责只是“把一行明细写进去 / 把明细汇总读出来”。
+// ⚠️ **生产路径的唯一写入口是 `core::session::usage::record_request_usage`**：
+// 它会把“插入明细”与“累加 sessions.total_*”放进**同一个事务**。
+// 直接调 [insert_request_usage] 会造成“明细与累计不一致”的账（账对不平且不报错），
+// 仅供应急/测试使用。
+
+/// 向 `request_usage` 插入一行明细（**不要**在业务里直接调，用 `record_request_usage`）。
+pub fn insert_request_usage(record: &RequestUsageRecord) -> Result<(), String> {
+    crate::infra::db::with_connection(|conn| insert_request_usage_in(conn, record))
+}
+
+/// [`insert_request_usage`] 的 connection 版（事务与测试共用）。
+///
+/// 缓存两列**原样绑定 `Option`**：`None` 落 NULL（厂商未上报），`Some(0)` 落 0。
+/// 这里刻意不写 `unwrap_or(0)` —— 那一行代码就会把“不知道”变成“确定为零”。
+pub(super) fn insert_request_usage_in(
+    conn: &rusqlite::Connection,
+    record: &RequestUsageRecord,
+) -> Result<(), String> {
+    // 时间戳统一毫秒口径（v16 起全库一致）；不传则取写入时刻。
+    let created_at = record.created_at.unwrap_or_else(now_ts) as i64;
+
+    conn.execute(
+        "INSERT INTO request_usage(
+            session_id, run_id, loop_index, source, parent_tool_use_id,
+            agent_role, task_id, model_id, input_tokens, output_tokens,
+            cache_hit_tokens, cache_miss_tokens, cache_source, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        params![
+            record.session_id,
+            record.run_id,
+            record.loop_index.map(|value| value as i64),
+            record.source.as_str(),
+            record.parent_tool_use_id,
+            record.agent_role,
+            record.task_id,
+            record.model_id,
+            record.input_tokens as i64,
+            record.output_tokens as i64,
+            record.cache_hit_tokens.map(|value| value as i64),
+            record.cache_miss_tokens.map(|value| value as i64),
+            record.cache_source,
+            created_at,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 读取会话的用量账本（按来源分组 + 总计）。
+pub fn get_session_usage_breakdown(session_id: &str) -> Result<UsageBreakdown, String> {
+    crate::infra::db::with_connection(|conn| session_usage_breakdown_in(conn, session_id))
+}
+
+/// 汇总查询的一行（`GROUP BY source` 的结果）。
+///
+/// 用带字段名的结构体而不是八元组：全是 `i64`，元组传错顺序编译器不拦。
+struct UsageAggregateRow {
+    source: String,
+    request_count: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_hit_tokens: i64,
+    cache_miss_tokens: i64,
+    unreported_requests: i64,
+    unreported_input_tokens: i64,
+}
+
+/// [`get_session_usage_breakdown`] 的 connection 版。
+///
+/// ## 为什么在 SQL 里汇总
+/// 一个长会话的明细行可以上万；拉到内存再 `fold` 等于把整张明细表搬一遍，
+/// 而这里只需要十几个数字。`GROUP BY source` + `SUM/COUNT` 一次拿完。
+///
+/// ## “未上报”的判定口径
+/// 任一个缓存列为 `NULL` 即算“本次未上报”：两个值本来就应同真同假，
+/// 出现半截数据（只有命中、没有未命中）时宁可归为未上报，也不拿半截数去算命中率。
+/// 未上报的请求**不参与** `cache_*_tokens` 求和（`SUM` 自带忽略 NULL），
+/// 也**不**按 0 计入——它们的输入量单独记在 `unreported_input_tokens` 里。
+///
+/// 分组顺序固定为 `source` 字母序（结果确定、可测）；展示顺序由前端决定。
+pub(super) fn session_usage_breakdown_in(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<UsageBreakdown, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT source,
+                    COUNT(*) AS request_count,
+                    COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                    COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                    COALESCE(SUM(cache_hit_tokens), 0) AS cache_hit_tokens,
+                    COALESCE(SUM(cache_miss_tokens), 0) AS cache_miss_tokens,
+                    SUM(CASE WHEN cache_hit_tokens IS NULL OR cache_miss_tokens IS NULL
+                             THEN 1 ELSE 0 END) AS unreported_requests,
+                    COALESCE(SUM(CASE WHEN cache_hit_tokens IS NULL OR cache_miss_tokens IS NULL
+                                      THEN input_tokens ELSE 0 END), 0) AS unreported_input_tokens
+             FROM request_usage
+             WHERE session_id = ?1
+             GROUP BY source
+             ORDER BY source",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([session_id], |row| {
+            Ok(UsageAggregateRow {
+                source: row.get("source")?,
+                request_count: row.get("request_count")?,
+                input_tokens: row.get("input_tokens")?,
+                output_tokens: row.get("output_tokens")?,
+                cache_hit_tokens: row.get("cache_hit_tokens")?,
+                cache_miss_tokens: row.get("cache_miss_tokens")?,
+                unreported_requests: row.get("unreported_requests")?,
+                unreported_input_tokens: row.get("unreported_input_tokens")?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut breakdown = UsageBreakdown::empty(session_id);
+    for row in rows {
+        let row = row.map_err(|e| e.to_string())?;
+        // 未知取值直接报错（理由见 `UsageSource::from_str` 的注释）
+        let source = UsageSource::from_str(&row.source)?;
+
+        let item = UsageSourceBreakdown {
+            source,
+            request_count: row.request_count.max(0) as u64,
+            input_tokens: row.input_tokens.max(0) as u64,
+            output_tokens: row.output_tokens.max(0) as u64,
+            cache_hit_tokens: row.cache_hit_tokens.max(0) as u64,
+            cache_miss_tokens: row.cache_miss_tokens.max(0) as u64,
+            unreported_requests: row.unreported_requests.max(0) as u64,
+            unreported_input_tokens: row.unreported_input_tokens.max(0) as u64,
+        };
+
+        // 总计由分组结果累加得出，不再发第二条 `SUM` 查询：
+        // 两处口径一旦分叉（比如过滤条件改了一处漏了一处）就会对不平。
+        breakdown.request_count += item.request_count;
+        breakdown.input_tokens += item.input_tokens;
+        breakdown.output_tokens += item.output_tokens;
+        breakdown.cache_hit_tokens += item.cache_hit_tokens;
+        breakdown.cache_miss_tokens += item.cache_miss_tokens;
+        breakdown.unreported_requests += item.unreported_requests;
+        breakdown.unreported_input_tokens += item.unreported_input_tokens;
+        breakdown.sources.push(item);
+    }
+
+    // 没有任何分组行 = 没有任何明细 = 历史会话（早于 v28）。
+    // 调用方必须靠这个标志区分“确实没用过 token”与“没明细可拆”。
+    breakdown.has_detail = !breakdown.sources.is_empty();
+    Ok(breakdown)
+}
+
+/// 会话当前是否可写用量（存在且未归档）。
+///
+/// 与累加 SQL 的 `WHERE ... AND deleted_at IS NULL` 同口径：
+/// 归档会话不再接受新账，否则归档区的旧账会被归档后的请求默默改掉。
+pub(super) fn session_usage_writable_in(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<bool, String> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sessions WHERE id = ?1 AND deleted_at IS NULL",
+            [session_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(count > 0)
 }
 
 pub fn append_or_upsert_session_messages(
@@ -942,7 +1137,8 @@ pub fn get_context_snapshot(session_id: &str) -> Result<Option<SessionContextSna
 /// 以后只需要在这里加一列，并把 `session_meta_from_row` 的索引往后挪。
 const SESSION_META_COLUMNS: &str = "s.id, s.title, s.created_at, s.updated_at, s.message_count, \
      s.is_smart_named, s.profile_id, s.total_input_tokens, s.total_output_tokens, s.title_source, \
-     s.project_id, p.path, s.thinking_mode, s.total_cache_hit_tokens, s.total_cache_miss_tokens";
+     s.project_id, p.path, s.thinking_mode, s.total_cache_hit_tokens, s.total_cache_miss_tokens, \
+     s.deleted_at, p.name";
 
 pub fn get_session_meta(id: &str) -> Result<SessionMeta, String> {
     crate::infra::db::with_connection(|conn| {
@@ -1087,24 +1283,279 @@ pub fn restore_session(id: &str) -> Result<(), String> {
 /// 与 `list_sessions` 的唯一区别是过滤条件取反；列清单复用同一份
 /// [`SESSION_META_COLUMNS`]，所以不会出现"两条查询列不一致"的老问题。
 pub fn list_deleted_sessions() -> Result<Vec<SessionMeta>, String> {
-    crate::infra::db::with_connection(|conn| {
-        let sql = format!(
-            "SELECT {} FROM sessions s \
-             LEFT JOIN projects p ON s.project_id = p.id \
-             WHERE s.deleted_at IS NOT NULL \
-             ORDER BY s.deleted_at DESC",
-            SESSION_META_COLUMNS
-        );
-        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], session_meta_from_row)
-            .map_err(|e| e.to_string())?;
-        let mut sessions = Vec::new();
-        for row in rows {
-            sessions.push(row.map_err(|e| e.to_string())?);
+    crate::infra::db::with_connection(|conn| list_deleted_sessions_in(conn))
+}
+
+/// [`list_deleted_sessions`] 的 connection 版（测试直接跑真实 SQL）。
+///
+/// LEFT JOIN `projects` **不过滤 `p.deleted_at`**：归档页要同时展示会话与它的项目名；
+/// 项目归档时两者是一起归档的，过滤掉项目就只能看到一条没头没尾的会话。
+fn list_deleted_sessions_in(conn: &rusqlite::Connection) -> Result<Vec<SessionMeta>, String> {
+    let sql = format!(
+        "SELECT {} FROM sessions s \
+         LEFT JOIN projects p ON s.project_id = p.id \
+         WHERE s.deleted_at IS NOT NULL \
+         ORDER BY s.deleted_at DESC",
+        SESSION_META_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], session_meta_from_row)
+        .map_err(|e| e.to_string())?;
+    let mut sessions = Vec::new();
+    for row in rows {
+        sessions.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(sessions)
+}
+
+// ── 项目 / 会话的归档与批量原语（v27）──
+//
+// 本段函数的共同约束：**数据库改动一律在同一次事务里完成**，
+// 文件系统（快照表以外的磁盘目录）清理一律在事务**外**做。
+// 原因：事务只能回滚数据库；目录已删、事务再回滚，就变成“行还在、数据没了”的不可恢复态。
+
+/// 归档项目：项目本身 + 名下所有**未归档**会话，在同一个事务里打上同一时间戳。
+///
+/// 返回被归档的会话数。
+///
+/// - 已自行归档的会话不改 `deleted_at`：归档时间要保留「用户当时手动归档那一刻」，
+///   不能被后来的项目归档覆盖（它已经是用户见过的时间）；
+/// - 项目不存在或已归档 → 返回错误。此时事务整体回滚，会话的归档也一并撤销，
+///   不会留下「会话已归档、项目还在」的半成品状态（这正是必须单事务的原因）。
+///
+/// 不清快照与回收站：归档可撤销（见 [`restore_project`]），回滚还要用它们。
+pub fn archive_project(project_id: &str, now: i64) -> Result<u64, String> {
+    crate::infra::db::with_transaction(|tx| archive_project_in(tx, project_id, now))
+}
+
+/// [`archive_project`] 的 connection 版（可在测试里跑真实 SQL，不必依赖全局 DB 单例）。
+///
+/// 参数是 `&Connection` 而不是 `&Transaction`：`Transaction` 会 deref 到 `Connection`，
+/// 同样能在事务上下文里执行；反过来（拿 `&Transaction` 做参数）则无法在测试里不建事务直接用。
+fn archive_project_in(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    now: i64,
+) -> Result<u64, String> {
+    let archived_sessions = conn
+        .execute(
+            "UPDATE sessions SET deleted_at = ?2 WHERE project_id = ?1 AND deleted_at IS NULL",
+            params![project_id, now],
+        )
+        .map_err(|e| e.to_string())?;
+
+    let changed_project = conn
+        .execute(
+            "UPDATE projects SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
+            params![project_id, now],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed_project == 0 {
+        // 返回 Err 会让 `with_transaction` 丢掉 tx、不 commit，上面的会话 UPDATE 随之回滚
+        return Err(format!("项目 {} 不存在或已在归档列表里", project_id));
+    }
+
+    Ok(archived_sessions as u64)
+}
+
+/// 取消归档项目：只清 `projects.deleted_at`。
+///
+/// 名下会话**不跟着复活**：它们是各自被归档的，应该逐条恢复（见 [`restore_sessions`]）。
+/// 这里不做“级联复活”是因为项目可能归档了半年、用户只想找回其中一条会话。
+pub fn restore_project(project_id: &str) -> Result<(), String> {
+    crate::infra::db::with_connection(|conn| restore_project_in(conn, project_id))
+}
+
+/// [`restore_project`] 的 connection 版。不在归档列表时报错（与 `restore_session` 同口径）。
+fn restore_project_in(conn: &rusqlite::Connection, project_id: &str) -> Result<(), String> {
+    let changed = conn
+        .execute(
+            "UPDATE projects SET deleted_at = NULL WHERE id = ?1 AND deleted_at IS NOT NULL",
+            [project_id],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err(format!("项目 {} 不在归档列表里", project_id));
+    }
+    Ok(())
+}
+
+/// 批量取消归档会话，并把**连带复活**的归档项目回报在 `restored_project_ids` 里。
+///
+/// 为什么要连带复活项目：归档项目时是项目+会话一起打标的。若只复活会话，它会挂在一个
+/// 归档项目下——项目列表里看不到它、`get_project_path` 仍能取值但界面无处可点，
+/// 用户看到的是「会话回来了但没在任何项目里」，与他的操作预期不符。
+///
+/// 失败项（不存在 / 不在归档列表）进 `failed` 而不中断整批：批量操作里单条失效
+/// （另一个窗口已恢复、会话已被彻底删除）不应该让其余勾选项全部白做。
+///
+/// ## 事务边界
+/// 整批共用一个事务：会话与项目的复活要么一起生效，要么一起不生效。
+/// ⚠️ 事务闭包里**只能**用手上的这把连接，不得再调 `with_connection` / `with_transaction`
+/// —— 全局连接是 Mutex 串行化的，重入会直接死锁。
+pub fn restore_sessions(ids: &[String]) -> Result<BatchOpResult, String> {
+    crate::infra::db::with_transaction(|tx| restore_sessions_in(tx, ids))
+}
+
+/// [`restore_sessions`] 的 connection 版。
+fn restore_sessions_in(
+    conn: &rusqlite::Connection,
+    ids: &[String],
+) -> Result<BatchOpResult, String> {
+    let mut succeeded_ids: Vec<String> = Vec::new();
+    let mut failed: Vec<BatchOpFailure> = Vec::new();
+    let mut restored_project_ids: Vec<String> = Vec::new();
+
+    for id in ids {
+        // 去重：同一个 id 在入参里出现两次时，第二次必然影响 0 行，
+        // 若照常计入 failed 会误报「恢复失败」。
+        if succeeded_ids.contains(id) {
+            continue;
         }
-        Ok(sessions)
+        let changed = conn
+            .execute(
+                "UPDATE sessions SET deleted_at = NULL WHERE id = ?1 AND deleted_at IS NOT NULL",
+                [id],
+            )
+            .map_err(|e| e.to_string())?;
+        if changed == 0 {
+            failed.push(BatchOpFailure {
+                id: id.clone(),
+                reason: "会话不存在或不在归档列表".to_string(),
+            });
+            continue;
+        }
+
+        // 会话已复活，再看它的项目是不是也还处于归档态。
+        // 刚更新过 deleted_at，所以这里读到的 project_id 仍是归档时的绑定关系。
+        let project_id: Option<String> = conn
+            .query_row(
+                "SELECT project_id FROM sessions WHERE id = ?1",
+                [id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .flatten();
+        if let Some(project_id) = project_id {
+            let project_changed = conn
+                .execute(
+                    "UPDATE projects SET deleted_at = NULL \
+                     WHERE id = ?1 AND deleted_at IS NOT NULL",
+                    [&project_id],
+                )
+                .map_err(|e| e.to_string())?;
+            if project_changed > 0 && !restored_project_ids.contains(&project_id) {
+                restored_project_ids.push(project_id);
+            }
+        }
+
+        succeeded_ids.push(id.clone());
+    }
+
+    Ok(BatchOpResult {
+        succeeded_ids,
+        failed,
+        restored_project_ids,
     })
+}
+
+/// 批量**彻底删除**归档会话（行 + 回滚侧产物）。
+///
+/// ## 两步式设计（为什么不能一步到底）
+/// 第一步（事务内）：逐条校验「确实在归档列表里」并删行。`session_messages` 有
+/// `ON DELETE CASCADE`，会随之清掉；但 `snapshot_trees` / `snapshot_content` 等快照表
+/// 和回收站目录**没有 FK 级联**，必须显式清理。
+/// 第二步（事务提交后）：逐条调 [`crate::core::session::purge_rollback_artifacts`] 清快照表与回收站目录。
+///
+/// ## 取舍：文件系统清理失败不算删除失败
+/// 会话行已删是不可逆的，此时把该 id 报成 failed 是“误导”：用户再看列表它已经不在了，
+/// 重试也只会得到「不在归档列表」。所以清理失败仅 `eprintln` 记录（留给运维排查残留），
+/// 该 id 仍计入 `succeeded_ids`。若将来要做“残留产物自动清理”，应该另起扫描任务，
+/// 而不是把这个函数变成半成功态。
+///
+/// 拒绝删除活跃（未归档）会话：那些 id 进 `failed`，原因「不在归档列表」。
+/// 这是本函数唯一的防误删门——彻底删除不可撤销，不能因为前端传错 id 就清掉在用会话。
+pub fn purge_sessions(ids: &[String]) -> Result<BatchOpResult, String> {
+    // 事务内只做数据库部分，返回值里的 pending 是「待清产物的会话 id」（已删行）
+    let (result, purged_ids) = crate::infra::db::with_transaction(|tx| purge_sessions_in(tx, ids))?;
+
+    // 事务已提交，此处才碰文件系统 / 快照表：清理不可回滚，必须排在提交之后
+    for session_id in &purged_ids {
+        crate::core::session::purge_rollback_artifacts(session_id);
+    }
+    Ok(result)
+}
+
+/// [`purge_sessions`] 的事务内部分：校验 + 删行。
+///
+/// 第二个返回值是**待清理回滚产物的 id 列表**（与 `result.succeeded_ids` 内容相同，
+/// 单列出来是为了让调用方在事务外循环时不必从结果结构里绕）。
+fn purge_sessions_in(
+    conn: &rusqlite::Connection,
+    ids: &[String],
+) -> Result<(BatchOpResult, Vec<String>), String> {
+    let mut succeeded_ids: Vec<String> = Vec::new();
+    let mut failed: Vec<BatchOpFailure> = Vec::new();
+    let mut pending: Vec<String> = Vec::new();
+
+    // 第一遍：只校验不删。先校验完再删，好处是入参里重复的 id 不会把第二条误判成失败。
+    for id in ids {
+        if pending.contains(id) {
+            continue;
+        }
+        let archived: Option<String> = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE id = ?1 AND deleted_at IS NOT NULL",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        match archived {
+            Some(_) => pending.push(id.clone()),
+            None => failed.push(BatchOpFailure {
+                id: id.clone(),
+                reason: "不在归档列表".to_string(),
+            }),
+        }
+    }
+
+    // 第二遍：删行。`session_messages` / `session_memory` 有 ON DELETE CASCADE，会自动跟随删除。
+    for id in pending {
+        conn.execute("DELETE FROM sessions WHERE id = ?1", [&id])
+            .map_err(|e| e.to_string())?;
+        succeeded_ids.push(id);
+    }
+
+    Ok((
+        BatchOpResult {
+            succeeded_ids: succeeded_ids.clone(),
+            failed,
+            // 删除不会复活任何项目，字段保持空（结构体统一，调用方不必分分支处理）
+            restored_project_ids: Vec::new(),
+        },
+        // 待清理回滚产物的 id（事务外循环用），与 result.succeeded_ids 内容一致
+        succeeded_ids,
+    ))
+}
+
+/// 归档会话总数（归档页角标，也是「清空归档」的前置读数）。
+pub fn count_deleted_sessions() -> Result<usize, String> {
+    crate::infra::db::with_connection(|conn| count_deleted_sessions_in(conn))
+}
+
+/// [`count_deleted_sessions`] 的 connection 版。
+fn count_deleted_sessions_in(conn: &rusqlite::Connection) -> Result<usize, String> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sessions WHERE deleted_at IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(count.max(0) as usize)
 }
 
 pub fn rename_session(
@@ -1271,8 +1722,8 @@ pub fn clear_last_active_session_id() -> Result<(), String> {
 /// 从 `sessions`（LEFT JOIN `projects`）的一行还原会话元数据。
 ///
 /// **按列名取值**（与 `stored_session_message_from_row` 同一口径，理由见那里的说明）。
-/// 注意 `working_directory` 取自 `p.path` —— 这是按列名之后才显式化的隐式约定，
-/// 别"顺手"改成 `s` 的列。
+/// 注意 `working_directory` 取自 `p.path`、`project_name` 取自 `p.name` —— 这是按列名之后
+/// 才显式化的隐式约定，别"顺手"改成 `s` 的列（sessions 表根本没有这两列）。
 fn session_meta_from_row(row: &Row<'_>) -> rusqlite::Result<SessionMeta> {
     Ok(SessionMeta {
         id: row.get("id")?,
@@ -1290,6 +1741,12 @@ fn session_meta_from_row(row: &Row<'_>) -> rusqlite::Result<SessionMeta> {
         thinking_mode: row.get::<_, i64>("thinking_mode")? != 0,
         total_cache_hit_tokens: row.get::<_, i64>("total_cache_hit_tokens")? as u64,
         total_cache_miss_tokens: row.get::<_, i64>("total_cache_miss_tokens")? as u64,
+        // NULL = 未归档；负值（脏数据）归一到 0，不把负数带进 u64
+        deleted_at: row
+            .get::<_, Option<i64>>("deleted_at")?
+            .map(|value| value.max(0) as u64),
+        // 无项目（或项目行缺失）时 LEFT JOIN 给 NULL → None
+        project_name: row.get("name")?,
     })
 }
 
@@ -1373,53 +1830,58 @@ pub fn create_project(name: &str, path: &str) -> Result<crate::core::session::Pr
 }
 
 pub fn list_projects() -> Result<Vec<crate::core::session::ProjectMeta>, String> {
-    crate::infra::db::with_connection(|conn| {
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT {} FROM projects p
-                 ORDER BY p.updated_at DESC",
-                PROJECT_META_COLUMNS
-            ))
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], project_meta_from_row)
-            .map_err(|e| e.to_string())?;
-        let mut projects = Vec::new();
-        for row in rows {
-            projects.push(row.map_err(|e| e.to_string())?);
-        }
-        Ok(projects)
-    })
+    crate::infra::db::with_connection(|conn| list_projects_in(conn))
 }
 
-/// 列某项目名下的会话 id。
+/// [`list_projects`] 的 connection 版（测试直接跑真实 SQL）。
 ///
-/// 给"删项目"用：那条路径会连带删掉名下所有会话（`DELETE FROM sessions WHERE project_id`），
-/// 而回滚侧产物（快照表 / 回收站目录）没有 FK 级联 —— 必须**删之前**把 id 抓出来，
-/// 删完就再也查不到了。
-pub fn list_session_ids_of_project(project_id: &str) -> Result<Vec<String>, String> {
-    crate::infra::db::with_connection(|conn| {
-        let mut stmt = conn
-            .prepare("SELECT id FROM sessions WHERE project_id = ?1")
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([project_id], |row| row.get::<_, String>(0))
-            .map_err(|e| e.to_string())?;
-        let mut ids = Vec::new();
-        for row in rows {
-            ids.push(row.map_err(|e| e.to_string())?);
-        }
-        Ok(ids)
-    })
+/// 只列**未归档**项目：归档是“从界面移除但可撤销”，归档项统一在「归档」区展示。
+/// 注意 `PROJECT_META_COLUMNS` 里的 `session_count` 子查询自己带了会话级过滤
+/// （`s.deleted_at IS NULL`），不要把它改成跟着项目过滤——两者口径不同：
+/// 一个未归档项目里可能全是已归档会话，此时 session_count 就是 0。
+fn list_projects_in(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<crate::core::session::ProjectMeta>, String> {
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT {} FROM projects p
+             WHERE p.deleted_at IS NULL
+             ORDER BY p.updated_at DESC",
+            PROJECT_META_COLUMNS
+        ))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], project_meta_from_row)
+        .map_err(|e| e.to_string())?;
+    let mut projects = Vec::new();
+    for row in rows {
+        projects.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(projects)
 }
 
-pub fn delete_project(id: &str) -> Result<(), String> {
+/// 项目是否处于**归档**状态（`projects.deleted_at IS NOT NULL`）。
+///
+/// 为什么单开一个查询，而不是把 `deleted_at` 加进 [`crate::core::session::ProjectMeta`]：
+/// `PROJECT_META_COLUMNS` / `project_meta_from_row` 是列表页、单条查询与
+/// `meta_columns_tests` 三方共用的一份列清单，而「打开项目时要不要复活」只有
+/// `command::session::open_project` 这一条路径需要判断。为一条路径扩大公共契约，
+/// 会把归档细节漏进所有读取项目的地方，收益不抵风险。
+///
+/// 项目不存在时返回 `false`（不是错误）：调用方已通过 `get_project_by_path` 拿到记录，
+/// 这里只回答「要不要复活」，查不到就按未归档处理即可。
+pub fn is_project_archived(project_id: &str) -> Result<bool, String> {
     crate::infra::db::with_connection(|conn| {
-        conn.execute("DELETE FROM sessions WHERE project_id = ?1", [id])
-            .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM projects WHERE id = ?1", [id])
-            .map_err(|e| e.to_string())?;
-        Ok(())
+        let archived: Option<i64> = conn
+            .query_row(
+                "SELECT deleted_at FROM projects WHERE id = ?1",
+                [project_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .flatten();
+        Ok(archived.is_some())
     })
 }
 
@@ -1533,6 +1995,9 @@ mod meta_columns_tests {
             "thinking_mode",
             "total_cache_hit_tokens",
             "total_cache_miss_tokens",
+            // 归档元数据：deleted_at 取自 s，project_name 取自 p.name（结果列名 "name"）
+            "deleted_at",
+            "name",
         ] {
             assert!(
                 names.iter().any(|n| n == name),
@@ -1541,8 +2006,8 @@ mod meta_columns_tests {
         }
         assert_eq!(
             names.len(),
-            15,
-            "列数应为 15，实际 {}：{names:?}",
+            17,
+            "列数应为 17，实际 {}：{names:?}",
             names.len()
         );
     }
@@ -1880,5 +2345,585 @@ mod message_stats_tests {
             session_message_stats_in(&conn, "s-stats").unwrap(),
             (2, Some(6))
         );
+    }
+}
+
+#[cfg(test)]
+mod archive_tests {
+    //! 归档原语（v27）：批量恢复、批量彻底删除、项目归档、归档计数。
+    //!
+    //! 全部走 `*_in` 版本直接在 connection 上跑**真实 SQL**（不进全局 DB 单例），
+    //! 与 `message_stats_tests` 同一做法。批量原语的全部风险都在 SQL 条件上
+    //! （`deleted_at IS NULL` / `IS NOT NULL` 写反就变成“删掉活跃会话”），
+    //! 所以这些用例断言的是"库里最终是什么样"，而不是函数返回值本身。
+
+    use super::*;
+    use rusqlite::Connection;
+
+    /// 测试用连接：真实 schema + 运行期 PRAGMA。
+    ///
+    /// 可直接用 `init_schema` 是因为 v27 迁移（`projects.deleted_at`）已由 schema 层落地；
+    /// 仓储层测试**不**自己补列——那样会把「仓储逻辑错」与「迁移没跟上」混成同一个红点。
+    fn init_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::infra::db::schema::init_schema(&conn).expect("建表");
+        // `session_messages` 的 ON DELETE CASCADE 依赖这个开关
+        // （运行期由 `infra::db::configure_connection` 打开，测试连接要自己开）
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        conn
+    }
+
+    fn insert_project(conn: &Connection, id: &str, name: &str, deleted_at: Option<i64>) {
+        conn.execute(
+            "INSERT INTO projects(id, name, path, created_at, updated_at, deleted_at)
+             VALUES(?1, ?2, ?3, 1000, 1000, ?4)",
+            params![id, name, format!("/tmp/{}", id), deleted_at],
+        )
+        .unwrap();
+    }
+
+    fn insert_session(conn: &Connection, id: &str, project_id: Option<&str>, deleted_at: Option<i64>) {
+        conn.execute(
+            "INSERT INTO sessions(
+                id, title, created_at, updated_at, message_count, project_id, deleted_at
+             ) VALUES(?1, ?2, 1000, 1000, 0, ?3, ?4)",
+            params![id, id, project_id, deleted_at],
+        )
+        .unwrap();
+    }
+
+    fn session_deleted_at(conn: &Connection, id: &str) -> Option<i64> {
+        conn.query_row(
+            "SELECT deleted_at FROM sessions WHERE id = ?1",
+            [id],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .unwrap()
+    }
+
+    fn project_deleted_at(conn: &Connection, id: &str) -> Option<i64> {
+        conn.query_row(
+            "SELECT deleted_at FROM projects WHERE id = ?1",
+            [id],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .unwrap()
+    }
+
+    /// 批量恢复里，未归档 / 不存在的 id 不得让整批失败，但必须逐条回报。
+    #[test]
+    fn restore_sessions_reports_ids_that_are_not_archived() {
+        let conn = init_conn();
+        insert_session(&conn, "s-archived", None, Some(1_700_000_000_000));
+        insert_session(&conn, "s-active", None, None);
+
+        let result = restore_sessions_in(
+            &conn,
+            &[
+                "s-archived".to_string(),
+                "s-active".to_string(),
+                "s-missing".to_string(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(result.succeeded_ids, vec!["s-archived".to_string()]);
+        assert_eq!(result.failed.len(), 2, "活跃会话与不存在的会话都应进 failed");
+        assert!(
+            result
+                .failed
+                .iter()
+                .any(|f| f.id == "s-active" && f.reason.contains("不在归档列表")),
+            "活跃会话不应被当作恢复成功：{:?}",
+            result.failed
+        );
+        assert!(
+            result
+                .failed
+                .iter()
+                .any(|f| f.id == "s-missing" && f.reason.contains("不存在")),
+            "不存在的会话应明确报不存在：{:?}",
+            result.failed
+        );
+        assert_eq!(session_deleted_at(&conn, "s-archived"), None, "成功项应已清掉归档标记");
+    }
+
+    /// 恢复归档会话时，其归档项目在同事务内一并复活；同一项目只回报一次。
+    #[test]
+    fn restoring_sessions_revives_the_archived_project_once() {
+        let conn = init_conn();
+        insert_project(&conn, "p1", "项目甲", Some(500));
+        insert_session(&conn, "s1", Some("p1"), Some(500));
+        insert_session(&conn, "s2", Some("p1"), Some(500));
+
+        let result =
+            restore_sessions_in(&conn, &["s1".to_string(), "s2".to_string()]).unwrap();
+
+        assert_eq!(
+            result.succeeded_ids,
+            vec!["s1".to_string(), "s2".to_string()]
+        );
+        assert_eq!(
+            result.restored_project_ids,
+            vec!["p1".to_string()],
+            "同一个项目只能回报一次"
+        );
+        assert_eq!(project_deleted_at(&conn, "p1"), None, "项目应已取消归档");
+    }
+
+    /// 彻底删除必须拒绝活跃会话（这是不可撤销操作唯一的防误删门），
+    /// 并且成功项的消息行要跟着 CASCADE 一起消失。
+    #[test]
+    fn purge_sessions_rejects_active_sessions() {
+        let conn = init_conn();
+        insert_session(&conn, "s-archived", None, Some(9));
+        insert_session(&conn, "s-active", None, None);
+        conn.execute(
+            "INSERT INTO session_messages(session_id, message_id, seq, role, content_json,
+                                          created_at, source)
+             VALUES('s-archived', 'm1', 0, 'user', '{}', 1000, 'chat')",
+            [],
+        )
+        .unwrap();
+
+        let (result, pending) = purge_sessions_in(
+            &conn,
+            &["s-archived".to_string(), "s-active".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(result.succeeded_ids, vec!["s-archived".to_string()]);
+        assert_eq!(pending, vec!["s-archived".to_string()], "只有删成功行的 id 才需要清产物");
+        assert_eq!(result.failed.len(), 1);
+        assert_eq!(result.failed[0].id, "s-active");
+        assert_eq!(result.failed[0].reason, "不在归档列表");
+
+        let sessions_left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions WHERE id = 's-active'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(sessions_left, 1, "活跃会话不得被彻底删除");
+        let messages_left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_messages WHERE session_id = 's-archived'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(messages_left, 0, "session_messages 应随会话行 CASCADE 删除");
+    }
+
+    /// 归档项目：项目从列表消失、名下未归档会话被打上同一时间戳，
+    /// 已手动归档的会话保留原时间戳；归档页仍能拿到项目名。
+    #[test]
+    fn archiving_project_hides_it_and_stamps_its_sessions() {
+        let conn = init_conn();
+        insert_project(&conn, "p1", "项目甲", None);
+        insert_project(&conn, "p2", "项目乙", None);
+        insert_session(&conn, "s1", Some("p1"), None);
+        insert_session(&conn, "s2", Some("p1"), None);
+        insert_session(&conn, "s-manual", Some("p1"), Some(777));
+
+        let archived = archive_project_in(&conn, "p1", 1234).unwrap();
+        assert_eq!(archived, 2, "只归档此前未归档的会话");
+
+        assert_eq!(session_deleted_at(&conn, "s1"), Some(1234));
+        assert_eq!(session_deleted_at(&conn, "s2"), Some(1234));
+        assert_eq!(
+            session_deleted_at(&conn, "s-manual"),
+            Some(777),
+            "已归档会话的时间戳不应被项目归档覆盖"
+        );
+
+        // 项目列表不再含 p1
+        let visible = list_projects_in(&conn).unwrap();
+        assert_eq!(
+            visible.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            vec!["p2"],
+            "归档项目必须从项目列表里消失"
+        );
+
+        // 归档页要展示「所属项目名 + 归档时间」
+        let archived_metas = list_deleted_sessions_in(&conn).unwrap();
+        let s1_meta = archived_metas
+            .iter()
+            .find(|m| m.id == "s1")
+            .expect("归档列表应包含 s1");
+        assert_eq!(s1_meta.deleted_at, Some(1234));
+        assert_eq!(
+            s1_meta.project_name.as_deref(),
+            Some("项目甲"),
+            "归档会话必须能拿到项目名（LEFT JOIN 不得过滤归档项目）"
+        );
+
+        // 重复归档同一个项目应当报错（并且不会把时间戳刷成新的）
+        assert!(
+            archive_project_in(&conn, "p1", 9999).is_err(),
+            "重复归档应报错而不是静默刷新时间"
+        );
+        assert_eq!(project_deleted_at(&conn, "p1"), Some(1234));
+    }
+
+    /// 归档计数只数 `deleted_at` 非空的会话。
+    #[test]
+    fn count_deleted_sessions_counts_only_archived_rows() {
+        let conn = init_conn();
+        insert_session(&conn, "s1", None, Some(1));
+        insert_session(&conn, "s2", None, Some(2));
+        insert_session(&conn, "s3", None, None);
+
+        assert_eq!(count_deleted_sessions_in(&conn).unwrap(), 2);
+
+        restore_sessions_in(&conn, &["s1".to_string()]).unwrap();
+        assert_eq!(count_deleted_sessions_in(&conn).unwrap(), 1);
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    //! 请求级用量明细（v28）：插入原语、累计原语、按来源汇总。
+    //!
+    //! 全部直接在 connection 上跑**真实 SQL**（进不了全局 DB 单例），
+    //! 与 `archive_tests` 同一做法；`record_request_usage`（事务 + 事件）
+    //! 由这三个原语拼成，原语对了那层就只剩“把三句串起来”。
+
+    use super::{
+        add_session_token_totals_in, insert_request_usage_in, session_usage_breakdown_in,
+        session_usage_writable_in,
+    };
+    use crate::core::session::{RequestUsageRecord, SessionTokenTotals, UsageSource};
+    use rusqlite::Connection;
+
+    /// 测试连接：真实 schema + 运行期 PRAGMA（外键与生产一致）。
+    fn init_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        // `init_schema` 不负责 PRAGMA，生产由 `db::configure_connection` 开外键
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::infra::db::schema::init_schema(&conn).expect("建表");
+        conn
+    }
+
+    fn insert_session(conn: &Connection, id: &str, deleted_at: Option<i64>) {
+        conn.execute(
+            "INSERT INTO sessions(id, title, created_at, updated_at, message_count, deleted_at)
+             VALUES(?1, '测试会话', 1, 1, 0, ?2)",
+            rusqlite::params![id, deleted_at],
+        )
+        .expect("插入会话");
+    }
+
+    fn raw_usage(conn: &Connection, session_id: &str) -> Vec<(String, Option<i64>, Option<i64>)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT source, cache_hit_tokens, cache_miss_tokens
+                 FROM request_usage WHERE session_id = ?1 ORDER BY id",
+            )
+            .unwrap();
+        stmt.query_map([session_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect()
+    }
+
+    /// 核心汇总契约：按来源分组、总计等于各组之和、
+    /// 未上报的请求单独计数且不拉低命中率。
+    #[test]
+    fn breakdown_groups_by_source_and_flags_unreported() {
+        let conn = init_conn();
+        insert_session(&conn, "s1", None);
+
+        // 主循环第 1 次：厂商报了缓存
+        insert_request_usage_in(
+            &conn,
+            &RequestUsageRecord::new("s1", UsageSource::Main)
+                .run("run-1", Some(0))
+                .model_id("deepseek-chat")
+                .tokens(1000, 100)
+                .cache(Some(900), Some(100), Some("deepseek"))
+                .at(1_000),
+        )
+        .unwrap();
+        // 主循环第 2 次：报了缓存，命中真的是 0（不得被当成“未上报”）
+        insert_request_usage_in(
+            &conn,
+            &RequestUsageRecord::new("s1", UsageSource::Main)
+                .run("run-1", Some(1))
+                .tokens(2000, 200)
+                .cache(Some(0), Some(2000), Some("deepseek"))
+                .at(2_000),
+        )
+        .unwrap();
+        // 子 Agent：厂商没报缓存（两个列必须落 NULL）
+        insert_request_usage_in(
+            &conn,
+            &RequestUsageRecord::new("s1", UsageSource::Subagent)
+                .parent_tool_use_id("toolu_1")
+                .tokens(500, 50)
+                .at(3_000),
+        )
+        .unwrap();
+
+        let breakdown = session_usage_breakdown_in(&conn, "s1").unwrap();
+        assert!(breakdown.has_detail, "有明细时 has_detail 必须为 true");
+        assert_eq!(breakdown.request_count, 3);
+        assert_eq!(breakdown.input_tokens, 3500);
+        assert_eq!(breakdown.output_tokens, 350);
+        // 已上报的命中/未命中：900 / 2100（未上报那行不按 0 计入，但也不影响这两个和）
+        assert_eq!(breakdown.cache_hit_tokens, 900);
+        assert_eq!(breakdown.cache_miss_tokens, 2100);
+        assert_eq!(breakdown.unreported_requests, 1, "只有子 Agent 那行没上报缓存");
+        assert_eq!(
+            breakdown.unreported_input_tokens, 500,
+            "未上报的输入量要单独记，才能说清“多少 token 不知道”"
+        );
+
+        // 分组：字母序 compact < main < subagent（这里只有 main 与 subagent）
+        assert_eq!(breakdown.sources.len(), 2);
+        let main = breakdown
+            .sources
+            .iter()
+            .find(|s| s.source == UsageSource::Main)
+            .expect("应有 main 分组");
+        assert_eq!(main.request_count, 2);
+        assert_eq!(main.cache_hit_tokens, 900);
+        assert_eq!(main.unreported_requests, 0, "命中为 0 不等于未上报");
+
+        let sub = breakdown
+            .sources
+            .iter()
+            .find(|s| s.source == UsageSource::Subagent)
+            .expect("应有 subagent 分组");
+        assert_eq!(sub.request_count, 1);
+        assert_eq!(sub.unreported_requests, 1);
+        assert_eq!(sub.unreported_input_tokens, 500);
+        assert_eq!(sub.cache_hit_tokens, 0);
+
+        // 总计 = 各组之和（不允许总分另算一套而少加一组）
+        assert_eq!(
+            breakdown.input_tokens,
+            breakdown.sources.iter().map(|s| s.input_tokens).sum::<u64>()
+        );
+
+        // 原始行：未上报必须真 NULL，上报为零必须真 0
+        assert_eq!(
+            raw_usage(&conn, "s1"),
+            vec![
+                ("main".to_string(), Some(900), Some(100)),
+                ("main".to_string(), Some(0), Some(2000)),
+                ("subagent".to_string(), None, None),
+            ]
+        );
+    }
+
+    /// 读 `sessions` 的四个累计值：(input, output, cache_hit, cache_miss)。
+    fn session_totals(conn: &Connection, session_id: &str) -> (u64, u64, u64, u64) {
+        conn.query_row(
+            "SELECT total_input_tokens, total_output_tokens,
+                    total_cache_hit_tokens, total_cache_miss_tokens
+             FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?.max(0) as u64,
+                    row.get::<_, i64>(1)?.max(0) as u64,
+                    row.get::<_, i64>(2)?.max(0) as u64,
+                    row.get::<_, i64>(3)?.max(0) as u64,
+                ))
+            },
+        )
+        .expect("读会话累计值")
+    }
+
+    /// 一次子 Agent 调用**只累加一次**（去重契约）。
+    ///
+    /// 复现子 Agent 的真实写入形态：每个 loop 一次请求 → 一行明细 + 一次累计，
+    /// 两者在**同一个事务**里（与 `record_request_usage` 一致）。
+    ///
+    /// 这是双计事故的回归防护：历史上子 Agent 的用量先由子代理自己带回父层，
+    /// 再由回合收尾的 `save_session` 补一次。一旦“每轮直写”与“收尾补交”并存，
+    /// `sessions.total_*` 就会大于明细求和，而账本本身不会报任何错——只能靠断言拓。
+    /// 子 Agent 改成每 loop 直写后，收尾一律传 `None`，本用例才能恒绿。
+    #[test]
+    fn subagent_usage_is_counted_once_per_loop() {
+        let mut conn = init_conn();
+        insert_session(&conn, "s1", None);
+
+        // 两轮子 Agent 请求（输入/输出/命中/未命中）
+        let loops = [(1200u64, 80u64, 1000u64, 200u64), (2400, 120, 2100, 300)];
+        for (loop_index, (input, output, hit, miss)) in loops.into_iter().enumerate() {
+            let record = RequestUsageRecord::new("s1", UsageSource::Subagent)
+                .run("sub-run-1", Some(loop_index as u32))
+                .agent_role("subagent:implementation")
+                .model_id("deepseek-chat")
+                .tokens(input, output)
+                .cache(Some(hit), Some(miss), Some("deepseek"))
+                .at(1_000 + loop_index as u64);
+            let delta = SessionTokenTotals {
+                input,
+                output,
+                cache_hit: hit,
+                cache_miss: miss,
+            };
+
+            // 与 `record_request_usage` 同一个事务形状：明细 + 累计同生同死
+            let tx = conn.transaction().unwrap();
+            insert_request_usage_in(&tx, &record).unwrap();
+            add_session_token_totals_in(&tx, "s1", delta)
+                .unwrap()
+                .expect("活跃会话必须可累加");
+            tx.commit().unwrap();
+        }
+
+        let breakdown = session_usage_breakdown_in(&conn, "s1").unwrap();
+        let totals = session_totals(&conn, "s1");
+
+        assert_eq!(breakdown.request_count, 2);
+        // 核心断言：累计 == 明细求和（差一分就是重复计或多计）
+        assert_eq!(
+            totals.0, breakdown.input_tokens,
+            "sessions.total_input_tokens 必须等于明细求和（收了两次就是双计）"
+        );
+        assert_eq!(totals.1, breakdown.output_tokens, "输出 token 同理");
+        assert_eq!(totals.2, breakdown.cache_hit_tokens);
+        assert_eq!(totals.3, breakdown.cache_miss_tokens);
+        assert_eq!(breakdown.input_tokens, 3600);
+        assert_eq!(breakdown.output_tokens, 200);
+
+        // 明细里的缓存读数必须是**实际值**，而不是写死的 0
+        assert_eq!(
+            raw_usage(&conn, "s1"),
+            vec![
+                ("subagent".to_string(), Some(1000), Some(200)),
+                ("subagent".to_string(), Some(2100), Some(300)),
+            ],
+            "子 Agent 明细行要带真实缓存读数（未上报才是 NULL，不得固定写 0）"
+        );
+    }
+
+    /// 无明细的会话（早于 v28 的历史会话）：`has_detail = false`、数字全 0。
+    ///
+    /// 调用方必须靠这个标志区分“真没用过 token”与“没明细可拆”，
+    /// 否则会把历史会话展示成 0。
+    #[test]
+    fn breakdown_without_detail_is_flagged() {
+        let conn = init_conn();
+        insert_session(&conn, "s-empty", None);
+
+        let breakdown = session_usage_breakdown_in(&conn, "s-empty").unwrap();
+        assert!(!breakdown.has_detail, "没有明细时必须 has_detail = false");
+        assert_eq!(breakdown.request_count, 0);
+        assert_eq!(breakdown.input_tokens, 0);
+        assert_eq!(breakdown.output_tokens, 0);
+        assert_eq!(breakdown.cache_hit_tokens, 0);
+        assert_eq!(breakdown.cache_miss_tokens, 0);
+        assert_eq!(breakdown.unreported_requests, 0);
+        assert!(breakdown.sources.is_empty());
+
+        // 会话 id 不存在时同样返回空账，不报错（展示层要能安全地问）
+        let missing = session_usage_breakdown_in(&conn, "s-missing").unwrap();
+        assert!(!missing.has_detail);
+    }
+
+    /// 库里的来源取值不可识别时必须报错，不得静默归入某个分组。
+    #[test]
+    fn unknown_source_in_db_is_rejected() {
+        let conn = init_conn();
+        insert_session(&conn, "s1", None);
+        conn.execute(
+            "INSERT INTO request_usage(session_id, source, input_tokens, output_tokens, created_at)
+             VALUES('s1', 'ghost', 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+
+        let err = session_usage_breakdown_in(&conn, "s1").expect_err("未知来源必须报错");
+        assert!(err.contains("ghost"), "错误信息要带上原始取值：{err}");
+    }
+
+    /// 累计原语：活跃会话原子累加并读回；归档/不存在的会话返回 None。
+    #[test]
+    fn totals_accumulate_and_skip_archived_sessions() {
+        let conn = init_conn();
+        insert_session(&conn, "s1", None);
+        insert_session(&conn, "s-arch", Some(1_700_000_000_000));
+
+        let totals = add_session_token_totals_in(
+            &conn,
+            "s1",
+            SessionTokenTotals {
+                input: 100,
+                output: 10,
+                cache_hit: 80,
+                cache_miss: 20,
+            },
+        )
+        .unwrap()
+        .expect("活跃会话必须累加成功");
+        assert_eq!(
+            (totals.input, totals.output, totals.cache_hit, totals.cache_miss),
+            (100, 10, 80, 20)
+        );
+
+        // 第二次是增量累加，不是整值覆盖
+        let totals = add_session_token_totals_in(
+            &conn,
+            "s1",
+            SessionTokenTotals {
+                input: 5,
+                output: 1,
+                cache_hit: 0,
+                cache_miss: 5,
+            },
+        )
+        .unwrap()
+        .expect("第二次累加");
+        assert_eq!(totals.input, 105);
+        assert_eq!(totals.cache_miss, 25);
+
+        assert_eq!(
+            add_session_token_totals_in(
+                &conn,
+                "s-arch",
+                SessionTokenTotals {
+                    input: 1,
+                    output: 1,
+                    cache_hit: 0,
+                    cache_miss: 1,
+                },
+            )
+            .unwrap(),
+            None,
+            "归档会话不再接受新账"
+        );
+        assert_eq!(
+            add_session_token_totals_in(
+                &conn,
+                "s-missing",
+                SessionTokenTotals {
+                    input: 1,
+                    output: 1,
+                    cache_hit: 0,
+                    cache_miss: 1,
+                },
+            )
+            .unwrap(),
+            None,
+            "不存在的会话返回 None"
+        );
+    }
+
+    /// 可写判定与累加 SQL 的条件同口径（存在且未归档）。
+    #[test]
+    fn writable_check_matches_accumulate_condition() {
+        let conn = init_conn();
+        insert_session(&conn, "s1", None);
+        insert_session(&conn, "s-arch", Some(1_700_000_000_000));
+
+        assert!(session_usage_writable_in(&conn, "s1").unwrap());
+        assert!(!session_usage_writable_in(&conn, "s-arch").unwrap());
+        assert!(!session_usage_writable_in(&conn, "s-missing").unwrap());
     }
 }

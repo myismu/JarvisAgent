@@ -338,6 +338,10 @@ pub async fn execute_tool_calls(
     all_results.sort_by_key(|r| r.index);
 
     let mut tool_results = Vec::new();
+    // 子代理用量**仅供参考**：它会被 `pipeline` 汇总进 `req_*_tokens`，
+    // 用于 `JarvisResult` / `agent_runs` 的展示（“这一轮花了多少”）。
+    // 会话账本不靠它：子代理自己每一轮都经 `record_request_usage` 直写了
+    // `request_usage` 与 `sessions.total_*`，这里再交一次就是重复计数。
     let mut sub_in: u64 = 0;
     let mut sub_out: u64 = 0;
 

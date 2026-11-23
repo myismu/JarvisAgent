@@ -44,6 +44,10 @@ export interface SessionMeta {
   toolCallCount?: number;
   runCount?: number;
   checkpointCount?: number;
+  /** 归档时间戳（毫秒级 Unix 时间）。缺失表示会话仍在正常列表中 */
+  deletedAt?: number;
+  /** 会话所属项目名称，仅在归档列表等按项目聚合的场景下由后端回填 */
+  projectName?: string;
 }
 
 export interface JarvisResult {
@@ -64,6 +68,13 @@ export interface JarvisResult {
    * 续跑（`resume_jarvis`）不注入用户消息，故那条路径上恒为空。
    */
   user_message_id?: string | null;
+  /**
+   * 按来源分组的会话用量明细（可选）。
+   *
+   * 这是**可选**字段：后端尚未给出分组统计时恒为缺省。消费方必须区分
+   * 「缺省」（不改动已有分组）与「全为 0」（确实没有这些请求），不要混为一谈。
+   */
+  session_usage_breakdown?: SessionUsageBreakdown | null;
   /**
    * 本轮创建的文件检查点 id（有文件编辑的轮次由后端收尾时才创建 Git 快照）。
    *
@@ -159,6 +170,61 @@ export interface SessionContextSnapshot {
 }
 
 /**
+ * 单一调用来源（谁发起的请求）的用量分组。
+ *
+ * 之所以按来源拆开：同一个会话里主 Agent、子 Agent、内部系统调用（标题生成、
+ * 压缩摘要、反思审查等）的 token 会混进同一个累计值，只看总量无法判断
+ * 「钱花在谁身上」。分组是**后端的口径**，前端只负责展示，不重新聚合。
+ *
+ * 全部是**累计绝对值**（会话级），不是单次请求的增量。
+ */
+export interface UsageSourceBreakdown {
+  /** 该来源累计输入 token */
+  input: number;
+  /** 该来源累计输出 token */
+  output: number;
+  /** 该来源累计缓存命中 token；0 可能是「未上报」，结合 cacheReported 判断 */
+  cacheHit: number;
+  /** 该来源累计缓存未命中 token */
+  cacheMiss: number;
+  /** 该来源累计请求次数（= 调用模型接口的次数，不是 agent loop 轮数） */
+  requestCount: number;
+  /**
+   * 其中**上报了缓存字段**的请求数。
+   *
+   * 与 requestCount 的差值就是「厂商没给缓存字段」的请求量 —— 用来解释
+   * 为什么某来源的缓存命中率算不出来，而不是直接显示 0%。
+   */
+  cacheReported: number;
+}
+
+/**
+ * 会话用量按来源分组的快照。
+ *
+ * 归一化（缺字段补 0）由 `utils/usageBreakdown.ts` 统一负责，
+ * 事件监听与 store 写入都走那一层，避免各处各写一遍兜底逻辑。
+ */
+export interface SessionUsageBreakdown {
+  /** 主 Agent（当前会话正在跑的那条主线） */
+  main: UsageSourceBreakdown;
+  /** 子 Agent（RunSubagent / 任务图调度出去的执行体） */
+  subagent: UsageSourceBreakdown;
+  /** 系统内部调用（标题生成、压缩摘要、反思审查等非用户可见的请求） */
+  system: UsageSourceBreakdown;
+  /** 来源未知（后端拿不到来源标记）的请求数 */
+  unreportedRequestCount: number;
+  /** 来源未知的请求累计输入 token */
+  unreportedInput: number;
+  /**
+   * 后端是否给出了真正的分组明细。
+   *
+   * false 表示这只是归零占位：界面应退回显示总量，不能把 0 当成
+   * 「主 Agent 一个 token 没花」。
+   */
+  hasDetail: boolean;
+}
+
+/**
  * `session-usage-updated` 事件的载荷：会话累计用量的**当前值**。
  *
  * 由后端在**每次请求**拿到 usage 后推送（`pipeline::update_provider_usage_snapshot`），
@@ -173,6 +239,13 @@ export interface SessionUsageUpdatedPayload {
   outputTokens: number;
   cacheHitTokens: number;
   cacheMissTokens: number;
+  /**
+   * 按来源分组的明细（可选）。
+   *
+   * 同样是**绝对值**：接收方整值覆盖即可，不要自行累加，否则数字会翻倍。
+   * 旧后端不推送该字段，此时前端按空值归零处理且不报错。
+   */
+  breakdown?: SessionUsageBreakdown | null;
 }
 
 export interface TodoItem {
@@ -829,7 +902,7 @@ export interface SkillDetail {
   body: string;
 }
 
-export type AppView = 'chat' | 'skill-manager';
+export type AppView = 'chat' | 'skill-manager' | 'archive';
 
 // === 提示词管理类型 ===
 

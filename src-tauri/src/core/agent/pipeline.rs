@@ -142,15 +142,14 @@ struct PipelineState {
     req_output_tokens: u64,
     /// 本次运行里**子代理**消耗的 token，单独留一份计数。
     ///
-    /// 为什么必须单独记：主 Agent 每个 loop 的用量在拿到 usage 时就已通过
-    /// `update_provider_usage_snapshot` 逐请求累加进 `sessions.total_*` 了，
-    /// 而子代理（`tools/agent_tools/subagent.rs`）有自己独立的循环，不经过那条路径。
-    /// 如果收尾时把 `req_input_tokens`（含主循环 + 子代理）整份再交一次，
-    /// 主循环那部分就会被**重复计一遍**。所以收尾只补这两个数。
+    /// 用途仅限**展示/诊断**（回合收尾的日志行、`agent_runs` 汇总里的子代理占比）：
+    /// 它**不参与** `sessions.total_*` 累计。子代理（`tools/agent_tools/subagent.rs`）
+    /// 有自己独立的循环，每一轮拿到 usage 就经 `session::usage::record_request_usage`
+    /// 直写明细与累计——收尾时再把这几个数交一次，就是**同一笔账记两遍**。
     ///
-    /// 曾经还有一对 `req_cache_hit_tokens` / `req_cache_miss_tokens`（整轮缓存累计），
-    /// 现已删除：它们是唯一读者——收尾那次整轮累加——的输入，改成逐请求累加后没人读了。
-    /// 缓存口径的唯一真相现在是 `sessions.total_cache_*`。
+    /// 历史教训：这两个字段曾经的唯一读者是收尾那次 `save_session` 增量；
+    /// 而主循环当时也走收尾整轮累加，账本靠"只交子代理那一份"勉强对得上。
+    /// 子代理改成逐请求直写后，这层手工补偿就成了纯重复计数，故收尾不再读取它们。
     req_sub_input_tokens: u64,
     req_sub_output_tokens: u64,
     final_answer: String,
@@ -1731,7 +1730,9 @@ impl PipelineState {
             .await;
             self.req_input_tokens += sub_in;
             self.req_output_tokens += sub_out;
-            // 单独记一份，供回合收尾补一次累加（主循环的用量已在逐请求路径落库）
+            // 子代理用量另记一份，**仅供展示/诊断**：`JarvisResult`/`agent_runs`
+            // 汇总里的输入输出已是含子代理的总量，这两个数用来说清"其中多少是子代理烧的"。
+            // 它们**不参与** `sessions.total_*`——子代理每轮自己直写明细与累计。
             self.req_sub_input_tokens += sub_in;
             self.req_sub_output_tokens += sub_out;
 
@@ -2234,28 +2235,24 @@ impl PipelineState {
 
         // 3. 保存会话到 SQLite；纯聊天且被取消时不落空会话
         //
-        // 收尾这里**不再交整轮 token**：主循环的每个 loop 已在
-        // `update_provider_usage_snapshot` 里逐请求累加过，再交一次就是重复计数。
-        // 只剩子代理那一份要补——它走的是 `subagent.rs` 自己的循环，不经过逐请求路径。
+        // 收尾这里**不交任何 token 增量**（`None`）：
+        // - 主循环的每个 loop 已在 `update_provider_usage_snapshot` 里逐请求直写；
+        // - 子代理也在它自己的每一轮里经 `record_request_usage` 直写。
+        // 两边都已入账，收尾再补一次就是**同一笔账记两遍**。
         //
-        // 取消的回合也照交：那部分 token 确实花掉了，旧实现在这里传 `None`
-        // 等于把子代理用量一并丢掉。
+        // 曾经的写法：收尾只补子代理那一份（因为主循环当时已经逐请求累加）。
+        // 子代理改成逐请求直写后，这层手工补偿失去了存在理由——它只能靠
+        // "主循环不算、子代理算"这类不对称约定维持正确，一旦任一侧改变写入时机
+        // 就会静默双计（明细行数与累计值对不上，而不会有任何报错）。
+        //
+        // `session_meta` 仍然照常读回：`save_session` 返回的 `total_*` 是从库里
+        // 读出的**当前累计值**（已含本轮所有请求），随 `JarvisResult` 下发不受影响。
         let memory = self.ctx.memory.lock().await.clone();
 
         let session_meta = if memory.messages.is_empty() && was_cancelled {
             None
         } else {
-            let meta = crate::core::session::save_session(
-                &self.sid,
-                &memory,
-                Some(crate::core::session::TokenUsageDelta {
-                    input: self.req_sub_input_tokens,
-                    output: self.req_sub_output_tokens,
-                    // 子代理的缓存用量未被采集，保持 0（展示层把 0 读作"未报告"）
-                    cache_hit: 0,
-                    cache_miss: 0,
-                }),
-            );
+            let meta = crate::core::session::save_session(&self.sid, &memory, None);
             println!("[JARVIS] 会话 {} 已自动保存", self.sid);
             Some(meta)
         };
@@ -2335,6 +2332,11 @@ impl PipelineState {
         }
 
         // Agent Run 完成（中断与超时续跑都不标记完成，保持可续跑语义）
+        //
+        // 这里传的 `req_*_tokens` 是**含子代理的总量**，只用于 `agent_runs` 的
+        // 回合汇总展示（面板上“这一轮花了多少”）。它**不是账本**：子代理的用量
+        // 已由它自己逐请求写入 `request_usage` 与 `sessions.total_*`，
+        // 若再从这里累加一次，明细与累计就会对不平。
         if !was_cancelled && !was_loop_timeout && interrupted_reason.is_none() {
             agent_runs::complete_run(
                 &self.app,
@@ -2391,10 +2393,12 @@ impl PipelineState {
         self.execution_lease.finish();
 
         println!(
-            "[JARVIS] finalize：status={}，notice={:?}，content 长度={}",
+            "[JARVIS] finalize：status={}，notice={:?}，content 长度={}，子代理用量 in={} out={}（已逐请求入账，仅展示）",
             status,
             self.notice_i18n_key.unwrap_or("<无>"),
-            self.final_answer.chars().count()
+            self.final_answer.chars().count(),
+            self.req_sub_input_tokens,
+            self.req_sub_output_tokens
         );
 
         JarvisResult {
@@ -3111,7 +3115,7 @@ impl PipelineState {
                     // 前缀未被压，本轮起点仍落在原前缀之后
                     self.initial_msg_index = prefix_len;
                 }
-                Ok(()) => {
+                Ok(usage) => {
                     // 压缩成功：前缀已被压成「压缩请求 + 摘要」两条，
                     // 本轮区间原样拼回，本轮起点 = 压缩后的前缀长度。
                     //
@@ -3132,6 +3136,22 @@ impl PipelineState {
                         session.messages.len() - compacted_len,
                         self.initial_msg_index
                     );
+
+                    // 压缩请求本身也真实消耗 token，按 Compact 来源单独入账；
+                    // 记账失败只记日志，不得影响压缩主流程。
+                    let record = crate::core::session::RequestUsageRecord::new(
+                        self.sid.clone(),
+                        crate::core::session::UsageSource::Compact,
+                    )
+                    .run(self.run_id.clone(), Some((self.total_loop_count + 1) as u32))
+                    .model_id(self.cfg.utility_model.clone());
+                    if let Err(err) = crate::core::session::usage::record_llm_usage(
+                        &self.app,
+                        record,
+                        usage.as_ref(),
+                    ) {
+                        eprintln!("[JARVIS] 写入压缩用量明细失败: {}", err);
+                    }
                 }
             }
 
@@ -3526,37 +3546,33 @@ impl PipelineState {
             Err(err) => eprintln!("[JARVIS] 更新上下文 usage 失败: {}", err),
         }
 
-        // 会话累计用量：**每次请求**就落库，而不是攒到回合收尾再交一次。
+        // 请求级入账：走**唯一写入口** `session::usage::record_request_usage`。
         //
-        // 旧实现把整轮增量押在收尾的 `save_session` 里，带来两个毛病：
-        // 1. 概览栏的「累计命中」在整轮跑完前一直停在上一轮的值（长回合里看着像卡死）；
-        // 2. 回合被取消时收尾那步传 `None`，整轮 token 直接丢掉、永久不进累计。
-        // 改成逐请求累加后两者同时消失——请求既然已经发生，用量就已经产生了。
+        // 为什么不再手写增量：一次请求的用量有两个落点，而且必须同时改 ——
+        // `request_usage`（明细，可按来源/模型/run 拆账）与 `sessions.total_*`
+        // （累计，前端概览栏直接读）。让两侧各写一遍，"明细加起来 ≠ 累计值"
+        // 这种账会在没有任何报错的情况下慢慢歪掉，只能靠人肉对数字才发现。
+        // 现在两者共用一个事务、一个事件推送（`record_request_usage` 内部发），
+        // 本函数只管把"本次请求事实上花了多少"如实交给它。
         //
-        // 缓存字段的语义要守住：`None` 表示这家没报告，按 0 累加（不要回退成
-        // `input - hit` 之类的推导，各家 `input_tokens` 口径不同，见 `SessionMeta` 的注释）。
-        let delta = crate::core::session::TokenUsageDelta {
-            input: input_tokens,
-            output: output_tokens,
-            cache_hit: cache_hit_tokens.unwrap_or(0),
-            cache_miss: cache_miss_tokens.unwrap_or(0),
-        };
-        match crate::core::session::accumulate_session_token_usage(&self.sid, delta) {
-            // 推的是**累加后的累计值**，前端整值覆盖写入，不自己再累一遍
-            Ok(Some(totals)) => {
-                let _ = self.app.emit(
-                    "session-usage-updated",
-                    serde_json::json!({
-                        "sessionId": self.sid,
-                        "inputTokens": totals.input,
-                        "outputTokens": totals.output,
-                        "cacheHitTokens": totals.cache_hit,
-                        "cacheMissTokens": totals.cache_miss,
-                    }),
-                );
-            }
-            Ok(None) => {}
-            Err(err) => eprintln!("[JARVIS] 累加会话用量失败: {}", err),
+        // 缓存字段的语义要守住：`None` 表示这家没报告（明细列落 NULL），按 0 累加
+        // （不回退成 `input - hit` 之类的推导，各家 `input_tokens` 口径不同，
+        // 见 `SessionMeta` 的注释）。这里的 `cache_*` 已由 `usage_memory` 的端点能力
+        // 记忆解释过（字段缺失但该端点确认会上报 ⇒ 按 0 命中），推断逻辑本身不动。
+        let record = crate::core::session::RequestUsageRecord::new(
+            self.sid.clone(),
+            crate::core::session::UsageSource::Main,
+        )
+        // loop_index 用 1 基序号，与日志/事件里的 `loopCount` 同一口径
+        .run(self.run_id.clone(), Some((self.total_loop_count + 1) as u32))
+        .model_id(self.model_id.clone())
+        .tokens(input_tokens, output_tokens)
+        .cache(cache_hit_tokens, cache_miss_tokens, cache_source);
+
+        if let Err(err) =
+            crate::core::session::usage::record_request_usage(&self.app, record)
+        {
+            eprintln!("[JARVIS] 写入请求用量明细失败: {}", err);
         }
     }
 

@@ -599,6 +599,9 @@ export function useAgentEvents() {
         cacheHit: usage.cacheHitTokens,
         cacheMiss: usage.cacheMissTokens,
       });
+      // 按来源分组用量：与总量同口径，载荷是**绝对值**，整值覆盖，不自行累加。
+      // 旧载荷没有 breakdown 字段时归一到「全 0 + hasDetail=false」，不报错、不抛异常。
+      session.setSessionUsageBreakdown(usage.sessionId, usage.breakdown);
       // 这一次请求到此结束：结算它的输出速度
       // （概览栏的 tok/s 就是这一跳的读数，不是会话累计）
       session.settleRequestThroughput(usage.sessionId, usage.outputTokens || 0, Date.now());

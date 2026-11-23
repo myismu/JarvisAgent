@@ -118,7 +118,8 @@ pub async fn restore_session(id: String) -> Result<(), String> {
 ///
 /// 这是 `hard_delete_session` 目前**唯一**的用户入口：另一个调用点（自动清理空会话）
 /// 已随归档改造移除 —— 归档不再按"有没有内容"分流。
-/// 另有 [`delete_project`] 连带真删名下会话，效果相同但走各自的 SQL，不复用本函数。
+/// 单条入口之外还有批量入口 [`purge_sessions`]（归档区多选彻底删除），两者落到同一个
+/// `repository::purge_sessions` 上，不再各写一份 SQL。
 #[tauri::command]
 pub async fn purge_session(id: String) -> Result<(), String> {
     session::hard_delete_session(&id)
@@ -197,16 +198,15 @@ pub async fn open_project(path: String) -> Result<session::ProjectMeta, String> 
     // 剥离 \\?\ 前缀后再入库：展示美观，且与用户输入的普通路径一致
     let abs = session::strip_extended_path_prefix(&abs_canonical).to_string();
 
-    // 已存在则直接返回（兼容存量记录：老数据以 canonicalize 原样含 \\?\ 存储）
-    if let Ok(Some(project)) = crate::core::session::repository::get_project_by_path(&abs) {
-        return Ok(project);
-    }
-    if abs != abs_canonical {
-        if let Ok(Some(project)) =
-            crate::core::session::repository::get_project_by_path(&abs_canonical)
-        {
-            return Ok(project);
-        }
+    // 已存在则直接返回（兼容存量记录：老数据以 canonicalize 原样含 \\?\ 存储）。
+    //
+    // 命中的记录可能是**已归档**的项目：归档项目必须在这里「复活」，绝不能改成 INSERT。
+    // 两条硬理由：
+    // 1. `projects.path` 上有 UNIQUE 约束，同一个 path 再插一条会直接失败；
+    // 2. 即使能插进去，新记录的 id 也是新的 —— 历史会话、快照、回收站全都挂在旧 id 上，
+    //    用户看到的会是「刚打开项目，以前的会话全没了」，等同于数据丢失。
+    if let Some(project) = find_project_by_path(&abs, &abs_canonical)? {
+        return revive_project_if_archived(project);
     }
 
     let name = std::path::Path::new(&abs)
@@ -222,18 +222,122 @@ pub async fn list_projects() -> Result<Vec<session::ProjectMeta>, String> {
     crate::core::session::repository::list_projects()
 }
 
-#[tauri::command]
-pub async fn delete_project(id: String) -> Result<(), String> {
+/// 按「普通路径优先、含 `\\?\` 前缀的存量路径兜底」的顺序查项目。
+///
+/// 顺序不能反：同一个目录在库里可能同时存在两种写法（老数据是 canonicalize 原样），
+/// 先查用户刚输入的那一种，命中的才是他真正点开的记录。
+fn find_project_by_path(
+    abs: &str,
+    abs_canonical: &str,
+) -> Result<Option<session::ProjectMeta>, String> {
     use crate::core::session::repository;
-    // 删项目会连带删掉它名下的所有会话（repository 里那条 DELETE FROM sessions），
-    // 所以要**先**把会话 id 抓出来，删完就查不到了；再逐个清回滚侧产物
-    // （快照表没有 FK 级联，不清就是永久孤儿）。
-    let session_ids = repository::list_session_ids_of_project(&id).unwrap_or_default();
-    repository::delete_project(&id)?;
-    for sid in session_ids {
-        crate::core::session::purge_rollback_artifacts(&sid);
+    if let Some(project) = repository::get_project_by_path(abs)? {
+        return Ok(Some(project));
     }
-    Ok(())
+    if abs != abs_canonical {
+        return repository::get_project_by_path(abs_canonical);
+    }
+    Ok(None)
+}
+
+/// 打开项目时，如果该项目处于**归档**状态，先取消归档再返回。
+///
+/// 为什么判断放在命令层、用 `is_project_archived` 单独查一次：
+/// `ProjectMeta` 的列清单（`PROJECT_META_COLUMNS`）是列表 / 单条查询 / 护栏测试
+/// 三方共用的契约，只有「打开项目」这一条路径需要知道归档态，不值得为它加字段。
+fn revive_project_if_archived(
+    project: session::ProjectMeta,
+) -> Result<session::ProjectMeta, String> {
+    use crate::core::session::repository;
+    if !repository::is_project_archived(&project.id)? {
+        return Ok(project);
+    }
+    repository::restore_project(&project.id)?;
+    // 复活后重读一次：返回给前端的 `session_count` 必须是归档之后的真实值
+    // （归档期间名下的会话可能已被恢复或彻底删除过）。
+    repository::get_project(&project.id)?.ok_or_else(|| "项目不存在".to_string())
+}
+
+/// 归档项目（软删）：项目本身 + 名下所有未归档会话，在同一事务里打上同一时间戳。
+///
+/// 这是原 `delete_project`（硬删项目行 + 硬删名下会话 + 清回滚产物）的替代：项目从
+/// 侧边栏消失，但会话记录、消息、快照、回收站全部原地保留，可在「归档」区逐条恢复
+/// （恢复会话时同事务连带复活归档项目）。
+///
+/// 返回值是被归档的会话数，供前端提示「该项目下 N 个会话一并归档」。
+#[tauri::command]
+pub async fn archive_project(
+    id: String,
+    session_manager: tauri::State<'_, SessionManager>,
+    app: tauri::AppHandle,
+) -> Result<u64, String> {
+    // 必须在归档**之前**记下「当前活动会话」与它所属的项目：所有读路径都带
+    // `AND deleted_at IS NULL`，归档一落地 `get_session_meta` 就查不到这条会话，
+    // 也就无从判断它到底属不属于这次被归档的项目。
+    let last_active_id = session::get_last_active_session_id();
+    let last_active_project = last_active_id
+        .as_deref()
+        .and_then(|sid| session::get_session_meta(sid).ok())
+        .and_then(|meta| meta.project_id);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let archived_sessions = session::archive_project(&id, now)?;
+
+    // 项目列表与侧边栏会话列表同时变化（名下会话整体从活跃列表消失）
+    let _ = app.emit("session-updated", ());
+
+    // 当前活动会话正好属于被归档的项目 → 必须切走并释放内存态。
+    // 否则后端仍把它当作"当前会话"：后续发消息会继续往一个已归档会话里写，
+    // 而所有读路径都查不到它（界面停在一个刷不出历史的会话上）。
+    if let (Some(sid), Some(pid)) = (last_active_id, last_active_project) {
+        if pid == id {
+            session_manager.remove(&sid).await;
+            switch_away(&sid, &app).await?;
+        }
+    }
+
+    Ok(archived_sessions)
+}
+
+/// 批量取消归档会话（归档区多选「恢复」的入口）。
+///
+/// 单条 [`restore_session`] 仍保留（侧边栏单条恢复用它）；批量版把 N 次 IPC 合成一次。
+/// 逐条复活 + 连带复活所属归档项目都由 `repository::restore_sessions` 在一个事务里完成；
+/// 单条失败只进 `failed`、不回滚整批 —— 归档区里另一窗口或另一台机器刚恢复/刚删掉的
+/// 失效 id，不应该让用户勾选的其余项全部白做。
+#[tauri::command]
+pub async fn restore_sessions(
+    ids: Vec<String>,
+    app: tauri::AppHandle,
+) -> Result<session::BatchOpResult, String> {
+    let result = session::restore_sessions(&ids)?;
+    // 活跃列表 / 归档列表 / 项目列表都可能变化（会话复活会连带复活归档项目）
+    let _ = app.emit("session-updated", ());
+    Ok(result)
+}
+
+/// 批量**彻底删除**归档会话（不可恢复）。
+///
+/// 回滚侧产物（快照表 / 回收站目录）的清理由 `repository::purge_sessions` 在事务提交后负责：
+/// 数据库行与文件系统没法放进同一个原子操作里，理由见该函数的文档注释。
+/// 活跃（未归档）会话会被拒绝、进 `failed` —— 彻底删除不可撤销，不能因为前端传错 id 就清掉在用会话。
+#[tauri::command]
+pub async fn purge_sessions(
+    ids: Vec<String>,
+    app: tauri::AppHandle,
+) -> Result<session::BatchOpResult, String> {
+    let result = session::purge_sessions(&ids)?;
+    let _ = app.emit("session-updated", ());
+    Ok(result)
+}
+
+/// 已归档会话总数（归档页角标）。变化由 `session-updated` 事件驱动重读，不必轮询。
+#[tauri::command]
+pub async fn count_deleted_sessions() -> Result<usize, String> {
+    session::count_deleted_sessions()
 }
 
 /// 重命名项目。
@@ -290,7 +394,7 @@ pub async fn switch_session(
 /// 当前会话"的后端路径都必须对齐一次**，否则后续请求会继续用上一个会话/全局默认的预设。
 ///
 /// 已覆盖的路径：启动恢复会话、点击切会话（本文件 `switch_session`，前端不再双写）、
-/// 删除会话后自动回落（本文件 `switch_away_and_delete_session`）。
+/// 归档会话后自动回落（本文件 `switch_away`）。
 fn align_active_profile_to_session(
     app: &tauri::AppHandle,
     config_state: &tauri::State<'_, crate::infra::config::config::ConfigState>,
@@ -323,23 +427,17 @@ fn align_active_profile_to_session(
     let _ = app.emit("config-updated", ());
 }
 
-/// 归档会话后自动切换到下一个可用会话（若无则创建新会话）。
+/// 归档会话后自动切换到下一个可用会话（若无则清空当前会话指针）。
 ///
-/// **这是所有归档路径的收口**（用户点归档 / 回滚后会话变空 / 删项目）。
+/// **这是单条会话归档路径的收口**（用户点归档 / 回滚后会话变空）。项目归档（
+/// [`archive_project`]）已经把名下会话在同一个事务里整体打上标记，不再走本函数，
+/// 但"切走"那一段完全复用 [`switch_away`]。
 /// 函数名里的 `delete`、"删除"时代的命名一律保留不动 —— 改名要同时动 tauri 命令名、
 /// 前端 invoke 与 DB 列，成本远大于收益；语义以本注释为准。
 pub async fn switch_away_and_delete_session(
     deleted_session_id: &str,
     app: &tauri::AppHandle,
 ) -> Result<(), String> {
-    // 找到第一个非当前的会话作为 fallback
-    let fallback = session::list_sessions()
-        .into_iter()
-        .find(|session| session.id != deleted_session_id);
-    // 删除前先记下 fallback 的预设：删除后这个 meta 就取不到了
-    let fallback_profile_id = fallback.as_ref().and_then(|m| m.profile_id.clone());
-    let fallback_id = fallback.as_ref().map(|m| m.id.clone());
-
     // 归档：一律只打 `deleted_at` 标记，**不再按有没有内容分流**。
     //
     // 原先空会话走硬删除（没有内容可挽留，留着只会让列表堆噪音）—— 那是"删除"语义下
@@ -354,6 +452,32 @@ pub async fn switch_away_and_delete_session(
     if let Some(manager) = app.try_state::<SessionManager>() {
         manager.remove(deleted_session_id).await;
     }
+
+    // 归档到此结束；剩下是纯粹的"切走"，与归档动作无关，交给 switch_away。
+    switch_away(deleted_session_id, app).await
+}
+
+/// 把一个**已经不可用**的会话从"当前会话"位置上摘下来：挑 fallback、对齐激活预设、
+/// 清 `last_active_session_id`、广播事件。
+///
+/// ## 为什么从 `switch_away_and_delete_session` 里抽出来
+/// "归档"与"切走"是两件正交的事，只是一直被写在一个函数里：
+/// - 单条归档（[`delete_session`]）需要先归档、再切走；
+/// - 项目归档（[`archive_project`]）在同一个事务里已经把项目名下所有会话批量打上
+///   `deleted_at`，此时再走一遍"删除"既不成立（`get_session_meta` 已经查不到，
+///   因为所有读路径都带 `AND deleted_at IS NULL`）、又毫无意义。
+///
+/// 抽出来之后两条路径共用**同一套**回落逻辑（选 fallback / 对齐预设 / 清指针 / 广播），
+/// 不会因为复制一份而慢慢走偏（比如一条改了 fallback 的选择口径、另一条忘了对齐预设）。
+/// 调用方负责先完成归档与内存态释放。
+pub async fn switch_away(deleted_session_id: &str, app: &tauri::AppHandle) -> Result<(), String> {
+    // 找到第一个非当前的会话作为 fallback
+    let fallback = session::list_sessions()
+        .into_iter()
+        .find(|session| session.id != deleted_session_id);
+    // 删除前先记下 fallback 的预设：删除后这个 meta 就取不到了
+    let fallback_profile_id = fallback.as_ref().and_then(|m| m.profile_id.clone());
+    let fallback_id = fallback.as_ref().map(|m| m.id.clone());
 
     // 对齐激活预设，否则后端会继续用**刚被删掉的会话**的预设
     if let Some(state) = app.try_state::<crate::infra::config::config::ConfigState>() {
@@ -478,6 +602,9 @@ pub async fn auto_name_session(
         30,
     )
     .await
+    // 非流式调用现在返回 `LlmCompletion`（正文 + usage）。标题生成不记账，
+    // 这里只取正文，失败仍回退空串 —— 行为与改造前完全一致。
+    .map(|completion| completion.text)
     .unwrap_or_default();
 
     let title = title
@@ -909,6 +1036,19 @@ pub async fn get_session_context_snapshot(
         snapshot.message_count = memory.messages.len();
     }
     Ok(Some(snapshot))
+}
+
+/// 读取会话的用量账本（按来源分组的请求明细汇总，v28）。
+///
+/// 与 `SessionMeta::total_*` 的分工：后者是四个累计总数（概览栏用），
+/// 这里能回答“这些 token 是谁烧的、有几成请求厂商没报缓存”。
+/// 无明细的历史会话返回 `hasDetail = false`（数字全 0，不可当真实用量展示），
+/// 此时前端应回退到 `total_*`。
+#[tauri::command]
+pub async fn get_session_usage_breakdown(
+    session_id: String,
+) -> Result<session::UsageBreakdown, String> {
+    session::get_session_usage_breakdown(&session_id)
 }
 
 #[tauri::command]

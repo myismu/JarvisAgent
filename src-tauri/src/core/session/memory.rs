@@ -8,6 +8,7 @@
 
 use crate::core::agent::prompts::*;
 use crate::infra::llm::api_format::ApiFormat;
+use crate::infra::llm::usage::LlmUsage;
 use crate::infra::types::error::MemoryError;
 use crate::infra::types::models::*;
 use reqwest::header::CONTENT_TYPE;
@@ -131,6 +132,10 @@ pub fn append_transcript(session_id: &str, text: &str) -> Result<String, MemoryE
 
 /// 对消息列表执行 LLM 摘要压缩（会话无关，不保存转录，供子 Agent 等场景使用）
 ///
+/// 返回值是本次摘要请求的用量（`None` = 厂商未上报），由调用方记账：
+/// 主 Agent 自动压缩、子 Agent 压缩、手动压缩三处的 session/run 上下文不同，
+/// 只有调用方知道该把账记到哪。本函数自己**不写明细**，只把读数带出去。
+///
 /// ⚠️ **本函数会压掉传进来的全部消息**（2026-09-17 起不再保留尾部）：
 /// 调用方必须先把「本轮任务区间」从 `memory` 里摘出去，只把**已完成轮次的前缀**传进来。
 /// 主 Agent 的做法见 `pipeline::compact_if_needed`（按 `initial_msg_index` 切分后
@@ -142,7 +147,7 @@ pub async fn compact_messages(
     base_url: &str,
     model_id: &str,
     api_format: ApiFormat,
-) -> Result<(), MemoryError> {
+) -> Result<Option<LlmUsage>, MemoryError> {
     // 1. 剔除"没有资格进摘要输入"的消息。
     //
     // 判据直接取 `MessageSource::in_llm_context()`，不再单独维护一份字符串名单：
@@ -187,7 +192,7 @@ pub async fn compact_messages(
     //
     // ⚠️ 调用方必须先把本轮区间摘出去，否则会把正在执行的任务也压掉。
 
-    let summary =
+    let (summary, usage) =
         call_summarize_llm(messages, client, api_key, base_url, model_id, api_format).await?;
 
     messages.clear();
@@ -207,10 +212,14 @@ pub async fn compact_messages(
     sources.push(MessageSource::Compact);
     kinds.push(None);
 
-    Ok(())
+    Ok(usage)
 }
 
-/// LLM 摘要核心逻辑：序列化消息 → 构建请求 → 调用 LLM → 返回摘要文本
+/// LLM 摘要核心逻辑：序列化消息 → 构建请求 → 调用 LLM → 返回摘要文本与本次用量
+///
+/// 第二个返回值是本次请求的 `usage` 快照（`None` = 厂商未上报）。
+/// 摘要正文与用量一起返回，是因为两者只能在这一层同时取到：响应体解析完之后，
+/// 上层再想拿用量就得重走一遍响应，不值得。
 async fn call_summarize_llm(
     messages: &[Message],
     client: &reqwest::Client,
@@ -218,7 +227,7 @@ async fn call_summarize_llm(
     base_url: &str,
     model_id: &str,
     api_format: ApiFormat,
-) -> Result<String, MemoryError> {
+) -> Result<(String, Option<LlmUsage>), MemoryError> {
     // 摘要只需要真实对话：动态上下文（工作目录 / repo map / 全局记忆）整段丢掉，别白烧 token
     let messages = crate::infra::llm::adapters::strip_context_blocks(messages);
 
@@ -333,6 +342,16 @@ async fn call_summarize_llm(
         MemoryError::CompactionFailed(format!("compact response parse failed: {}", e))
     })?;
 
+    // 用量从**已解析的响应 JSON** 取（两个协议都在顶层 `usage`）。
+    // 字段识别与口径归一全部复用 `infra::llm::usage`（Anthropic 家族 input = 命中 + 未命中），
+    // `cacheUsageStyle` 走注册表，与流式链路同一个覆盖开关。
+    // 未上报时是 None —— 不伪造 0，调用方据此跳过记账。
+    let usage = crate::infra::llm::usage::extract_llm_usage(
+        body.get("usage"),
+        api_format,
+        crate::infra::llm::registry::cache_usage_style_for(model_id),
+    );
+
     let mut text = String::new();
     if is_openai {
         if let Some(choices) = body["choices"].as_array() {
@@ -380,10 +399,14 @@ async fn call_summarize_llm(
         );
     }
 
-    Ok(text)
+    Ok((text, usage))
 }
 
 /// 自动压缩：保存转录 → 调用 LLM 生成摘要 → 替换会话历史
+///
+/// 返回值同样把本次摘要请求的用量带出去（`None` = 厂商未上报），由调用方写明细：
+/// 主 Agent 要带上 `run_id` / `loop_index`，子 Agent 要带自己的轮次，
+/// 这些上下文这个函数都没有，也不该知道。
 pub async fn auto_compact(
     session_id: &str,
     memory: &mut SessionMemory,
@@ -392,7 +415,7 @@ pub async fn auto_compact(
     base_url: &str,
     model_id: &str,
     api_format: ApiFormat,
-) -> Result<(), MemoryError> {
+) -> Result<Option<LlmUsage>, MemoryError> {
     // 保存转录
     let mut json_content = String::new();
     for msg in memory.messages.iter() {
@@ -405,7 +428,7 @@ pub async fn auto_compact(
     println!("[auto_compact] Transcript saved to {}", transcript_path);
 
     // 委托核心压缩逻辑（内部按 `in_llm_context` 剔除不进摘要的消息）
-    compact_messages(memory, client, api_key, base_url, model_id, api_format).await?;
+    let usage = compact_messages(memory, client, api_key, base_url, model_id, api_format).await?;
 
     // 从 DB 中删除刚才被剔除的消息行。
     // 名单与上一步的剔除判据**同源**（都来自 `!in_llm_context()`），
@@ -458,7 +481,7 @@ pub async fn auto_compact(
 
     memory.message_ids = message_ids;
 
-    Ok(())
+    Ok(usage)
 }
 
 /// 独立摘要接口：对任意 prompt 生成摘要文本（不替换消息）
@@ -609,7 +632,15 @@ use crate::infra::config::config::AgentConfig;
 /// 调 LLM 重写全局记忆，返回重写后的完整内容。
 ///
 /// 不落盘、不发事件：由调用方决定何时写入（并做乐观并发校验）。
+///
+/// ## 记账
+/// 本函数同时负责把这次请求的用量写进 `request_usage`（`source = memory_curator`）。
+/// 为什么记在这里而不是调用方：自动整理（[`run_memory_curator`]）与
+/// `ConsolidateMemory` 工具两条路径都从这里过，而**两边的 session_id 与模型都在手边**；
+/// 收在一处就同时覆盖两条路径，不会再漏掉一边。
+/// 厂商未上报时 `usage` 为 `None`，按口径不写零行；记账失败只记日志，不影响整理结果。
 pub async fn rewrite_global_memory(
+    app: &tauri::AppHandle,
     session_id: &str,
     config: &AgentConfig,
     system_prompt: &str,
@@ -699,6 +730,23 @@ pub async fn rewrite_global_memory(
 
     let body: serde_json::Value = req.json(&req_json).send().await.ok()?.json().await.ok()?;
 
+    // 用量从已解析的响应体取（两个协议都在顶层 `usage`），口径复用 `infra::llm::usage`。
+    // 先记账再取正文：即使厂商回了空正文（下面返回 None），这次 token 也是真实花掉的。
+    let usage = crate::infra::llm::usage::extract_llm_usage(
+        body.get("usage"),
+        api_format,
+        crate::infra::llm::registry::cache_usage_style_for(&config.utility_model),
+    );
+    let record = crate::core::session::RequestUsageRecord::new(
+        session_id.to_string(),
+        crate::core::session::UsageSource::MemoryCurator,
+    )
+    // 记忆整理固定用 utility 模型（见上方 request_body.model）
+    .model_id(config.utility_model.clone());
+    if let Err(err) = crate::core::session::usage::record_llm_usage(app, record, usage.as_ref()) {
+        eprintln!("[MEMORY] 写入记忆整理用量明细失败: {}", err);
+    }
+
     let raw_text = if is_openai {
         body["choices"]
             .as_array()
@@ -783,6 +831,7 @@ pub async fn run_memory_curator(app: tauri::AppHandle, config: AgentConfig, sess
     );
 
     match rewrite_global_memory(
+        &app,
         &session_id,
         &config,
         MEMORY_CURATOR_SYSTEM,

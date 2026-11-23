@@ -1,7 +1,16 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
-import type { AgentCurrentTurn, AgentApprovalMode, AgentUserMode } from "../types";
+import type {
+  AgentCurrentTurn,
+  AgentApprovalMode,
+  AgentUserMode,
+  SessionUsageBreakdown,
+} from "../types";
 import { createEmptyAgentCurrentTurn, resetAgentCurrentTurn } from "../utils/agentTurnState";
+import {
+  createEmptySessionUsageBreakdown,
+  normalizeSessionUsageBreakdown,
+} from "../utils/usageBreakdown";
 
 interface LatestCheckpoint {
   id: string;
@@ -96,6 +105,17 @@ export interface SessionViewState {
   sessionCacheHitTokens: number;
   sessionCacheMissTokens: number;
   /**
+   * 会话用量的**按来源分组**快照（主 / 子 Agent / 系统内部 / 来源未知）。
+   *
+   * 与上面四个扁平累计值并存，二者互不覆盖：
+   * - 扁平值：总量读数（概览栏的累计命中、输入输出）
+   * - 本字段：拆分视图（谁把 token 花掉了）
+   *
+   * `hasDetail = false` 表示后端没给明细（纯占位），
+   * 界面此时不能把 0 当成真实分布。
+   */
+  sessionUsageBreakdown: SessionUsageBreakdown;
+  /**
    * 本次请求的首个流式片段到达时刻（毫秒）。null = 当前没有进行中的吞吐采样。
    *
    * 起点取「首个片段」而不是 loop 开始：后端在**每次请求**拿到 usage 就推一次
@@ -177,6 +197,7 @@ function createEmptySessionView(hydration: SessionHydration = 'idle'): SessionVi
     sessionOutputTokens: 0,
     sessionCacheHitTokens: 0,
     sessionCacheMissTokens: 0,
+    sessionUsageBreakdown: createEmptySessionUsageBreakdown(),
     requestFirstDeltaAt: null,
     requestOutputTokensBase: 0,
     lastRequestTokPerSec: null,
@@ -391,6 +412,24 @@ export const useSessionStore = defineStore("session", () => {
   }
 
   /**
+   * 写入会话用量的按来源分组快照。
+   *
+   * **整值覆盖，不自行累加**：入参是后端算好的绝对快照（事件载荷或 IPC 回执），
+   * 累加会让数字翻倍。缺字段 / `null` 一律归一化成 0 并置 `hasDetail = false`。
+   *
+   * 故意与 `setSessionUsageTotals` 分开：回合结束时的总量回写只该动那四个扁平值，
+   * 若把分组也一并写一遍，会把「上一个请求推来的明细」冲成空。
+   * 需要「后端没给明细就不覆盖」的调用方，请先判断字段存在再调用本函数。
+   */
+  function setSessionUsageBreakdown(
+    sessionId: string | null | undefined,
+    breakdown: SessionUsageBreakdown | null | undefined,
+  ) {
+    const view = getSessionView(sessionId);
+    view.sessionUsageBreakdown = normalizeSessionUsageBreakdown(breakdown);
+  }
+
+  /**
    * 记下「本次请求的首个流式片段到达时刻」。
    *
    * 只在还没有起点时写入 —— 一个请求会推来成百上千个片段，只有第一个是起点；
@@ -494,6 +533,7 @@ export const useSessionStore = defineStore("session", () => {
     prependSessionMessages,
     setSessionPaging,
     setSessionUsageTotals,
+    setSessionUsageBreakdown,
     markRequestFirstDelta,
     settleRequestThroughput,
     noteLoopStep,
