@@ -49,7 +49,31 @@ pub const CACHE_HISTORY_MAX_POINTS: usize = 12;
 /// ② 手动压缩低于几条直接拒绝（**保留** —— 就是本常量现在的唯一含义）。
 /// 前端 `src/utils/contextUsage.ts` 有一份同值镜像，改一侧必须同步另一侧。
 pub const COMPACT_MIN_MESSAGES: usize = 6;
-pub const SUBAGENT_TIMEOUT_SECS: u64 = 480;
+
+/// 子代理**无进展**超时（秒）：连续这么久收不到任何"链路仍在流动"的信号
+/// （SSE 帧 / 工具返回）就判定失联并终止。
+///
+/// 语义边界（重要）：
+/// - **只管"等模型 / 流式静默"**，不管工具执行。工具执行期间本来就没有 SSE 帧，
+///   一条 600 秒的 `cargo build` 是正常行为；若让本阈值笼罩工具阶段，
+///   等于把过去"整体超时 480 秒一刀切"的误杀原样搬到新机制里。
+///   工具阶段由工具自身 timeout（≤ 600 秒）兜底，见
+///   `core::tools::agent_tools::subagent_budget::judge_phase_aware`。
+/// - 取 180 而非 120：给工具间隙（tool result 回送、下一请求建连）和模型首帧
+///   （pro 档推理更久）留余量。
+///
+/// 修改本值前请先读 `subagent_budget.rs` 顶部的设计说明，不要把它和
+/// 主 Agent 的 `STREAM_IDLE_TIMEOUT_SECS`（120，单个 HTTP 流的静默）混为一谈。
+pub const SUBAGENT_IDLE_TIMEOUT_SECS: u64 = 180;
+
+/// 子代理**硬上限**（秒）：从启动到现在的总时长上限，只用于防真死循环
+/// （模型反复调工具直到天荒地老）。正常任务永远碰不到它。
+///
+/// 与 `SUBAGENT_IDLE_TIMEOUT_SECS` 的关系：两者是**不同形态**的超时，
+/// 绝不是"一个大一个小"的重复常量——idle 看"多久没动静"，hard 看"总共跑了多久"。
+/// 历史上只有 `SUBAGENT_TIMEOUT_SECS = 480` 一个值同时充当两者，结果慢命令被误杀、
+/// 真空转却要等满 480 秒，故于 2026-11-23 拆开。
+pub const SUBAGENT_HARD_TIMEOUT_SECS: u64 = 3600;
 
 // --- HTTP 超时（分层，覆盖不同的沉默形态，详见 doc/流式请求超时与中断落库机制方案.md 第 11 节）---
 

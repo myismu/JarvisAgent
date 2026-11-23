@@ -10,7 +10,15 @@ use tauri::Emitter;
 
 use crate::core::orchestration::tasks::{TaskManager, TaskUpdateParams};
 use crate::core::tools::{run_subagent, IMPLEMENTATION_AGENT_ROLE};
+use crate::infra::types::constants::SUBAGENT_HARD_TIMEOUT_SECS;
 use crate::infra::types::models::TaskStatus;
+
+/// 子代理超时结果的**结构化前缀标记**。
+///
+/// 由 `subagent.rs` 内部的预算判据（无进展 / 硬上限）产出，调度器只负责识别它，
+/// 不做任何超时判断，也不拼装超时文案——文案属于判定层，判定层才知道
+/// 「是静默超时还是总时长超限、静默了多久」。
+const SUBAGENT_TIMEOUT_MARKER: &str = "【子代理超时】";
 
 pub struct TaskScheduler;
 
@@ -146,7 +154,9 @@ impl TaskScheduler {
                 _total_in += si;
                 total_out += so;
 
-                let status_msg = if answer.contains("任务超时") {
+                // 前缀匹配而非 contains：这是子代理内部产出的结构化标记，
+                // 约定出现在回答开头；用前缀可避免正文里恰好提到该词时被误判。
+                let status_msg = if answer.starts_with(SUBAGENT_TIMEOUT_MARKER) {
                     failed_count += 1;
                     "超时"
                 } else if answer.contains("子代理已取消") {
@@ -341,8 +351,23 @@ fn spawn_into_set(
     set.spawn(async move {
         println!("[SCHEDULER] 启动子Agent: Task #{} - {}", tid, tsubject);
         let label = format!("Task #{}: {}", tid, tsubject);
+
+        // 外层兜底超时：**只防未预期挂死，不承担判定职责**
+        //
+        // 超时值 = 子代理内部硬上限 + 60 秒余量。超时的判定权已经交给 subagent.rs
+        // 内部的预算判据：`SUBAGENT_IDLE_TIMEOUT_SECS`（无进展 180s，只管等模型的静默）、
+        // `SUBAGENT_HARD_TIMEOUT_SECS`（硬上限 3600s，防真死循环），且工具执行阶段
+        // 不参与 idle 判定。内部判据命中时会带着真实用量返回，并在回答开头打上
+        // `【子代理超时】` 前缀。
+        //
+        // 因此本层在正常情况下永远不会触发，它兜的是一种极端情况：run_subagent
+        // 既不返回、内部判据也没能收口（例如卡在某个不走预算判据的 await 上）。
+        // 本层**不产出任何面向用户的文案**——判定与文案全部由 subagent.rs 内部负责，
+        // 这里命中只意味着"这个 future 挂了"，仅此而已。
+        // +60 秒是留给内部判据收尾（失败落库、监控面板收口）的余量，不是第二个判据。
+        let fallback_secs = SUBAGENT_HARD_TIMEOUT_SECS + 60;
         let result = tokio::time::timeout(
-            std::time::Duration::from_secs(300),
+            std::time::Duration::from_secs(fallback_secs),
             run_subagent(
                 app_clone,
                 prompt,
@@ -356,10 +381,31 @@ fn spawn_into_set(
             ),
         )
         .await;
-        let (answer, si, so) = match result {
-            Ok(r) => r,
-            Err(_) => (format!("任务超时（超过 5 分钟）"), 0, 0),
-        };
-        (tid, answer, si, so)
+
+        match result {
+            // 子代理自己收口：回答可能是正常结果，也可能是它内部判定的超时标记。
+            // 无论哪种，tokens 一律原样透传——它们是子代理真实累计的用量，
+            // 调度器不得改写，更不得为了方便展示而置 0。
+            Ok((answer, si, so)) => (tid, answer, si, so),
+            // 兜底命中：future 被丢弃，子代理一个轮次都没能交回来，
+            // 因此**没有**任何真实用量可透传（这里的 0 表示"未知"，不是"用了 0"）。
+            // 不再构造"超过 N 分钟"这类面向用户的超时文案，只回一个结构化失败标记，
+            // 避免这次挂死被下游当成"完成"计入成功数。
+            Err(_) => {
+                println!(
+                    "[SCHEDULER] Task #{} 命中外层兜底超时（{} 秒）：子代理未返回，内部判据未收口",
+                    tid, fallback_secs
+                );
+                (
+                    tid,
+                    format!(
+                        "{}调度器外层兜底命中：子代理未在 {} 秒内返回（未预期挂死）",
+                        SUBAGENT_TIMEOUT_MARKER, fallback_secs
+                    ),
+                    0,
+                    0,
+                )
+            }
+        }
     });
 }

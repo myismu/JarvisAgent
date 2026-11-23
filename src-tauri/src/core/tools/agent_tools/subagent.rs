@@ -22,6 +22,9 @@ use tauri::{Emitter, Manager};
 
 use super::super::framework::agent_registry::{normalize_agent_role, AgentRegistry};
 use super::super::handle_tool_call_inner_owned;
+use super::subagent_budget::{
+    activity_callback, BudgetPhase, BudgetVerdict, SharedSubagentBudget, SubagentBudget,
+};
 use crate::core::agent::prompts::get_subagent_system_prompt;
 use crate::core::agent::{process_stream, StreamConfig};
 use crate::core::orchestration::subagents::{SubAgentMonitor, SubAgentPhase};
@@ -34,6 +37,7 @@ use crate::infra::llm::adapters::parse_streamed_tool_input;
 use crate::infra::state::state::{SessionManager, ToolDedupeCacheEntry};
 use crate::infra::types::models::{AnthropicRequest, Content, ContentBlock, Message};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 /// 提取工具调用的关键输入摘要（规则提取，不调用 LLM）
 fn summarize_tool_input(name: &str, input: &serde_json::Value) -> String {
@@ -449,6 +453,74 @@ fn record_subagent_turn_usage(
     }
 }
 
+/// 记录一次「有进展」：推进预算的 idle 锚点。
+///
+/// 这是**手工**推进预算的唯一入口。调用点必须是真实的进展证据（一轮开始、收到响应头、
+/// 流式结束、工具批次起止），不要拿心跳定时器来调它 —— 那样 idle 判据等于失效，
+/// 真卡死的子代理会一直判 Running，超时机制退化成"没有机制"。
+///
+/// 锁只在这里持有一瞬（一次字段赋值），且**不跨 await**（本函数非 async）。
+fn budget_touch(budget: &SharedSubagentBudget) {
+    let mut guard = budget.lock().expect("子代理预算锁中毒：超时判据已不可信");
+    guard.touch();
+}
+
+/// 按指定阶段检查预算；命中终止判据时收尾，并返回可直接 `return` 的结果。
+///
+/// ## 返回什么
+/// `None` = 未越线，继续跑；`Some((文案, 累计输入, 累计输出))` = 已越线，调用方直接 `return`。
+/// 两条返回路径的动作完全一致：写监控失败态 + 返回累计 token，所以集中在这里，
+/// 避免在每个检查点重复三行 `fail_run` 并各自写一份略有差异的文案。
+///
+/// ## 为什么 token 只读不写
+/// 各返回路径**只读** `sub_input_tokens / sub_output_tokens`（见 `run_subagent` 里
+/// 「请求级入账」那段注释）：本次请求的 usage 已由 `record_subagent_turn_usage`
+/// 直写进明细与累计，这里再交一次就是双计。传 0 也不行 —— 监控面板那一行会显示
+/// "这个任务没花钱"，与账本对不上。
+///
+/// ## 阶段参数
+/// - [`BudgetPhase::AwaitingModel`]：等模型 / 流式期间，idle 判据生效。
+/// - [`BudgetPhase::RunningTool`]：工具执行期间，**只查硬上限**。
+async fn check_subagent_budget(
+    app: &tauri::AppHandle,
+    run_id: &str,
+    budget: &SharedSubagentBudget,
+    phase: BudgetPhase,
+    last_progress: &str,
+    sub_input_tokens: u64,
+    sub_output_tokens: u64,
+) -> Option<(String, u64, u64)> {
+    // 先把判据拷出来、放掉锁：下面的 fail_run 里全是 await，绝不能跨 await 持锁。
+    let verdict = {
+        let guard = budget.lock().expect("子代理预算锁中毒：超时判据已不可信");
+        guard.verdict_in_phase(phase)
+    };
+
+    let msg = match verdict {
+        BudgetVerdict::Running => return None,
+        // idle：链路静默太久，通常意味着流已死。带上"最后进展在哪一步"，
+        // 否则事后只看得到"卡了 200 秒"，无法判断卡在等模型还是卡在某一步。
+        BudgetVerdict::IdleTimeout { idle_secs } => format!(
+            "【子代理超时】连续 {} 秒无进展（最后进展：{}）",
+            idle_secs, last_progress
+        ),
+        // hard：总时长到顶，通常是循环/反复重试。与"这一段时间没动静"是两件事。
+        BudgetVerdict::HardTimeout { elapsed_secs } => {
+            format!("【子代理超时】已运行 {} 秒，达到硬上限", elapsed_secs)
+        }
+    };
+
+    SubAgentMonitor::fail_run(
+        app,
+        run_id,
+        msg.clone(),
+        sub_input_tokens,
+        sub_output_tokens,
+    )
+    .await;
+    Some((msg, sub_input_tokens, sub_output_tokens))
+}
+
 /// 子代理执行引擎：独立 Agent Loop，支持只读/读写模式，返回 (结果, 输入token, 输出token)
 ///
 /// ## 返回的 token 数是什么
@@ -533,6 +605,21 @@ pub async fn run_subagent(
         SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
         return ("子代理已取消。".to_string(), 0, 0);
     }
+
+    // 子代理执行预算：把「无进展」与「整体上限」拆成两条彼此独立的判据
+    // （idle 180s / hard 3600s，见 `infra::types::constants` 与本模块 `subagent_budget`
+    // 顶部的设计说明）。历史上只有一个 480 秒同时充当两者：慢命令被误杀，
+    // 真空转却要等满 480 秒。
+    //
+    // 为什么是共享形态（`Arc<Mutex<_>>`）：`process_stream` 的 `on_frame` 回调
+    // 每收到一个 SSE 帧就要推进「最近进展」，主循环同时要读判据 —— 两个访问者
+    // 必须看到同一份状态。锁在两侧各持有一瞬（一次读写），且都不跨 await。
+    let budget: SharedSubagentBudget = Arc::new(Mutex::new(SubagentBudget::from_defaults()));
+    // 判据只给出秒数，人看日志还需要「卡在哪一步」：这里记录最后一次进展的文字描述。
+    // 只由下面四处手工 touch 更新（帧级 touch 在流内部，无法顺带改这个字符串）。
+    // 首个值在循环开头（第一处 touch）写入，故此处不设初值 —— 设了也永远读不到，
+    // 只会招来一条 "value assigned is never read" 警告，让真正的告警淹在噪音里。
+    let mut last_progress: String;
 
     // 从 ConfigState 读取配置
     let app_cfg = app.state::<ConfigState>().0.lock().await.clone();
@@ -691,6 +778,24 @@ pub async fn run_subagent(
     };
 
     while loop_count < max_loops {
+        // 预算进展信号 1/4：新的一轮开始（上一轮的工具结果已落地，链路仍在正常推进）。
+        // 后面就要发请求等模型了，所以用 `AwaitingModel` 判：这一段必须有 idle 兜底。
+        budget_touch(&budget);
+        last_progress = format!("第 {} 轮开始", loop_count + 1);
+        if let Some(stop) = check_subagent_budget(
+            &app,
+            &run_id,
+            &budget,
+            BudgetPhase::AwaitingModel,
+            &last_progress,
+            sub_input_tokens,
+            sub_output_tokens,
+        )
+        .await
+        {
+            return stop;
+        }
+
         // 空转保护：连续多轮工具调用全部失败 → 结构性受阻，提前收口。
         // 汇报里必须写清"为什么停"，并要求不要重复委派同一任务 —— 否则主 Agent 会再派一个
         // 新子代理从头试一遍（这正是那次空转被放大成好几分钟的原因）。
@@ -937,6 +1042,23 @@ pub async fn run_subagent(
         )
         .await;
 
+        // 预算进展信号 2/4：响应头已到达 —— 请求确实被厂商接住了（不是静默排队）。
+        budget_touch(&budget);
+        last_progress = format!("第 {} 轮已收到响应头", loop_count + 1);
+        if let Some(stop) = check_subagent_budget(
+            &app,
+            &run_id,
+            &budget,
+            BudgetPhase::AwaitingModel,
+            &last_progress,
+            sub_input_tokens,
+            sub_output_tokens,
+        )
+        .await
+        {
+            return stop;
+        }
+
         let mut stream = response.bytes_stream().eventsource();
         let sub_cancel_token = SubAgentMonitor::cancel_token(&app, &run_id).await;
         let default_cancel = tokio_util::sync::CancellationToken::new();
@@ -953,8 +1075,12 @@ pub async fn run_subagent(
             StreamConfig {
                 is_subagent: true,
                 cache_usage_style: crate::infra::llm::registry::cache_usage_style_for(&model_id),
-                // 子 Agent 有自己的监控面板与阶段提示，不需要主聊天流的等待提示
-                on_frame: None,
+                // 子 Agent 有自己的监控面板与阶段提示，不需要主聊天流的「等待提示」；
+                // 但 `on_frame` 的**另一个用途**这里必须用上：它是逐帧触发的真实进展信号
+                // （见 `core::agent::stream` 里调用点位于解析 payload 之前），预算判据靠它
+                // 区分「流还在吐数据」与「流已静默」。不接的话，一次长时间的流式生成
+                // （深度思考 + 长文本）期间没有任何手工 touch，会被 180 秒 idle 判据误判成失联。
+                on_frame: Some(activity_callback(budget.clone())),
                 model_id: Some(model_id.clone()),
                 // 子 Agent 的轮次不进 `agent_run_events`（那是主 Agent 崩溃重建的数据源），
                 // 故这里恒关——开了只会往一张不参与重建的表里写无关行。
@@ -962,6 +1088,13 @@ pub async fn run_subagent(
             },
         )
         .await;
+
+        // 预算进展信号 3/4：本轮流式响应已结束（工具参数也一并收齐）。
+        // 位置与下面那段「请求级入账」注释一致：先 touch，再入账。
+        // 判据本身放在本轮 token 累加完成后才查（见下方），这样超时返回里带的是
+        // 含本轮在内的**完整**用量，与本轮已入账的金额完全对得上。
+        budget_touch(&budget);
+        last_progress = format!("第 {} 轮流式响应结束", loop_count + 1);
 
         // ── 请求级入账（本 loop 一拿到 usage 就写）──
         //
@@ -1007,6 +1140,23 @@ pub async fn run_subagent(
         let request_input_tokens = stream_result.input_tokens;
         sub_input_tokens += stream_result.input_tokens;
         sub_output_tokens += stream_result.output_tokens;
+
+        // 预算检查：紧跟在累计之后（而不是紧跟 touch 之后），保证超时收尾时交出去的
+        // `sub_*` 已含本轮 usage —— 若在入账前判，返回的用量会少一轮，
+        // 而那一轮的账已经写进去了，两边对不上。
+        if let Some(stop) = check_subagent_budget(
+            &app,
+            &run_id,
+            &budget,
+            BudgetPhase::AwaitingModel,
+            &last_progress,
+            sub_input_tokens,
+            sub_output_tokens,
+        )
+        .await
+        {
+            return stop;
+        }
 
         let mut current_blocks = stream_result.blocks;
         let tool_input_buffers = stream_result.tool_input_buffers;
@@ -1248,6 +1398,32 @@ pub async fn run_subagent(
         // 600 秒），用户点停止要等整批工具跑完才轮到下一次取消检查。
         let mut all_results = immediate_results;
 
+        // 预算进展信号 4/4（起）：进入工具执行阶段。
+        //
+        // 这里的阶段必须切到 `RunningTool`：工具执行期间链路上没有任何 SSE 帧，
+        // 一条 `cargo build` 编译大工程 600 秒也是正常的。若仍按 180 秒 idle 判据，
+        // 慢命令会被误杀 —— 正是本次拆分要根治的老问题。工具自身已有 timeout 兜底
+        // （≤ 600 秒），所以这里只保留硬上限（防真死循环）。
+        budget_touch(&budget);
+        last_progress = format!(
+            "第 {} 轮工具执行开始（{} 个工具）",
+            loop_count + 1,
+            spawn_tasks.len()
+        );
+        if let Some(stop) = check_subagent_budget(
+            &app,
+            &run_id,
+            &budget,
+            BudgetPhase::RunningTool,
+            &last_progress,
+            sub_input_tokens,
+            sub_output_tokens,
+        )
+        .await
+        {
+            return stop;
+        }
+
         if !spawn_tasks.is_empty() && !cancel_requested(&app, &run_id, parent_cancel.as_ref()).await {
             let mut set = tokio::task::JoinSet::new();
             // 只登记同步 shell 命令：取消时它必须立刻停机（进程树由 exec 层守卫清理），
@@ -1317,6 +1493,28 @@ pub async fn run_subagent(
                     sub_output_tokens,
                 );
             }
+        }
+
+        // 预算进展信号 4/4（终）：工具批次已结束，本轮的进展证据到此为止。
+        // 下面回到等模型阶段（下一轮请求 / 压缩调用），所以阶段切回 `AwaitingModel`。
+        budget_touch(&budget);
+        last_progress = format!(
+            "第 {} 轮工具执行结束（{} 个结果）",
+            loop_count + 1,
+            all_results.len()
+        );
+        if let Some(stop) = check_subagent_budget(
+            &app,
+            &run_id,
+            &budget,
+            BudgetPhase::AwaitingModel,
+            &last_progress,
+            sub_input_tokens,
+            sub_output_tokens,
+        )
+        .await
+        {
+            return stop;
         }
 
         // 阶段 3：排序 + 汇总
@@ -1463,6 +1661,23 @@ pub async fn run_subagent(
                 messages = temp_memory.messages;
             }
         }
+        // 每轮收尾再判一次：这里**不 touch** —— 尾部没有新的进展证据，只是把
+        // 「工具批次结束 → 消息落盘 → 可能的压缩调用」这段耗时也算进判据，
+        // 避免「每轮都刚好卡在阈值边缘」的长任务一直拖到硬上限。
+        if let Some(stop) = check_subagent_budget(
+            &app,
+            &run_id,
+            &budget,
+            BudgetPhase::AwaitingModel,
+            &last_progress,
+            sub_input_tokens,
+            sub_output_tokens,
+        )
+        .await
+        {
+            return stop;
+        }
+
         loop_count += 1;
     }
 

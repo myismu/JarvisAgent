@@ -4,12 +4,14 @@
 //!
 //! ## 子模块
 //! - `subagent`: 子代理执行引擎（独立 Agent Loop，支持只读/读写模式）
+//! - `subagent_budget`: 子代理执行预算判据（无进展超时 / 硬上限，纯函数可单测）
 //! - `skill`: 技能加载
 //! - `compact`: 上下文压缩
 //! - `plan`: 方案审批工具
 //!
 //! ## 关键导出
 //! - `run_subagent()`: 子代理执行引擎
+//! - `subagent_budget::SubagentBudget` / `judge()`: 子代理预算判据（无进展 / 硬上限）
 //! - `load_skill()`: 按名称加载技能知识
 //! - `compact()`: 手动触发上下文压缩
 //! - `memory`: 全局记忆读写（ReadMemory / UpdateMemory / ConsolidateMemory）
@@ -20,6 +22,9 @@ mod memory;
 mod plan;
 mod skill;
 mod subagent;
+// 子代理执行预算判据（无进展超时 / 硬上限）：纯函数判据 + 时间锚点状态，
+// 供 subagent 的 Agent Loop 在"等模型"与"跑工具"两种阶段下分别判定。
+pub mod subagent_budget;
 mod switch_mode;
 
 pub use compact::compact;
