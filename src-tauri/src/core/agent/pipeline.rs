@@ -3845,17 +3845,18 @@ impl PipelineState {
         }
 
         self.final_answer = summary.clone();
-        // 收尾小结**不写** `tool_execution_summary`：后者是“工具执行结果”的摘要，
-        // 前端会把它渲染进执行过程的折叠区。同一个字符串同时正文与工具摘要各写一份，
-        // 渲染层去重后正文会被吃掉，用户只看到「输出 #N」里的一段结论（实测反馈）。
-        let _ = self.app.emit(
-            "chat-stream",
-            json!({
-                "content": "\n> **[规划探索已到上限]** 规划探索未收敛，已自动停下并把决策权交还给你。可选择：继续探索 / 缩小范围 / 直接执行。\n",
-                "sessionId": self.sid,
-                "loopCount": self.total_loop_count + 1
-            }),
-        );
+        // 收尾小结**既不写** `tool_execution_summary`，**也不发** `chat-stream`。
+        // 两者都是前端的「执行过程」通道，只是入口不同：前者进 fallback 日志行，
+        // 后者直接 append 成 `turn.logs`（渲染为「输出 #N · [标签] 摘要」）。
+        //
+        // 代价（实测反馈，别再补回来）：只要正文之后多出这样一条过程行，
+        // 前端 `AgentTurn.timelineSplit` 的「时间线末尾必须是正文」判据就不再成立，
+        // 整段小结会连同工具调用一起被折回执行过程，最终回答区反而空着。
+        //
+        // 这条信息已有两个正式承载者，不需要第三份：
+        // 1. `summary` 本身就是正文：实时经 `chat-text` 推给前端，落库为 assistant 消息；
+        // 2. 「已到阈值、等待决策」由 `InterruptKind::PlanLimit` → `notice.planLimit`
+        //    以气泡下方小字下发（中英文案已就位）。
 
         // 小结落库：此前看门狗收尾只进 final_answer 与事件流，session_messages
         // 零痕迹（尾部悬 tool_result，刷新后聊天流回退到上一条正文）。
