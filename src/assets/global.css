@@ -116,6 +116,10 @@
   /* 布局与圆角 */
   --header-height: 44px;
   --sidebar-width: 260px;
+  /* --radius-sm 此前只有引用、没有定义：14 处 border-radius 全部算作 0（全直角），
+     只有 PermissionCard 写了 var(--radius-sm, 4px) 兑底才躲过。取 4px 跟那个兑底值对齐，
+     也是行内标记与输入框内小元件的合理比例。 */
+  --radius-sm: 4px;
   --radius-md: 8px;
   --radius-lg: 12px;
   --radius-xl: 16px;

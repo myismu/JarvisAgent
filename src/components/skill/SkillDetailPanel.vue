@@ -302,12 +302,16 @@ const renderMarkdown = (text: string): string => {
 .body-content :deep(h2) { font-size: 1.2rem; }
 .body-content :deep(h3) { font-size: 1.0667rem; }
 
-.body-content :deep(code) {
-  background: var(--glass-bg-light);
-  padding: 2px 6px;
+/* 行内代码：与 markdown 正文的兑项保持一致（底色、内边距、圆角取同一套值）。
+   与正文的差别只有字号：技能正文自身用 --code-font-size 排版，保留该口径。
+   :not(pre) > code 同时把代码块内的 code 挡在外面，所以下面不再需要单独的 pre code reset。 */
+.body-content :deep(:not(pre) > code) {
+  background: var(--code-inline-bg);
+  padding: 0.1em 0.35em;
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: var(--code-font-size);
+  letter-spacing: -0.01em;
 }
 
 .body-content :deep(pre) {
@@ -315,11 +319,6 @@ const renderMarkdown = (text: string): string => {
   padding: 12px;
   border-radius: var(--radius-md);
   overflow-x: auto;
-}
-
-.body-content :deep(pre code) {
-  background: transparent;
-  padding: 0;
 }
 
 .body-content :deep(li) {
