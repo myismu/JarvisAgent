@@ -506,6 +506,9 @@ pub async fn switch_away(deleted_session_id: &str, app: &tauri::AppHandle) -> Re
 ///
 /// 提取前几条用户消息 + 助手首条文本，过滤掉系统注入的上下文消息。
 /// 对 LLM 返回结果做长度校验，防止 LLM 复述原文。
+///
+/// 命名请求的 token 会以 `UsageSource::SessionName` 落一行用量明细（`run_id` 留空，
+/// 理由见函数内注释）；记账失败只打日志，不影响取名与 rename。
 pub async fn auto_name_session(
     app: tauri::AppHandle,
     session_id: String,
@@ -591,7 +594,7 @@ pub async fn auto_name_session(
 
     // 辅助调用统一走带超时的客户端
     let client = api_client::build_utility_client();
-    let title = api_client::call_llm_simple(
+    let completion = api_client::call_llm_simple(
         &client,
         &agent_cfg.api_key,
         &agent_cfg.base_url,
@@ -601,11 +604,37 @@ pub async fn auto_name_session(
         &summary_prompt,
         30,
     )
-    .await
-    // 非流式调用现在返回 `LlmCompletion`（正文 + usage）。标题生成不记账，
-    // 这里只取正文，失败仍回退空串 —— 行为与改造前完全一致。
-    .map(|completion| completion.text)
-    .unwrap_or_default();
+    .await;
+
+    // 记账口径：命名请求是一次真实的 utility 模型调用，token 确实花掉了，
+    // 所以必须落一行 `session_name` 明细（否则按来源拆账时「系统开销」永远偏小，
+    // 而且偏得没有痕迹）。失败（拿不到 `completion`）时连 usage 都没有，自然不入账。
+    //
+    // 厂商没上报 `usage`（`None`）或报了 0/0 时，`record_llm_usage` 返回 `Ok(false)`，
+    // 这是既定口径（不写零行），不是错误。
+    //
+    // 不设 `run_id`：自动命名发生在一轮 agent run 的**收尾之后**（首条助手回复产出
+    // 后才触发一次），它不属于任何一次 loop；硬塞外层 run_id 会让「本轮累计」被这条
+    // 边缘请求污染，`run_id = NULL` 才是「不属于任何一轮」的准确表达。
+    if let Ok(completion) = completion.as_ref() {
+        let record = crate::core::session::RequestUsageRecord::new(
+            session_id.clone(),
+            crate::core::session::UsageSource::SessionName,
+        )
+        // 标题生成固定走 utility 模型（与上面请求入参同一个配置字段）
+        .model_id(agent_cfg.utility_model.clone());
+        // `Ok(false)` 还可能是「会话不存在或已归档」，同样是正常的跳过口径
+        if let Err(err) =
+            crate::core::session::usage::record_llm_usage(&app, record, completion.usage.as_ref())
+        {
+            // 账本问题不得影响取名与随后的 rename：只记日志，继续往下走
+            eprintln!("[JARVIS] 写入会话命名用量明细失败: {}", err);
+        }
+    }
+
+    // 记账之后才取正文：厂商哪怕回了空正文，这次 token 也已经是事实。
+    // 调用失败时 `completion` 是 `Err`，仍回退空串 —— 行为与改造前完全一致。
+    let title = completion.map(|completion| completion.text).unwrap_or_default();
 
     let title = title
         .trim()

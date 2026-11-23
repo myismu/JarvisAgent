@@ -1,5 +1,6 @@
 use crate::infra::llm::api_client;
 use crate::infra::llm::api_format::ApiFormat;
+use crate::infra::llm::usage::LlmUsage;
 use crate::infra::types::error::ApiError;
 use crate::infra::types::models::{Content, ContentBlock, Message};
 
@@ -140,6 +141,10 @@ fn should_reflect_smart(thinking_text: &str) -> bool {
 ///
 /// 构建审查请求：session history + 本轮工具调用/结果 + 审查 prompt，
 /// 调用 LLM 进行非流式判断。
+///
+/// 返回值除判断结果外，还带回本次请求的 `usage`：审查请求本身也真实消耗 token，
+/// 但本模块刻意不认识 `AppHandle` / `session_id` / `run_id`（保持纯逻辑、可单测），
+/// 记账由调用方（pipeline）按 `UsageSource::Reflection` 写入。
 pub async fn execute_review(
     client: &reqwest::Client,
     api_key: &str,
@@ -150,7 +155,7 @@ pub async fn execute_review(
     user_request: &str,
     current_assistant_blocks: &[ContentBlock],
     current_tool_results: &[ContentBlock],
-) -> Result<ReflectionJudgment, ApiError> {
+) -> Result<(ReflectionJudgment, Option<LlmUsage>), ApiError> {
     // 构建审查消息序列：session history + 本轮 assistant 工具调用 + 本轮工具结果 + 审查 prompt
     let mut review_messages: Vec<Message> = session_messages.to_vec();
 
@@ -200,8 +205,9 @@ pub async fn execute_review(
     });
 
     // 调用审查 Agent（非流式，不带 tools）
-    // 返回体里带了 usage，但审查判断只关心正文，先取 text；记账由后续任务接管。
-    let response = api_client::call_llm_with_messages(
+    // 返回体里带了 usage，但审查判断只关心正文，先取 text 解析判断；
+    // usage 原样带回给调用方（pipeline）记账，本模块不接触会话/运行上下文。
+    let completion = api_client::call_llm_with_messages(
         client,
         api_key,
         base_url,
@@ -211,11 +217,13 @@ pub async fn execute_review(
         review_messages,
         512, // 审查回复不需要太长
     )
-    .await?
-    .text;
+    .await?;
 
     // 解析判断结果
-    Ok(parse_reflection_response(&response))
+    Ok((
+        parse_reflection_response(&completion.text),
+        completion.usage,
+    ))
 }
 
 /// 解析审查 Agent 的回复

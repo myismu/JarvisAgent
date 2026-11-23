@@ -2031,60 +2031,86 @@ impl PipelineState {
                     )
                     .await
                     {
-                        Ok(super::reflection::ReflectionJudgment::Ok) => {
-                            println!("[审查 Agent] 判断: OK");
-                            self.total_reflections += 1;
-                            self.consecutive_reflection_nos = 0;
-                            reflection_record = Some(("ok".to_string(), None, None));
-                            let _ = self.app.emit(
-                                "agent-step",
-                                json!({
-                                    "type": "reflection",
-                                    "sessionId": self.sid,
-                                    "loopCount": self.total_loop_count + 1,
-                                    "judgment": "ok",
-                                }),
-                            );
-                        }
-                        Ok(super::reflection::ReflectionJudgment::NotOk { reason, suggestion }) => {
-                            println!("[审查 Agent] 判断: NO — {}\n建议: {}", reason, suggestion);
-                            self.total_reflections += 1;
-                            self.consecutive_reflection_nos += 1;
-                            reflection_record = Some((
-                                "not_ok".to_string(),
-                                Some(reason.clone()),
-                                Some(suggestion.clone()),
-                            ));
-                            let _ = self.app.emit(
-                                "agent-step",
-                                json!({
-                                    "type": "reflection",
-                                    "sessionId": self.sid,
-                                    "loopCount": self.total_loop_count + 1,
-                                    "judgment": "not_ok",
-                                    "reason": reason,
-                                    "suggestion": suggestion,
-                                }),
-                            );
+                        Ok((judgment, usage)) => {
+                            // 审查请求本身也真实消耗 token，按 Reflection 来源单独入账；
+                            // 无论判断是 OK 还是 NO 都有这次调用，所以记账放在分支判定之前。
+                            // 记账失败只记日志，不得影响反思主流程。
+                            let record = crate::core::session::RequestUsageRecord::new(
+                                self.sid.clone(),
+                                crate::core::session::UsageSource::Reflection,
+                            )
+                            .run(self.run_id.clone(), Some((self.total_loop_count + 1) as u32))
+                            .model_id(self.cfg.utility_model.clone());
+                            if let Err(err) = crate::core::session::usage::record_llm_usage(
+                                &self.app,
+                                record,
+                                usage.as_ref(),
+                            ) {
+                                eprintln!("[JARVIS] 写入反思用量明细失败: {}", err);
+                            }
 
-                            // 注入修正建议到 session
-                            let mut session = self.ctx.memory.lock().await;
-                            // `Inject`：`doc/reflection-mechanism-design.md` §3.2 写明
-                            // "继续循环，LLM 在下一轮看到修正提示"。标成 `internal` 时
-                            // 这条提示进不了模型上下文，反思判定对主 Agent 零影响。
-                            append_message(
-                                &mut session,
-                                Message::User {
-                                    content: Content::Single(format!(
-                                    "审查发现以下问题：{}\n建议修正：{}\n请根据建议修正后继续。",
-                                    reason, suggestion
-                                )),
-                                },
-                                MessageSource::Inject,
-                            );
+                            match judgment {
+                                // 判断 OK：工具结果符合预期，继续正常流程
+                                super::reflection::ReflectionJudgment::Ok => {
+                                    println!("[审查 Agent] 判断: OK");
+                                    self.total_reflections += 1;
+                                    self.consecutive_reflection_nos = 0;
+                                    reflection_record = Some(("ok".to_string(), None, None));
+                                    let _ = self.app.emit(
+                                        "agent-step",
+                                        json!({
+                                            "type": "reflection",
+                                            "sessionId": self.sid,
+                                            "loopCount": self.total_loop_count + 1,
+                                            "judgment": "ok",
+                                        }),
+                                    );
+                                }
+                                // 判断 NO：递增连续 NO 计数，并把修正建议注入 session
+                                super::reflection::ReflectionJudgment::NotOk { reason, suggestion } => {
+                                    println!(
+                                        "[审查 Agent] 判断: NO — {}\n建议: {}",
+                                        reason, suggestion
+                                    );
+                                    self.total_reflections += 1;
+                                    self.consecutive_reflection_nos += 1;
+                                    reflection_record = Some((
+                                        "not_ok".to_string(),
+                                        Some(reason.clone()),
+                                        Some(suggestion.clone()),
+                                    ));
+                                    let _ = self.app.emit(
+                                        "agent-step",
+                                        json!({
+                                            "type": "reflection",
+                                            "sessionId": self.sid,
+                                            "loopCount": self.total_loop_count + 1,
+                                            "judgment": "not_ok",
+                                            "reason": reason,
+                                            "suggestion": suggestion,
+                                        }),
+                                    );
+
+                                    // 注入修正建议到 session
+                                    let mut session = self.ctx.memory.lock().await;
+                                    // `Inject`：`doc/reflection-mechanism-design.md` §3.2 写明
+                                    // "继续循环，LLM 在下一轮看到修正提示"。标成 `internal` 时
+                                    // 这条提示进不了模型上下文，反思判定对主 Agent 零影响。
+                                    append_message(
+                                        &mut session,
+                                        Message::User {
+                                            content: Content::Single(format!(
+                                                "审查发现以下问题：{}\n建议修正：{}\n请根据建议修正后继续。",
+                                                reason, suggestion
+                                            )),
+                                        },
+                                        MessageSource::Inject,
+                                    );
+                                }
+                            }
                         }
                         Err(e) => {
-                            // 审查调用失败不影响主流程，仅记录日志
+                            // 审查调用失败不影响主流程，仅记录日志；失败没有用量可记
                             println!("[审查 Agent] 调用失败: {}", e);
                         }
                     }

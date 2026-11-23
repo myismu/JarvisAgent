@@ -23,14 +23,15 @@
 
 use tauri::Emitter;
 
-use super::{repository, RequestUsageRecord, SessionTokenTotals, UsageBreakdown};
+use super::{repository, RequestUsageRecord, SessionTokenTotals, SessionUsageView, UsageBreakdown};
 use crate::infra::llm::usage::LlmUsage;
 
 /// 记录一次模型请求的用量：明细 + 累计 + 事件，三件事一步做完。
 ///
 /// ## 返回
 /// - `Ok(Some(breakdown))`：写入成功，附上**写入之后**的按来源账本（调用方一般不用，
-///   但测试与调试需要它；事件载荷也是同一份数据）。
+///   但测试与调试需要它）。注意事件载荷**不是**这份账本原形，而是它的视图投影
+///   （[`SessionUsageView`]），理由见下面「事件」一节。
 /// - `Ok(None)`：会话不存在或已归档 —— 本次请求**不入账**（连明细也不写），
 ///   调用方据此跳过事件推送。口径与旧的 `accumulate_session_token_usage` 一致。
 ///
@@ -46,10 +47,26 @@ use crate::infra::llm::usage::LlmUsage;
 ///
 /// ## 事件
 /// 事件在事务**提交之后**才发：订阅方收到事件后可能立刻回读数据库，
-/// 提交前发等于让前端读到旧值。载荷在原有 `sessionId / inputTokens / outputTokens /
-/// cacheHitTokens / cacheMissTokens` 五个字段之外，追加 `requestCount /
-/// unreportedRequests / unreportedInputTokens / hasDetail / sources`，
-/// **原字段语义与取值口径不变**（累计绝对值，前端整值覆盖）。
+/// 提交前发等于让前端读到旧值。
+///
+/// 载荷是**视图投影**（[`SessionUsageView`]），与前端 `SessionUsageUpdatedPayload`
+/// 严格对齐，共两组字段：
+/// - 扁平四值 + 会话 id：`sessionId / inputTokens / outputTokens / cacheHitTokens /
+///   cacheMissTokens`。概览栏直接读它们，语义仍是**累计绝对值**（前端整值覆盖）；
+/// - 分层明细：`breakdown`，内含 `main / subagent / system` 三桶与
+///   `unreportedRequestCount / unreportedInput / hasDetail`。
+///
+/// ### 为什么事件载荷用投影，而不是账本原形
+/// 账本（[`UsageBreakdown`]）是**存储口径**：六个 `UsageSource` 平铺成 `sources`
+/// 数组，字段名（`input_tokens` / `unreported_requests` …）跟着明细表走，也没有
+/// 前端要画的「主对话 / 子 Agent / 系统开销」三层。若把账本原形直接推给前端，
+/// 前端就得自己再做一遍改名 + 分桶 + 派生 `cacheReported`，于是同一套归一化逻辑
+/// 存在两份（后端一份给命令回包、前端一份给事件监听）。两处一旦漂移不会报错：
+/// 界面上的三层之和与总计对不上，只能靠人肉对数字发现。
+/// 所以折叠只在后端做一份（[`SessionUsageView::from_breakdown`]），事件只传结果；
+/// 前端拿到什么就画什么，不做二次聚合。
+/// 账本原形仍通过命令 `get_session_usage_breakdown` 对外提供——那是**审计口径**
+/// （要能追溯到具体来源行），与展示投影是两条互不干扰的出口。
 pub fn record_request_usage(
     app: &tauri::AppHandle,
     record: RequestUsageRecord,
@@ -89,7 +106,12 @@ pub fn record_request_usage(
 
     // 提交之后再推送。序列化失败只是没有事件（前端下次拉取/下一轮事件会补上），
     // 不能让一个展示层问题把已经落库的账回滚掉。
-    if let Ok(payload) = serde_json::to_value(&breakdown) {
+    //
+    // 推送的是**视图投影**而不是账本原形：前端消费形状（三层 + 扁平四值）已定，
+    // 折叠与改名在后端只做一份，避免前后端各归一化一遍而悄悄漂移。
+    // `from_breakdown` 是纯折叠，不会失败，故不必为它单独兜错。
+    let view = SessionUsageView::from_breakdown(&breakdown);
+    if let Ok(payload) = serde_json::to_value(&view) {
         let _ = app.emit("session-usage-updated", payload);
     }
 
@@ -165,7 +187,8 @@ mod usage_tests {
     //! `record_request_usage` 本身依赖全局 DB 单例与 `AppHandle`，无法在单元测试里跑；
     //! 它调用的三个 SQL 原语由 `repository::usage_tests` 用内存库覆盖。
 
-    use super::super::{RequestUsageRecord, UsageSource};
+    use super::super::{RequestUsageRecord, UsageBreakdown, UsageSource, UsageSourceBreakdown};
+    use super::super::{SessionUsageBreakdownView, SessionUsageView};
     use super::should_record_llm_usage;
     use crate::infra::llm::usage::LlmUsage;
 
@@ -255,5 +278,212 @@ mod usage_tests {
             output_tokens: 24,
             ..Default::default()
         })));
+    }
+
+    // ========================================================================
+    // 账本 → 视图的投影（`SessionUsageView::from_breakdown`）
+    //
+    // 这些用例都在纯函数层跑：折叠是**加法与改名**，不需要数据库。
+    // 要盯住的只有一件事——投影不能丢账，也不能凭空造账。
+    // ========================================================================
+
+    /// 构造一段来源账（测试用，字段顺序固定，避免各处手写漏字段）。
+    fn source_row(
+        source: UsageSource,
+        request_count: u64,
+        input: u64,
+        output: u64,
+        cache_hit: u64,
+        cache_miss: u64,
+        unreported_requests: u64,
+        unreported_input: u64,
+    ) -> UsageSourceBreakdown {
+        UsageSourceBreakdown {
+            source,
+            request_count,
+            input_tokens: input,
+            output_tokens: output,
+            cache_hit_tokens: cache_hit,
+            cache_miss_tokens: cache_miss,
+            unreported_requests,
+            unreported_input_tokens: unreported_input,
+        }
+    }
+
+    /// 六个来源齐全时，三层折叠之和必须**分毫不差**地等于账本总计。
+    ///
+    /// 这是投影层唯一不能破的契约：折叠一旦少算一个来源（例如忘了把
+    /// `MemoryCurator` 归进 `system`），界面上三层加起来就会比总数少一截，
+    /// 而这种缺失不会报错，只能靠对数字发现。
+    #[test]
+    fn view_folds_all_six_sources_into_three_layers() {
+        let sources = vec![
+            source_row(UsageSource::Main, 3, 1_000, 200, 800, 100, 0, 0),
+            source_row(UsageSource::Subagent, 2, 400, 90, 300, 50, 1, 100),
+            source_row(UsageSource::Reflection, 1, 50, 10, 0, 0, 1, 50),
+            source_row(UsageSource::Compact, 1, 70, 20, 40, 10, 0, 0),
+            source_row(UsageSource::SessionName, 1, 30, 5, 0, 0, 1, 30),
+            source_row(UsageSource::MemoryCurator, 1, 20, 8, 10, 5, 0, 0),
+        ];
+
+        // 总计按来源逐列累加（等价于 SQL 的 SUM，但这里手工写清每个数来自哪一行）
+        let breakdown = UsageBreakdown {
+            session_id: "s-fold".to_string(),
+            input_tokens: 1_570,
+            output_tokens: 333,
+            cache_hit_tokens: 1_150,
+            cache_miss_tokens: 165,
+            request_count: 9,
+            unreported_requests: 3,
+            unreported_input_tokens: 180,
+            has_detail: true,
+            sources,
+        };
+
+        let view = SessionUsageView::from_breakdown(&breakdown);
+
+        // 总计原样透传
+        assert_eq!(view.session_id, "s-fold");
+        assert_eq!((view.input_tokens, view.output_tokens), (1_570, 333));
+        assert_eq!((view.cache_hit_tokens, view.cache_miss_tokens), (1_150, 165));
+
+        // 三层相加 == 总计（输入、输出两列都必须成立）
+        let layers_input =
+            view.breakdown.main.input + view.breakdown.subagent.input + view.breakdown.system.input;
+        let layers_output = view.breakdown.main.output
+            + view.breakdown.subagent.output
+            + view.breakdown.system.output;
+        assert_eq!(layers_input, breakdown.input_tokens, "三层输入之和必须等于账本总计");
+        assert_eq!(layers_output, breakdown.output_tokens, "三层输出之和必须等于账本总计");
+
+        // 分层归属：四个系统内部来源都进了 system（漏一个这里就会变小）
+        assert_eq!(view.breakdown.main.input, 1_000);
+        assert_eq!(view.breakdown.subagent.input, 400);
+        assert_eq!(view.breakdown.system.input, 170);
+        assert_eq!(view.breakdown.system.request_count, 4);
+    }
+
+    /// 空账本（无明细的历史会话）折叠后必须是「全零 + has_detail=false」。
+    ///
+    /// 关键是不能顺手把 `has_detail` 抬成 true：界面靠它决定"退回显示累计值"，
+    /// 一旦变成 true，用户会看到三层 0，被读成"主对话一个 token 没花"。
+    #[test]
+    fn empty_breakdown_folds_to_zeroed_view_without_detail() {
+        let ledger = UsageBreakdown::empty("s-empty");
+        let view = SessionUsageView::from_breakdown(&ledger);
+
+        assert!(!view.breakdown.has_detail, "无明细必须保持 has_detail=false");
+        assert_eq!(view.session_id, "s-empty");
+        assert_eq!(view.input_tokens, 0);
+        assert_eq!(view.output_tokens, 0);
+
+        fn assert_source_zero(src: &super::super::UsageSourceView) {
+            assert_eq!(
+                (
+                    src.input,
+                    src.output,
+                    src.cache_hit,
+                    src.cache_miss,
+                    src.request_count,
+                    src.cache_reported
+                ),
+                (0, 0, 0, 0, 0, 0),
+                "空账本的三层必须全零"
+            );
+        }
+        assert_source_zero(&view.breakdown.main);
+        assert_source_zero(&view.breakdown.subagent);
+        assert_source_zero(&view.breakdown.system);
+        assert_eq!(view.breakdown.unreported_request_count, 0);
+        assert_eq!(view.breakdown.unreported_input, 0);
+    }
+
+    /// 未上报字段与派生字段：`unreported*` 从账本透传，`cacheReported` 按差值推导。
+    ///
+    /// `cache_reported = request_count - unreported_requests` 是**推导**而非独立读数，
+    /// 这里把三个数一起断言，防止将来有人另加一列 SQL 却忘了改这个换算。
+    #[test]
+    fn unreported_fields_pass_through_and_cache_reported_is_derived() {
+        let breakdown = UsageBreakdown {
+            session_id: "s-unreported".to_string(),
+            input_tokens: 300,
+            output_tokens: 40,
+            cache_hit_tokens: 60,
+            cache_miss_tokens: 20,
+            request_count: 5,
+            unreported_requests: 2,
+            unreported_input_tokens: 220,
+            has_detail: true,
+            sources: vec![source_row(
+                UsageSource::Main,
+                5,
+                300,
+                40,
+                60,
+                20,
+                2,
+                220,
+            )],
+        };
+
+        let view: SessionUsageView = SessionUsageView::from_breakdown(&breakdown);
+        let ledger_view: &SessionUsageBreakdownView = &view.breakdown;
+
+        // 透传：未上报两项不做任何换算
+        assert_eq!(ledger_view.unreported_request_count, 2);
+        assert_eq!(ledger_view.unreported_input, 220);
+        assert!(ledger_view.has_detail);
+
+        // 派生：5 次请求里有 2 次没报缓存 → 3 次上报了
+        assert_eq!(ledger_view.main.request_count, 5);
+        assert_eq!(ledger_view.main.cache_reported, 3);
+        // 缓存读数只统计已上报的部分（未上报的不按 0 计入分母，但也不另加一条）
+        assert_eq!(ledger_view.main.cache_hit, 60);
+        assert_eq!(ledger_view.main.cache_miss, 20);
+        // 没进 main 的桶必须干净，避免"同一行被折两次"
+        assert_eq!(ledger_view.subagent.request_count, 0);
+        assert_eq!(ledger_view.system.request_count, 0);
+    }
+
+    /// 事件载荷的**键名契约**：序列化结果必须与前端 `SessionUsageUpdatedPayload`
+    /// （`src/types/index.ts`）逐字对齐。
+    ///
+    /// 这条测试防的是**跨语言改名**：Rust 侧把 `cache_hit` 改成 `cacheHitTokens`
+    /// 或给视图加一层嵌套，编译器都不会拦——前端拿到 undefined，概览栏静默显示 0，
+    /// 只有用户发现"数字怎么不动"才知道出事了。字段增减必须同时改这份断言与前端的 TS 接口。
+    #[test]
+    fn usage_view_serializes_to_frontend_payload_shape() {
+        let view = SessionUsageView::from_breakdown(&UsageBreakdown::empty("s-shape"));
+        let json = serde_json::to_value(&view).expect("序列化用量视图");
+        let obj = json.as_object().expect("载荷顶层必须是对象");
+
+        // 顶层：会话 id + 四个扁平累计值 + 分层明细（与前端 interface 字段顺序无关，只比集合）
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["breakdown", "cacheHitTokens", "cacheMissTokens", "inputTokens", "outputTokens", "sessionId"],
+            "顶层键名必须与 SessionUsageUpdatedPayload 一致（camelCase）"
+        );
+
+        // 明细层：三桶 + 未上报两项 + hasDetail
+        let breakdown = obj["breakdown"].as_object().expect("breakdown 必须是对象");
+        let mut breakdown_keys: Vec<&str> = breakdown.keys().map(String::as_str).collect();
+        breakdown_keys.sort_unstable();
+        assert_eq!(
+            breakdown_keys,
+            vec!["hasDetail", "main", "subagent", "system", "unreportedInput", "unreportedRequestCount"],
+            "明细键名必须与 SessionUsageBreakdown 一致（camelCase）"
+        );
+
+        // 单桶层：`input/output` 是改过名的字段，`cacheReported` 是派生字段
+        let main = breakdown["main"].as_object().expect("main 必须是对象");
+        let mut main_keys: Vec<&str> = main.keys().map(String::as_str).collect();
+        main_keys.sort_unstable();
+        assert_eq!(
+            main_keys,
+            vec!["cacheHit", "cacheMiss", "cacheReported", "input", "output", "requestCount"],
+            "单桶键名必须与 UsageSourceBreakdown 一致（camelCase）"
+        );
     }
 }

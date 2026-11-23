@@ -470,6 +470,147 @@ impl UsageBreakdown {
     }
 }
 
+// ============================================================================
+// 用量**视图**（账本的投影）
+//
+// 这一组结构是给前端与命令回包用的，和上面的账本结构（`UsageBreakdown` /
+// `UsageSourceBreakdown`）刻意分成两套：
+// - **账本是权威**：字段与 `request_usage` 明细表一一对应，只由 SQL 聚合产出，
+//   数字能追溯到具体请求行，是排查"账对不对"的唯一依据；
+// - **视图是投影**：只做改名（`input_tokens` → `input`）、分层折叠（六个来源 →
+//   主/子/系统三桶）和派生字段（`cache_reported`）三件事，**不产生新数字**。
+//
+// 为什么不把字段直接改成前端口径：账本还要被 `repository`、审计与测试读取，
+// 若让展示口径反向侵入账本，将来前端改个字段名就会牵动 SQL 聚合层。
+// 投影层做厚一点，两边的演进互不牵连。
+// ============================================================================
+
+/// 单一来源的用量视图（对应前端 `UsageSourceBreakdown`）。
+///
+/// 全部字段都是**会话级累计绝对值**（不是单次请求的增量），
+/// 接收方整值覆盖即可，任何自行累加都会让数字翻倍。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSourceView {
+    /// 累计输入 token
+    pub input: u64,
+    /// 累计输出 token
+    pub output: u64,
+    /// 累计缓存命中 token。0 有两种可能：真的没命中、厂商没报（后者看 `cache_reported`）
+    pub cache_hit: u64,
+    /// 累计缓存未命中 token
+    pub cache_miss: u64,
+    /// 累计请求次数（= 调用模型接口的次数，不是 agent loop 轮数）
+    pub request_count: u64,
+    /// 其中**上报了缓存字段**的请求数。
+    ///
+    /// 推导关系：`cache_reported = request_count - unreported_requests`。
+    /// 两者是同一批请求的两种数法，不是独立读数——同一行的请求要么报了缓存、
+    /// 要么没报，没有第三种。因此不另加一列 SQL（另加 = 多一个可能与差值打架的口径）。
+    /// 与 `request_count` 的差值即「厂商没给缓存字段」的请求量，用来解释
+    /// 某个来源为什么算不出命中率，而不是把未上报直接画成 0%。
+    pub cache_reported: u64,
+}
+
+impl UsageSourceView {
+    /// 把一段来源账（某一来源的 `GROUP BY` 汇总行）累加进本视图。
+    ///
+    /// `system` 桶由四个来源（反思/压缩/命名/记忆整理）合成，靠它折叠；
+    /// 逐字段显式相加而不是实现 `Add`：字段里有一个是**派生值**，
+    /// 通用加法容易让人以为可以随便加两段账而不检查口径。
+    fn accumulate(&mut self, src: &UsageSourceBreakdown) {
+        self.input += src.input_tokens;
+        self.output += src.output_tokens;
+        self.cache_hit += src.cache_hit_tokens;
+        self.cache_miss += src.cache_miss_tokens;
+        self.request_count += src.request_count;
+        // 派生字段同样按"请求数相减"累加，理由见字段文档
+        self.cache_reported += src.request_count.saturating_sub(src.unreported_requests);
+    }
+}
+
+/// 会话按来源分层的用量视图（对应前端 `SessionUsageBreakdown`）。
+///
+/// 三层是**展示口径**而非存储口径：账本按 `UsageSource` 存六个来源，
+/// 用户只关心"主对话 / 子 Agent / 系统内部"这三件事。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionUsageBreakdownView {
+    /// 主 Agent 主循环
+    pub main: UsageSourceView,
+    /// 子 Agent（RunSubagent / 任务图调度出去的执行体）
+    pub subagent: UsageSourceView,
+    /// 系统内部调用（反思、压缩、自动命名、记忆整理）
+    pub system: UsageSourceView,
+    /// 缓存字段未上报的请求数（整会话口径）
+    pub unreported_request_count: u64,
+    /// 这些未上报请求对应的输入 token 合计（让"不知道"也有量级）
+    pub unreported_input: u64,
+    /// 是否存在明细。`false` = 无明细行（历史会话），三层全零**不可当真实分布展示**
+    pub has_detail: bool,
+}
+
+/// 一个会话的用量视图（账本 → 视图的投影结果）。
+///
+/// 调用方拿到的应该永远是这个结构：账本（[`UsageBreakdown`]）本身是内部口径，
+/// 会随明细表结构调整；视图字段一旦放出就是前端契约，改它要同步改 TS 类型。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionUsageView {
+    pub session_id: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_hit_tokens: u64,
+    pub cache_miss_tokens: u64,
+    /// 按来源分层的明细。`has_detail = false` 时三层全零，只有上面的总计有意义
+    pub breakdown: SessionUsageBreakdownView,
+}
+
+impl SessionUsageView {
+    /// 账本 → 视图的折叠：四个总计透传，来源逐行归入三桶。
+    ///
+    /// 折叠规则刻意写成 `match` **穷举六个变体**，不留 `_ =>` 兜底：
+    /// 新增 `UsageSource` 变体时，这里是唯一需要人为决策"它算谁的开销"的地方。
+    /// 若留兜底，新变体就会悄悄落进某个桶（大概率是 `system`），
+    /// 表现为"主对话的账对不上总数"，而且不报错、只能靠人肉对数字才发现。
+    /// 编译失败一次，比账错三个月划算。
+    pub fn from_breakdown(b: &UsageBreakdown) -> Self {
+        let mut breakdown = SessionUsageBreakdownView {
+            unreported_request_count: b.unreported_requests,
+            unreported_input: b.unreported_input_tokens,
+            has_detail: b.has_detail,
+            ..Default::default()
+        };
+
+        for src in &b.sources {
+            match src.source {
+                // 主 Agent 主循环独占一桶：它是用户唯一直接操作的那条线
+                UsageSource::Main => breakdown.main.accumulate(src),
+                // 子 Agent 独占一桶：它常是单次任务里花钱最多的部分，必须单独可见
+                UsageSource::Subagent => breakdown.subagent.accumulate(src),
+                // 剩下四个都是"用户没直接发起"的系统内部请求，合成系统开销：
+                // 反思 = 回合结束后的自我评估
+                // 压缩 = 上下文摘要生成
+                // 命名 = 会话自动标题
+                // 记忆整理 = 会话结束后提炼长期记忆
+                UsageSource::Reflection
+                | UsageSource::Compact
+                | UsageSource::SessionName
+                | UsageSource::MemoryCurator => breakdown.system.accumulate(src),
+            }
+        }
+
+        Self {
+            session_id: b.session_id.clone(),
+            input_tokens: b.input_tokens,
+            output_tokens: b.output_tokens,
+            cache_hit_tokens: b.cache_hit_tokens,
+            cache_miss_tokens: b.cache_miss_tokens,
+            breakdown,
+        }
+    }
+}
+
 /// 获取当前时间戳（**毫秒**，Unix epoch）。
 ///
 /// 2026-09-19 起全项目 DB 时间戳统一为毫秒（v16 迁移已把存量秒值 ×1000）。
