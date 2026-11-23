@@ -947,15 +947,8 @@ const toggleMinimize = () => {
   text-decoration: underline;
 }
 
-.plan-markdown :deep(code) {
-  padding: 2px 6px;
-  color: var(--text-main);
-  font-family: var(--font-mono);
-  font-size: 0.85em;
-  border: 1px solid var(--glass-border-subtle);
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--text-muted) 15%, transparent);
-}
+/* 行内代码胶囊的样式统一在 StreamingMarkdown.vue 里维护（本面板的正文也由它渲染），
+   这里不再留第二份拷贝。具体取舍见该组件内 .streaming-markdown :deep(:not(pre) > code) 上方的注释。 */
 
 .plan-markdown :deep(pre) {
   margin: 12px 0;

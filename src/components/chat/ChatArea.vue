@@ -1251,17 +1251,11 @@ onMounted(() => {
   font-style: italic;
 }
 
-/* 行内代码胶囊只给 Markdown 正文里的 code；执行时间线的工具名也是 code，
-   不能一起吃到底色和内边距（否则每行会被撑高、工具名变成灰色胶囊）。 */
-.response-text :deep(.streaming-markdown code) {
-  padding: 2px 6px;
-  color: var(--text-main);
-  font-family: var(--font-mono);
-  font-size: 0.85em;
-  border: 1px solid var(--glass-border-subtle);
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--text-muted) 15%, transparent);
-}
+/* 行内代码胶囊的样式统一在 StreamingMarkdown.vue 里维护，全局只留那一份。
+   这里曾有一份同值拷贝（padding 2px 6px / border #ececec / radius 5px / 文字灰 15% 底色），
+   当初加它只是为了把胶囊限制在 .streaming-markdown 内、不污染执行时间线；
+   组件内的 :not(pre) > code 已经排除了代码块，且作用域天然跟组件走，
+   再留一份只会让两处取值永远漂移（本次改动前就漂移了两次）。 */
 
 .response-text :deep(.markdown-code-block),
 .response-text :deep(.md-code-block),

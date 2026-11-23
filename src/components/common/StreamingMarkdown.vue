@@ -471,14 +471,25 @@ function renderTableCell(cell: any): string {
   font-style: italic;
 }
 
-.streaming-markdown :deep(code) {
-  padding: 2px 6px;
+/* 行内代码：只标记正文里的 `标识符`。父元素不是 pre 才算行内（代码块内 code 的父元素是 pre，
+   不吃这套胶囊样式）。
+   设计取舍（原样式的问题已核实）：
+     · 去边框 —— 原先 border(#ececec) 与底色(≈#e1e1e1) 同属一个灰阶，边框既不分隔也不强调，
+       只是把块的边缘磨厚一圈，形成"双层包裹"。
+     · 圆角 4px —— 元素高约 20px，5px 已占行高四分之一，读作按钮/标签；4px 才是文字标记的比例。
+     · 内边距用 em —— 原先固定 2px 6px，界面字号放大时胶囊不跟着长，会撑乱行距。
+     · 底色走 --code-inline-bg —— 冷调定值，不再从文字色混出来（浅/深主题各一套）。
+   此规则是**唯一一份**行内代码样式；ChatArea / PlanPreviewPanel 里原来的两份拷贝已删，
+   正文全部经本组件渲染，不需要特异性更高的覆盖层。 */
+.streaming-markdown :deep(:not(pre) > code) {
+  padding: 0.1em 0.35em;
   color: var(--text-main);
   font-family: var(--font-mono);
-  font-size: 0.85em;
-  border: 1px solid var(--glass-border-subtle);
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--text-muted) 15%, transparent);
+  font-size: 0.88em;
+  letter-spacing: -0.01em;
+  border: 0;
+  border-radius: 4px;
+  background: var(--code-inline-bg);
 }
 
 .streaming-markdown :deep(del) {

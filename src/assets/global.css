@@ -89,6 +89,13 @@
      工具参数输出与执行日志的容器会把它改写成 --code-font-size，让整块内容走代码口径。 */
   --md-body-font-size: var(--content-font-size);
 
+  /* 行内代码底色：只服务 markdown 正文里的 `标识符` 胶囊。
+     刻意不从 --text-muted 混色推导 —— --text-muted 是文字色，混白得到的是水泥灰，
+     既无冷调又偏脏，在纯白面板上会糊成一层雾（边框再叠一层同色系就变成双层包裹）。
+     这里给定值：比面板亮一档的冷调极浅灰，读作"被标记的文字"而不是"贴上去的块"。
+     深色主题另给一套（见 body.dark-mode），不靠 color-mix 自动翻转。 */
+  --code-inline-bg: #f4f4f5;
+
   /* 面板表面变量：历史命名保留（组件大量引用），取值全部实心化。
      --glass-bg-light 是"叠加在面板上的一层浅灰"，用于 hover / 内嵌块。 */
   --glass-bg: var(--bg-panel);
@@ -188,6 +195,11 @@ body.dark-mode {
   --thinking-on-surface: #3f3f46;
   --thinking-off-fg: #8a8a93;
   --thinking-on-fg: #f4f4f5;
+
+  /* 行内代码底色：比面板(#0f0f0f)抬一档的冷调深灰。
+     不取 --surface-2(#242424)：那是卡片/输入框的表面层级，行内代码只需可辨、
+     不需要"浮起"，过亮会重新变成贴纸感。 */
+  --code-inline-bg: #232326;
 }
 
 /* --- 3. 基础重置 --- */
