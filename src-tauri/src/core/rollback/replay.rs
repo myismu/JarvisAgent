@@ -146,6 +146,216 @@ pub(crate) fn trash_restores_from_patches<'a>(
     map
 }
 
+/// 把"被撤销的补丁链"汇总成**文件级净变化**（用于撤回确认框）。
+///
+/// 旧实现直接拿每条的 `to_summary()`：`UpdateFile` 的增删行数是**整个文件的行数**
+/// （`new_content.lines()` / `old_content.lines()`），于是改一行也会显示 +1000/-1000；
+/// 而且同一个文件在多轮里改过会重复出现。这里改为：
+/// - 按路径合并整段区间，`before` 取最早一次变更前的内容、`after` 取最后一次变更后的内容；
+/// - 统计两者之间的**真实行差异**；
+/// - 净变化为零（建了又删、前后一致）的路径直接不展示。
+///
+/// `undo_patches` 的顺序是"从 HEAD 往目标"（新 → 旧），函数内部反转成时间顺序。
+fn summarize_undo_patches(session_id: &str, undo_patches: &[Patch]) -> Vec<PatchSummary> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    /// 区间起点/终点的内容。外层 `None` = 尚未初始化；内层 `None` = 文件不存在。
+    struct Acc {
+        before: Option<Option<String>>,
+        after: Option<Option<String>>,
+        /// 区间内最后一次变更是否是删除（用于区分"内容读不出来"与"真的删了"）。
+        deleted: bool,
+        /// 内容不可得（大文件内容已被 GC / 目录 / 二进制）时的兜底差异行数。
+        fallback_diff: Option<(usize, usize)>,
+    }
+
+    fn resolve_content(inline: &str, hash: Option<&String>, session_id: &str) -> Option<String> {
+        if !inline.is_empty() {
+            return Some(inline.to_string());
+        }
+        hash.and_then(|value| {
+            crate::core::rollback::store::load_content(session_id, value)
+                .ok()
+                .flatten()
+        })
+    }
+
+    fn diff_counts(patch: &Patch) -> Option<(usize, usize)> {
+        let Patch::UpdateFile {
+            diff: Some(diff), ..
+        } = patch
+        else {
+            return None;
+        };
+        let mut added = 0;
+        let mut removed = 0;
+        for hunk in &diff.hunks {
+            for line in &hunk.lines {
+                match line {
+                    super::patch::DiffLine::Addition { .. } => added += 1,
+                    super::patch::DiffLine::Deletion { .. } => removed += 1,
+                    super::patch::DiffLine::Context { .. } => {}
+                }
+            }
+        }
+        Some((added, removed))
+    }
+
+    let mut files: BTreeMap<String, Acc> = BTreeMap::new();
+    let mut renames: BTreeSet<String> = BTreeSet::new();
+
+    for patch in undo_patches.iter().rev() {
+        match patch {
+            Patch::CreateFile { path, content } => {
+                let entry = files.entry(path.clone()).or_insert(Acc {
+                    before: None,
+                    after: None,
+                    deleted: false,
+                    fallback_diff: None,
+                });
+                if entry.before.is_none() {
+                    entry.before = Some(None); // 区间开始时不存在
+                }
+                entry.after = Some(Some(content.clone()));
+                entry.deleted = false;
+            }
+            Patch::DeleteFile {
+                path, content_hash, ..
+            } => {
+                let entry = files.entry(path.clone()).or_insert(Acc {
+                    before: None,
+                    after: None,
+                    deleted: false,
+                    fallback_diff: None,
+                });
+                if entry.before.is_none() {
+                    entry.before = Some(resolve_content("", content_hash.as_ref(), session_id));
+                }
+                entry.after = Some(None); // 区间结束时不存在
+                entry.deleted = true;
+            }
+            Patch::UpdateFile {
+                path,
+                old_content,
+                new_content,
+                content_hash,
+                ..
+            } => {
+                let entry = files.entry(path.clone()).or_insert(Acc {
+                    before: None,
+                    after: None,
+                    deleted: false,
+                    fallback_diff: None,
+                });
+                if entry.before.is_none() {
+                    entry.before = Some(resolve_content(
+                        old_content,
+                        content_hash.as_ref().map(|(old, _)| old),
+                        session_id,
+                    ));
+                }
+                entry.after = Some(resolve_content(
+                    new_content,
+                    content_hash.as_ref().map(|(_, new)| new),
+                    session_id,
+                ));
+                entry.deleted = false;
+                if let Some(counts) = diff_counts(patch) {
+                    entry.fallback_diff = Some(counts);
+                }
+            }
+            Patch::RenameFile { old_path, .. } => {
+                renames.insert(old_path.clone());
+            }
+        }
+    }
+
+    fn line_diff_counts(before: &str, after: &str) -> (usize, usize) {
+        use similar::{ChangeTag, TextDiff as SimilarTextDiff};
+        let diff = SimilarTextDiff::from_lines(before, after);
+        let mut added = 0;
+        let mut removed = 0;
+        for change in diff.iter_all_changes() {
+            match change.tag() {
+                ChangeTag::Insert => added += 1,
+                ChangeTag::Delete => removed += 1,
+                ChangeTag::Equal => {}
+            }
+        }
+        (added, removed)
+    }
+
+    let mut summaries = Vec::new();
+    for (path, acc) in files {
+        let before = acc.before.clone().flatten();
+        // `deleted` 才代表"区间结束时文件不存在"；否则 `after == None` 只表示内容读不出来。
+        let after = if acc.deleted {
+            None
+        } else {
+            acc.after.clone().flatten()
+        };
+
+        // 区间开始时不存在、结束时也不存在（建了又删）→ 净零变化，不展示。
+        if acc.deleted && matches!(acc.before, Some(None)) {
+            continue;
+        }
+        // 前后都存在且完全一致 → 这段撤回对该文件是净零变化，不展示。
+        if let (Some(before), Some(after)) = (&before, &after) {
+            if before == after {
+                continue;
+            }
+        }
+
+        // 更新类补丁但拿不到新内容（大文件内容被 GC 等）：用该补丁自带的 diff 兜底，
+        // 至少不会把"读不出来"误报成"整文件删除"。
+        if !acc.deleted && after.is_none() {
+            let (lines_added, lines_removed) = acc.fallback_diff.unwrap_or((0, 0));
+            summaries.push(PatchSummary {
+                path,
+                operation: "update".to_string(),
+                lines_added,
+                lines_removed,
+            });
+            continue;
+        }
+
+        let operation = match (&acc.before, &acc.after) {
+            (Some(None), Some(Some(_))) => "create",
+            (Some(Some(_)), Some(None)) => "delete",
+            (Some(Some(_)), Some(Some(_))) => "update",
+            _ => "update",
+        };
+        let (lines_added, lines_removed) = match (&before, &after) {
+            (Some(before), Some(after)) => line_diff_counts(before, after),
+            (None, Some(after)) => (after.lines().count(), 0),
+            (Some(before), None) => (0, before.lines().count()),
+            (None, None) => acc.fallback_diff.unwrap_or((0, 0)),
+        };
+        summaries.push(PatchSummary {
+            path,
+            operation: operation.to_string(),
+            lines_added,
+            lines_removed,
+        });
+    }
+
+    // 改名补丁没有内容，单独列出（保留旧实现显示旧路径的口径）。
+    for path in renames {
+        if summaries.iter().any(|summary| summary.path == path) {
+            continue;
+        }
+        summaries.push(PatchSummary {
+            path,
+            operation: "rename".to_string(),
+            lines_added: 0,
+            lines_removed: 0,
+        });
+    }
+
+    summaries.sort_by(|a, b| a.path.cmp(&b.path));
+    summaries
+}
+
 /// 带重试的文件操作（处理 Windows 文件锁，供回滚时使用）
 async fn retry_fs_op<F, T>(op: F, max_retries: u32) -> Result<T, ReplayError>
 where
@@ -366,63 +576,39 @@ impl ReplayEngine {
         Ok(patches)
     }
 
-    fn collect_redo_patches(
-        &self,
-        tree: &SnapshotTree,
-        from_id: &str,
-        to_id: &str,
-    ) -> Result<Vec<Patch>, ReplayError> {
-        let mut patches = Vec::new();
-        let mut current = Some(to_id.to_string());
-
+    /// `ancestor_id` 是否在当前 HEAD 的祖先链上（含自身）。
+    ///
+    /// 撤回的目标必须是 HEAD 的祖先：否则"文件回退到 X"与"会话截断到 X 之前的消息"
+    /// 描述的不是同一个时间点，必然造成工作区与历史不一致。
+    fn is_ancestor(tree: &SnapshotTree, ancestor_id: &str, descendant_id: &str) -> bool {
+        let mut current = Some(descendant_id.to_string());
         while let Some(id) = current {
-            if id == *from_id {
-                break;
+            if id == ancestor_id {
+                return true;
             }
-            if let Some(snapshot) = tree.nodes.get(&id) {
-                patches.splice(0..0, snapshot.patches.clone());
-                current = snapshot.parent_id.clone();
-            } else {
-                break;
-            }
+            current = tree.nodes.get(&id).and_then(|s| s.parent_id.clone());
         }
-
-        Ok(patches)
+        false
     }
 
-    fn collect_transition_patches(
-        &self,
-        tree: &SnapshotTree,
-        current_id: &str,
-        target_id: &str,
-    ) -> Result<(Vec<Patch>, Vec<Patch>), ReplayError> {
-        if current_id == target_id {
-            return Ok((Vec::new(), Vec::new()));
-        }
-
-        let lca = self.find_lowest_common_ancestor(tree, current_id, target_id)?;
-        let undo_patches = self.collect_undo_patches(tree, current_id, &lca)?;
-        let redo_patches = self.collect_redo_patches(tree, &lca, target_id)?;
-
-        Ok((undo_patches, redo_patches))
-    }
-
+    /// 预览"从当前 HEAD 回退到目标快照"会影响的文件。
+    ///
+    /// 只统计 `HEAD → 目标` 这段**被撤销的补丁**（`target_id` 为空表示回到初始状态）。
+    /// 不再把 `目标 → HEAD` 的"重做补丁"混进来：那不是本次撤回的影响。
     pub fn preview_touched_files(
         &self,
         tree: &SnapshotTree,
         target_id: &str,
     ) -> Result<Vec<PatchSummary>, ReplayError> {
         let current_id = tree.current_snapshot_id.clone();
-        let (undo_patches, redo_patches) =
-            self.collect_transition_patches(tree, &current_id, target_id)?;
-        let mut summaries: Vec<PatchSummary> = undo_patches
-            .iter()
-            .chain(redo_patches.iter())
-            .map(|patch| patch.to_summary())
-            .collect();
-        summaries.sort_by(|a, b| a.path.cmp(&b.path));
-        summaries.dedup_by(|a, b| a.path == b.path);
-        Ok(summaries)
+        if !target_id.is_empty() && !Self::is_ancestor(tree, target_id, &current_id) {
+            return Err(ReplayError::InvalidPath(format!(
+                "目标快照 {} 不在当前分支链路上",
+                target_id
+            )));
+        }
+        let undo_patches = self.collect_undo_patches(tree, &current_id, target_id)?;
+        Ok(summarize_undo_patches(&self.session_id, &undo_patches))
     }
 
     /// 收集"从当前位置回退到目标快照"这段里、需要靠回收站恢复本体的对象。
@@ -461,7 +647,32 @@ impl ReplayEngine {
         target_id: &str,
         target_dir: &PathBuf,
     ) -> Result<RollbackOutcome, ReplayError> {
-        let workspace = self.rebuild_workspace(tree, target_id)?;
+        // 目标必须是当前 HEAD 的祖先：否则会把另一条分支的文件状态写进工作区，
+        // 而会话历史却按当前分支截断，两边描述的不是同一个时间点。
+        if !target_id.is_empty() && !Self::is_ancestor(tree, target_id, &tree.current_snapshot_id) {
+            return Err(ReplayError::InvalidPath(format!(
+                "目标快照 {} 不在当前分支链路上",
+                target_id
+            )));
+        }
+        let mut workspace = self.rebuild_workspace(tree, target_id)?;
+
+        // 目标状态里"不该存在"的文件必须被删掉。`rebuild_workspace` 只表达目标点
+        // 仍存在的文件；"目标点之后新建/改名产生的路径"要靠被撤销的补丁补出来。
+        // 只在根目录扫盘（`prepare` 的另一条清理通道）覆盖不到子目录 / 工作区外路径
+        // —— 例如在桌面新建的 x-login.html 会残留，导致"预览说会删、实际没删"。
+        let undo_patches = self.collect_undo_patches(tree, &tree.current_snapshot_id, target_id)?;
+        for patch in &undo_patches {
+            let path = match patch {
+                Patch::CreateFile { path, .. } => path.as_str(),
+                Patch::RenameFile { new_path, .. } => new_path.as_str(),
+                _ => continue,
+            };
+            if !workspace.files.contains_key(path) {
+                workspace.delete_paths.insert(path.to_string());
+            }
+        }
+
         let ctx = RollbackContext {
             known_paths: known_paths_in_tree(tree),
             trash_restores: self.trash_restores_between(tree, target_id)?,
@@ -959,7 +1170,12 @@ mod sweep_tests {
     }
 
     fn fresh_root(tag: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("jarvis-rollback-{tag}"));
+        // 每次用唯一目录：Windows 上并行测试/残留句柄会让固定路径的 remove_dir_all
+        // 偶发失败，进而把上一次测试的 tmp-e2e 带进本次前置断言（与业务逻辑无关）。
+        let root = std::env::temp_dir().join(format!(
+            "jarvis-rollback-{tag}-{}",
+            uuid::Uuid::new_v4()
+        ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("src")).unwrap();
         root
@@ -1149,5 +1365,220 @@ mod sweep_tests {
         ] {
             assert!(set.contains(p), "已知路径集合缺少 {p}：{set:?}");
         }
+    }
+
+    fn snapshot(
+        tree: &mut SnapshotTree,
+        patches: Vec<Patch>,
+        message: &str,
+    ) -> crate::core::rollback::Snapshot {
+        tree.create_snapshot(patches, Some(message.to_string()), None, None, false, None)
+    }
+
+    /// 撤回第 N 轮时，预览只能包含"第 N 轮及其后"被撤销的补丁，
+    /// 不能把更早轮次的改动一起列出来（截图事故的核心）。
+    #[test]
+    fn preview_only_contains_rounds_after_target() {
+        init_agent_home();
+        let mut tree = SnapshotTree::new("s-preview");
+        let root = snapshot(
+            &mut tree,
+            vec![Patch::CreateFile {
+                path: "C:/ws/a.txt".into(),
+                content: "one\ntwo\n".into(),
+            }],
+            "round-1",
+        );
+        let mid = snapshot(
+            &mut tree,
+            vec![Patch::UpdateFile {
+                path: "C:/ws/a.txt".into(),
+                old_content: "one\ntwo\n".into(),
+                new_content: "one\nTWO\n".into(),
+                diff: None,
+                content_hash: None,
+            }],
+            "round-2",
+        );
+        let head = snapshot(
+            &mut tree,
+            vec![Patch::CreateFile {
+                path: "C:/ws/b.txt".into(),
+                content: "b1\nb2\nb3\n".into(),
+            }],
+            "round-3",
+        );
+        assert_eq!(tree.current_snapshot_id, head.id);
+
+        let engine = ReplayEngine::new("s-preview");
+
+        // 撤回第 3 轮（目标是第 2 轮末状态）：只应看到 b.txt。
+        let files = engine
+            .preview_touched_files(&tree, &mid.id)
+            .expect("preview round-3");
+        assert_eq!(files.len(), 1, "只能影响第 3 轮创建的文件：{files:?}");
+        assert_eq!(files[0].path, "C:/ws/b.txt");
+        assert_eq!((files[0].lines_added, files[0].lines_removed), (3, 0));
+
+        // 撤回第 2 轮：应看到 a.txt 的真实净差异 +1/-1，以及 b.txt 的创建。
+        let files = engine
+            .preview_touched_files(&tree, &root.id)
+            .expect("preview round-2");
+        let a = files.iter().find(|file| file.path == "C:/ws/a.txt").expect("a.txt");
+        assert_eq!(
+            (a.lines_added, a.lines_removed),
+            (1, 1),
+            "应统计真实行差异，而不是整文件行数"
+        );
+        assert!(files.iter().any(|file| file.path == "C:/ws/b.txt"));
+    }
+
+    /// 目标不在当前分支链路上时必须报错，绝不能把另一条分支的文件状态写进工作区。
+    #[test]
+    fn preview_rejects_target_outside_current_branch() {
+        init_agent_home();
+        let mut tree = SnapshotTree::new("s-branch");
+        let root = snapshot(
+            &mut tree,
+            vec![Patch::CreateFile {
+                path: "C:/ws/root.txt".into(),
+                content: "root".into(),
+            }],
+            "root",
+        );
+        snapshot(
+            &mut tree,
+            vec![Patch::CreateFile {
+                path: "C:/ws/main.txt".into(),
+                content: "main".into(),
+            }],
+            "main",
+        );
+
+        tree.create_branch("side".to_string(), Some(root.id.clone()), None, None)
+            .expect("create side branch");
+        tree.switch_branch("side").expect("switch side");
+        let side = snapshot(
+            &mut tree,
+            vec![Patch::CreateFile {
+                path: "C:/ws/side.txt".into(),
+                content: "side".into(),
+            }],
+            "side",
+        );
+        tree.switch_branch("main").expect("switch main");
+
+        let engine = ReplayEngine::new("s-branch");
+        let error = engine
+            .preview_touched_files(&tree, &side.id)
+            .expect_err("另一条分支的快照必须被拒绝");
+        assert!(
+            format!("{error}").contains("不在当前分支链路上"),
+            "错误信息必须说明原因：{error}"
+        );
+    }
+
+    /// 回滚必须删除"目标点之后新建"的文件，包括子目录与工作区外路径。
+    ///
+    /// 只靠目标工作区 + 根目录扫盘覆盖不到这些路径，会出现"预览说会删、实际没删"。
+    #[test]
+    fn rollback_deletes_files_created_after_target_outside_root_scan() {
+        init_agent_home();
+        let root = fresh_root("delete-after-target");
+        let keep = root.join("keep.txt");
+        let later_sub = root.join("sub").join("later.txt");
+        let outside = std::env::temp_dir().join(format!(
+            "jarvis-rollback-outside-{}.txt",
+            uuid::Uuid::new_v4()
+        ));
+
+        std::fs::write(&keep, "keep\n").unwrap();
+        std::fs::create_dir_all(later_sub.parent().unwrap()).unwrap();
+        std::fs::write(&later_sub, "later\n").unwrap();
+        std::fs::write(&outside, "outside\n").unwrap();
+
+        let mut tree = SnapshotTree::new("s-delete-after");
+        let target = snapshot(
+            &mut tree,
+            vec![Patch::CreateFile {
+                path: keep.to_string_lossy().to_string(),
+                content: "keep\n".into(),
+            }],
+            "round-1",
+        );
+        snapshot(
+            &mut tree,
+            vec![
+                Patch::CreateFile {
+                    path: later_sub.to_string_lossy().to_string(),
+                    content: "later\n".into(),
+                },
+                Patch::CreateFile {
+                    path: outside.to_string_lossy().to_string(),
+                    content: "outside\n".into(),
+                },
+            ],
+            "round-2",
+        );
+
+        let engine = ReplayEngine::new("s-delete-after");
+        let outcome = tauri::async_runtime::block_on(engine.rollback_to(&mut tree, &target.id, &root))
+            .expect("rollback should succeed");
+
+        assert!(keep.exists(), "目标点已有的文件必须保留");
+        assert!(!later_sub.exists(), "目标点之后在子目录新建的文件必须删除");
+        assert!(!outside.exists(), "目标点之后在工作区外新建的文件必须删除");
+        assert!(
+            outcome.restore_failures.is_empty(),
+            "不应有恢复失败：{:?}",
+            outcome.restore_failures
+        );
+    }
+
+    /// 建了又删 = 净零变化，不应出现在预览里；同一文件多轮修改按整段净差异统计。
+    #[test]
+    fn summary_skips_net_zero_and_merges_multi_round_changes() {
+        let patches = vec![
+            // `summarize_undo_patches` 的入参顺序是"从 HEAD 往目标"（新 → 旧）：
+            // 1) 再修改 a.txt 一行，2) 修改 a.txt 一行，3) 删除 temp.txt，4) 创建 temp.txt
+            Patch::UpdateFile {
+                path: "C:/ws/a.txt".into(),
+                old_content: "1\nX\n3\n4\n5\n".into(),
+                new_content: "1\nX\n3\nY\n5\n".into(),
+                diff: None,
+                content_hash: None,
+            },
+            Patch::UpdateFile {
+                path: "C:/ws/a.txt".into(),
+                old_content: "1\n2\n3\n4\n5\n".into(),
+                new_content: "1\nX\n3\n4\n5\n".into(),
+                diff: None,
+                content_hash: None,
+            },
+            Patch::DeleteFile {
+                path: "C:/ws/temp.txt".into(),
+                content_hash: None,
+                trash_path: None,
+            },
+            Patch::CreateFile {
+                path: "C:/ws/temp.txt".into(),
+                content: "tmp\n".into(),
+            },
+        ];
+
+        let summaries = summarize_undo_patches("s-summary", &patches);
+        assert!(
+            !summaries.iter().any(|summary| summary.path == "C:/ws/temp.txt"),
+            "净零变化的文件不应出现：{summaries:?}"
+        );
+        let a = summaries
+            .iter()
+            .find(|summary| summary.path == "C:/ws/a.txt")
+            .expect("a.txt");
+        assert_eq!(
+            (a.lines_added, a.lines_removed),
+            (2, 2),
+            "多轮修改应按整段净差异合并，而不是重复出现两次"
+        );
     }
 }

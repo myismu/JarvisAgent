@@ -2215,7 +2215,6 @@ impl PipelineState {
                     p.seq,
                     &p.patch,
                     p.message.as_deref(),
-                    p.trigger_user_memory_index,
                     p.trigger_user_message_id.as_deref(),
                 );
             }
@@ -2234,7 +2233,7 @@ impl PipelineState {
                     &self.app,
                     &self.sid,
                     self.user_msg_preview.clone(),
-                    Some(self.initial_msg_index),
+                    self.user_message_id.clone(),
                 )
                 .await
             } else {

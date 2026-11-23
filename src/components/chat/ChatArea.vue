@@ -29,6 +29,12 @@ interface RollbackPreviewResult {
   targetCheckpointId: string;
   checkpointLabel: string;
   files: RollbackPreviewFile[];
+  /** 目标是否是"会话开始前"（撤销全部代码改动）。 */
+  initialState: boolean;
+  /** 被撤回消息是第几轮（从 1 开始）。 */
+  roundNumber: number;
+  /** 从被撤回消息起、到会话结束共有多少轮。 */
+  affectedRounds: number;
 }
 
 interface RollbackRecallResult {
@@ -48,6 +54,10 @@ interface RollbackPreviewState {
   targetCheckpointId: string;
   checkpointLabel: string;
   error: string;
+  /** 目标是否是"会话开始前"（撤销全部代码改动）。 */
+  initialState: boolean;
+  roundNumber: number;
+  affectedRounds: number;
 }
 
 const { t } = useI18n();
@@ -249,7 +259,6 @@ const rollbackMenu = ref<{
   y: number;
   snapshotId: string | null;
   rollbackMode: 'both' | 'session';
-  userMessageIndex: number | null;
   messageId: string | null;
   fallbackSnapshotId: string;
 }>({
@@ -258,7 +267,6 @@ const rollbackMenu = ref<{
   y: 0,
   snapshotId: null,
   rollbackMode: 'session',
-  userMessageIndex: null,
   fallbackSnapshotId: '',
   messageId: null,
 });
@@ -267,7 +275,6 @@ const rollbackConfirm = ref<{
   mode: 'both' | 'session';
   snapshotId: string;
   fallbackSnapshotId: string;
-  userMessageIndex: number | null;
   messageId: string | null;
   title: string;
   message: string;
@@ -284,6 +291,9 @@ const rollbackPreview = ref<RollbackPreviewState>({
   targetCheckpointId: '',
   checkpointLabel: '',
   error: '',
+  initialState: false,
+  roundNumber: 0,
+  affectedRounds: 0,
 });
 const rollbackLoading = ref(false);
 const rollbackError = ref('');
@@ -471,14 +481,15 @@ const handleContextMenu = (e: MouseEvent) => {
     y: position.top,
     snapshotId,
     rollbackMode: 'session',
-    userMessageIndex: null,
     messageId: null,
     fallbackSnapshotId: '',
   };
 };
 
-// 使用 Vue 数据驱动的回滚按钮点击
-const handleRollbackClickVue = (index: number, message: any, event: MouseEvent) => {
+// 使用 Vue 数据驱动的回滚按钮点击。
+// 不传 v-for 下标：渲染列表是"聚合气泡"，与后端原始消息表的下标不是同一坐标系；
+// 后端只认 messageId（及快照 ID）这两个稳定锚点。
+const handleRollbackClickVue = (message: any, event: MouseEvent) => {
   const rollbackMode = message.rollbackMode === 'both' ? 'both' : 'session';
   const rollbackCheckpointId = message.rollbackCheckpointId || '';
   const position = getRollbackMenuPosition(event.clientX, event.clientY, rollbackMode);
@@ -489,7 +500,6 @@ const handleRollbackClickVue = (index: number, message: any, event: MouseEvent) 
     y: position.top,
     snapshotId: rollbackCheckpointId,
     rollbackMode,
-    userMessageIndex: index,
     messageId: message.messageId || null,
     fallbackSnapshotId: '',
   };
@@ -655,7 +665,6 @@ const executeRollback = async (mode: 'both' | 'session') => {
         sessionId,
         checkpointId: rollbackMenu.value.snapshotId || rollbackMenu.value.fallbackSnapshotId || '',
         messageId: rollbackMenu.value.messageId,
-        userMessageIndex: rollbackMenu.value.userMessageIndex,
       });
       rollbackPreview.value = {
         loading: false,
@@ -664,12 +673,18 @@ const executeRollback = async (mode: 'both' | 'session') => {
         targetCheckpointId: result.targetCheckpointId,
         checkpointLabel: result.checkpointLabel,
         error: '',
+        initialState: result.initialState,
+        roundNumber: result.roundNumber,
+        affectedRounds: result.affectedRounds,
       };
     } catch (err) {
       const message = normalizeRollbackError(err);
       rollbackPreview.value.loading = false;
       rollbackPreview.value.error = message;
       rollbackError.value = message;
+      // 预览失败 = 目标区间无法安全确定，后端不会执行任何撤回。
+      // 必须明确告知用户，否则菜单关掉后看起来像"什么都没发生"。
+      alert(message);
       return;
     } finally {
       rollbackPreview.value.loading = false;
@@ -677,15 +692,22 @@ const executeRollback = async (mode: 'both' | 'session') => {
     }
   }
 
+  // 确认文案必须说清真实影响区间：是"全部代码改动"还是"从第 N 轮起的 M 轮"。
+  // 旧文案固定写"这条消息以及其后的代码改动"，与后端实际解析出的范围脱节。
   const previewMessage = mode === 'both'
-    ? t('rollback.confirmBothMessage')
+    ? rollbackPreview.value.initialState
+      ? t('rollback.confirmBothInitialMessage', { count: rollbackPreview.value.files.length })
+      : t('rollback.confirmBothRangeMessage', {
+          round: rollbackPreview.value.roundNumber,
+          rounds: rollbackPreview.value.affectedRounds,
+          count: rollbackPreview.value.files.length,
+        })
     : t('rollback.confirmSessionMessage');
 
   rollbackConfirm.value = {
     mode,
     snapshotId: rollbackMenu.value.snapshotId || '',
     fallbackSnapshotId: rollbackMenu.value.fallbackSnapshotId,
-    userMessageIndex: rollbackMenu.value.userMessageIndex,
     messageId: rollbackMenu.value.messageId,
     title: mode === 'both' ? t('rollback.confirmBothTitle') : t('rollback.confirmSessionTitle'),
     message: previewMessage,
@@ -724,7 +746,6 @@ const confirmRollback = async () => {
     }
 
     let recalledText: string | null = null;
-    const rollbackUserMessageIndex = rollbackConfirm.value.userMessageIndex;
     const rollbackMessageId = rollbackConfirm.value.messageId;
     if (rollbackConfirm.value.snapshotId || rollbackConfirm.value.fallbackSnapshotId || rollbackConfirm.value.mode === 'both') {
       // 有 checkpointId 或需要回滚代码（后端会按传入快照恢复文件）
@@ -733,15 +754,13 @@ const confirmRollback = async () => {
         checkpointId: rollbackConfirm.value.snapshotId || rollbackConfirm.value.fallbackSnapshotId || '',
         rollbackFiles: rollbackConfirm.value.mode === 'both',
         messageId: rollbackMessageId,
-        userMessageIndex: rollbackUserMessageIndex,
       });
       recalledText = result.recalledText;
       restoreWarnings = result.restoreWarnings ?? [];
-    } else if (rollbackMessageId || rollbackUserMessageIndex !== null) {
+    } else if (rollbackMessageId) {
       recalledText = await invoke<string | null>('recall_message', {
         sessionId,
         messageId: rollbackMessageId,
-        userMessageIndex: rollbackUserMessageIndex,
       });
     } else {
       recalledText = await invoke<string | null>('recall_last_message', { sessionId });
@@ -754,7 +773,6 @@ const confirmRollback = async () => {
           mode: 'session',
           snapshotId: '',
           fallbackSnapshotId: '',
-          userMessageIndex: null,
           messageId: null,
           title: t('rollback.restoreWarningsTitle'),
           message: t('rollback.restoreWarningsMessage'),
@@ -770,6 +788,9 @@ const confirmRollback = async () => {
       targetCheckpointId: '',
       checkpointLabel: '',
       error: '',
+      initialState: false,
+      roundNumber: 0,
+      affectedRounds: 0,
     };
     closeRollbackMenu();
 
@@ -889,7 +910,7 @@ onMounted(() => {
             :data-cp-id="message.rollbackCheckpointId || ''"
             :title="t('rollback.trigger')"
             :aria-label="t('rollback.trigger')"
-            @click.stop="handleRollbackClickVue(index, message, $event)"
+            @click.stop="handleRollbackClickVue(message, $event)"
           >
             <svg
               class="rollback-trigger-icon"

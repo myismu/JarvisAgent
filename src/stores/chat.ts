@@ -1147,7 +1147,6 @@ export const useChatStore = defineStore("chat", () => {
       const recalledText = await invoke<string>("recall_message", {
         sessionId,
         messageId: target.messageId,
-        userMessageIndex: null,
         pruneMetadataCutoff: null,
       });
       // 与后端按 messageId 截断保持一致，移除目标消息及其后的全部本地消息。

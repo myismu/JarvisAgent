@@ -59,7 +59,9 @@ pub struct PendingSnapshotPatch {
     pub seq: usize,
     pub patch: crate::core::rollback::Patch,
     pub message: Option<String>,
-    pub trigger_user_memory_index: Option<usize>,
+    /// 触发本轮补丁的用户消息 UUID（撤回关联的唯一锚点）。
+    ///
+    /// v29 起不再保存内存下标：它会被压缩/撤回改变并被后续轮次复用。
     pub trigger_user_message_id: Option<String>,
 }
 

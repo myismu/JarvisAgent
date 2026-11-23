@@ -98,15 +98,23 @@ fn latest_user_message_index(messages: &[Message]) -> Option<usize> {
         })
 }
 
-async fn active_user_message_index(app: &tauri::AppHandle, session_id: &str) -> Option<usize> {
+/// 当前轮用户消息的稳定 UUID。
+///
+/// 撤回锚点必须用 ID，不能用下标：下标会被自动压缩/撤回改写，并被后续轮次复用。
+async fn active_user_message_id(
+    app: &tauri::AppHandle,
+    session_id: &str,
+) -> Option<String> {
     if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         let session = ctx.memory.lock().await;
-        return latest_user_message_index(&session.messages);
+        let index = latest_user_message_index(&session.messages)?;
+        return session.message_ids.get(index).cloned();
     }
-    crate::core::session::load_session(session_id)
-        .ok()
-        .and_then(|session| latest_user_message_index(&session.messages))
+    crate::core::session::load_session(session_id).ok().and_then(|session| {
+        let index = latest_user_message_index(&session.messages)?;
+        session.message_ids.get(index).cloned()
+    })
 }
 
 async fn active_run_id(app: &tauri::AppHandle, session_id: &str) -> Option<String> {
@@ -126,13 +134,7 @@ async fn persist_pending_patch(
 ) {
     if let Some(manager) = app.try_state::<SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
-        let trigger_user_memory_index = active_user_message_index(app, session_id).await;
-        let trigger_user_message_id = trigger_user_memory_index.and_then(|index| {
-            ctx.memory
-                .try_lock()
-                .ok()
-                .and_then(|memory| memory.message_ids.get(index).cloned())
-        });
+        let trigger_user_message_id = active_user_message_id(app, session_id).await;
         let run_id = ctx
             .active_run_id
             .lock()
@@ -154,7 +156,6 @@ async fn persist_pending_patch(
             seq,
             patch,
             message,
-            trigger_user_memory_index,
             trigger_user_message_id,
         });
     }
@@ -170,7 +171,6 @@ fn records_to_pending(
             seq: record.seq,
             patch: record.patch,
             message: record.message,
-            trigger_user_memory_index: record.trigger_user_memory_index,
             trigger_user_message_id: record.trigger_user_message_id,
         })
         .collect()
@@ -202,7 +202,7 @@ pub async fn commit_pending_snapshot(
     app: &tauri::AppHandle,
     session_id: &str,
     message: String,
-    trigger_user_memory_index: Option<usize>,
+    trigger_user_message_id: Option<String>,
 ) -> Option<String> {
     let manager = app.try_state::<SessionManager>()?;
     let ctx = manager.get_or_create(session_id).await;
@@ -245,10 +245,12 @@ pub async fn commit_pending_snapshot(
     } else {
         pending.iter().rev().find_map(|item| item.message.clone())
     };
-    let user_index = trigger_user_memory_index.or_else(|| {
+    // 撤回锚点：优先用调用方明确传入的"本轮用户消息 ID"；
+    // 补丁记录里的 ID 是同一轮写入时的兜底（两者都来自 UUID，不受压缩影响）。
+    let user_message_id = trigger_user_message_id.or_else(|| {
         pending
             .iter()
-            .find_map(|item| item.trigger_user_memory_index)
+            .find_map(|item| item.trigger_user_message_id.clone())
     });
 
     if let Some(registry) = app.try_state::<SnapshotRegistry>() {
@@ -261,7 +263,7 @@ pub async fn commit_pending_snapshot(
                     None,
                     None,
                     None,
-                    user_index,
+                    user_message_id.clone(),
                 )
                 .await
             {
@@ -281,7 +283,12 @@ pub async fn commit_pending_snapshot(
                     );
                     if mgr.should_create_checkpoint().await {
                         let _ = mgr
-                            .create_checkpoint_snapshot(snapshot_message, None, None, user_index)
+                            .create_checkpoint_snapshot(
+                                snapshot_message,
+                                None,
+                                None,
+                                user_message_id,
+                            )
                             .await;
                     }
                     return Some(snapshot_id);

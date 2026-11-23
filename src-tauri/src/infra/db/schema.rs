@@ -16,7 +16,7 @@ use rusqlite::Connection;
 /// 2. 在 `init_schema` 的版本分支链末尾追加 `current_version < NN` 分支；
 /// 3. 把新结构同步进 `init_schema` 末尾的建表 DDL（新库不跑迁移，DDL 就是它的全部结构）。
 /// 三者缺一，新库与升级库的结构就会分叉。
-pub const SCHEMA_VERSION: i64 = 28;
+pub const SCHEMA_VERSION: i64 = 29;
 
 /// v24：用子 Agent 逐轮轨迹替代仅归档溢出事件的旧表。
 fn migrate_v24_subagent_trace(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -198,6 +198,80 @@ fn migrate_v28_request_usage(conn: &Connection) -> Result<(), rusqlite::Error> {
          );
          CREATE INDEX IF NOT EXISTS idx_request_usage_session_time
             ON request_usage(session_id, created_at);",
+    )?;
+    Ok(())
+}
+
+/// v29：撤回关联从**易变的内存消息下标**改为**稳定的 message_id**。
+///
+/// ## 为什么必须换主键
+/// 旧表的 `user_message_index` 记录的是"写补丁那一刻内存 `messages` 数组的下标"。
+/// 自动压缩会把前缀压成两条消息、撤回会截断历史，下标随之前移并被后续轮次复用；
+/// 而撤回解析时又拿它与 `session_messages.seq`（全局递增、不回退）比较，
+/// 两者不在同一个坐标系。实测后果：
+/// - 点第 3 轮却解析到第 6 轮的快照；
+/// - 点第 6 轮解析回当前 HEAD，代码完全没退；
+/// - 解析不到时退化为"初始状态"，预览/执行变成撤销整个会话。
+///
+/// `message_id` 是消息落库时分配的 UUID，跨压缩、撤回、分页都不变，是唯一正确的锚点。
+///
+/// ## 旧数据处理
+/// - `message_id` 为空的历史行无法可靠还原身份，**丢弃**（它们正是会误配的脏数据）；
+/// - 快照树里的 `trigger_user_message_id` 元数据会在会话打开时由
+///   `SessionSnapshotManager` 回填，因此旧会话仍能恢复出正确的关联。
+///
+/// 迁移可能被重复执行（版本号读取异常、手工重跑），因此先探列、整段用事务包住。
+fn migrate_v29_checkpoint_links_message_id(conn: &Connection) -> Result<(), rusqlite::Error> {
+    if !db_table_exists(conn, "checkpoint_user_message_links")? {
+        return Ok(());
+    }
+
+    let has_index_column = {
+        let mut stmt = conn.prepare("PRAGMA table_info(checkpoint_user_message_links)")?;
+        let found = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .any(|column| column == "user_message_index");
+        found
+    };
+    if !has_index_column {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "BEGIN IMMEDIATE;
+         DROP TABLE IF EXISTS checkpoint_user_message_links_v29;
+         CREATE TABLE checkpoint_user_message_links_v29 (
+            session_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            checkpoint_id TEXT NOT NULL,
+            has_file_edits INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER,
+            PRIMARY KEY(session_id, message_id),
+            UNIQUE(session_id, checkpoint_id),
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+         );
+         INSERT OR IGNORE INTO checkpoint_user_message_links_v29(
+            session_id, message_id, checkpoint_id, has_file_edits, created_at, updated_at
+         )
+         SELECT l.session_id, l.message_id, l.checkpoint_id, l.has_file_edits,
+                l.created_at, l.updated_at
+         FROM checkpoint_user_message_links l
+         JOIN (
+            SELECT session_id, message_id, MIN(created_at) AS min_created
+            FROM checkpoint_user_message_links
+            WHERE message_id IS NOT NULL AND trim(message_id) <> ''
+            GROUP BY session_id, message_id
+         ) earliest
+           ON earliest.session_id = l.session_id
+          AND earliest.message_id = l.message_id
+          AND earliest.min_created = l.created_at;
+         DROP TABLE checkpoint_user_message_links;
+         ALTER TABLE checkpoint_user_message_links_v29 RENAME TO checkpoint_user_message_links;
+         CREATE INDEX IF NOT EXISTS idx_checkpoint_user_message_links_session
+            ON checkpoint_user_message_links(session_id, message_id);
+         COMMIT;",
     )?;
     Ok(())
 }
@@ -1535,6 +1609,10 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
         if current_version < 28 {
             migrate_v28_request_usage(conn).map_err(|e| format!("v28 迁移失败: {}", e))?;
         }
+        if current_version < 29 {
+            migrate_v29_checkpoint_links_message_id(conn)
+                .map_err(|e| format!("v29 迁移失败: {}", e))?;
+        }
     }
 
     conn.execute_batch(
@@ -1735,13 +1813,12 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
 
         CREATE TABLE IF NOT EXISTS checkpoint_user_message_links (
             session_id TEXT NOT NULL,
-            user_message_index INTEGER NOT NULL,
+            message_id TEXT NOT NULL,
             checkpoint_id TEXT NOT NULL,
             has_file_edits INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
-            message_id TEXT,
             updated_at INTEGER,
-            PRIMARY KEY(session_id, user_message_index),
+            PRIMARY KEY(session_id, message_id),
             UNIQUE(session_id, checkpoint_id),
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
@@ -1803,8 +1880,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
 
         CREATE INDEX IF NOT EXISTS idx_session_attachments_session ON session_attachments(session_id);
         CREATE INDEX IF NOT EXISTS idx_session_transcripts_session_time ON session_transcripts(session_id, created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_checkpoint_user_message_links_session ON checkpoint_user_message_links(session_id, user_message_index);
-        CREATE INDEX IF NOT EXISTS idx_checkpoint_user_message_links_message_id ON checkpoint_user_message_links(session_id, message_id);
+        CREATE INDEX IF NOT EXISTS idx_checkpoint_user_message_links_session ON checkpoint_user_message_links(session_id, message_id);
         CREATE INDEX IF NOT EXISTS idx_agent_run_patches_session_run ON agent_run_patches(session_id, run_id, seq);
         CREATE INDEX IF NOT EXISTS idx_agent_run_patches_trigger_message_id ON agent_run_patches(session_id, trigger_user_message_id);
         CREATE INDEX IF NOT EXISTS idx_snapshot_journal_session ON snapshot_journal(session_id, id);
@@ -3300,5 +3376,100 @@ mod tests {
             )
             .expect("count deleted rows");
         assert_eq!(del_rows, 0, "会话彻底删除后明细必须级联清掉");
+    }
+
+    /// v29：撤回关联表必须从"内存下标主键"重建为"message_id 主键"。
+    ///
+    /// 锁三件事：
+    /// 1. 同一个 message_id 的多条历史行只保留**最早**一条（本轮第一个快照才是撤回锚点）；
+    /// 2. `message_id` 为空的下标脏数据被丢弃（它们正是误配的来源）；
+    /// 3. 迁移可重复执行，且新主键确实是 `(session_id, message_id)`。
+    #[test]
+    fn v29_checkpoint_links_rebuilds_on_message_id() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        conn.execute_batch(
+            "CREATE TABLE sessions(id TEXT PRIMARY KEY);
+             INSERT INTO sessions(id) VALUES('s1');
+             CREATE TABLE checkpoint_user_message_links (
+                session_id TEXT NOT NULL,
+                user_message_index INTEGER NOT NULL,
+                checkpoint_id TEXT NOT NULL,
+                has_file_edits INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                message_id TEXT,
+                updated_at INTEGER,
+                PRIMARY KEY(session_id, user_message_index),
+                UNIQUE(session_id, checkpoint_id)
+             );
+             INSERT INTO checkpoint_user_message_links
+                (session_id, user_message_index, checkpoint_id, has_file_edits, created_at, message_id, updated_at)
+             VALUES
+                ('s1', 2,  'snap_old',   1, 100, 'msg-a', 100),
+                ('s1', 6,  'snap_new',   1, 200, 'msg-a', 200),
+                ('s1', 10, 'snap_b',     1, 300, 'msg-b', 300),
+                ('s1', 12, 'snap_dirty', 1, 400, NULL,    400);",
+        )
+        .expect("seed legacy links");
+
+        migrate_v29_checkpoint_links_message_id(&conn).expect("首次迁移");
+        migrate_v29_checkpoint_links_message_id(&conn).expect("重复迁移必须幂等");
+
+        assert_eq!(
+            column_occurrences(&conn, "checkpoint_user_message_links", "user_message_index"),
+            0,
+            "旧的内存下标列必须消失"
+        );
+        assert_eq!(
+            column_occurrences(&conn, "checkpoint_user_message_links", "message_id"),
+            1,
+            "message_id 列必须存在且只有一列"
+        );
+
+        let rows: Vec<(String, String)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT message_id, checkpoint_id FROM checkpoint_user_message_links
+                     ORDER BY message_id",
+                )
+                .expect("prepare links");
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("query links")
+                .filter_map(Result::ok)
+                .collect()
+        };
+        assert_eq!(
+            rows,
+            vec![
+                ("msg-a".to_string(), "snap_old".to_string()),
+                ("msg-b".to_string(), "snap_b".to_string()),
+            ],
+            "同一消息只保留最早关联；message_id 为空的脏行必须丢弃"
+        );
+
+        // 新主键必须是 (session_id, message_id)：同一消息再次写入应覆盖而不是新增行。
+        conn.execute(
+            "INSERT INTO checkpoint_user_message_links
+                (session_id, message_id, checkpoint_id, has_file_edits, created_at, updated_at)
+             VALUES('s1', 'msg-a', 'snap_newer', 1, 500, 500)
+             ON CONFLICT(session_id, message_id) DO UPDATE SET
+                checkpoint_id = excluded.checkpoint_id",
+            [],
+        )
+        .expect("upsert by message_id");
+        let checkpoint: String = conn
+            .query_row(
+                "SELECT checkpoint_id FROM checkpoint_user_message_links
+                 WHERE session_id = 's1' AND message_id = 'msg-a'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read linked checkpoint");
+        assert_eq!(checkpoint, "snap_newer");
+        let total: i64 = conn
+            .query_row("SELECT count(*) FROM checkpoint_user_message_links", [], |row| {
+                row.get(0)
+            })
+            .expect("count links");
+        assert_eq!(total, 2, "按 message_id 覆盖后仍应是两条");
     }
 }

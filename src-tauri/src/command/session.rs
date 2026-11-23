@@ -691,19 +691,19 @@ pub async fn recall_last_message(
     session_manager: tauri::State<'_, SessionManager>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    let ctx = session_manager.get_or_create(&session_id).await;
-    let last_user_idx = {
-        let session = ctx.memory.lock().await;
-        session
-            .messages
-            .iter()
-            .rposition(|m| matches!(m, Message::User { .. }))
-            .ok_or_else(|| "没有可撤回的用户消息".to_string())?
-    };
+    // 以消息表为准找"最后一条真实用户输入"，再按 message_id 交给统一撤回入口。
+    // 不再把内存下标传下去：它会被压缩/撤回改变，且与 DB seq 不是同一坐标系。
+    let visible = session::list_visible_session_messages(&session_id)?;
+    let target = visible
+        .iter()
+        .rev()
+        .find(|message| is_real_user_message(message))
+        .ok_or_else(|| "没有可撤回的用户消息".to_string())?;
+    let message_id = target.message_id.clone();
     recall_message(
         session_id,
+        Some(message_id),
         None,
-        Some(last_user_idx),
         None,
         session_manager,
         app,
@@ -711,7 +711,39 @@ pub async fn recall_last_message(
     .await
 }
 
+/// 这条存储消息是否是"真实用户输入"（不是工具结果 / 后台通知 / 压缩摘要）。
+fn is_real_user_message(
+    stored: &crate::core::session::repository::StoredSessionMessage,
+) -> bool {
+    use crate::infra::types::models::{Content, ContentBlock, Message, MessageSource};
+
+    if stored.role != "user" || !stored.source.rendered_in_ui() {
+        return false;
+    }
+    if stored.source == MessageSource::Compact {
+        return false;
+    }
+    match &stored.content {
+        Message::User { content } => match content {
+            Content::Single(text) => !text.trim().is_empty(),
+            Content::Multiple(blocks) => blocks.iter().any(|block| match block {
+                ContentBlock::Text { text } => !text.trim().is_empty(),
+                ContentBlock::Image { .. } => true,
+                _ => false,
+            }),
+        },
+        _ => false,
+    }
+}
+
 /// 统一撤回入口。recall_last_message / rollback_to_checkpoint_with_recall 均委托至此。
+///
+/// ## 坐标口径（v29 起）
+/// - `message_id`：唯一首选锚点；
+/// - `user_message_index`：仅在缺少 message_id 时作为**可见消息表下标**兜底
+///   （不是内存 `messages` 下标，前端也不应再传聚合气泡下标）。
+///
+/// 截断与关联清理都以 `session_messages.seq` 为准：它全局递增、跨压缩稳定。
 #[tauri::command]
 pub async fn recall_message(
     session_id: String,
@@ -727,98 +759,104 @@ pub async fn recall_message(
     if ctx.has_active_execution() {
         return Err("当前任务尚未结束，请等待任务停止后再撤回。".to_string());
     }
-    let stored_target =
-        if let Some(message_id) = message_id.as_ref().filter(|id| !id.trim().is_empty()) {
-            session::find_session_message_by_id(&session_id, message_id)?
-        } else {
-            None
-        };
-    let recalled_text;
+    recall_message_locked(
+        &session_id,
+        message_id,
+        user_message_index,
+        prune_metadata_cutoff,
+        &ctx,
+        &app,
+    )
+    .await
+}
+
+/// 已持有执行槽时使用的撤回实现。
+///
+/// 文件回滚与会话截断必须处于同一个执行槽内：否则删完文件后 `recall_message`
+/// 才因为"任务仍在运行"失败，会留下工作区已变、历史没变的半截状态。
+pub(crate) async fn recall_message_locked(
+    session_id: &str,
+    message_id: Option<String>,
+    user_message_index: Option<usize>,
+    prune_metadata_cutoff: Option<u64>,
+    ctx: &crate::infra::state::state::SessionContext,
+    app: &tauri::AppHandle,
+) -> Result<String, String> {
+    let visible = session::list_visible_session_messages(session_id)?;
+    let position = if let Some(message_id) = message_id.filter(|id| !id.trim().is_empty()) {
+        visible
+            .iter()
+            .position(|message| message.message_id == message_id)
+            .ok_or_else(|| "撤回消息不存在".to_string())?
+    } else if let Some(index) = user_message_index {
+        if index >= visible.len() {
+            return Err("撤回消息不存在".to_string());
+        }
+        index
+    } else {
+        return Err("撤回消息不存在".to_string());
+    };
+
+    let stored_target = visible[position].clone();
+    if !is_real_user_message(&stored_target) {
+        return Err("撤回目标不是用户消息".to_string());
+    }
+    let recalled_text = match &stored_target.content {
+        Message::User { content } => message_text_content(content),
+        _ => return Err("撤回目标不是用户消息".to_string()),
+    };
+    // 被撤回区间内的所有 message_id：每条都可能触发过 agent_run，逐个清理，
+    // 防止崩溃恢复机制把已撤回的内容重新补回（复活）。
+    let removed_ids: Vec<String> = visible[position..]
+        .iter()
+        .map(|message| message.message_id.clone())
+        .filter(|id| !id.trim().is_empty())
+        .collect();
+
     let is_empty;
     {
         let mut session = ctx.memory.lock().await;
-        // 优先通过 stored.seq（session_messages 表行号）定位截断点。
-        // 压缩后 message_ids 只含摘要 ID，position() 查不到原始消息，必须从 DB 重建。
-        let target_msg: Option<Message> = if let Some(stored) = stored_target.as_ref() {
-            let visible = session::list_visible_session_messages(&session_id)?;
-            let pos = visible
-                .iter()
-                .position(|m| m.seq == stored.seq)
-                .ok_or_else(|| "撤回消息不存在".to_string())?;
-            // 撤回目标消息及之后的所有消息，只保留之前的
-            let target_content = visible.get(pos).map(|m| m.content.clone());
-            // 收集**所有被撤回消息**的 id：每条 user 消息都可能触发过 agent_run，
-            // 逐个清理，防止崩溃恢复机制把已撤回的内容重新补回（复活）
-            let removed_ids: Vec<String> = visible[pos..]
-                .iter()
-                .map(|m| m.message_id.clone())
-                .filter(|id| !id.is_empty())
-                .collect();
-            let keep: Vec<_> = visible.into_iter().take(pos).collect();
-            session.messages = keep.iter().map(|m| m.content.clone()).collect();
-            session.message_ids = keep.iter().map(|m| m.message_id.clone()).collect();
-            for mid in &removed_ids {
-                crate::core::orchestration::agent_runs::cleanup_by_message_id(mid);
-            }
-            target_content
-        } else if let Some(idx) = user_message_index {
-            if idx >= session.messages.len() {
-                return Err("撤回消息不存在".to_string());
-            }
-            let target = session.messages[idx].clone();
-            // 截断前收集 idx 及之后**所有**被撤消息的 id（与 message_id 分支同口径：
-            // 每条都可能触发过 agent_run），截断后 idx 就没了
-            let removed_ids: Vec<String> = session.message_ids[idx..]
-                .iter()
-                .filter(|id| !id.is_empty())
-                .cloned()
-                .collect();
-            session.messages.truncate(idx);
-            session.message_ids.truncate(idx);
-            for mid in &removed_ids {
-                crate::core::orchestration::agent_runs::cleanup_by_message_id(mid);
-            }
-            Some(target)
-        } else {
-            return Err("撤回消息不存在".to_string());
-        };
-
-        let Some(target_msg) = target_msg else {
-            return Err("撤回消息不存在".to_string());
-        };
-        if let Message::User { content } = &target_msg {
-            recalled_text = message_text_content(content);
-        } else {
-            return Err("撤回目标不是用户消息".to_string());
+        // 在内存里按 message_id 定位同一条消息。压缩摘要等非可见消息仍会留在内存中，
+        // 所以不能直接用"可见表下标"截断内存。
+        let memory_position = session
+            .message_ids
+            .iter()
+            .position(|id| id == &stored_target.message_id)
+            .ok_or_else(|| "会话内存与消息表不一致，请刷新会话后重试".to_string())?;
+        session.messages.truncate(memory_position);
+        session.message_ids.truncate(memory_position);
+        for message_id in &removed_ids {
+            crate::core::orchestration::agent_runs::cleanup_by_message_id(message_id);
         }
 
-        // checkpoint 回滚时的元数据清理
         if let Some(cutoff) = prune_metadata_cutoff {
             if cutoff == 0 {
                 session.plan_documents.clear();
             } else {
-                session.plan_documents.retain(|d| d.created_at <= cutoff);
+                session
+                    .plan_documents
+                    .retain(|document| document.created_at <= cutoff);
             }
         }
-
         is_empty = session.messages.is_empty();
     }
 
-    if let Some(stored) = stored_target {
-        session::delete_session_messages_from_seq(&session_id, stored.seq)?;
-    } else if let Some(user_message_index) = user_message_index {
-        session::delete_session_messages_from_seq(&session_id, user_message_index)?;
-    }
+    // 顺序不能反：关联清理的子查询要靠 session_messages 里的 seq 找到 message_id。
+    crate::infra::db::delete_checkpoint_user_message_links_from_seq(
+        session_id,
+        stored_target.seq,
+    )?;
+    session::delete_session_messages_from_seq(session_id, stored_target.seq)?;
 
     if is_empty {
-        switch_away_and_delete_session(&session_id, &app).await?;
+        switch_away_and_delete_session(session_id, app).await?;
     } else {
         {
             let memory = ctx.memory.lock().await.clone();
-            session::save_session(&session_id, &memory, None);
+            session::save_session(session_id, &memory, None);
         }
         // 保存后从 DB 重新加载，确保内存与持久化数据完全一致
-        match session::load_session(&session_id) {
+        match session::load_session(session_id) {
             Ok(reloaded) => {
                 let mut session = ctx.memory.lock().await;
                 *session = reloaded;
@@ -829,7 +867,7 @@ pub async fn recall_message(
         }
         let _ = app.emit("session-updated", ());
         // 撤回会截断消息表：可见条数与最新 seq 同时变化，必须广播
-        crate::core::session::notify_messages_changed(&app, &session_id, "recall");
+        crate::core::session::notify_messages_changed(app, session_id, "recall");
     }
 
     Ok(recalled_text)

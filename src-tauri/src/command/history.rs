@@ -46,8 +46,13 @@ struct UserDisplayMessage {
 }
 
 struct RollbackLookups {
-    by_index: Vec<(usize, RollbackInfo)>,
+    /// 消息自身就是"本轮有文件改动"的轮次 → 直接命中。
     by_message_id: HashMap<String, RollbackInfo>,
+    /// 按触发消息的**全局 seq** 升序排列。
+    ///
+    /// 用于"这条消息自己没有快照"的情形：取它之后第一个文件快照，
+    /// 该快照的父节点就是这条消息之前的文件状态。
+    by_seq: Vec<(usize, RollbackInfo)>,
 }
 
 use serde::Serialize;
@@ -419,7 +424,7 @@ fn append_tool_result(
 }
 
 fn build_linked_rollbacks(session_id: &str) -> RollbackLookups {
-    let mut by_index = Vec::new();
+    let mut by_seq = Vec::new();
     let mut by_message_id = HashMap::new();
     for link in crate::infra::db::list_checkpoint_user_message_links(session_id)
         .unwrap_or_default()
@@ -431,72 +436,44 @@ fn build_linked_rollbacks(session_id: &str) -> RollbackLookups {
             has_file_edits: true,
             created_at: link.created_at,
         };
-        if let Some(message_id) = link.message_id.filter(|value| !value.trim().is_empty()) {
-            by_message_id.insert(message_id, info.clone());
+        by_message_id.insert(link.message_id.clone(), info.clone());
+        // 已被撤回/隐藏的消息（seq 为 None）不参与后续轮次匹配。
+        if let Some(seq) = link.message_seq {
+            by_seq.push((seq, info));
         }
-        by_index.push((link.user_message_index, info));
     }
-    by_index.sort_by_key(|(trigger_index, info)| (*trigger_index, info.created_at));
+    by_seq.sort_by_key(|(seq, info)| (*seq, info.created_at));
     RollbackLookups {
-        by_index,
         by_message_id,
+        by_seq,
     }
 }
 
-fn parse_snapshot_usize(snapshot: &crate::core::rollback::Snapshot, key: &str) -> Option<usize> {
-    snapshot
-        .metadata
-        .get(key)
-        .and_then(|value| value.parse::<usize>().ok())
-}
-
-fn parse_snapshot_string(snapshot: &crate::core::rollback::Snapshot, key: &str) -> Option<String> {
-    snapshot
-        .metadata
-        .get(key)
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
+/// 为一条用户消息找"撤回入口对应的文件快照"。
+///
+/// 规则（v29 起只依赖稳定锚点）：
+/// 1. 这条消息自己有快照 → 直接用它；
+/// 2. 自己没有（纯聊天轮）→ 用它之后**第一个**文件快照；
+///    该快照的父节点就是这条消息之前的文件状态。
+///
+/// 不再使用"页内下标 / 内存下标"做兜底：分页、压缩、撤回都会改变它们，
+/// 曾导致消息被挂上完全不相干轮次的快照。
 fn find_rollback_info(
     linked_rollbacks: &RollbackLookups,
-    metadata_rollbacks_by_index: &[(usize, u64, String)],
-    metadata_rollbacks_by_message_id: &HashMap<String, RollbackInfo>,
-    memory_index: usize,
+    message_seq: Option<usize>,
     message_id: Option<&str>,
 ) -> Option<RollbackInfo> {
     if let Some(message_id) = message_id {
-        if let Some(info) = linked_rollbacks
-            .by_message_id
-            .get(message_id)
-            .or_else(|| metadata_rollbacks_by_message_id.get(message_id))
-        {
+        if let Some(info) = linked_rollbacks.by_message_id.get(message_id) {
             return Some(info.clone());
         }
     }
-
-    let linked = linked_rollbacks
-        .by_index
+    let message_seq = message_seq?;
+    linked_rollbacks
+        .by_seq
         .iter()
-        .filter(|(trigger_index, _)| *trigger_index >= memory_index)
-        .min_by_key(|(trigger_index, info)| (*trigger_index, info.created_at))
-        .map(|(_, info)| info.clone());
-    let metadata = metadata_rollbacks_by_index
-        .iter()
-        .filter(|(trigger_index, _, _)| *trigger_index >= memory_index)
-        .min_by_key(|(trigger_index, created_at, _)| (*trigger_index, *created_at))
-        .map(|(_, created_at, id)| RollbackInfo {
-            checkpoint_id: id.clone(),
-            has_file_edits: true,
-            created_at: *created_at,
-        });
-
-    match (linked, metadata) {
-        (Some(linked), Some(metadata)) if metadata.created_at < linked.created_at => Some(metadata),
-        (Some(linked), _) => Some(linked),
-        (None, Some(metadata)) => Some(metadata),
-        (None, None) => None,
-    }
+        .find(|(trigger_seq, _)| *trigger_seq > message_seq)
+        .map(|(_, info)| info.clone())
 }
 
 /// 判断该 source 是否属于"中断收尾消息"。
@@ -579,11 +556,10 @@ fn is_renderable_source(source: MessageSource) -> bool {
 async fn extract_session_messages(
     session_id: &str,
     session_manager: &SessionManager,
-    registry: &SnapshotRegistry,
 ) -> Result<Vec<SessionMessage>, String> {
     // 全量语义：窗口不设限（分页元数据被丢弃）
     let (messages, _, _, _) =
-        extract_session_messages_window(session_id, session_manager, registry, None, None).await?;
+        extract_session_messages_window(session_id, session_manager, None, None).await?;
     Ok(messages)
 }
 
@@ -619,7 +595,6 @@ pub struct PagedSessionMessages {
 async fn extract_session_messages_window(
     session_id: &str,
     session_manager: &SessionManager,
-    registry: &SnapshotRegistry,
     before_seq: Option<i64>,
     max_turns: Option<usize>,
 ) -> Result<(Vec<SessionMessage>, bool, Option<i64>, Option<i64>), String> {
@@ -657,41 +632,9 @@ async fn extract_session_messages_window(
         return Ok((Vec::new(), false, None, None));
     }
 
+    // 撤回关联只读 v29 的 `message_id` 关联表（旧会话由快照树元数据在打开时回填）。
+    // 不再读 snapshot.metadata 里的 `trigger_user_memory_index` —— 它是易变下标。
     let linked_rollbacks = build_linked_rollbacks(session_id);
-    let metadata_rollbacks_by_index;
-    let metadata_rollbacks_by_message_id;
-    {
-        let manager = registry.0.read().await.get_or_create(session_id).await?;
-        let mut by_index = Vec::new();
-        let mut by_message_id = HashMap::new();
-        for snapshot in manager
-            .list_snapshots(None)
-            .await
-            .into_iter()
-            .filter(|snapshot| snapshot.is_checkpoint)
-        {
-            let patch_count = parse_snapshot_usize(&snapshot, "patch_count").unwrap_or(0);
-            if patch_count == 0 {
-                continue;
-            }
-            let info = RollbackInfo {
-                checkpoint_id: snapshot.id.clone(),
-                has_file_edits: true,
-                created_at: snapshot.created_at,
-            };
-            if let Some(message_id) = parse_snapshot_string(&snapshot, "trigger_user_message_id") {
-                by_message_id.insert(message_id, info);
-            }
-            if let Some(trigger_index) =
-                parse_snapshot_usize(&snapshot, "trigger_user_memory_index")
-            {
-                by_index.push((trigger_index, snapshot.created_at, snapshot.id));
-            }
-        }
-        by_index.sort_by_key(|(trigger_index, created_at, _)| (*trigger_index, *created_at));
-        metadata_rollbacks_by_index = by_index;
-        metadata_rollbacks_by_message_id = by_message_id;
-    };
 
     // 消息来源二选一：
     // - 按轮凑页：每页 max_turns 个完整轮（长任务轮密度自适应）
@@ -753,7 +696,7 @@ async fn extract_session_messages_window(
 
     let display_messages = render_messages
         .iter()
-        .filter_map(|(memory_index, message_id, seq, msg, source, _kind)| {
+        .filter_map(|(_idx, message_id, seq, msg, source, _kind)| {
             if let Message::User { content } = msg {
                 let display = user_display_content(content);
                 if is_renderable_source(*source) && !display.trim().is_empty() {
@@ -762,9 +705,7 @@ async fn extract_session_messages_window(
                         seq: *seq,
                         rollback_info: find_rollback_info(
                             &linked_rollbacks,
-                            &metadata_rollbacks_by_index,
-                            &metadata_rollbacks_by_message_id,
-                            *memory_index,
+                            *seq,
                             message_id.as_deref(),
                         ),
                     });
@@ -951,7 +892,6 @@ async fn extract_session_messages_window(
 pub async fn get_session_messages(
     session_id: String,
     session_manager: tauri::State<'_, SessionManager>,
-    registry: tauri::State<'_, SnapshotRegistry>,
 ) -> Result<Vec<SessionMessage>, String> {
     // 重建时机前置：把 interrupted+resumable 的半截内容从 agent_run_events
     // 重放并落进 session_messages，使崩溃/中断后**仅查看会话**（无需发消息）
@@ -977,7 +917,7 @@ pub async fn get_session_messages(
             session_id
         );
     }
-    extract_session_messages(&session_id, &session_manager, &registry).await
+    extract_session_messages(&session_id, &session_manager).await
 }
 
 /// 懒加载分页命令：**按轮凑页**——一轮 = 一条可渲染 user 消息 + 其后所有消息
@@ -993,7 +933,6 @@ pub async fn get_session_messages_paged(
     before_seq: Option<i64>,
     limit: Option<usize>,
     session_manager: tauri::State<'_, SessionManager>,
-    registry: tauri::State<'_, SnapshotRegistry>,
 ) -> Result<PagedSessionMessages, String> {
     // 中断恢复前置（唯一闸门 `ensure_session_recovered`，原子抢占 + 先落库后盖章）：
     // 恢复落库的是尾部消息，天然包含在首屏窗口内。
@@ -1019,7 +958,6 @@ pub async fn get_session_messages_paged(
     let (messages, has_more, oldest_seq, newest_seq) = extract_session_messages_window(
         &session_id,
         &session_manager,
-        &registry,
         before_seq,
         limit,
     )

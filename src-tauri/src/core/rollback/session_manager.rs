@@ -77,6 +77,58 @@ impl SessionSnapshotManager {
             }
         }
 
+        // ── v29 回填：旧库的关联表按"内存下标"存，无法可靠还原；
+        //    快照树里的 `trigger_user_message_id` 才是真锚点。
+        //    这里按 message_id 补齐缺失关联，绝不覆盖已有权威关联（INSERT OR IGNORE）。
+        //    普通快照优先；只有整轮快照节点已被裁剪时，才退而使用 checkpoint 节点。 ──
+        {
+            let mut linked_message_ids: HashSet<String> =
+                crate::infra::db::list_checkpoint_user_message_links(session_id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|link| link.message_id)
+                    .collect();
+            // 只回填**仍然可见**的消息：已撤回/隐藏消息的快照节点还在树里，
+            // 但绝不能因回填把它们的关联"复活"，否则刷新后又会冒出指向幽灵消息的链接。
+            let visible_message_ids: HashSet<String> =
+                crate::core::session::list_visible_session_messages(session_id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|message| message.message_id)
+                    .collect();
+            for pass_checkpoint in [false, true] {
+                for snapshot in tree.nodes.values() {
+                    if snapshot.is_checkpoint != pass_checkpoint {
+                        continue;
+                    }
+                    let message_id = snapshot
+                        .metadata
+                        .get("trigger_user_message_id")
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty());
+                    let Some(message_id) = message_id else {
+                        continue;
+                    };
+                    if linked_message_ids.contains(&message_id)
+                        || !visible_message_ids.contains(&message_id)
+                    {
+                        continue;
+                    }
+                    if crate::infra::db::insert_checkpoint_user_message_link_if_absent(
+                        session_id,
+                        &message_id,
+                        &snapshot.id,
+                        !snapshot.patches.is_empty(),
+                        snapshot.created_at,
+                    )
+                    .is_ok()
+                    {
+                        linked_message_ids.insert(message_id);
+                    }
+                }
+            }
+        }
+
         let replay_engine = ReplayEngine::new(session_id);
 
         let mut sandbox_manager = SandboxManager::new(sandbox_base_dir, session_id.to_string());
@@ -97,6 +149,9 @@ impl SessionSnapshotManager {
     /// 创建新快照
     ///
     /// 普通快照只记录一轮 Agent 累积的补丁，不在这里自动升级为 checkpoint。
+    ///
+    /// `trigger_user_message_id` 是本轮用户消息的稳定 UUID（撤回关联的唯一锚点）。
+    /// v29 起不再接收/保存内存下标：压缩与撤回都会改写它。
     pub async fn create_snapshot(
         &self,
         patches: Vec<Patch>,
@@ -104,7 +159,7 @@ impl SessionSnapshotManager {
         agent_id: Option<String>,
         workspace_id: Option<String>,
         _target_dir: Option<PathBuf>,
-        trigger_user_memory_index: Option<usize>,
+        trigger_user_message_id: Option<String>,
     ) -> Result<Snapshot, String> {
         let mut tree = self.tree.write().await;
 
@@ -117,16 +172,9 @@ impl SessionSnapshotManager {
             None,
         );
 
-        if let Some(index) = trigger_user_memory_index {
-            snapshot
-                .metadata
-                .insert("trigger_user_memory_index".to_string(), index.to_string());
-        }
-        let trigger_user_message_id = trigger_user_memory_index.and_then(|index| {
-            crate::core::session::load_session(&self.session_id)
-                .ok()
-                .and_then(|memory| memory.message_ids.get(index).cloned())
-        });
+        let trigger_user_message_id = trigger_user_message_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
         if let Some(message_id) = trigger_user_message_id.as_ref() {
             snapshot
                 .metadata
@@ -142,11 +190,13 @@ impl SessionSnapshotManager {
         self.store
             .save_tree(&tree)
             .map_err(|e| format!("保存树失败: {}", e))?;
-        if let Some(index) = trigger_user_memory_index {
-            crate::infra::db::upsert_checkpoint_user_message_link_v2(
+        if let Some(message_id) = trigger_user_message_id.as_ref() {
+            // **只登记本轮第一个文件快照**：同一条用户消息可能因续跑/循环确认产生
+            // 多个快照。撤回这条消息时应回到"本轮开始前"，因此目标必须锚定第一个
+            // 快照的父节点；若每次覆盖成最新快照，只会撤掉最后一次续跑。
+            crate::infra::db::insert_checkpoint_user_message_link_if_absent(
                 &self.session_id,
-                trigger_user_message_id.as_deref(),
-                index,
+                message_id,
                 &snapshot.id,
                 !patches.is_empty(),
                 snapshot.created_at,
@@ -191,7 +241,7 @@ impl SessionSnapshotManager {
         message: Option<String>,
         agent_id: Option<String>,
         workspace_id: Option<String>,
-        trigger_user_memory_index: Option<usize>,
+        trigger_user_message_id: Option<String>,
     ) -> Result<Snapshot, String> {
         let mut tree = self.tree.write().await;
 
@@ -201,19 +251,13 @@ impl SessionSnapshotManager {
         snapshot
             .metadata
             .insert("patch_count".to_string(), patch_count.to_string());
-        if let Some(index) = trigger_user_memory_index {
+        let trigger_user_message_id = trigger_user_message_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        if let Some(message_id) = trigger_user_message_id.as_ref() {
             snapshot
                 .metadata
-                .insert("trigger_user_memory_index".to_string(), index.to_string());
-        }
-        if let Some(message_id) = trigger_user_memory_index.and_then(|index| {
-            crate::core::session::load_session(&self.session_id)
-                .ok()
-                .and_then(|memory| memory.message_ids.get(index).cloned())
-        }) {
-            snapshot
-                .metadata
-                .insert("trigger_user_message_id".to_string(), message_id);
+                .insert("trigger_user_message_id".to_string(), message_id.clone());
         }
 
         // 将 metadata 同步回 tree.nodes（create_snapshot 返回的是 clone 前的原始对象，
@@ -522,6 +566,23 @@ impl SessionSnapshotManager {
     pub async fn get_current_snapshot_id(&self) -> String {
         let tree = self.tree.read().await;
         tree.current_snapshot_id.clone()
+    }
+
+    /// 当前 HEAD 所在链路上的全部快照 ID（含 HEAD 自身）。
+    ///
+    /// 撤回解析必须只看这条链路：回滚后旧的后继快照仍留在 `nodes` 里（孤儿分支），
+    /// 若不筛掉，它们可能被当成"本条消息之后的下一个文件快照"，把撤回目标带偏。
+    pub async fn current_chain_ids(&self) -> HashSet<String> {
+        let tree = self.tree.read().await;
+        let mut ids = HashSet::new();
+        let mut current = Some(tree.current_snapshot_id.clone());
+        while let Some(id) = current {
+            if !ids.insert(id.clone()) {
+                break;
+            }
+            current = tree.nodes.get(&id).and_then(|snapshot| snapshot.parent_id.clone());
+        }
+        ids
     }
 
     /// 查找目标快照之前最近一个检查点的 workspace_state

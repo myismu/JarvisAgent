@@ -50,15 +50,17 @@ fn latest_user_message_index(messages: &[Message]) -> Option<usize> {
         })
 }
 
-async fn active_user_message_index(app: &tauri::AppHandle, session_id: &str) -> Option<usize> {
+async fn active_user_message_id(app: &tauri::AppHandle, session_id: &str) -> Option<String> {
     if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         let session = ctx.memory.lock().await;
-        return latest_user_message_index(&session.messages);
+        let index = latest_user_message_index(&session.messages)?;
+        return session.message_ids.get(index).cloned();
     }
-    crate::core::session::load_session(session_id)
-        .ok()
-        .and_then(|session| latest_user_message_index(&session.messages))
+    crate::core::session::load_session(session_id).ok().and_then(|session| {
+        let index = latest_user_message_index(&session.messages)?;
+        session.message_ids.get(index).cloned()
+    })
 }
 
 async fn active_run_id(app: &tauri::AppHandle, session_id: &str) -> Option<String> {
@@ -76,13 +78,8 @@ async fn record_patch_to_snapshot(
 ) {
     if let Some(manager) = app.try_state::<SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
-        let trigger_user_memory_index = active_user_message_index(app, session_id).await;
-        let trigger_user_message_id = trigger_user_memory_index.and_then(|index| {
-            ctx.memory
-                .try_lock()
-                .ok()
-                .and_then(|memory| memory.message_ids.get(index).cloned())
-        });
+        // 撤回锚点只用稳定的用户消息 UUID，不再记录易变的内存下标。
+        let trigger_user_message_id = active_user_message_id(app, session_id).await;
         let run_id = active_run_id(app, session_id)
             .await
             .unwrap_or_else(|| "manual".to_string());
@@ -101,7 +98,6 @@ async fn record_patch_to_snapshot(
             seq,
             patch,
             message,
-            trigger_user_memory_index,
             trigger_user_message_id,
         });
     }
