@@ -3768,7 +3768,7 @@ impl PipelineState {
         // 触发指令带实际计数：触发时两个计数器尚未清零（触发分支直接 break），
         // 把真实值与阈值一起告诉模型，让它对"空转了多久"有量化感知。
         let instruction = format!(
-            "【系统通知】规划探索已达到看门狗阈值（本轮已累计 {} 次工具调用未提交方案 / {} 轮未提交方案；阈值：{} 次或 {} 轮）。请立即停止探索，不要调用任何工具，只用一段话输出当前进度小结与下一步建议（继续探索 / 缩小范围 / 直接执行）。",
+            "【系统通知】规划探索已达到看门狗阈值（本轮已累计 {} 次工具调用未提交方案 / {} 轮未提交方案；阈值：{} 次或 {} 轮）。请立即停止探索，不要调用任何工具。思考可以照常进行，但必须在可见正文中输出当前进度小结与下一步建议（继续探索 / 缩小范围 / 直接执行）；只有思考而没有正文，用户将看不到本轮结论。",
             self.plan_consecutive_stalls,
             self.plan_total_loops_without_plan,
             PLAN_WATCHDOG_MAX_CONSECUTIVE_STALLS,
@@ -3819,7 +3819,9 @@ impl PipelineState {
         }
 
         self.final_answer = summary.clone();
-        self.tool_execution_summary = Some(summary.clone());
+        // 收尾小结**不写** `tool_execution_summary`：后者是“工具执行结果”的摘要，
+        // 前端会把它渲染进执行过程的折叠区。同一个字符串同时正文与工具摘要各写一份，
+        // 渲染层去重后正文会被吃掉，用户只看到「输出 #N」里的一段结论（实测反馈）。
         let _ = self.app.emit(
             "chat-stream",
             json!({
