@@ -1,7 +1,12 @@
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { AgentApprovalMode, AgentAudience, AgentUserMode, AgentWorkMode } from "../types";
+import type {
+  AgentApprovalDefaultMode,
+  AgentAudience,
+  AgentUserMode,
+  AgentWorkMode,
+} from "../types";
 import { DEFAULT_LOCALE, normalizeLocale, type AppLocale } from "../i18n";
 import { parseThinkingDefault, type ThinkingDefault } from "../utils/thinking";
 
@@ -65,8 +70,13 @@ interface UiPreferences {
   agentPanelVisible: boolean;
   agentAudience: AgentAudience;
   agentWorkMode: AgentWorkMode;
-  /** 权限档位：请求审批（默认）/ 帮我批准 */
-  agentApprovalMode: AgentApprovalMode;
+  /**
+   * 权限档位**默认值**：请求审批（默认）/ 帮我批准。
+   *
+   * 刻意不含 full_approve：完全批准只能在绑定项目的会话里按会话开启，不能当全局默认
+   * （理由见 `types/index.ts` 的 `AgentApprovalDefaultMode`）。
+   */
+  agentApprovalMode: AgentApprovalDefaultMode;
   /**
    * 深度思考的**设置默认档位**（三值）：跟随后端 `UiPreferences.thinking_default`。
    *
@@ -507,7 +517,9 @@ export function usePreferences() {
     get: () => (prefs.value.agentWorkMode === "plan" ? "plan" : "edit"),
     set: (val) => { prefs.value.agentWorkMode = val; },
   });
-  const agentApprovalMode = computed<AgentApprovalMode>({
+  // 全局白名单只有两档：库里即便被手改成 full_approve（或任何脏值），读出来也收敛成
+  // request_approval；写入口的类型同样只接受两档，从编译期堵住「把完全批准存成默认」。
+  const agentApprovalMode = computed<AgentApprovalDefaultMode>({
     get: () => (prefs.value.agentApprovalMode === "auto_approve" ? "auto_approve" : "request_approval"),
     set: (val) => { prefs.value.agentApprovalMode = val; },
   });
@@ -564,7 +576,7 @@ export function usePreferences() {
     agentWorkMode,
     setAgentWorkMode: (val: AgentUserMode) => { prefs.value.agentWorkMode = val; },
     agentApprovalMode,
-    setAgentApprovalMode: (val: AgentApprovalMode) => { prefs.value.agentApprovalMode = val; },
+    setAgentApprovalMode: (val: AgentApprovalDefaultMode) => { prefs.value.agentApprovalMode = val; },
     thinkingDefault,
     setThinkingDefault: (val: ThinkingDefault) => { prefs.value.thinkingDefault = parseThinkingDefault(val); },
     locale,

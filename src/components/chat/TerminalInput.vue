@@ -804,8 +804,39 @@ const doSwitchProfile = async (id: string) => {
   }
 };
 
-/** 当前权限档位（请求审批 / 帮我批准）：后端会话状态为准 */
+/** 当前权限档位（请求审批 / 帮我批准 / 完全批准）：后端会话状态为准 */
 const currentApprovalMode = ref<AgentApprovalMode>(uiPrefs.agentApprovalMode.value);
+
+/**
+ * 当前会话是否**绑定项目** —— 「完全批准」（full_approve）档的开放条件。
+ *
+ * 为什么第三档要看这个：full_approve 连改动/删除/改名/命令都不再问，安全垫只有
+ * 项目的回滚快照与回收站（删除是可恢复的软删）。这两个能力都挂在项目目录（沙箱根）上，
+ * 独立会话没有沙箱根，也就没有回滚依据，所以只给两档。
+ *
+ * 数据来源（本组件既有口径）：
+ * - 已有会话：`session.workingDirectory`，后端由 sessions LEFT JOIN projects 派生的
+ *   `p.path`，非空即已绑定项目（独立会话恒为 null）；
+ * - 新建会话态（尚未发首条消息）：还没有会话 meta，绑定关系暂存在 `session.pendingProjectId`。
+ */
+const projectBound = computed(() => {
+  if (session.activeSessionId) return !!session.workingDirectory;
+  return !!session.pendingProjectId;
+});
+
+/**
+ * 权限档位选择器要渲染的档位列表。
+ *
+ * 绑定项目 → 三档；否则两档。额外兜一条：当前值已经是 full_approve 时也把它渲染出来，
+ * 否则会出现「没有任何一项高亮、也没有入口切回两档」的情况（例如项目已归档但会话仍可访问）。
+ */
+const approvalModeOptions = computed<AgentApprovalMode[]>(() => {
+  const modes: AgentApprovalMode[] = ['request_approval', 'auto_approve'];
+  if (projectBound.value || currentApprovalMode.value === 'full_approve') {
+    modes.push('full_approve');
+  }
+  return modes;
+});
 
 /**
  * 只读保护（本会话禁止一切改动）：后端会话状态为准，**不落盘**。
@@ -852,6 +883,8 @@ const toggleReadOnly = async () => {
  *   `approval-mode-changed`，并把**已经挂起的权限卡**按新档位重判
  *   （`sweep_pending_on_mode_change`）。运行期间切档必须走这条路——只记 pending、
  *   等发消息才落库的话，当前这一轮仍按旧档位判定（切了等于没切）。
+ *   注意：full_approve 只在绑定项目的会话里可选（见 `projectBound` / `approvalModeOptions`），
+ *   前端不在这里再拦一次——允许的档位列表已经决定了用户点不到它。
  * - **无会话态**（尚未发首条消息，会话还不存在）：只记 pending，创建会话时由
  *   `chat.ts flushPendingSessionPrefs` 统一转交。
  *
@@ -1480,14 +1513,14 @@ const handleRecallEdit = async () => {
         <div class="work-mode-selector approval-selector">
           <button class="work-mode-btn" @click="showApprovalMenu = !showApprovalMenu">
             <span class="work-mode-dot" :class="currentApprovalMode"></span>
-            <span class="work-mode-label">{{ t('settings.general.' + currentApprovalMode) }}</span>
+            <span class="work-mode-label" :class="{ 'is-danger': currentApprovalMode === 'full_approve' }">{{ t('settings.general.' + currentApprovalMode) }}</span>
             <svg viewBox="0 0 24 24" width="10" height="10" stroke="currentColor" stroke-width="2" fill="none"><polyline points="6 9 12 15 18 9"></polyline></svg>
           </button>
 
           <div v-if="showApprovalMenu" class="work-mode-menu">
             <div class="work-mode-menu-inner">
               <div
-                v-for="mode in (['request_approval', 'auto_approve'] as AgentApprovalMode[])"
+                v-for="mode in approvalModeOptions"
                 :key="mode"
                 class="work-mode-menu-item"
                 :class="{ active: currentApprovalMode === mode }"
@@ -1495,7 +1528,7 @@ const handleRecallEdit = async () => {
               >
                 <span class="work-mode-dot" :class="mode"></span>
                 <div class="work-mode-menu-text">
-                  <div class="work-mode-menu-name">{{ t('settings.general.' + mode) }}</div>
+                  <div class="work-mode-menu-name" :class="{ 'is-danger': mode === 'full_approve' }">{{ t('settings.general.' + mode) }}</div>
                   <div class="work-mode-menu-desc">{{ t('settings.general.' + mode + 'DescShort') }}</div>
                 </div>
               </div>
@@ -2100,6 +2133,12 @@ const handleRecallEdit = async () => {
 .work-mode-dot.readonly { background: var(--text-muted); }
 .work-mode-dot.request_approval { background: var(--text-muted); }
 .work-mode-dot.auto_approve { background: var(--text-muted); }
+.work-mode-dot.full_approve { background: var(--surface-danger); }
+/* 完全批准是危险选项：标题用警示红，与普通档位区分 */
+.work-mode-menu-name.is-danger,
+.work-mode-label.is-danger {
+  color: var(--surface-danger);
+}
 
 .work-mode-btn.readonly {
   border-color: var(--glass-border);

@@ -376,6 +376,7 @@ mod tests {
             target_exists: None,
             existing_deny_reason: None,
             warning: None,
+            destructive_warning: false,
             command_is_readonly: readonly_cmd,
             allowance: Vec::new(),
         }
@@ -450,6 +451,8 @@ pub struct PreparedFacts {
     pub target_exists: Option<bool>,
     pub existing_deny_reason: Option<String>,
     pub warning: Option<String>,
+    /// 是否命中破坏性操作（与 `warning` 分开：后者含长周期/命令替换等普通提醒）。
+    pub destructive_warning: bool,
     pub command_is_readonly: bool,
     /// 会话级允许的键列表（类别 + 范围 + 说明）；空列表表示这次操作不支持会话级允许。
     /// 链式命令会有多把键（一段一把），判定侧要求**全部**被允许才放行。
@@ -466,6 +469,7 @@ impl PreparedFacts {
             target_exists: self.target_exists,
             existing_deny_reason: self.existing_deny_reason.clone(),
             existing_warning: self.warning.clone(),
+            destructive_warning: self.destructive_warning,
             command_is_readonly: self.command_is_readonly,
             background_run: self.class == Some(ToolClass::Background),
         }
@@ -566,6 +570,7 @@ pub async fn prepare_facts(ctx: &SessionContext, tool: &str, input: &Value) -> P
         target_exists,
         existing_deny_reason: command_info.deny_reason,
         warning: command_info.warning,
+        destructive_warning: command_info.destructive,
         command_is_readonly: command_info.is_readonly,
         allowance,
     }
@@ -583,6 +588,9 @@ fn resolve_target(path: &str, workspace: Option<&std::path::Path>) -> std::path:
 struct ExistingGuardVerdict {
     deny_reason: Option<String>,
     warning: Option<String>,
+    /// 命中的是不是**破坏性**操作（递归强删 / git reset --hard / DROP TABLE 等）。
+    /// 与 `warning` 分开：`warning` 是所有提醒的合并文案，完全批准档只用本字段决定问不问。
+    destructive: bool,
     is_readonly: bool,
 }
 
@@ -600,6 +608,7 @@ fn inspect_existing_guards(
         return ExistingGuardVerdict {
             deny_reason: None,
             warning: None,
+            destructive: false,
             is_readonly: false,
         };
     }
@@ -608,6 +617,7 @@ fn inspect_existing_guards(
             return ExistingGuardVerdict {
                 deny_reason: Some(format!("现有命令安全检查会拦下：{}", msg)),
                 warning: None,
+                destructive: false,
                 is_readonly: false,
             };
         }
@@ -620,6 +630,7 @@ fn inspect_existing_guards(
             return ExistingGuardVerdict {
                 deny_reason: Some(format!("命令里的路径越界：{}", err)),
                 warning,
+                destructive: false,
                 is_readonly,
             };
         }
@@ -628,11 +639,20 @@ fn inspect_existing_guards(
         return ExistingGuardVerdict {
             deny_reason: Some(format!("shell 改文件会被拦：{}", hint)),
             warning,
+            destructive: false,
             is_readonly,
         };
     }
-    if warning.is_none() {
-        warning = security::get_destructive_warning(&command);
+    // 破坏性操作单独标记：完全批准档只用它决定要不要问（普通提醒在该档放行）。
+    // 文案仍并入 `warning` 用于展示：已有同类文案时不重复拼接。
+    let destructive_warning = security::get_destructive_warning(&command);
+    let destructive = destructive_warning.is_some();
+    if let Some(d) = destructive_warning {
+        warning = match warning {
+            Some(existing) if existing.contains(d.as_str()) => Some(existing),
+            Some(existing) => Some(format!("{existing}\n{d}")),
+            None => Some(d),
+        };
     }
     // 2026-09-19 沐拍板，2026-11-20 合并后口径不变：后台模式（RunCommand +
     // run_in_background=true）不背「长周期命令」警示——它已经后台化了，警示自己建议的
@@ -655,6 +675,7 @@ fn inspect_existing_guards(
     ExistingGuardVerdict {
         deny_reason: None,
         warning,
+        destructive,
         is_readonly,
     }
 }
@@ -1066,10 +1087,8 @@ pub async fn grant_session_allowance(
 pub async fn sweep_pending_on_mode_change(app: &tauri::AppHandle, session_id: &str) -> usize {
     let manager = app.state::<crate::infra::state::state::SessionManager>();
     let ctx = manager.get_or_create(session_id).await;
-    let mode = match ctx.approval_mode.lock().await.as_str() {
-        "auto_approve" => ApprovalMode::AutoApprove,
-        _ => ApprovalMode::RequestApproval,
-    };
+    // 档位字符串 → 枚举走唯一入口 `ApprovalMode::from_str`（与 `enforce` 同源）
+    let mode = ApprovalMode::from_str(ctx.approval_mode.lock().await.as_str());
 
     // 收集可重放的挂起工具确认（id, 工具名, 原始入参）
     let replay: Vec<(String, String, Value)> = {
@@ -1257,34 +1276,53 @@ pub async fn enforce(
         }
     }
 
-    let mode = match ctx.approval_mode.lock().await.as_str() {
-        "auto_approve" => ApprovalMode::AutoApprove,
-        _ => ApprovalMode::RequestApproval,
-    };
+    // 档位字符串 → 枚举走唯一入口 `ApprovalMode::from_str`（与 `sweep_pending_on_mode_change` 同源）
+    let mode = ApprovalMode::from_str(ctx.approval_mode.lock().await.as_str());
 
     let decision = policy::judge(tool, mode, &facts.to_input());
 
     match decision.outcome {
         Outcome::Allow => {
-            // 审计（2026-09-18 A）：`帮我批准`档下命令类自动放行不留痕 = 事后无法追溯。
-            // 只记这一类（非只读、非只读保护拦截），只读命令每轮几百条全是噪音不记。
-            // 判据与 judge 规则 4 的放行分支同口径：档位 AutoApprove + 命令类 + 无警示。
-            if mode == ApprovalMode::AutoApprove
+            // 审计（2026-09-18 A；2026-11 扩到完全批准档）：`帮我批准`/`完全批准`档下
+            // 静默放行不留痕 = 事后无法追溯。只记这一类（非只读、非只读保护拦截），
+            // 只读命令每轮几百条全是噪音不记。危险警示命令不会走到这里（仍 Ask），
+            // 所以这里覆盖的就是"真正没弹卡的那批"。
+            // 审计口径必须与 judge 一致：完全批准覆盖的类别更多（删除/改名/后台），
+            // 且只被破坏性警示拦住。若仍用 auto 档的旧条件，会出现"判定放行了、审计没记"
+            // 的黑洞（完全批准下的删除与带普通警示的命令就是两例）。
+            let auto_approved_class = facts
+                .class
+                .map(|c| match mode {
+                    ApprovalMode::FullApprove => c.auto_approved_in_full_mode(),
+                    _ => c.auto_approved_in_auto_mode(),
+                })
+                .unwrap_or(false);
+            let warning_blocks = match mode {
+                ApprovalMode::FullApprove => facts.destructive_warning,
+                _ => facts.warning.is_some(),
+            };
+            if matches!(mode, ApprovalMode::AutoApprove | ApprovalMode::FullApprove)
                 && !facts.command_is_readonly
-                && facts
-                    .class
-                    .map(|c| c.auto_approved_in_auto_mode())
-                    .unwrap_or(false)
-                && facts.warning.is_none()
+                && auto_approved_class
+                && !warning_blocks
             {
+                // 档位不同 → action 不同：审计流水要能直接看出"这条静默放行凭的是哪一档"，
+                // 完全批准比帮我批准宽得多，两者混记成 auto_approve 事后就分不清了。
+                let action = match mode {
+                    ApprovalMode::FullApprove => {
+                        super::permission_audit_logger::ACTION_FULL_APPROVE
+                    }
+                    _ => super::permission_audit_logger::ACTION_AUTO_APPROVE,
+                };
                 super::permission_audit_logger::permission_audit_logger().log_decision(
                     session_id,
                     agent_type,
                     tool,
                     facts.allowance.first().map(|k| k.kind),
                     facts.allowance.first().map(|k| k.scope.as_str()),
-                    super::permission_audit_logger::ACTION_AUTO_APPROVE,
-                    None,
+                    action,
+                    // 普通警示放行也把文案带进流水：事后能看出"当时提醒了什么"。
+                    facts.warning.as_deref(),
                 );
             }
             None

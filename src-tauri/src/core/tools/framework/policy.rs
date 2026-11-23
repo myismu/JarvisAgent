@@ -4,7 +4,7 @@
 //! **这次工具调用，应该直接放行、先问用户一句，还是直接拒绝。**
 //!
 //! ## Key Exports
-//! - `ApprovalMode`：权限档位（请求审批 / 帮我批准）
+//! - `ApprovalMode`：权限档位（请求审批 / 帮我批准 / 完全批准）
 //! - `ToolClass`：工具归类（只看不碰 / 新建 / 改内容 / 删除 / 改名 / 跑命令 …）
 //! - `TOOL_POLICIES` / `policy_for()`：唯一一张策略表与查询
 //! - `judge()`：判定器（纯函数，接收已查明的事实）
@@ -23,6 +23,9 @@
 //!
 //! - `RequestApproval`（请求审批，默认）：改文件、删文件、跑命令一律先问
 //! - `AutoApprove`（帮我批准）：普通改动放行，只有风险操作才问
+//! - `FullApprove`（完全批准）：新建/改内容/跑命令/批量一律放行，只保留硬边界——
+//!   现有运行时检查要拒绝（Deny）、越界路径（Deny）、危险操作警示（每次都问 Ask）、
+//!   未登记分类（Ask，同时提醒补表）
 
 /// 用户的权限档位
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +34,8 @@ pub enum ApprovalMode {
     RequestApproval,
     /// 帮我批准：只有风险操作才问
     AutoApprove,
+    /// 完全批准：改动 / 命令 / 批量都不再弹卡，只留"拒绝类"与"危险警示类"硬边界
+    FullApprove,
 }
 
 impl ApprovalMode {
@@ -38,6 +43,7 @@ impl ApprovalMode {
         match self {
             ApprovalMode::RequestApproval => "request_approval",
             ApprovalMode::AutoApprove => "auto_approve",
+            ApprovalMode::FullApprove => "full_approve",
         }
     }
 
@@ -46,6 +52,23 @@ impl ApprovalMode {
         match self {
             ApprovalMode::RequestApproval => "请求审批",
             ApprovalMode::AutoApprove => "帮我批准",
+            ApprovalMode::FullApprove => "完全批准",
+        }
+    }
+
+    /// 字符串 → 档位（**唯一**的字符串解析入口）。
+    ///
+    /// 会话偏好落盘、前端传参、档位切换清扫都走这里，避免各处各写一套 match
+    /// （旧写法散落在 `policy_guard` 两处，新增档位时极易漏改一处、导致"切了档位没反应"）。
+    ///
+    /// 契约：**未知值一律退化为 `RequestApproval`**（最保守的一档），不 panic、
+    /// 也不静默放宽——脏数据不该换来更宽的权限。
+    #[allow(clippy::should_implement_trait)] // 有意做成"任意字符串兜底解析"，与 FromStr 的 Err 语义不同
+    pub fn from_str(raw: &str) -> ApprovalMode {
+        match raw {
+            "auto_approve" => ApprovalMode::AutoApprove,
+            "full_approve" => ApprovalMode::FullApprove,
+            _ => ApprovalMode::RequestApproval,
         }
     }
 }
@@ -157,6 +180,27 @@ impl ToolClass {
                 | ToolClass::RunCommand
                 | ToolClass::Background
                 | ToolClass::Rename
+        )
+    }
+
+    /// 该类别在"完全批准（FullApprove）"档下是否自动放行。
+    ///
+    /// 范围（2026-11 收紧后的最终口径）：**除只读外全部改动类**——
+    /// 新建 / 改内容 / 删除 / 改名 / 跑命令 / 起后台服务。
+    /// 共同前提是项目会话（档位本身要求绑定项目），且各自有兜底：
+    /// - 文件类走补丁暂存 + 快照回滚，删除进回收站可恢复；
+    /// - 命令与后台走权限审计日志（`permission_audit_logger`），事后可追溯；
+    /// - 真正不可撤回的操作（递归强删、`git reset --hard` 等）仍由
+    ///   `destructive_warning` 单独拦下问一次，不看档位。
+    pub fn auto_approved_in_full_mode(&self) -> bool {
+        matches!(
+            self,
+            ToolClass::CreateFile
+                | ToolClass::ModifyContent
+                | ToolClass::Delete
+                | ToolClass::Rename
+                | ToolClass::RunCommand
+                | ToolClass::Background
         )
     }
 }
@@ -534,6 +578,12 @@ pub struct JudgementInput {
     pub existing_deny_reason: Option<String>,
     /// 现有运行时检查给出的提醒（例如"长周期命令建议后台执行"）
     pub existing_warning: Option<String>,
+    /// 现有检查命中的是不是**破坏性**操作（递归强删、`git reset --hard`、`DROP TABLE` 等）。
+    ///
+    /// 与 `existing_warning` 的区别：后者是所有提醒的合并文案，包含长周期、sleep、
+    /// 命令替换这类**可撤回**的提醒。完全批准档只用本字段决定要不要问——
+    /// 普通提醒在该档放行（审计留痕），破坏性操作仍问一次。
+    pub destructive_warning: bool,
     /// 命令是不是"只读命令"（今天这类命令本来就免弹窗，新规则也应当直接放行）
     pub command_is_readonly: bool,
     /// 本次调用是否是 RunCommand 的后台模式（run_in_background=true）。
@@ -564,10 +614,12 @@ pub const BATCH_FILE_THRESHOLD: usize = 3;
 /// 2. 路径跑出项目 → 拒绝
 /// 3. 工具未登记分类 → 问（保守，同时提醒补表）
 /// 4. 默认就要问的类别（删/改名/跑命令/后台）→ 问；
-///    例外：只读命令直接放行；"帮我批准"档下非危险命令类自动放行（2026-09-18 A）
-/// 5. 危险操作警示 → 问（覆盖已有文件已于 2026-09-18 摘出本条，与编辑同权走规则 7）
-/// 6. 批量（本次调用 ≥3 个文件，或本轮第 3 个文件）→ 问
-/// 7. 其余按档位：请求审批档问，帮我批准档放行
+///    例外：只读命令直接放行；档位豁免（帮我批准 / 完全批准）下、该类别被该档覆盖
+///    且无「会拦住放行」的警示 → 放行（完全批准只看破坏性警示）
+/// 5. 破坏性操作警示 → 问（**所有档位都不豁免**；普通提醒在完全批准档放行，
+///    覆盖已有文件已于 2026-09-18 摘出本条，与编辑同权走规则 7）
+/// 6. 批量（本次调用 ≥3 个文件，或本轮第 3 个文件）→ 问（完全批准档不问）
+/// 7. 其余按档位：请求审批档问，帮我批准 / 完全批准档放行
 pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDecision {
     let policy = policy_for(tool);
     // 后台语义由入参派生（2026-11-20 合并 StartBackgroundCommand 后，后台服务唯一入口是
@@ -620,17 +672,21 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
                 reason: "只读命令（免询问）".to_string(),
             };
         }
-        // 命令类在"帮我批准"档下自动放行（2026-09-18 沐拍板 A：档位语义 = "别烦我"）。
+        // 命令类在档位豁免下自动放行（2026-09-18 沐拍板 A：AutoApprove = "别烦我"；
+        // 2026-11 新增 FullApprove = "连批量也别拦"）。
         // ⚠️ 危险警示命令不在这里放行——它在上面的只读判断之后、且规则 5 前仍需 Ask；
         //    为保持"危险永不自动放行"的硬边界，这里先挡一道：有警示就落到规则 5 去 Ask。
-        if mode == ApprovalMode::AutoApprove
-            && class_value.auto_approved_in_auto_mode()
-            && input.existing_warning.is_none()
-        {
+        // 警示的分母按档位区分：完全批准只看**破坏性**警示（长周期、sleep、命令替换
+        // 这类可撤回的提醒在该档放行，审计留痕）；其余档位仍看全部警示。
+        let warning_blocks_auto = match mode {
+            ApprovalMode::FullApprove => input.destructive_warning,
+            _ => input.existing_warning.is_some(),
+        };
+        if class_auto_approved(class_value, mode) && !warning_blocks_auto {
             return ShadowDecision {
                 class,
                 outcome: Outcome::Allow,
-                reason: format!("{}（帮我批准档自动放行）", class_value.label()),
+                reason: format!("{}（{}档自动放行）", class_value.label(), mode.label()),
             };
         }
         // 原因只说"为什么要问你"（例如"跑命令"）。
@@ -646,7 +702,11 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
     // 5. 危险命令警示（这次询问**每次都要问**，不能被"本次会话都允许"吞掉）。
     //    命令类在规则 4（always ask）就已 Ask，走不到这里；本条对命令类是防御性一致。
     //    覆盖已有文件已摘出本条（2026-09-18 沐拍板）：与普通编辑同权，走规则 7 按档位判定。
-    if ask_always_repeated(input.existing_warning.is_some()) {
+    let repeated_warning = match mode {
+        ApprovalMode::FullApprove => input.destructive_warning,
+        _ => input.existing_warning.is_some(),
+    };
+    if ask_always_repeated(repeated_warning) {
         return ShadowDecision {
             class,
             outcome: Outcome::Ask,
@@ -658,7 +718,8 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
     // 批量（本次调用 ≥3 个文件 / 本轮第 3 个文件）**可以**被"本次会话都允许"吞掉：
     // 用户已经说过"这个目录里的改动我放心"，此时还要他第 3、4、5… 个文件各点一次，
     // 只会把人逼回"每次都点允许"，反而失去护栏的意义。
-    if class_value.mutates_project() {
+    // 完全批准档（FullApprove）连批量也不再问：该档的语义就是"批量也别拦"（改动仍有快照可回滚）。
+    if class_value.mutates_project() && mode != ApprovalMode::FullApprove {
         if input.files_in_call >= BATCH_FILE_THRESHOLD {
             return ShadowDecision {
                 class,
@@ -687,6 +748,13 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
                 reason: format!("{}（帮我批准档自动放行）", class_value.label()),
             }
         }
+        (ToolClass::CreateFile | ToolClass::ModifyContent, ApprovalMode::FullApprove) => {
+            ShadowDecision {
+                class,
+                outcome: Outcome::Allow,
+                reason: format!("{}（完全批准档自动放行）", class_value.label()),
+            }
+        }
         (ToolClass::CreateFile | ToolClass::ModifyContent, ApprovalMode::RequestApproval) => {
             ShadowDecision {
                 class,
@@ -696,16 +764,30 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
         }
         // 命令类在"帮我批准"档放行（规则 4 已拦截含警示的命令；此处是命令类无警示时的放行路径，
         // 与规则 4 的放行分支互为兜底——规则 4 早返回，这里是语义完整性）。
-        (ToolClass::RunCommand, ApprovalMode::AutoApprove) => ShadowDecision {
-            class,
-            outcome: Outcome::Allow,
-            reason: "跑命令（帮我批准档自动放行）".to_string(),
-        },
+        (ToolClass::RunCommand, ApprovalMode::AutoApprove | ApprovalMode::FullApprove) => {
+            ShadowDecision {
+                class,
+                outcome: Outcome::Allow,
+                reason: format!("跑命令（{}档自动放行）", mode.label()),
+            }
+        }
         _ => ShadowDecision {
             class,
             outcome: Outcome::Allow,
             reason: class_value.label().to_string(),
         },
+    }
+}
+
+/// 某类别在某档位下是否自动放行（规则 4 与规则 7 共用同一份判据）。
+///
+/// 为什么集中在一处：规则 4（默认要问的类别区）与规则 7（按档位收尾）都要回答
+/// "这一档放不放它"，两处若各写一份，新增档位时必然漂移。
+fn class_auto_approved(class: ToolClass, mode: ApprovalMode) -> bool {
+    match mode {
+        ApprovalMode::RequestApproval => false,
+        ApprovalMode::AutoApprove => class.auto_approved_in_auto_mode(),
+        ApprovalMode::FullApprove => class.auto_approved_in_full_mode(),
     }
 }
 
@@ -769,6 +851,15 @@ mod tests {
         }
     }
 
+    /// 全部档位。新档位加进来时，所有"各档都要成立"的用例自动覆盖到。
+    fn all_modes() -> [ApprovalMode; 3] {
+        [
+            ApprovalMode::RequestApproval,
+            ApprovalMode::AutoApprove,
+            ApprovalMode::FullApprove,
+        ]
+    }
+
     #[test]
     fn every_registered_tool_is_classified() {
         // 防漏：新增工具必须登记分类，否则这里直接失败
@@ -786,20 +877,26 @@ mod tests {
     }
 
     #[test]
-    fn read_only_work_is_allowed_in_both_modes() {
-        for mode in [ApprovalMode::RequestApproval, ApprovalMode::AutoApprove] {
+    fn read_only_work_is_allowed_in_all_modes() {
+        for mode in all_modes() {
             let decision = judge("ReadFile", mode, &allow_input());
             assert_eq!(decision.outcome, Outcome::Allow, "mode={:?}", mode);
         }
     }
 
     #[test]
-    fn delete_asks_in_both_modes() {
+    fn delete_asks_until_full_approve() {
+        // 2026-11 收紧后：删除进回收站可恢复，完全批准档放行；
+        // 请求审批 / 帮我批准两档仍要用户亲自批。
         for mode in [ApprovalMode::RequestApproval, ApprovalMode::AutoApprove] {
             let decision = judge("DeleteFile", mode, &allow_input());
             assert_eq!(decision.outcome, Outcome::Ask, "mode={:?}", mode);
             assert_eq!(decision.reason, "删除文件");
         }
+        assert_eq!(
+            judge("DeleteFile", ApprovalMode::FullApprove, &allow_input()).outcome,
+            Outcome::Allow
+        );
     }
 
     #[test]
@@ -851,12 +948,15 @@ mod tests {
 
     #[test]
     fn dangerous_command_is_never_auto_approved() {
-        // A 的硬边界：带危险警示的命令即使切到 AutoApprove 档也必须问
+        // 硬边界：破坏性操作在任何档位（含完全批准）都必须问。
+        // 注意 `destructive_warning` 必为 true——真实采集来自
+        // `security::get_destructive_warning`，普通提醒（长周期等）不置此位。
         let input = JudgementInput {
             existing_warning: Some("检测到递归强制删除".to_string()),
+            destructive_warning: true,
             ..allow_input()
         };
-        for mode in [ApprovalMode::RequestApproval, ApprovalMode::AutoApprove] {
+        for mode in all_modes() {
             assert_eq!(
                 judge("RunCommand", mode, &input).outcome,
                 Outcome::Ask,
@@ -864,6 +964,179 @@ mod tests {
                 mode
             );
         }
+    }
+
+    // ── 完全批准（FullApprove）档 ──
+
+    #[test]
+    fn approval_mode_strings_are_parsed_centrally() {
+        // as_str / label / from_str 必须一一对应（from_str 是唯一的字符串解析入口）
+        assert_eq!(ApprovalMode::RequestApproval.as_str(), "request_approval");
+        assert_eq!(ApprovalMode::AutoApprove.as_str(), "auto_approve");
+        assert_eq!(ApprovalMode::FullApprove.as_str(), "full_approve");
+        assert_eq!(ApprovalMode::FullApprove.label(), "完全批准");
+        for mode in all_modes() {
+            assert_eq!(ApprovalMode::from_str(mode.as_str()), mode);
+        }
+        // 未知值 / 空串一律退化为最保守的请求审批档（脏数据不能换来更宽权限）
+        assert_eq!(
+            ApprovalMode::from_str("whatever"),
+            ApprovalMode::RequestApproval
+        );
+        assert_eq!(ApprovalMode::from_str(""), ApprovalMode::RequestApproval);
+    }
+
+    #[test]
+    fn full_approve_silences_file_writes_and_commands() {
+        let input = allow_input();
+        // 新建（WriteFile）与改内容（EditFile / ApplyPatch）都直接放行
+        for tool in ["WriteFile", "EditFile", "ApplyPatch"] {
+            let decision = judge(tool, ApprovalMode::FullApprove, &input);
+            assert_eq!(decision.outcome, Outcome::Allow, "tool={}", tool);
+        }
+        // 普通命令（无警示）也直接放行
+        let decision = judge("RunCommand", ApprovalMode::FullApprove, &input);
+        assert_eq!(decision.outcome, Outcome::Allow);
+        assert!(
+            decision.reason.contains("完全批准"),
+            "{}",
+            decision.reason
+        );
+        // 覆盖已有文件同理（回滚系统兜底）
+        let overwrite = JudgementInput {
+            target_exists: Some(true),
+            ..allow_input()
+        };
+        assert_eq!(
+            judge("WriteFile", ApprovalMode::FullApprove, &overwrite).outcome,
+            Outcome::Allow
+        );
+    }
+
+    #[test]
+    fn full_approve_ignores_batch_threshold() {
+        // 批量不再拦：一次调用 5 个文件、本轮第 3 个文件都直接放行
+        let by_call = JudgementInput {
+            files_in_call: 5,
+            ..allow_input()
+        };
+        assert_eq!(
+            judge("ApplyPatch", ApprovalMode::FullApprove, &by_call).outcome,
+            Outcome::Allow
+        );
+        let by_turn = JudgementInput {
+            files_in_turn: BATCH_FILE_THRESHOLD,
+            ..allow_input()
+        };
+        assert_eq!(
+            judge("EditFile", ApprovalMode::FullApprove, &by_turn).outcome,
+            Outcome::Allow
+        );
+        // 对照：同样入参在帮我批准档仍会问（确认阈值只是被完全批准档跳过，而不是失效）
+        assert_eq!(
+            judge("EditFile", ApprovalMode::AutoApprove, &by_turn).outcome,
+            Outcome::Ask
+        );
+    }
+
+    #[test]
+    fn full_approve_keeps_hard_boundaries() {
+        // 1) 现有运行时检查要拒绝 → 仍 Deny
+        let deny = JudgementInput {
+            existing_deny_reason: Some("检测到危险 PowerShell 命令".to_string()),
+            ..allow_input()
+        };
+        let decision = judge("RunCommand", ApprovalMode::FullApprove, &deny);
+        assert_eq!(decision.outcome, Outcome::Deny);
+        assert_eq!(decision.reason, "检测到危险 PowerShell 命令");
+
+        // 2) 越界路径 → 仍 Deny
+        let outside = JudgementInput {
+            out_of_workspace: vec!["C:/Windows/System32".to_string()],
+            ..allow_input()
+        };
+        for tool in ["ReadFile", "WriteFile", "RunCommand"] {
+            assert_eq!(
+                judge(tool, ApprovalMode::FullApprove, &outside).outcome,
+                Outcome::Deny,
+                "tool={}",
+                tool
+            );
+        }
+
+        // 3) 未登记分类 → 仍 Ask（并提醒补表）
+        let decision = judge("SomethingNew", ApprovalMode::FullApprove, &allow_input());
+        assert_eq!(decision.outcome, Outcome::Ask);
+        assert!(decision.class.is_none());
+        assert!(decision.reason.contains("未登记分类"));
+
+        // 4) 破坏性操作警示 → 仍 Ask（每次都要问的硬边界，完全批准也不豁免）
+        let destructive = JudgementInput {
+            existing_warning: Some("检测到递归强制删除".to_string()),
+            destructive_warning: true,
+            ..allow_input()
+        };
+        for tool in ["RunCommand", "WriteFile"] {
+            assert_eq!(
+                judge(tool, ApprovalMode::FullApprove, &destructive).outcome,
+                Outcome::Ask,
+                "tool={}",
+                tool
+            );
+        }
+
+        // 5) 普通提醒（长周期 / sleep / 命令替换）→ 完全批准档放行，审计留痕即可
+        let ordinary = JudgementInput {
+            existing_warning: Some("检测到长周期命令，建议后台执行".to_string()),
+            destructive_warning: false,
+            ..allow_input()
+        };
+        for tool in ["RunCommand", "WriteFile"] {
+            assert_eq!(
+                judge(tool, ApprovalMode::FullApprove, &ordinary).outcome,
+                Outcome::Allow,
+                "tool={}",
+                tool
+            );
+        }
+        // 对照：同样普通提醒在帮我批准档仍问（收紧只作用于完全批准档）
+        assert_eq!(
+            judge("RunCommand", ApprovalMode::AutoApprove, &ordinary).outcome,
+            Outcome::Ask
+        );
+    }
+
+    #[test]
+    fn full_approve_covers_delete_rename_and_background() {
+        // 2026-11 收紧后的最终口径：完全批准覆盖删除 / 改名 / 后台服务——
+        // 档位本身要求绑定项目，删除进回收站、改名与编辑同权、后台有进程树守卫与审计。
+        assert_eq!(
+            judge("RenameFile", ApprovalMode::FullApprove, &allow_input()).outcome,
+            Outcome::Allow
+        );
+        assert_eq!(
+            judge("DeleteFile", ApprovalMode::FullApprove, &allow_input()).outcome,
+            Outcome::Allow
+        );
+        let background = JudgementInput {
+            background_run: true,
+            ..allow_input()
+        };
+        assert_eq!(
+            judge("RunCommand", ApprovalMode::FullApprove, &background).outcome,
+            Outcome::Allow
+        );
+        // 但破坏性操作在后台模式下仍要问
+        let destructive_bg = JudgementInput {
+            background_run: true,
+            existing_warning: Some("检测到递归强制删除".to_string()),
+            destructive_warning: true,
+            ..allow_input()
+        };
+        assert_eq!(
+            judge("RunCommand", ApprovalMode::FullApprove, &destructive_bg).outcome,
+            Outcome::Ask
+        );
     }
 
     #[test]
@@ -957,13 +1230,13 @@ mod tests {
     }
 
     #[test]
-    fn outside_workspace_is_denied_in_both_modes() {
+    fn outside_workspace_is_denied_in_all_modes() {
         let input = JudgementInput {
             out_of_workspace: vec!["C:/Windows/System32".to_string()],
             ..allow_input()
         };
         for tool in ["ReadFile", "WriteFile", "DeleteFile", "RunCommand"] {
-            for mode in [ApprovalMode::RequestApproval, ApprovalMode::AutoApprove] {
+            for mode in all_modes() {
                 let decision = judge(tool, mode, &input);
                 assert_eq!(decision.outcome, Outcome::Deny, "tool={}", tool);
             }

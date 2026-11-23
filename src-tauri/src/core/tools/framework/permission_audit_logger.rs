@@ -12,6 +12,9 @@
 //! **唯一例外**：`auto_approve`（2026-09-18 A 改造）——"帮我批准"档自动放行**非危险命令**
 //! 时记一条。理由：这是档位策略放行、用户从未逐条表态，不记就彻底无痕；
 //! 只读命令（Get-ChildItem 这类）仍然不记（噪音）。判据见 `policy.rs::always_asks` 分支。
+//! 2026-11 相同口径扩到 `full_approve`（完全批准档），但 action 单独记为
+//! `full_approve`：事后看流水要能区分"用户选的是哪一档"，否则"全量放行"与"普通放行"
+//! 混成一个词，审计就答不出"这条命令凭什么没问"。
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
@@ -35,6 +38,12 @@ pub const ACTION_REJECT: &str = "reject";
 /// 直接放行，用户从未就这条命令表过态。这是 A 改造的安全垫——AutoApprove 档下
 /// 非危险命令静默执行，唯一的事后追溯手段就是这条流水。
 pub const ACTION_AUTO_APPROVE: &str = "auto_approve";
+/// 决策动作：「完全批准」档自动放行，未弹卡（2026-11）
+///
+/// 与 `auto_approve` 覆盖同一类"档位策略放行"，但**档位不同就分开记**：
+/// 完全批准比帮我批准宽得多（命令/删除/改名/批量都不问），事后追溯时必须能
+/// 从流水直接看出"这条是哪个档位吃的"，否则一旦出事就只能靠时间点去猜。
+pub const ACTION_FULL_APPROVE: &str = "full_approve";
 
 /// 一条权限决策记录
 #[derive(Serialize)]

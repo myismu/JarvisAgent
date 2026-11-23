@@ -12,8 +12,21 @@
 //! - `cancel_jarvis()`: 取消当前 Agent 执行，清理所有待处理权限和子 Agent
 
 use crate::core::tools::framework::permission::PermissionDecision;
+use crate::core::tools::framework::policy::ApprovalMode;
 use crate::infra::state::state::SessionManager;
 use tauri::Emitter;
+
+/// 「绑定项目」要求的**唯一口径**：哪些档位必须挂在项目下才能生效。
+///
+/// 为什么单独抽成一个函数：这条规则在两条路径上都要用——
+/// 1. 设置路径（本文件的 [`set_session_approval_mode`]）：不满足就拒绝，档位不变；
+/// 2. 恢复路径（`infra::state` 的 `SessionManager::get_or_create`）：存量脏数据不满足就降级。
+/// 两处各写一份判断，必然出现"设置时拦、恢复时放"（或反之）的漂移。
+/// 新增"必须绑项目"的档位时只改这里。
+pub(crate) fn mode_requires_project(mode: &str) -> bool {
+    // 解析走唯一入口 `ApprovalMode::from_str`（未知值兜底 request_approval，不会意外变宽）
+    ApprovalMode::from_str(mode) == ApprovalMode::FullApprove
+}
 
 /// 把前端传来的 decision/content 解析成结构化决策。
 /// 未知取值一律按"明确拒绝"处理（安全默认），并保留用户说明。
@@ -254,7 +267,12 @@ pub async fn get_session_permission_settings(
     }))
 }
 
-/// 切换当前会话的权限档位：request_approval（请求审批）/ auto_approve（帮我批准）
+/// 切换当前会话的权限档位：request_approval（请求审批）/ auto_approve（帮我批准）/
+/// full_approve（完全批准）。
+///
+/// 「完全批准」额外要求会话**绑定项目**：该档位下改动/命令/批量都不再弹卡，
+/// 放行范围只能靠项目根来界定；没有项目根就等于对整台机器无限放行。
+/// 校验不通过时直接报错返回，档位与落库值都保持原样（不做"先改再回退"）。
 #[tauri::command]
 pub async fn set_session_approval_mode(
     session_id: String,
@@ -262,12 +280,39 @@ pub async fn set_session_approval_mode(
     session_manager: tauri::State<'_, SessionManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    if !["request_approval", "auto_approve"].contains(&mode.as_str()) {
+    // 白名单直接对齐 `ApprovalMode::as_str()`（唯一字符串口径），避免这里手写一份字符串
+    // 表、新增档位时漏改本处。注意：不能用 `ApprovalMode::from_str` 判合法——它对
+    // 未知值会兜底成 request_approval，等于把非法输入静默改成另一个档位。
+    let supported = [
+        ApprovalMode::RequestApproval,
+        ApprovalMode::AutoApprove,
+        ApprovalMode::FullApprove,
+    ]
+    .into_iter()
+    .any(|candidate| candidate.as_str() == mode.as_str());
+    if !supported {
         return Err(format!(
-            "不支持的权限档位「{}」。支持：request_approval（请求审批）、auto_approve（帮我批准）。",
+            "不支持的权限档位「{}」。支持：request_approval（请求审批）、auto_approve（帮我批准）、full_approve（完全批准）。",
             mode
         ));
     }
+
+    // 「完全批准」的项目绑定前置校验。放在 `get_or_create` 之前：校验失败不应顺手
+    // 建出一个会话上下文（那会让"被拒绝的调用"也留下副作用）。
+    if mode_requires_project(&mode) {
+        // 查不到会话元信息时按失败处理（fail-closed）：项目归属无法确认，就不能当成
+        // "已绑定项目"放行。合法会话在建会话时即已落库，查不到只可能是脏数据/串号。
+        let meta = crate::core::session::get_session_meta(&session_id).map_err(|e| {
+            format!(
+                "无法确认会话「{}」的项目绑定，已拒绝切换到「完全批准」：{}",
+                session_id, e
+            )
+        })?;
+        if meta.project_id.is_none() {
+            return Err("「完全批准」只能在绑定项目的会话里启用：本会话没有所属项目，放行范围无从界定。请把会话挂到项目下再切档，或改用「帮我批准」。".to_string());
+        }
+    }
+
     let ctx = session_manager.get_or_create(&session_id).await;
     *ctx.approval_mode.lock().await = mode.clone();
     // 档位是会话级属性：落库（sessions.approval_mode），随会话恢复
@@ -394,6 +439,16 @@ mod tests {
             PermissionDecision::AllowSession
         );
         assert!(parse_decision("allow_session", None).is_allowed());
+    }
+
+    #[test]
+    fn full_approve_requires_project_binding() {
+        // 唯一口径：三档里只有完全批准必须绑项目
+        assert!(mode_requires_project("full_approve"));
+        assert!(!mode_requires_project("auto_approve"));
+        assert!(!mode_requires_project("request_approval"));
+        // 非法值兜底到请求审批，不得被当成"需要绑项目"以外更宽的档位
+        assert!(!mode_requires_project("whatever"));
     }
 
     #[test]

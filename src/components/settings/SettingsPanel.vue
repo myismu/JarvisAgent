@@ -687,7 +687,13 @@ const setAgentWorkMode = (val: AgentUserMode) => {
   uiPrefs.setAgentWorkMode(val)
 }
 
-/** 权限档位：请求审批（改动一律问）/ 帮我批准（只问风险操作） */
+/**
+ * 权限档位**默认值**：请求审批（改动一律问）/ 帮我批准（只问风险操作）。
+ *
+ * 设置页刻意只给两档：更松的「完全批准」（full_approve）跳过删除/改名/命令的确认，
+ * 依靠项目回滚快照与回收站兜底，只能由用户在**绑定项目的会话**里用输入栏选择器临时开启，
+ * 不能作为全局默认（否则新建的独立会话会落在没有回滚依据的档位上）。
+ */
 const setAgentApprovalMode = (val: "request_approval" | "auto_approve") => {
   uiPrefs.setAgentApprovalMode(val)
 }

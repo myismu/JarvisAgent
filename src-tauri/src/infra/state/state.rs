@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
 use tokio::sync::{watch, Mutex, RwLock};
 
 use crate::core::rollback::session_manager::SnapshotManagerRegistry;
+use crate::core::tools::framework::policy::ApprovalMode;
 use crate::infra::types::models::SessionMemory;
 
 pub struct WorkspaceState(pub Mutex<Option<std::path::PathBuf>>);
@@ -588,6 +589,13 @@ impl SessionManager {
         if let Ok(memory) = crate::core::session::load_session(session_id) {
             *ctx.memory.lock().await = memory;
         }
+        // 会话元信息先取：下面的权限档位恢复要判断"是否绑定项目"（full_approve 的准入条件），
+        // 工作目录与思考档位也出自同一份 meta，合并成一次查询。
+        let meta = crate::core::session::get_session_meta(session_id).ok();
+        let bound_to_project = meta
+            .as_ref()
+            .and_then(|meta| meta.project_id.as_deref())
+            .is_some();
         // 会话级运行偏好恢复：用户在本会话表态过（落库非 NULL）则以落库值为准，
         // 否则保持上面按设置默认初始化的值（与 thinking_mode 的恢复路径对称）
         if let Ok(prefs) = crate::core::session::get_session_runtime_prefs(session_id) {
@@ -595,13 +603,37 @@ impl SessionManager {
                 *ctx.agent_work_mode.lock().await = mode;
             }
             if let Some(mode) = prefs.approval_mode {
-                *ctx.approval_mode.lock().await = mode;
+                // 「完全批准」要求会话绑定项目（放行范围靠项目根界定）。存量数据可能在
+                // 这条准入规则之前就写进了 full_approve，而项目后来被删（sessions.project_id
+                // 外键 ON DELETE SET NULL）或会话被摘出项目，都会留下"无项目 + 完全批准"
+                // 这个危险组合。恢复时降级为 request_approval 并**回写库**，保证内存档位与
+                // 落库值一致，而不是只在内存里改一次、下次启动又重新放宽。
+                // 规则口径来自 `command::permission::mode_requires_project`（与设置路径同一处），
+                // 这里只负责"发现违规后的降级与回写"，不另写一份档位判断。
+                if crate::command::permission::mode_requires_project(&mode) && !bound_to_project {
+                    let downgraded = ApprovalMode::RequestApproval.as_str();
+                    *ctx.approval_mode.lock().await = downgraded.to_string();
+                    if let Err(e) =
+                        crate::core::session::update_session_approval_mode(session_id, downgraded)
+                    {
+                        eprintln!(
+                            "[JARVIS] 会话 {} 权限档位降级回写失败：{}",
+                            session_id, e
+                        );
+                    }
+                    println!(
+                        "[JARVIS] 会话 {} 恢复时发现「完全批准」但无项目绑定，已降级为「请求审批」",
+                        session_id
+                    );
+                } else {
+                    *ctx.approval_mode.lock().await = mode;
+                }
             }
             if let Some(audience) = prefs.agent_audience {
                 *ctx.agent_audience.lock().await = audience;
             }
         }
-        if let Ok(meta) = crate::core::session::get_session_meta(session_id) {
+        if let Some(meta) = meta {
             // 存量记录可能带 \\?\ 前缀，绑定前剥离（下游报错文案与显示才干净）
             *ctx.workspace.lock().await = meta.working_directory.map(|ws| {
                 std::path::PathBuf::from(crate::core::session::strip_extended_path_prefix(&ws))

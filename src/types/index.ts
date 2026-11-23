@@ -430,11 +430,23 @@ export type AgentWorkMode = "edit" | "plan";
 export type AgentUserMode = "edit" | "plan";
 
 /**
- * 权限档位（第二步新增）：决定"改动前问得多严"。
+ * 权限档位：决定"改动前问得多严"。
  * - request_approval：请求审批 —— 改文件/删文件/跑命令一律先问（默认）
  * - auto_approve：帮我批准 —— 只有风险操作（删除/覆盖/改名/跑命令/批量）才问
+ * - full_approve：完全批准 —— 一切改动/删除/改名/命令都不再问（危险命令仍保留一次确认），
+ *   比 auto_approve 更松，唯一的回滚依据是项目的回滚快照与回收站
  */
-export type AgentApprovalMode = "request_approval" | "auto_approve";
+export type AgentApprovalMode = "request_approval" | "auto_approve" | "full_approve";
+
+/**
+ * **全局设置**（UiPreferences）里的权限档位默认值：只有两档。
+ *
+ * 为什么不是 AgentApprovalMode：full_approve 会跳过几乎所有确认，只能由用户在
+ * **绑定项目的会话里**临时开启（回滚快照与回收站是它的安全垫，独立会话没有）。
+ * 若允许它进全局默认，新建的独立会话就会落在一个没有任何回滚依据的档位上。
+ * 后端 `UiPreferences.agent_approval_mode` 的收敛口径同样是这两档。
+ */
+export type AgentApprovalDefaultMode = Exclude<AgentApprovalMode, "full_approve">;
 
 /** 本会话已允许的范围（工具 + 范围） */
 export interface SessionAllowance {
