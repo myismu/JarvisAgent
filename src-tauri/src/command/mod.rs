@@ -22,6 +22,7 @@ pub mod permission;
 pub mod prompt;
 pub mod sandbox;
 pub mod session;
+pub mod shell;
 pub mod skill;
 pub mod snapshot;
 pub mod tool;

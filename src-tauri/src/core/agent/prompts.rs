@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 // ── 提示词文件注册表（唯一事实源）──
 //
-// 提示词文件的元数据清单（13 个内置 + 1 个可选的个人规则），服务于设置页的「提示词」可视化编辑：
+// 提示词文件的元数据清单（14 个内置 + 1 个可选的个人规则），服务于设置页的「提示词」可视化编辑：
 // - 列表展示、分类分组、生效语义标注都以本表为准，**不扫描任何目录**；
 // - `path` 同时是磁盘覆盖层文件名（data/prompts/<path>）与内置文件名
 //   （src/core/agent/prompts/<path>，经 `prompt!` 宏 include_str! 嵌入 exe）；
@@ -151,7 +151,15 @@ pub const PROMPT_FILES: &[PromptFileMeta] = &[
     PromptFileMeta {
         path: "os/windows.md",
         display_name: "系统环境 — Windows",
-        description: "PowerShell 5.1 语法约束（三个平台按编译目标选一个注入）",
+        description: "PowerShell 5.1 语法约束（Windows 未启用 Git Bash 时注入）",
+        category: PromptCategory::Os,
+        goes_into_system: true,
+        optional: false,
+    },
+    PromptFileMeta {
+        path: "os/windows-bash.md",
+        display_name: "系统环境 — Windows（Git Bash）",
+        description: "Git Bash / POSIX 语法约束（Windows 上启用 Git Bash 执行模式时注入）",
         category: PromptCategory::Os,
         goes_into_system: true,
         optional: false,
@@ -159,7 +167,7 @@ pub const PROMPT_FILES: &[PromptFileMeta] = &[
     PromptFileMeta {
         path: "os/macos.md",
         display_name: "系统环境 — macOS",
-        description: "macOS/zsh 环境说明（三个平台按编译目标选一个注入）",
+        description: "macOS/zsh 环境说明（OS 规则按目标平台与执行方言选一个注入）",
         category: PromptCategory::Os,
         goes_into_system: true,
         optional: false,
@@ -212,6 +220,7 @@ pub fn embedded_prompt(path: &str) -> &'static str {
         "mode/edit.md" => prompt!("mode/edit.md"),
         "mode/plan.md" => prompt!("mode/plan.md"),
         "os/windows.md" => prompt!("os/windows.md"),
+        "os/windows-bash.md" => prompt!("os/windows-bash.md"),
         "os/macos.md" => prompt!("os/macos.md"),
         "os/linux.md" => prompt!("os/linux.md"),
         "subagent.md" => prompt!("subagent.md"),
@@ -380,11 +389,19 @@ pub fn get_mode_prompt(work_mode: &str) -> Cow<'static, str> {
 // ── OS 规则 ──
 
 fn os_rules() -> Vec<PromptRule> {
+    // 选择口径 = 目标平台 + 执行方言。Windows 上启用 Git Bash 时，
+    // 环境说明必须换成 POSIX 版本，否则模型会照着 PowerShell 约束写 bash。
+    let dialect = crate::infra::shell_dialect::current();
     if cfg!(target_os = "windows") {
+        let path = if dialect.is_bash() {
+            "os/windows-bash.md"
+        } else {
+            "os/windows.md"
+        };
         vec![PromptRule::new(
             PromptLevel::P2Reference,
             "系统环境",
-            resolve_prompt("os/windows.md"),
+            resolve_prompt(path),
         )]
     } else if cfg!(target_os = "macos") {
         vec![PromptRule::new(

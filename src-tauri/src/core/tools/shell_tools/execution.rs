@@ -95,6 +95,50 @@ fn has_alias_command(cmd: &str, aliases: &[&str]) -> bool {
         .any(|name| aliases.iter().any(|a| name.eq_ignore_ascii_case(a)))
 }
 
+/// 取某个段首命令的全部参数（用于判断"是不是带写盘开关"）。
+///
+/// 与 [`command_names`] 用同一套切分口径：`;`、`|`、`&`、换行都算命令边界，
+/// 这样 `cat x | tee log` 里的 `tee` 能被单独识别出来。
+fn command_args<'a>(cmd: &'a str, name: &str) -> Vec<&'a str> {
+    cmd.split(|c| matches!(c, ';' | '|' | '&' | '\n'))
+        .filter_map(|segment| {
+            let mut tokens = segment.split_whitespace();
+            let first = tokens.next()?.trim_matches(|c| c == '"' || c == '\'');
+            if first.eq_ignore_ascii_case(name) {
+                Some(tokens.collect::<Vec<_>>())
+            } else {
+                None
+            }
+        })
+        .flatten()
+        .collect()
+}
+
+/// `sed -i` / `sed --in-place`：就地写回文件。
+///
+/// 短选项按"簇"判断（`-i`、`-ni`、`-i.bak` 都算），长选项按前缀判断；
+/// `--in-place` 之外的普通 `-n`、`-e` 不误伤。
+fn sed_writes_in_place(cmd: &str) -> bool {
+    command_args(cmd, "sed").iter().any(|arg| {
+        arg.starts_with("--in-place")
+            || (arg.starts_with('-') && !arg.starts_with("--") && arg.contains('i'))
+    })
+}
+
+/// `dd of=...`：dd 的写盘目标不是位置参数，必须单独认。
+fn dd_writes_file(cmd: &str) -> bool {
+    command_args(cmd, "dd")
+        .iter()
+        .any(|arg| arg.starts_with("of="))
+}
+
+/// `touch` / `truncate` / `install`：都会创建或改写文件，必须走专用文件工具。
+///
+/// 这三个是 POSIX 方言下新增的入口；`rm`/`mv`/`cp`/重定向由下面的既有逻辑覆盖。
+fn posix_creates_or_truncates(cmd: &str) -> bool {
+    has_alias_command(cmd, &["touch", "truncate", "install"])
+}
+
 /// 是否包含目录切换命令。按**段首命令名**判定，不用 contains：
 /// 否则 `rg "cd "`、`Select-String "cd "` 这类参数里的字样会被误拦（而且是硬拦）。
 pub(super) fn is_dir_change_command(cmd: &str) -> bool {
@@ -171,6 +215,24 @@ pub fn is_file_mutation_command(cmd: &str) -> Option<&'static str> {
         );
     }
 
+    // POSIX 方言的写文件入口（Git Bash 与 Unix 共用）：
+    // 这些命令不经过 PowerShell cmdlet，但同样能绕过专用文件工具的沙箱、快照与回滚。
+    if sed_writes_in_place(&lower) {
+        return Some(
+            "检测到 sed 就地编辑（-i）。请使用 EditFile 工具——\
+             只有专用工具有沙箱检查、快照与回滚",
+        );
+    }
+    if has_alias_command(&lower, &["tee"]) {
+        return Some("请使用 WriteFile 工具写文件，不要用 tee 写文件");
+    }
+    if dd_writes_file(&lower) {
+        return Some("请使用 WriteFile/EditFile 工具，不要用 dd 写文件");
+    }
+    if posix_creates_or_truncates(&lower) {
+        return Some("请使用 WriteFile 工具创建或改写文件，不要用 touch/truncate/install");
+    }
+
     if lower.contains("set-content") || lower.contains("out-file") || lower.contains("add-content")
     {
         return Some("请使用 WriteFile 或 EditFile 工具，不要用 PowerShell cmdlet 写文件");
@@ -245,22 +307,38 @@ fn kill_process_tree(_pid: u32) {}
 
 /// 异步执行 shell 命令（按平台选择 PowerShell 或 bash），返回 (stdout, stderr, exit_code)
 async fn run_shell_async(cmd: &str, exec_dir: &std::path::Path) -> (String, String, i32) {
-    let (shell, args) = if cfg!(target_os = "windows") {
-        // Windows 命令构造统一走 infra 公共层：本机 PowerShell 5.1 不支持 `&&`
-        // （PS 7+ 语法），公共层会把它展开成"逐段执行 + 前段失败即停"，
-        // 语义与 bash 的 `&&` 一致，不依赖 shell 版本（详见 infra/shell_command.rs）。
-        let ps_cmd = crate::infra::shell_command::build_windows_ps_command(cmd);
-        (
-            "powershell".to_string(),
-            vec![
-                "-NoProfile".to_string(),
-                "-NonInteractive".to_string(),
-                "-Command".to_string(),
-                ps_cmd,
-            ],
-        )
-    } else {
-        ("bash".to_string(), vec!["-c".to_string(), cmd.to_string()])
+    run_shell_async_with(&crate::infra::shell_dialect::current(), cmd, exec_dir).await
+}
+
+/// 按显式方言执行命令。
+///
+/// 拆出显式参数是为了让测试能固定方言，不依赖进程级 `OnceLock`：
+/// 测试进程里第一次 `current()` 会兜底成 PowerShell，无法验证 bash 链路。
+async fn run_shell_async_with(
+    dialect: &crate::infra::shell_dialect::ShellDialect,
+    cmd: &str,
+    exec_dir: &std::path::Path,
+) -> (String, String, i32) {
+    // - PowerShell：`-Command` 走公共层（PS 5.1 不支持 `&&`，由公共层展开）；
+    // - Bash（Windows 上是 Git Bash，Unix 上是系统 bash）：`-c` 原样传入，
+    //   `&&`/`||`/管道都是原生语义，不需要任何包装。
+    let (shell, args) = match dialect {
+        crate::infra::shell_dialect::ShellDialect::PowerShell => {
+            let ps_cmd = crate::infra::shell_command::build_windows_ps_command(cmd);
+            (
+                "powershell".to_string(),
+                vec![
+                    "-NoProfile".to_string(),
+                    "-NonInteractive".to_string(),
+                    "-Command".to_string(),
+                    ps_cmd,
+                ],
+            )
+        }
+        crate::infra::shell_dialect::ShellDialect::Bash { program, .. } => (
+            program.to_string_lossy().to_string(),
+            vec!["-c".to_string(), cmd.to_string()],
+        ),
     };
 
     match tokio::process::Command::new(&shell)
@@ -717,5 +795,64 @@ mod file_mutation_tests {
             is_file_mutation_command(real).is_none(),
             "只读的 .NET 调用不属于改文件，不该被这条规则拦"
         );
+    }
+
+    /// POSIX 方言新增的写文件入口：必须与 rm/cp/重定向同口径拦下。
+    /// 这条链路以前只在 Unix 主机生效，Git Bash 模式让它在 Windows 上生效。
+    #[test]
+    fn posix_write_commands_are_blocked() {
+        for cmd in [
+            "sed -i 's/a/b/' file.txt",
+            "sed -i.bak 's/a/b/' file.txt",
+            "cat x | tee log.txt",
+            "dd if=a.bin of=b.bin",
+            "touch new.txt",
+            "truncate -s 0 file.txt",
+            "install -m 755 a b",
+        ] {
+            assert!(
+                is_file_mutation_command(cmd).is_some(),
+                "应拦下 POSIX 写文件命令：{}",
+                cmd
+            );
+        }
+    }
+
+    /// 纯读取的 sed 不能被误伤（只拦 -i / --in-place）。
+    #[test]
+    fn posix_read_only_sed_is_allowed() {
+        assert!(is_file_mutation_command("sed -n '1,5p' file.txt").is_none());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod dialect_execution_tests {
+    use super::run_shell_async_with;
+    use crate::infra::shell_dialect::{detect_git_bash, ShellDialect};
+
+    /// 真实拉起 Git Bash：验证 `-c` 参数、原生 `&&` 语义与退出码透传。
+    /// 本机没装 Git for Windows 时跳过（CI 环境不应因缺少外部工具失败）。
+    #[tokio::test]
+    async fn git_bash_runs_posix_syntax_and_propagates_exit_code() {
+        let Some(bash) = detect_git_bash(None) else {
+            return;
+        };
+        let dialect = ShellDialect::Bash {
+            program: bash,
+            git_bash: true,
+        };
+        let dir = std::env::temp_dir();
+
+        let (out, err, code) = run_shell_async_with(&dialect, "echo a && echo b", &dir).await;
+        assert_eq!(code, 0, "out={} err={}", out, err);
+        assert!(
+            out.contains('a') && out.contains('b'),
+            "两个 echo 都应执行（&& 原生语义）: out={} err={}",
+            out,
+            err
+        );
+
+        let (_, _, code) = run_shell_async_with(&dialect, "exit 3", &dir).await;
+        assert_eq!(code, 3, "退出码必须原样透传");
     }
 }

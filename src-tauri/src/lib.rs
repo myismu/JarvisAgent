@@ -130,6 +130,10 @@ pub fn run() {
         }
     }
 
+    // Shell 方言必须在任何工具 schema 生成之前定下来：工具描述、只读判定、
+    // 提示词注入都以它为唯一口径。这里读配置并写入进程级 OnceLock。
+    infra::shell_dialect::init(&command::app_config::get_shell_settings());
+
     let startup_session_id = core::session::get_last_active_session_id()
         .filter(|id| core::session::get_session_meta(id).is_ok());
     if let Some(id) = startup_session_id {
@@ -269,6 +273,8 @@ pub fn run() {
             command::skill::get_skill_detail,
             command::tool::list_tools,
             command::tool::set_tool_active,
+            command::shell::get_shell_settings,
+            command::shell::save_shell_settings,
         ])
         .build(tauri::generate_context!())
         .expect("构建失败")

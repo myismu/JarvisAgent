@@ -327,19 +327,23 @@ impl BackgroundManager {
                 .to_string()
         });
 
-        let (shell, shell_args): (String, Vec<String>) = if cfg!(target_os = "windows") {
-            // 与前台 run_shell_async 同一构造口径：PS 5.1 不支持 `&&`，
-            // 公共层把链式命令展开成"逐段执行 + 前段失败即停"。
-            let ps_cmd = crate::infra::shell_command::build_windows_ps_command(&cmd_async);
-            (
-                "powershell".to_string(),
-                vec!["-NoProfile".to_string(), "-Command".to_string(), ps_cmd],
-            )
-        } else {
-            (
-                "bash".to_string(),
+        // 与前台 run_shell_async 共用同一方言判定：后台任务不能因为走了另一条
+        // 代码路径就换回 PowerShell（否则同一条命令前台能跑、后台语法报错）。
+        let (shell, shell_args): (String, Vec<String>) = match
+            crate::infra::shell_dialect::current()
+        {
+            crate::infra::shell_dialect::ShellDialect::PowerShell => {
+                // PS 5.1 不支持 `&&`，公共层把链式命令展开成"逐段执行 + 前段失败即停"。
+                let ps_cmd = crate::infra::shell_command::build_windows_ps_command(&cmd_async);
+                (
+                    "powershell".to_string(),
+                    vec!["-NoProfile".to_string(), "-Command".to_string(), ps_cmd],
+                )
+            }
+            crate::infra::shell_dialect::ShellDialect::Bash { program, .. } => (
+                program.to_string_lossy().to_string(),
                 vec!["-c".to_string(), cmd_async.clone()],
-            )
+            ),
         };
 
         let mut cmd = tokio::process::Command::new(&shell);

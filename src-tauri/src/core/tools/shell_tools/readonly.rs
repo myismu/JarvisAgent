@@ -315,7 +315,11 @@ pub fn is_readonly_command_unix(cmd: &str) -> bool {
         }
 
         if READONLY_UNIX_COMMANDS.iter().any(|c| *c == name) {
-            continue;
+            let args: Vec<&str> = segment.split_whitespace().skip(1).collect();
+            if posix_args_are_readonly(&name, &args) {
+                continue;
+            }
+            return false;
         }
 
         return false;
@@ -323,17 +327,90 @@ pub fn is_readonly_command_unix(cmd: &str) -> bool {
     true
 }
 
+/// POSIX 只读名单里"名字只读、参数可写"的命令，按参数二次判定。
+///
+/// 名单按命令名维护，但下列命令的写盘能力藏在参数里：`sed -i`、`tee file`、
+/// `find -delete`、`curl -o`……只看命令名会把它们全部判成"只读、免弹窗"。
+/// 这套判定在 Unix 主机上一直生效，但 Git Bash 模式让它在 Windows 上
+/// 第一次面对真实用户环境，必须收紧到参数级。
+fn posix_args_are_readonly(name: &str, args: &[&str]) -> bool {
+    // 是否出现某个精确参数
+    let has = |needle: &str| args.iter().any(|arg| *arg == needle);
+    match name {
+        // 执行任意命令 / 默认落盘：永不只读
+        "xargs" | "wget" => false,
+        // 就地编辑：短选项按簇判断（-i / -ni / -i.bak），长选项按前缀
+        "sed" => !args.iter().any(|arg| {
+            arg.starts_with("--in-place")
+                || (arg.starts_with('-') && !arg.starts_with("--") && arg.contains('i'))
+        }),
+        // tee 只有"纯选项"形态才只读；一旦有文件操作数就在写盘
+        "tee" => !args.iter().any(|arg| !arg.starts_with('-')),
+        // find 的删除 / 执行 / 写文件动作
+        "find" => !args.iter().any(|arg| {
+            matches!(
+                *arg,
+                "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir" | "-fls"
+            ) || arg.starts_with("-fprint")
+        }),
+        // curl 的落盘与上传开关
+        "curl" => !args.iter().any(|arg| {
+            matches!(
+                *arg,
+                "-o" | "-O" | "-T" | "--output" | "--remote-name" | "--remote-name-all" | "--upload-file"
+            ) || arg.starts_with("--output=")
+                || arg.starts_with("--remote-name=")
+                || arg.starts_with("--upload-file=")
+                || (arg.starts_with("-o") && !arg.starts_with("--") && arg.len() > 2)
+        }),
+        // sort -o / --output 会写文件
+        "sort" => !args.iter().any(|arg| {
+            *arg == "-o"
+                || arg.starts_with("--output")
+                || (arg.starts_with("-o") && !arg.starts_with("--") && arg.len() > 2)
+        }),
+        // uniq 第二个操作数是输出文件
+        "uniq" => args.iter().filter(|arg| !arg.starts_with('-')).count() <= 1,
+        // env 后面跟命令就会执行该命令（env VAR=1 rm x）
+        "env" => !args
+            .iter()
+            .any(|arg| !arg.starts_with('-') && !arg.contains('=')),
+        // tar 只有纯列表模式只读（-t 且不含 c/x/r/u）
+        "tar" => args.iter().any(|arg| {
+            *arg == "--list"
+                || (arg.starts_with('-')
+                    && !arg.starts_with("--")
+                    && arg.contains('t')
+                    && !arg.contains('c')
+                    && !arg.contains('x')
+                    && !arg.contains('r')
+                    && !arg.contains('u'))
+        }),
+        // gzip/gunzip 只有列目录与完整性测试只读
+        "gzip" | "gunzip" => has("-l") || has("--list") || has("-t") || has("--test"),
+        _ => true,
+    }
+}
+
 // --- 主入口 ---
 
-/// 主入口：对命令进行安全检查（中等严格级别，按平台自动分发）
+/// 主入口：按**当前执行方言**分派只读判定。
 ///
-/// 检查顺序：Block 类先检查（高危），Warn 类后检查（中危）。
-/// 只读命令检测（按平台自动分发）
+/// 为什么不再看操作系统：Windows 上可以配置 Git Bash 执行模式，
+/// 那时命令是 POSIX 语义，用 PowerShell 的 cmdlet 名单判定会全错。
 pub fn is_readonly_command(cmd: &str) -> bool {
-    if cfg!(target_os = "windows") {
-        is_readonly_command_windows(cmd)
-    } else {
+    is_readonly_command_for(&crate::infra::shell_dialect::current(), cmd)
+}
+
+/// 显式指定方言的只读判定（供测试与需要固定口径的调用点使用）。
+pub fn is_readonly_command_for(
+    dialect: &crate::infra::shell_dialect::ShellDialect,
+    cmd: &str,
+) -> bool {
+    if dialect.is_bash() {
         is_readonly_command_unix(cmd)
+    } else {
+        is_readonly_command_windows(cmd)
     }
 }
 
@@ -908,5 +985,67 @@ mod tests {
         assert!(get_destructive_warning("Get-ChildItem").is_none());
         assert!(get_destructive_warning("git status").is_none());
         assert!(get_destructive_warning("echo hello").is_none());
+    }
+}
+
+#[cfg(test)]
+mod posix_readonly_tests {
+    use super::is_readonly_command_for;
+    use crate::infra::shell_dialect::ShellDialect;
+    use std::path::PathBuf;
+
+    fn bash() -> ShellDialect {
+        ShellDialect::Bash {
+            program: PathBuf::from("bash"),
+            git_bash: true,
+        }
+    }
+
+    /// 只读名单里"名字只读、参数可写"的命令必须按参数否决。
+    /// 这些用例守的是 Git Bash 模式新增的暴露面：`sed -i` / `tee file` /
+    /// `find -delete` / `curl -o` 都不能因为命令名在白名单里就免弹窗。
+    #[test]
+    fn write_capable_arguments_are_not_readonly() {
+        let dialect = bash();
+        for cmd in [
+            "sed -i 's/a/b/' file.txt",
+            "sed -i.bak 's/a/b/' file.txt",
+            "echo hi | tee log.txt",
+            "find . -delete",
+            "find . -exec rm {} +",
+            "xargs rm",
+            "wget https://example.com/a.zip",
+            "curl -o out.bin https://example.com/a",
+            "curl -O https://example.com/a",
+            "sort -o out.txt in.txt",
+            "uniq in.txt out.txt",
+            "env FOO=1 rm x",
+            "tar -czf a.tar.gz dir",
+            "gzip file.txt",
+        ] {
+            assert!(
+                !is_readonly_command_for(&dialect, cmd),
+                "应判为非只读：{}",
+                cmd
+            );
+        }
+    }
+
+    /// 纯读取形态仍要放行，避免收紧过头把正常命令全部弹卡。
+    #[test]
+    fn pure_read_forms_remain_readonly() {
+        let dialect = bash();
+        for cmd in [
+            "sed -n '1,5p' file.txt",
+            "cat file.txt",
+            "find . -name '*.rs'",
+            "curl -s https://example.com",
+            "tar -tzf a.tar.gz",
+            "gzip -l a.gz",
+            "sort file.txt",
+            "uniq file.txt",
+        ] {
+            assert!(is_readonly_command_for(&dialect, cmd), "应判为只读：{}", cmd);
+        }
     }
 }

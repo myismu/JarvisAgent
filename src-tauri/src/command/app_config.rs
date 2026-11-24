@@ -338,6 +338,12 @@ pub(crate) struct AppConfigFile {
     /// 技能激活状态：skill_name → active。未记录的技能默认激活。
     #[serde(default)]
     skills: HashMap<String, bool>,
+    /// Shell 执行方言（Windows 专用；非 Windows 恒为 bash）。
+    ///
+    /// 生效时机与工具开关一致：schema 与提示词都按方言生成，必须重启后统一生效，
+    /// 不支持会话内热切换（见 infra/shell_dialect.rs 的模块注释）。
+    #[serde(default)]
+    shell: crate::infra::shell_dialect::ShellSettings,
     /// 工具启用状态：tool_name → enabled。未记录的工具默认启用。
     ///
     /// 与 `skills` 同构：只存"被显式关掉的"，所以文件里通常只有零星几条。
@@ -379,6 +385,7 @@ pub(crate) fn read_file() -> AppConfigFile {
             windows: HashMap::new(),
             ui_preferences: UiPreferences::default(),
             skills: HashMap::new(),
+            shell: Default::default(),
             tools: HashMap::new(),
         };
     };
@@ -386,6 +393,7 @@ pub(crate) fn read_file() -> AppConfigFile {
         windows: HashMap::new(),
         ui_preferences: UiPreferences::default(),
         skills: HashMap::new(),
+        shell: Default::default(),
         tools: HashMap::new(),
     })
 }
@@ -414,6 +422,22 @@ pub fn get_all_skill_activations() -> HashMap<String, bool> {
 pub fn set_skill_activation(skill_name: &str, active: bool) -> Result<(), String> {
     let mut file = read_file();
     file.skills.insert(skill_name.to_string(), active);
+    write_file(&file)
+}
+
+// ── Shell 执行方言 ──
+
+/// 读取 Shell 设置（未配置时为 PowerShell 模式）
+pub fn get_shell_settings() -> crate::infra::shell_dialect::ShellSettings {
+    read_file().shell
+}
+
+/// 保存 Shell 设置。只写配置，**不热切换**：需要重启应用后生效。
+pub fn save_shell_settings(
+    settings: crate::infra::shell_dialect::ShellSettings,
+) -> Result<(), String> {
+    let mut file = read_file();
+    file.shell = settings;
     write_file(&file)
 }
 

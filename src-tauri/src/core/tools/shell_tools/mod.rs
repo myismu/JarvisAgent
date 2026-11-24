@@ -24,14 +24,17 @@ pub use execution::run_shell;
 
 use crate::core::tools::framework::registry::ToolDef;
 use serde_json::json;
-use utils::{dir_param_description, shell_tool_description};
+use utils::{
+    dir_param_description, shell_command_param_description, shell_tool_description,
+    shell_tool_short_description,
+};
 
 // --- 工具注册 ---
 crate::define_tools! {
     pub fn register_tools(registry) {
         ToolDef {
             name: "RunCommand",
-            description: if cfg!(target_os = "windows") { "执行 Windows PowerShell 命令（统一入口）" } else { "执行 Unix bash 命令（统一入口）" },
+            description: shell_tool_short_description(),
             search_hint: "shell powershell bash command execute run background",
             category: "命令执行",
             schema: json!({
@@ -40,7 +43,7 @@ crate::define_tools! {
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "command": {"type": "string", "description": if cfg!(target_os = "windows") { "要执行的 PowerShell 命令" } else { "要执行的 bash 命令" }},
+                        "command": {"type": "string", "description": shell_command_param_description()},
                         "description": {"type": "string", "description": "一句话说明命令用途（显示在权限确认中）"},
                         // dir 于 2026-09-21 补齐，前台与后台模式共用同一套解析与沙箱校验。
                         // 2026-11-20 起 StartBackgroundCommand 并入本工具：长周期服务统一用

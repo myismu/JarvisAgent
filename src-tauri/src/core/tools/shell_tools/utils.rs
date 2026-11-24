@@ -239,7 +239,150 @@ fn has_parent_segment(token: &str) -> bool {
     has_parent_dir_segment(token)
 }
 
+/// POSIX 参数 token 归一后的形态
+enum NormalizedToken {
+    /// 无害设备路径（/dev/null 等），不参与越界判定
+    Skip,
+    /// 换算成了 Windows 口径的绝对路径
+    Path(String),
+    /// 保持原样（相对路径、Windows 路径、未识别的 POSIX 绝对路径）
+    Unchanged,
+}
+
+/// 把 Git Bash 的 MSYS 路径换算成 Windows 路径：`/e/demo` → `E:\demo`。
+///
+/// 只在 Git Bash 方言下调用——Linux 主机上的 `/c/Users` 是真实目录，
+/// 不能按盘符误解。
+fn msys_path_to_windows(token: &str) -> Option<String> {
+    let rest = if let Some(rest) = token.strip_prefix("/cygdrive/") {
+        rest
+    } else {
+        let bytes = token.as_bytes();
+        if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b'/' {
+            // 跳过开头的 '/'，得到 `e/foo`
+            &token[1..]
+        } else {
+            return None;
+        }
+    };
+    let bytes = rest.as_bytes();
+    if bytes.is_empty() || !bytes[0].is_ascii_alphabetic() {
+        return None;
+    }
+    let drive = (bytes[0] as char).to_ascii_uppercase();
+    let tail = &rest[1..];
+    if tail.is_empty() {
+        return Some(format!("{}:\\", drive));
+    }
+    // 只认 `/e/...` 形态；`/etc` 这类不是盘符路径
+    let tail = tail.strip_prefix('/')?;
+    Some(format!("{}:\\{}", drive, tail.replace('/', "\\")))
+}
+
+/// 展开 `~/...` 为用户主目录（Windows 用 USERPROFILE，Unix 用 HOME）。
+fn expand_home(token: &str) -> Option<String> {
+    if token != "~" && !token.starts_with("~/") && !token.starts_with("~\\") {
+        return None;
+    }
+    let home = if cfg!(windows) {
+        std::env::var("USERPROFILE").ok()?
+    } else {
+        std::env::var("HOME").ok()?
+    };
+    let rest = token.trim_start_matches('~').trim_start_matches(['/', '\\']);
+    if rest.is_empty() {
+        Some(home)
+    } else {
+        Some(format!("{}\\{}", home.trim_end_matches(['/', '\\']), rest.replace('/', "\\")))
+    }
+}
+
+/// Windows 程序的 `/F`、`/PID` 形式开关。
+///
+/// 判定刻意收窄：只有"单段、纯字母、要么单字母要么不超过 5 字母且全大写"才算开关。
+/// `/e/demo`、`/usr/bin`、`/tmp/x` 都会落到路径分支，不会被误当成开关放过。
+/// 已知代价：单字母小写开关与盘符根目录（`/c`）无法区分，这里按开关处理——
+/// 裸盘符根作为命令参数没有实际用途，而 `cmd /c` 是高频写法。
+fn is_windows_style_switch(token: &str) -> bool {
+    let Some(rest) = token.strip_prefix('/') else {
+        return false;
+    };
+    if rest.is_empty() || rest.contains('/') {
+        return false;
+    }
+    let all_alpha = rest.chars().all(|c| c.is_ascii_alphabetic());
+    all_alpha && (rest.len() == 1 || (rest.len() <= 5 && rest.chars().all(|c| c.is_ascii_uppercase())))
+}
+
+/// POSIX token 归一：设备路径跳过、Git Bash 路径换算、`~` 展开。
+fn normalize_posix_token(token: &str, git_bash: bool) -> NormalizedToken {
+    if matches!(
+        token,
+        "/dev/null" | "/dev/stdout" | "/dev/stderr" | "/dev/tty" | "/dev/zero"
+    ) {
+        return NormalizedToken::Skip;
+    }
+    if git_bash {
+        if let Some(path) = msys_path_to_windows(token) {
+            return NormalizedToken::Path(path);
+        }
+    }
+    if let Some(path) = expand_home(token) {
+        return NormalizedToken::Path(path);
+    }
+    NormalizedToken::Unchanged
+}
+
+/// 是否为 Windows 盘符绝对路径（`X:\` 或 `X:/`）
+fn is_windows_absolute(token: &str) -> bool {
+    token.len() >= 3
+        && token.as_bytes()[1] == b':'
+        && (token.as_bytes()[2] == b'\\' || token.as_bytes()[2] == b'/')
+}
+
+/// `--opt=value` 的值如果是路径，同样要过沙箱边界（如 `npm --prefix /e/out`）。
+fn check_option_value_path(
+    value: &str,
+    git_bash: bool,
+    workspace: &std::path::Path,
+) -> Result<(), String> {
+    let normalized = match normalize_posix_token(value, git_bash) {
+        NormalizedToken::Skip => return Ok(()),
+        NormalizedToken::Path(path) => path,
+        NormalizedToken::Unchanged => value.to_string(),
+    };
+    if (is_windows_absolute(&normalized) || normalized.starts_with('/'))
+        && !is_within_workspace(&normalized, Some(workspace))
+    {
+        return Err(format!(
+            "沙箱限制：命令包含沙箱外路径 '{}'（沙箱目录为 '{}'）",
+            normalized,
+            workspace.display()
+        ));
+    }
+    if has_parent_segment(&normalized) {
+        let combined = workspace.join(&normalized);
+        if !is_within_workspace(&combined.to_string_lossy(), Some(workspace)) {
+            return Err(format!(
+                "沙箱限制：命令包含越权相对路径 '{}'（解析后不在沙箱内）",
+                normalized
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn check_command_paths(cmd: &str, workspace: &std::path::Path) -> Result<(), String> {
+    check_command_paths_for(&crate::infra::shell_dialect::current(), cmd, workspace)
+}
+
+/// 按指定方言校验命令里的路径是否都在沙箱内。
+pub fn check_command_paths_for(
+    dialect: &crate::infra::shell_dialect::ShellDialect,
+    cmd: &str,
+    workspace: &std::path::Path,
+) -> Result<(), String> {
+    let git_bash = dialect.is_git_bash();
     for (i, part) in split_command_tokens(cmd).into_iter().enumerate() {
         let mut trimmed = part.trim_matches('"').trim_matches('\'').to_string();
         // 剥掉重定向前缀 (>  >>  2>  1>  *>  2>> 等)，避免路径被 ">C:\..." 格式隐藏
@@ -250,8 +393,21 @@ pub fn check_command_paths(cmd: &str, workspace: &std::path::Path) -> Result<(),
             continue;
         }
 
-        // 跳过命令行开关和选项
-        if trimmed.starts_with('-') || trimmed.starts_with('/') {
+        // 选项与开关：两种方言的形态不同
+        if dialect.is_bash() {
+            // `--opt=value` 的值可能是路径（如 npm 的 --prefix），不能整条跳过
+            if trimmed.starts_with('-') {
+                if let Some((_, value)) = trimmed.split_once('=') {
+                    check_option_value_path(value, git_bash, workspace)?;
+                }
+                continue;
+            }
+            // Windows 程序的 `/F`、`/PID` 形式开关
+            if is_windows_style_switch(&trimmed) {
+                continue;
+            }
+        } else if trimmed.starts_with('-') || trimmed.starts_with('/') {
+            // PowerShell 方言维持原口径：`/` 开头一律视为开关
             continue;
         }
 
@@ -394,26 +550,44 @@ pub fn check_command_paths(cmd: &str, workspace: &std::path::Path) -> Result<(),
             continue;
         }
 
-        // 检查 Windows 绝对路径：X:\ 或 X:/
-        if trimmed.len() >= 3
-            && trimmed.as_bytes()[1] == b':'
-            && (trimmed.as_bytes()[2] == b'\\' || trimmed.as_bytes()[2] == b'/')
-        {
-            if !is_within_workspace(&trimmed, Some(workspace)) {
+        // POSIX 方言：先换算 MSYS 路径（/e/... → E:\...）与 ~ 展开，
+        // 否则所有 Git Bash 绝对路径都会被当成"非绝对路径"直接放行。
+        let normalized = if dialect.is_bash() {
+            match normalize_posix_token(&trimmed, git_bash) {
+                NormalizedToken::Skip => continue,
+                NormalizedToken::Path(path) => path,
+                NormalizedToken::Unchanged => trimmed.clone(),
+            }
+        } else {
+            trimmed.clone()
+        };
+
+        // POSIX 方言禁止用环境变量构造路径（$HOME/x 这类写法绕过静态校验）
+        if dialect.is_bash() && normalized.starts_with('$') && normalized.contains('/') {
+            return Err(format!(
+                "沙箱限制：命令包含环境变量引用 '{}'，沙箱内禁止使用环境变量构造路径。\
+                 请使用沙箱内的相对路径或绝对路径。",
+                normalized
+            ));
+        }
+
+        // 检查绝对路径：Windows 的 X:\ / X:/，以及 POSIX 的 / 开头路径
+        if is_windows_absolute(&normalized) || normalized.starts_with('/') {
+            if !is_within_workspace(&normalized, Some(workspace)) {
                 return Err(format!(
                     "沙箱限制：命令包含沙箱外路径 '{}'（沙箱目录为 '{}'）",
-                    trimmed,
+                    normalized,
                     workspace.display()
                 ));
             }
         }
         // 检查相对路径遍历：`..` 必须是独立路径段（30..42 / a..b 不算遍历）
-        else if has_parent_segment(&trimmed) {
-            let combined = workspace.join(&trimmed);
+        else if has_parent_segment(&normalized) {
+            let combined = workspace.join(&normalized);
             if !is_within_workspace(&combined.to_string_lossy(), Some(workspace)) {
                 return Err(format!(
                     "沙箱限制：命令包含越权相对路径 '{}'（解析后不在沙箱内）",
-                    trimmed
+                    normalized
                 ));
             }
             // 沙箱内禁止使用环境变量构造路径（$env:VAR / %VAR%）
@@ -472,20 +646,99 @@ pub fn shell_tool_description() -> &'static str {
     // 末尾那句"不支持文件写入"从提示词搬来（2026-09-21）：执行层本来就会拦
     // （见 execution.rs 的 is_file_mutation_command），但事前告知能省一次失败调用。
     // 搬来后提示词里 base_p0_write.md 与 subagent.md 的两处同款说明即删除。
-    if cfg!(target_os = "windows") {
-        "执行 Windows PowerShell 命令。支持管道、脚本。可通过 run_in_background 启动长周期任务（如 npm run dev）。只读命令（dir/type/git status 等）自动放行无需确认。输出超过 50000 字符自动截断。exit code 含义自动解读（findstr:1=无匹配, robocopy:0-7=成功）。不支持文件写入/删除/重命名：用 [System.IO.File] 方法、Set-Content/Out-File/Add-Content/New-Item 或 shell 重定向 > 落盘都会被拦下，请改用 WriteFile/EditFile/DeleteFile/RenameFile 等专用工具（只有它们有沙箱边界检查、改动快照与回滚）。"
-    } else {
-        "执行 Unix bash 命令。支持管道、脚本。可通过 run_in_background 启动长周期任务（如 npm run dev）。只读命令（ls/cat/git status 等）自动放行无需确认。输出超过 50000 字符自动截断。exit code 含义自动解读（grep:1=无匹配, diff:1=不同）。不支持文件写入/删除/重命名（echo >、tee、sed -i 等都会被拦下），请改用 WriteFile/EditFile/DeleteFile/RenameFile 等专用工具（只有它们有沙箱边界检查、改动快照与回滚）。"
+    // 文案必须与**实际方言**一致：Windows 上开了 Git Bash 还告诉模型"PowerShell"，
+    // 模型会写 $env:VAR / Get-ChildItem，整轮命令全部语法报错。
+    match crate::infra::shell_dialect::current() {
+        crate::infra::shell_dialect::ShellDialect::PowerShell => {
+            "执行 Windows PowerShell 命令。支持管道、脚本。可通过 run_in_background 启动长周期任务（如 npm run dev）。只读命令（dir/type/git status 等）自动放行无需确认。输出超过 50000 字符自动截断。exit code 含义自动解读（findstr:1=无匹配, robocopy:0-7=成功）。不支持文件写入/删除/重命名：用 [System.IO.File] 方法、Set-Content/Out-File/Add-Content/New-Item 或 shell 重定向 > 落盘都会被拦下，请改用 WriteFile/EditFile/DeleteFile/RenameFile 等专用工具（只有它们有沙箱边界检查、改动快照与回滚）。"
+        }
+        crate::infra::shell_dialect::ShellDialect::Bash { .. } if cfg!(windows) => {
+            "执行 Git Bash（POSIX/bash 语义，运行在 Windows 上）命令。支持管道、&&、||、脚本。可通过 run_in_background 启动长周期任务（如 npm run dev）。只读命令（ls/cat/grep/git status 等）自动放行无需确认。输出超过 50000 字符自动截断。exit code 含义自动解读（grep:1=无匹配, diff:1=不同）。路径用 bash 口径：E:\\xxx 写作 /e/xxx；沙箱内优先用相对路径。不要写 PowerShell 语法（$env:VAR / Get-ChildItem / Remove-Item 等）。不支持文件写入/删除/重命名（echo >、tee、sed -i 等都会被拦下），请改用 WriteFile/EditFile/DeleteFile/RenameFile 等专用工具（只有它们有沙箱边界检查、改动快照与回滚）。"
+        }
+        crate::infra::shell_dialect::ShellDialect::Bash { .. } => {
+            "执行 Unix bash 命令。支持管道、脚本。可通过 run_in_background 启动长周期任务（如 npm run dev）。只读命令（ls/cat/git status 等）自动放行无需确认。输出超过 50000 字符自动截断。exit code 含义自动解读（grep:1=无匹配, diff:1=不同）。不支持文件写入/删除/重命名（echo >、tee、sed -i 等都会被拦下），请改用 WriteFile/EditFile/DeleteFile/RenameFile 等专用工具（只有它们有沙箱边界检查、改动快照与回滚）。"
+        }
+    }
+}
+
+/// RunCommand 的 `command` 参数说明（须与方言一致）
+pub fn shell_command_param_description() -> &'static str {
+    match crate::infra::shell_dialect::current() {
+        crate::infra::shell_dialect::ShellDialect::PowerShell => "要执行的 PowerShell 命令",
+        crate::infra::shell_dialect::ShellDialect::Bash { .. } if cfg!(windows) => {
+            "要执行的 Git Bash 命令（POSIX 语法）"
+        }
+        crate::infra::shell_dialect::ShellDialect::Bash { .. } => "要执行的 bash 命令",
+    }
+}
+
+/// RunCommand 的工具简述（工具列表里那行）
+pub fn shell_tool_short_description() -> &'static str {
+    match crate::infra::shell_dialect::current() {
+        crate::infra::shell_dialect::ShellDialect::PowerShell => {
+            "执行 Windows PowerShell 命令（统一入口）"
+        }
+        crate::infra::shell_dialect::ShellDialect::Bash { .. } if cfg!(windows) => {
+            "执行 Git Bash 命令（统一入口）"
+        }
+        crate::infra::shell_dialect::ShellDialect::Bash { .. } => "执行 Unix bash 命令（统一入口）",
     }
 }
 
 #[cfg(test)]
 mod path_and_truncation_tests {
-    use super::{check_command_paths, format_shell_output};
-    use std::path::Path;
+    use super::{check_command_paths, check_command_paths_for, format_shell_output, msys_path_to_windows};
+    use crate::infra::shell_dialect::ShellDialect;
+    use std::path::{Path, PathBuf};
 
     fn ws() -> &'static Path {
         Path::new("C:\\workspace")
+    }
+
+    fn git_bash() -> ShellDialect {
+        ShellDialect::Bash {
+            program: PathBuf::from("bash"),
+            git_bash: true,
+        }
+    }
+
+    #[test]
+    fn msys_paths_map_to_drive_letters() {
+        assert_eq!(msys_path_to_windows("/e/demo/x"), Some("E:\\demo\\x".to_string()));
+        assert_eq!(
+            msys_path_to_windows("/c/Users/沐/.ssh"),
+            Some("C:\\Users\\沐\\.ssh".to_string())
+        );
+        assert_eq!(
+            msys_path_to_windows("/cygdrive/d/work"),
+            Some("D:\\work".to_string())
+        );
+        // 非盘符形态不换算，避免把 /etc、/usr 误认成 E:\tc、U:\sr
+        assert_eq!(msys_path_to_windows("/etc/passwd"), None);
+        assert_eq!(msys_path_to_windows("./relative"), None);
+    }
+
+    /// Git Bash 方言下，MSYS 绝对路径必须参与沙箱校验；
+    /// 以前"以 / 开头一律当开关"会让 `/e/other` 直接穿过边界。
+    #[test]
+    fn git_bash_paths_are_checked_against_workspace() {
+        let dialect = git_bash();
+        let ws = Path::new("E:\\demo\\JarvisAgent");
+        assert!(check_command_paths_for(&dialect, "cat /e/demo/JarvisAgent/src/main.rs", ws).is_ok());
+        assert!(check_command_paths_for(&dialect, "cat /e/other/secret.txt", ws).is_err());
+        // 未换算的 POSIX 绝对路径同样越界
+        assert!(check_command_paths_for(&dialect, "cat /tmp/secret", ws).is_err());
+        // `--opt=value` 里的路径也要过边界
+        assert!(check_command_paths_for(&dialect, "npm --prefix=/e/other install", ws).is_err());
+    }
+
+    /// Windows 程序的 `/F`、`/PID` 开关不能被当成路径；设备重定向无害。
+    #[test]
+    fn windows_switches_and_dev_null_are_not_paths() {
+        let dialect = git_bash();
+        let ws = Path::new("E:\\demo\\JarvisAgent");
+        assert!(check_command_paths_for(&dialect, "taskkill /F /IM node.exe", ws).is_ok());
+        assert!(check_command_paths_for(&dialect, "npm run dev 2>/dev/null", ws).is_ok());
     }
 
     /// `30..42` 这类数字区间/普通单词里的 `..` 不是路径遍历，不该被判越权
