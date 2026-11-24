@@ -165,7 +165,6 @@
     "pipelineError": "This turn was interrupted. The partial result above is kept — reply \"continue\" to pick up where it left off.",
     "appClosed": "This run was interrupted because the app closed, so no reply was produced.",
     "loopLimit": "The turn limit was reached without continuation approval, so the run stopped here. Tell me when you want to continue and I will pick up from the last progress.",
-    "planLimit": "Planning exploration hit its threshold and stopped automatically, waiting for your decision.",
     "detail": "({detail})",
     "waitingHint": "No data received for {silent}s. If it stays silent, this will terminate automatically in about {remain}s (no need to stop it manually). Deep thinking or a busy upstream can be slow.",
     "retry": "API call failed. Retrying in {secs}s (attempt {attempt}/{max})…"

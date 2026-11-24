@@ -35,8 +35,12 @@ pub const MAX_TOKENS_CONTEXT: i32 = 8192;
 // 见 `infra::llm::context_budget`（主 Agent 与子代理共用）。
 pub const MAX_AGENT_LOOP_BEFORE_CONFIRM: usize = 30;
 pub const MAX_AGENT_LOOP_ABSOLUTE: usize = 200;
-pub const PLAN_WATCHDOG_MAX_CONSECUTIVE_STALLS: usize = 6;
-pub const PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN: usize = 10;
+/// Plan 看门狗：plan 模式下连续多少**轮**未提交方案即停下。
+///
+/// 口径是轮（loop），不是工具调用次数：一个 loop 里并行读 20 个文件也只算 1 轮。
+/// 旧口径按 `tool_calls.len()` 累加，一次并行读取就能把额度吃满，
+/// 大项目探索阶段因此频繁误拦（2026-11 实测反馈）。
+pub const PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN: usize = 20;
 pub const MAX_SESSION_TITLE_LEN: usize = 30;
 pub const MAX_BACKGROUND_OUTPUT_LEN: usize = 50000;
 pub const MAX_BACKGROUND_NOTIFY_LEN: usize = 500;

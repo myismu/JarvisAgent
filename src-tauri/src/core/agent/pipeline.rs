@@ -157,13 +157,10 @@ struct PipelineState {
     reflection_mode: String,
     total_reflections: usize,
     consecutive_reflection_nos: usize,
-    /// Plan 看门狗：plan 模式下连续无喂狗动作的空转计数。
+    /// Plan 看门狗：plan 模式下连续未提交 ProposePlan 的**轮数**。
     ///
-    /// 语义是「**轮次**」而非「工具调用次数」：无工具轮（纯文本）计 1，
-    /// 有工具轮按调用次数计。旧实现只累加 `tool_calls.len()`，导致纯文本
-    /// 轮次恒加 0、这条判据对"无工具空转"天然免疫（2026-09-19 死循环事故）。
-    plan_consecutive_stalls: usize,
-    /// Plan 看门狗：plan 模式下累计无 ProposePlan / 降级 edit 的 loop 次数
+    /// 按轮计分，不按工具调用次数：一轮里并行读多少文件都只 +1。
+    /// 提交方案或切出 plan 模式即清零。
     plan_total_loops_without_plan: usize,
     /// 本轮因上游失联（流内空闲超时）而中断时的原因说明。
     /// Some 表示属于"运行被打断"，收尾时必须保留现场、不得截断历史。
@@ -464,6 +461,28 @@ fn loop_submitted_plan(tool_calls: &[(String, String)]) -> bool {
         }
         false
     })
+}
+
+/// 推进 Plan 看门狗的轮次计数，返回是否应触发。
+///
+/// 计分口径是**轮**：无论本轮调用了 1 个还是 20 个工具，都只 +1。
+/// 旧实现按 `tool_calls.len()` 累加，一次并行读取就能把额度吃满，
+/// 大项目探索阶段因此频繁误拦。
+///
+/// 清零条件（喂狗）：提交了方案，或已切出 plan 模式。
+fn advance_plan_watchdog(
+    work_mode: &str,
+    submitted_plan: bool,
+    loops_without_plan: &mut usize,
+) -> bool {
+    use crate::infra::types::constants::PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN;
+
+    if work_mode != "plan" || submitted_plan {
+        *loops_without_plan = 0;
+        return false;
+    }
+    *loops_without_plan = loops_without_plan.saturating_add(1);
+    *loops_without_plan >= PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN
 }
 
 /// 判断给定的助手文本是否已存在于消息列表尾部。
@@ -1096,7 +1115,6 @@ impl PipelineState {
             reflection_mode: resolved_reflection_mode,
             total_reflections: 0,
             consecutive_reflection_nos: 0,
-            plan_consecutive_stalls: 0,
             plan_total_loops_without_plan: 0,
             interrupted_reason: None,
             notice_i18n_key: None,
@@ -1924,8 +1942,8 @@ impl PipelineState {
                     // 取消脱困。
                     if self.update_plan_watchdog(&work_mode, &[]) {
                         println!(
-                            "[JARVIS] Plan 看门狗触发（拦截路径）：consecutive={}, loops_without_plan={}",
-                            self.plan_consecutive_stalls, self.plan_total_loops_without_plan
+                            "[JARVIS] Plan 看门狗触发（拦截路径）：loops_without_plan={}",
+                            self.plan_total_loops_without_plan
                         );
                         self.handle_plan_watchdog_summary().await;
                         break;
@@ -2157,14 +2175,14 @@ impl PipelineState {
                     );
                 }
 
-                // B3 Plan 看门狗：仅 plan 模式；连续无喂狗的工具调用 / 累计无 ProposePlan 的空转达到阈值时，
+                // B3 Plan 看门狗：仅 plan 模式；连续 20 轮未提交 ProposePlan 时，
                 // 先做一次缓存友好的 LLM 进度小结，再强制停下交还决策权。
                 // 传 tool_calls（含参数 JSON）而非纯名字列表：喂狗判定要解包 ExecuteTool 包装。
                 let current_mode_after = self.ctx.agent_work_mode.lock().await.clone();
                 if self.update_plan_watchdog(&current_mode_after, &tool_calls) {
                     println!(
-                        "[JARVIS] Plan 看门狗触发：consecutive={}, loops_without_plan={}",
-                        self.plan_consecutive_stalls, self.plan_total_loops_without_plan
+                        "[JARVIS] Plan 看门狗触发：loops_without_plan={}",
+                        self.plan_total_loops_without_plan
                     );
                     self.handle_plan_watchdog_summary().await;
                     break;
@@ -2833,7 +2851,7 @@ impl PipelineState {
         //
         // ⚠️ 归因口径（前端写文案时仍受此约束，勿再混淆）：本函数是**流空闲超时**
         // （SSE 30s 零帧）的收尾，与 plan 模式的「规划看门狗」
-        // （update_plan_watchdog / 阈值 6 次·10 轮）是两套完全不同的机制。
+        // （update_plan_watchdog / 阈值 20 轮）是两套完全不同的机制。
         // 文案只描述"等待"这个客观事实，**不得断言服务端状态**
         // （"已停止响应/已失联"都不行）——静默可能是服务繁忙、链路抖动或半开连接，
         // 在链路上不可区分，断言会误导用户。
@@ -3746,9 +3764,9 @@ impl PipelineState {
         }
     }
 
-    /// B3 Plan 看门狗：更新计数并判断是否触发（仅 plan 模式）。
+    /// B3 Plan 看门狗：按轮推进计数并判断是否触发（仅 plan 模式）。
     ///
-    /// 喂狗动作（重置两个计数器）：
+    /// 喂狗动作（计数清零）：
     /// - 本 loop 提交了规划方案（`loop_submitted_plan`：裸 ProposePlan 或
     ///   经 ExecuteTool 包装——只匹配裸名时，包装形态的提交轮不喂狗，看门狗误触发）；
     /// - 本 loop 已把 work_mode 切出 plan（SwitchWorkMode 到 edit）。
@@ -3757,46 +3775,23 @@ impl PipelineState {
     /// 旧实现只挂在工具执行分支，而"纯文本空转"走的是无工具分支，
     /// 计数器永远停在 0、看门狗结构性失效（2026-09-19 死循环事故根因）。
     fn update_plan_watchdog(&mut self, work_mode: &str, tool_calls: &[(String, String)]) -> bool {
-        use crate::infra::types::constants::{
-            PLAN_WATCHDOG_MAX_CONSECUTIVE_STALLS, PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN,
-        };
-
-        if work_mode != "plan" {
-            self.plan_consecutive_stalls = 0;
-            self.plan_total_loops_without_plan = 0;
-            return false;
-        }
-
-        if loop_submitted_plan(tool_calls) {
-            self.plan_consecutive_stalls = 0;
-            self.plan_total_loops_without_plan = 0;
-            return false;
-        }
-
-        // 无工具轮（tool_calls 为空）计 1：轮次本身就是一次空转，
-        // 不能因为"没调用工具"就加 0（否则纯文本空转永远触发不了）。
-        let stall_increment = tool_calls.len().max(1);
-        self.plan_consecutive_stalls = self.plan_consecutive_stalls.saturating_add(stall_increment);
-        self.plan_total_loops_without_plan = self.plan_total_loops_without_plan.saturating_add(1);
-
-        self.plan_consecutive_stalls >= PLAN_WATCHDOG_MAX_CONSECUTIVE_STALLS
-            || self.plan_total_loops_without_plan >= PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN
+        advance_plan_watchdog(
+            work_mode,
+            loop_submitted_plan(tool_calls),
+            &mut self.plan_total_loops_without_plan,
+        )
     }
 
     /// B3 触发后：先复用当前 system + 历史做一次缓存友好的 LLM 进度小结，
     /// 再把决策权交还用户并强制结束当前 loop。
     async fn handle_plan_watchdog_summary(&mut self) {
-        use crate::infra::types::constants::{
-            PLAN_WATCHDOG_MAX_CONSECUTIVE_STALLS, PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN,
-        };
+        use crate::infra::types::constants::PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN;
 
-        // 触发指令带实际计数：触发时两个计数器尚未清零（触发分支直接 break），
-        // 把真实值与阈值一起告诉模型，让它对"空转了多久"有量化感知。
+        // 触发指令带实际轮数：触发时计数尚未清零（触发分支直接 break），
+        // 把真实值与阈值一起告诉模型，让它知道已经连续探索了多少轮。
         let instruction = format!(
-            "【系统通知】规划探索已达到看门狗阈值（本轮已累计 {} 次工具调用未提交方案 / {} 轮未提交方案；阈值：{} 次或 {} 轮）。请立即停止探索，不要调用任何工具。思考可以照常进行，但必须在可见正文中输出当前进度小结与下一步建议（继续探索 / 缩小范围 / 直接执行）；只有思考而没有正文，用户将看不到本轮结论。",
-            self.plan_consecutive_stalls,
+            "【系统通知】规划探索已连续 {} 轮未提交方案（阈值 {} 轮），已到上限。请立即停止探索，不要调用任何工具。思考可以照常进行，但必须用你自己的话在可见正文中总结：当前已完成什么、卡在哪里、下一步建议（继续探索 / 缩小范围 / 直接执行）。只有思考而没有正文，用户将看不到本轮结论。",
             self.plan_total_loops_without_plan,
-            PLAN_WATCHDOG_MAX_CONSECUTIVE_STALLS,
             PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN,
         );
         let mut snapshot = self.prepare_history_snapshot().await;
@@ -3852,28 +3847,28 @@ impl PipelineState {
         // 前端 `AgentTurn.timelineSplit` 的「时间线末尾必须是正文」判据就不再成立，
         // 整段小结会连同工具调用一起被折回执行过程，最终回答区反而空着。
         //
-        // 这条信息已有两个正式承载者，不需要第三份：
-        // 1. `summary` 本身就是正文：实时经 `chat-text` 推给前端，落库为 assistant 消息；
-        // 2. 「已到阈值、等待决策」由 `InterruptKind::PlanLimit` → `notice.planLimit`
-        //    以气泡下方小字下发（中英文案已就位）。
+        // 这条信息只有一个承载者：`summary` 本身就是正文，
+        // 实时经 `chat-text` 推给前端，落库为 assistant 消息。
+        //
+        // 刻意**不**打 `InterruptKind::PlanLimit`：那会在气泡下方额外渲染一行
+        // 「规划探索已达到阈值」，与模型自己的收尾重复，且把系统判定摆到模型判断前面。
+        // 用户需要看到的是模型用自己的话说清现状，不是系统的判定标签。
 
         // 小结落库：此前看门狗收尾只进 final_answer 与事件流，session_messages
         // 零痕迹（尾部悬 tool_result，刷新后聊天流回退到上一条正文）。
         // 这里把小结补成 assistant 消息并立即整仓落库，尾部以 assistant 收口。
         //
-        // 正文只放小结本身，中断类型走 `interrupt_kinds`（阶段二改造）；
-        // source 保持 `chat`——这条消息**会发给 LLM**，标记由 `interrupt_marker_for`
-        // 在发送前按 kind 拼回（见 doc/状态标注符号统一与结构化改造方案.md）。
+        // 不带中断类型：看门狗收尾不按「中断」呈现，不给用户额外的系统提示。
+        // source 保持 `chat`——这条消息**会发给 LLM**，作为下一轮可续写的上下文。
         {
             let mut session = self.ctx.memory.lock().await;
             if !assistant_text_exists_at_tail(&session.messages, &summary) {
-                append_message_with_kind(
+                append_message(
                     &mut session,
                     Message::Assistant {
                         content: Content::Single(summary.clone()),
                     },
                     MessageSource::Chat,
-                    Some(InterruptKind::PlanLimit.as_str()),
                 );
             }
             crate::core::session::save_session(&self.sid, &session, None);
@@ -4133,6 +4128,41 @@ mod plan_watchdog_feeding_tests {
             call("ExecuteTool", r#"{"name":"ProposePlan","args":{}}"#),
         ];
         assert!(loop_submitted_plan(&calls));
+    }
+}
+
+#[cfg(test)]
+mod plan_watchdog_scoring_tests {
+    use super::advance_plan_watchdog;
+    use crate::infra::types::constants::PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN;
+
+    /// 计分按轮：第 20 轮才触发，前 19 轮都不打扰。
+    ///
+    /// 旧口径按工具调用次数累加，一轮里并行读 6 个文件就会触发；
+    /// 这里锁死新口径，防止改回去。
+    #[test]
+    fn triggers_on_the_last_allowed_round() {
+        let mut loops = 0;
+        for _ in 0..PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN - 1 {
+            assert!(!advance_plan_watchdog("plan", false, &mut loops));
+        }
+        assert_eq!(loops, PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN - 1);
+        assert!(advance_plan_watchdog("plan", false, &mut loops));
+        assert_eq!(loops, PLAN_WATCHDOG_MAX_LOOPS_WITHOUT_PLAN);
+    }
+
+    #[test]
+    fn submitting_plan_resets_counter() {
+        let mut loops = 10;
+        assert!(!advance_plan_watchdog("plan", true, &mut loops));
+        assert_eq!(loops, 0);
+    }
+
+    #[test]
+    fn leaving_plan_mode_resets_counter() {
+        let mut loops = 10;
+        assert!(!advance_plan_watchdog("edit", false, &mut loops));
+        assert_eq!(loops, 0);
     }
 }
 

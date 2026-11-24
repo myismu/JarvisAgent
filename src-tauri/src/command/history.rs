@@ -21,8 +21,8 @@
 //! - 助手多轮回复合并显示；思考过程由前端折叠
 //! - 用户消息关联检查点 ID，支持前端回滚按钮
 
-use crate::core::session;
 use crate::core::orchestration::agent_runs::AgentRun;
+use crate::core::session;
 use crate::infra::state::state::*;
 use crate::infra::types::models::*;
 use std::collections::HashMap;
@@ -258,7 +258,8 @@ fn aggregate_run_duration(runs: &[AgentRun]) -> Option<u64> {
 /// 按用户消息 ID 查这一轮的用时；消息 ID 缺失或查库失败返回 `None`。
 fn run_duration_ms(message_id: Option<&str>) -> Option<u64> {
     let id = message_id?;
-    let runs = crate::core::orchestration::agent_run_repository::list_runs_by_message_id(id).ok()?;
+    let runs =
+        crate::core::orchestration::agent_run_repository::list_runs_by_message_id(id).ok()?;
     aggregate_run_duration(&runs)
 }
 
@@ -523,14 +524,16 @@ fn interrupted_body_is_content(kind: Option<&str>) -> bool {
 /// 已在 v23 迁移里把老数据的 `interrupt_kind` 一次性回填，该回退随之删除。
 fn interrupt_notice_key(kind: Option<&str>) -> Option<&'static str> {
     use crate::infra::types::models::InterruptKind;
-    Some(match InterruptKind::from_db(kind?)? {
-        InterruptKind::StreamTimeout => "notice.streamTimeout",
-        InterruptKind::UserCancel => "notice.userCancel",
-        InterruptKind::PipelineError => "notice.pipelineError",
-        InterruptKind::AppClosed => "notice.appClosed",
-        InterruptKind::LoopLimit => "notice.loopLimit",
-        InterruptKind::PlanLimit => "notice.planLimit",
-    })
+    match InterruptKind::from_db(kind?)? {
+        InterruptKind::StreamTimeout => Some("notice.streamTimeout"),
+        InterruptKind::UserCancel => Some("notice.userCancel"),
+        InterruptKind::PipelineError => Some("notice.pipelineError"),
+        InterruptKind::AppClosed => Some("notice.appClosed"),
+        InterruptKind::LoopLimit => Some("notice.loopLimit"),
+        // 规划看门狗收尾展示的是模型自己写的小结，不再叠加系统判定小字。
+        // 旧库里的 plan_limit 消息也按此处理，避免刷新历史时又冒出来。
+        InterruptKind::PlanLimit => None,
+    }
 }
 
 /// 该来源的消息是否参与会话历史的界面渲染。
@@ -880,12 +883,7 @@ async fn extract_session_messages_window(
         });
     }
 
-    Ok((
-        result,
-        has_more.unwrap_or(false),
-        oldest_seq,
-        newest_seq,
-    ))
+    Ok((result, has_more.unwrap_or(false), oldest_seq, newest_seq))
 }
 
 #[tauri::command]
@@ -955,13 +953,8 @@ pub async fn get_session_messages_paged(
         );
     }
     // limit 在此命令中语义为 **每页轮数**（默认 5 轮）
-    let (messages, has_more, oldest_seq, newest_seq) = extract_session_messages_window(
-        &session_id,
-        &session_manager,
-        before_seq,
-        limit,
-    )
-    .await?;
+    let (messages, has_more, oldest_seq, newest_seq) =
+        extract_session_messages_window(&session_id, &session_manager, before_seq, limit).await?;
     // 可见消息总条数：与上面的窗口查询同一套可见性条件，前端据此判定本地窗口是否落后。
     // 统计失败不阻断消息返回 —— 分页元数据缺失时给 0（前端按"未知"处理），
     // 总比因为一次 COUNT 查询把整页内容丢掉要好。
