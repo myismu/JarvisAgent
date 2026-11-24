@@ -24,7 +24,21 @@ const todos = computed(() => agent.currentTodos);
 const visible = computed(() => todos.value.length > 0);
 const done = computed(() => todos.value.filter((t) => t.status === 'completed').length);
 const total = computed(() => todos.value.length);
-const inProgress = computed(() => todos.value.find((t) => t.status === 'in_progress'));
+const activeItems = computed(() => todos.value.filter((t) => t.status === 'in_progress'));
+const inProgress = computed(() => activeItems.value[0]);
+
+/**
+ * 当前执行的摘要文案。
+ *
+ * 调度器并行跑多个子任务时，同一组里会同时存在多个 in_progress 条目；
+ * 这时显示“N 项任务执行中”，而不是只显示第一个任务的名字。
+ */
+const activeLabel = computed(() => {
+  if (activeItems.value.length > 1) {
+    return `${activeItems.value.length} 项任务执行中`;
+  }
+  return inProgress.value ? todoLabel(inProgress.value) : '';
+});
 
 /**
  * 圆点只画**未完成**的：已完成的点每一条都是一个绿点，清单一长就把 pill 撑成一排，
@@ -72,8 +86,8 @@ const progressText = computed(() => {
             <span v-for="t in unfinished" :key="t.id" class="todo-dot" :class="'dot-' + t.status"></span>
           </span>
           <span class="todo-count">{{ done }}/{{ total }}</span>
-          <span v-if="inProgress" class="todo-current">
-            {{ todoLabel(inProgress) }}
+          <span v-if="activeLabel" class="todo-current">
+            {{ activeLabel }}
             <span v-if="progressText" class="todo-progress">{{ progressText }}</span>
           </span>
           <svg viewBox="0 0 24 24" width="10" height="10" stroke="currentColor" stroke-width="2.5" fill="none" class="todo-chevron" :class="{ open: expanded }">

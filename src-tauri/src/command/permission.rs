@@ -53,6 +53,8 @@ pub async fn resolve_permission(
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
     let ctx = session_manager.get_or_create(&session_id).await;
+    // 审批通过时拿到的方案文档：稍后（等本轮执行结束后）据此自动建任务图。
+    let mut approved_plan: Option<crate::infra::types::models::PlanDocument> = None;
     if id.starts_with("plan_") {
         let status = if decision == "allow" {
             "approved"
@@ -78,6 +80,9 @@ pub async fn resolve_permission(
                 }
             }
             let _ = app.emit("plan-document-updated", &doc);
+            if status == "approved" {
+                approved_plan = Some(doc);
+            }
         }
     }
 
@@ -92,6 +97,28 @@ pub async fn resolve_permission(
     // 等待提交方案的执行完成收尾，再允许审批后的新轮次进入会话。
     if id.starts_with("plan_") {
         ctx.wait_for_active_execution().await;
+
+        // 审批通过后立即建任务图，并投影成用户可见的 TODO 清单：
+        // 用户点“同意”的瞬间清单就该出现，而不是依赖模型在续跑轮里记得调用 CreateTask。
+        // 任务图仍留在 SQLite（调度器需要依赖与状态），TODO 是内存态显示层。
+        // 失败不阻塞审批：返回 false，前端走兼容文案让模型自行 CreateTask。
+        let mut plan_tasks_created = false;
+        if let Some(plan) = approved_plan.as_ref() {
+            if let Some(tasks) =
+                crate::core::orchestration::tasks::sync_plan_tasks(&session_id, plan)
+            {
+                crate::core::orchestration::todo_sync::mirror_plan_tasks(
+                    &app,
+                    &ctx,
+                    &session_id,
+                    &plan.id,
+                    &tasks,
+                )
+                .await;
+                plan_tasks_created = true;
+            }
+        }
+
         let _ = app.emit(
             "permission-resolved",
             serde_json::json!({
@@ -101,7 +128,10 @@ pub async fn resolve_permission(
                 "decisionText": parsed.model_note(),
             }),
         );
-        return Ok(serde_json::json!({ "needsResume": false }));
+        return Ok(serde_json::json!({
+            "needsResume": false,
+            "planTasksCreated": plan_tasks_created,
+        }));
     }
 
     // 循环上限续跑：请求此前因中断（取消/通道关闭）结束、channel 已死，但续跑标记还在，

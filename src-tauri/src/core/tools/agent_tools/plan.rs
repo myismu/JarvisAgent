@@ -8,7 +8,52 @@
 use serde_json::json;
 use tauri::{Emitter, Manager};
 
-use crate::infra::types::models::PlanDocument;
+use crate::infra::types::models::{PlanDocument, PlanTask};
+
+/// 把 `task_breakdown` 解析成结构化任务列表。
+///
+/// 关键约束：返回值必须与输入数组**逐项对齐**。即使某项 subject 为空，也保留一个
+/// 占位条目，否则后续 `depends_on` 的 1-based 序号会整体错位，建出来的任务图会挂错依赖。
+fn parse_plan_tasks(input: &serde_json::Value) -> Vec<PlanTask> {
+    let parse_indices = |value: &serde_json::Value| -> Vec<usize> {
+        value
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_u64().map(|n| n as usize))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    input["task_breakdown"]
+        .as_array()
+        .map(|tasks| {
+            tasks
+                .iter()
+                .enumerate()
+                .map(|(index, task)| {
+                    let subject = task["subject"].as_str().unwrap_or("").trim();
+                    PlanTask {
+                        subject: if subject.is_empty() {
+                            format!("#{}", index + 1)
+                        } else {
+                            subject.to_string()
+                        },
+                        description: task["description"]
+                            .as_str()
+                            .unwrap_or("")
+                            .trim()
+                            .to_string(),
+                        depends_on: parse_indices(&task["depends_on"]),
+                        can_parallel_with: parse_indices(&task["can_parallel_with"]),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 /// 方案审批工具：推送方案到前端预览面板，通过 oneshot channel 阻塞等待用户决策
 pub async fn propose_plan(
@@ -305,6 +350,8 @@ pub async fn propose_plan(
         updated_at: now,
         decided_at: None,
         rejection_feedback: None,
+        // 结构化落库：审批通过时后端据此确定性建任务图，不依赖模型再调 CreateTask。
+        tasks: parse_plan_tasks(input),
     };
     {
         let mut memory = ctx.memory.lock().await;
@@ -357,4 +404,41 @@ pub async fn propose_plan(
         "方案「{}」已提交审批面板。请等待用户查阅后做出决策。",
         title
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 回归锁：空 subject 也要占住自己的序号。
+    ///
+    /// 如果过滤掉空项，`depends_on` 的 1-based 序号会整体错位，审批自动建任务时
+    /// 会把依赖挂到错误的任务上。
+    #[test]
+    fn parse_plan_tasks_keeps_index_alignment_when_subject_missing() {
+        let input = json!({
+            "task_breakdown": [
+                {"description": "没有标题"},
+                {
+                    "subject": "#2 写样式",
+                    "description": "样式",
+                    "depends_on": [1],
+                    "can_parallel_with": [1]
+                }
+            ]
+        });
+
+        let tasks = parse_plan_tasks(&input);
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].subject, "#1");
+        assert_eq!(tasks[1].subject, "#2 写样式");
+        assert_eq!(tasks[1].depends_on, vec![1]);
+        assert_eq!(tasks[1].can_parallel_with, vec![1]);
+    }
+
+    #[test]
+    fn parse_plan_tasks_ignores_missing_breakdown() {
+        assert!(parse_plan_tasks(&json!({})).is_empty());
+        assert!(parse_plan_tasks(&json!({ "task_breakdown": null })).is_empty());
+    }
 }

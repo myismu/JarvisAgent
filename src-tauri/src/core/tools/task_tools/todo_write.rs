@@ -12,7 +12,7 @@ pub(super) fn tool_def() -> ToolDef {
         category: "任务管理",
         schema: json!({
             "name": "UpdateTodos",
-            "description": "Update the lightweight todo list for the current session. Use this for main-agent progress tracking on non-trivial work such as editing several files, running tests, or following a short checklist. This does not create persistent tasks, does not delegate to subagents, and does not participate in dependency scheduling. For complex work needing persistence, dependencies, or subagent execution, use CreateTask/UpdateTask/RunSubagent/RunSubagentsSequentially instead.\n\nRules:\n- Use proactively for tasks with roughly 3+ meaningful steps or multiple files — even when the path and content are already clear, list the plan first so the user can see what you are about to do.\n- Do not use for a single trivial task or purely conversational answers.\n- Keep exactly one item in_progress while actively working, unless the list is empty or all work is done.\n- Mark items completed immediately after finishing them.\n- Each item must include both content (imperative form, e.g. \"Run tests\") and activeForm (present continuous form, e.g. \"Running tests\").",
+            "description": "Update the lightweight todo list for the current session. Use this for main-agent progress tracking on non-trivial work such as editing several files, running tests, or following a short checklist. This does not create persistent tasks, does not delegate to subagents, and does not participate in dependency scheduling. For complex work needing persistence, dependencies, or subagent execution, use CreateTask/UpdateTask/RunSubagent/RunSubagentsSequentially instead.\n\nRules:\n- Use proactively for tasks with roughly 3+ meaningful steps or multiple files — even when the path and content are already clear, list the plan first so the user can see what you are about to do.\n- Do not use for a single trivial task or purely conversational answers.\n- Keep exactly one item in_progress while actively working, unless the list is empty or all work is done.\n- Mark items completed immediately after finishing them.\n- Each item must include both content (imperative form, e.g. \"Run tests\") and activeForm (present continuous form, e.g. \"Running tests\").\n- Finish ordering (hard rule): bring the todo list to its final state BEFORE writing the final answer. The final answer must be the last action of the turn; never call UpdateTodos (or any other tool) after it.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -174,6 +174,22 @@ fn parse_todos(input: &serde_json::Value) -> Result<Vec<TodoItem>, String> {
     Ok(parsed)
 }
 
+/// 工具返回给模型的收尾提示。
+///
+/// 全部完成时给出**有条件**的收尾建议，而不是强制结束：
+/// - 清单勾完不等于任务真的完成，模型仍要自己判断实际工作量；
+/// - 确实完成时才停止调用本工具、直接输出最终正文，避免正文后补一次 UpdateTodos
+///   导致正文被前端当成执行过程折叠。
+fn todo_result_text(all_completed: bool) -> &'static str {
+    if all_completed {
+        "待办清单已全部标记为完成。请先确认任务是否真的已经实际完成：\
+         如果确实完成，不要再调用 UpdateTodos，直接输出最终回答，且最终正文之后不要再调用任何工具；\
+         如果仍有未完成的工作，请继续执行，不要仅因为清单已全部勾选就提前结束。"
+    } else {
+        "Todos have been modified successfully. Continue using UpdateTodos to track progress for this session."
+    }
+}
+
 pub async fn todo_write(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
@@ -191,6 +207,12 @@ pub async fn todo_write(
             );
         }
     };
+
+    // 本轮提交的清单是否已全部完成。用于收尾提示：全部完成后不要再让模型多调一次
+    // 本工具，否则正文之后会多出一个工具调用，前端会把正文当成执行过程折叠起来。
+    let all_completed = todos
+        .iter()
+        .all(|todo| todo.status == TodoStatus::Completed);
 
     let mut replaced_group: Option<String> = None;
     let mut groups_snapshot: Vec<TodoGroup> = Vec::new();
@@ -223,7 +245,9 @@ pub async fn todo_write(
             "groupId": replaced_group,
             "newTodos": flat,
             "groups": groups_snapshot,
-            "result": "Todos have been modified successfully. Continue using UpdateTodos to track progress for this session."
+            // 全部完成时明确要求收尾：本轮不要再调任何工具，直接输出最终正文。
+            // 正文必须是最后一个动作，否则它会被当作中间叙述折叠进执行过程。
+            "result": todo_result_text(all_completed)
         })
         .to_string(),
     )
@@ -354,5 +378,20 @@ mod tests {
         let todos = parse_todos(&input).unwrap();
         assert_eq!(todos[0].content, "Build project");
         assert_eq!(todos[0].active_form, "Build project");
+    }
+
+    /// 回归锁：全部完成后必须明确阻止模型再调一次本工具。
+    ///
+    /// 真实事故：模型先输出收尾正文，再补一次 UpdateTodos，前端按“text 后面还有工具”
+    /// 把整段正文判定为中间叙述折叠掉，用户看不到结论。
+    #[test]
+    fn all_completed_result_tells_model_to_finish() {
+        let done = todo_result_text(true);
+        assert!(done.contains("确认任务是否真的已经实际完成"));
+        assert!(done.contains("不要再调用 UpdateTodos"));
+        assert!(done.contains("如果仍有未完成的工作，请继续执行"));
+
+        let pending = todo_result_text(false);
+        assert!(pending.contains("Continue using UpdateTodos"));
     }
 }

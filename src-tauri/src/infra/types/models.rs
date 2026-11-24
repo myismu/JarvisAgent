@@ -754,6 +754,26 @@ pub struct AgentStep {
     pub timestamp: u64,
 }
 
+/// 方案里的单个任务条目（`ProposePlan.task_breakdown` 的结构化落库形态）。
+///
+/// 为什么不再只把任务分解拼进 `PlanDocument.content`：
+/// 审批通过时需要由后端确定性地建任务图，从 Markdown 正文里反解析 JSON 既脆弱又容易
+/// 与模型编辑后的正文漂移。这里保存提交方案时的原始结构，审批动作直接消费它。
+///
+/// `depends_on` / `can_parallel_with` 都是**1-based 序号**，指向同一方案 tasks 数组，
+/// 与 `ProposePlan` schema 的口径一致。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanTask {
+    pub subject: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub depends_on: Vec<usize>,
+    #[serde(default)]
+    pub can_parallel_with: Vec<usize>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanDocument {
@@ -770,6 +790,12 @@ pub struct PlanDocument {
     /// 用户拒绝方案时填写的修改意见（与 content 分离，不覆盖原始方案）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rejection_feedback: Option<String>,
+    /// 结构化任务分解。审批通过时据此自动建任务图。
+    ///
+    /// 存量方案没有这个字段（serde default 为空数组），审批时走兼容分支，
+    /// 由模型按正文里的任务分解自行 `CreateTask`。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<PlanTask>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

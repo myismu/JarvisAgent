@@ -134,7 +134,6 @@ chat/
 ├── ToolCallGroup.vue            # 工具调用分组展示
 ├── PermissionCard.vue           # 权限请求卡片
 ├── ContextInspector.vue         # 上下文内容检查器
-├── SessionTaskBoard.vue         # 会话任务看板
 ├── AgentSnapshotSection.vue     # Agent 快照区块
 └── WelcomeScreen.vue            # 无会话或初始状态欢迎页
 ```

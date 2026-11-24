@@ -11,7 +11,7 @@ use tauri::Emitter;
 use crate::core::orchestration::tasks::{TaskManager, TaskUpdateParams};
 use crate::core::tools::{run_subagent, IMPLEMENTATION_AGENT_ROLE};
 use crate::infra::types::constants::SUBAGENT_HARD_TIMEOUT_SECS;
-use crate::infra::types::models::TaskStatus;
+use crate::infra::types::models::{TaskStatus, TodoStatus};
 
 /// 子代理超时结果的**结构化前缀标记**。
 ///
@@ -105,6 +105,14 @@ impl TaskScheduler {
                     "subject": task.subject, "sessionId": session_id,
                 }),
             );
+            // 同步用户可见的 TODO 清单（任务图与 TODO 是同一批任务的两个视图）
+            crate::core::orchestration::todo_sync::update_task_status(
+                app,
+                session_id,
+                task.id,
+                TodoStatus::InProgress,
+            )
+            .await;
         }
 
         // 2. 全部 spawn 到 JoinSet
@@ -197,6 +205,15 @@ impl TaskScheduler {
                         "status": status_msg, "sessionId": session_id,
                     }),
                 );
+                // 同步 TODO 清单。注意 TaskStatus 没有 Failed，失败任务也会落到 completed；
+                // 失败详情以调度报告/时间线为准。
+                crate::core::orchestration::todo_sync::update_task_status(
+                    app,
+                    session_id,
+                    task_id,
+                    TodoStatus::Completed,
+                )
+                .await;
 
                 // 保存已完成任务的结果摘要（供下游任务引用）
                 {
@@ -253,6 +270,13 @@ impl TaskScheduler {
                             "subject": task.subject, "sessionId": session_id,
                         }),
                     );
+                    crate::core::orchestration::todo_sync::update_task_status(
+                        app,
+                        session_id,
+                        task.id,
+                        TodoStatus::InProgress,
+                    )
+                    .await;
                     spawn_into_set(
                         &mut set,
                         app,

@@ -397,7 +397,12 @@ export const useChatStore = defineStore("chat", () => {
     const sid = perm.planProposal?.sessionId || planDoc?.sessionId || session.activeSessionId;
     if (!planId || !sid) return null;
 
-    const result = await invoke<{ needsResume?: boolean; resumeMessage?: string }>("resolve_permission", {
+    const result = await invoke<{
+      needsResume?: boolean;
+      resumeMessage?: string;
+      /** 审批通过时后端是否已按方案任务分解自动建好任务图 */
+      planTasksCreated?: boolean;
+    }>("resolve_permission", {
       id: planId,
       sessionId: sid,
       decision,
@@ -409,14 +414,24 @@ export const useChatStore = defineStore("chat", () => {
     return result;
   }
 
-  async function continueFromApprovedPlan(title: string, _content: string) {
-    const fullMsg = [
-      `用户已同意方案「${title}」。严格按以下步骤执行，禁止自己直接执行任务：`,
-      `1. 用 ExecuteTool 执行 SwitchWorkMode(mode="edit", reason="方案已审批通过，切回编辑模式执行")`,
-      `2. 用 ExecuteTool 执行 CreateTask，批量创建方案中所有任务（传 tasks 数组，含 depends_on 依赖关系）`,
-      `3. 用 ExecuteTool 执行 RunSubagentsSequentially，启动调度器由子 Agent 执行任务`,
-      `4. 调度完成后读取报告，向用户汇报结果`,
-    ].join('\n');
+  async function continueFromApprovedPlan(title: string, _content: string, tasksCreated = false) {
+    // 任务图已由后端在审批动作里建好：续跑只负责切换模式和调度，禁止再 CreateTask，
+    // 否则会重复建一套任务。存量方案（没有结构化任务分解）走兼容分支。
+    const fullMsg = tasksCreated
+      ? [
+          `用户已同意方案「${title}」。任务清单已由系统生成到待办清单，**不要再调用 CreateTask**。`,
+          `严格按以下步骤执行，禁止自己直接执行任务：`,
+          `1. 用 ExecuteTool 执行 SwitchWorkMode(mode="edit", reason="方案已审批通过，切回编辑模式执行")`,
+          `2. 用 ExecuteTool 执行 RunSubagentsSequentially，启动调度器由子 Agent 执行任务`,
+          `3. 调度完成后读取报告，向用户汇报结果`,
+        ].join('\n')
+      : [
+          `用户已同意方案「${title}」。严格按以下步骤执行，禁止自己直接执行任务：`,
+          `1. 用 ExecuteTool 执行 SwitchWorkMode(mode="edit", reason="方案已审批通过，切回编辑模式执行")`,
+          `2. 用 ExecuteTool 执行 CreateTask，批量创建方案中所有任务（传 tasks 数组，含 depends_on 依赖关系）`,
+          `3. 用 ExecuteTool 执行 RunSubagentsSequentially，启动调度器由子 Agent 执行任务`,
+          `4. 调度完成后读取报告，向用户汇报结果`,
+        ].join('\n');
     return sendToJarvis(
       fullMsg,
       undefined,

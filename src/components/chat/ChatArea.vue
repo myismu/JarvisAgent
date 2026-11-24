@@ -11,7 +11,6 @@ import { invoke } from '@tauri-apps/api/core';
 import ConfirmModal from '../common/ConfirmModal.vue';
 import AgentTurn from './AgentTurn.vue';
 import AgentTurnNotice from './AgentTurnNotice.vue';
-import SessionTaskBoard from './SessionTaskBoard.vue';
 import TodoPanel from './TodoPanel.vue';
 import WelcomeScreen from './WelcomeScreen.vue';
 import MessageRail from './MessageRail.vue';
@@ -844,7 +843,6 @@ onMounted(() => {
   <div class="response-area" ref="responseAreaRef" @scroll="handleResponseScroll" @contextmenu="handleContextMenu" @click="handleResponseClick">
     <MessageRail :container="responseAreaRef" />
     <TodoPanel />
-    <SessionTaskBoard />
     <WelcomeScreen v-if="!chat.messages.length && !showAgentTurn && !session.currentSessionView.loadError" />
     <div class="response-text markdown-body" v-else :class="{ 'pre-anchor-hidden': initialAnchoring }">
       <!-- 懒加载：更早历史提示（顶部小字，无边框；加载中带旋转图标） -->

@@ -523,19 +523,7 @@
       "showSchema": "Parameters",
       "hideSchema": "Collapse",
       "noParams": "No parameters",
-      "required": "required",
-      "shellTitle": "Shell environment",
-      "shellHint": "Auto by default: use Git Bash when detected, otherwise PowerShell. Git Bash matches the boundary used by Claude Code's Bash tool: POSIX semantics, and git/ssh can resolve the user home directory correctly. Selecting PowerShell disables detection. Restart the app to apply.",
-      "shellAuto": "Auto (recommended)",
-      "shellAutoFallback": "Git Bash not found — PowerShell will be used",
-      "shellPowerShell": "PowerShell",
-      "shellPathPlaceholder": "Path to bash.exe (leave empty to auto-detect)",
-      "shellDetected": "Detected: {path}",
-      "shellSave": "Save",
-      "shellSaved": "Saved — takes effect after restart",
-      "shellSaveError": "Failed to save: {error}",
-      "shellRestartHint": "Takes effect after restart",
-      "shellUnsupported": "This platform always uses bash"
+      "required": "required"
     },
     "about": {
       "title": "About & Updates",
@@ -692,7 +680,21 @@
       "restoreLayout": "Restore default window layout",
       "restoreLayoutDesc": "Clear local window cache and restore the main and monitor windows to their initial position and size.",
       "restoreLayoutSuccess": "Window layout restored to defaults",
-      "restoreLayoutError": "Failed to restore default window layout: {error}"
+      "restoreLayoutError": "Failed to restore default window layout: {error}",
+      "shellTitle": "Shell environment",
+      "shellMode": "Execution mode",
+      "shellHint": "Auto by default: use Git Bash when detected, otherwise PowerShell. Git Bash matches the boundary used by Claude Code's Bash tool: POSIX semantics, and git/ssh can resolve the user home directory correctly. Selecting PowerShell disables detection.",
+      "shellAuto": "Auto (recommended)",
+      "shellAutoFallback": "Git Bash was not detected at startup — PowerShell will be used",
+      "shellPowerShell": "PowerShell",
+      "shellPath": "bash.exe path",
+      "shellPathPlaceholder": "Leave empty to auto-detect",
+      "shellDetected": "Will use: {path}",
+      "shellSave": "Save",
+      "shellSaved": "Saved — takes effect after restart",
+      "shellSaveError": "Failed to save: {error}",
+      "shellRestartHint": "Takes effect after restart",
+      "shellUnsupported": "This platform always uses bash"
     },
     "profileEditor": {
       "identity": "Preset Identity",

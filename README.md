@@ -145,7 +145,7 @@ JarvisAgent/
 │       │                             # AgentTurnNotice, MessageRail, ExecutionPanel,
 │       │                             # ThinkingStatus, TodoPanel, ToolCallGroup,
 │       │                             # PermissionCard, ContextInspector, CacheHitTooltip,
-│       │                             # SessionTaskBoard, AgentSnapshotSection, WelcomeScreen
+│       │                             # AgentSnapshotSection, WelcomeScreen
 │       ├── common/                   # PermissionModal, PlanPreviewPanel, ConfirmModal,
 │       │                             # RollbackConfirmModal, StreamingMarkdown, ToastHost
 │       ├── checkpoint/               # CheckpointTimeline

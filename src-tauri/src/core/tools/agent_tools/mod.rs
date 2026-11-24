@@ -210,7 +210,7 @@ crate::define_tools! {
                         "can_parallel_with": {"type": "array", "items": {"type": "integer"}, "description": "可并行任务序号数组（1-based），调度器无强依赖时可由 depends_on 推导。"}
                     },
                     "required": ["subject"]
-                } => "【必填】结构化任务分解列表。任务图后续会驱动 CreateTask 与子 Agent 执行，不能省略——重点是拆得可执行、依赖清晰。",
+                } => "【必填】结构化任务分解列表。审批通过后系统会据此自动创建任务图并驱动子 Agent 执行，不能省略——重点是拆得可执行、依赖清晰。",
             },
             required: ["title", "content", "task_breakdown"],
             category: "Agent 调度",

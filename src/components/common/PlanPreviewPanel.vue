@@ -180,7 +180,7 @@ const handleApprove = async () => {
   const title = proposal?.title || doc!.title;
   const content = isEditing.value ? editedContent.value : (proposal?.content || doc!.content);
   try {
-    await chat.resolvePlan('allow', content, proposal ? undefined : (doc ?? undefined));
+    const resolved = await chat.resolvePlan('allow', content, proposal ? undefined : (doc ?? undefined));
     perm.upsertPlanDocument({
       id: planId,
       sessionId: proposal?.sessionId || doc!.sessionId || '',
@@ -195,7 +195,8 @@ const handleApprove = async () => {
     isEditing.value = false;
     isRequestingRevision.value = false;
     revisionFeedback.value = '';
-    void chat.continueFromApprovedPlan(title, content);
+    // 后端审批动作里已经按结构化任务分解建好看板时，续跑不再让模型 CreateTask。
+    void chat.continueFromApprovedPlan(title, content, Boolean(resolved?.planTasksCreated));
   } finally {
     isResolving.value = false;
   }

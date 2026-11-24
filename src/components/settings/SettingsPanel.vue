@@ -340,6 +340,46 @@
               </div>
 
               <div class="setting-card">
+                <!-- Shell 执行环境：解释器选择。探测只在应用启动时做一次，
+                     这里读的是启动期缓存，不再每次打开设置页都跑 git。 -->
+                <div class="card-header">
+                  <h4>{{ t('settings.general.shellTitle') }}</h4>
+                </div>
+                <template v-if="shell">
+                  <div v-if="!shell.platformSupported" class="setting-item">
+                    <div class="setting-desc">{{ t('settings.general.shellUnsupported') }}</div>
+                  </div>
+                  <template v-else>
+                    <div class="setting-item">
+                      <label>{{ t('settings.general.shellMode') }}</label>
+                      <select v-model="shellMode">
+                        <option value="auto">{{ t('settings.general.shellAuto') }}</option>
+                        <option value="powershell">{{ t('settings.general.shellPowerShell') }}</option>
+                      </select>
+                      <button type="button" class="shell-save-btn" :disabled="shellSaving" @click="saveShell">
+                        {{ t('settings.general.shellSave') }}
+                      </button>
+                      <div class="setting-desc">
+                        {{ t('settings.general.shellHint') }}
+                        <span class="shell-restart-note">{{ t('settings.general.shellRestartHint') }}</span>
+                      </div>
+                    </div>
+                    <div v-if="shellMode === 'auto'" class="setting-item">
+                      <label>{{ t('settings.general.shellPath') }}</label>
+                      <input v-model="shellPath" type="text" :placeholder="t('settings.general.shellPathPlaceholder')" />
+                      <div class="setting-desc">
+                        <template v-if="shell.detectedBashPath">
+                          {{ t('settings.general.shellDetected', { path: shell.detectedBashPath }) }}
+                        </template>
+                        <template v-else>{{ t('settings.general.shellAutoFallback') }}</template>
+                      </div>
+                      <p v-if="shell.error" class="shell-error">{{ shell.error }}</p>
+                    </div>
+                  </template>
+                </template>
+              </div>
+
+              <div class="setting-card">
                 <!-- 对话与消息：消息流的表现方式与发消息时的处理 -->
                 <div class="card-header">
                   <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M20,2H4A2,2 0 0,0 2,4V22L6,18H20A2,2 0 0,0 22,16V4A2,2 0 0,0 20,2Z"/></svg>
@@ -654,6 +694,7 @@ import {
   type ImageCompressTier,
 } from '../../composables/usePreferences'
 import { useWindow } from '../../composables/useWindow'
+import { showToast } from '../../composables/useToast'
 import type { AgentUserMode } from '../../types'
 import type { ThinkingDefault } from '../../utils/thinking'
 import ConfirmModal from '../common/ConfirmModal.vue'
@@ -674,6 +715,55 @@ const agentApprovalMode = uiPrefs.agentApprovalMode
 // 「跟随全局」的解析在后端按模型能力完成，前端不做推导。
 const thinkingDefault = uiPrefs.thinkingDefault
 const setThinkingDefault = (val: ThinkingDefault) => uiPrefs.setThinkingDefault(val)
+
+/**
+ * Shell 执行环境设置（原在「工具」页，已移到常规设置）。
+ *
+ * 探测只在应用启动时做一次，后端返回的是启动期缓存；本组件打开设置页时
+ * 只做一次廉价的配置读取，不会再卡几秒。
+ */
+interface ShellResolution {
+  platformSupported: boolean
+  mode: 'auto' | 'powershell'
+  gitBashPath: string | null
+  detectedBashPath: string | null
+  error: string | null
+}
+
+const shell = ref<ShellResolution | null>(null)
+const shellMode = ref<'auto' | 'powershell'>('auto')
+const shellPath = ref('')
+const shellSaving = ref(false)
+
+const loadShell = async () => {
+  try {
+    const res = await invoke<ShellResolution>('get_shell_settings')
+    shell.value = res
+    shellMode.value = res.mode
+    shellPath.value = res.gitBashPath ?? ''
+  } catch (err) {
+    console.error('加载 Shell 设置失败:', err)
+  }
+}
+
+const saveShell = async () => {
+  shellSaving.value = true
+  try {
+    const res = await invoke<ShellResolution>('save_shell_settings', {
+      settings: {
+        mode: shellMode.value,
+        gitBashPath: shellPath.value.trim() || null,
+      },
+    })
+    shell.value = res
+    showToast(t('settings.general.shellSaved'))
+  } catch (err) {
+    console.error('保存 Shell 设置失败:', err)
+    showToast(t('settings.general.shellSaveError', { error: String(err) }), 'error')
+  } finally {
+    shellSaving.value = false
+  }
+}
 
 /**
  * 设置页只写**默认值**，刻意不碰任何会话。
@@ -1248,6 +1338,15 @@ const onWindowMouseUp = (e: MouseEvent) => {
 onMounted(() => window.addEventListener('mouseup', onWindowMouseUp))
 onUnmounted(() => window.removeEventListener('mouseup', onWindowMouseUp))
 
+// 打开设置页时读取一次 Shell 配置。后端只返回启动期缓存，不会触发探测。
+watch(
+  () => props.modelValue,
+  (open) => {
+    if (open) void loadShell()
+  },
+  { immediate: true },
+)
+
 const toggleGlobalProfile = async (profileId: string) => {
   if (actionLoading.value || savedConfig.value.globalProfileId === profileId) return
 
@@ -1798,6 +1897,38 @@ const save = async () => {
 .setting-item .setting-desc {
   flex-basis: 100%;
   order: 99;
+}
+
+/* Shell 执行环境：保存按钮与缓存提示 */
+.shell-save-btn {
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg-light);
+  color: var(--text-main);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
+}
+.shell-save-btn:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+}
+.shell-save-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.shell-restart-note {
+  margin-left: 6px;
+  color: var(--text-faint);
+}
+.shell-error {
+  flex-basis: 100%;
+  order: 99;
+  margin: 0;
+  color: var(--text-warning);
+  font-size: 0.78rem;
 }
 
 /* 嵌套设置行（预设页 max_tokens）与能力徽章：独占一整行，

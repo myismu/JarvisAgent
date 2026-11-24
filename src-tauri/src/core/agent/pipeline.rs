@@ -981,6 +981,9 @@ impl PipelineState {
 
             if was_proposing_plan {
                 let mut approved_any = false;
+                // 本轮批准通过的方案文档：锁外据此自动建任务图。
+                // 必须在 memory 锁外做 DB 写入，避免与其它会话操作形成锁顺序问题。
+                let mut approved_plans: Vec<PlanDocument> = Vec::new();
                 {
                     let mut memory = ctx.memory.lock().await;
                     let pending_plans: Vec<_> = memory
@@ -1017,6 +1020,9 @@ impl PipelineState {
                                     *existing = doc.clone();
                                 }
                                 let _ = app.emit("plan-document-updated", &doc);
+                                if new_status == "approved" {
+                                    approved_plans.push(doc);
+                                }
                             }
                             println!(
                                 "[JARVIS] 输入框审批：方案「{}」→ {}",
@@ -1028,6 +1034,67 @@ impl PipelineState {
 
                 // B2：方案批准后由服务端强制切回 edit；模型侧的 SwitchWorkMode(edit) 仅作双保险
                 if approved_any {
+                    // 审批动作本身负责生成清单：按方案的结构化任务分解建任务图，
+                    // 并投影成 TODO 清单（任务图留 SQLite 供调度器使用，TODO 是内存态）。
+                    // 全部成功才算“任务已创建”；任一方案失败则整体走兼容分支。
+                    let mut tasks_ready = !approved_plans.is_empty();
+                    for plan in &approved_plans {
+                        let synced =
+                            crate::core::orchestration::tasks::sync_plan_tasks(&session_id, plan);
+                        match synced {
+                            Some(tasks) => {
+                                crate::core::orchestration::todo_sync::mirror_plan_tasks(
+                                    &app,
+                                    &ctx,
+                                    &session_id,
+                                    &plan.id,
+                                    &tasks,
+                                )
+                                .await;
+                            }
+                            None => tasks_ready = false,
+                        }
+                    }
+
+                    // 输入框短回复审批不会经过前端那段“已同意方案”的续跑消息，
+                    // 这里补一条内部指令，保证两条审批入口对模型的要求完全一致。
+                    let titles = approved_plans
+                        .iter()
+                        .map(|plan| plan.title.as_str())
+                        .collect::<Vec<_>>()
+                        .join("、");
+                    // 极端情况下（状态已改但文档读取失败）标题为空，别把「」送给模型。
+                    let titles = if titles.is_empty() {
+                        "方案".to_string()
+                    } else {
+                        titles
+                    };
+                    let instruction = if tasks_ready {
+                        format!(
+                            "用户已同意方案「{}」。任务清单已由系统生成到待办清单，**不要再调用 CreateTask**。\
+                             请切回编辑模式（SwitchWorkMode mode=\"edit\"），然后直接调用 \
+                             RunSubagentsSequentially 执行任务；调度完成后读取报告并向用户汇报结果。",
+                            titles
+                        )
+                    } else {
+                        format!(
+                            "用户已同意方案「{}」。请切回编辑模式（SwitchWorkMode mode=\"edit\"），\
+                             按方案的任务分解调用 CreateTask 创建任务图，再调用 \
+                             RunSubagentsSequentially 执行任务；完成后向用户汇报结果。",
+                            titles
+                        )
+                    };
+                    {
+                        let mut session = ctx.memory.lock().await;
+                        append_message(
+                            &mut session,
+                            Message::User {
+                                content: Content::Single(instruction),
+                            },
+                            MessageSource::Inject,
+                        );
+                    }
+
                     let mut mode = ctx.agent_work_mode.lock().await;
                     if mode.as_str() != "edit" {
                         let old_mode = mode.clone();

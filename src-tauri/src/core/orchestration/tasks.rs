@@ -5,7 +5,28 @@
 //! 任务以 JSON 文件形式持久化存储。
 
 use crate::core::session::resource_repository;
-use crate::infra::types::models::{Task, TaskStatus};
+use crate::infra::types::models::{PlanDocument, Task, TaskStatus};
+
+/// 一条待创建任务的规格。
+///
+/// `CreateTask` 工具与“方案审批自动建任务”共用同一套建图逻辑，避免两处各写一份
+/// 1-based 依赖换算。
+pub struct TaskSpec {
+    pub subject: String,
+    pub description: String,
+    pub active_form: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+    pub owner: Option<String>,
+    pub subagent_type: Option<String>,
+    /// 依赖的序号（1-based，指向同一批 specs）
+    pub depends_on: Vec<usize>,
+}
+
+/// 批量建图结果。`errors` 非空表示有任务创建或依赖设置失败。
+pub struct TaskGraphResult {
+    pub created: Vec<Task>,
+    pub errors: Vec<String>,
+}
 
 /// 任务管理器 - 基于 SQLite 的任务持久化
 pub struct TaskManager {
@@ -79,6 +100,73 @@ impl TaskManager {
     /// 原子保存：在一个 with_connection 内完成 max_id + 1 + insert
     fn _save_atomic(&self, task: &Task) -> Result<Task, String> {
         resource_repository::save_task_with_auto_id(&self.session_id, task)
+    }
+
+    /// 批量创建任务并建立依赖关系。
+    ///
+    /// 依赖用**批次内 1-based 序号**表达：必须等全部任务创建完、拿到真实 id 后
+    /// 才能换算，所以建任务与挂依赖分成两趟。
+    ///
+    /// 空 subject 的条目按历史行为跳过且不报错，但它**占住自己的序号**：
+    /// 引用它的 depends_on 会被丢弃，而不是错挂到下一个任务上。
+    pub fn create_graph(&self, specs: &[TaskSpec]) -> TaskGraphResult {
+        let mut ids: Vec<Option<i32>> = vec![None; specs.len()];
+        let mut created = Vec::new();
+        let mut errors = Vec::new();
+
+        for (index, spec) in specs.iter().enumerate() {
+            let subject = spec.subject.trim();
+            if subject.is_empty() {
+                continue;
+            }
+            match self.create(
+                subject.to_string(),
+                spec.description.clone(),
+                spec.active_form.clone(),
+                spec.metadata.clone(),
+                spec.owner.clone(),
+                spec.subagent_type.clone(),
+            ) {
+                Ok(task) => {
+                    ids[index] = Some(task.id);
+                    created.push(task);
+                }
+                Err(error) => errors.push(format!("「{}」: {}", subject, error)),
+            }
+        }
+
+        for (index, spec) in specs.iter().enumerate() {
+            let Some(task_id) = ids[index] else {
+                continue;
+            };
+            let blocked_by: Vec<i32> = spec
+                .depends_on
+                .iter()
+                .filter_map(|dep| if *dep == 0 { None } else { Some(*dep - 1) })
+                .filter_map(|dep_index| ids.get(dep_index).copied().flatten())
+                .collect();
+            if blocked_by.is_empty() {
+                continue;
+            }
+            if let Err(error) = self.update(
+                task_id,
+                TaskUpdateParams {
+                    status: None,
+                    subject: None,
+                    description: None,
+                    active_form: None,
+                    owner: None,
+                    metadata: None,
+                    add_blocked_by: Some(blocked_by),
+                    add_blocks: None,
+                    subagent_type: None,
+                },
+            ) {
+                errors.push(format!("任务 #{} 设置依赖失败: {}", task_id, error));
+            }
+        }
+
+        TaskGraphResult { created, errors }
     }
 
     /// 获取单个任务详情
@@ -457,6 +545,115 @@ impl TaskManager {
     }
 }
 
+/// 方案审批通过后，把方案里的结构化任务分解同步成任务图。
+///
+/// 返回值语义：
+/// - `Some(tasks)`：本方案的任务图已就绪，续跑应直接 `RunSubagentsSequentially`；
+///   调用方还会拿这份任务列表投影成 TODO 清单；
+/// - `None`：方案没有结构化任务（存量方案），或建任务失败。续跑走兼容分支，
+///   由模型按正文里的任务分解自行 `CreateTask`。
+///
+/// 幂等：同一 `plan_id` 重复审批不会重复建任务。
+/// 清理：旧方案遗留的 **pending** 任务会被删除（新方案已取代它，不该再被调度）；
+/// in_progress / completed 保留，作为历史记录。
+pub fn sync_plan_tasks(session_id: &str, plan: &PlanDocument) -> Option<Vec<Task>> {
+    if plan.tasks.is_empty() {
+        return None;
+    }
+
+    let manager = TaskManager::for_session(session_id);
+    let existing = manager.get_all_tasks();
+
+    // 幂等：同一方案重复审批（双击、退回后再点）直接复用已有任务。
+    let mut existing_for_plan: Vec<Task> = existing
+        .iter()
+        .filter(|task| plan_id_of(task) == Some(plan.id.as_str()))
+        .cloned()
+        .collect();
+    if !existing_for_plan.is_empty() {
+        // 按方案原始序号恢复顺序，保证 TODO 清单与方案里的任务顺序一致。
+        existing_for_plan.sort_by_key(|task| {
+            task.metadata
+                .as_ref()
+                .and_then(|meta| meta.get("planIndex"))
+                .and_then(|value| value.as_u64())
+                .unwrap_or(task.id as u64)
+        });
+        return Some(existing_for_plan);
+    }
+
+    // 清理旧方案遗留的 pending 任务。只删 pending：已执行过的任务要留在数据库里。
+    for task_id in stale_pending_plan_task_ids(&existing, &plan.id) {
+        if let Err(error) = manager.delete(task_id) {
+            eprintln!("[JARVIS] 清理旧方案任务 #{} 失败：{}", task_id, error);
+        }
+    }
+
+    let specs = plan_tasks_to_specs(plan);
+    let result = manager.create_graph(&specs);
+    if !result.errors.is_empty() {
+        eprintln!(
+            "[JARVIS] 方案「{}」自动建任务失败：{:?}",
+            plan.title, result.errors
+        );
+        // 全有或全无：回滚已建的部分，避免只建了一半、续跑文案却宣称“任务已创建”。
+        // 失败后返回 None，续跑走兼容分支让模型重新 CreateTask。
+        for task in &result.created {
+            let _ = manager.delete(task.id);
+        }
+        return None;
+    }
+
+    Some(result.created)
+}
+
+/// 任务来自哪个方案（无方案来源的任务返回 None）。
+fn plan_id_of(task: &Task) -> Option<&str> {
+    task.metadata.as_ref()?.get("planId")?.as_str()
+}
+
+/// 需要清理的旧方案 pending 任务 id。
+///
+/// 只处理**带 planId 且不属于当前方案**的任务：
+/// - 手工创建的任务（没有 planId）不动；
+/// - in_progress / completed 不动。
+fn stale_pending_plan_task_ids(tasks: &[Task], active_plan_id: &str) -> Vec<i32> {
+    tasks
+        .iter()
+        .filter(|task| task.status == TaskStatus::Pending)
+        .filter(|task| {
+            plan_id_of(task)
+                .map(|plan_id| plan_id != active_plan_id)
+                .unwrap_or(false)
+        })
+        .map(|task| task.id)
+        .collect()
+}
+
+/// 把方案里的任务分解转换成建图规格。
+///
+/// metadata 里的 `planId` 是幂等与旧任务清理的识别依据；`planIndex` 保留任务在方案里的
+/// 原始序号，便于排障时反查。
+fn plan_tasks_to_specs(plan: &PlanDocument) -> Vec<TaskSpec> {
+    plan.tasks
+        .iter()
+        .enumerate()
+        .map(|(index, task)| TaskSpec {
+            subject: task.subject.clone(),
+            description: task.description.clone(),
+            active_form: None,
+            metadata: Some(serde_json::json!({
+                "source": "plan",
+                "planId": plan.id,
+                "planIndex": index + 1,
+            })),
+            owner: None,
+            subagent_type: None,
+            depends_on: task.depends_on.clone(),
+        })
+        .collect()
+}
+
 /// update() 的返回结构
 pub struct TaskUpdateResult {
     pub task_id: i32,
@@ -488,5 +685,87 @@ fn merge_metadata(existing: serde_json::Value, new: serde_json::Value) -> serde_
         }
         // 如果不是对象类型，直接用新的覆盖
         (_, new_val) => new_val,
+    }
+}
+
+#[cfg(test)]
+mod plan_task_sync_tests {
+    use super::*;
+    use crate::infra::types::models::PlanTask;
+
+    fn task(id: i32, plan_id: Option<&str>, status: TaskStatus) -> Task {
+        Task {
+            id,
+            subject: format!("任务 {}", id),
+            description: String::new(),
+            status,
+            blocked_by: Vec::new(),
+            blocks: Vec::new(),
+            owner: String::new(),
+            active_form: None,
+            metadata: plan_id.map(|plan_id| serde_json::json!({ "planId": plan_id })),
+            subagent_type: None,
+        }
+    }
+
+    fn plan(id: &str, tasks: Vec<PlanTask>) -> PlanDocument {
+        PlanDocument {
+            id: id.to_string(),
+            session_id: "session-1".to_string(),
+            title: "测试方案".to_string(),
+            content: String::new(),
+            status: "approved".to_string(),
+            path: None,
+            created_at: 0,
+            updated_at: 0,
+            decided_at: None,
+            rejection_feedback: None,
+            tasks,
+        }
+    }
+
+    /// 旧方案清理只针对“其他方案的 pending 任务”：
+    /// 手工任务（无 planId）、已执行任务、当前方案任务都必须保留。
+    #[test]
+    fn stale_pending_only_targets_other_plan_pending_tasks() {
+        let tasks = vec![
+            task(1, Some("plan_old"), TaskStatus::Pending),
+            task(2, Some("plan_old"), TaskStatus::Completed),
+            task(3, Some("plan_new"), TaskStatus::Pending),
+            task(4, None, TaskStatus::Pending),
+        ];
+
+        assert_eq!(stale_pending_plan_task_ids(&tasks, "plan_new"), vec![1]);
+    }
+
+    /// 方案任务转建图规格时，必须带 planId（幂等/清理依据）与 1-based depends_on。
+    #[test]
+    fn plan_specs_carry_plan_metadata_and_dependencies() {
+        let plan = plan(
+            "plan_1",
+            vec![
+                PlanTask {
+                    subject: "#1 建库".to_string(),
+                    description: "建表".to_string(),
+                    depends_on: Vec::new(),
+                    can_parallel_with: Vec::new(),
+                },
+                PlanTask {
+                    subject: "#2 写接口".to_string(),
+                    description: "路由".to_string(),
+                    depends_on: vec![1],
+                    can_parallel_with: Vec::new(),
+                },
+            ],
+        );
+
+        let specs = plan_tasks_to_specs(&plan);
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[1].depends_on, vec![1]);
+
+        let metadata = specs[0].metadata.as_ref().expect("方案任务必须带 metadata");
+        assert_eq!(metadata["planId"].as_str(), Some("plan_1"));
+        assert_eq!(metadata["planIndex"].as_u64(), Some(1));
+        assert_eq!(metadata["source"].as_str(), Some("plan"));
     }
 }

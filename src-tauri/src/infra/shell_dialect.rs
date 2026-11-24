@@ -109,12 +109,36 @@ impl ShellDialect {
 /// 进程级方言。启动时由 [`init`] 写入；未初始化（单测、早期调用）时按操作系统兜底。
 static CURRENT: OnceLock<ShellDialect> = OnceLock::new();
 
+/// 启动时探测到的 Git Bash 路径（仅 Auto 模式且探测成功时有值）。
+///
+/// 设置页只读这份缓存，不再每次打开页面都跑 `git --exec-path` / `where git`。
+/// 用户换电脑或重装 Git 后需要重启应用才能刷新——这与“方言在启动时定死”的
+/// 生效边界一致，不是额外的限制。
+static DETECTED_BASH: OnceLock<Option<PathBuf>> = OnceLock::new();
+
 /// 启动期初始化。
 ///
 /// 解析永远成功：自动模式探测不到 Git Bash 会退回 PowerShell，这是正常状态，
 /// 不是错误。因此这里没有失败分支，也不会因为环境缺东西而影响应用启动。
+///
+/// **探测只在这里发生一次**。设置页读取的是缓存的 [`cached_detected_bash`]，
+/// 不再触发进程调用，避免每次打开设置页卡几秒。
 pub fn init(settings: &ShellSettings) {
-    let _ = CURRENT.set(resolve(settings));
+    let dialect = resolve(settings);
+    let detected = match &dialect {
+        ShellDialect::Bash {
+            program,
+            git_bash: true,
+        } => Some(program.clone()),
+        _ => None,
+    };
+    let _ = DETECTED_BASH.set(detected);
+    let _ = CURRENT.set(dialect);
+}
+
+/// 启动时缓存的 Git Bash 探测结果（未初始化或无结果时为 None）。
+pub fn cached_detected_bash() -> Option<PathBuf> {
+    DETECTED_BASH.get().cloned().flatten()
 }
 
 /// 当前方言。未初始化时按操作系统兜底（Windows→PowerShell，其他→bash）。
@@ -271,31 +295,48 @@ pub struct ShellResolution {
     pub error: Option<String>,
 }
 
-/// 把设置解析成前端可展示的状态。不写全局，纯查询。
-pub fn describe(settings: &ShellSettings) -> ShellResolution {
+/// 把设置解析成前端可展示的状态，**不触发任何进程探测**。
+///
+/// 设置页每次打开都调用它，因此必须廉价：
+/// - 显式路径只做 `is_file` 检查（本地文件系统调用，微秒级）；
+/// - 自动模式且未填路径时，读取启动时缓存的探测结果；
+/// - PowerShell 模式不展示检测路径。
+pub fn resolution_without_detection(settings: &ShellSettings) -> ShellResolution {
     let platform_supported = cfg!(windows);
-    // PowerShell 模式不探测：既没有路径输入框，也没必要每次打开设置页都跑一次 git。
-    let detected = if platform_supported && settings.mode == ShellMode::Auto {
-        detect_git_bash(settings.git_bash_path.as_deref())
+    let explicit = settings
+        .git_bash_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty());
+
+    let (detected_bash_path, error) = if !platform_supported {
+        (None, None)
+    } else if settings.mode == ShellMode::PowerShell {
+        (None, None)
+    } else if let Some(path) = explicit {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            (Some(path.display().to_string()), None)
+        } else {
+            // 显式路径写错不该静默忽略：用户以为指定了 bash，实际却退回了 PowerShell。
+            (
+                None,
+                Some("指定的 bash.exe 路径不存在，自动模式将使用 PowerShell".to_string()),
+            )
+        }
     } else {
-        None
+        (
+            cached_detected_bash().map(|path| path.display().to_string()),
+            None,
+        )
     };
-    let detected_str = detected.as_ref().map(|p| p.display().to_string());
-    // 显式路径写错不该静默忽略：用户以为指定了 bash，实际却退回了 PowerShell。
-    let explicit_path_invalid = settings.mode == ShellMode::Auto
-        && settings
-            .git_bash_path
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|path| !path.is_empty())
-        && detected.is_none();
+
     ShellResolution {
         platform_supported,
         mode: settings.mode,
         git_bash_path: settings.git_bash_path.clone(),
-        detected_bash_path: detected_str,
-        error: explicit_path_invalid
-            .then(|| "指定的 bash.exe 路径不存在，自动模式将使用 PowerShell".to_string()),
+        detected_bash_path,
+        error,
     }
 }
 
@@ -352,7 +393,7 @@ mod tests {
             git_bash_path: Some("C:\\definitely\\missing\\bash.exe".to_string()),
         };
         assert_eq!(resolve(&settings), ShellDialect::PowerShell);
-        let described = describe(&settings);
+        let described = resolution_without_detection(&settings);
         let error = described.error.expect("应给出可见提示");
         assert!(error.contains("bash.exe"), "提示要点明缺的是什么: {}", error);
     }

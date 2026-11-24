@@ -13,3 +13,4 @@ pub mod multi_agent;
 pub mod scheduler;
 pub mod subagents;
 pub mod tasks;
+pub mod todo_sync;

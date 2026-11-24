@@ -1,5 +1,5 @@
 use super::common::optional_string;
-use crate::core::orchestration::tasks::TaskManager;
+use crate::core::orchestration::tasks::{TaskManager, TaskSpec};
 use crate::core::tools::framework;
 use crate::core::tools::framework::registry::ToolDef;
 use serde_json::json;
@@ -53,67 +53,35 @@ pub async fn task_create(
             );
         }
         let tm = TaskManager::for_session(session_id);
-        // 使用 HashMap 而非 Vec，避免空 subject 跳过导致索引错位
-        let mut created_ids: std::collections::HashMap<usize, i32> =
-            std::collections::HashMap::new();
-        let mut failures: Vec<String> = Vec::new();
-        for (idx, item) in tasks.iter().enumerate() {
-            let subject = item["subject"].as_str().unwrap_or("").to_string();
-            if subject.trim().is_empty() {
-                continue;
-            }
-            let description = item["description"].as_str().unwrap_or("").to_string();
-            let active_form = optional_string(item, "activeForm");
-            let metadata = item.get("metadata").cloned();
-            let owner = optional_string(item, "owner");
-            let subagent_type = optional_string(item, "subagent_type");
-            match tm.create(
-                subject.clone(),
-                description,
-                active_form,
-                metadata,
-                owner,
-                subagent_type,
-            ) {
-                Ok(t) => {
-                    created_ids.insert(idx, t.id);
-                }
-                Err(e) => failures.push(format!("「{}」: {}", subject, e)),
-            }
-        }
-        // 处理 depends_on 依赖（1-based 索引 → 0-based 查 HashMap）
-        for (idx, item) in tasks.iter().enumerate() {
-            if let Some(task_id) = created_ids.get(&idx) {
-                if let Some(deps) = item["depends_on"].as_array() {
-                    let blocked_by: Vec<i32> = deps
-                        .iter()
-                        .filter_map(|d| d.as_u64().map(|n| (n as usize).saturating_sub(1)))
-                        .filter_map(|di| created_ids.get(&di).copied())
-                        .map(|id| id as i32)
-                        .collect();
-                    if !blocked_by.is_empty() {
-                        let _ = tm.update(
-                            *task_id,
-                            crate::core::orchestration::tasks::TaskUpdateParams {
-                                status: None,
-                                subject: None,
-                                description: None,
-                                active_form: None,
-                                owner: None,
-                                metadata: None,
-                                add_blocked_by: Some(blocked_by),
-                                add_blocks: None,
-                                subagent_type: None,
-                            },
-                        );
-                    }
-                }
-            }
-        }
-        let mut result = serde_json::json!({"success": true, "created": created_ids.len()});
-        if !failures.is_empty() {
-            result["failed"] = serde_json::json!(failures.len());
-            result["errors"] = serde_json::json!(failures);
+        // 统一走 TaskManager::create_graph：与“方案审批自动建任务”共用同一套
+        // 1-based 依赖换算，避免两处实现漂移。
+        let specs: Vec<TaskSpec> = tasks
+            .iter()
+            .map(|item| TaskSpec {
+                subject: item["subject"].as_str().unwrap_or("").to_string(),
+                description: item["description"].as_str().unwrap_or("").to_string(),
+                active_form: optional_string(item, "activeForm"),
+                metadata: item.get("metadata").cloned(),
+                owner: optional_string(item, "owner"),
+                subagent_type: optional_string(item, "subagent_type"),
+                depends_on: item["depends_on"]
+                    .as_array()
+                    .map(|deps| {
+                        deps.iter()
+                            .filter_map(|dep| dep.as_u64().map(|n| n as usize))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            })
+            .collect();
+        let created = tm.create_graph(&specs);
+        let mut result = serde_json::json!({
+            "success": true,
+            "created": created.created.len()
+        });
+        if !created.errors.is_empty() {
+            result["failed"] = serde_json::json!(created.errors.len());
+            result["errors"] = serde_json::json!(created.errors);
         }
         return framework::ToolCallResult::ok(result.to_string());
     }

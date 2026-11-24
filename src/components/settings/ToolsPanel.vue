@@ -72,24 +72,7 @@ interface ParamRow {
 
 const { t } = useI18n();
 
-/** 与后端 `infra::shell_dialect::ShellResolution` 对应 */
-interface ShellResolution {
-  /** 只有 Windows 才有自动 / PowerShell 两种选择 */
-  platformSupported: boolean;
-  mode: 'auto' | 'powershell';
-  gitBashPath: string | null;
-  /** 后端自动探测到的 bash.exe 路径（用于告诉用户"保存时会用哪个"） */
-  detectedBashPath: string | null;
-  /** 当前配置无法解析时的原因（例如 bash.exe 已被卸载） */
-  error: string | null;
-}
-
 const tools = ref<ToolMeta[]>([]);
-/** Shell 执行环境：保存在 app-config.json，**重启后生效** */
-const shell = ref<ShellResolution | null>(null);
-const shellMode = ref<'auto' | 'powershell'>('auto');
-const shellPath = ref('');
-const shellSaving = ref(false);
 const loading = ref(true);
 /** 展开了 schema 的工具名。用 Set 而非给每项加布尔字段：列表来自后端，不污染它 */
 const expanded = ref<Set<string>>(new Set());
@@ -203,87 +186,13 @@ const toggle = async (tool: ToolMeta) => {
   }
 };
 
-const loadShell = async () => {
-  try {
-    const res = await invoke<ShellResolution>('get_shell_settings');
-    shell.value = res;
-    shellMode.value = res.mode;
-    shellPath.value = res.gitBashPath ?? '';
-  } catch (err) {
-    // 读取失败不阻塞工具列表：Shell 卡片不渲染即可
-    console.error('加载 Shell 设置失败:', err);
-  }
-};
-
-const saveShell = async () => {
-  shellSaving.value = true;
-  try {
-    const res = await invoke<ShellResolution>('save_shell_settings', {
-      // 后端参数是 ShellSettings（camelCase 反序列化）
-      settings: {
-        mode: shellMode.value,
-        gitBashPath: shellPath.value.trim() || null,
-      },
-    });
-    shell.value = res;
-    showToast(t('settings.tools.shellSaved'));
-  } catch (err) {
-    console.error('保存 Shell 设置失败:', err);
-    showToast(t('settings.tools.shellSaveError', { error: formatError(err) }), 'error');
-  } finally {
-    shellSaving.value = false;
-  }
-};
-
 onMounted(() => {
   load();
-  loadShell();
 });
 </script>
 
 <template>
   <div class="tools-panel">
-    <!-- Shell 执行环境：与工具开关同页，因为都直接改变模型能用什么方式操作系统。
-         它改的是**解释器**，所以和工具开关一样需要重启/新会话边界，不能热切换。 -->
-    <section v-if="shell" class="shell-card">
-      <div class="shell-head">
-        <h4 class="shell-title">{{ t('settings.tools.shellTitle') }}</h4>
-        <span class="shell-restart">{{ t('settings.tools.shellRestartHint') }}</span>
-      </div>
-      <p class="shell-hint">{{ t('settings.tools.shellHint') }}</p>
-
-      <p v-if="!shell.platformSupported" class="shell-note">
-        {{ t('settings.tools.shellUnsupported') }}
-      </p>
-      <template v-else>
-        <div class="shell-row">
-          <select v-model="shellMode" class="shell-select">
-            <option value="auto">{{ t('settings.tools.shellAuto') }}</option>
-            <option value="powershell">{{ t('settings.tools.shellPowerShell') }}</option>
-          </select>
-          <!-- 自动模式下允许手填路径：探测错或探测不到时兜底 -->
-          <input
-            v-if="shellMode === 'auto'"
-            v-model="shellPath"
-            class="shell-path"
-            type="text"
-            :placeholder="t('settings.tools.shellPathPlaceholder')"
-          />
-          <button type="button" class="shell-save" :disabled="shellSaving" @click="saveShell">
-            {{ t('settings.tools.shellSave') }}
-          </button>
-        </div>
-        <p v-if="shellMode === 'auto'" class="shell-note">
-          {{
-            shell.detectedBashPath
-              ? t('settings.tools.shellDetected', { path: shell.detectedBashPath })
-              : t('settings.tools.shellAutoFallback')
-          }}
-        </p>
-        <p v-if="shell.error" class="shell-error">{{ shell.error }}</p>
-      </template>
-    </section>
-
     <p class="tools-intro">{{ t('settings.tools.intro') }}</p>
 
     <input
@@ -377,92 +286,6 @@ onMounted(() => {
   flex-direction: column;
   gap: 12px;
   padding: 4px 0 24px;
-}
-
-/* ── Shell 执行环境 ── */
-.shell-card {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px;
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-lg);
-  background: var(--glass-bg);
-}
-.shell-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-.shell-title {
-  margin: 0;
-  font-size: 0.8rem;
-  font-weight: var(--fw-semibold);
-  color: var(--text-main);
-}
-.shell-restart {
-  margin-left: auto;
-  color: var(--text-muted);
-  font-size: 0.7rem;
-}
-.shell-hint {
-  margin: 0;
-  color: var(--text-soft);
-  font-size: 0.74rem;
-  line-height: 1.55;
-}
-.shell-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.shell-select,
-.shell-path {
-  padding: 5px 8px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--glass-border);
-  background: var(--glass-bg);
-  color: var(--text-main);
-  font-size: 0.76rem;
-  outline: none;
-}
-.shell-path {
-  flex: 1;
-  min-width: 220px;
-  font-family: var(--font-mono);
-}
-.shell-select:focus,
-.shell-path:focus {
-  border-color: var(--accent-blue);
-}
-.shell-save {
-  padding: 5px 14px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--glass-border);
-  background: var(--glass-bg-light);
-  color: var(--text-main);
-  font-size: 0.76rem;
-  cursor: pointer;
-  transition: border-color var(--transition-fast);
-}
-.shell-save:hover:not(:disabled) {
-  border-color: var(--accent-blue);
-}
-.shell-save:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-.shell-note {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: 0.72rem;
-  word-break: break-all;
-}
-.shell-error {
-  margin: 0;
-  color: var(--text-warning);
-  font-size: 0.72rem;
 }
 
 .tools-intro {

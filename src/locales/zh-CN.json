@@ -523,19 +523,7 @@
       "showSchema": "参数",
       "hideSchema": "收起",
       "noParams": "无参数",
-      "required": "必填",
-      "shellTitle": "Shell 执行环境",
-      "shellHint": "默认自动：探测到 Git Bash 就用它，否则用 PowerShell。Git Bash 与 Claude Code 的 Bash 工具同一边界：POSIX 语义，git 与 ssh 能正确读取用户主目录。手动选择 PowerShell 后不再探测。改完需要重启应用。",
-      "shellAuto": "自动（推荐）",
-      "shellAutoFallback": "未探测到 Git Bash，将使用 PowerShell",
-      "shellPowerShell": "PowerShell",
-      "shellPathPlaceholder": "bash.exe 路径（留空自动探测）",
-      "shellDetected": "已探测到：{path}",
-      "shellSave": "保存",
-      "shellSaved": "已保存，重启应用后生效",
-      "shellSaveError": "保存失败：{error}",
-      "shellRestartHint": "重启应用后生效",
-      "shellUnsupported": "当前平台固定使用 bash，无法切换"
+      "required": "必填"
     },
     "about": {
       "title": "关于与更新",
@@ -692,7 +680,21 @@
       "restoreLayout": "恢复默认窗口布局",
       "restoreLayoutDesc": "清空本地窗口缓存，将主窗口与监控窗口恢复到初始位置和大小。",
       "restoreLayoutSuccess": "窗口布局已恢复默认",
-      "restoreLayoutError": "恢复默认窗口失败: {error}"
+      "restoreLayoutError": "恢复默认窗口失败: {error}",
+      "shellTitle": "Shell 执行环境",
+      "shellMode": "执行方式",
+      "shellHint": "默认自动：探测到 Git Bash 就用它，否则用 PowerShell。Git Bash 与 Claude Code 的 Bash 工具同一边界：POSIX 语义，git 与 ssh 能正确读取用户主目录。手动选择 PowerShell 后不再探测。",
+      "shellAuto": "自动（推荐）",
+      "shellAutoFallback": "启动时未探测到 Git Bash，将使用 PowerShell",
+      "shellPowerShell": "PowerShell",
+      "shellPath": "bash.exe 路径",
+      "shellPathPlaceholder": "留空自动探测",
+      "shellDetected": "将使用：{path}",
+      "shellSave": "保存",
+      "shellSaved": "已保存，重启应用后生效",
+      "shellSaveError": "保存失败：{error}",
+      "shellRestartHint": "重启应用后生效",
+      "shellUnsupported": "当前平台固定使用 bash，无法切换"
     },
     "profileEditor": {
       "identity": "预设身份",
