@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import type { JarvisResult } from "../types";
+import type { JarvisResult, SessionUsageView } from "../types";
 import { useSessionStore } from "./session";
 import { useAgentStore } from "./agent";
 import { usePermissionStore } from "./permission";
@@ -589,15 +589,35 @@ export const useChatStore = defineStore("chat", () => {
 
     const task = (async () => {
       try {
-        const res = await invoke<PagedSessionMessagesResponse>(
-          "get_session_messages_paged",
-          { sessionId, beforeSeq: null, limit: 5 },
-        );
+        const [res, usage] = await Promise.all([
+          invoke<PagedSessionMessagesResponse>(
+            "get_session_messages_paged",
+            { sessionId, beforeSeq: null, limit: 5 },
+          ),
+          // 用量视图与首屏并行回读：启动 / 切会话时分组明细没有事件可回放，
+          // 不回读就只剩 `hasDetail = false` 的兜底四指标。
+          // 失败不能拖垮消息窗口 —— 浮层退回兜底值即可。
+          invoke<SessionUsageView>("get_session_usage", { sessionId }).catch((err) => {
+            console.warn(`[chat] session-usage load failed: session=${sessionId}`, err);
+            return null;
+          }),
+        ]);
         // 整批替换内部会置 ready；调用方紧接着用真实游标覆盖分页边界
         session.replaceSessionMessages(sessionId, res.messages);
         // 分页边界：最老端 = 后端下发的 oldestSeq（上滑游标）；
         // 最新端 = 后端下发的 newestSeq（首屏即会话最新端，空会话为 null）
         session.setSessionPaging(sessionId, res.oldestSeq, res.hasMore, res.newestSeq);
+        // 只在视图里还**没有**明细时写入：重载可能发生在运行中，
+        // 事件通道推来的分组比这次回读更新；无条件覆盖会把新数据冲回旧快照。
+        if (usage && !session.getSessionView(sessionId).sessionUsageBreakdown.hasDetail) {
+          session.setSessionUsageTotals(sessionId, {
+            input: usage.inputTokens || 0,
+            output: usage.outputTokens || 0,
+            cacheHit: usage.cacheHitTokens || 0,
+            cacheMiss: usage.cacheMissTokens || 0,
+          });
+          session.setSessionUsageBreakdown(sessionId, usage.breakdown);
+        }
         console.debug(
           `[chat] session-view load done: session=${sessionId} reason=${reason} messages=${res.messages.length} oldestSeq=${res.oldestSeq} newestSeq=${res.newestSeq} totalCount=${res.totalCount} hasMore=${res.hasMore} hydration=ready`,
         );
@@ -770,7 +790,7 @@ export const useChatStore = defineStore("chat", () => {
       sessionIdAtStart = await ensureActiveSessionForSend();
     } catch (err) {
       // 会话创建失败（典型：挂载项目目录已被删除/改名）。此时没有真实会话可挂，
-      // 错误快照挂到 __default__ 视图：欢迎页让位，错误卡片直接显示在对话区。
+      // 错误快照挂到 __default__ 视图：欢迎页让位，错误标注直接显示在对话区。
       console.error("[chat] 创建会话失败:", err);
       const errMsg = extractErrorMessage(err) || "创建会话失败";
       const view = session.getSessionView(null);
@@ -779,9 +799,12 @@ export const useChatStore = defineStore("chat", () => {
         id: agentMessageId(view),
         snapshot: buildAgentTurnSnapshot(
           view.currentTurn,
-          `**执行出错：${errMsg}**`,
+          "",
           "",
           "ERROR",
+          // 错误走状态标注（气泡下方），不占正文位置
+          "notice.executionError",
+          errMsg,
         ),
       });
       view.status = "ERROR";
@@ -1059,16 +1082,23 @@ export const useChatStore = defineStore("chat", () => {
       // 已有更新一轮时，旧请求的错误回执不能清理新一轮的流数据或追加错误卡片。
       if (myGeneration !== sendGeneration[sessionIdAtStart]) return;
 
+      // 先折叠 live 缓冲区、拍快照，再清理 —— 顺序不能反。
+      // `clearSessionBuffers` 会把 currentTurn 换成空对象，先清理会让这一轮的
+      // 执行过程和已经流出的正文一起消失，错误快照只剩一条错误文本。
+      const { finalContent, finalToolBuffer } = buildFinalResponseParts(requestView);
+      const snapshot = buildAgentTurnSnapshot(
+        requestView.currentTurn,
+        finalContent,
+        finalToolBuffer,
+        "ERROR",
+        // 错误是这一轮的状态，不是模型说的话：交给气泡下方的状态标注渲染
+        "notice.executionError",
+        errMsg,
+      );
+
       session.clearSessionBuffers(sessionIdAtStart);
       resetRenderState(sessionIdAtStart);
 
-      // 构建错误快照，追加到 chat.messages（而非遗留字段 jarvisResponse）
-      const snapshot = buildAgentTurnSnapshot(
-        requestView.currentTurn,
-        `**执行出错：${errMsg}**`,
-        "",
-        "ERROR",
-      );
       session.appendSessionMessage(sessionIdAtStart, {
         role: "agent",
         id: agentMessageId(requestView),

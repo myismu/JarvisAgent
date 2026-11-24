@@ -394,7 +394,7 @@ pub async fn switch_session(
 /// 当前会话"的后端路径都必须对齐一次**，否则后续请求会继续用上一个会话/全局默认的预设。
 ///
 /// 已覆盖的路径：启动恢复会话、点击切会话（本文件 `switch_session`，前端不再双写）、
-/// 归档会话后自动回落（本文件 `switch_away`）。
+/// 归档当前会话后切到新对话（本文件 `switch_away`，重置为全局默认预设）。
 fn align_active_profile_to_session(
     app: &tauri::AppHandle,
     config_state: &tauri::State<'_, crate::infra::config::config::ConfigState>,
@@ -427,7 +427,7 @@ fn align_active_profile_to_session(
     let _ = app.emit("config-updated", ());
 }
 
-/// 归档会话后自动切换到下一个可用会话（若无则清空当前会话指针）。
+/// 归档一个会话，并处理它是不是"当前会话"。
 ///
 /// **这是单条会话归档路径的收口**（用户点归档 / 回滚后会话变空）。项目归档（
 /// [`archive_project`]）已经把名下会话在同一个事务里整体打上标记，不再走本函数，
@@ -453,40 +453,33 @@ pub async fn switch_away_and_delete_session(
         manager.remove(deleted_session_id).await;
     }
 
-    // 归档到此结束；剩下是纯粹的"切走"，与归档动作无关，交给 switch_away。
+    // 归档到此结束；剩下只处理"它是不是当前会话"：
+    // 是 → 回新对话（清空指针）；否 → 当前会话保持不动。交给 switch_away。
     switch_away(deleted_session_id, app).await
 }
 
-/// 把一个**已经不可用**的会话从"当前会话"位置上摘下来：挑 fallback、对齐激活预设、
-/// 清 `last_active_session_id`、广播事件。
+/// 归档会话后的"当前会话"处理。
 ///
-/// ## 为什么从 `switch_away_and_delete_session` 里抽出来
-/// "归档"与"切走"是两件正交的事，只是一直被写在一个函数里：
-/// - 单条归档（[`delete_session`]）需要先归档、再切走；
-/// - 项目归档（[`archive_project`]）在同一个事务里已经把项目名下所有会话批量打上
-///   `deleted_at`，此时再走一遍"删除"既不成立（`get_session_meta` 已经查不到，
-///   因为所有读路径都带 `AND deleted_at IS NULL`）、又毫无意义。
+/// 口径只看被处理的是不是**当前会话**：
+/// - 是当前会话 → 清空会话指针，前端回到新对话欢迎页；
+/// - 不是当前会话 → 当前会话保持不变，只广播事件让前端清理被删会话的缓存。
 ///
-/// 抽出来之后两条路径共用**同一套**回落逻辑（选 fallback / 对齐预设 / 清指针 / 广播），
-/// 不会因为复制一份而慢慢走偏（比如一条改了 fallback 的选择口径、另一条忘了对齐预设）。
-/// 调用方负责先完成归档与内存态释放。
+/// **不挑"第一个别的会话"当 fallback**：归档当前会话时把用户甩进列表里另一个
+/// 会话（往往是"上一个对话"）不符合归档的语义——用户归档的是一个会话，不是
+/// 要求切换；归档非当前会话时擅自改 `active_session_id` 也会造成同样的跳动。
+/// 新对话的模型预设沿用侧栏「新建对话」的口径（重置到全局默认）。
 pub async fn switch_away(deleted_session_id: &str, app: &tauri::AppHandle) -> Result<(), String> {
-    // 找到第一个非当前的会话作为 fallback
-    let fallback = session::list_sessions()
-        .into_iter()
-        .find(|session| session.id != deleted_session_id);
-    // 删除前先记下 fallback 的预设：删除后这个 meta 就取不到了
-    let fallback_profile_id = fallback.as_ref().and_then(|m| m.profile_id.clone());
-    let fallback_id = fallback.as_ref().map(|m| m.id.clone());
+    let last_active = session::get_last_active_session_id();
+    let was_active = last_active.as_deref() == Some(deleted_session_id);
+    let next_active_id = if was_active { None } else { last_active };
 
-    // 对齐激活预设，否则后端会继续用**刚被删掉的会话**的预设
-    if let Some(state) = app.try_state::<crate::infra::config::config::ConfigState>() {
-        align_active_profile_to_session(app, &state, fallback_profile_id.as_deref());
-    }
-
-    // 没有 fallback（删掉了最后一个会话）时清掉 last_active_session_id，
-    // 否则下次启动会拿一个已删除的 id 去 switch_session，白报一次错再回落。
-    if fallback_id.is_none() {
+    if was_active {
+        // 新对话沿用全局默认预设，与 `prepareNewSession`（侧栏新建对话）同口径；
+        // 归档的不是当前会话时保持正在用的预设不动。
+        if let Some(state) = app.try_state::<crate::infra::config::config::ConfigState>() {
+            align_active_profile_to_session(app, &state, None);
+        }
+        // 指针不留在已归档会话上，否则下次启动会拿一个已删除的 id 去 switch_session
         let _ = crate::core::session::repository::clear_last_active_session_id();
     }
 
@@ -494,7 +487,7 @@ pub async fn switch_away(deleted_session_id: &str, app: &tauri::AppHandle) -> Re
         "active-session-changed",
         SessionCleanupResult {
             deleted_session_id: Some(deleted_session_id.to_string()),
-            active_session_id: fallback_id,
+            active_session_id: next_active_id,
         },
     );
     let _ = app.emit("session-updated", ());
@@ -1116,6 +1109,25 @@ pub async fn get_session_usage_breakdown(
     session_id: String,
 ) -> Result<session::UsageBreakdown, String> {
     session::get_session_usage_breakdown(&session_id)
+}
+
+/// 读取会话的用量视图（扁平四值 + 主对话 / 子 Agent / 系统开销三层投影）。
+///
+/// 与 `get_session_usage_breakdown` 的分工：
+/// - 那个返回**账本原形**（`sources` 平铺），是审计口径；
+/// - 这个返回与 `session-usage-updated` 事件载荷**同形**的展示投影，
+///   供启动 / 切会话时首屏加载。
+///
+/// 为什么必须有这个命令：分组明细只在运行期通过事件推送，没有回放通道。
+/// 启动后打开历史会话时如果不回读，前端 `sessionUsageBreakdown` 一直是空占位，
+/// 浮层只能退回 `hasDetail = false` 的兜底四指标，直到用户再发一轮才出现三层。
+/// 折叠仍复用 `SessionUsageView::from_breakdown`，不在前端重做第二套聚合。
+#[tauri::command]
+pub async fn get_session_usage(
+    session_id: String,
+) -> Result<session::SessionUsageView, String> {
+    let breakdown = session::get_session_usage_breakdown(&session_id)?;
+    Ok(session::SessionUsageView::from_breakdown(&breakdown))
 }
 
 #[tauri::command]

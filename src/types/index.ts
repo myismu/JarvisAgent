@@ -211,9 +211,9 @@ export interface SessionUsageBreakdown {
   subagent: UsageSourceBreakdown;
   /** 系统内部调用（标题生成、压缩摘要、反思审查等非用户可见的请求） */
   system: UsageSourceBreakdown;
-  /** 来源未知（后端拿不到来源标记）的请求数 */
+  /** 缓存字段未上报的请求数（厂商没给缓存统计，不是"来源未知"） */
   unreportedRequestCount: number;
-  /** 来源未知的请求累计输入 token */
+  /** 这些未上报请求对应的输入 token 合计（仍计入各层 input） */
   unreportedInput: number;
   /**
    * 后端是否给出了真正的分组明细。
@@ -222,6 +222,22 @@ export interface SessionUsageBreakdown {
    * 「主 Agent 一个 token 没花」。
    */
   hasDetail: boolean;
+}
+
+/**
+ * 会话用量视图（与 `session-usage-updated` 事件载荷同形）。
+ *
+ * 启动 / 切会话时由 `get_session_usage` 回读：分组明细只在运行期通过事件推送，
+ * 没有回放通道；不回读的话浮层会一直停在 `hasDetail = false` 的兜底值，
+ * 直到用户再发一轮才出现三层。
+ */
+export interface SessionUsageView {
+  sessionId: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheHitTokens: number;
+  cacheMissTokens: number;
+  breakdown: SessionUsageBreakdown;
 }
 
 /**

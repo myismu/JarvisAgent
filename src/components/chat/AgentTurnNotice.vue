@@ -20,18 +20,26 @@
 
 <script setup lang="ts">
 defineProps<{
-  /** 状态标注：中断 / 取消 / 等待说明 */
+  /** 状态标注：中断 / 取消 / 等待说明 / 执行错误 */
   notice?: string | null;
   /**
    * 过程态（等待提示 / 重试进度）：加脉冲点表示"还在进行中"，并让宽度自适应内容。
    * 由调用方给 —— 历史快照恒为 false，只有当前轮才可能为 true。
    */
   running?: boolean;
+  /**
+   * 语气：`error` 用于本轮执行失败。
+   *
+   * 默认标注继承气泡的次级文字色（--text-soft）；错误必须显著高于普通状态说明，
+   * 否则一条灰字提示会被当成可忽略的旁注。只改文字色，不加底色 ——
+   * 与普通标注共用同一套留白与字号，避免两种提示长得像两个组件。
+   */
+  tone?: "error";
 }>();
 </script>
 
 <template>
-  <div v-if="notice" class="turn-notice" :class="{ running }">
+  <div v-if="notice" class="turn-notice" :class="{ running, 'is-error': tone === 'error' }">
     <span v-if="running" class="turn-notice-light state-light is-running"></span>
     {{ notice }}
   </div>
@@ -50,6 +58,11 @@ defineProps<{
   line-height: 1.55;
   color: var(--text-soft);
   word-break: break-word;
+}
+
+/* 执行失败：颜色即语义（与全局 accent-red 一致），字号与位置仍与非错误标注一致 */
+.turn-notice.is-error {
+  color: var(--accent-red);
 }
 
 /* 过程态：脉冲点 + 内容宽度，扫一眼就知道这条会变，不必等结果 */

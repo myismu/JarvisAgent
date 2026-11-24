@@ -257,6 +257,39 @@ export function useAgentEvents() {
     // 等落库事件驱动重载，那几条路径各自负责推进 hydration。
   }
 
+  /**
+   * 把本轮用户消息的数据库 id 回填到本地占位消息。
+   *
+   * 为什么要靠 run 事件而不是命令回执：
+   * - 前端发消息时只有本地占位 id（`pending_*`），真实 UUID 由后端在
+   *   `pre_loop` 注入用户消息时生成并落库；
+   * - `ask_jarvis` 的返回值要等**整轮结束**才带回 `user_message_id`，
+   *   一旦模型调用报错、命令以 Err 返回，那条回填代码永远不会执行；
+   * - 而 run 记录在开跑时就通过 `agent-run-updated` 带出了 `message_id`，
+   *   这是同一事实更早、且异常路径也能到达的通道。
+   *
+   * 撤回按钮的渲染条件是 `rollbackCheckpointId || messageId`：检查点由收尾
+   * 生成，运行中必然为空；少了这一步，运行期间和失败后都只剩占位 id，
+   * 只能等刷新从历史消息里拿回真实 id。
+   *
+   * 只认 running 且不早于本轮发送时刻的 run：切会话 / 重启恢复会批量加载
+   * 历史 run，不能把旧 id 贴到新的占位消息上。
+   */
+  function backfillRunningUserMessageId(run: AgentRun) {
+    if (run.status !== "running" || !run.messageId) return;
+    const view = session.getSessionView(run.sessionId);
+    if (view.status !== "RUNNING" || !view.runStartTime) return;
+    if ((run.startedAt || 0) < view.runStartTime) return;
+    // 只认列表尾部那条用户消息：正常发送时占位消息刚被追加到末尾，
+    // 后面还没有任何助手消息；续跑（resume）不会追加用户消息，尾部是
+    // 上一轮的助手消息 / 错误快照，这里必须放过，否则会把续跑新消息的
+    // id 贴到上一条用户消息上，撤回目标就错了。
+    const last = view.messages[view.messages.length - 1];
+    if (!last || last.role !== "user" || last.messageId) return;
+    if (!String(last.id).startsWith("pending_")) return;
+    last.messageId = run.messageId;
+  }
+
   async function refreshSessionHistory(sessionId: string, reason: string) {
     try {
       // 入口三：强制重载会话视图（分页首屏 + 重置分页游标）
@@ -563,6 +596,8 @@ export function useAgentEvents() {
     await on<AgentRun>("agent-run-updated", (event) => {
       const run = event.payload;
       agent.upsertAgentRun(run);
+      // 用户消息 id 随 run 下发：一开跑就回填，撤回按钮不必等整轮结束或刷新
+      backfillRunningUserMessageId(run);
       const runs = Object.values(agent.agentRuns).filter((item) => item.sessionId === run.sessionId);
       applyAgentRunState(run.sessionId, runs);
       syncActiveSessionView(run.sessionId, false);

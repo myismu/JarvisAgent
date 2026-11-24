@@ -504,8 +504,8 @@ const switchToSession = async (id: string) => {
 //
 // 为什么当前会话也可以归档：要求"先切走再归档"会让**只有一个会话时功能完全不可达**，
 // 且整理多个会话时被迫来回切换（切换还带改预设、改思考档位的副作用）。
-// 后端会把 activeSessionId 回落到另一个会话并同步该会话的模型预设，
-// 前端由 active-session-changed 事件切过去，这里不需要额外处理。
+// 归档当前会话后后端会清空 activeSessionId，前端由 active-session-changed 事件
+// 回到新对话欢迎页；归档非当前会话时 activeSessionId 保持不变，不会跳走。
 const archiving = ref(false);
 
 const deleteSession = async (session: SessionMeta, event: Event) => {

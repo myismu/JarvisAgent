@@ -200,6 +200,7 @@ pub fn run() {
             command::session::update_session_profile,
             command::session::get_session_meta,
             command::session::get_session_usage_breakdown,
+            command::session::get_session_usage,
             command::session::get_session_context_snapshot,
             command::session::get_workspace_dir,
             command::session::list_plan_documents,

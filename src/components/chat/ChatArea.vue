@@ -949,6 +949,7 @@ onMounted(() => {
                live 时才传 running，历史轮次没有「运行中」这个概念。 -->
           <AgentTurnNotice
             :notice="turnOfMessage(message).notice"
+            :tone="message.snapshot?.status === 'ERROR' || message.snapshot?.status === 'FAILED' ? 'error' : undefined"
             :running="message.live ? currentTurn.isRunning || awaitingFirstEvent : undefined"
           />
         </div>

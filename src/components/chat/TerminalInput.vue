@@ -356,6 +356,17 @@ const cacheUsage = computed(() => {
 });
 
 /**
+ * 本次请求的输出 token（与 `cacheUsage` 同源：最近一次请求的上下文快照）。
+ *
+ * 浮层的「本次请求」和会话表一样按 输入 / 命中 / 未命中 / 输出 四项展示；
+ * 输出单价与输入不同，缺了它就没法单独算这一笔账。
+ * 厂商没给输出字段时保留 null，由浮层显示 `--`，不回退成 0。
+ */
+const currentOutputTokens = computed(
+  () => agent.currentContextSnapshot?.providerOutputTokens ?? null,
+);
+
+/**
  * 概览栏上的缓存读数——**会话累计**口径（不是最近一次请求）。
  *
  * 为什么栏上用累计而不是单次：多 loop 的回合里，单次命中率只反映**最后一个 loop**，
@@ -1761,9 +1772,9 @@ const handleRecallEdit = async () => {
             :percent="cacheUsage?.percent ?? null"
             :hit-tokens="cacheUsage?.hitTokens ?? null"
             :total-tokens="cacheUsage?.totalTokens ?? null"
+            :output-tokens="currentOutputTokens"
             :session-input-tokens="session.totalInputTokens || 0"
             :session-output-tokens="session.totalOutputTokens || 0"
-            :session-total-tokens="sessionTokenTotal"
             :session-cache-hit-tokens="session.totalCacheHitTokens"
             :session-cache-miss-tokens="session.totalCacheMissTokens"
             :breakdown="usageBreakdown"
