@@ -11,6 +11,7 @@
 //! - External: serde_json
 
 pub mod background;
+pub mod dialect_guard;
 pub mod execution;
 pub mod guards;
 pub mod readonly;

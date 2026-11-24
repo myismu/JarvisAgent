@@ -420,7 +420,17 @@ pub async fn run_shell(
         .clamp(5, 600);
     let run_in_bg = input["run_in_background"].as_bool().unwrap_or(false);
 
-    // --- 1. 安全检查 ---
+    // --- 1. 方言预检 ---
+    // 放在最前：PowerShell 语法在 Git Bash 里不仅跑不通，重定向还可能先落盘
+    // （`Get-Content a > b` 会创建/清空 b），必须在执行和弹卡之前拦下。
+    if let Some(msg) = super::dialect_guard::detect_foreign_shell_syntax(
+        &crate::infra::shell_dialect::current(),
+        cmd,
+    ) {
+        return framework::ToolCallResult::blocked(msg);
+    }
+
+    // --- 1b. 安全检查 ---
     let mut warnings: Vec<String> = Vec::new();
     match check_command_safety(cmd) {
         SafetyResult::Block(msg) => {
