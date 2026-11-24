@@ -5,7 +5,7 @@
 //!
 //! ## Key Exports
 //! - `get_shell_settings()`: 读取当前设置并附带探测结果
-//! - `save_shell_settings()`: 校验后保存（找不到 bash.exe 时拒绝写入）
+//! - `save_shell_settings()`: 保存并返回当前解析状态
 //!
 //! ## Dependencies
 //! - Internal: `command::app_config`（持久化）、`infra::shell_dialect`（解析与探测）
@@ -19,11 +19,10 @@ pub fn get_shell_settings() -> ShellResolution {
     crate::infra::shell_dialect::describe(&crate::command::app_config::get_shell_settings())
 }
 
-/// 保存设置。先做完整解析校验，**解析失败不落盘**——
-/// 否则用户重启后会得到一个回退到 PowerShell 的启动，却不知道配置为什么没生效。
+/// 保存设置。自动模式永远可解析（探测不到 Git Bash 会回退 PowerShell），
+/// 因此这里只需要落盘并返回展示状态；手填路径无效会在 `error` 里提示。
 #[tauri::command]
 pub fn save_shell_settings(settings: ShellSettings) -> Result<ShellResolution, String> {
-    crate::infra::shell_dialect::resolve(&settings)?;
     crate::command::app_config::save_shell_settings(settings.clone())?;
     Ok(crate::infra::shell_dialect::describe(&settings))
 }

@@ -74,9 +74,9 @@ const { t } = useI18n();
 
 /** 与后端 `infra::shell_dialect::ShellResolution` 对应 */
 interface ShellResolution {
-  /** 只有 Windows 才有 PowerShell / Git Bash 两种选择 */
+  /** 只有 Windows 才有自动 / PowerShell 两种选择 */
   platformSupported: boolean;
-  mode: 'auto' | 'powershell' | 'git_bash';
+  mode: 'auto' | 'powershell';
   gitBashPath: string | null;
   /** 后端自动探测到的 bash.exe 路径（用于告诉用户"保存时会用哪个"） */
   detectedBashPath: string | null;
@@ -87,7 +87,7 @@ interface ShellResolution {
 const tools = ref<ToolMeta[]>([]);
 /** Shell 执行环境：保存在 app-config.json，**重启后生效** */
 const shell = ref<ShellResolution | null>(null);
-const shellMode = ref<'auto' | 'powershell' | 'git_bash'>('auto');
+const shellMode = ref<'auto' | 'powershell'>('auto');
 const shellPath = ref('');
 const shellSaving = ref(false);
 const loading = ref(true);
@@ -260,11 +260,10 @@ onMounted(() => {
           <select v-model="shellMode" class="shell-select">
             <option value="auto">{{ t('settings.tools.shellAuto') }}</option>
             <option value="powershell">{{ t('settings.tools.shellPowerShell') }}</option>
-            <option value="git_bash">{{ t('settings.tools.shellGitBash') }}</option>
           </select>
-          <!-- 自动模式也允许填路径：探测不到时可手工兜底，不必先切到强制模式 -->
+          <!-- 自动模式下允许手填路径：探测错或探测不到时兜底 -->
           <input
-            v-if="shellMode !== 'powershell'"
+            v-if="shellMode === 'auto'"
             v-model="shellPath"
             class="shell-path"
             type="text"
@@ -274,13 +273,11 @@ onMounted(() => {
             {{ t('settings.tools.shellSave') }}
           </button>
         </div>
-        <p v-if="shellMode !== 'powershell'" class="shell-note">
+        <p v-if="shellMode === 'auto'" class="shell-note">
           {{
             shell.detectedBashPath
               ? t('settings.tools.shellDetected', { path: shell.detectedBashPath })
-              : shellMode === 'auto'
-                ? t('settings.tools.shellAutoFallback')
-                : t('settings.tools.shellNotFound')
+              : t('settings.tools.shellAutoFallback')
           }}
         </p>
         <p v-if="shell.error" class="shell-error">{{ shell.error }}</p>

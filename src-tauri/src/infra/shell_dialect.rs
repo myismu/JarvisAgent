@@ -4,10 +4,10 @@
 //! 提示词层，全部写成 `cfg!(target_os = "windows")`——操作系统和 shell 语义被绑死。
 //! 引入本模块后，**实际方言由"自动探测 + 可覆盖设置"决定**：
 //!
-//! - Windows + `Auto`（默认）：探测到 Git Bash 就用它，否则用 PowerShell；
-//! - Windows + `GitBash`：强制走 Git for Windows 的 `bash.exe -c`，与 Claude Code
-//!   的 Bash 工具同一边界（POSIX 语义、HOME/PATH 由 bash 自行摆正）；
-//! - Windows + `PowerShell`：强制走 `powershell -NoProfile -Command`（逃生阀）；
+//! - Windows + `Auto`（默认）：探测到 Git Bash 就用它（`bash.exe -c`），
+//!   与 Claude Code 的 Bash 工具同一边界（POSIX 语义、HOME/PATH 由 bash 自行摆正）；
+//!   探测不到就用 `powershell -NoProfile -Command`；
+//! - Windows + `PowerShell`：不探测，固定使用 PowerShell（逃生阀）；
 //! - 非 Windows：恒为系统 `bash`。
 //!
 //! 默认 `Auto` 是刻意与 Claude Code 对齐的：装没装 Git for Windows 是环境事实，
@@ -32,23 +32,24 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 /// 用户可选的 Shell 模式（只有 Windows 有意义；非 Windows 恒为 POSIX bash）
+///
+/// 只有两档：自动与 PowerShell。
+/// 不提供"手动选 Git Bash"——它与"自动 + 指定 bash 路径"行为一致，
+/// 多一个选项只会让用户多理解一个概念。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShellMode {
     /// 自动（默认）：探测到 Git Bash 就用 Git Bash，否则用 PowerShell。
     ///
     /// 与 Claude Code 的行为一致：用户装了 Git for Windows 就直接享受 POSIX 语义，
-    /// 不需要手动切换；设置项里的另外两档只作为异常时的逃生阀。
+    /// 不需要手动切换。
     #[serde(rename = "auto")]
     Auto,
-    /// 强制 Windows PowerShell
+    /// 手动选择 Windows PowerShell：不再探测，固定使用 PowerShell。
     ///
     /// 显式写 `rename`：`rename_all = "snake_case"` 会把 `PowerShell`
     /// 拆成 `power_shell`，与前端约定的 `powershell` 不一致。
     #[serde(rename = "powershell")]
     PowerShell,
-    /// 强制 Git for Windows 提供的 Git Bash（POSIX 语义）
-    #[serde(rename = "git_bash")]
-    GitBash,
 }
 
 impl Default for ShellMode {
@@ -110,17 +111,10 @@ static CURRENT: OnceLock<ShellDialect> = OnceLock::new();
 
 /// 启动期初始化。
 ///
-/// 解析失败不 panic：退回 PowerShell 并打印原因。用户可能在新机器上打开了开关
-/// 但 Git for Windows 已被卸载——此时应用仍要能启动，只是命令回到现状行为。
+/// 解析永远成功：自动模式探测不到 Git Bash 会退回 PowerShell，这是正常状态，
+/// 不是错误。因此这里没有失败分支，也不会因为环境缺东西而影响应用启动。
 pub fn init(settings: &ShellSettings) {
-    let dialect = match resolve(settings) {
-        Ok(dialect) => dialect,
-        Err(err) => {
-            eprintln!("[ShellDialect] {}；回退 PowerShell", err);
-            default_dialect()
-        }
-    };
-    let _ = CURRENT.set(dialect);
+    let _ = CURRENT.set(resolve(settings));
 }
 
 /// 当前方言。未初始化时按操作系统兜底（Windows→PowerShell，其他→bash）。
@@ -139,39 +133,27 @@ fn default_dialect() -> ShellDialect {
     }
 }
 
-/// 纯解析函数：设置 → 方言。设置命令用它做保存前校验，启动初始化也走这里。
+/// 纯解析函数：设置 → 方言。启动初始化与设置页状态展示都走这里。
 ///
-/// 失败只发生在"用户选了 Git Bash 但找不到 bash.exe"这一种情况，
-/// 返回的错误文案会直接进设置页，必须说明怎么修。
-pub fn resolve(settings: &ShellSettings) -> Result<ShellDialect, String> {
+/// 永不失败：自动模式下探测不到 Git Bash 就退回 PowerShell。
+/// 探测失败是常见状态（用户没装 Git for Windows），不该被当成错误。
+pub fn resolve(settings: &ShellSettings) -> ShellDialect {
     if !cfg!(windows) {
-        return Ok(ShellDialect::Bash {
+        return ShellDialect::Bash {
             program: PathBuf::from("bash"),
             git_bash: false,
-        });
+        };
     }
     match settings.mode {
         // 自动：探测到就用 Git Bash，探测不到安静地退回 PowerShell。
-        // 退回不是错误——大多数用户根本没装 Git for Windows，那是正常状态。
         ShellMode::Auto => match detect_git_bash(settings.git_bash_path.as_deref()) {
-            Some(program) => Ok(ShellDialect::Bash {
+            Some(program) => ShellDialect::Bash {
                 program,
                 git_bash: true,
-            }),
-            None => Ok(ShellDialect::PowerShell),
+            },
+            None => ShellDialect::PowerShell,
         },
-        ShellMode::PowerShell => Ok(ShellDialect::PowerShell),
-        ShellMode::GitBash => {
-            let program = detect_git_bash(settings.git_bash_path.as_deref()).ok_or_else(|| {
-                "未找到 Git for Windows 的 bash.exe。请先安装 Git for Windows，\
-                 或在设置中手动指定 bash.exe 路径"
-                    .to_string()
-            })?;
-            Ok(ShellDialect::Bash {
-                program,
-                git_bash: true,
-            })
-        }
+        ShellMode::PowerShell => ShellDialect::PowerShell,
     }
 }
 
@@ -277,53 +259,43 @@ fn find_bash_near(start: &std::path::Path) -> Option<PathBuf> {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShellResolution {
-    /// 当前平台是否支持切换（只有 Windows 有 PowerShell / Git Bash 两种选择）
+    /// 当前平台是否支持切换（只有 Windows 有自动 / PowerShell 两种选择）
     pub platform_supported: bool,
-    /// 用户选择的模式：`powershell` / `git_bash`
+    /// 用户选择的模式：`auto` / `powershell`
     pub mode: ShellMode,
     /// 用户显式配置的 bash 路径（可能为空）
     pub git_bash_path: Option<String>,
     /// 实际探测到的 bash.exe 路径（探测失败为 None）
     pub detected_bash_path: Option<String>,
-    /// 保存/解析失败的原因（成功为 None）
+    /// 需要提示给用户的问题（例如手填路径不存在）。正常状态为 None。
     pub error: Option<String>,
 }
 
 /// 把设置解析成前端可展示的状态。不写全局，纯查询。
 pub fn describe(settings: &ShellSettings) -> ShellResolution {
-    let detected = detect_git_bash(settings.git_bash_path.as_deref());
-    let detected_str = detected.as_ref().map(|p| p.display().to_string());
     let platform_supported = cfg!(windows);
-    // 自动模式下显式路径写错不该静默忽略：用户以为指定了 bash，
-    // 实际却退回了 PowerShell。强制模式由 resolve 给出同样的错误。
-    let explicit_path_invalid = settings
-        .git_bash_path
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|path| !path.is_empty())
+    // PowerShell 模式不探测：既没有路径输入框，也没必要每次打开设置页都跑一次 git。
+    let detected = if platform_supported && settings.mode == ShellMode::Auto {
+        detect_git_bash(settings.git_bash_path.as_deref())
+    } else {
+        None
+    };
+    let detected_str = detected.as_ref().map(|p| p.display().to_string());
+    // 显式路径写错不该静默忽略：用户以为指定了 bash，实际却退回了 PowerShell。
+    let explicit_path_invalid = settings.mode == ShellMode::Auto
+        && settings
+            .git_bash_path
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|path| !path.is_empty())
         && detected.is_none();
-    match resolve(settings) {
-        Ok(_) if explicit_path_invalid && settings.mode == ShellMode::Auto => ShellResolution {
-            platform_supported,
-            mode: settings.mode,
-            git_bash_path: settings.git_bash_path.clone(),
-            detected_bash_path: detected_str,
-            error: Some("指定的 bash.exe 路径不存在，自动模式将使用 PowerShell".to_string()),
-        },
-        Ok(_) => ShellResolution {
-            platform_supported,
-            mode: settings.mode,
-            git_bash_path: settings.git_bash_path.clone(),
-            detected_bash_path: detected_str,
-            error: None,
-        },
-        Err(err) => ShellResolution {
-            platform_supported,
-            mode: settings.mode,
-            git_bash_path: settings.git_bash_path.clone(),
-            detected_bash_path: detected_str,
-            error: Some(err),
-        },
+    ShellResolution {
+        platform_supported,
+        mode: settings.mode,
+        git_bash_path: settings.git_bash_path.clone(),
+        detected_bash_path: detected_str,
+        error: explicit_path_invalid
+            .then(|| "指定的 bash.exe 路径不存在，自动模式将使用 PowerShell".to_string()),
     }
 }
 
@@ -343,26 +315,17 @@ mod tests {
             serde_json::to_string(&ShellMode::PowerShell).unwrap(),
             "\"powershell\""
         );
-        assert_eq!(
-            serde_json::to_string(&ShellMode::GitBash).unwrap(),
-            "\"git_bash\""
-        );
-        assert_eq!(
-            serde_json::from_str::<ShellMode>("\"git_bash\"").unwrap(),
-            ShellMode::GitBash
-        );
         assert_eq!(ShellMode::default(), ShellMode::Auto);
     }
 
-    /// 自动模式永远解析成功：探测到就用 Git Bash，探测不到退回 PowerShell。
+    /// 自动模式：探测到就用 Git Bash，探测不到退回 PowerShell，两种都合法。
     #[test]
-    fn auto_mode_never_fails() {
+    fn auto_mode_always_resolves() {
         let dialect = resolve(&ShellSettings {
             mode: ShellMode::Auto,
             git_bash_path: None,
-        })
-        .expect("自动模式不该报错");
-        // 环境相关：装了 Git for Windows 是 Bash，否则 PowerShell，两者都合法
+        });
+        // 环境相关：装了 Git for Windows 是 Bash，否则 PowerShell
         assert!(dialect.is_bash() || dialect == ShellDialect::PowerShell);
     }
 
@@ -374,26 +337,24 @@ mod tests {
         let dialect = resolve(&ShellSettings {
             mode: ShellMode::PowerShell,
             git_bash_path: None,
-        })
-        .expect("PowerShell 模式不该失败");
+        });
         assert_eq!(dialect, ShellDialect::PowerShell);
     }
 
+    /// 手填路径不存在时不报错、回退 PowerShell，但设置页必须能看到提示。
     #[test]
-    fn explicit_missing_bash_reports_actionable_error() {
+    fn invalid_explicit_path_is_visible_but_not_fatal() {
         if !cfg!(windows) {
             return;
         }
-        let err = resolve(&ShellSettings {
-            mode: ShellMode::GitBash,
+        let settings = ShellSettings {
+            mode: ShellMode::Auto,
             git_bash_path: Some("C:\\definitely\\missing\\bash.exe".to_string()),
-        })
-        .unwrap_err();
-        assert!(
-            err.contains("bash.exe"),
-            "错误文案必须点明缺的是什么: {}",
-            err
-        );
+        };
+        assert_eq!(resolve(&settings), ShellDialect::PowerShell);
+        let described = describe(&settings);
+        let error = described.error.expect("应给出可见提示");
+        assert!(error.contains("bash.exe"), "提示要点明缺的是什么: {}", error);
     }
 
     #[test]
@@ -402,10 +363,9 @@ mod tests {
             return;
         }
         let dialect = resolve(&ShellSettings {
-            mode: ShellMode::GitBash,
+            mode: ShellMode::PowerShell,
             git_bash_path: None,
-        })
-        .expect("非 Windows 不应失败");
+        });
         assert!(dialect.is_bash());
         assert!(!dialect.is_git_bash());
     }
