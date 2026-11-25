@@ -500,10 +500,7 @@ pub async fn dispatch_core_tool(
             let cancel_token = {
                 let sm = app.state::<crate::infra::state::state::SessionManager>();
                 let ctx = sm.get_or_create(session_id).await;
-                // 先落到局部变量：MutexGuard 是临时值，直接作为块尾表达式会让它
-                // 活到 ctx 之后才析构（E0597）
-                let token = ctx.current_cancel_token();
-                token
+                ctx.current_cancel_token()
             }
             .unwrap_or_else(tokio_util::sync::CancellationToken::new);
             let (report, in_tokens, out_tokens) =

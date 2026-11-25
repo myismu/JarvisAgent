@@ -427,12 +427,12 @@ mod tests {
         let budget = SubagentBudget::from_defaults();
         assert_eq!(budget.idle_limit(), SUBAGENT_IDLE_TIMEOUT_SECS);
         assert_eq!(budget.hard_limit(), SUBAGENT_HARD_TIMEOUT_SECS);
-        assert!(
-            SUBAGENT_IDLE_TIMEOUT_SECS < SUBAGENT_HARD_TIMEOUT_SECS,
-            "idle={} 必须小于 hard={}",
-            SUBAGENT_IDLE_TIMEOUT_SECS,
-            SUBAGENT_HARD_TIMEOUT_SECS
-        );
+        const {
+            assert!(
+                SUBAGENT_IDLE_TIMEOUT_SECS < SUBAGENT_HARD_TIMEOUT_SECS,
+                "idle 必须严格小于 hard"
+            );
+        }
         // 新创建的预算两条锚点都等于启动时刻：启动瞬间必定 Running
         assert_eq!(budget.started_at(), budget.last_progress_at());
         assert_eq!(budget.verdict(), BudgetVerdict::Running);

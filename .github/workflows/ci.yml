@@ -39,6 +39,10 @@ jobs:
         working-directory: src-tauri
         run: cargo fmt --all -- --check
 
+      - name: 静态代码检查（Clippy）
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
       - name: 单元测试
         working-directory: src-tauri
         run: cargo test

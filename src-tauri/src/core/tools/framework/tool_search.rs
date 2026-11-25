@@ -142,7 +142,7 @@ pub fn search_deferred_tools(
         .filter(|(_, s)| *s > 0)
         .collect();
 
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by_key(|item| std::cmp::Reverse(item.1));
     scored.truncate(max_results);
     scored.into_iter().map(|(name, _)| name).collect()
 }
@@ -248,7 +248,7 @@ pub async fn handle_execute_tool(
                 session_id,
                 agent_type,
                 name,
-                &input,
+                input,
                 intent,
                 work_mode,
                 super::tool_call_logger::ToolCallStatus::Error,
@@ -270,7 +270,7 @@ pub async fn handle_execute_tool(
             session_id,
             agent_type,
             name,
-            &input,
+            input,
             intent,
             work_mode,
             super::tool_call_logger::ToolCallStatus::Error,
@@ -309,7 +309,7 @@ pub async fn handle_execute_tool(
             session_id,
             agent_type,
             name,
-            &input,
+            input,
             intent,
             work_mode,
             super::tool_call_logger::ToolCallStatus::Error,
@@ -331,7 +331,7 @@ pub async fn handle_execute_tool(
             session_id,
             agent_type,
             name,
-            &input,
+            input,
             intent,
             work_mode,
             super::tool_call_logger::ToolCallStatus::Blocked,
@@ -361,7 +361,7 @@ pub async fn handle_execute_tool(
             session_id,
             agent_type,
             name,
-            &input,
+            input,
             intent,
             work_mode,
             super::tool_call_logger::ToolCallStatus::Error,
@@ -375,7 +375,7 @@ pub async fn handle_execute_tool(
             session_id,
             agent_type,
             name,
-            &input,
+            input,
             intent,
             work_mode,
             super::tool_call_logger::ToolCallStatus::Ok,
@@ -706,11 +706,11 @@ mod tests {
             let left_ok = text[..idx]
                 .chars()
                 .next_back()
-                .map_or(true, |ch| !ch.is_ascii_alphanumeric());
+                .is_none_or(|ch| !ch.is_ascii_alphanumeric());
             let right_ok = text[idx + name.len()..]
                 .chars()
                 .next()
-                .map_or(true, |ch| !ch.is_ascii_alphanumeric());
+                .is_none_or(|ch| !ch.is_ascii_alphanumeric());
             left_ok && right_ok
         })
     }

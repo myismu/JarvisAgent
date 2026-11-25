@@ -171,38 +171,40 @@ pub fn inject_user_message(
 /// 边界不能用「最后一条 Assistant 的位置」：一次工具循环会插入多条 Assistant，
 /// 那样本轮图片在循环第二轮就被折叠，请求前缀中途改变导致缓存全失效，
 /// 模型在后续轮次也再也看不到本轮图片。
-pub fn restore_image_data(history_snapshot: &mut Vec<Message>, current_turn_start: usize) {
+pub fn restore_image_data(history_snapshot: &mut [Message], current_turn_start: usize) {
     // 往轮：折叠为文本摘要
     for msg in history_snapshot.iter_mut().take(current_turn_start) {
-        if let Message::User { content } = msg {
-            if let Content::Multiple(blocks) = content {
-                let mut new_blocks = Vec::with_capacity(blocks.len());
-                for block in blocks.drain(..) {
-                    match block {
-                        ContentBlock::Image { source } => {
-                            new_blocks.push(ContentBlock::Text {
-                                text: format!("[图片: {}]", source.media_type),
-                            });
-                        }
-                        other => new_blocks.push(other),
+        if let Message::User {
+            content: Content::Multiple(blocks),
+        } = msg
+        {
+            let mut new_blocks = Vec::with_capacity(blocks.len());
+            for block in blocks.drain(..) {
+                match block {
+                    ContentBlock::Image { source } => {
+                        new_blocks.push(ContentBlock::Text {
+                            text: format!("[图片: {}]", source.media_type),
+                        });
                     }
+                    other => new_blocks.push(other),
                 }
-                *blocks = new_blocks;
             }
+            *blocks = new_blocks;
         }
     }
 
     // 本轮及之后：按需从磁盘恢复 base64
     for msg in history_snapshot.iter_mut().skip(current_turn_start) {
-        if let Message::User { content } = msg {
-            if let Content::Multiple(blocks) = content {
-                for block in blocks.iter_mut() {
-                    if let ContentBlock::Image { source } = block {
-                        if source.data.is_empty() {
-                            if let Some(ref fp) = source.file_path {
-                                if let Some(data) = crate::core::session::load_image_data(fp) {
-                                    source.data = data;
-                                }
+        if let Message::User {
+            content: Content::Multiple(blocks),
+        } = msg
+        {
+            for block in blocks.iter_mut() {
+                if let ContentBlock::Image { source } = block {
+                    if source.data.is_empty() {
+                        if let Some(ref fp) = source.file_path {
+                            if let Some(data) = crate::core::session::load_image_data(fp) {
+                                source.data = data;
                             }
                         }
                     }

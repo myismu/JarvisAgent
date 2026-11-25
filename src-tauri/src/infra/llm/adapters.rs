@@ -140,6 +140,7 @@ fn classify_tool_input_error(err: &serde_json::Error) -> ToolInputErrorKind {
 /// 触发条件刻意收紧，避免掩盖真实错误：
 /// 1. 末尾必须存在**一处完整闭合**（带字符串状态机的括号计数归零）；
 /// 2. 闭合之后的剩余字符，去掉空白后**必须全是闭合符**（`}` / `]`）。
+///
 /// 任何其它字符（例如又一段 JSON、半个字符串）都返回 None，交回上层报错。
 fn strip_trailing_closers(raw: &str) -> Option<String> {
     let mut depth: i32 = 0;

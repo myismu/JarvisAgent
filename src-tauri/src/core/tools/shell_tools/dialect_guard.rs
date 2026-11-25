@@ -75,7 +75,7 @@ pub fn detect_foreign_shell_syntax(dialect: &ShellDialect, cmd: &str) -> Option<
     if !dialect.is_bash() {
         return None;
     }
-    for segment in cmd.split(|c| matches!(c, '|' | ';' | '&' | '\n' | '\r')) {
+    for segment in cmd.split(['|', ';', '&', '\n', '\r']) {
         let Some(head) = segment_head(segment) else {
             continue;
         };

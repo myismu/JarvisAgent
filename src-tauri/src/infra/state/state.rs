@@ -463,6 +463,7 @@ impl SessionContext {
     ///   （继承判定见 `policy_guard::scope_covers`）。
     /// - 命令类（`run_command`）：字符串**精确相等**——命令前缀没有"包含"语义，
     ///   `npm run` 的授权不能放宽到 `npm run build` 以外的前缀。
+    ///
     /// 多把键是否**全部**已被允许（链式命令用：一段一把键，缺一把都不算放行）。
     ///
     /// 空列表返回 false（"没有任何键"不该被当成"全都被覆盖"）——调用方要先判空。
@@ -538,6 +539,12 @@ impl Drop for ExecutionLease {
 
 /// 全局管理器，维护所有活跃会话的 SessionContext
 pub struct SessionManager(pub RwLock<HashMap<String, Arc<SessionContext>>>);
+
+impl Default for SessionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl SessionManager {
     pub fn new() -> Self {

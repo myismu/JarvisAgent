@@ -255,6 +255,7 @@ pub fn extract_command_name(cmd: &str) -> String {
 ///
 /// 安全约束：
 /// - 包含 $()、@、赋值 =、重定向 > 的命令不算只读
+///
 /// 检查 eval/source（Unix 特定高危）
 pub fn check_eval(cmd: &str) -> Option<SafetyResult> {
     if eval_re().is_match(cmd) {

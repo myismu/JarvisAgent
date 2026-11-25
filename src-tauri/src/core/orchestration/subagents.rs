@@ -106,6 +106,12 @@ pub struct SubAgentMonitor {
     pub cancel_tokens: HashMap<String, CancellationToken>,
 }
 
+impl Default for SubAgentMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SubAgentMonitor {
     pub fn new() -> Self {
         Self {
@@ -119,7 +125,7 @@ impl SubAgentMonitor {
         let mut runs: Vec<SubAgentRun> = self
             .runs
             .values()
-            .filter(|run| session_id.map_or(true, |sid| run.session_id == sid))
+            .filter(|run| session_id.is_none_or(|sid| run.session_id == sid))
             .cloned()
             .collect();
         runs.sort_by_key(|run| run.started_at);
@@ -137,7 +143,7 @@ impl SubAgentMonitor {
                 run.status != SubAgentStatus::Running
                     && run
                         .finished_at
-                        .map_or(false, |finished| now.saturating_sub(finished) > ttl_ms)
+                        .is_some_and(|finished| now.saturating_sub(finished) > ttl_ms)
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -281,7 +287,7 @@ impl SubAgentMonitor {
         max_loops: usize,
         parent_run_id: Option<String>,
     ) -> String {
-        let run_id = format!("sa_{}", uuid::Uuid::new_v4().to_string()[..8].to_string());
+        let run_id = format!("sa_{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let now = now_millis();
         let cancel_token = CancellationToken::new();
         let prompt_preview = preview(prompt, 160);

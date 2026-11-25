@@ -254,6 +254,7 @@ impl UsageSource {
     /// **未知值一律报错**，不静默降级：聚合结果会被当成“账本”给用户看，
     /// 把拼错的值兑成 `Main` 等于把子 Agent 的开销报成主循环的，
     /// 错得安静且无法从数字上察觉。
+    #[allow(clippy::should_implement_trait)] // 与全仓既有调用口径保持一致
     pub fn from_str(raw: &str) -> Result<Self, String> {
         match raw {
             "main" => Ok(Self::Main),
@@ -761,7 +762,7 @@ pub fn normalize_message_ids(memory: &mut SessionMemory) {
             "auto:{}{}:{}",
             prefix,
             index,
-            uuid::Uuid::new_v4().simple().to_string()[..4].to_string()
+            &uuid::Uuid::new_v4().simple().to_string()[..4]
         ));
     }
 
@@ -1220,11 +1221,12 @@ pub fn session_message_stats(session_id: &str) -> Result<(i64, Option<i64>), Str
 pub fn notify_messages_changed(app: &tauri::AppHandle, session_id: &str, reason: &str) {
     use tauri::Emitter;
 
+    type SessionStatsCache =
+        std::sync::Mutex<std::collections::HashMap<String, (i64, Option<i64>)>>;
+
     /// 上一次广播时的 (可见条数, 最新 seq)，进程级缓存，用于抑制重复广播。
     /// 会话被归档/删除后留一条无用记录，代价可忽略；会话 id 不复用，不会误判。
-    static LAST_SNAPSHOT: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, (i64, Option<i64>)>>,
-    > = std::sync::OnceLock::new();
+    static LAST_SNAPSHOT: std::sync::OnceLock<SessionStatsCache> = std::sync::OnceLock::new();
 
     let stats = match session_message_stats(session_id) {
         Ok(v) => v,
@@ -1294,7 +1296,7 @@ pub fn get_context_snapshot(
 /// 列出会话关联的计划文档（按更新时间倒序）
 pub fn list_plan_documents(session_id: &str) -> Result<Vec<PlanDocument>, String> {
     let mut plans = load_session(session_id)?.plan_documents;
-    plans.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    plans.sort_by_key(|p| std::cmp::Reverse(p.updated_at));
     Ok(plans)
 }
 

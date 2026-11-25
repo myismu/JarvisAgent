@@ -178,61 +178,6 @@ fn extract_skeleton_lines(path: &str, content: &str) -> Vec<String> {
         .map(format_skeleton_entry)
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{extract_skeleton_entries, extract_skeleton_lines};
-
-    #[test]
-    fn extracts_vue_script_setup_entries() {
-        let lines = extract_skeleton_lines(
-            "Component.vue",
-            "<template></template>\n<script setup lang=\"ts\">\nconst count = ref(0)\ndefineProps<{ title: string }>()\n</script>",
-        );
-        assert!(lines.iter().any(|line| line.contains("<script setup")));
-        assert!(lines.iter().any(|line| line.contains("defineProps")));
-    }
-
-    #[test]
-    fn extracts_typescript_entries() {
-        let lines = extract_skeleton_lines(
-            "store.ts",
-            "import x from 'x'\nexport function load() {}\ninterface State {}\nexport type Mode = 'a'",
-        );
-        assert!(lines
-            .iter()
-            .any(|line| line.contains("[2-2] export function load")));
-        assert!(lines
-            .iter()
-            .any(|line| line.contains("[3-3] interface State")));
-        assert!(lines
-            .iter()
-            .any(|line| line.contains("[4-4] export type Mode")));
-    }
-
-    #[test]
-    fn extracts_multiline_typescript_signature_with_range() {
-        let entries = extract_skeleton_entries(
-            "store.ts",
-            "export function sendMessage(\n  input: string,\n): void {\n  console.log(input)\n}\nconst next = 1",
-        );
-        assert_eq!(entries[0].start_line, 1);
-        assert_eq!(entries[0].end_line, 5);
-        assert!(entries[0].signature.contains("sendMessage"));
-        assert!(entries[0].signature.contains("input: string"));
-    }
-
-    #[test]
-    fn extracts_rust_entries() {
-        let lines = extract_skeleton_lines(
-            "lib.rs",
-            "pub trait Tool {}\nimpl Tool for Read {}\nmacro_rules! demo { () => {} }",
-        );
-        assert!(lines.iter().any(|line| line.contains("pub trait Tool")));
-        assert!(lines.iter().any(|line| line.contains("impl Tool")));
-        assert!(lines.iter().any(|line| line.contains("macro_rules! demo")));
-    }
-}
 pub async fn read_file(
     app: &tauri::AppHandle,
     input: &serde_json::Value,
@@ -401,5 +346,60 @@ pub async fn read_file_skeleton(
                 ))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_skeleton_entries, extract_skeleton_lines};
+
+    #[test]
+    fn extracts_vue_script_setup_entries() {
+        let lines = extract_skeleton_lines(
+            "Component.vue",
+            "<template></template>\n<script setup lang=\"ts\">\nconst count = ref(0)\ndefineProps<{ title: string }>()\n</script>",
+        );
+        assert!(lines.iter().any(|line| line.contains("<script setup")));
+        assert!(lines.iter().any(|line| line.contains("defineProps")));
+    }
+
+    #[test]
+    fn extracts_typescript_entries() {
+        let lines = extract_skeleton_lines(
+            "store.ts",
+            "import x from 'x'\nexport function load() {}\ninterface State {}\nexport type Mode = 'a'",
+        );
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("[2-2] export function load")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("[3-3] interface State")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("[4-4] export type Mode")));
+    }
+
+    #[test]
+    fn extracts_multiline_typescript_signature_with_range() {
+        let entries = extract_skeleton_entries(
+            "store.ts",
+            "export function sendMessage(\n  input: string,\n): void {\n  console.log(input)\n}\nconst next = 1",
+        );
+        assert_eq!(entries[0].start_line, 1);
+        assert_eq!(entries[0].end_line, 5);
+        assert!(entries[0].signature.contains("sendMessage"));
+        assert!(entries[0].signature.contains("input: string"));
+    }
+
+    #[test]
+    fn extracts_rust_entries() {
+        let lines = extract_skeleton_lines(
+            "lib.rs",
+            "pub trait Tool {}\nimpl Tool for Read {}\nmacro_rules! demo { () => {} }",
+        );
+        assert!(lines.iter().any(|line| line.contains("pub trait Tool")));
+        assert!(lines.iter().any(|line| line.contains("impl Tool")));
+        assert!(lines.iter().any(|line| line.contains("macro_rules! demo")));
     }
 }

@@ -226,7 +226,7 @@ fn resolve_effort(want: Option<&str>, levels: &[String]) -> Option<String> {
     let mut best: Option<(u8, &str)> = None;
     for level in levels {
         if let Some(rank) = effort_rank(level) {
-            if rank <= high_rank && best.map_or(true, |(current, _)| rank > current) {
+            if rank <= high_rank && best.is_none_or(|(current, _)| rank > current) {
                 best = Some((rank, level.as_str()));
             }
         }

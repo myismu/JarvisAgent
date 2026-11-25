@@ -639,7 +639,7 @@ pub async fn auto_name_session(
 
     // 校验：标题必须在 2~30 字之间，不是原文复述
     let char_count = title.chars().count();
-    if char_count >= 2 && char_count <= 30 {
+    if (2..=30).contains(&char_count) {
         // 额外检查：标题不能是某条原始消息的原文复述
         let is_verbatim = user_texts
             .iter()
@@ -1165,7 +1165,7 @@ pub async fn list_agent_runs(
             .filter(|(sid, _)| {
                 session_id
                     .as_deref()
-                    .map_or(true, |target| target == sid.as_str())
+                    .is_none_or(|target| target == sid.as_str())
             })
             .map(|(_, ctx)| ctx.clone())
             .collect()
@@ -1566,7 +1566,7 @@ async fn compact_inner(
         config.active_config().clone()
     };
     crate::core::session::memory::compact_messages(
-        &mut *memory,
+        &mut memory,
         &client,
         &cfg.api_key,
         &cfg.base_url,

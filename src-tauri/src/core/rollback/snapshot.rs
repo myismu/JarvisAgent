@@ -465,9 +465,9 @@ impl SnapshotTree {
         let branches: Vec<BranchView> = self
             .branches
             .values()
-            .filter_map(|branch| {
+            .map(|branch| {
                 if branch.head_snapshot_id.is_empty() {
-                    return Some(BranchView {
+                    return BranchView {
                         name: branch.name.clone(),
                         description: branch.description.clone(),
                         agent_id: branch.agent_id.clone(),
@@ -480,17 +480,17 @@ impl SnapshotTree {
                             agent_id: None,
                             children: vec![],
                         },
-                    });
+                    };
                 }
 
                 let root = self.build_tree_from(&branch.head_snapshot_id);
-                Some(BranchView {
+                BranchView {
                     name: branch.name.clone(),
                     description: branch.description.clone(),
                     agent_id: branch.agent_id.clone(),
                     is_active: branch.is_active,
                     root,
-                })
+                }
             })
             .collect();
 
@@ -571,5 +571,5 @@ fn current_timestamp() -> u64 {
 
 fn generate_id() -> String {
     use uuid::Uuid;
-    format!("snap_{}", Uuid::new_v4().to_string()[..8].to_string())
+    format!("snap_{}", &Uuid::new_v4().to_string()[..8])
 }

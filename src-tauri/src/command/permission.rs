@@ -21,6 +21,7 @@ use tauri::Emitter;
 /// 为什么单独抽成一个函数：这条规则在两条路径上都要用——
 /// 1. 设置路径（本文件的 [`set_session_approval_mode`]）：不满足就拒绝，档位不变；
 /// 2. 恢复路径（`infra::state` 的 `SessionManager::get_or_create`）：存量脏数据不满足就降级。
+///
 /// 两处各写一份判断，必然出现"设置时拦、恢复时放"（或反之）的漂移。
 /// 新增"必须绑项目"的档位时只改这里。
 pub(crate) fn mode_requires_project(mode: &str) -> bool {

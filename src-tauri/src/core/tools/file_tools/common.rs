@@ -40,11 +40,7 @@ pub(super) fn resolve_path(input: &serde_json::Value) -> String {
 
 /// 剥离 Windows 扩展长度路径前缀 \\?\
 fn strip_extended_path_prefix(path: &str) -> String {
-    if path.starts_with("\\\\?\\") {
-        path[4..].to_string()
-    } else {
-        path.to_string()
-    }
+    path.strip_prefix("\\\\?\\").unwrap_or(path).to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -315,10 +311,8 @@ fn invalid_data_error(message: &str) -> io::Error {
 
 /// 归一化弯引号为直引号（LLM 可能输出直引号而文件使用弯引号，用于匹配比较）
 pub(super) fn normalize_quotes(s: &str) -> String {
-    s.replace('\u{201C}', "\"")
-        .replace('\u{201D}', "\"") // 中文双弯引号 ""
-        .replace('\u{2018}', "'")
-        .replace('\u{2019}', "'") // 中文单弯引号 ''
+    s.replace(['\u{201C}', '\u{201D}'], "\"") // 中文双弯引号 ""
+        .replace(['\u{2018}', '\u{2019}'], "'") // 中文单弯引号 ''
         .replace('\u{FF02}', "\"") // 全角双引号
         .replace('\u{FF07}', "'") // 全角单引号
 }
@@ -375,7 +369,7 @@ pub(super) fn input_usize(input: &serde_json::Value, key: &str) -> Option<usize>
 pub(super) fn input_string_list(input: &serde_json::Value, key: &str) -> Vec<String> {
     if let Some(raw) = input[key].as_str() {
         return raw
-            .split(|ch| ch == ',' || ch == ' ')
+            .split([',', ' '])
             .map(str::trim)
             .filter(|part| !part.is_empty())
             .map(str::to_string)
@@ -398,7 +392,7 @@ pub(super) fn input_string_list(input: &serde_json::Value, key: &str) -> Vec<Str
 
 /// 按逗号/空格把一个 glob 串切成多条规则（`"**/*.rs, **/*.ts"`）。
 pub(super) fn split_glob_patterns(glob: &str) -> Vec<String> {
-    glob.split(|ch| ch == ',' || ch == ' ')
+    glob.split([',', ' '])
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .map(str::to_string)
@@ -607,7 +601,7 @@ pub(super) fn is_skippable_dir_name(name: &str, ignore_dirs: &[String]) -> bool 
 pub fn is_binary_extension(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| is_binary_ext_str(ext))
+        .map(is_binary_ext_str)
         .unwrap_or(false)
 }
 

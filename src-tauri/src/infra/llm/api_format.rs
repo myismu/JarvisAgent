@@ -17,6 +17,7 @@ pub enum ApiFormat {
 
 impl ApiFormat {
     /// 从字符串解析 API 格式，默认为 Anthropic
+    #[allow(clippy::should_implement_trait)] // 任意字符串兜底解析，与 FromStr 的 Err 语义不同
     pub fn from_str(s: &str) -> Self {
         match s {
             "openai" => Self::OpenAI,

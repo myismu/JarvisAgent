@@ -92,8 +92,8 @@ impl SandboxManager {
         base_snapshot_id: String,
         description: Option<String>,
     ) -> Result<AgentSandbox, SandboxError> {
-        let sandbox_id = format!("sandbox-{}", Uuid::new_v4().to_string()[..8].to_string());
-        let workspace_id = format!("ws-{}", Uuid::new_v4().to_string()[..8].to_string());
+        let sandbox_id = format!("sandbox-{}", &Uuid::new_v4().to_string()[..8]);
+        let workspace_id = format!("ws-{}", &Uuid::new_v4().to_string()[..8]);
         let branch_name = format!("agent-{}", agent_id);
 
         let sandbox_dir = self.base_dir.join("sandboxes").join(&sandbox_id);

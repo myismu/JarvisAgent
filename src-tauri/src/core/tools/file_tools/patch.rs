@@ -252,11 +252,9 @@ struct FuzzyHunkMatch {
 
 impl FuzzyHunkMatch {
     fn confidence_percent(&self) -> usize {
-        if self.expected_lines == 0 {
-            100
-        } else {
-            self.score * 100 / self.expected_lines
-        }
+        (self.score * 100)
+            .checked_div(self.expected_lines)
+            .unwrap_or(100)
     }
 }
 

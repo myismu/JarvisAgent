@@ -37,12 +37,14 @@ use std::sync::OnceLock;
 /// 不提供"手动选 Git Bash"——它与"自动 + 指定 bash 路径"行为一致，
 /// 多一个选项只会让用户多理解一个概念。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum ShellMode {
     /// 自动（默认）：探测到 Git Bash 就用 Git Bash，否则用 PowerShell。
     ///
     /// 与 Claude Code 的行为一致：用户装了 Git for Windows 就直接享受 POSIX 语义，
     /// 不需要手动切换。
     #[serde(rename = "auto")]
+    #[default]
     Auto,
     /// 手动选择 Windows PowerShell：不再探测，固定使用 PowerShell。
     ///
@@ -52,11 +54,6 @@ pub enum ShellMode {
     PowerShell,
 }
 
-impl Default for ShellMode {
-    fn default() -> Self {
-        Self::Auto
-    }
-}
 
 /// `app-config.json` 中的 `shell` 字段
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -309,11 +306,10 @@ pub fn resolution_without_detection(settings: &ShellSettings) -> ShellResolution
         .map(str::trim)
         .filter(|path| !path.is_empty());
 
-    let (detected_bash_path, error) = if !platform_supported {
-        (None, None)
-    } else if settings.mode == ShellMode::PowerShell {
-        (None, None)
-    } else if let Some(path) = explicit {
+    let (detected_bash_path, error) =
+        if !platform_supported || settings.mode == ShellMode::PowerShell {
+            (None, None)
+        } else if let Some(path) = explicit {
         let path = PathBuf::from(path);
         if path.is_file() {
             (Some(path.display().to_string()), None)

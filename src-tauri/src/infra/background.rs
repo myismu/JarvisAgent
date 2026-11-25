@@ -110,6 +110,12 @@ pub struct BackgroundManager {
     pub child_processes: HashMap<String, Arc<tokio::sync::Mutex<Option<tokio::process::Child>>>>,
 }
 
+impl Default for BackgroundManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BackgroundManager {
     pub fn new() -> Self {
         Self {

@@ -518,7 +518,7 @@ impl ReplayEngine {
     fn load_file_content(&self, hash: &str) -> Result<String, ReplayError> {
         super::store::load_content(&self.session_id, hash)
             .map_err(|err| {
-                ReplayError::IoError(std::io::Error::new(std::io::ErrorKind::Other, err))
+                ReplayError::IoError(std::io::Error::other(err))
             })
             .map(|content| content.unwrap_or_default())
     }

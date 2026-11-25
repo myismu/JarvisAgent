@@ -454,7 +454,7 @@ pub fn merged_wait_ms(intervals: Vec<(Instant, Instant)>) -> u64 {
     if spans.is_empty() {
         return 0;
     }
-    spans.sort_by(|a, b| a.0.cmp(&b.0));
+    spans.sort_by_key(|a| a.0);
 
     let mut total = Duration::ZERO;
     let (mut cur_start, mut cur_end) = spans[0];

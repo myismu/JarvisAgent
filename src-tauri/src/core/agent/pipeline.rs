@@ -965,13 +965,14 @@ impl PipelineState {
                 let memory = ctx.memory.lock().await;
                 memory.messages.iter().rev()
                     .find_map(|m| {
-                        if let Message::Assistant { content } = m {
-                            if let Content::Multiple(blocks) = content {
-                                let has_tool = blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
-                                if has_tool {
-                                    let is_plan = blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { name, .. } if name == "ProposePlan"));
-                                    return Some(is_plan);
-                                }
+                        if let Message::Assistant {
+                            content: Content::Multiple(blocks),
+                        } = m
+                        {
+                            let has_tool = blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+                            if has_tool {
+                                let is_plan = blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { name, .. } if name == "ProposePlan"));
+                                return Some(is_plan);
                             }
                         }
                         None
@@ -1527,7 +1528,7 @@ impl PipelineState {
                         &e.to_string(),
                         &messages_json,
                     );
-                    return Err(e.into());
+                    return Err(e);
                 }
             };
 
@@ -3275,11 +3276,10 @@ impl PipelineState {
                     .iter()
                     .any(|existing| existing == &message_id);
                 if already_present {
-                    let needs_assistant_pad = match session.messages.last() {
-                        Some(Message::User { .. }) => true,
-                        None => true,
-                        _ => false,
-                    };
+                    let needs_assistant_pad = matches!(
+                        session.messages.last(),
+                        Some(Message::User { .. }) | None
+                    );
                     if needs_assistant_pad {
                         // `Placeholder`：这条是**对齐填充**（保持 user/assistant 交替），
                         // 既不该给模型看也不该给用户看 —— 它原先标 `internal` 是"巧合的正确"，

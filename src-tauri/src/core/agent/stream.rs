@@ -158,8 +158,7 @@ fn extract_deferred_propose_plan_content(partial_json: &str) -> Option<String> {
         let after_name = &partial_json[name_start + 6..];
         if let Some(colon_pos) = after_name.find(':') {
             let value_part = after_name[colon_pos + 1..].trim_start();
-            if value_part.starts_with('"') {
-                let name_value = &value_part[1..];
+            if let Some(name_value) = value_part.strip_prefix('"') {
                 if let Some(end_quote) = name_value.find('"') {
                     let name = &name_value[..end_quote];
                     if name != "ProposePlan" {
@@ -177,8 +176,7 @@ fn extract_deferred_propose_plan_content(partial_json: &str) -> Option<String> {
             let after_content_key = &after_args[content_start + 9..];
             if let Some(colon_pos) = after_content_key.find(':') {
                 let value_part = after_content_key[colon_pos + 1..].trim_start();
-                if value_part.starts_with('"') {
-                    let after_quote = &value_part[1..];
+                if let Some(after_quote) = value_part.strip_prefix('"') {
                     let mut content = String::new();
                     let mut chars = after_quote.chars().peekable();
                     while let Some(c) = chars.next() {
@@ -774,7 +772,7 @@ pub async fn process_stream(
             for (i, (name, input_json)) in parsed.iter().enumerate() {
                 let id = format!(
                     "call_{}",
-                    uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
+                    &uuid::Uuid::new_v4().simple().to_string()[..8]
                 );
                 current_blocks.push(ContentBlock::ToolUse {
                     name: name.clone(),
@@ -840,26 +838,22 @@ mod idle_timeout_tests {
     /// 断言区间既能防住"误改成 0 或超大值"，又不会阻碍合理调优。
     #[test]
     fn idle_timeout_is_a_sane_finite_bound() {
-        assert!(
-            STREAM_IDLE_TIMEOUT_SECS >= 10,
-            "过小会误杀正常生成：{}",
-            STREAM_IDLE_TIMEOUT_SECS
-        );
-        assert!(
-            STREAM_IDLE_TIMEOUT_SECS <= 300,
-            "过大等于没有兜底：{}",
-            STREAM_IDLE_TIMEOUT_SECS
-        );
+        const {
+            assert!(STREAM_IDLE_TIMEOUT_SECS >= 10, "过小会误杀正常生成");
+            assert!(STREAM_IDLE_TIMEOUT_SECS <= 300, "过大等于没有兜底");
+        }
     }
 
     /// 连续错误容忍次数必须有限，否则底层流已死时会无限空转（原实现即如此）。
     #[test]
     fn consecutive_error_tolerance_is_bounded() {
-        assert!(STREAM_MAX_CONSECUTIVE_ERRORS > 0);
-        assert!(
-            STREAM_MAX_CONSECUTIVE_ERRORS <= 10,
-            "容忍次数过大等于没有兜底"
-        );
+        const {
+            assert!(STREAM_MAX_CONSECUTIVE_ERRORS > 0);
+            assert!(
+                STREAM_MAX_CONSECUTIVE_ERRORS <= 10,
+                "容忍次数过大等于没有兜底"
+            );
+        }
     }
 
     /// 与 `process_stream` 内部相同的 select 形态：

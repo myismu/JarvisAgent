@@ -25,7 +25,7 @@ pub async fn get_workspace(app: &tauri::AppHandle, session_id: &str) -> Option<s
 
 /// 提取命令的第一个 token（cmdlet/命令名）
 pub fn extract_base_command(cmd: &str) -> &str {
-    cmd.trim().split_whitespace().next().unwrap_or("")
+    cmd.split_whitespace().next().unwrap_or("")
 }
 
 /// 解读命令 exit code 的语义含义（grep:1=无匹配, diff:1=不同, robocopy:0-7=成功 等）
@@ -207,9 +207,7 @@ fn strip_redirection_prefix(token: &str) -> &str {
         return token;
     }
     // >>  2>>  1>>
-    if len >= 3 && bytes[0] == b'2' && bytes[1] == b'>' && bytes[2] == b'>'
-        || len >= 3 && bytes[0] == b'1' && bytes[1] == b'>' && bytes[2] == b'>'
-    {
+    if len >= 3 && (bytes[0] == b'2' || bytes[0] == b'1') && bytes[1] == b'>' && bytes[2] == b'>' {
         return token[3..].trim_start();
     }
     // n> n>> (stdout/stderr numbered redirect)
@@ -412,8 +410,8 @@ pub fn check_command_paths_for(
         }
 
         // 跳过子命令关键字 (npm install 中的 install, git clone 中的 clone 等)
-        if i == 1 {
-            if matches!(
+        if i == 1
+            && matches!(
                 trimmed.to_lowercase().as_str(),
                 "install"
                     | "uninstall"
@@ -474,7 +472,6 @@ pub fn check_command_paths_for(
             ) {
                 continue;
             }
-        }
 
         // 跳过常见的命令关键字和 shell 内建命令
         if matches!(

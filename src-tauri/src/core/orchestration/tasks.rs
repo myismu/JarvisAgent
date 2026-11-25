@@ -427,7 +427,7 @@ impl TaskManager {
             .collect();
         active_tasks.sort_by_key(|t| std::cmp::Reverse(t.blocks.len()));
 
-        let mut report = format!("### Task Summary\n");
+        let mut report = "### Task Summary\n".to_string();
         report.push_str(&format!(
             "Progress: {:.1}% ({}/{})\n",
             percentage, completed, total
@@ -447,7 +447,7 @@ impl TaskManager {
                     t.subject
                 ));
             }
-            report.push_str("\n");
+            report.push('\n');
         }
 
         if !ready_tasks.is_empty() {

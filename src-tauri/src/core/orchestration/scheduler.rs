@@ -123,7 +123,7 @@ impl TaskScheduler {
                 app,
                 session_id,
                 &task,
-                &mut task_subjects,
+                &task_subjects,
                 &completed_results,
             );
         }
@@ -282,7 +282,7 @@ impl TaskScheduler {
                         app,
                         session_id,
                         task,
-                        &mut task_subjects,
+                        &task_subjects,
                         &completed_results,
                     );
                 }

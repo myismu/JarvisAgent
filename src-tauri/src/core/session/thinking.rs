@@ -404,8 +404,8 @@ mod tests {
     fn storage_roundtrip_never_yields_null() {
         assert_eq!(ThinkingMode::ON.as_storage(), 1);
         assert_eq!(ThinkingMode::OFF.as_storage(), 0);
-        assert!(ThinkingMode::from_storage(Some(0)).0 == false);
-        assert!(ThinkingMode::from_storage(Some(1)).0 == true);
+        assert!(!ThinkingMode::from_storage(Some(0)).0);
+        assert!(ThinkingMode::from_storage(Some(1)).0);
         // 兼容口径：NULL 按关处理（v14 已把存量刷成 0，这里只防御）
         assert_eq!(ThinkingMode::from_storage(None), ThinkingMode::OFF);
     }

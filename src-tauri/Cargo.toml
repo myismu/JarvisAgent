@@ -59,4 +59,10 @@ codegen-units = 1
 # 去掉符号表。桌面应用不需要线上符号化，产物能小一截。
 strip = true
 
+[lints.clippy]
+# 历史核心接口参数较多（如 pipeline / command 层），后续随模块拆分逐步收紧，避免硬包临时结构体
+too_many_arguments = "allow"
+# infra/config/config.rs 与 infra/state/state.rs 历史模块布局，改名会大面积改动导入路径
+module_inception = "allow"
+
 

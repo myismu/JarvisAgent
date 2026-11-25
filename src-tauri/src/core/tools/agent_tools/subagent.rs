@@ -51,12 +51,12 @@ fn summarize_tool_input(name: &str, input: &serde_json::Value) -> String {
                     format!("{} (从 L{} 起)", path, start)
                 }
             } else {
-                format!("{}", path)
+                path.to_string()
             }
         }
         "FindFiles" => {
             let pattern = input["pattern"].as_str().unwrap_or("?");
-            format!("{}", pattern)
+            pattern.to_string()
         }
         "SearchRepo" => {
             let query = input["query"].as_str().unwrap_or("?");
@@ -78,11 +78,11 @@ fn summarize_tool_input(name: &str, input: &serde_json::Value) -> String {
         }
         "ListDirectory" => {
             let path = input["path"].as_str().unwrap_or(".");
-            format!("{}", path)
+            path.to_string()
         }
         "LoadSkill" => {
             let skill_name = input["name"].as_str().unwrap_or("?");
-            format!("{}", skill_name)
+            skill_name.to_string()
         }
         _ => {
             let raw = input.to_string();
@@ -177,7 +177,7 @@ fn summarize_tool_result(name: &str, content: &str) -> String {
                     .iter()
                     .map(|l| l.trim_start_matches("[FILE] ").trim_start_matches("[DIR] "))
                     .collect();
-                format!("{}", names.join(", "))
+                names.join(", ").to_string()
             }
         }
         _ => String::new(),
@@ -573,8 +573,7 @@ pub async fn run_subagent(
     // 不依赖"取消请求正好赶在注册之后"这一时序假设。
     let parent_cancel = if let Some(manager) = app.try_state::<SessionManager>() {
         let ctx = manager.get_or_create(&session_id).await;
-        let token = ctx.current_cancel_token();
-        token
+        ctx.current_cancel_token()
     } else {
         None
     };
@@ -1773,7 +1772,7 @@ pub async fn run_subagent(
             )
             .await;
         }
-        return (stop_message, sub_input_tokens, sub_output_tokens);
+        (stop_message, sub_input_tokens, sub_output_tokens)
     } else {
         SubAgentMonitor::complete_run(
             &app,

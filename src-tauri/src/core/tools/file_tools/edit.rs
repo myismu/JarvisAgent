@@ -177,8 +177,8 @@ fn resolve_edits(input: &serde_json::Value) -> Vec<SingleEdit> {
 }
 
 /// 校验单条编辑，返回 (old_text引用, 错误消息)
-fn validate_single_edit<'a>(
-    edit: &'a SingleEdit,
+fn validate_single_edit(
+    edit: &SingleEdit,
     content: &str,
     idx: usize,
     path: &str,
@@ -246,7 +246,7 @@ fn validate_single_edit<'a>(
                 ));
                 for (i, line) in lines[ctx_start..ctx_end].iter().enumerate() {
                     let ln = ctx_start + i + 1;
-                    let marker = if ln >= line_num + 1 && ln <= line_num + old_lines_count {
+                    let marker = if ln > line_num && ln <= line_num + old_lines_count {
                         ">>>"
                     } else {
                         "   "

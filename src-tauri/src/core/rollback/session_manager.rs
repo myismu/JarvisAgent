@@ -473,14 +473,14 @@ impl SessionSnapshotManager {
                             .or_insert_with(|| old_content.clone());
                     }
                     Patch::DeleteFile {
-                        path, content_hash, ..
+                        path,
+                        content_hash: Some(hash),
+                        ..
                     } => {
-                        if let Some(hash) = content_hash {
-                            if let Ok(Some(content)) =
-                                crate::core::rollback::store::load_content(&self.session_id, hash)
-                            {
-                                initial_files.entry(path.clone()).or_insert_with(|| content);
-                            }
+                        if let Ok(Some(content)) =
+                            crate::core::rollback::store::load_content(&self.session_id, hash)
+                        {
+                            initial_files.entry(path.clone()).or_insert_with(|| content);
                         }
                     }
                     Patch::CreateFile { path, .. } => {
@@ -863,6 +863,12 @@ pub type SessionSnapshotManagerRef = Arc<SessionSnapshotManager>;
 /// 管理多个会话的 SessionSnapshotManager 实例，支持按需创建和缓存
 pub struct SnapshotManagerRegistry {
     managers: RwLock<HashMap<String, SessionSnapshotManagerRef>>,
+}
+
+impl Default for SnapshotManagerRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SnapshotManagerRegistry {

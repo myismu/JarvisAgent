@@ -597,12 +597,11 @@ fn user_display_content_for_paging(content: &crate::infra::types::models::Conten
             let mut parts = String::new();
             for b in blocks {
                 match b {
-                    ContentBlock::Text { text } => {
-                        if !text.trim().is_empty() {
+                    ContentBlock::Text { text }
+                        if !text.trim().is_empty() => {
                             parts.push_str(text.trim());
                             parts.push('\n');
                         }
-                    }
                     // 图片是可渲染内容：有图即视为有用户输入（与渲染层一致）
                     ContentBlock::Image { .. } => {
                         parts.push_str("[image]");
@@ -1283,7 +1282,7 @@ pub fn restore_session(id: &str) -> Result<(), String> {
 /// 与 `list_sessions` 的唯一区别是过滤条件取反；列清单复用同一份
 /// [`SESSION_META_COLUMNS`]，所以不会出现"两条查询列不一致"的老问题。
 pub fn list_deleted_sessions() -> Result<Vec<SessionMeta>, String> {
-    crate::infra::db::with_connection(|conn| list_deleted_sessions_in(conn))
+    crate::infra::db::with_connection(list_deleted_sessions_in)
 }
 
 /// [`list_deleted_sessions`] 的 connection 版（测试直接跑真实 SQL）。
@@ -1543,7 +1542,7 @@ fn purge_sessions_in(
 
 /// 归档会话总数（归档页角标，也是「清空归档」的前置读数）。
 pub fn count_deleted_sessions() -> Result<usize, String> {
-    crate::infra::db::with_connection(|conn| count_deleted_sessions_in(conn))
+    crate::infra::db::with_connection(count_deleted_sessions_in)
 }
 
 /// [`count_deleted_sessions`] 的 connection 版。
@@ -1830,7 +1829,7 @@ pub fn create_project(name: &str, path: &str) -> Result<crate::core::session::Pr
 }
 
 pub fn list_projects() -> Result<Vec<crate::core::session::ProjectMeta>, String> {
-    crate::infra::db::with_connection(|conn| list_projects_in(conn))
+    crate::infra::db::with_connection(list_projects_in)
 }
 
 /// [`list_projects`] 的 connection 版（测试直接跑真实 SQL）。

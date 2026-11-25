@@ -65,7 +65,7 @@ pub(super) fn has_file_redirect(cmd: &str) -> bool {
 fn command_names(cmd: &str) -> Vec<String> {
     let normalized = cmd.replace("&&", ";");
     normalized
-        .split(|c| c == ';' || c == '|' || c == '\n')
+        .split([';', '|', '\n'])
         .filter_map(|seg| {
             let mut tokens = seg.split_whitespace();
             let mut first = tokens
@@ -100,7 +100,7 @@ fn has_alias_command(cmd: &str, aliases: &[&str]) -> bool {
 /// 与 [`command_names`] 用同一套切分口径：`;`、`|`、`&`、换行都算命令边界，
 /// 这样 `cat x | tee log` 里的 `tee` 能被单独识别出来。
 fn command_args<'a>(cmd: &'a str, name: &str) -> Vec<&'a str> {
-    cmd.split(|c| matches!(c, ';' | '|' | '&' | '\n'))
+    cmd.split([';', '|', '&', '\n'])
         .filter_map(|segment| {
             let mut tokens = segment.split_whitespace();
             let first = tokens.next()?.trim_matches(|c| c == '"' || c == '\'');

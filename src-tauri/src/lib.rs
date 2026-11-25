@@ -64,9 +64,9 @@ fn detect_data_dir() -> PathBuf {
                 .map(|p| p.join("data"))
                 .unwrap_or_else(|| cwd.join("data"));
         }
-        return exe_dir
+        exe_dir
             .map(|d| d.join("data"))
-            .unwrap_or_else(|| cwd.join("data"));
+            .unwrap_or_else(|| cwd.join("data"))
     }
 
     #[cfg(not(debug_assertions))]

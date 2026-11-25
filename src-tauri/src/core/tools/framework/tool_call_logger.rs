@@ -60,6 +60,7 @@ pub enum CorrectionStrategy {
 // ───────────────────────── 日志记录结构 ─────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
+#[derive(Default)]
 pub struct CorrectionInfo {
     pub is_correction: bool,
     pub corrects_seq: Option<u64>,
@@ -67,16 +68,6 @@ pub struct CorrectionInfo {
     pub strategy: Option<CorrectionStrategy>,
 }
 
-impl Default for CorrectionInfo {
-    fn default() -> Self {
-        Self {
-            is_correction: false,
-            corrects_seq: None,
-            attempt: 0,
-            strategy: None,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DiagnosisInfo {

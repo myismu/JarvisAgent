@@ -15,6 +15,7 @@ use rusqlite::Connection;
 /// 1. 写一个 `migrate_vNN_*` 迁移函数（老库靠它补结构）；
 /// 2. 在 `init_schema` 的版本分支链末尾追加 `current_version < NN` 分支；
 /// 3. 把新结构同步进 `init_schema` 末尾的建表 DDL（新库不跑迁移，DDL 就是它的全部结构）。
+///
 /// 三者缺一，新库与升级库的结构就会分叉。
 pub const SCHEMA_VERSION: i64 = 29;
 

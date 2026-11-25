@@ -342,7 +342,7 @@ fn input_patterns(input: &serde_json::Value, key: &str) -> Vec<String> {
 fn input_string_list(input: &serde_json::Value, key: &str) -> Vec<String> {
     if let Some(raw) = input[key].as_str() {
         return raw
-            .split(|ch| ch == ',' || ch == ' ')
+            .split([',', ' '])
             .map(str::trim)
             .filter(|part| !part.is_empty())
             .map(str::to_string)

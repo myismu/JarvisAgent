@@ -54,7 +54,7 @@ fn strip_assignment_prefixes(cmd: &str) -> String {
 /// 切分是**保守**的：引号里的 `;` 也会被切开（可能把一条只读命令判成非只读），
 /// 但方向安全——宁可拦错，不可放过。
 fn split_command_segments(cmd: &str) -> Vec<&str> {
-    cmd.split(|c| matches!(c, '|' | ';' | '&' | '\n' | '\r'))
+    cmd.split(['|', ';', '&', '\n', '\r'])
         .map(str::trim)
         .filter(|segment| !segment.is_empty())
         .collect()
@@ -183,7 +183,7 @@ pub fn is_readonly_command_windows(cmd: &str) -> bool {
         let name = normalize_ps_alias(&name);
 
         // 检查是否为只读 PowerShell cmdlet
-        if READONLY_CMDLETS.iter().any(|c| *c == name) {
+        if READONLY_CMDLETS.contains(&name) {
             continue;
         }
 
@@ -235,7 +235,7 @@ pub fn is_readonly_command_windows(cmd: &str) -> bool {
         //
         // 必须是**整词**相等：原先这里是 `*c == name || name.starts_with(c)`，
         // 名单里的 `set` 于是把 `setx`（写用户环境变量）也判成了只读、免弹窗放行。
-        if READONLY_WIN_COMMANDS.iter().any(|c| *c == name) {
+        if READONLY_WIN_COMMANDS.contains(&name) {
             continue;
         }
 
@@ -335,7 +335,7 @@ pub fn is_readonly_command_unix(cmd: &str) -> bool {
 /// 第一次面对真实用户环境，必须收紧到参数级。
 fn posix_args_are_readonly(name: &str, args: &[&str]) -> bool {
     // 是否出现某个精确参数
-    let has = |needle: &str| args.iter().any(|arg| *arg == needle);
+    let has = |needle: &str| args.contains(&needle);
     match name {
         // 执行任意命令 / 默认落盘：永不只读
         "xargs" | "wget" => false,
