@@ -237,9 +237,16 @@ skill/
 
 ```text
 composables/
-├── useAgentEvents.ts            # 后端事件监听与分发中心
+├── useAgentEvents.ts            # 后端事件监听装配入口（薄门面）
+├── agentEvents/                 # 后端事件按领域拆分（types / runState / loaders / governanceEvents / streamEvents / lifecycleEvents）
+├── input/                       # TerminalInput 领域逻辑（useTurnMetrics / useMediaAttachments / useProfileSwitcher / useSessionControlModes）
+├── settings/                    # SettingsPanel 预设编辑逻辑（useProfilesEditor）
+├── chat/                        # ChatArea 回滚与剪贴板逻辑（useChatRollback / useChatClipboard）
+├── agent/                       # AgentPanel 后台任务同步逻辑（useBackgroundTasks）
 ├── usePreferences.ts            # 前端 UI 偏好持久化
 ├── useTheme.ts                  # 主题切换/主题状态逻辑
+├── useThinkingMode.ts           # 深度思考档位（会话级）
+├── useToast.ts                  # 全局轻提示单例队列
 └── useWindow.ts                 # Tauri 窗口相关操作封装
 ```
 
@@ -376,7 +383,9 @@ services/
 
 ```text
 types/
-└── index.ts                     # 前端共享类型定义
+├── generated/
+│   └── contracts.ts             # ts-rs 自动导出的跨端类型契约（90 个 Rust DTO，运行 pnpm gen:types 生成）
+└── index.ts                     # 前端共享类型定义（重导出契约 + 前端特有视图类型）
 ```
 
 职责：

@@ -218,6 +218,7 @@ pub fn log_model_request(model: &str, url: &str, agent_kind: &str) {
 ///
 /// 客户端错误（4xx）立即返回，不重试。
 /// **连接被拒（服务未监听）直接失败**：那是确定性失败，重试只是白等。
+#[allow(clippy::too_many_arguments)]
 pub async fn api_call_with_retry(
     client: &reqwest::Client,
     url: &str,
@@ -345,6 +346,7 @@ pub async fn api_call_with_retry(
 ///
 /// 用于意图分类等不需要流式输出的场景。
 /// 返回值由 `String` 改为 `LlmCompletion`（正文 + usage），原因见本模块文件头注释。
+#[allow(clippy::too_many_arguments)]
 pub async fn call_llm_simple(
     client: &reqwest::Client,
     api_key: &str,
@@ -455,6 +457,7 @@ pub async fn call_llm_simple(
 /// 与 `call_llm_simple` 类似，但接受完整的消息历史而非单条 user message。
 /// 不注入 tools，不开启 thinking，适用于反思审查等轻量判断场景。
 /// 返回值同样带上 usage（调用方可只取 `.text`，行为与改造前一致）。
+#[allow(clippy::too_many_arguments)]
 pub async fn call_llm_with_messages(
     client: &reqwest::Client,
     api_key: &str,

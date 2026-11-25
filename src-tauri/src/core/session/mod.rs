@@ -1312,28 +1312,13 @@ pub fn save_context_snapshot(
     repository::upsert_context_snapshot(snapshot)
 }
 
+pub use repository::ContextSnapshotUsageUpdate;
+
 pub fn update_context_snapshot_usage(
     session_id: &str,
-    provider_input_tokens: u64,
-    provider_output_tokens: u64,
-    provider_total_tokens: u64,
-    drift_percent: Option<f32>,
-    cache_hit_tokens: Option<u64>,
-    cache_miss_tokens: Option<u64>,
-    cache_source: Option<&str>,
-    cache_point: Option<&crate::infra::types::models::CacheHitPoint>,
+    usage: ContextSnapshotUsageUpdate<'_>,
 ) -> Result<Option<crate::infra::types::models::SessionContextSnapshot>, String> {
-    repository::update_context_snapshot_usage(
-        session_id,
-        provider_input_tokens,
-        provider_output_tokens,
-        provider_total_tokens,
-        drift_percent,
-        cache_hit_tokens,
-        cache_miss_tokens,
-        cache_source,
-        cache_point,
-    )
+    repository::update_context_snapshot_usage(session_id, usage)
 }
 
 pub fn get_context_snapshot(

@@ -69,6 +69,7 @@ impl PipelineState {
     ///    → 产出 TASK_PLAN，首轮强制切 Plan 并广播 agent-work-mode-changed；
     ///    未命中 → 直接进入项目操作流程
     /// 5. 输入框自然语言审批：短消息 + 上轮刚提交方案 → 直接更新方案状态（同意/驳回）
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn setup(
         session_id: String,
         msg: String,

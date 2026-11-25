@@ -273,6 +273,7 @@ impl ToolCallLogger {
     }
 
     /// 记录 ExecuteTool 调用
+    #[allow(clippy::too_many_arguments)]
     pub fn log_deferred_call(
         &self,
         session_id: &str,
@@ -334,6 +335,7 @@ impl ToolCallLogger {
     }
 
     /// 记录核心工具直接调用
+    #[allow(clippy::too_many_arguments)]
     pub fn log_core_call(
         &self,
         session_id: &str,

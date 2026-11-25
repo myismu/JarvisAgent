@@ -527,6 +527,7 @@ impl DebugLogger {
     }
 
     /// 记录流式响应摘要
+    #[allow(clippy::too_many_arguments)]
     pub fn log_response(
         &self,
         session_id: &str,
@@ -568,6 +569,7 @@ impl DebugLogger {
     }
 
     /// 记录 Agent 思考过程
+    #[allow(clippy::too_many_arguments)]
     pub fn log_thoughts(
         &self,
         session_id: &str,

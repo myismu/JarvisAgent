@@ -234,6 +234,7 @@ impl SubAgentMonitor {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn append_trace_event(
         app: &tauri::AppHandle,
         run_id: &str,
@@ -298,6 +299,7 @@ impl SubAgentMonitor {
     ///
     /// 创建运行记录、注册取消令牌、启动心跳检测。
     /// 返回生成的 run_id。
+    #[allow(clippy::too_many_arguments)]
     pub async fn start_run(
         app: &tauri::AppHandle,
         session_id: &str,
@@ -750,6 +752,7 @@ impl SubAgentMonitor {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn push_event(
         _app: &tauri::AppHandle,
         _run_id: &str,

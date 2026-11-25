@@ -865,6 +865,7 @@ pub async fn preview_rollback_to_checkpoint_with_recall(
 /// - 本轮无快照（纯聊天）→ 退到其后第一个文件快照的父状态；
 /// - 解析失败 → **直接报错中止**，不再把空目标当成"初始状态"。
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn rollback_to_checkpoint_with_recall(
     session_id: String,
     checkpoint_id: String,

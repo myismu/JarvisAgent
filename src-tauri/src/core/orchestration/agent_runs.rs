@@ -334,6 +334,7 @@ pub fn list_loop_events(session_id: Option<&str>, run_id: Option<&str>) -> Vec<A
 /// 不需要 `AppHandle`：前端进度靠既有的流式事件（`chat-content` / `chat-tool-*`）
 /// 推进，轮次行是**崩溃重建的落盘数据**，不是实时通道，没有要广播的东西。
 /// （旧 `save_checkpoint` 收 `app` 只是历史惯性，参数从未被真正使用。）
+#[allow(clippy::too_many_arguments)]
 pub fn upsert_loop_event(
     run_id: &str,
     session_id: &str,
@@ -956,6 +957,7 @@ pub fn mark_run_closed(app: &tauri::AppHandle, run_id: &str, wait_ms: u64) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish_run(
     app: &tauri::AppHandle,
     run_id: &str,

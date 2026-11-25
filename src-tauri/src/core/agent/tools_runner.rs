@@ -62,6 +62,7 @@ fn is_abortable_on_cancel(name: &str) -> bool {
 /// 1. 预处理（串行）：解析参数、emit "running" 事件、收集 ToolTaskData
 /// 2. 并行执行：tokio::spawn 每个工具调用，join_all 收集结果
 /// 3. 排序汇总：按原始 index 排序，emit "completed" 事件，组装返回
+#[allow(clippy::too_many_arguments)]
 pub async fn execute_tool_calls(
     current_blocks: &mut [ContentBlock],
     tool_input_buffers: std::collections::HashMap<usize, String>,

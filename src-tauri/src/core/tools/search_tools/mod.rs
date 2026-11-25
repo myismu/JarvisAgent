@@ -133,6 +133,7 @@ fn should_skip_dir_with_overrides(path: &Path, ignore_dirs: &[String]) -> bool {
 /// 此函数在遍历阶段完成所有过滤，避免对巨型目录树的全量收集。
 ///
 /// `limit` 为 0 时不会收集任何条目（调用方应避免此情况）。
+#[allow(clippy::too_many_arguments)]
 fn collect_files_glob(
     root: &Path,
     pattern: &str,

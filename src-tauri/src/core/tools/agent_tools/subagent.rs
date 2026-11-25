@@ -414,6 +414,7 @@ async fn wait_cancel(
 /// 它自己那一次响应的读数，不做跨请求推断。
 ///
 /// 写失败只记日志、不中断子 Agent：账本问题不应把正在跑的任务打吹。
+#[allow(clippy::too_many_arguments)]
 fn record_subagent_turn_usage(
     app: &tauri::AppHandle,
     session_id: &str,
@@ -532,6 +533,7 @@ async fn check_subagent_budget(
 /// [`record_subagent_turn_usage`] 直写（明细 + 累计同事务）。调用方拿这两个数
 /// 只是为了展示，**不得**再当成增量交给任何入库接口（包括 `save_session`）——
 /// 那会把同一笔账记两遍。
+#[allow(clippy::too_many_arguments)]
 pub async fn run_subagent(
     app: tauri::AppHandle,
     prompt: String,

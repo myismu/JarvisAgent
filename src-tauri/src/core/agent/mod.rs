@@ -1,4 +1,4 @@
-﻿//! # mod.rs — Agent 子系统入口模块
+//! # mod.rs — Agent 子系统入口模块
 //!
 //! 组织并暴露 Agent 核心子模块（pipeline、stream、context、tools_runner），
 //! 并定义前端可调用的 `ask_jarvis` Tauri 命令。
@@ -34,6 +34,7 @@ pub use stream::{process_stream, StreamConfig, StreamResult};
 use pipeline::{resume_pipeline, run_pipeline};
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn ask_jarvis(
     session_id: String,
     msg: String,

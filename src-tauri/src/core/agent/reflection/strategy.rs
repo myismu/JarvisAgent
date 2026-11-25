@@ -145,6 +145,7 @@ fn should_reflect_smart(thinking_text: &str) -> bool {
 /// 返回值除判断结果外，还带回本次请求的 `usage`：审查请求本身也真实消耗 token，
 /// 但本模块刻意不认识 `AppHandle` / `session_id` / `run_id`（保持纯逻辑、可单测），
 /// 记账由调用方（pipeline）按 `UsageSource::Reflection` 写入。
+#[allow(clippy::too_many_arguments)]
 pub async fn execute_review(
     client: &reqwest::Client,
     api_key: &str,

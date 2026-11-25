@@ -47,11 +47,11 @@ src/
 `lib.rs` 是 Tauri 后端的真实启动入口，主要职责：
 
 1. 检测并锁定运行时 `data/` 目录（`AGENT_HOME_DIR`）。
-2. `infra::db::init()` 初始化 SQLite（19 张表 + 增量迁移）。
+2. `infra::db::init()` 初始化 SQLite（20 张表 + v1~v29 增量迁移）。
 3. 恢复上次工作目录与启动会话。
 4. 注册全局状态：`SessionManager`、`BackgroundState`、`CompactingState`、`SubAgentMonitorState`、`ConfigState`、`RuntimeConfigState`、`WorkspaceState`、`SnapshotRegistry`。
-5. 注册 Tauri 插件：opener、dialog、fs、window-state。
-6. 在 `invoke_handler` 中注册全部前端可调用命令（约 90 个）。
+5. 注册 Tauri 插件：opener、dialog、fs、window-state、updater、process。
+6. 在 `invoke_handler` 中注册全部前端可调用命令（115 个）。
 7. 退出时清理所有后台任务进程（`kill_all_process_tree`）。
 
 ## 基础设施层：`src/infra/`
@@ -64,7 +64,11 @@ infra/
 │   └── data_paths.rs            # data 目录、会话、图片、快照等运行期路径管理
 ├── db/
 │   ├── mod.rs                   # SQLite 连接管理与初始化
-│   └── schema.rs                # 19 张表 schema 定义 + 增量迁移
+│   └── schema/                  # 20 张表 schema 定义 + 增量迁移分卷
+│       ├── mod.rs               # SCHEMA_VERSION、建表 DDL 与迁移编排入口
+│       ├── migrations_v1_v15.rs # v3~v15 早期增量迁移
+│       ├── migrations_v16_v29.rs# v16~v29 近期增量迁移与毫秒时间戳归一化
+│       └── tests.rs             # schema 初始化与历史迁移回归测试
 ├── llm/
 │   ├── api_format.rs            # ApiFormat 枚举（认证头、版本头）
 │   ├── api_client.rs            # HTTP 客户端、固定阶梯重试、429 Retry-After
@@ -77,7 +81,8 @@ infra/
 ├── types/
 │   ├── models.rs                # 消息、工具、会话、计划文档等共享数据模型
 │   ├── error.rs                 # AgentError、ApiError、DbError 等分层错误类型
-│   └── constants.rs             # 全局常量
+│   ├── constants.rs             # 全局常量
+│   └── ts_bindings.rs           # ts-rs 跨端 TypeScript 契约导出与一致性门禁测试（覆盖 115 个命令）
 ├── background.rs                # 后台任务状态与输出管理（bg-task-done 事件推送）
 └── debug_logger.rs              # 调试日志
 ```
@@ -87,7 +92,15 @@ infra/
 ```text
 agent/
 ├── mod.rs                       # ask_jarvis / resume_jarvis Tauri 命令入口
-├── pipeline.rs                  # run_pipeline / resume_pipeline 主流程（四阶段流水线）
+├── pipeline/                    # run_pipeline / resume_pipeline 四阶段流水线目录
+│   ├── mod.rs                   # 管线总入口与编排
+│   ├── setup.rs                 # 初始化与复杂任务检测
+│   ├── main_loop.rs             # 主循环与模型/工具调度
+│   ├── finalize.rs              # 回合收尾、持久化与标题生成
+│   ├── recovery.rs              # 中断与崩溃恢复
+│   ├── context_metrics.rs       # 上下文快照与 token 用量入账
+│   ├── helpers.rs               # 管线辅助函数
+│   └── tests.rs                 # 管线单元测试
 ├── context.rs                   # 动态上下文注入：记忆、技能、目录结构等
 ├── stream.rs                    # SSE 流解析：文本、thinking、tool_use
 ├── tools_runner.rs              # 执行模型返回的工具调用并回填观察结果
@@ -247,7 +260,13 @@ orchestration/
 ```text
 session/
 ├── mod.rs                       # 会话创建、切换、删除、重命名、元数据管理
-├── repository.rs                # 会话 SQLite 仓储 + 消息加载
+├── repository/                  # 会话 SQLite 领域仓储目录
+│   ├── mod.rs                   # 仓储统一门面与重导出
+│   ├── sessions.rs              # 会话元数据、回收站、项目归档与运行偏好
+│   ├── messages.rs              # 消息索引、分页回溯与上下文快照
+│   ├── projects.rs              # 项目元数据 CRUD
+│   ├── usage.rs                 # 逐请求 token 用量明细与聚合统计
+│   └── tests.rs                 # 仓储集成与列一致性测试
 ├── resource_repository.rs       # 附件/资源 SQLite 仓储
 └── memory.rs                    # 会话记忆与上下文压缩（视图引用方案）
 ```
@@ -335,8 +354,8 @@ cargo clippy                     # Rust lint 检查
 | 需求 | 优先查看 |
 | --- | --- |
 | 前端调用后端命令失败 | `src/lib.rs`、`src/command/*` |
-| 用户发送消息后的 Agent 主流程 | `core/agent/mod.rs`、`core/agent/pipeline.rs` |
-| 中断恢复 Agent run | `core/agent/pipeline.rs`（resume_pipeline）、`command/session.rs`（prepare_resume_agent_run） |
+| 用户发送消息后的 Agent 主流程 | `core/agent/mod.rs`、`core/agent/pipeline/` |
+| 中断恢复 Agent run | `core/agent/pipeline/`（`resume_pipeline` / `recovery.rs`）、`command/session.rs`（`prepare_resume_agent_run`） |
 | SSE 流式输出、thinking、工具调用解析异常 | `core/agent/stream.rs` |
 | 反思审查行为异常 | `core/agent/reflection/` |
 | 工具执行结果异常 | `core/agent/tools_runner.rs`、`core/tools/mod.rs`、具体工具文件 |
@@ -346,7 +365,7 @@ cargo clippy                     # Rust lint 检查
 | OpenAI/Anthropic 协议兼容问题 | `infra/llm/request_builder.rs`、`infra/llm/api_format.rs`、`infra/llm/adapters.rs` |
 | Token 计数不准确 | `infra/llm/token_count.rs` |
 | 会话、历史、工作区恢复异常 | `core/session/`、`command/session.rs`、`infra/config/data_paths.rs` |
-| 数据库 schema / 迁移异常 | `infra/db/schema.rs`、`infra/db/mod.rs` |
+| 数据库 schema / 迁移异常 | `infra/db/schema/`、`infra/db/mod.rs` |
 | Agent 执行记录或执行面板异常 | `core/orchestration/agent_runs.rs`、`command/session.rs` |
 | 子代理异常 | `core/orchestration/subagents.rs`、`core/tools/agent_tools/subagent.rs` |
 | 任务系统异常 | `core/orchestration/tasks.rs`、`core/tools/task_tools/` |

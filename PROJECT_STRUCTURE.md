@@ -49,6 +49,8 @@ JarvisAgent/
 
 ```bash
 pnpm tauri dev       # 启动桌面开发环境，前端热更新 + Rust 后端
+pnpm gen:types       # 从 Rust 导出跨端 TypeScript 类型契约（ts-rs）
+pnpm test            # 运行前端 Vitest 单元测试
 pnpm build           # 前端类型检查与构建：vue-tsc --noEmit && vite build
 pnpm tauri build     # 构建桌面应用
 pnpm install         # 安装前端依赖
@@ -128,18 +130,18 @@ Rust command / Agent pipeline
 
 | 目标 | 优先查看/修改位置 |
 | --- | --- |
-| 修改 Agent 主循环 | `src-tauri/src/core/agent/pipeline.rs` |
+| 修改 Agent 主循环 | `src-tauri/src/core/agent/pipeline/`（`mod.rs` / `setup.rs` / `main_loop.rs` / `finalize.rs` 等） |
 | 修改上下文注入 | `src-tauri/src/core/agent/context.rs` |
 | 修改提示词组装 | `src-tauri/src/core/agent/prompts.rs` |
-| 修改 SSE 解析 | `src-tauri/src/core/agent/stream.rs` |
+| 修改 SSE 解析 | `src-tauri/src/infra/llm/stream_parse.rs` 与 `src-tauri/src/core/agent/stream.rs` |
 | 修改工具执行结果处理 | `src-tauri/src/core/agent/tools_runner.rs` |
 | 新增工具 | `src-tauri/src/core/tools/` 对应子模块 + `framework/registry.rs` 注册宏 |
 | 修改权限逻辑 | `src-tauri/src/core/tools/framework/permission.rs` 与 `command/permission.rs` |
-| 新增 Tauri 命令 | `src-tauri/src/command/` + `src-tauri/src/lib.rs` |
+| 新增 Tauri 命令 | `src-tauri/src/command/` + `src-tauri/src/lib.rs` + `infra/types/ts_bindings.rs`（执行 `pnpm gen:types`） |
 | 新增模型能力 | `src-tauri/model_registry.json` + `infra/llm/registry.rs` |
 | 新增 Provider/API 格式 | `infra/llm/api_format.rs`、`infra/llm/request_builder.rs`、`model_registry.json` |
-| 修改会话持久化 | `src-tauri/src/core/session/mod.rs` |
-| 修改前端事件处理 | `src/composables/useAgentEvents.ts` |
+| 修改会话持久化 | `src-tauri/src/core/session/mod.rs`、`src-tauri/src/core/session/repository/` |
+| 修改前端事件处理 | `src/composables/useAgentEvents.ts` 与 `src/composables/agentEvents/` |
 | 修改会话 UI 状态 | `src/stores/session.ts`、`src/stores/chat.ts` |
 | 修改执行面板 | `src/stores/agent.ts`、`src/components/chat/AgentPanel.vue` |
 | 修改权限/计划审批 UI | `src/stores/permission.ts`、`src/components/common/` |
@@ -166,7 +168,7 @@ Rust command / Agent pipeline
 2. `src/composables/useAgentEvents.ts`：理解前端如何接收后端事件。
 3. `src/stores/session.ts`、`src/stores/agent.ts`、`src/stores/permission.ts`：理解核心状态。
 4. `src-tauri/src/lib.rs`：理解后端启动和命令注册。
-5. `src-tauri/src/core/agent/pipeline.rs`：理解 Agent 主循环。
+5. `src-tauri/src/core/agent/pipeline/`：理解 Agent 主循环与四阶段流水线。
 6. `src-tauri/src/core/tools/mod.rs`：理解工具系统。
 
 ### Agent 执行任务前

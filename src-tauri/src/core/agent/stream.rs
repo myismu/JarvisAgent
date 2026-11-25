@@ -350,6 +350,7 @@ impl FrameFlusher {
 /// - `api_format`: 本次流使用的协议格式——**只在这一处出现**，往下全部是统一事件
 /// - `app` / `sid` / `run_id` / `loop_count`: 前端事件推送与日志归档的定位信息
 /// - `cancel_token`: 用户取消令牌；`config`: 发送行为开关（见 `StreamConfig`）
+#[allow(clippy::too_many_arguments)]
 pub async fn process_stream(
     stream: &mut (impl StreamExt<
         Item = Result<

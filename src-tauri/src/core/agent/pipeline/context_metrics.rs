@@ -585,14 +585,16 @@ impl PipelineState {
 
         match crate::core::session::update_context_snapshot_usage(
             &self.sid,
-            input_tokens,
-            output_tokens,
-            total_tokens,
-            drift,
-            cache_hit_tokens,
-            cache_miss_tokens,
-            cache_source,
-            cache_point,
+            crate::core::session::ContextSnapshotUsageUpdate {
+                provider_input_tokens: input_tokens,
+                provider_output_tokens: output_tokens,
+                provider_total_tokens: total_tokens,
+                drift_percent: drift,
+                cache_hit_tokens,
+                cache_miss_tokens,
+                cache_source,
+                cache_point,
+            },
         ) {
             Ok(Some(snapshot)) => {
                 let _ = self.app.emit("context-snapshot-updated", &snapshot);

@@ -288,6 +288,7 @@ mod usage_tests {
     // ========================================================================
 
     /// 构造一段来源账（测试用，字段顺序固定，避免各处手写漏字段）。
+    #[allow(clippy::too_many_arguments)]
     fn source_row(
         source: UsageSource,
         request_count: u64,

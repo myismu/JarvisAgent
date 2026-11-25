@@ -84,6 +84,7 @@ impl PermissionAuditLogger {
     }
 
     /// 记录一条权限决策。`kind`/`scope` 为本次弹卡提供的会话允许键（无键则 None）。
+    #[allow(clippy::too_many_arguments)]
     pub fn log_decision(
         &self,
         session_id: &str,

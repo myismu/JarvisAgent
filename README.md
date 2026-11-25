@@ -5,7 +5,7 @@
 <div align="center">
 一一一一用你自己的 API Key 运行：会读代码、改文件、跑命令的桌面端 AI 编程助手 —— 改坏了能退回去，动手前会先问你。
 
-Tauri 2 + Rust + Vue 3 · 12 家厂商 93 个模型 · 142 个 Rust 模块 / 700 个单元测试全绿
+Tauri 2 + Rust + Vue 3 · 12 家厂商 93 个模型 · 158 个 Rust 模块 / 705 个后端单测 + 63 个前端 Vitest 单测
 
 <a href="SCREENSHOTS.md"><img src="screenshots/01-main-chat.png" alt="JarvisAgent 主界面" width="820"></a>
 
@@ -61,6 +61,8 @@ Tauri 2 + Rust + Vue 3 · 12 家厂商 93 个模型 · 142 个 Rust 模块 / 700
 ```bash
 pnpm install          # 安装前端依赖
 pnpm tauri dev        # 开发模式（热更新）
+pnpm gen:types        # 从 Rust 结构体导出跨端 TypeScript 契约（ts-rs）
+pnpm test             # 运行前端 Vitest 单元测试
 pnpm build            # 前端类型检查与构建：vue-tsc --noEmit && vite build
 pnpm tauri build      # 生产构建（本地打包需先设置更新签名私钥，见下）
 cargo test            # Rust 测试（在 src-tauri/ 下运行）
@@ -115,7 +117,9 @@ JarvisAgent/
 │   ├── vite-env.d.ts / PROJECT_STRUCTURE.md   # Vite 类型声明 / 前端结构说明
 │   ├── api/ / pages/                 # 预留目录（暂空）
 │   ├── assets/global.css             # CSS 变量主题 + 毛玻璃令牌
-│   ├── types/index.ts                # 全部 TypeScript 类型定义
+│   ├── types/
+│   │   ├── generated/contracts.ts    #   ts-rs 自动导出的跨端类型契约（90 个 Rust DTO，覆盖 115 个命令）
+│   │   └── index.ts                  #   前端共享类型定义（重导出契约 + 前端特有视图类型）
 │   ├── stores/                       # Pinia 状态管理
 │   │   ├── session.ts                #   会话生命周期 + 消息缓冲区 + 分页游标
 │   │   ├── chat.ts                   #   核心交互：发送/取消/撤回/渲染/懒加载
@@ -123,7 +127,12 @@ JarvisAgent/
 │   │   ├── permission.ts             #   权限请求 + 方案审批状态（按会话排队）
 │   │   └── appView.ts                #   主内容区视图切换（聊天 / 技能管理）
 │   ├── composables/
-│   │   ├── useAgentEvents.ts         #   后端事件监听中枢 → 分发到各 Store
+│   │   ├── useAgentEvents.ts         #   后端事件监听装配入口（具体领域逻辑在 agentEvents/ 目录）
+│   │   ├── agentEvents/              #   按事件域拆分（types / runState / loaders / governance / stream / lifecycle）
+│   │   ├── input/                    #   TerminalInput 领域逻辑（turnMetrics / media / profile / controlModes）
+│   │   ├── settings/                 #   SettingsPanel 预设编辑逻辑（useProfilesEditor）
+│   │   ├── chat/                     #   ChatArea 回滚与剪贴板逻辑（useChatRollback / useChatClipboard）
+│   │   ├── agent/                    #   AgentPanel 后台任务同步逻辑（useBackgroundTasks）
 │   │   ├── useTheme.ts               #   亮/暗主题切换（同步监控窗口）
 │   │   ├── useWindow.ts              #   Tauri 窗口控制 + 跨窗口同步
 │   │   ├── usePreferences.ts         #   用户偏好持久化
@@ -150,7 +159,7 @@ JarvisAgent/
 │       │                             # RollbackConfirmModal, StreamingMarkdown, ToastHost
 │       ├── checkpoint/               # CheckpointTimeline
 │       ├── snapshot/                 # SnapshotTimeline, DiffViewer, LivePreview, FileOpIcon
-│       ├── settings/                 # SettingsPanel（四页签）+ PromptsTab + ToolsPanel
+│       ├── settings/                 # SettingsPanel（五页签）+ PromptsTab + ToolsPanel
 │       ├── skill/                    # SkillManager, SkillMarket, SkillCard, SkillDetailPanel
 │       └── todo/                     # Todo 组件（暂空）
 ├── src-tauri/                        # Rust 后端（三层：infra / core / command）
@@ -159,18 +168,18 @@ JarvisAgent/
 │   │   ├── main.rs                   # 二进制入口
 │   │   ├── infra/                    # ── 基础设施层：配置 / 数据库 / LLM / 状态 ──
 │   │   │   ├── config/               #   config.rs（AppConfig + 预设 + 原子写入）+ data_paths.rs
-│   │   │   ├── db/                   #   mod.rs（SQLite 连接）+ schema.rs（20 张表 + 迁移 v1~v29）
+│   │   │   ├── db/                   #   mod.rs（SQLite 连接）+ schema/（20 张表 + 迁移 v1~v29 分卷）
 │   │   │   ├── llm/                  #   api_format + api_client（固定阶梯重试 + Retry-After）
 │   │   │   │                         #   + adapters + registry（模型能力注册表）
 │   │   │   │                         #   + stream_parse（SSE 帧解析唯一实现）+ token_count
 │   │   │   │                         #   + context_budget（压缩判据）+ usage + usage_memory
 │   │   │   ├── state/                #   state.rs（SessionManager/WorkspaceState）
-│   │   │   ├── types/                #   models.rs（数据模型）+ error.rs + constants.rs
+│   │   │   ├── types/                #   models.rs + error.rs + constants.rs + ts_bindings.rs（ts-rs 导出）
 │   │   │   ├── background.rs         #   后台任务管理 + Tauri 事件推送
 │   │   │   └── debug_logger.rs       #   调试日志
 │   │   ├── core/                     # ── 业务层：Agent / 工具 / 编排 / 回滚 / 会话 ──
 │   │   │   ├── agent/
-│   │   │   │   ├── pipeline.rs       #   四阶段 Agent 管线主循环（压缩 + 反思 + Plan 看门狗）
+│   │   │   │   ├── pipeline/         #   四阶段 Agent 管线目录（mod / setup / main_loop / finalize / recovery / context_metrics / helpers / tests）
 │   │   │   │   ├── stream.rs         #   流式事件副作用处理（协议解析在 infra/llm/stream_parse）
 │   │   │   │   ├── context.rs        #   动态上下文构建（快照 + 用户消息 + 深度思考决策）
 │   │   │   │   ├── tools_runner.rs   #   工具调用并行执行引擎
@@ -186,7 +195,7 @@ JarvisAgent/
 │   │   │   │                         #   + trash（回收站）+ rollback_logger
 │   │   │   │                         #   + session_manager（检查点 + GC 触发）
 │   │   │   ├── session/              #   会话持久化 + memory（单级摘要压缩）+ thinking（档位裁决）
-│   │   │   │                         #   + repository + resource_repository（transcript 等资源）
+│   │   │   │                         #   + repository/（sessions / messages / projects / usage 分域仓储）+ resource_repository
 │   │   │   └── tools/                #   工具系统中枢 + 8 个子系统：
 │   │   │       ├── file_tools/       #   文件读写/编辑/搜索/符号（14 个文件）
 │   │   │       ├── shell_tools/      #   Shell + 后台任务 + 安全检查（git 走 RunCommand，无专用工具）

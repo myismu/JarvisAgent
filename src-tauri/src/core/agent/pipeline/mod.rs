@@ -258,6 +258,7 @@ fn blocks_to_text_and_thinking(blocks: &[ContentBlock]) -> (String, String) {
 }
 
 /// 主流程入口：依次执行 4 个阶段
+#[allow(clippy::too_many_arguments)]
 pub async fn run_pipeline(
     session_id: String,
     msg: String,
@@ -316,6 +317,7 @@ pub async fn resume_pipeline(
 ///
 /// 依次执行：阶段 1 setup → 阶段 2 pre_loop
 /// → 阶段 3 run_main_loop（出错走 abort_after_error）→ 阶段 4 finalize
+#[allow(clippy::too_many_arguments)]
 async fn run_pipeline_inner(
     session_id: String,
     msg: String,
