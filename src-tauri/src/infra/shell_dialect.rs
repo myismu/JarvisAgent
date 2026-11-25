@@ -37,7 +37,7 @@ use std::sync::OnceLock;
 /// 不提供"手动选 Git Bash"——它与"自动 + 指定 bash 路径"行为一致，
 /// 多一个选项只会让用户多理解一个概念。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Default, ts_rs::TS)]
 pub enum ShellMode {
     /// 自动（默认）：探测到 Git Bash 就用 Git Bash，否则用 PowerShell。
     ///
@@ -56,8 +56,9 @@ pub enum ShellMode {
 
 
 /// `app-config.json` 中的 `shell` 字段
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct ShellSettings {
     #[serde(default)]
     pub mode: ShellMode,
@@ -277,8 +278,9 @@ fn find_bash_near(start: &std::path::Path) -> Option<PathBuf> {
 }
 
 /// 设置页展示用的解析结果（序列化给前端）
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct ShellResolution {
     /// 当前平台是否支持切换（只有 Windows 有自动 / PowerShell 两种选择）
     pub platform_supported: bool,

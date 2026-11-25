@@ -490,18 +490,24 @@ impl UsageBreakdown {
 ///
 /// 全部字段都是**会话级累计绝对值**（不是单次请求的增量），
 /// 接收方整值覆盖即可，任何自行累加都会让数字翻倍。
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct UsageSourceView {
     /// 累计输入 token
+    #[ts(type = "number")]
     pub input: u64,
     /// 累计输出 token
+    #[ts(type = "number")]
     pub output: u64,
     /// 累计缓存命中 token。0 有两种可能：真的没命中、厂商没报（后者看 `cache_reported`）
+    #[ts(type = "number")]
     pub cache_hit: u64,
     /// 累计缓存未命中 token
+    #[ts(type = "number")]
     pub cache_miss: u64,
     /// 累计请求次数（= 调用模型接口的次数，不是 agent loop 轮数）
+    #[ts(type = "number")]
     pub request_count: u64,
     /// 其中**上报了缓存字段**的请求数。
     ///
@@ -510,6 +516,7 @@ pub struct UsageSourceView {
     /// 要么没报，没有第三种。因此不另加一列 SQL（另加 = 多一个可能与差值打架的口径）。
     /// 与 `request_count` 的差值即「厂商没给缓存字段」的请求量，用来解释
     /// 某个来源为什么算不出命中率，而不是把未上报直接画成 0%。
+    #[ts(type = "number")]
     pub cache_reported: u64,
 }
 
@@ -534,8 +541,9 @@ impl UsageSourceView {
 ///
 /// 三层是**展示口径**而非存储口径：账本按 `UsageSource` 存六个来源，
 /// 用户只关心"主对话 / 子 Agent / 系统内部"这三件事。
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct SessionUsageBreakdownView {
     /// 主 Agent 主循环
     pub main: UsageSourceView,
@@ -544,8 +552,10 @@ pub struct SessionUsageBreakdownView {
     /// 系统内部调用（反思、压缩、自动命名、记忆整理）
     pub system: UsageSourceView,
     /// 缓存字段未上报的请求数（整会话口径）
+    #[ts(type = "number")]
     pub unreported_request_count: u64,
     /// 这些未上报请求对应的输入 token 合计（让"不知道"也有量级）
+    #[ts(type = "number")]
     pub unreported_input: u64,
     /// 是否存在明细。`false` = 无明细行（历史会话），三层全零**不可当真实分布展示**
     pub has_detail: bool,
@@ -555,13 +565,18 @@ pub struct SessionUsageBreakdownView {
 ///
 /// 调用方拿到的应该永远是这个结构：账本（[`UsageBreakdown`]）本身是内部口径，
 /// 会随明细表结构调整；视图字段一旦放出就是前端契约，改它要同步改 TS 类型。
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct SessionUsageView {
     pub session_id: String,
+    #[ts(type = "number")]
     pub input_tokens: u64,
+    #[ts(type = "number")]
     pub output_tokens: u64,
+    #[ts(type = "number")]
     pub cache_hit_tokens: u64,
+    #[ts(type = "number")]
     pub cache_miss_tokens: u64,
     /// 按来源分层的明细。`has_detail = false` 时三层全零，只有上面的总计有意义
     pub breakdown: SessionUsageBreakdownView,

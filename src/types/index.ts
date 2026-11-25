@@ -178,67 +178,29 @@ export interface SessionContextSnapshot {
  *
  * 全部是**累计绝对值**（会话级），不是单次请求的增量。
  */
-export interface UsageSourceBreakdown {
-  /** 该来源累计输入 token */
-  input: number;
-  /** 该来源累计输出 token */
-  output: number;
-  /** 该来源累计缓存命中 token；0 可能是「未上报」，结合 cacheReported 判断 */
-  cacheHit: number;
-  /** 该来源累计缓存未命中 token */
-  cacheMiss: number;
-  /** 该来源累计请求次数（= 调用模型接口的次数，不是 agent loop 轮数） */
-  requestCount: number;
-  /**
-   * 其中**上报了缓存字段**的请求数。
-   *
-   * 与 requestCount 的差值就是「厂商没给缓存字段」的请求量 —— 用来解释
-   * 为什么某来源的缓存命中率算不出来，而不是直接显示 0%。
-   */
-  cacheReported: number;
-}
-
 /**
- * 会话用量按来源分组的快照。
+ * 会话用量按来源分组的快照与视图（由 Rust 侧 `ts-rs` 自动生成，单一事实来源）。
+ *
+ * 对应 `src-tauri/src/core/session/mod.rs` 中的 `UsageSourceView` /
+ * `SessionUsageBreakdownView` / `SessionUsageView`，改 Rust 结构体后
+ * `cargo test` 会直接校验 `src/types/generated/contracts.ts` 是否同步。
  *
  * 归一化（缺字段补 0）由 `utils/usageBreakdown.ts` 统一负责，
  * 事件监听与 store 写入都走那一层，避免各处各写一遍兜底逻辑。
  */
-export interface SessionUsageBreakdown {
-  /** 主 Agent（当前会话正在跑的那条主线） */
-  main: UsageSourceBreakdown;
-  /** 子 Agent（RunSubagent / 任务图调度出去的执行体） */
-  subagent: UsageSourceBreakdown;
-  /** 系统内部调用（标题生成、压缩摘要、反思审查等非用户可见的请求） */
-  system: UsageSourceBreakdown;
-  /** 缓存字段未上报的请求数（厂商没给缓存统计，不是"来源未知"） */
-  unreportedRequestCount: number;
-  /** 这些未上报请求对应的输入 token 合计（仍计入各层 input） */
-  unreportedInput: number;
-  /**
-   * 后端是否给出了真正的分组明细。
-   *
-   * false 表示这只是归零占位：界面应退回显示总量，不能把 0 当成
-   * 「主 Agent 一个 token 没花」。
-   */
-  hasDetail: boolean;
-}
+import type {
+  UsageSourceView,
+  SessionUsageBreakdownView,
+  SessionUsageView as GeneratedSessionUsageView,
+  ShellMode,
+  ShellSettings,
+  ShellResolution,
+} from "./generated/contracts";
 
-/**
- * 会话用量视图（与 `session-usage-updated` 事件载荷同形）。
- *
- * 启动 / 切会话时由 `get_session_usage` 回读：分组明细只在运行期通过事件推送，
- * 没有回放通道；不回读的话浮层会一直停在 `hasDetail = false` 的兜底值，
- * 直到用户再发一轮才出现三层。
- */
-export interface SessionUsageView {
-  sessionId: string;
-  inputTokens: number;
-  outputTokens: number;
-  cacheHitTokens: number;
-  cacheMissTokens: number;
-  breakdown: SessionUsageBreakdown;
-}
+export type UsageSourceBreakdown = UsageSourceView;
+export type SessionUsageBreakdown = SessionUsageBreakdownView;
+export type SessionUsageView = GeneratedSessionUsageView;
+export type { ShellMode, ShellSettings, ShellResolution };
 
 /**
  * `session-usage-updated` 事件的载荷：会话累计用量的**当前值**。
