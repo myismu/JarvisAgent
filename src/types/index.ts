@@ -589,4 +589,4 @@ export interface SubAgentConversationItem extends SubAgentTraceRunSummary {
 
 // 检查点 / 快照 / 沙箱 / 合并 / Skill / Prompt 等跨端 DTO 均已迁移至 ./generated/contracts.ts。
 
-export type AppView = 'chat' | 'skill-manager' | 'archive';
+export type AppView = 'chat' | 'extensions' | 'archive';

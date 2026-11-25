@@ -7,6 +7,12 @@ import type {
   SessionUsageBreakdown,
 } from "../types";
 import { createEmptyAgentCurrentTurn, resetAgentCurrentTurn } from "../utils/agentTurnState";
+import { extractUserImages } from "../utils/userMessage";
+
+/** 空数组转 undefined：气泡以 `message.images` 是否存在判断是否渲染图片区 */
+function nonEmptyOrUndefined<T>(list: T[]): T[] | undefined {
+  return list.length > 0 ? list : undefined;
+}
 import {
   createEmptySessionUsageBreakdown,
   normalizeSessionUsageBreakdown,
@@ -345,6 +351,10 @@ export const useSessionStore = defineStore("session", () => {
       // 后端返回 userContent，前端 Vue 组件使用 text/images（或 content 作为兼容）
       content: msg.content ?? msg.userContent,
       text: msg.text ?? (msg.role === 'user' ? msg.userContent?.replace(/<[^>]*>/g, '') : undefined),
+      // 历史用户消息的图片内联在 userContent 的 <img> 里，这里提取出来供气泡渲染
+      images:
+        msg.images ??
+        (msg.role === 'user' ? nonEmptyOrUndefined(extractUserImages(msg.userContent)) : undefined),
     }));
     view.loadError = false;
     // 整批替换完成 = 窗口就绪；上一次的脏原因到此失效
@@ -384,6 +394,9 @@ export const useSessionStore = defineStore("session", () => {
       ...msg,
       content: msg.content ?? msg.userContent,
       text: msg.text ?? (msg.role === 'user' ? msg.userContent?.replace(/<[^>]*>/g, '') : undefined),
+      images:
+        msg.images ??
+        (msg.role === 'user' ? nonEmptyOrUndefined(extractUserImages(msg.userContent)) : undefined),
     }));
     view.messages.unshift(...mapped);
   }

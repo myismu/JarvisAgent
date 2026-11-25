@@ -24,6 +24,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import ConfirmModal from '../common/ConfirmModal.vue';
 import CacheHitTooltip from './CacheHitTooltip.vue';
+import McpPromptPickerModal from './McpPromptPickerModal.vue';
 import type { AgentApprovalMode, AgentUserMode, AgentWorkMode } from '../../types';
 
 const { t } = useI18n();
@@ -34,6 +35,17 @@ const uiPrefs = usePreferences();
 const userInput = ref("");
 const isDragging = ref(false);
 const inputRef = ref<HTMLTextAreaElement | null>(null);
+const showMcpPromptPicker = ref(false);
+
+const insertMcpPromptDraft = (text: string) => {
+  userInput.value = userInput.value.trim()
+    ? `${userInput.value}\n\n${text}`
+    : text;
+  nextTick(() => {
+    adjustHeight();
+    inputRef.value?.focus();
+  });
+};
 
 const isRunning = computed(
   () => session.getSessionView(session.activeSessionId).status === 'RUNNING',
@@ -635,6 +647,14 @@ const handleRecallEdit = async () => {
                 </span>
                 <span class="mini-switch" :class="{ on: isThinkingActive }" aria-hidden="true"></span>
               </button>
+              <button
+                type="button"
+                class="toolbar-btn mcp-prompt-btn"
+                :title="t('extensions.mcp.promptPicker.buttonTitle')"
+                @click="showMcpPromptPicker = true"
+              >
+                <span>{{ t('extensions.mcp.promptPicker.buttonLabel') }}</span>
+              </button>
             </div>
           </div>
 
@@ -661,6 +681,11 @@ const handleRecallEdit = async () => {
       </div>
 
     </div>
+
+    <McpPromptPickerModal
+      v-model="showMcpPromptPicker"
+      @insert="insertMcpPromptDraft"
+    />
 
     <!-- 上下文与缓存遥测条：外置到输入框卡片正下方，让卡片本体保持两层轻盈 -->
     <div class="token-bar" v-if="contextTokens > 0 || sessionTokenTotal > 0">

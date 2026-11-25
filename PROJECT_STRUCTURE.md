@@ -146,7 +146,7 @@ Rust command / Agent pipeline
 | 修改执行面板 | `src/stores/agent.ts`、`src/components/chat/AgentPanel.vue` |
 | 修改权限/计划审批 UI | `src/stores/permission.ts`、`src/components/common/` |
 | 修改快照 UI | `src/components/snapshot/`、`src/services/snapshotService.ts` |
-| 修改技能管理 | `src/components/skill/`、`src-tauri/src/command/skill.rs` |
+| 修改扩展（技能与 MCP） | `src/components/extension/`、`src/components/skill/`、`src/stores/mcp.ts`、`src-tauri/src/core/mcp/`、`src-tauri/src/command/{skill,mcp}.rs` |
 
 ## 8. 开发约定与注意事项
 

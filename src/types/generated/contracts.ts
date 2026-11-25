@@ -1024,4 +1024,128 @@ status: string, };
 
 export type UserQuestionAnswerItem = { questionId: string, selectedOptions: Array<string>, customText?: string, };
 
+export type McpIsolation = "global" | "session";
+
+export type McpTransportKind = "stdio" | "streamable_http";
+
+export type McpToolHints = { readOnlyHint?: boolean, destructiveHint?: boolean, idempotentHint?: boolean, openWorldHint?: boolean, };
+
+export type McpServerConfig = {
+/**
+ * 本地 stdio 服务：可执行命令（如 `"npx"`、`"uvx"`、`"node"`）
+ */
+command?: string,
+/**
+ * 本地 stdio 服务：命令行参数
+ */
+args: Array<string>,
+/**
+ * 本地 stdio 服务：附加环境变量（常含 API Key，前端默认遮罩）
+ */
+env: { [key in string]?: string },
+/**
+ * 本地 stdio 服务：可选工作目录
+ */
+cwd?: string,
+/**
+ * 远程 Streamable HTTP 服务：端点 URL
+ */
+url?: string,
+/**
+ * 远程 Streamable HTTP 服务：附加请求头（如 `Authorization`，前端默认遮罩）
+ */
+headers: { [key in string]?: string },
+/**
+ * 是否启用该服务（默认 true）
+ */
+enabled: boolean,
+/**
+ * 是否信任该服务（默认 false；打开后才享受"帮我批准/完全批准"档位自动放行）
+ */
+trusted: boolean,
+/**
+ * 是否随应用启动后台拉起（默认 false，即懒启动：首次用到时才拉起）
+ */
+autoStart: boolean,
+/**
+ * 隔离级别（默认 global，预留 session）
+ */
+isolation: McpIsolation,
+/**
+ * 启动握手超时（秒，默认 60）
+ */
+startupTimeoutSec: number,
+/**
+ * 单次调用超时（秒，默认 60）
+ */
+callTimeoutSec: number,
+/**
+ * 空闲自动休眠时长（分钟，默认 30；设为 0 表示不自动休眠）
+ */
+idleTimeoutMin: number,
+/**
+ * 被用户单独关闭的原始工具名列表
+ */
+disabledTools: Array<string>, };
+
+export type McpServerStatus = "disabled" | "idle" | "starting" | "ready" | "failed" | "stopped";
+
+export type McpServerSummary = { name: string, transport: McpTransportKind, status: McpServerStatus, enabled: boolean, trusted: boolean, autoStart: boolean, toolCount: number, resourceCount: number, promptCount: number,
+/**
+ * 是否已有本地能力缓存（用于前端标识"待首次连接"）
+ */
+hasCachedCapabilities: boolean, lastError?: string,
+/**
+ * 原始配置（用于编辑表单回显）
+ */
+config: McpServerConfig, };
+
+export type McpToolView = {
+/**
+ * 暴露给大模型的命名空间工具名（如 `mcp__fs__read_file`）
+ */
+qualifiedName: string,
+/**
+ * MCP Server 声明的原始工具名
+ */
+name: string, serverName: string, description: string, enabled: boolean, inputSchema: Record<string, unknown>, hints: McpToolHints, };
+
+export type McpTestConfigResult = { ok: boolean, toolCount: number, resourceCount: number, promptCount: number, message: string, };
+
+export type McpImportItemResult = {
+/**
+ * 原始 JSON 中的 key
+ */
+originalName: string,
+/**
+ * 最终落盘的规范服务名
+ */
+savedName: string,
+/**
+ * 是否导入成功
+ */
+ok: boolean,
+/**
+ * 提示或失败原因（如名称已自动清洗、字段非法等）
+ */
+message?: string, };
+
+export type McpResourceItemView = { serverName: string, uri: string, name: string, description?: string, mimeType?: string, };
+
+export type McpResourceReadResult = { uri: string, content: string, mimeType?: string, isBinary: boolean, };
+
+export type CachedPromptArgument = { name: string, description?: string, required: boolean, };
+
+export type McpPromptItemView = { serverName: string, name: string, description?: string, arguments: Array<CachedPromptArgument>, };
+
+export type RenderedPromptMessage = { role: string, text: string, };
+
+export type McpPromptRenderResult = { name: string, description?: string, messages: Array<RenderedPromptMessage>,
+/**
+ * 拼合后的纯文本草稿（可直接填入聊天输入框）
+ */
+combinedText: string, };
+
+export type McpServerStatusEvent = { serverName: string, status: McpServerStatus, toolCount: number, resourceCount: number, promptCount: number, lastError?: string, };
+
 export type ResolveUserQuestionResult = { resolved: boolean, status: string, };

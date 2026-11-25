@@ -466,3 +466,19 @@ pub struct ResolveUserQuestionResult {
     pub resolved: bool,
     pub status: String,
 }
+
+// ── MCP 扩展服务事件 ──
+
+/// `mcp-server-status`：MCP 服务运行状态或能力数量变化通知
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerStatusEvent {
+    pub server_name: String,
+    pub status: crate::core::mcp::McpServerStatus,
+    pub tool_count: usize,
+    pub resource_count: usize,
+    pub prompt_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub last_error: Option<String>,
+}

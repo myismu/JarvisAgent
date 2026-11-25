@@ -17,6 +17,7 @@ pub mod app_config;
 pub mod checkpoint;
 pub mod config;
 pub mod history;
+pub mod mcp;
 pub mod merge;
 pub mod permission;
 pub mod prompt;

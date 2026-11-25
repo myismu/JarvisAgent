@@ -222,7 +222,15 @@ impl AgentTurnSnapshot {
 ///
 /// 只取真实 Text 块；动态上下文是独立的 Context 块（工作目录 / 项目结构 /
 /// 全局记忆），属于发给模型的运行时信息，不进 UI。
+///
+/// **含 `tool_result` 块的 user 消息是工具结果的载体，不是人说的话**：协议要求工具结果
+/// 以 user 角色回灌，MCP 截图 / `ViewSessionImage` 还会在同一条消息里追加 Image 块给视觉模型看。
+/// 若不在此统一排除，图片会让展示文本非空，整条被当成用户气泡渲染到右侧。
+/// 排除后工具结果仍由渲染循环里的 `append_tool_result` 归入对应的工具调用。
 fn user_display_content(content: &Content) -> String {
+    if content_carries_tool_result(content) {
+        return String::new();
+    }
     match content {
         Content::Single(s) => s.trim().to_string(),
         Content::Multiple(blocks) => {
@@ -255,6 +263,16 @@ fn user_display_content(content: &Content) -> String {
             }
             parts.trim_end().to_string()
         }
+    }
+}
+
+/// 该 user 消息是否携带 `tool_result`（即工具结果载体，而非用户输入）
+fn content_carries_tool_result(content: &Content) -> bool {
+    match content {
+        Content::Multiple(blocks) => blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolResult { .. })),
+        Content::Single(_) => false,
     }
 }
 
@@ -1003,6 +1021,51 @@ pub async fn get_session_messages_paged(
         newest_seq,
         total_count,
     })
+}
+
+#[cfg(test)]
+mod tool_result_carrier_tests {
+    use super::user_display_content;
+    use crate::infra::types::models::{Content, ContentBlock, ImageSource};
+
+    fn image_block() -> ContentBlock {
+        ContentBlock::Image {
+            source: ImageSource {
+                r#type: "base64".to_string(),
+                media_type: "image/jpeg".to_string(),
+                data: String::new(),
+                file_path: Some("s1_abcd.jpg".to_string()),
+            },
+        }
+    }
+
+    /// 回归：tool_result + image 同在一条 user 消息（MCP 截图 / ViewSessionImage）时，
+    /// 不得被当成用户气泡渲染。
+    #[test]
+    fn tool_result_with_image_is_not_a_user_message() {
+        let content = Content::Multiple(vec![
+            ContentBlock::ToolResult {
+                tool_use_id: "call_1".to_string(),
+                content: "已重新加载图片".to_string(),
+            },
+            image_block(),
+        ]);
+        assert!(user_display_content(&content).trim().is_empty());
+    }
+
+    /// 反向锁：用户自己发的图片（无 tool_result）仍要展示。
+    #[test]
+    fn real_user_image_is_still_displayed() {
+        let content = Content::Multiple(vec![
+            ContentBlock::Text {
+                text: "这是谁".to_string(),
+            },
+            image_block(),
+        ]);
+        let shown = user_display_content(&content);
+        assert!(shown.contains("这是谁"));
+        assert!(shown.contains("<img"));
+    }
 }
 
 #[cfg(test)]

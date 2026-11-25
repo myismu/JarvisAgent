@@ -1,4 +1,4 @@
-﻿//! SQLite-backed storage for session-scoped binary/text resources.
+//! SQLite-backed storage for session-scoped binary/text resources.
 
 use rusqlite::{params, OptionalExtension};
 use std::path::Path;
@@ -62,6 +62,140 @@ pub fn load_attachment(filename: &str) -> Result<Option<(String, Vec<u8>)>, Stri
         .optional()
         .map_err(|e| e.to_string())
     })
+}
+
+/// 校验自定义协议 / 工具传入的附件名是否安全：非空、不含路径分隔符与 `..`。
+///
+/// `jarvis-attachment` 协议把 URL 路径直接当附件名查库，这里是唯一的入口闸门；
+/// 抽成纯函数以便单测锁住（路径穿越类问题一旦回归就是任意读取）。
+pub fn is_safe_attachment_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains("..") && !name.contains('/') && !name.contains('\\')
+}
+
+/// 按当前会话 ID 严格校验并读取附件元信息（防止跨会话越权访问）
+pub fn load_session_attachment_meta(
+    session_id: &str,
+    filename: &str,
+) -> Result<Option<(String, String)>, String> {
+    let filename = basename(filename);
+    crate::infra::db::with_connection(|conn| query_session_attachment_meta(conn, session_id, &filename))
+}
+
+/// `load_session_attachment_meta` 的纯 SQL 部分（接收连接，便于内存库单测）
+fn query_session_attachment_meta(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    filename: &str,
+) -> Result<Option<(String, String)>, String> {
+    conn.query_row(
+        "SELECT filename, media_type FROM session_attachments WHERE session_id = ?1 AND filename = ?2",
+        params![session_id, filename],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+/// 列出指定会话内的全部附件 `(filename, media_type)`（按创建时间升序）
+pub fn list_session_attachments(session_id: &str) -> Result<Vec<(String, String)>, String> {
+    crate::infra::db::with_connection(|conn| query_session_attachments(conn, session_id))
+}
+
+/// `list_session_attachments` 的纯 SQL 部分（接收连接，便于内存库单测）
+fn query_session_attachments(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT filename, media_type FROM session_attachments WHERE session_id = ?1 ORDER BY created_at ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([session_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod attachment_isolation_tests {
+    //! 会话附件隔离：`ViewSessionImage` 只能看到**当前会话**的图片，跨会话必须查不到。
+
+    use super::*;
+    use rusqlite::Connection;
+
+    fn conn_with_two_sessions() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::infra::db::schema::init_schema(&conn).expect("建表");
+        for sid in ["sess_a", "sess_b"] {
+            conn.execute(
+                "INSERT INTO sessions(id, title, created_at, updated_at, message_count) \
+                 VALUES(?1, 't', 0, 0, 0)",
+                params![sid],
+            )
+            .unwrap();
+        }
+        let insert = |filename: &str, session: &str, media: &str, ts: i64| {
+            conn.execute(
+                "INSERT INTO session_attachments(filename, session_id, media_type, data, created_at) \
+                 VALUES(?1, ?2, ?3, x'00', ?4)",
+                params![filename, session, media, ts],
+            )
+            .unwrap();
+        };
+        insert("a_1.png", "sess_a", "image/png", 1);
+        insert("a_2.jpg", "sess_a", "image/jpeg", 2);
+        insert("b_1.png", "sess_b", "image/png", 3);
+        conn
+    }
+
+    #[test]
+    fn meta_lookup_is_scoped_to_the_given_session() {
+        let conn = conn_with_two_sessions();
+        // 本会话的图查得到
+        let own = query_session_attachment_meta(&conn, "sess_a", "a_1.png").unwrap();
+        assert_eq!(own, Some(("a_1.png".to_string(), "image/png".to_string())));
+        // 别的会话的图：文件名真实存在，但会话不匹配 → 必须查不到
+        let foreign = query_session_attachment_meta(&conn, "sess_a", "b_1.png").unwrap();
+        assert_eq!(foreign, None, "不得跨会话读取附件");
+        // 不存在的文件名同样为 None
+        assert_eq!(
+            query_session_attachment_meta(&conn, "sess_a", "nope.png").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn listing_only_returns_the_given_sessions_attachments_in_order() {
+        let conn = conn_with_two_sessions();
+        let a = query_session_attachments(&conn, "sess_a").unwrap();
+        assert_eq!(
+            a,
+            vec![
+                ("a_1.png".to_string(), "image/png".to_string()),
+                ("a_2.jpg".to_string(), "image/jpeg".to_string()),
+            ]
+        );
+        let b = query_session_attachments(&conn, "sess_b").unwrap();
+        assert_eq!(b.len(), 1);
+        assert!(query_session_attachments(&conn, "sess_none").unwrap().is_empty());
+    }
+
+    #[test]
+    fn attachment_name_validation_rejects_path_traversal() {
+        assert!(is_safe_attachment_name("45dc870d_148726fc.jpg"));
+        assert!(!is_safe_attachment_name(""));
+        assert!(!is_safe_attachment_name("../secret.db"));
+        assert!(!is_safe_attachment_name("a/b.png"));
+        assert!(!is_safe_attachment_name("a\\b.png"));
+        assert!(!is_safe_attachment_name(".."));
+    }
 }
 
 pub fn delete_attachment(filename: &str) -> Result<(), String> {

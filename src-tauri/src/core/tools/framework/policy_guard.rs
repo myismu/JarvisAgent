@@ -379,6 +379,7 @@ mod tests {
             destructive_warning: false,
             command_is_readonly: readonly_cmd,
             allowance: Vec::new(),
+            mcp_trusted: false,
         }
     }
 
@@ -392,6 +393,21 @@ mod tests {
         // 读类不受影响
         assert!(read_only_deny_reason("ReadFile", &json!({ "path": "a.ts" }), &facts).is_none());
         assert!(read_only_deny_reason("SearchRepo", &json!({ "dir": "a" }), &facts).is_none());
+    }
+
+    #[test]
+    fn mcp_allowance_key_granularity_matches_trust_level() {
+        // 未信任服务：单工具级（mcp_tool + 完整工具名）
+        let untrusted = mcp_allowance_keys("mcp__playwright__browser_click", Some("playwright"), false);
+        assert_eq!(untrusted.len(), 1);
+        assert_eq!(untrusted[0].kind, ALLOWANCE_KIND_MCP_TOOL);
+        assert_eq!(untrusted[0].scope, "mcp__playwright__browser_click");
+
+        // 已信任服务：整服务级（mcp_server + 服务名）
+        let trusted = mcp_allowance_keys("mcp__playwright__browser_click", Some("playwright"), true);
+        assert_eq!(trusted.len(), 1);
+        assert_eq!(trusted[0].kind, ALLOWANCE_KIND_MCP_SERVER);
+        assert_eq!(trusted[0].scope, "playwright");
     }
 
     #[test]
@@ -502,6 +518,8 @@ pub struct PreparedFacts {
     /// 会话级允许的键列表（类别 + 范围 + 说明）；空列表表示这次操作不支持会话级允许。
     /// 链式命令会有多把键（一段一把），判定侧要求**全部**被允许才放行。
     pub allowance: Vec<AllowanceKey>,
+    /// MCP 外部服务是否被用户标记为"信任"（未信任时无论档位每次询问，且不提供会话允许键）
+    pub mcp_trusted: bool,
 }
 
 impl PreparedFacts {
@@ -517,6 +535,7 @@ impl PreparedFacts {
             destructive_warning: self.destructive_warning,
             command_is_readonly: self.command_is_readonly,
             background_run: self.class == Some(ToolClass::Background),
+            mcp_trusted: self.mcp_trusted,
         }
     }
 }
@@ -638,6 +657,7 @@ pub async fn prepare_facts(ctx: &SessionContext, tool: &str, input: &Value) -> P
         destructive_warning: command_info.destructive,
         command_is_readonly: command_info.is_readonly,
         allowance,
+        mcp_trusted: false,
     }
 }
 
@@ -775,6 +795,10 @@ pub const ALLOWANCE_KIND_EDIT: &str = "edit_project";
 pub const ALLOWANCE_KIND_DELETE: &str = "delete";
 pub const ALLOWANCE_KIND_COMMAND: &str = "run_command";
 pub const ALLOWANCE_KIND_READ_OUTSIDE: &str = "read_outside";
+/// MCP 单工具级允许类别（用于未信任服务：允许在当前项目放行某一个具体 MCP 工具）
+pub const ALLOWANCE_KIND_MCP_TOOL: &str = "mcp_tool";
+/// MCP 整服务级允许类别（用于已信任服务：一次授权放行该服务在当前项目内的全部工具）
+pub const ALLOWANCE_KIND_MCP_SERVER: &str = "mcp_server";
 
 /// 为跨目录只读操作生成「本项目允许」范围键：每个项目外目标归一到其目录，
 /// 配合 `state.rs` 的目录前缀继承（`scope_covers`），允许一次后该外部目录及其子目录均免再问，
@@ -1355,6 +1379,57 @@ pub fn read_only_deny_reason(tool: &str, input: &Value, facts: &PreparedFacts) -
         );
     }
 
+    // 3. 外部 MCP 服务调用
+    if facts.class == Some(ToolClass::ExternalService) {
+        return Some(format!(
+            "只读保护已开启：外部 MCP 服务（{}）可能产生不可回滚的外部副作用，本会话不允许执行。",
+            tool
+        ));
+    }
+
+    None
+}
+
+/// 按服务信任状态构造 MCP 的「本项目允许」授权键（纯函数，便于测试）：
+/// - 已信任服务：整服务级键（`mcp_server` + 服务名），一次点击放行该服务的全部工具；
+/// - 未信任服务：单工具级键（`mcp_tool` + 完整工具名），精细放行单个工具；
+///   若此前给已信任服务授予过整服务键、之后又取消信任，因查找键切回 `mcp_tool`，整服务键自动失效。
+fn mcp_allowance_keys(
+    tool: &str,
+    server_name: Option<&str>,
+    trusted: bool,
+) -> Vec<AllowanceKey> {
+    if trusted {
+        if let Some(srv) = server_name {
+            return vec![AllowanceKey {
+                kind: ALLOWANCE_KIND_MCP_SERVER,
+                scope: srv.to_string(),
+                label: format!("本项目允许调用 MCP 服务 {} 的全部工具", srv),
+            }];
+        }
+    }
+    vec![AllowanceKey {
+        kind: ALLOWANCE_KIND_MCP_TOOL,
+        scope: tool.to_string(),
+        label: format!("本项目允许调用 MCP 工具 {}", tool),
+    }]
+}
+
+/// 从 MCP 工具名或资源工具入参中提取所属 MCP 服务名（用于查询该服务是否已被用户信任）
+fn extract_mcp_server_name(tool: &str, input: &Value) -> Option<String> {
+    if let Some(rest) = tool.strip_prefix(crate::core::mcp::MCP_TOOL_PREFIX) {
+        return rest.split("__").next().map(str::to_string);
+    }
+    if matches!(
+        tool,
+        "ConnectMcpServer" | "ListMcpResources" | "ReadMcpResource"
+    ) {
+        return input["server"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+    }
     None
 }
 
@@ -1377,7 +1452,22 @@ pub async fn enforce(
 ) -> EnforceResult {
     let manager = app.state::<crate::infra::state::state::SessionManager>();
     let ctx = manager.get_or_create(session_id).await;
-    let facts = prepare_facts(&ctx, tool, input).await;
+    let mut facts = prepare_facts(&ctx, tool, input).await;
+
+    // 外部 MCP 服务：补查服务信任状态，按两层粒度生成「本项目允许」授权键
+    if facts.class == Some(ToolClass::ExternalService) {
+        let server_name = extract_mcp_server_name(tool, input);
+        let trusted = if let (Some(mcp_state), Some(srv)) = (
+            app.try_state::<crate::core::mcp::McpManagerState>(),
+            server_name.as_deref(),
+        ) {
+            mcp_state.0.is_server_trusted(srv).await
+        } else {
+            false
+        };
+        facts.mcp_trusted = trusted;
+        facts.allowance = mcp_allowance_keys(tool, server_name.as_deref(), trusted);
+    }
 
     // ── 只读保护（用户显式开关，优先级最高）──
     // 放在档位判定之前：档位回答的是"要不要问用户"，只读保护回答的是"根本不许做"。
@@ -1624,6 +1714,17 @@ fn build_permission_message(
         }
     }
     msg.push_str(&format!("\n工具：{}", tool));
+    if facts.class == Some(ToolClass::ExternalService) {
+        if let Some(srv) = extract_mcp_server_name(tool, input) {
+            msg.push_str(&format!("\nMCP 服务：{}", srv));
+        }
+        let args_preview = serde_json::to_string(input).unwrap_or_default();
+        if !args_preview.is_empty() && args_preview != "{}" {
+            let clipped: String = args_preview.chars().take(240).collect();
+            msg.push_str(&format!("\n入参：{}", clipped));
+        }
+        msg.push_str("\n注意：此操作由外部 MCP 服务执行，不经过项目快照，无法回滚。");
+    }
     let _ = reason;
     if let Some(warning) = &facts.warning {
         msg.push_str(&format!("\n风险提示：{}", warning));

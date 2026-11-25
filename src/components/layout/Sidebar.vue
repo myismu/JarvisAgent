@@ -388,12 +388,12 @@ const openProject = async () => {
   }
 };
 
-const openSkillManager = () => {
+const openExtensions = () => {
   // 再点一次返回聊天：按钮同时充当“当前视图”指示。
   // 这里刻意不动 sessionStore.activeSessionId —— 它是消息渲染 / running 状态 /
   // 上下文快照的宿主，置空等于把当前会话卸载掉。两个选中态的问题在模板的
   // active 判定条件里解决（会话高亮只在聊天视图下成立），不靠改状态。
-  appView.toggleSkillManager();
+  appView.toggleExtensions();
 };
 
 // 在项目下新建对话
@@ -681,13 +681,16 @@ onUnmounted(() => {
           <button
             type="button"
             class="new-session-btn skill-btn"
-            :class="{ active: appView.isSkillManagerView }"
-            @click.stop="openSkillManager()"
+            :class="{ active: appView.isExtensionsView }"
+            @click.stop="openExtensions()"
           >
-            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
-              <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
+            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="7" height="7" rx="1.5"></rect>
+              <rect x="3" y="14" width="7" height="7" rx="1.5"></rect>
+              <rect x="14" y="14" width="7" height="7" rx="1.5"></rect>
+              <rect x="14" y="3" width="7" height="7" rx="1.5" transform="rotate(12 17.5 6.5)"></rect>
             </svg>
-            <span>{{ t('sidebar.skillManager') }}</span>
+            <span>{{ t('sidebar.extensions') }}</span>
           </button>
           <!-- 归档入口：垃圾桶图标 + 存量徽标。归档页集中承担列表 / 恢复 / 彻底删除，
                所以侧边栏这里不再有折叠块，也不再有任何彻底删除入口 —— 销毁性操作

@@ -96,6 +96,8 @@ pub enum ToolClass {
     SessionMgmt,
     /// 应用自身控制（模式切换等）
     AppControl,
+    /// 外部 MCP 服务调用（不经过项目快照，无法回滚）
+    ExternalService,
 }
 
 impl ToolClass {
@@ -111,6 +113,7 @@ impl ToolClass {
             ToolClass::Orchestrate => "orchestrate",
             ToolClass::SessionMgmt => "session_mgmt",
             ToolClass::AppControl => "app_control",
+            ToolClass::ExternalService => "external_service",
         }
     }
 
@@ -127,6 +130,7 @@ impl ToolClass {
             ToolClass::Orchestrate => "任务编排",
             ToolClass::SessionMgmt => "会话与记忆",
             ToolClass::AppControl => "应用控制",
+            ToolClass::ExternalService => "调用外部 MCP 服务",
         }
     }
 
@@ -149,7 +153,11 @@ impl ToolClass {
     pub fn always_asks(&self) -> bool {
         matches!(
             self,
-            ToolClass::Delete | ToolClass::Rename | ToolClass::RunCommand | ToolClass::Background
+            ToolClass::Delete
+                | ToolClass::Rename
+                | ToolClass::RunCommand
+                | ToolClass::Background
+                | ToolClass::ExternalService
         )
     }
 
@@ -180,6 +188,7 @@ impl ToolClass {
                 | ToolClass::RunCommand
                 | ToolClass::Background
                 | ToolClass::Rename
+                | ToolClass::ExternalService
         )
     }
 
@@ -201,6 +210,7 @@ impl ToolClass {
                 | ToolClass::Rename
                 | ToolClass::RunCommand
                 | ToolClass::Background
+                | ToolClass::ExternalService
         )
     }
 }
@@ -531,10 +541,60 @@ pub const TOOL_POLICIES: &[(&str, ToolPolicy)] = &[
             patch_field: None,
         },
     ),
+    // ── MCP 连接工具（会拉起本地子进程或建立远程连接，按外部服务信任模型审批） ──
+    (
+        "ConnectMcpServer",
+        ToolPolicy {
+            class: ToolClass::ExternalService,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    // ── MCP 外部资源只读按需工具（不改动状态，免审批；规划模式与子代理仍由注册表禁用） ──
+    (
+        "ListMcpResources",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "ReadMcpResource",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
+        "ViewSessionImage",
+        ToolPolicy {
+            class: READ_ONLY,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
 ];
 
-/// 查策略表；没登记返回 `None`（调用方要把它标成"未分类"）
+/// 动态 MCP 工具（`mcp__*`）的统一合成策略
+static MCP_EXTERNAL_SERVICE_POLICY: ToolPolicy = ToolPolicy {
+    class: ToolClass::ExternalService,
+    path_fields: &[],
+    command_field: None,
+    patch_field: None,
+};
+
+/// 查策略表；动态 MCP 工具（`mcp__*`）返回统一的 `ExternalService` 合成策略；
+/// 没登记返回 `None`（调用方要把它标成"未分类"）
 pub fn policy_for(tool: &str) -> Option<&'static ToolPolicy> {
+    if crate::core::mcp::is_mcp_tool_name(tool) {
+        return Some(&MCP_EXTERNAL_SERVICE_POLICY);
+    }
     TOOL_POLICIES
         .iter()
         .find(|(name, _)| *name == tool)
@@ -601,6 +661,8 @@ pub struct JudgementInput {
     /// judge() 据此把类别视同 Background（卡片文案"起后台服务"、只读保护直接拒绝），
     /// 而不是再依赖一个独立的工具名。
     pub background_run: bool,
+    /// MCP 外部服务是否已被用户标记为"信任"（默认 false；未信任服务一律每次询问，不享受档位自动放行）
+    pub mcp_trusted: bool,
 }
 
 /// 一次判定的结果
@@ -703,6 +765,14 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
 
     // 4. 默认就要问的类别
     if class_value.always_asks() {
+        // 外部 MCP 服务：未信任时无论处于何种审批档位，一律每次询问（信任模型硬边界）
+        if class_value == ToolClass::ExternalService && !input.mcp_trusted {
+            return ShadowDecision {
+                class,
+                outcome: Outcome::Ask,
+                reason: "外部 MCP 服务未信任（每次询问）".to_string(),
+            };
+        }
         // 只读命令（Get-ChildItem 这类）本来就免弹窗，新规则同样直接放行，
         // 否则观察数据会把"免询问的只读命令"算成打扰次数
         if input.command_is_readonly {
@@ -1453,5 +1523,47 @@ mod tests {
         let patch = "--- a/src/x.rs\n+++ b/src/x.rs\n@@\n--- a/src/y.rs\n+++ b/src/y.rs\n@@\n";
         let files = files_in_patch(patch);
         assert_eq!(files, vec!["src/x.rs".to_string(), "src/y.rs".to_string()]);
+    }
+
+    #[test]
+    fn mcp_untrusted_service_always_asks_in_all_modes() {
+        let input = JudgementInput {
+            mcp_trusted: false,
+            ..allow_input()
+        };
+        for mode in [
+            ApprovalMode::RequestApproval,
+            ApprovalMode::AutoApprove,
+            ApprovalMode::FullApprove,
+        ] {
+            let decision = judge("mcp__fs__read_file", mode, &input);
+            assert_eq!(decision.class, Some(ToolClass::ExternalService));
+            assert_eq!(
+                decision.outcome,
+                Outcome::Ask,
+                "未信任 MCP 服务在 {:?} 档必须询问",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_trusted_service_follows_approval_mode() {
+        let input = JudgementInput {
+            mcp_trusted: true,
+            ..allow_input()
+        };
+        assert_eq!(
+            judge("mcp__fs__read_file", ApprovalMode::RequestApproval, &input).outcome,
+            Outcome::Ask
+        );
+        assert_eq!(
+            judge("mcp__fs__read_file", ApprovalMode::AutoApprove, &input).outcome,
+            Outcome::Allow
+        );
+        assert_eq!(
+            judge("mcp__fs__read_file", ApprovalMode::FullApprove, &input).outcome,
+            Outcome::Allow
+        );
     }
 }

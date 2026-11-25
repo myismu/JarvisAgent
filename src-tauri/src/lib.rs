@@ -9,6 +9,7 @@ pub mod command;
 pub mod core;
 pub mod infra;
 
+use crate::core::mcp::{McpManager, McpManagerState};
 use crate::core::orchestration::subagents::SubAgentMonitorState;
 use crate::core::rollback::session_manager::SnapshotManagerRegistry;
 use crate::infra::background::{BackgroundState, CompactingState};
@@ -141,6 +142,9 @@ pub fn run() {
         println!("[System] 启动应用，暂无可恢复会话");
     }
 
+    let mcp_manager = McpManager::new_arc();
+    let mcp_manager_setup = mcp_manager.clone();
+
     tauri::Builder::default()
         .manage(SessionManager::new())
         .manage(BackgroundState::default())
@@ -151,12 +155,44 @@ pub fn run() {
         .manage(SnapshotRegistry(tokio::sync::RwLock::new(
             SnapshotManagerRegistry::new(),
         )))
+        .manage(McpManagerState(mcp_manager))
+        .setup(move |app| {
+            let handle = app.handle().clone();
+            let mgr = mcp_manager_setup.clone();
+            tauri::async_runtime::spawn(async move {
+                mgr.initialize(handle).await;
+            });
+            Ok(())
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // 只读自定义协议：让前端 <img> 直接按附件名从 SQLite session_attachments 渲染图片
+        .register_uri_scheme_protocol("jarvis-attachment", |_ctx, req| {
+            let raw_path = req.uri().path().trim_start_matches('/');
+            let valid = core::session::resource_repository::is_safe_attachment_name(raw_path);
+            if valid {
+                if let Ok(Some((mime, bytes))) =
+                    core::session::resource_repository::load_attachment(raw_path)
+                {
+                    return tauri::http::Response::builder()
+                        .status(200)
+                        .header("Content-Type", mime)
+                        .header("Access-Control-Allow-Origin", "*")
+                        .header("Cache-Control", "public, max-age=31536000, immutable")
+                        .body(bytes)
+                        .unwrap();
+                }
+            }
+            tauri::http::Response::builder()
+                .status(404)
+                .header("Content-Type", "text/plain; charset=utf-8")
+                .body(b"attachment not found".to_vec())
+                .unwrap()
+        })
         .invoke_handler(tauri::generate_handler![
             core::agent::ask_jarvis,
             core::agent::resume_jarvis,
@@ -275,6 +311,22 @@ pub fn run() {
             command::shell::save_shell_settings,
             command::permission::resolve_user_question,
             command::permission::get_pending_user_questions,
+            command::mcp::mcp_list_servers,
+            command::mcp::mcp_save_server,
+            command::mcp::mcp_delete_server,
+            command::mcp::mcp_import_json,
+            command::mcp::mcp_set_server_enabled,
+            command::mcp::mcp_set_server_trusted,
+            command::mcp::mcp_restart_server,
+            command::mcp::mcp_stop_server,
+            command::mcp::mcp_test_config,
+            command::mcp::mcp_list_tools,
+            command::mcp::mcp_set_tool_enabled,
+            command::mcp::mcp_list_resources,
+            command::mcp::mcp_read_resource,
+            command::mcp::mcp_list_prompts,
+            command::mcp::mcp_get_prompt,
+            command::mcp::mcp_get_server_logs,
         ])
         .build(tauri::generate_context!())
         .expect("构建失败")
@@ -286,6 +338,10 @@ pub fn run() {
                     let mut guard = bg.0.blocking_lock();
                     guard.kill_all_process_tree();
                     println!("[System] 已清理所有后台任务进程");
+                }
+                if let Some(mcp) = handle.try_state::<McpManagerState>() {
+                    tauri::async_runtime::block_on(mcp.0.shutdown_all());
+                    println!("[System] 已清理所有 MCP 服务进程");
                 }
                 // 退出收尾：内存态会话落库 + 活跃 run 标记 Interrupted。
                 // 事件驱动检查点没有"进程退出"这一落库时机，此前直接关窗

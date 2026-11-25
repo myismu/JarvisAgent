@@ -181,6 +181,29 @@ pub async fn handle_tool_call(
         }
         (result.output, result.input_tokens, result.output_tokens)
     } else {
+        // 拦截直接调用动态 MCP 工具：MCP 工具一律为按需工具，须经 ExecuteTool 执行
+        if crate::core::mcp::is_mcp_tool_name(name) {
+            if !crate::core::mcp::is_mcp_allowed_in_context(intent, work_mode) {
+                return (
+                    format!(
+                        "MCP 工具 '{}' 在当前模式/意图下不可用（规划模式与子代理禁用 MCP 工具）。",
+                        name
+                    ),
+                    0,
+                    0,
+                );
+            }
+            return (
+                format!(
+                    "MCP 工具 '{}' 是按需工具，不能直接调用。请通过 ExecuteTool 代理执行。\n\
+                     用法: ExecuteTool(name=\"{}\", args={{...}})",
+                    name, name
+                ),
+                0,
+                0,
+            );
+        }
+
         // 拦截直接调用按需工具：按需工具必须通过 ExecuteTool 代理执行。
         //
         // 但先判一次它在当前模式/意图下是否可用：不可用的（如规划模式下的 RunSubagent）
@@ -533,12 +556,27 @@ pub async fn dispatch_core_tool(
         // 工作模式切换
         "SwitchWorkMode" => agent_tools::switch_work_mode(app, input, session_id).await,
 
+        // MCP 连接与资源按需工具
+        "ConnectMcpServer" => {
+            agent_tools::connect_mcp_server(app, input, intent, work_mode).await
+        }
+        "ListMcpResources" => {
+            agent_tools::list_mcp_resources(app, input, intent, work_mode).await
+        }
+        "ReadMcpResource" => {
+            agent_tools::read_mcp_resource(app, input, session_id, intent, work_mode).await
+        }
+        "ViewSessionImage" => agent_tools::view_session_image(app, input, session_id).await,
+
         // 工具搜索（纯搜索，始终成功）
         "DiscoverTools" => {
+            use tauri::Manager;
             let filter = tool_filter_for(app, session_id).await;
+            let mcp_state = app.try_state::<crate::core::mcp::McpManagerState>();
+            let mcp_ref = mcp_state.as_deref().map(|s| s.0.as_ref());
             return framework::ToolCallResult::ok(
-                framework::tool_search::handle_search_tools(
-                    input, intent, session_id, work_mode, &filter,
+                framework::tool_search::handle_search_tools_with_mcp(
+                    input, intent, session_id, work_mode, &filter, mcp_ref,
                 )
                 .await,
             );

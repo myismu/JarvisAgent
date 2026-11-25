@@ -9,6 +9,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { marked } from 'marked';
+// 确保 marked 自定义渲染器（含本地图片 convertFileSrc 转换）已注册到全局实例
+import '../../utils/markdown';
 
 const props = defineProps<{
   content: string;

@@ -420,6 +420,30 @@ impl PipelineState {
             .await;
             self.req_input_tokens += sub_in;
             self.req_output_tokens += sub_out;
+
+            // 若本轮工具（如 MCP 浏览器截图）产生了图片附件，且当前模型支持视觉能力，
+            // 直接复用现有 ContentBlock::Image 通道附带进本轮 tool_results（双协议自动兼容、往轮自动折叠）。
+            let pending_images: Vec<(String, String)> = {
+                let mut guard = self.ctx.pending_tool_images.lock().await;
+                std::mem::take(&mut *guard)
+            };
+            if !pending_images.is_empty() {
+                let supports_vision = crate::infra::llm::registry::query_capabilities(&self.model_id)
+                    .map(|c| c.vision)
+                    .unwrap_or(false);
+                if supports_vision {
+                    for (media_type, filename) in pending_images {
+                        tool_results.push(ContentBlock::Image {
+                            source: ImageSource {
+                                r#type: "base64".to_string(),
+                                media_type,
+                                data: String::new(),
+                                file_path: Some(filename),
+                            },
+                        });
+                    }
+                }
+            }
             // 子代理用量另记一份，**仅供展示/诊断**：`JarvisResult`/`agent_runs`
             // 汇总里的输入输出已是含子代理的总量，这两个数用来说清"其中多少是子代理烧的"。
             // 它们**不参与** `sessions.total_*`——子代理每轮自己直写明细与累计。

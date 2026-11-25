@@ -213,6 +213,9 @@ pub struct SessionContext {
     /// 工具调用的结构化标志 (break_loop, is_error)，按工具名索引
     /// 由 dispatch_tool_call 写入，tools_runner 读取后清除
     pub tool_result_flags: Mutex<HashMap<String, (bool, bool)>>,
+    /// 本轮工具调用（如 MCP 浏览器截图）产生的待附加视觉图片 `(media_type, attachment_filename)`
+    /// 由工具执行层写入，main_loop 汇总 tool_results 时消费并清空（仅视觉模型附加）
+    pub pending_tool_images: Mutex<Vec<(String, String)>>,
     /// 权限判定的"本轮"状态（本轮改过哪些文件）——给批量规则用
     pub permission_turn: Mutex<crate::core::tools::framework::policy_guard::PermissionTurnState>,
     /// 权限档位："request_approval"（请求审批，默认）/ "auto_approve"（帮我批准）
@@ -286,6 +289,7 @@ impl SessionContext {
             read_file_fingerprints: Mutex::new(HashMap::new()),
             loop_continuation_pending: Mutex::new(false),
             tool_result_flags: Mutex::new(HashMap::new()),
+            pending_tool_images: Mutex::new(Vec::new()),
             permission_turn: Mutex::new(Default::default()),
             approval_mode: Mutex::new("request_approval".to_string()),
             session_allowances: Mutex::new(Vec::new()),

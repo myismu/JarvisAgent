@@ -19,8 +19,10 @@
 
 mod ask_user;
 mod compact;
+mod mcp_resource;
 mod memory;
 mod plan;
+mod session_image;
 mod skill;
 mod subagent;
 // 子代理执行预算判据（无进展超时 / 硬上限）：纯函数判据 + 时间锚点状态，
@@ -30,11 +32,13 @@ mod switch_mode;
 
 pub use ask_user::ask_user;
 pub use compact::compact;
+pub use mcp_resource::{connect_mcp_server, list_mcp_resources, read_mcp_resource};
 pub use memory::{
     consolidate_memory, extract_profile, read_memory, update_memory, MEMORY_BUDGET_CHARS,
     MEMORY_CONSOLIDATE_THRESHOLD_CHARS, MEMORY_SECTIONS, PROFILE_SECTIONS,
 };
 pub use plan::propose_plan;
+pub use session_image::view_session_image;
 pub use skill::load_skill;
 pub use subagent::run_subagent;
 pub use switch_mode::switch_work_mode;
@@ -105,6 +109,18 @@ pub async fn get_tool_catalog(
         }
     }
 
+    // MCP 外部工具列表（由 catalog 统一按模式/意图/启用状态过滤）
+    {
+        use tauri::Manager;
+        if let Some(mcp_state) = app.try_state::<crate::core::mcp::McpManagerState>() {
+            if let Some(mcp_section) =
+                crate::core::mcp::format_mcp_catalog_section(&mcp_state.0, intent, work_mode).await
+            {
+                out.push_str(&mcp_section);
+            }
+        }
+    }
+
     if out.is_empty() {
         return framework::ToolCallResult::error(
             "当前意图下没有可用的按需工具或技能。".to_string(),
@@ -137,12 +153,67 @@ crate::define_tools! {
         crate::tool_def!(
             "GetToolCatalog",
             desc: "获取可用工具和技能目录",
-            hint: "get tool catalog available tools skills discover",
+            hint: "get tool catalog available tools skills mcp discover",
             // 末端原写"技能通过 LoadSkill 直接加载"，已删（2026-09-21）：
             // 那是 LoadSkill **自己**的用法说明，该在它的 schema 里（见 LoadSkill 的
             // schema_desc）。写在这里等于无条件推荐一个用户可能已经关掉的工具。
-            schema_desc: "获取当前可用的按需工具列表（按分类分组）和技能列表。当你需要使用非核心工具（如 WriteFile、EditFile 等写文件工具）或加载技能时，必须先调用此工具获取可用资源目录。按需工具通过 DiscoverTools + ExecuteTool 两步执行。",
+            schema_desc: "获取当前可用的按需工具列表（按分类分组）、MCP 外部工具列表和技能列表。当你需要使用非核心工具（如 WriteFile、EditFile 等写文件工具、MCP 外部工具）或加载技能时，必须先调用此工具获取可用资源目录。按需工具与 MCP 外部工具均通过 DiscoverTools + ExecuteTool 两步执行。",
             category: "系统",
+            read_only: true,
+            concurrency_safe: true,
+        ),
+        crate::tool_def!(
+            "ConnectMcpServer",
+            desc: "连接待首次初始化或已断开的已启用 MCP 服务并获取工具列表",
+            hint: "mcp connect start init server tools",
+            schema_desc: "连接一个已启用但尚无工具缓存（或连接已断开）的 MCP 服务，完成握手并返回它暴露的可用工具列表。注意：如果 GetToolCatalog 已经列出了该服务的具体工具名，无需调用本工具，直接通过 DiscoverTools + ExecuteTool 执行即可（待机服务会自动懒启动）。",
+            props: {
+                server: string => "要连接的已启用 MCP 服务名称（来自 GetToolCatalog 的待连接列表）",
+            },
+            required: ["server"],
+            category: "MCP 扩展",
+            defer: true,
+            read_only: false,
+            concurrency_safe: false,
+        ),
+        crate::tool_def!(
+            "ListMcpResources",
+            desc: "列出已启用 MCP 服务提供的外部资源",
+            hint: "mcp resource list external data uri",
+            schema_desc: "列出已启用 MCP 服务提供的外部资源（URI、名称、MIME 类型与描述）。可选按 server 参数过滤指定服务。",
+            props: {
+                server: string => "可选：只列出指定 MCP 服务名的资源，省略则列出全部已启用服务的资源",
+            },
+            category: "MCP 扩展",
+            defer: true,
+            read_only: true,
+            concurrency_safe: false,
+        ),
+        crate::tool_def!(
+            "ReadMcpResource",
+            desc: "读取指定 MCP 服务的资源内容",
+            hint: "mcp resource read fetch uri external",
+            schema_desc: "读取指定 MCP 服务的外部资源内容（文本直接返回，二进制返回元信息占位）。请先通过 ListMcpResources 获取有效的 server 与 uri。",
+            props: {
+                server: string => "MCP 服务名称",
+                uri: string => "要读取的资源 URI",
+            },
+            required: ["server", "uri"],
+            category: "MCP 扩展",
+            defer: true,
+            read_only: true,
+            concurrency_safe: false,
+        ),
+        crate::tool_def!(
+            "ViewSessionImage",
+            desc: "重新查看当前会话中已被折叠的历史图片（仅限本会话）",
+            hint: "view image attachment screenshot history recall vision",
+            schema_desc: "重新加载当前会话中已被折叠的历史图片到本轮视觉上下文（系统自动限定当前会话 ID，无法跨会话查询）。支持传入历史占位中的 filename 或 attachment://<filename>；省略 filename 时返回当前会话所有可回看的图片列表。",
+            props: {
+                filename: string => "可选：要回看的图片附件名（如历史占位中的 filename）；省略则返回本会话全部图片列表",
+            },
+            category: "系统",
+            defer: true,
             read_only: true,
             concurrency_safe: true,
         ),

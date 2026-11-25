@@ -348,6 +348,10 @@ impl ToolRegistry {
                         // 后台任务检查（启动入口已并入 RunCommand；子代理的后台禁令
                         // 由 tools::subagent_background_block_message 在分发层按入参拦截）
                         | "CheckBackgroundCommand"
+                        // MCP 资源与连接工具：第一期子代理一律禁用 MCP 能力
+                        | "ConnectMcpServer"
+                        | "ListMcpResources"
+                        | "ReadMcpResource"
                 )
             }
             _ => true, // PROJECT_ACTION
@@ -389,8 +393,13 @@ impl ToolRegistry {
     /// 同时用它过滤工具目录（GetToolCatalog / DiscoverTools），规划模式下它们从目录里
     /// 直接消失——这就是"规划模式看不见派子代理"的实现方式（2026-09-21 RunSubagent
     /// 从核心工具降级为按需工具之后；此前它的 schema 常驻 tools 参数，规划模式一直看得见）。
-    pub const PLAN_BLOCKED_EXTRA: &'static [&'static str] =
-        &["RunSubagent", "RunSubagentsSequentially"];
+    pub const PLAN_BLOCKED_EXTRA: &'static [&'static str] = &[
+        "RunSubagent",
+        "RunSubagentsSequentially",
+        "ConnectMcpServer",
+        "ListMcpResources",
+        "ReadMcpResource",
+    ];
 
     /// 规划模式下这个工具名是否不可用（写工具 + [`Self::PLAN_BLOCKED_EXTRA`]）。
     ///
@@ -636,5 +645,77 @@ mod tool_filter_tests {
             "edit",
             &filter
         ));
+    }
+
+    /// MCP 连接与资源工具在规划模式和子代理中一律禁用，仅在主代理编辑模式可用
+    #[test]
+    fn mcp_deferred_tools_are_blocked_in_plan_and_subagent_modes() {
+        let registry = ToolRegistry::global();
+        let allow_all = ToolFilter::allow_all();
+
+        for name in ["ConnectMcpServer", "ListMcpResources", "ReadMcpResource"] {
+            let def = registry
+                .get(name)
+                .unwrap_or_else(|| panic!("工具 {} 必须已注册", name));
+            assert!(def.should_defer, "{} 应为按需工具", name);
+            assert!(
+                ToolRegistry::is_available(def, "PROJECT_ACTION", "edit", &allow_all),
+                "{} 在主代理编辑模式下应可用",
+                name
+            );
+            assert!(
+                !ToolRegistry::is_available(def, "PROJECT_ACTION", "plan", &allow_all),
+                "{} 在规划模式下必须禁用",
+                name
+            );
+            assert!(
+                !ToolRegistry::is_available(def, "SUBAGENT", "edit", &allow_all),
+                "{} 在子代理中必须禁用",
+                name
+            );
+        }
+    }
+
+    /// ViewSessionImage 为只读按需工具，规划模式与编辑模式均应可用，且归类为 ReadOnly
+    #[test]
+    fn view_session_image_is_readonly_deferred_and_available_in_plan_and_edit() {
+        use crate::core::tools::framework::policy::{self, ToolClass};
+
+        let registry = ToolRegistry::global();
+        let allow_all = ToolFilter::allow_all();
+        let def = registry
+            .get("ViewSessionImage")
+            .expect("ViewSessionImage 必须已注册");
+
+        assert!(def.should_defer, "ViewSessionImage 应为按需工具");
+        assert!(def.is_read_only, "ViewSessionImage 应标记为只读");
+        assert!(ToolRegistry::is_available(
+            def,
+            "PROJECT_ACTION",
+            "edit",
+            &allow_all
+        ));
+        assert!(ToolRegistry::is_available(
+            def,
+            "PROJECT_ACTION",
+            "plan",
+            &allow_all
+        ));
+        assert_eq!(
+            policy::policy_for("ViewSessionImage").map(|p| p.class),
+            Some(ToolClass::ReadOnly)
+        );
+        assert_eq!(
+            policy::policy_for("ListMcpResources").map(|p| p.class),
+            Some(ToolClass::ReadOnly)
+        );
+        assert_eq!(
+            policy::policy_for("ReadMcpResource").map(|p| p.class),
+            Some(ToolClass::ReadOnly)
+        );
+        assert_eq!(
+            policy::policy_for("ConnectMcpServer").map(|p| p.class),
+            Some(ToolClass::ExternalService)
+        );
     }
 }

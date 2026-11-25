@@ -155,10 +155,27 @@ pub async fn handle_search_tools(
     work_mode: &str,
     filter: &ToolFilter,
 ) -> String {
+    handle_search_tools_with_mcp(input, intent, session_id, work_mode, filter, None).await
+}
+
+/// DiscoverTools 处理函数（支持合并动态 MCP 工具索引）
+pub async fn handle_search_tools_with_mcp(
+    input: &serde_json::Value,
+    intent: &str,
+    session_id: &str,
+    work_mode: &str,
+    filter: &ToolFilter,
+    mcp: Option<&crate::core::mcp::McpManager>,
+) -> String {
     let query = input["query"].as_str().unwrap_or("");
     let max_results = input["max_results"].as_u64().unwrap_or(5).clamp(1, 20) as usize;
 
-    let deferred = get_deferred_tool_search_entries(intent, work_mode, filter);
+    let mut deferred = get_deferred_tool_search_entries(intent, work_mode, filter);
+    if let Some(mcp_mgr) = mcp {
+        let mcp_entries =
+            crate::core::mcp::list_available_mcp_search_entries(mcp_mgr, intent, work_mode).await;
+        deferred.extend(mcp_entries);
+    }
 
     // 能力边界结论：让"搜不到某个工具"变成确定的答案，而不是让模型反复换关键词再试
     let caps = super::capabilities::Capabilities::for_work_mode(work_mode, filter);
@@ -186,7 +203,16 @@ pub async fn handle_search_tools(
     let mut result = format!("匹配到 {} 个工具，完整参数定义如下：\n", matches.len());
 
     for name in &matches {
-        if let Some(schema) = get_deferred_tool_full_schema(name, filter) {
+        let schema_opt = if crate::core::mcp::is_mcp_tool_name(name) {
+            if let Some(mcp_mgr) = mcp {
+                crate::core::mcp::resolve_mcp_tool_schema(mcp_mgr, name, intent, work_mode).await
+            } else {
+                None
+            }
+        } else {
+            get_deferred_tool_full_schema(name, filter)
+        };
+        if let Some(schema) = schema_opt {
             let json_str = serde_json::to_string_pretty(&schema).unwrap_or_default();
             result.push_str(&format!("\n工具: {}\n```json\n{}\n```\n", name, json_str));
         }
@@ -239,6 +265,22 @@ pub async fn handle_execute_tool(
 
     // 诊断：本 session 内是否 DiscoverTools 过该工具
     let searched_before = logger.has_searched(session_id, name);
+
+    // ── 动态 MCP 工具分支（`mcp__{server}__{tool}`）──
+    if crate::core::mcp::is_mcp_tool_name(name) {
+        return execute_mcp_deferred_tool(
+            app,
+            name,
+            &args,
+            input,
+            session_id,
+            agent_type,
+            intent,
+            work_mode,
+            searched_before,
+        )
+        .await;
+    }
 
     // 校验：工具是否存在
     let tool_def = match ToolRegistry::global().get(name) {
@@ -388,6 +430,190 @@ pub async fn handle_execute_tool(
 
     // 直接返回 ToolCallResult，保留 break_loop/is_error 标志
     // （如 ProposePlan 的 break_loop=true 需要传递到 pipeline 主循环）
+    result
+}
+
+/// 动态 MCP 工具代理执行分支（可用性唯一口径校验 → 权限审批 → 懒启动调用 → 审计日志）
+#[allow(clippy::too_many_arguments)]
+async fn execute_mcp_deferred_tool(
+    app: &tauri::AppHandle,
+    qualified_name: &str,
+    args: &serde_json::Value,
+    raw_input: &serde_json::Value,
+    session_id: &str,
+    agent_type: &str,
+    intent: &str,
+    work_mode: &str,
+    searched_before: bool,
+) -> super::ToolCallResult {
+    use tauri::Manager;
+    let logger = super::tool_call_logger::tool_call_logger();
+
+    let Some(mcp_state) = app.try_state::<crate::core::mcp::McpManagerState>() else {
+        return super::ToolCallResult::error("MCP 管理器未初始化。".to_string());
+    };
+
+    // 1. 可用性唯一口径校验（含规划模式 / 子代理 / 停用 / 单工具开关拦截）
+    let descriptor = match crate::core::mcp::catalog::resolve_mcp_tool_for_execution(
+        &mcp_state.0,
+        qualified_name,
+        intent,
+        work_mode,
+    )
+    .await
+    {
+        Ok(desc) => desc,
+        Err(reason) => {
+            logger.log_deferred_call(
+                session_id,
+                agent_type,
+                qualified_name,
+                raw_input,
+                intent,
+                work_mode,
+                super::tool_call_logger::ToolCallStatus::Blocked,
+                Some(super::tool_call_logger::ErrorType::ModeBlocked),
+                Some(reason.clone()),
+                searched_before,
+                super::tool_call_logger::TokenUsage::NONE,
+            );
+            return super::ToolCallResult::error(reason);
+        }
+    };
+
+    // 2. 权限判定与审批（ExternalService 类 + 信任模型）
+    let approval_note = match super::policy_guard::enforce(
+        app,
+        session_id,
+        qualified_name,
+        args,
+        agent_type,
+    )
+    .await
+    {
+        super::policy_guard::EnforceResult::Allow { user_note } => user_note,
+        super::policy_guard::EnforceResult::Block(blocked) => {
+            logger.log_deferred_call(
+                session_id,
+                agent_type,
+                qualified_name,
+                raw_input,
+                intent,
+                work_mode,
+                super::tool_call_logger::ToolCallStatus::Blocked,
+                Some(super::tool_call_logger::ErrorType::ModeBlocked),
+                Some(blocked.output.chars().take(500).collect()),
+                searched_before,
+                super::tool_call_logger::TokenUsage::NONE,
+            );
+            return blocked;
+        }
+    };
+
+    // 3. 取会话取消令牌并调用 MCP 服务（若处于 Idle 会自动透明拉起）
+    let cancel_token = if let Some(sm) =
+        app.try_state::<crate::infra::state::state::SessionManager>()
+    {
+        let ctx = sm.get_or_create(session_id).await;
+        ctx.current_cancel_token()
+    } else {
+        None
+    };
+
+    let call_result = mcp_state
+        .0
+        .call_tool(
+            &descriptor.server_name,
+            &descriptor.original_tool_name,
+            args,
+            cancel_token.as_ref(),
+        )
+        .await;
+
+    let mut result = match call_result {
+        Ok((mut output, is_error, images)) => {
+            // 若 MCP 工具返回了图片，统一只存一份到 session_attachments 表：
+            // 1) 前端通过 attachment://<filename> 经自定义协议直读显示；
+            // 2) 多模态视觉模型通过 pending_tool_images 复用同一份附件看图；
+            // 3) 彻底删除会话时自动连带清理，零磁盘孤儿文件。
+            if !images.is_empty() {
+                let mut saved_notes = Vec::with_capacity(images.len());
+                let mut saved_for_vision = Vec::with_capacity(images.len());
+                for (media_type, base64_data) in images {
+                    let approx_kb = (base64_data.len() * 3 / 4) as f64 / 1024.0;
+                    let filename = crate::core::session::save_image_to_file(
+                        session_id,
+                        &media_type,
+                        &base64_data,
+                    );
+                    saved_notes.push(format!(
+                        "[图片已存入会话附件] attachment://{} (mime={}, 约 {:.1} KB)。如需展示给用户，请在回复中使用 Markdown 图片语法: ![截图](attachment://{})",
+                        filename, media_type, approx_kb, filename
+                    ));
+                    saved_for_vision.push((media_type, filename));
+                }
+                if !saved_notes.is_empty() {
+                    if !output.is_empty() {
+                        output.push('\n');
+                    }
+                    output.push_str(&saved_notes.join("\n"));
+                }
+                if let Some(sm) =
+                    app.try_state::<crate::infra::state::state::SessionManager>()
+                {
+                    let ctx = sm.get_or_create(session_id).await;
+                    let mut pending = ctx.pending_tool_images.lock().await;
+                    pending.extend(saved_for_vision);
+                }
+            }
+            if is_error {
+                super::ToolCallResult::error(output)
+            } else {
+                super::ToolCallResult::ok(output)
+            }
+        }
+        Err(err) => super::ToolCallResult::error(format!(
+            "MCP 工具 '{}'（服务 '{}'）调用失败: {}",
+            descriptor.original_tool_name, descriptor.server_name, err
+        )),
+    };
+
+    if let Some(note) = approval_note {
+        result
+            .output
+            .push_str(&format!("\n\n【用户审批附言】{}", note));
+    }
+
+    if result.is_error {
+        logger.log_deferred_call(
+            session_id,
+            agent_type,
+            qualified_name,
+            raw_input,
+            intent,
+            work_mode,
+            super::tool_call_logger::ToolCallStatus::Error,
+            Some(super::tool_call_logger::ErrorType::ExecutionFailed),
+            Some(result.output.chars().take(500).collect()),
+            searched_before,
+            super::tool_call_logger::TokenUsage::NONE,
+        );
+    } else {
+        logger.log_deferred_call(
+            session_id,
+            agent_type,
+            qualified_name,
+            raw_input,
+            intent,
+            work_mode,
+            super::tool_call_logger::ToolCallStatus::Ok,
+            None,
+            None,
+            searched_before,
+            super::tool_call_logger::TokenUsage::NONE,
+        );
+    }
+
     result
 }
 

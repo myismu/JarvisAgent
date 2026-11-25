@@ -182,9 +182,11 @@ pub fn restore_image_data(history_snapshot: &mut [Message], current_turn_start: 
             for block in blocks.drain(..) {
                 match block {
                     ContentBlock::Image { source } => {
-                        new_blocks.push(ContentBlock::Text {
-                            text: format!("[图片: {}]", source.media_type),
-                        });
+                        let summary = match source.file_path.as_deref().filter(|s| !s.is_empty()) {
+                            Some(fp) => format!("[图片: {} | filename={}]", source.media_type, fp),
+                            None => format!("[图片: {}]", source.media_type),
+                        };
+                        new_blocks.push(ContentBlock::Text { text: summary });
                     }
                     other => new_blocks.push(other),
                 }
@@ -393,6 +395,56 @@ mod tests {
         match first_block(&history[0]) {
             ContentBlock::Text { text } => assert_eq!(text, "[图片: image/png]"),
             other => panic!("应折叠为文本，实际: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn restore_image_data_preserves_filename_in_folded_placeholder() {
+        let mut history = vec![
+            Message::User {
+                content: Content::Multiple(vec![
+                    ContentBlock::Image {
+                        source: ImageSource {
+                            r#type: "base64".to_string(),
+                            media_type: "image/jpeg".to_string(),
+                            data: "OLD_WITH_FILE".to_string(),
+                            file_path: Some("45dc870d_148726fc.jpg".to_string()),
+                        },
+                    },
+                    ContentBlock::Image {
+                        source: image_source("OLD_NO_FILE"),
+                    },
+                ]),
+            },
+            Message::Assistant {
+                content: Content::Single("done".to_string()),
+            },
+            user_with_image("CURRENT"),
+        ];
+
+        restore_image_data(&mut history, 2);
+
+        match &history[0] {
+            Message::User {
+                content: Content::Multiple(blocks),
+            } => {
+                match &blocks[0] {
+                    ContentBlock::Text { text } => {
+                        assert_eq!(text, "[图片: image/jpeg | filename=45dc870d_148726fc.jpg]");
+                    }
+                    other => panic!("带 file_path 的往轮图片应折叠并保留 filename=，实际: {:?}", other),
+                }
+                match &blocks[1] {
+                    ContentBlock::Text { text } => assert_eq!(text, "[图片: image/png]"),
+                    other => panic!("无 file_path 的往轮图片应折叠为普通占位，实际: {:?}", other),
+                }
+            }
+            other => panic!("期望多块用户消息，实际: {:?}", other),
+        }
+
+        match first_block(&history[2]) {
+            ContentBlock::Image { source } => assert_eq!(source.data, "CURRENT"),
+            other => panic!("本轮图片不应被折叠，实际: {:?}", other),
         }
     }
 }

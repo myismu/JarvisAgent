@@ -13,6 +13,7 @@
 
 pub mod agent;
 pub mod complex_task;
+pub mod mcp;
 pub mod orchestration;
 pub mod rollback;
 pub mod session;

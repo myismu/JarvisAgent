@@ -29,6 +29,7 @@ use crate::command::history::{
     AgentTurnSnapshot as HistoryTurnSnapshot, AgentTurnTokens as HistoryTurnTokens,
     PagedSessionMessages, SessionMessage,
 };
+use crate::command::mcp::{McpPromptItemView, McpResourceItemView};
 use crate::command::permission::{
     PendingPermissionItem, PermissionResolvedPayload, PermissionStateView, ResolvePermissionResult,
     SessionAllowance, SessionPermissionSettingsView,
@@ -36,6 +37,11 @@ use crate::command::permission::{
 use crate::command::prompt::{PromptDetail, PromptMeta};
 use crate::command::session::SessionThinkingSnapshot;
 use crate::command::tool::ToolMeta;
+use crate::core::mcp::{
+    CachedPromptArgument, McpImportItemResult, McpIsolation, McpPromptMessageView,
+    McpPromptRenderResult, McpResourceReadResult, McpServerConfig, McpServerStatus,
+    McpServerSummary, McpTestConfigResult, McpToolHints, McpToolView, McpTransportKind,
+};
 use crate::core::orchestration::agent_runs::{
     AgentRun, AgentRunLoopEvent, AgentRunStatus, ResumeAgentRunPlan,
 };
@@ -65,7 +71,8 @@ use crate::infra::types::events::{
     AgentReadOnlyChangedEvent, AgentStepEvent, AgentWorkModeChangedEvent, ApprovalModeChangedEvent,
     BackgroundFailedEvent, BgCompactingChangedEvent, ChatContentEvent, ChatStreamEvent,
     ChatThinkingEvent, ChatToolDebugEvent, ChatToolStartEvent, ChatTurnEndEvent,
-    ChatTurnStartEvent, CheckpointCreatedEvent, MemoryUpdatedEvent, PermissionRequestEvent,
+    ChatTurnStartEvent, CheckpointCreatedEvent, McpServerStatusEvent, MemoryUpdatedEvent,
+    PermissionRequestEvent,
     PermissionResolvedEvent, PlanProposalEvent, PlanProposalStreamEvent, ResolveUserQuestionResult,
     SessionAllowancesChangedEvent, SessionMessagesChangedEvent, SessionThinkingModeChangedEvent,
     SnapshotCreatedEvent, SubagentTraceUpdatedEvent, TodoUpdateEvent, UserQuestionAnswerItem,
@@ -218,6 +225,23 @@ fn render_contracts_ts() -> String {
         UserQuestionRequestEvent::decl(),
         UserQuestionResolvedEvent::decl(),
         UserQuestionAnswerItem::decl(),
+        // MCP 扩展服务契约（core/mcp/ & command/mcp.rs）
+        McpIsolation::decl(),
+        McpTransportKind::decl(),
+        McpToolHints::decl(),
+        McpServerConfig::decl(),
+        McpServerStatus::decl(),
+        McpServerSummary::decl(),
+        McpToolView::decl(),
+        McpTestConfigResult::decl(),
+        McpImportItemResult::decl(),
+        McpResourceItemView::decl(),
+        McpResourceReadResult::decl(),
+        CachedPromptArgument::decl(),
+        McpPromptItemView::decl(),
+        McpPromptMessageView::decl(),
+        McpPromptRenderResult::decl(),
+        McpServerStatusEvent::decl(),
         ResolveUserQuestionResult::decl(),
     ];
 

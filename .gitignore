@@ -33,6 +33,7 @@ dist-ssr
 
 # JarvisAgent Runtime Data
 data/
+.playwright-mcp/
 .acl-recovery/
 .staging/
 .sessions/

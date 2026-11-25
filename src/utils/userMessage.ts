@@ -14,6 +14,24 @@ export function plainUserText(raw: unknown): string {
 }
 
 /**
+ * 从历史用户消息的 HTML 片段里提取图片（data URI）。
+ *
+ * 后端 `user_display_content` 会把用户图片以 `<img src="data:...">` 内联进 userContent，
+ * 而气泡只渲染 `message.images`；实时发送时 images 由前端自己填，**历史加载路径**
+ * 此前只剥标签取文本、从不提取图片，于是重启后用户图片全部丢失。
+ */
+export function extractUserImages(raw: unknown): string[] {
+  const html = String(raw ?? '');
+  const out: string[] = [];
+  const re = /<img\b[^>]*?\bsrc="(data:image\/[^"]+)"/gi;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(html)) !== null) {
+    out.push(match[1]);
+  }
+  return out;
+}
+
+/**
  * 判定用户消息是否需要折叠：超过 6 行或 500 字符。
  * 阈值取自主对话的既有行为，改这里会同时影响主对话与子 Agent 轨迹。
  */

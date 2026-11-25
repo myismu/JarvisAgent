@@ -57,6 +57,21 @@ pub fn global_memory_path() -> PathBuf {
     global_dir().join(constants::FILE_GLOBAL_MEMORY)
 }
 
+/// MCP 服务配置文件路径（`data/mcp-servers.json`，全局配置）
+pub fn mcp_servers_path() -> PathBuf {
+    data_root().join("mcp-servers.json")
+}
+
+/// MCP 能力元数据本地缓存路径（`data/mcp-cache.json`，支撑懒启动下展示工具目录）
+pub fn mcp_cache_path() -> PathBuf {
+    data_root().join("mcp-cache.json")
+}
+
+/// MCP 子进程日志目录（`data/logs/mcp/`）
+pub fn mcp_logs_dir() -> PathBuf {
+    ensure_dir(logs_dir().join("mcp"))
+}
+
 pub fn ensure_base_layout() {
     ensure_dir(data_root());
     ensure_dir(global_dir());
