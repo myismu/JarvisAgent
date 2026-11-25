@@ -29,14 +29,18 @@ const prefs = usePreferences();
 const {
   rollbackMenu,
   rollbackConfirm,
+  editResendConfirm,
   rollbackLoading,
   rollbackError,
   closeRollbackMenu,
   handleRollbackClickVue,
   executeRollback,
   confirmRollback,
+  submitEditedMessage,
+  confirmEditResend,
+  cancelEditResend,
 } = useChatRollback();
-const { copyCodeBlock, copyTable } = useChatClipboard();
+const { copyCodeBlock, copyTable, copyPlainText } = useChatClipboard();
 const responseAreaRef = ref<HTMLElement | null>(null);
 /** 视口是否贴底：滚动事件与程序化落底共同维护的统一事实源。 */
 const atBottom = ref(true);
@@ -204,6 +208,97 @@ function convertSnapshotToTurn(snapshot: AgentTurnSnapshot): AgentCurrentTurn {
 
 const expandedUserMsgs = ref(new Set<string>());
 
+// ── 用户消息操作栏：复制反馈 + 原地编辑 ──
+const copiedUserMsgId = ref<string | null>(null);
+let copiedUserMsgTimer: number | null = null;
+
+const editingMsgId = ref<string | null>(null);
+const editingText = ref('');
+const editingOriginalText = ref('');
+const editTextareaRef = ref<HTMLTextAreaElement | null>(null);
+
+async function handleCopyUserMsg(message: any) {
+  const text = getUserMsgText(message);
+  if (!text) return;
+  const ok = await copyPlainText(text);
+  if (!ok) return;
+  copiedUserMsgId.value = message.id;
+  if (copiedUserMsgTimer !== null) {
+    window.clearTimeout(copiedUserMsgTimer);
+  }
+  copiedUserMsgTimer = window.setTimeout(() => {
+    copiedUserMsgId.value = null;
+    copiedUserMsgTimer = null;
+  }, 1500);
+}
+
+function resizeEditTextarea(el?: HTMLTextAreaElement | null) {
+  const target = el ?? editTextareaRef.value;
+  if (!target) return;
+  target.style.height = 'auto';
+  target.style.height = `${Math.min(target.scrollHeight, 360)}px`;
+}
+
+function startEditUserMsg(message: any) {
+  if (session.isCurrentSessionRunning || rollbackLoading.value) return;
+  closeRollbackMenu();
+  const original = getUserMsgText(message);
+  editingMsgId.value = message.id;
+  editingText.value = original;
+  editingOriginalText.value = original;
+  nextTick(() => {
+    const el = editTextareaRef.value;
+    if (!el) return;
+    resizeEditTextarea(el);
+    el.focus();
+    const len = el.value.length;
+    el.setSelectionRange(len, len);
+  });
+}
+
+function cancelEditUserMsg() {
+  if (rollbackLoading.value) return;
+  editingMsgId.value = null;
+  editingText.value = '';
+  editingOriginalText.value = '';
+}
+
+function canConfirmEdit(message: any): boolean {
+  const trimmed = editingText.value.trim();
+  const hasImages = Array.isArray(message.images) && message.images.length > 0;
+  if (!trimmed && !hasImages) return false;
+  return editingText.value !== editingOriginalText.value;
+}
+
+async function handleConfirmEditUserMsg(message: any) {
+  if (rollbackLoading.value || session.isCurrentSessionRunning) return;
+  if (!canConfirmEdit(message)) return;
+  await submitEditedMessage(message, editingText.value, () => {
+    editingMsgId.value = null;
+    editingText.value = '';
+    editingOriginalText.value = '';
+  });
+}
+
+function handleEditKeydown(e: KeyboardEvent, message: any) {
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    cancelEditUserMsg();
+  } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    void handleConfirmEditUserMsg(message);
+  }
+}
+
+function isRollbackMenuActiveFor(message: any): boolean {
+  if (!rollbackMenu.value.visible) return false;
+  if (message.messageId && rollbackMenu.value.messageId === message.messageId) return true;
+  if (message.rollbackCheckpointId && rollbackMenu.value.snapshotId === message.rollbackCheckpointId) {
+    return true;
+  }
+  return false;
+}
+
 // 消息对象 → 纯文本。判定阈值统一放在 utils/userMessage，子 Agent 轨迹共用同一份。
 function getUserMsgText(message: any): string {
   return plainUserText(message.text ?? message.userContent ?? message.content ?? '');
@@ -355,6 +450,10 @@ const initialAnchoring = ref(false);
 watch(currentSessionKey, (key) => {
   pendingInitialScrollSessionKey.value = key;
   initialAnchoring.value = true;
+  // 切换会话时退出可能停留的原地编辑态，避免跨会话误操作
+  editingMsgId.value = null;
+  editingText.value = '';
+  editingOriginalText.value = '';
 }, { immediate: true });
 
 watch(
@@ -474,10 +573,15 @@ onMounted(() => {
         <div
           v-if="message.role === 'user'"
           class="chat-message user-message"
+          :class="{
+            'is-editing-row': editingMsgId === message.id,
+            'menu-open': isRollbackMenuActiveFor(message),
+          }"
           :data-msg-id="message.id"
         >
           <div
             class="message-content"
+            :class="{ 'is-editing': editingMsgId === message.id }"
             :data-user-message-index="index"
             :data-message-id="message.messageId"
             :data-rollback-checkpoint-id="message.rollbackCheckpointId || ''"
@@ -493,42 +597,143 @@ onMounted(() => {
                 alt="用户发送的图片"
               />
             </div>
-            <!-- 文本 -->
-            <div class="user-text" :class="{ collapsed: isUserMsgLong(getUserMsgText(message)) && !expandedUserMsgs.has(message.id) }">
-              {{ getUserMsgText(message) }}
-            </div>
+            <!-- 原地编辑态 -->
+            <template v-if="editingMsgId === message.id">
+              <textarea
+                :ref="(el) => { if (el) editTextareaRef = el as HTMLTextAreaElement; }"
+                v-model="editingText"
+                class="user-edit-textarea"
+                rows="1"
+                :disabled="rollbackLoading"
+                @input="resizeEditTextarea()"
+                @keydown="handleEditKeydown($event, message)"
+              />
+              <div class="user-edit-footer">
+                <span class="user-edit-hint">{{ t('chat.editHint') }}</span>
+                <div class="user-edit-buttons">
+                  <button
+                    type="button"
+                    class="user-edit-btn cancel"
+                    :disabled="rollbackLoading"
+                    @click="cancelEditUserMsg"
+                  >
+                    {{ t('common.cancel') }}
+                  </button>
+                  <button
+                    type="button"
+                    class="user-edit-btn confirm"
+                    :disabled="rollbackLoading || session.isCurrentSessionRunning || !canConfirmEdit(message)"
+                    @click="handleConfirmEditUserMsg(message)"
+                  >
+                    {{ rollbackLoading ? t('common.processing') : t('chat.editConfirm') }}
+                  </button>
+                </div>
+              </div>
+            </template>
+            <!-- 正常展示态 -->
+            <template v-else>
+              <div class="user-text" :class="{ collapsed: isUserMsgLong(getUserMsgText(message)) && !expandedUserMsgs.has(message.id) }">
+                {{ getUserMsgText(message) }}
+              </div>
+              <button
+                v-if="isUserMsgLong(getUserMsgText(message))"
+                class="user-msg-toggle"
+                @click="toggleUserMsgExpand(message.id)"
+              >
+                {{ expandedUserMsgs.has(message.id) ? t('chat.collapse') : t('chat.expandAll') }}
+              </button>
+            </template>
+          </div>
+          <!-- 气泡下方右侧：无外框纯幽灵图标操作栏（复制 / 修改 / 撤回） -->
+          <div v-if="editingMsgId !== message.id" class="user-msg-actions">
             <button
-              v-if="isUserMsgLong(getUserMsgText(message))"
-              class="user-msg-toggle"
-              @click="toggleUserMsgExpand(message.id)"
+              type="button"
+              class="user-action-btn"
+              :class="{ 'is-copied': copiedUserMsgId === message.id }"
+              :title="copiedUserMsgId === message.id ? t('chat.copied') : t('chat.copyMessage')"
+              :aria-label="copiedUserMsgId === message.id ? t('chat.copied') : t('chat.copyMessage')"
+              @click.stop="handleCopyUserMsg(message)"
             >
-              {{ expandedUserMsgs.has(message.id) ? t('chat.collapse') : t('chat.expandAll') }}
+              <svg
+                v-if="copiedUserMsgId === message.id"
+                viewBox="0 0 24 24"
+                width="14"
+                height="14"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+              <svg
+                v-else
+                viewBox="0 0 24 24"
+                width="14"
+                height="14"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            </button>
+            <button
+              v-if="message.rollbackCheckpointId || message.messageId"
+              type="button"
+              class="user-action-btn"
+              :disabled="session.isCurrentSessionRunning || rollbackLoading"
+              :title="t('chat.editMessage')"
+              :aria-label="t('chat.editMessage')"
+              @click.stop="startEditUserMsg(message)"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="14"
+                height="14"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M12 20h9" />
+                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+              </svg>
+            </button>
+            <button
+              v-if="message.rollbackCheckpointId || message.messageId"
+              type="button"
+              class="user-action-btn rollback-trigger"
+              :data-cp-id="message.rollbackCheckpointId || ''"
+              :disabled="session.isCurrentSessionRunning || rollbackLoading"
+              :title="t('rollback.trigger')"
+              :aria-label="t('rollback.trigger')"
+              @click.stop="handleRollbackClickVue(message, $event)"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="14"
+                height="14"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M9 14 4 9l5-5" />
+                <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5V20" />
+              </svg>
             </button>
           </div>
-          <button
-            v-if="message.rollbackCheckpointId || message.messageId"
-            class="rollback-trigger"
-            :data-cp-id="message.rollbackCheckpointId || ''"
-            :title="t('rollback.trigger')"
-            :aria-label="t('rollback.trigger')"
-            @click.stop="handleRollbackClickVue(message, $event)"
-          >
-            <svg
-              class="rollback-trigger-icon"
-              viewBox="0 0 24 24"
-              width="14"
-              height="14"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M9 14 4 9l5-5" />
-              <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5V20" />
-            </svg>
-          </button>
         </div>
         <!-- Agent 消息：历史快照与 live 轮次走**同一条**渲染语句。
              live 项由 renderMessages 追加在列表末尾，key 与收尾后的正式消息一致，
@@ -613,6 +818,64 @@ onMounted(() => {
       </template>
     </ConfirmModal>
 
+    <!-- 原地编辑后存在关联代码变更时的二选一确认弹窗 -->
+    <ConfirmModal
+      :open="!!editResendConfirm"
+      :title="editResendConfirm?.title || ''"
+      :message="editResendConfirm?.message || ''"
+      :warning="rollbackError || editResendConfirm?.warning || ''"
+      :loading="rollbackLoading"
+      @cancel="cancelEditResend"
+      @confirm="confirmEditResend('session', () => { editingMsgId = null; editingText = ''; editingOriginalText = ''; })"
+    >
+      <template #message>
+        <div v-if="editResendConfirm" class="rollback-preview-modal">
+          <p class="rollback-preview-message">{{ editResendConfirm.message }}</p>
+          <div v-if="editResendConfirm.files.length > 0" class="rollback-preview-files">
+            <div class="rollback-preview-summary">{{ t('rollback.previewSummary', { count: editResendConfirm.files.length }) }}</div>
+            <div class="rollback-preview-file-list">
+              <div v-for="file in editResendConfirm.files" :key="file.path" class="rollback-preview-file">
+                <span class="rollback-preview-path" :title="file.path">{{ file.path }}</span>
+                <span class="rollback-preview-stats">
+                  <span class="rollback-preview-added">+{{ file.linesAdded }}</span>
+                  <span class="rollback-preview-removed">-{{ file.linesRemoved }}</span>
+                </span>
+              </div>
+            </div>
+          </div>
+          <p v-else class="rollback-preview-empty">{{ t('rollback.previewEmpty') }}</p>
+        </div>
+      </template>
+      <template #actions>
+        <div class="edit-resend-actions">
+          <button
+            type="button"
+            class="edit-resend-btn primary"
+            :disabled="rollbackLoading"
+            @click="confirmEditResend('session', () => { editingMsgId = null; editingText = ''; editingOriginalText = ''; })"
+          >
+            {{ rollbackLoading ? t('common.processing') : t('rollback.editResendSessionOnly') }}
+          </button>
+          <button
+            type="button"
+            class="edit-resend-btn danger"
+            :disabled="rollbackLoading"
+            @click="confirmEditResend('both', () => { editingMsgId = null; editingText = ''; editingOriginalText = ''; })"
+          >
+            {{ rollbackLoading ? t('common.processing') : t('rollback.editResendSessionAndCode') }}
+          </button>
+          <button
+            type="button"
+            class="edit-resend-btn cancel"
+            :disabled="rollbackLoading"
+            @click="cancelEditResend"
+          >
+            {{ t('common.cancel') }}
+          </button>
+        </div>
+      </template>
+    </ConfirmModal>
+
     <Transition name="scroll-btn">
       <button
         v-if="showScrollToBottom"
@@ -676,10 +939,10 @@ onMounted(() => {
 }
 
 :deep(.user-message) {
-  justify-content: flex-end;
-  align-items: flex-start;
+  flex-direction: column;
+  align-items: flex-end;
   position: relative;
-  gap: 8px;
+  gap: 4px;
 }
 
 :deep(.agent-message) {
@@ -1205,47 +1468,194 @@ onMounted(() => {
   color: var(--accent-red);
 }
 
-/* 撤回触发按钮：位于用户消息气泡左侧外部 */
-:deep(.rollback-trigger) {
-  position: static;
-  order: -1;
-  align-self: flex-start;
-  flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  border: 1px solid transparent;
-  background: transparent;
-  cursor: pointer;
-  padding: 0;
-  margin-top: 8px;
-  display: flex;
+/* 用户消息操作栏：位于气泡下方右侧，无外框纯幽灵图标组 */
+:deep(.user-msg-actions) {
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  transition: opacity 0.15s ease, transform 0.15s ease, border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
-  z-index: 5;
+  gap: 2px;
+  height: 26px;
+  padding-right: 2px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
   -webkit-app-region: no-drag;
-  opacity: 0.2;
+}
+
+:deep(.user-message:hover .user-msg-actions),
+:deep(.user-message:focus-within .user-msg-actions),
+:deep(.user-message.menu-open .user-msg-actions) {
+  opacity: 1;
   pointer-events: auto;
 }
-:deep(.rollback-trigger-icon) {
-  color: color-mix(in srgb, var(--text-muted) 78%, transparent);
-  transition: color 0.15s ease;
+
+:deep(.user-action-btn) {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
 }
-:deep(.user-message:hover .rollback-trigger) {
-  opacity: 0.75;
+
+:deep(.user-action-btn:hover:not(:disabled)) {
+  background: color-mix(in srgb, var(--text-main) 8%, transparent);
+  color: var(--text-main);
+}
+
+:deep(.user-action-btn:active:not(:disabled)) {
+  background: color-mix(in srgb, var(--text-main) 13%, transparent);
+}
+
+:deep(.user-action-btn:disabled) {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+:deep(.user-action-btn.is-copied) {
+  color: var(--accent-green);
+}
+
+/* 原地编辑态：气泡平滑切换为聚焦输入框，底部内嵌快捷键提示与确认/取消 */
+:deep(.user-message .message-content.is-editing) {
+  width: min(560px, 85%);
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 65%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 12%, transparent);
+  transform: none;
+}
+
+.user-edit-textarea {
+  width: 100%;
+  min-height: 44px;
+  max-height: 360px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  letter-spacing: 0.01em;
+  overflow-y: auto;
+}
+
+.user-edit-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--text-main) 8%, transparent);
+}
+
+.user-edit-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.user-edit-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-edit-btn {
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.user-edit-btn.cancel {
+  background: transparent;
+  color: var(--text-muted);
   border-color: var(--glass-border-subtle);
+}
+
+.user-edit-btn.cancel:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-main) 7%, transparent);
+  color: var(--text-main);
+}
+
+.user-edit-btn.confirm {
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
+}
+
+.user-edit-btn.confirm:hover:not(:disabled) {
+  background: var(--btn-primary-bg-hover);
+}
+
+.user-edit-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 编辑重发二选一弹窗按钮区（竖排三键，区分仅会话 / 会话与代码 / 取消） */
+.edit-resend-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.edit-resend-btn {
+  width: 100%;
+  min-height: 40px;
+  padding: 9px 14px;
+  border-radius: var(--radius-md);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all var(--transition-fast);
+}
+
+.edit-resend-btn.primary {
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
+}
+
+.edit-resend-btn.primary:hover:not(:disabled) {
+  background: var(--btn-primary-bg-hover);
+}
+
+.edit-resend-btn.danger {
+  background: var(--surface-danger);
+  color: var(--text-on-danger);
+  border-color: var(--border-danger);
+}
+
+.edit-resend-btn.danger:hover:not(:disabled) {
+  background: var(--surface-danger-hover);
+}
+
+.edit-resend-btn.cancel {
+  background: var(--glass-bg-light);
+  color: var(--text-main);
+  border-color: var(--glass-border);
+}
+
+.edit-resend-btn.cancel:hover:not(:disabled) {
   background: var(--glass-bg);
 }
-:deep(.rollback-trigger:hover) {
-  opacity: 1 !important;
-  border-color: var(--accent-blue) !important;
-  background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-blue) 12%, transparent);
-  transform: scale(1.1);
-}
-:deep(.rollback-trigger:hover) .rollback-trigger-icon {
-  color: var(--accent-blue);
+
+.edit-resend-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .thinking-timer {

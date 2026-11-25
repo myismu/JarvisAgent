@@ -110,8 +110,19 @@ export function useChatClipboard() {
     showCopiedState(button);
   };
 
+  const copyPlainText = async (text: string): Promise<boolean> => {
+    if (!text) return false;
+    try {
+      await copyText(text);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   return {
     copyCodeBlock,
     copyTable,
+    copyPlainText,
   };
 }

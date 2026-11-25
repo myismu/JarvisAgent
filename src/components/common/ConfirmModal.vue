@@ -81,16 +81,18 @@ onBeforeUnmount(() => {
         </slot>
         <p v-if="warning" class="confirm-warning" role="alert">{{ warning }}</p>
         <div class="modal-actions">
-          <button class="cancel-btn" :disabled="loading" @click="emit('cancel')">{{ cancelText || t('common.cancel') }}</button>
-          <button
-            ref="confirmBtnRef"
-            class="confirm-btn"
-            :class="confirmKind === 'danger' ? 'danger' : 'primary'"
-            :disabled="loading"
-            @click="emit('confirm')"
-          >
-            {{ loading ? t('common.processing') : (confirmText || t('common.confirm')) }}
-          </button>
+          <slot name="actions">
+            <button class="cancel-btn" :disabled="loading" @click="emit('cancel')">{{ cancelText || t('common.cancel') }}</button>
+            <button
+              ref="confirmBtnRef"
+              class="confirm-btn"
+              :class="confirmKind === 'danger' ? 'danger' : 'primary'"
+              :disabled="loading"
+              @click="emit('confirm')"
+            >
+              {{ loading ? t('common.processing') : (confirmText || t('common.confirm')) }}
+            </button>
+          </slot>
         </div>
       </div>
     </div>

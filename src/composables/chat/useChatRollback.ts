@@ -104,6 +104,18 @@ export function useChatRollback() {
     noticeOnly?: boolean;
   } | null>(null);
 
+  /** 编辑重发二选一弹窗状态（仅当消息存在关联代码变更 `rollbackMode === 'both'` 时打开） */
+  const editResendConfirm = ref<{
+    snapshotId: string;
+    messageId: string | null;
+    editedText: string;
+    images: string[];
+    title: string;
+    message: string;
+    files: PatchSummary[];
+    warning: string;
+  } | null>(null);
+
   const rollbackPreview = ref<RollbackPreviewState>(createEmptyPreview());
   const rollbackLoading = ref(false);
   const rollbackError = ref("");
@@ -209,13 +221,17 @@ export function useChatRollback() {
     };
   };
 
-  const confirmRollback = async () => {
-    if (!rollbackConfirm.value) return;
-    if (rollbackConfirm.value.noticeOnly) {
-      rollbackConfirm.value = null;
-      return;
-    }
-
+  /**
+   * 底层撤回执行器：供「普通撤回」与「原地编辑后撤回重发」共用，确保后端调用、
+   * 视图重载、方案文档刷新与恢复警告处理保持唯一口径。
+   */
+  const performRollbackCore = async (params: {
+    mode: "both" | "session";
+    snapshotId: string;
+    fallbackSnapshotId: string;
+    messageId: string | null;
+    fillInputWithRecalled: boolean;
+  }): Promise<{ ok: boolean; restoreWarnings: string[] }> => {
     rollbackLoading.value = true;
     rollbackError.value = "";
     let restoreWarnings: string[] = [];
@@ -223,51 +239,32 @@ export function useChatRollback() {
       const sessionId = session.activeSessionId;
       if (!sessionId) {
         alert(t("rollback.noSession"));
-        return;
+        return { ok: false, restoreWarnings: [] };
       }
 
       let recalledText: string | null = null;
-      const rollbackMessageId = rollbackConfirm.value.messageId;
-      if (
-        rollbackConfirm.value.snapshotId ||
-        rollbackConfirm.value.fallbackSnapshotId ||
-        rollbackConfirm.value.mode === "both"
-      ) {
+      if (params.snapshotId || params.fallbackSnapshotId || params.mode === "both") {
         const result = await invoke<RollbackRecallResult>("rollback_to_checkpoint_with_recall", {
           sessionId,
-          checkpointId:
-            rollbackConfirm.value.snapshotId || rollbackConfirm.value.fallbackSnapshotId || "",
-          rollbackFiles: rollbackConfirm.value.mode === "both",
-          messageId: rollbackMessageId,
+          checkpointId: params.snapshotId || params.fallbackSnapshotId || "",
+          rollbackFiles: params.mode === "both",
+          messageId: params.messageId,
         });
         recalledText = result.recalledText;
         restoreWarnings = result.restoreWarnings ?? [];
-      } else if (rollbackMessageId) {
+      } else if (params.messageId) {
         recalledText = await invoke<string | null>("recall_message", {
           sessionId,
-          messageId: rollbackMessageId,
+          messageId: params.messageId,
         });
       } else {
         recalledText = await invoke<string | null>("recall_last_message", { sessionId });
       }
 
-      rollbackConfirm.value = restoreWarnings.length
-        ? {
-            mode: "session",
-            snapshotId: "",
-            fallbackSnapshotId: "",
-            messageId: null,
-            title: t("rollback.restoreWarningsTitle"),
-            message: t("rollback.restoreWarningsMessage"),
-            files: [],
-            warning: restoreWarnings.join("\n"),
-            noticeOnly: true,
-          }
-        : null;
       rollbackPreview.value = createEmptyPreview();
       closeRollbackMenu();
 
-      if (recalledText) {
+      if (params.fillInputWithRecalled && recalledText) {
         chat.rollbackRecalledMessage = recalledText;
       }
 
@@ -289,18 +286,188 @@ export function useChatRollback() {
         session.resetSessionView(sessionId);
         chat.triggerRender();
       }
+
+      return { ok: true, restoreWarnings };
     } catch (err) {
       const message = normalizeRollbackError(err);
       console.error("回滚失败:", err);
       rollbackError.value = message;
+      return { ok: false, restoreWarnings: [] };
     } finally {
       rollbackLoading.value = false;
     }
   };
 
+  const confirmRollback = async () => {
+    if (!rollbackConfirm.value) return;
+    if (rollbackConfirm.value.noticeOnly) {
+      rollbackConfirm.value = null;
+      return;
+    }
+
+    const { ok, restoreWarnings } = await performRollbackCore({
+      mode: rollbackConfirm.value.mode,
+      snapshotId: rollbackConfirm.value.snapshotId,
+      fallbackSnapshotId: rollbackConfirm.value.fallbackSnapshotId,
+      messageId: rollbackConfirm.value.messageId,
+      fillInputWithRecalled: true,
+    });
+    if (!ok) return;
+
+    rollbackConfirm.value = restoreWarnings.length
+      ? {
+          mode: "session",
+          snapshotId: "",
+          fallbackSnapshotId: "",
+          messageId: null,
+          title: t("rollback.restoreWarningsTitle"),
+          message: t("rollback.restoreWarningsMessage"),
+          files: [],
+          warning: restoreWarnings.join("\n"),
+          noticeOnly: true,
+        }
+      : null;
+  };
+
+  /**
+   * 提交原地编辑后的用户消息：
+   * - 无关联代码变更（`rollbackMode !== 'both'`）：直接执行仅会话撤回并重新发送；
+   * - 有关联代码变更（`rollbackMode === 'both'`）：先查受影响文件预览，弹出二选一确认框，
+   *   由用户决定「仅撤回会话并重发」还是「撤回会话与代码并重发」。
+   *
+   * 返回 `true` 表示已经直接完成撤回并触发重发（调用方可退出编辑态）；
+   * 返回 `false` 表示已打开弹窗等待用户选择或发生错误（调用方应保持编辑态）。
+   */
+  const submitEditedMessage = async (
+    message: any,
+    editedText: string,
+    onDone?: () => void,
+  ): Promise<boolean> => {
+    const rollbackMode = message.rollbackMode === "both" ? "both" : "session";
+    const snapshotId = message.rollbackCheckpointId || "";
+    const messageId = message.messageId || null;
+    const images: string[] = Array.isArray(message.images) ? [...message.images] : [];
+
+    rollbackError.value = "";
+
+    // 无代码改动：按需求直接撤回会话并重发，不弹二次确认
+    if (rollbackMode !== "both") {
+      const { ok } = await performRollbackCore({
+        mode: "session",
+        snapshotId,
+        fallbackSnapshotId: "",
+        messageId,
+        fillInputWithRecalled: false,
+      });
+      if (!ok) {
+        if (rollbackError.value) alert(rollbackError.value);
+        return false;
+      }
+      onDone?.();
+      void chat.sendToJarvis(editedText, undefined, images.length > 0 ? images : undefined);
+      return true;
+    }
+
+    // 有关联代码改动：先拉取文件变更预览，再弹二选一确认框
+    const sessionId = session.activeSessionId;
+    if (!sessionId) {
+      alert(t("rollback.noSession"));
+      return false;
+    }
+
+    rollbackLoading.value = true;
+    try {
+      const result = await invoke<RollbackPreviewResult>(
+        "preview_rollback_to_checkpoint_with_recall",
+        {
+          sessionId,
+          checkpointId: snapshotId,
+          messageId,
+        },
+      );
+      const previewMessage = result.initialState
+        ? t("rollback.editResendBothInitialMessage", { count: result.files.length })
+        : t("rollback.editResendBothRangeMessage", {
+            round: result.roundNumber,
+            rounds: result.affectedRounds,
+            count: result.files.length,
+          });
+      editResendConfirm.value = {
+        snapshotId,
+        messageId,
+        editedText,
+        images,
+        title: t("rollback.editResendTitle"),
+        message: previewMessage,
+        files: result.files,
+        warning: t("rollback.warningBoth"),
+      };
+      return false;
+    } catch (err) {
+      const msg = normalizeRollbackError(err);
+      rollbackError.value = msg;
+      alert(msg);
+      return false;
+    } finally {
+      rollbackLoading.value = false;
+    }
+  };
+
+  /**
+   * 确认二选一弹窗中的编辑重发模式（`'session'` 或 `'both'`）。
+   * 若代码回滚返回了 `restoreWarnings`，则先弹出警告并把修改后的文本暂存回底部输入框，
+   * 不盲目自动重发，避免在不一致的工作区状态下继续执行。
+   */
+  const confirmEditResend = async (mode: "session" | "both", onDone?: () => void) => {
+    const pending = editResendConfirm.value;
+    if (!pending) return;
+
+    const { ok, restoreWarnings } = await performRollbackCore({
+      mode,
+      snapshotId: pending.snapshotId,
+      fallbackSnapshotId: "",
+      messageId: pending.messageId,
+      fillInputWithRecalled: false,
+    });
+    if (!ok) return;
+
+    editResendConfirm.value = null;
+    onDone?.();
+
+    if (restoreWarnings.length > 0) {
+      // 有文件未能恢复：暂停自动重发，把用户刚改好的文本放进底部输入框方便确认后手动发送
+      chat.rollbackRecalledMessage = pending.editedText;
+      rollbackConfirm.value = {
+        mode: "session",
+        snapshotId: "",
+        fallbackSnapshotId: "",
+        messageId: null,
+        title: t("rollback.restoreWarningsTitle"),
+        message: t("rollback.restoreWarningsMessage"),
+        files: [],
+        warning: restoreWarnings.join("\n"),
+        noticeOnly: true,
+      };
+      return;
+    }
+
+    void chat.sendToJarvis(
+      pending.editedText,
+      undefined,
+      pending.images.length > 0 ? pending.images : undefined,
+    );
+  };
+
+  const cancelEditResend = () => {
+    if (rollbackLoading.value) return;
+    editResendConfirm.value = null;
+    rollbackError.value = "";
+  };
+
   return {
     rollbackMenu,
     rollbackConfirm,
+    editResendConfirm,
     rollbackPreview,
     rollbackLoading,
     rollbackError,
@@ -308,5 +475,8 @@ export function useChatRollback() {
     handleRollbackClickVue,
     executeRollback,
     confirmRollback,
+    submitEditedMessage,
+    confirmEditResend,
+    cancelEditResend,
   };
 }
