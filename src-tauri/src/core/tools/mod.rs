@@ -509,8 +509,9 @@ pub async fn dispatch_core_tool(
         }
 
         // 运行期结构化咨询工具（仅主 Agent 可用，子代理结构性禁止弹窗）
+        // 调用来源口径见 handle_tool_call_inner：主循环传 agent_type="main"，子代理传 "subagent:<role>" 且 intent="SUBAGENT"。
         "AskUser" => {
-            if agent_type != "MAIN" {
+            if intent == "SUBAGENT" || agent_type.starts_with("subagent") {
                 return framework::ToolCallResult::error(
                     "子代理不允许直接调用 AskUser 弹窗咨询用户，请将待确认事项汇总回报给主 Agent。"
                         .to_string(),
