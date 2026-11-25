@@ -39,7 +39,7 @@ import UpdatePrompt from "./components/common/UpdatePrompt.vue";
 import SettingsPanel from "./components/settings/SettingsPanel.vue";
 import { useUpdater } from "./composables/useUpdater";
 // 视图级页面组件：整页接管主内容区（与聊天工作区互斥）
-import SkillManager from "./components/skill/SkillManager.vue";
+import ExtensionHub from "./components/extension/ExtensionHub.vue";
 import ArchiveManager from "./components/archive/ArchiveManager.vue";
 import SubAgentChatPane from "./components/chat/SubAgentChatPane.vue";
 import type { SubAgentConversationItem } from "./types";
@@ -363,8 +363,8 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
-          <template v-if="appView.isSkillManagerView">
-            <SkillManager />
+          <template v-if="appView.isExtensionsView">
+            <ExtensionHub />
           </template>
           <!-- 归档管理视图：已归档会话列表（恢复 / 彻底删除）。
                与技能管理同级，独占主内容区；聊天区的输入框、权限卡等会话级元素都不渲染 -->
@@ -562,13 +562,14 @@ onBeforeUnmount(() => {
 .tab-bar-project {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
-  border-radius: 20px;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 8px;
   font-size: 0.72rem;
+  font-weight: 500;
   color: var(--text-muted);
-  background: var(--glass-bg-light);
-  border: 1px solid var(--glass-border-subtle);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--text-muted) 20%, transparent);
   user-select: none;
   margin-left: 4px;
 }
@@ -578,15 +579,17 @@ onBeforeUnmount(() => {
   opacity: 0.85;
 }
 
-/* 沙箱语义色：挂项目 = 绿（有边界，安全）；非沙箱 = 琥珀（无边界，留意）。
-   色相只落在图标与文字上，底色保持中性，避免工具条变花。 */
+/* 会话范围语义色：项目会话 = 绿（有目录边界）；独立对话 = 琥珀（无目录边界）。
+   去掉厚重灰底胶囊，改为通透底 + 细腻描边。 */
 .tab-bar-project.sandboxed {
   color: var(--accent-green);
+  border-color: color-mix(in srgb, var(--accent-green) 28%, transparent);
 }
 
 .tab-bar-project.no-sandbox {
   color: var(--text-warning);
   border-style: dashed;
+  border-color: color-mix(in srgb, var(--text-warning) 36%, transparent);
 }
 
 .status-indicator {
