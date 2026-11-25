@@ -523,25 +523,25 @@ watch(
 .general-tab-content {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 20px;
 }
 
 .setting-card {
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  padding: 0;
-  box-shadow: none;
+  background: var(--bg-panel);
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 6px 16px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
 }
 
 .card-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 2px;
+  gap: 8px;
+  margin-bottom: 0;
+  padding: 10px 2px 6px;
   color: var(--text-faint);
   border-bottom: none;
-  padding-bottom: 0;
 }
 
 .card-header svg {
@@ -550,9 +550,10 @@ watch(
 
 .card-header h4 {
   margin: 0;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.04em;
+  text-transform: uppercase;
   color: var(--text-faint);
 }
 
@@ -561,10 +562,10 @@ watch(
   flex-direction: row;
   flex-wrap: wrap;
   align-items: center;
-  column-gap: 24px;
+  column-gap: 20px;
   row-gap: 6px;
   margin-bottom: 0;
-  padding: 12px 2px;
+  padding: 13px 2px;
   border-bottom: 1px solid var(--glass-border-subtle);
 }
 
@@ -624,18 +625,21 @@ watch(
   font-size: 0.78rem;
 }
 
-.setting-item input, .setting-item select {
-  flex: 0 1 320px;
+/* 排除 range 和 checkbox：避免滑杆被通用文本输入框样式撑成灰盒子 */
+.setting-item input:not([type="range"]):not([type="checkbox"]),
+.setting-item select {
+  flex: 0 1 300px;
   width: auto;
-  min-width: 220px;
+  min-width: 200px;
   height: 32px;
-  padding: 0 12px;
-  background-color: var(--glass-bg-light);
+  padding: 0 11px;
+  background-color: var(--bg-panel);
   border: 1px solid var(--glass-border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   color: var(--text-main);
-  font-size: 0.8667rem;
-  transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s;
+  font-size: 0.84rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background-color var(--transition-fast);
 }
 
 .setting-item > .custom-select,
@@ -679,7 +683,8 @@ watch(
   color: var(--text-main);
 }
 
-.setting-item input:focus, .setting-item select:focus {
+.setting-item input:not([type="range"]):not([type="checkbox"]):focus,
+.setting-item select:focus {
   outline: none;
   border-color: var(--text-main);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--text-main) 10%, transparent);
@@ -693,20 +698,21 @@ watch(
 
 .custom-select-trigger {
   width: 100%;
-  height: 34px;
+  height: 32px;
   padding: 0 10px;
   padding-right: 28px;
-  background-color: var(--glass-bg-light);
+  background-color: var(--bg-panel);
   border: 1px solid var(--glass-border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   color: var(--text-main);
-  font-size: 0.8667rem;
+  font-size: 0.84rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
   cursor: pointer;
-  transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background-color var(--transition-fast);
   white-space: nowrap;
 }
 

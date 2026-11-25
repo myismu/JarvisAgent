@@ -300,17 +300,20 @@ onMounted(() => {
 
 .tools-search {
   width: 100%;
-  padding: 6px 10px;
+  height: 34px;
+  padding: 0 12px;
   border-radius: var(--radius-md);
   border: 1px solid var(--glass-border);
-  background: var(--glass-bg);
+  background: var(--bg-panel);
   color: var(--text-main);
-  font-size: 0.8rem;
+  font-size: 0.82rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
   outline: none;
-  transition: border-color var(--transition-fast);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 .tools-search:focus {
-  border-color: var(--accent-blue);
+  border-color: var(--text-main);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--text-main) 8%, transparent);
 }
 
 .tools-empty {
@@ -331,9 +334,9 @@ onMounted(() => {
   gap: 8px;
   margin: 10px 0 0;
   position: sticky; /* 滚到中段也知道自己在哪个分组 */
-  top: -24px; /* 抵消 .settings-body 的 padding-top，贴住内容区顶部 */
-  padding: 4px 0;
-  background: var(--bg-dark);
+  top: -22px; /* 抵消 .settings-body 的 padding-top，贴住内容区顶部 */
+  padding: 6px 0;
+  background: color-mix(in srgb, var(--bg-sidebar) 55%, var(--bg-panel));
   z-index: 1;
 }
 .group-title {
@@ -364,17 +367,19 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px 14px;
-  border: 1px solid var(--glass-border);
+  min-height: 112px;
+  padding: 13px 15px;
+  border: 1px solid var(--glass-border-subtle);
   border-radius: var(--radius-lg);
-  background: var(--glass-bg);
-  transition: border-color var(--transition-fast), background var(--transition-fast),
+  background: var(--bg-panel);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast),
     opacity var(--transition-fast);
 }
 .tool-card:hover,
 .tool-card.expanded {
-  border-color: var(--accent-blue);
-  background: var(--glass-bg-light);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
 }
 /* 关掉的卡整体压暗：一眼能看出"这些是不生效的"（与技能卡片的 inactive 同语义） */
 .tool-card.off {
@@ -412,16 +417,17 @@ onMounted(() => {
 }
 .schema-toggle {
   align-self: flex-start;
+  margin-top: auto;
   padding: 0;
   border: none;
   background: none;
   color: var(--text-muted);
-  font-size: 0.7rem;
+  font-size: 0.72rem;
   cursor: pointer;
   transition: color var(--transition-fast);
 }
 .schema-toggle:hover {
-  color: var(--accent-blue);
+  color: var(--text-main);
 }
 
 /* ── 参数表（展开后在卡片内部，以一条虚分隔线与上方隔开） ── */
@@ -503,7 +509,7 @@ onMounted(() => {
   transition: background var(--transition-fast);
 }
 .tool-switch.on {
-  background: var(--accent-green);
+  background: var(--sel-fill);
 }
 .knob {
   position: absolute;
@@ -512,7 +518,7 @@ onMounted(() => {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--surface-strong);
   transition: transform var(--transition-fast);
 }
 .tool-switch.on .knob {

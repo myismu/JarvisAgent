@@ -337,20 +337,25 @@ const rePreview = async () => {
   align-items: center;
   gap: 8px;
   padding: 7px 10px;
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   cursor: pointer;
-  transition: all var(--transition-fast);
-  font-size: 0.8667rem;
-  color: var(--text-main);
+  transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+  font-size: 0.85rem;
+  color: var(--text-soft);
 }
 
 .prompt-item:hover {
-  background: var(--glass-bg-light);
+  background: var(--surface-1);
+  color: var(--text-main);
 }
 
 .prompt-item.active {
-  background: var(--glass-bg-light);
-  font-weight: 500;
+  background: var(--bg-panel);
+  border-color: var(--glass-border-subtle);
+  color: var(--text-main);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
 .prompt-item-main {
@@ -462,19 +467,22 @@ const rePreview = async () => {
   min-height: 0;
   resize: none;
   border: 1px solid var(--glass-border);
-  border-radius: var(--radius-md);
-  background: var(--glass-bg-light);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
   color: var(--text-main);
   font-family: var(--font-mono);
   /* prompt 正文（含 {{变量}} 占位符）按代码口径排版 */
   font-size: var(--code-font-size);
   line-height: 1.7;
-  padding: 12px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
   outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .editor-textarea:focus {
-  border-color: var(--accent-blue);
+  border-color: var(--text-main);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--text-main) 8%, transparent);
 }
 
 .editor-footer {

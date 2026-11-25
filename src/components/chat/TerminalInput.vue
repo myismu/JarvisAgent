@@ -514,6 +514,7 @@ const formatToken = (n: number): string => {
 // WorkMode 状态，与 usePreferences 双向同步 + 监听后端切换
 const showWorkModeMenu = ref(false);
 const showApprovalMenu = ref(false);
+const showOptionsMenu = ref(false);
 const currentWorkMode = ref<AgentWorkMode>(uiPrefs.agentWorkMode.value);
 // 模式切换失败的提示（后端拒绝时显示）
 const workModeWarning = ref("");
@@ -1011,6 +1012,9 @@ const closeMenuOnOutsideClick = (e: MouseEvent) => {
   if (!target.closest('.approval-selector')) {
     showApprovalMenu.value = false;
   }
+  if (!target.closest('.options-selector')) {
+    showOptionsMenu.value = false;
+  }
 };
 
 /**
@@ -1494,141 +1498,6 @@ const handleRecallEdit = async () => {
         <span>{{ t('input.resumeHint') }}</span>
       </div>
 
-      <div class="input-toolbar">
-        <div class="profile-selector">
-          <button class="profile-btn" @click="showProfileMenu = !showProfileMenu; showProfileMenu && openProfileMenuLayout()">
-            <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round" class="profile-icon">
-              <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"></path>
-            </svg>
-            {{ appConfig?.profiles.find((p: any) => p.id === appConfig?.activeProfileId)?.name || t('input.selectModel') }}
-            <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none"><polyline points="6 9 12 15 18 9"></polyline></svg>
-          </button>
-          
-          <div v-if="showProfileMenu" class="profile-menu" ref="profileMenuRef">
-            <div 
-              v-for="profile in appConfig?.profiles" 
-              :key="profile.id"
-              class="profile-menu-item"
-              :class="{ active: appConfig?.activeProfileId === profile.id }"
-              @click="switchProfile(profile.id)"
-            >
-              <div class="profile-menu-name">{{ profile.name }}</div>
-              <div class="profile-menu-model">{{ profile.config.mainModel }}</div>
-            </div>
-          </div>
-        </div>
-        
-        <div class="toolbar-spacer"></div>
-
-        <!-- 权限档位：只决定"问得多严"，与工作模式互不影响 -->
-        <div class="work-mode-selector approval-selector">
-          <button class="work-mode-btn" @click="showApprovalMenu = !showApprovalMenu">
-            <span class="work-mode-dot" :class="currentApprovalMode"></span>
-            <span class="work-mode-label" :class="{ 'is-danger': currentApprovalMode === 'full_approve' }">{{ t('settings.general.' + currentApprovalMode) }}</span>
-            <svg viewBox="0 0 24 24" width="10" height="10" stroke="currentColor" stroke-width="2" fill="none"><polyline points="6 9 12 15 18 9"></polyline></svg>
-          </button>
-
-          <div v-if="showApprovalMenu" class="work-mode-menu">
-            <div class="work-mode-menu-inner">
-              <div
-                v-for="mode in approvalModeOptions"
-                :key="mode"
-                class="work-mode-menu-item"
-                :class="{ active: currentApprovalMode === mode }"
-                @click="applyApprovalMode(mode)"
-              >
-                <span class="work-mode-dot" :class="mode"></span>
-                <div class="work-mode-menu-text">
-                  <div class="work-mode-menu-name" :class="{ 'is-danger': mode === 'full_approve' }">{{ t('settings.general.' + mode) }}</div>
-                  <div class="work-mode-menu-desc">{{ t('settings.general.' + mode + 'DescShort') }}</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 工作模式：编辑（直接干）/ 规划（先出方案），与权限档位互不影响 -->
-        <div class="work-mode-selector">
-          <button class="work-mode-btn" @click="showWorkModeMenu = !showWorkModeMenu">
-            <span class="work-mode-dot" :class="currentWorkMode"></span>
-            <span class="work-mode-label">{{ t('settings.general.' + currentWorkMode) }}</span>
-            <svg viewBox="0 0 24 24" width="10" height="10" stroke="currentColor" stroke-width="2" fill="none"><polyline points="6 9 12 15 18 9"></polyline></svg>
-          </button>
-
-          <div v-if="showWorkModeMenu" class="work-mode-menu">
-            <div class="work-mode-menu-inner">
-              <div
-                v-for="mode in (['edit', 'plan'] as AgentUserMode[])"
-                :key="mode"
-                class="work-mode-menu-item"
-                :class="{ active: currentWorkMode === mode }"
-                @click="applyWorkMode(mode)"
-              >
-                <span class="work-mode-dot" :class="mode"></span>
-                <div class="work-mode-menu-text">
-                  <div class="work-mode-menu-name">{{ t('settings.general.' + mode) }}</div>
-                  <div class="work-mode-menu-desc">{{ t('settings.general.' + mode + 'DescShort') }}</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 只读保护：独立闸门，开启后本会话禁止一切改动（写文件 / 非只读命令 / 派子代理 / 改工作目录） -->
-        <button
-          class="action-toggle-btn readonly-toggle"
-          :class="{ active: agentReadOnly }"
-          @click="toggleReadOnly"
-          :title="agentReadOnly ? t('settings.general.readOnlyOnTitle') : t('settings.general.readOnlyOffTitle')"
-        >
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="11" width="18" height="11" rx="2" />
-            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-          </svg>
-          <span>{{ t('settings.general.readOnly') }}</span>
-          <!-- 迷你滑块：状态信号全靠滑块位置，纯中性色 -->
-          <span class="mini-switch" :class="{ on: agentReadOnly }" aria-hidden="true"></span>
-        </button>
-
-        <div class="toolbar-right">
-          <button
-            class="action-toggle-btn"
-            :class="{
-              active: isThinkingActive,
-              disabled: thinkingToggleDisabled,
-              locked: thinkingLocked
-            }"
-            :disabled="thinkingToggleDisabled || thinkingSaving"
-            @click="toggleThinking"
-            :title="!canModelThink ? t('input.thinkingUnsupportedTitle') : isThinkingForced ? t('input.thinkingForcedTitle') : (isThinkingActive ? t('input.thinkingOnTitle') : t('input.thinkingOffTitle'))"
-          >
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27a5 5 0 1 1-7.14 7.14" />
-            </svg>
-            <span>{{ !canModelThink ? t('input.thinkingUnsupported') : isThinkingForced ? t('input.thinkingForced') : t('input.thinking') }}</span>
-            <!-- 迷你滑块：状态信号全靠滑块位置，纯中性色 -->
-            <span class="mini-switch" :class="{ on: isThinkingActive }" aria-hidden="true"></span>
-            <!-- 锁定角标：模型强制开启、用户改不了（读作"开启"而非"禁用"） -->
-            <svg
-              v-if="thinkingLocked"
-              class="thinking-lock-badge"
-              viewBox="0 0 24 24"
-              width="9"
-              height="9"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.6"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <rect x="5" y="11" width="14" height="10" rx="2" />
-              <path d="M8 11V7a4 4 0 0 1 8 0v4" />
-            </svg>
-          </button>
-        </div>
-      </div>
-
       <div v-if="mediaFiles.length > 0" class="media-preview-container">
         <div v-for="(media, index) in mediaFiles" :key="index" class="media-preview-item">
           <template v-if="media.type === 'image' && media.url">
@@ -1687,6 +1556,7 @@ const handleRecallEdit = async () => {
         </button>
       </div>
 
+      <!-- 输入区置顶：打开即见打字区，符合现代 AI Composer 视觉重心 -->
       <div class="input-row" @click="inputRef?.focus()">
         <textarea
           ref="inputRef"
@@ -1701,30 +1571,208 @@ const handleRecallEdit = async () => {
           @keydown="handleKeydown"
           @paste="handlePaste"
         ></textarea>
-
-        <button v-if="isCompacting" class="send-btn compacting-state" disabled :title="'上下文压缩中'">
-          <svg class="spinner-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle>
-            <path d="M12 2a10 10 0 0 1 10 10"></path>
-          </svg>
-        </button>
-        <button v-else-if="!isRunning && !isStopping" class="send-btn" :class="{ active: userInput.trim() || mediaFiles.length > 0 }" @click="handleSubmit" :title="t('input.send')">
-          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="22" y1="2" x2="11" y2="13"></line>
-            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-          </svg>
-        </button>
-        <button v-else class="send-btn active stop-state" @click="handleCancel" :title="t('input.stop')" :disabled="isStopping" :aria-busy="isStopping ? 'true' : undefined">
-          <svg v-if="!isStopping" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
-          <svg v-else class="spinner-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10"></circle>
-            <path d="M12 2a10 10 0 0 1 10 10"></path>
-          </svg>
-        </button>
       </div>
 
-      <!-- 上下文与缓存读数 -->
-      <div class="token-bar" v-if="contextTokens > 0 || sessionTokenTotal > 0">
+      <!-- 底部极简工具栏：左侧仅留高频（模型 + 工作模式），右侧收纳会话选项上拉面板与发送键 -->
+      <div class="input-toolbar">
+        <div class="profile-selector">
+          <button
+            class="profile-btn"
+            @click="showWorkModeMenu = false; showOptionsMenu = false; showProfileMenu = !showProfileMenu; showProfileMenu && openProfileMenuLayout()"
+          >
+            <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="profile-icon">
+              <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"></path>
+            </svg>
+            {{ appConfig?.profiles.find((p: any) => p.id === appConfig?.activeProfileId)?.name || t('input.selectModel') }}
+            <svg viewBox="0 0 24 24" width="11" height="11" stroke="currentColor" stroke-width="2" fill="none"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+
+          <div v-if="showProfileMenu" class="profile-menu" ref="profileMenuRef">
+            <div
+              v-for="profile in appConfig?.profiles"
+              :key="profile.id"
+              class="profile-menu-item"
+              :class="{ active: appConfig?.activeProfileId === profile.id }"
+              @click="switchProfile(profile.id)"
+            >
+              <div class="profile-menu-name">{{ profile.name }}</div>
+              <div class="profile-menu-model">{{ profile.config.mainModel }}</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 工作模式：编辑（直接干）/ 规划（先出方案），高频入口留在明面 -->
+        <div class="work-mode-selector">
+          <button
+            class="work-mode-btn"
+            @click="showProfileMenu = false; showOptionsMenu = false; showWorkModeMenu = !showWorkModeMenu"
+          >
+            <span class="work-mode-dot" :class="currentWorkMode"></span>
+            <span class="work-mode-label">{{ t('settings.general.' + currentWorkMode) }}</span>
+            <svg viewBox="0 0 24 24" width="10" height="10" stroke="currentColor" stroke-width="2" fill="none"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+
+          <div v-if="showWorkModeMenu" class="work-mode-menu">
+            <div class="work-mode-menu-inner">
+              <div
+                v-for="mode in (['edit', 'plan'] as AgentUserMode[])"
+                :key="mode"
+                class="work-mode-menu-item"
+                :class="{ active: currentWorkMode === mode }"
+                @click="applyWorkMode(mode)"
+              >
+                <span class="work-mode-dot" :class="mode"></span>
+                <div class="work-mode-menu-text">
+                  <div class="work-mode-menu-name">{{ t('settings.general.' + mode) }}</div>
+                  <div class="work-mode-menu-desc">{{ t('settings.general.' + mode + 'DescShort') }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="toolbar-spacer"></div>
+
+        <div class="toolbar-right">
+          <!-- 特殊安全状态微标（仅开启只读保护或完全批准时显现，平时零干扰） -->
+          <button
+            v-if="agentReadOnly || currentApprovalMode === 'full_approve'"
+            type="button"
+            class="safety-pill"
+            :class="{ 'is-danger': currentApprovalMode === 'full_approve' && !agentReadOnly }"
+            @click="showProfileMenu = false; showWorkModeMenu = false; showOptionsMenu = !showOptionsMenu"
+          >
+            <span class="safety-pill-dot"></span>
+            <span>{{ agentReadOnly ? t('settings.general.readOnly') : t('settings.general.full_approve') }}</span>
+          </button>
+
+          <!-- 会话选项上拉面板：收纳审批权限、只读保护、深度思考 -->
+          <div class="options-selector">
+            <button
+              type="button"
+              class="options-trigger-btn"
+              :class="{ open: showOptionsMenu }"
+              @click="showProfileMenu = false; showWorkModeMenu = false; showOptionsMenu = !showOptionsMenu"
+              :title="`${t('settings.general.' + currentApprovalMode)} · ${t('settings.general.readOnly')} · ${t('input.thinking')}`"
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="4" y1="21" x2="4" y2="14" />
+                <line x1="4" y1="10" x2="4" y2="3" />
+                <line x1="12" y1="21" x2="12" y2="12" />
+                <line x1="12" y1="8" x2="12" y2="3" />
+                <line x1="20" y1="21" x2="20" y2="16" />
+                <line x1="20" y1="12" x2="20" y2="3" />
+                <line x1="1" y1="14" x2="7" y2="14" />
+                <line x1="9" y1="8" x2="15" y2="8" />
+                <line x1="17" y1="16" x2="23" y2="16" />
+              </svg>
+            </button>
+
+            <div v-if="showOptionsMenu" class="options-popover">
+              <!-- 1. 审批权限分段控制 -->
+              <div class="options-section">
+                <div class="options-section-title">{{ t('settings.general.approvalMode') }}</div>
+                <div class="options-segmented">
+                  <button
+                    v-for="mode in approvalModeOptions"
+                    :key="mode"
+                    type="button"
+                    class="options-seg-btn"
+                    :class="{ active: currentApprovalMode === mode, 'is-danger': mode === 'full_approve' }"
+                    @click="applyApprovalMode(mode)"
+                  >
+                    {{ t('settings.general.' + mode) }}
+                  </button>
+                </div>
+                <div class="options-section-desc">{{ t('settings.general.' + currentApprovalMode + 'DescShort') }}</div>
+              </div>
+
+              <div class="options-divider"></div>
+
+              <!-- 2. 只读保护开关行 -->
+              <button
+                type="button"
+                class="options-toggle-row"
+                :class="{ active: agentReadOnly }"
+                @click="toggleReadOnly"
+                :title="agentReadOnly ? t('settings.general.readOnlyOnTitle') : t('settings.general.readOnlyOffTitle')"
+              >
+                <span class="options-row-left">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="11" width="18" height="11" rx="2" />
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                  </svg>
+                  <span class="options-row-label">{{ t('settings.general.readOnly') }}</span>
+                </span>
+                <span class="mini-switch" :class="{ on: agentReadOnly }" aria-hidden="true"></span>
+              </button>
+
+              <!-- 3. 深度思考开关行 -->
+              <button
+                type="button"
+                class="options-toggle-row"
+                :class="{
+                  active: isThinkingActive,
+                  disabled: thinkingToggleDisabled,
+                  locked: thinkingLocked
+                }"
+                :disabled="thinkingToggleDisabled || thinkingSaving"
+                @click="toggleThinking"
+                :title="!canModelThink ? t('input.thinkingUnsupportedTitle') : isThinkingForced ? t('input.thinkingForcedTitle') : (isThinkingActive ? t('input.thinkingOnTitle') : t('input.thinkingOffTitle'))"
+              >
+                <span class="options-row-left">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27a5 5 0 1 1-7.14 7.14" />
+                  </svg>
+                  <span class="options-row-label">{{ !canModelThink ? t('input.thinkingUnsupported') : isThinkingForced ? t('input.thinkingForced') : t('input.thinking') }}</span>
+                  <svg
+                    v-if="thinkingLocked"
+                    class="thinking-lock-badge"
+                    viewBox="0 0 24 24"
+                    width="11"
+                    height="11"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <rect x="5" y="11" width="14" height="10" rx="2" />
+                    <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+                  </svg>
+                </span>
+                <span class="mini-switch" :class="{ on: isThinkingActive }" aria-hidden="true"></span>
+              </button>
+            </div>
+          </div>
+
+          <button v-if="isCompacting" class="send-btn compacting-state" disabled :title="'上下文压缩中'">
+            <svg class="spinner-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle>
+              <path d="M12 2a10 10 0 0 1 10 10"></path>
+            </svg>
+          </button>
+          <button v-else-if="!isRunning && !isStopping" class="send-btn" :class="{ active: userInput.trim() || mediaFiles.length > 0 }" @click="handleSubmit" :title="t('input.send')">
+            <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="19" x2="12" y2="5"></line>
+              <polyline points="5 12 12 5 19 12"></polyline>
+            </svg>
+          </button>
+          <button v-else class="send-btn active stop-state" @click="handleCancel" :title="t('input.stop')" :disabled="isStopping" :aria-busy="isStopping ? 'true' : undefined">
+            <svg v-if="!isStopping" viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+            <svg v-else class="spinner-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <path d="M12 2a10 10 0 0 1 10 10"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- 上下文与缓存遥测条：外置到输入框卡片正下方，让卡片本体保持两层轻盈 -->
+    <div class="token-bar" v-if="contextTokens > 0 || sessionTokenTotal > 0">
         <!-- 上下文占用：概览栏只留一个进度环，读数收进悬停浮层（Codex / WorkBuddy 同款）。
              环的填充比例 = 已用 / 窗口；窗口未登记时只画灰轨道，浮层文字里注明「窗口未知」。
 
@@ -1793,8 +1841,6 @@ const handleRecallEdit = async () => {
         <span class="token-bar-spacer"></span>
         <span class="token-bar-item token-bar-model">{{ agentModel }}</span>
       </div>
-
-    </div>
   </div>
 
   <ConfirmModal
@@ -1839,22 +1885,21 @@ const handleRecallEdit = async () => {
   max-width: min(85%, 960px); /* 与消息区同一套宽度口径，上下对齐 */
   background: var(--surface-strong);
   border: 1px solid var(--glass-border);
-  border-radius: 24px; /* 增加圆角度，使其更圆润 */
-  box-shadow: var(--shadow-lg);
+  border-radius: 18px;
+  box-shadow: var(--shadow-md);
   display: flex;
   flex-direction: column;
-  transition: all var(--transition-normal);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
   position: relative;
   z-index: 1;
 }
 
 .chat-input-wrapper:hover {
-  border-color: var(--glass-border);
-  box-shadow: var(--shadow-lg);
+  border-color: var(--border-strong);
 }
 
 .chat-input-wrapper:focus-within {
-  border-color: var(--glass-border);
+  border-color: var(--border-strong);
   box-shadow: var(--shadow-lg);
 }
 
@@ -1862,9 +1907,9 @@ const handleRecallEdit = async () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 16px 0;
+  padding: 6px 10px 10px;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 4px;
 }
 
 .profile-selector {
@@ -1872,24 +1917,24 @@ const handleRecallEdit = async () => {
 }
 
 .profile-btn {
-  background: var(--glass-bg-light);
-  border: 1px solid var(--glass-border-subtle);
+  height: 28px;
+  background: transparent;
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   color: var(--text-main);
-  padding: 6px 12px;
-  font-size: 0.85rem;
+  padding: 0 9px;
+  font-size: 0.8rem;
   font-weight: 600;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 
 .profile-btn:hover {
-  background: var(--glass-bg);
-  border-color: var(--glass-border);
-  transform: translateY(-1px);
+  background: var(--surface-1);
+  border-color: transparent;
 }
 
 .profile-icon {
@@ -1977,49 +2022,50 @@ const handleRecallEdit = async () => {
    主信号是"文字对比度跨度"（约 2.4 倍），面与边只作辅助——纯中性色下底色的
    可用对比度只有约 1.23:1，不足以独立承担状态区分。 */
 .action-toggle-btn {
+  height: 28px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  background: var(--thinking-off-surface);
-  color: var(--thinking-off-fg);
-  border: 1px solid var(--glass-border-subtle);
+  gap: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
-  padding: 6px 12px;
-  font-size: 0.75rem;
+  padding: 0 9px;
+  font-size: 0.78rem;
   font-weight: 500;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
   box-shadow: none;
   position: relative;
 }
 
 .action-toggle-btn svg {
-  stroke-width: 1.7;
+  stroke-width: 1.8;
   transition: stroke-width var(--transition-fast);
 }
 
-/* 关闭 · hover：预示"可开启"，但不加粗描边，避免误读为已开启 */
+/* 关闭 · hover：统一 ghost 风格，轻底色反馈 */
 .action-toggle-btn:hover {
-  background: var(--glass-bg);
-  border-color: var(--glass-border);
+  background: var(--surface-1);
+  border-color: transparent;
   color: var(--text-main);
 }
 
-/* 开启（选中）：三个信号同时拉满 */
+/* 开启（选中）：柔和底色 + 高对比文字 + 加粗，不堆硬边框 */
 .action-toggle-btn.active {
-  background: var(--thinking-on-surface);
-  border-color: var(--glass-border);
+  background: var(--surface-1);
+  border-color: var(--glass-border-subtle);
   color: var(--thinking-on-fg);
-  font-weight: 700;
-  box-shadow: var(--shadow-sm);
+  font-weight: 600;
+  box-shadow: none;
 }
 
 .action-toggle-btn.active svg {
-  stroke-width: 2.4;
+  stroke-width: 2.1;
 }
 
 .action-toggle-btn.active:hover {
-  background: var(--thinking-on-surface);
+  background: var(--surface-2);
   border-color: var(--glass-border);
 }
 
@@ -2058,11 +2104,10 @@ const handleRecallEdit = async () => {
 }
 
 .action-toggle-btn.locked .thinking-lock-badge {
-  position: absolute;
-  right: 3px;
-  bottom: 2px;
-  color: inherit;
+  flex-shrink: 0;
+  color: var(--text-muted);
   opacity: 0.85;
+  margin-left: 1px;
 }
 
 /* 迷你滑块开关：只承担"状态"信号，位置即状态（左=关 / 右=开）。
@@ -2111,24 +2156,25 @@ const handleRecallEdit = async () => {
 }
 
 .work-mode-btn {
-  background: var(--glass-bg-light);
-  border: 1px solid var(--glass-border-subtle);
+  height: 28px;
+  background: transparent;
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
-  color: var(--text-main);
-  padding: 6px 12px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  display: flex;
+  color: var(--text-soft);
+  padding: 0 9px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   cursor: pointer;
-  transition: background var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 
 .work-mode-btn:hover {
-  background: var(--glass-bg);
-  border-color: var(--glass-border);
-  transform: translateY(-1px);
+  background: var(--surface-1);
+  border-color: transparent;
+  color: var(--text-main);
 }
 
 .work-mode-dot {
@@ -2265,7 +2311,7 @@ const handleRecallEdit = async () => {
 .input-row {
   display: flex;
   align-items: flex-end;
-  padding: 14px 16px 16px;
+  padding: 12px 14px 4px;
   cursor: text;
 }
 
@@ -2275,16 +2321,22 @@ const handleRecallEdit = async () => {
   border: none;
   border-radius: var(--radius-md);
   color: var(--text-main);
-  font-family: var(--font-mono);
-  font-size: 0.95rem;
+  font-family: var(--font-sans);
+  font-size: 0.9333rem;
   outline: none;
   resize: none;
   overflow-y: auto;
+  scrollbar-width: none;
   line-height: 1.6;
-  padding: 10px 12px;
+  padding: 4px 6px 6px;
   margin: 0;
   max-height: 200px;
   transition: all var(--transition-fast);
+}
+
+.editor-input::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .editor-input:focus {
@@ -2294,8 +2346,8 @@ const handleRecallEdit = async () => {
 }
 
 .editor-input::placeholder {
-  color: var(--text-muted);
-  opacity: 0.85;
+  color: var(--text-faint);
+  opacity: 0.9;
 }
 
 .editor-input.input-disabled {
@@ -2304,19 +2356,24 @@ const handleRecallEdit = async () => {
 }
 
 .send-btn {
-  background: var(--glass-bg);
-  color: var(--text-muted);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-md);
-  width: 36px;
-  height: 36px;
+  background: var(--surface-1);
+  color: var(--text-faint);
+  border: 1px solid transparent;
+  border-radius: 9px;
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-left: 12px;
+  margin-left: 4px;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
   flex-shrink: 0;
+}
+
+.send-btn:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text-soft);
 }
 
 .send-btn.active {
@@ -2511,16 +2568,236 @@ const handleRecallEdit = async () => {
   opacity: 0.7;
 }
 
-/* ── Token 统计栏 ── */
+/* ── 会话选项上拉面板（收纳权限、只读保护、深度思考）── */
+.options-selector {
+  position: relative;
+}
+
+.options-trigger-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.options-trigger-btn:hover,
+.options-trigger-btn.open {
+  background: var(--surface-1);
+  color: var(--text-main);
+}
+
+.safety-pill {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border-subtle);
+  background: var(--surface-1);
+  color: var(--text-soft);
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.safety-pill:hover {
+  border-color: var(--glass-border);
+}
+
+.safety-pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.safety-pill.is-danger {
+  border-color: var(--border-danger);
+  color: var(--accent-red);
+}
+
+.safety-pill.is-danger .safety-pill-dot {
+  background: var(--accent-red);
+}
+
+.options-popover {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  right: 0;
+  width: 296px;
+  padding: 10px;
+  background: var(--surface-strong);
+  border: 1px solid color-mix(in srgb, var(--text-muted) 22%, transparent);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  animation: popIn var(--transition-fast);
+}
+
+.options-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 2px 4px;
+}
+
+.options-section-title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-faint);
+  letter-spacing: 0.02em;
+}
+
+.options-segmented {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  background: var(--surface-1);
+  border-radius: var(--radius-md);
+}
+
+.options-seg-btn {
+  flex: 1;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+  white-space: nowrap;
+}
+
+.options-seg-btn:hover {
+  color: var(--text-main);
+}
+
+.options-seg-btn.active {
+  background: var(--bg-panel);
+  color: var(--text-main);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+
+.options-seg-btn.active.is-danger {
+  color: var(--accent-red);
+}
+
+.options-section-desc {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.options-divider {
+  height: 1px;
+  background: var(--glass-border-subtle);
+  margin: 4px 0;
+}
+
+.options-toggle-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 8px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.options-toggle-row:hover:not(:disabled) {
+  background: var(--surface-1);
+  color: var(--text-main);
+}
+
+.options-toggle-row.active {
+  color: var(--text-main);
+  font-weight: 600;
+}
+
+.options-toggle-row.disabled,
+.options-toggle-row.locked {
+  cursor: not-allowed;
+  opacity: 0.75;
+}
+
+.options-row-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.options-row-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.options-toggle-row .mini-switch {
+  flex: none;
+  width: 24px;
+  height: 13px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: var(--thinking-off-surface);
+  position: relative;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.options-toggle-row .mini-switch::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform var(--transition-fast), background var(--transition-fast);
+}
+
+.options-toggle-row .mini-switch.on {
+  background: var(--text-main);
+  border-color: var(--text-main);
+}
+
+.options-toggle-row .mini-switch.on::after {
+  transform: translateX(11px);
+  background: var(--bg-panel);
+}
+
+/* ── Token 统计栏（外置到卡片正下方，与输入框等宽对齐）── */
 .token-bar {
   display: flex;
   align-items: center;
   gap: 6px;
   width: 100%;
-  max-width: 85%;
-  padding: 4px 16px 0;
-  font-size: 0.65rem;
-  color: var(--text-muted);
+  max-width: min(85%, 960px);
+  padding: 6px 14px 0;
+  font-size: 0.68rem;
+  color: var(--text-faint);
   user-select: none;
 }
 

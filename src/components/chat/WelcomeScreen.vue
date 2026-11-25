@@ -69,6 +69,10 @@ function useHint() {
       <Transition name="hint-fade" mode="out-in">
         <span :key="hintIndex" class="welcome-hint-text">{{ hints[hintIndex] }}</span>
       </Transition>
+      <svg class="welcome-hint-arrow" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="5" y1="12" x2="19" y2="12" />
+        <polyline points="12 5 19 12 12 19" />
+      </svg>
     </button>
   </div>
 </template>
@@ -149,29 +153,42 @@ function useHint() {
   margin-top: 8px;
 }
 
-/* 快捷指令：比就绪提示再弱一档，hover 时才"浮"出来邀请点击。
+/* 快捷指令胶囊：常驻极浅底色与细描边，清晰表达可点击，hover 时微亮上浮。
    容器是 pointer-events:none，这里单独恢复。 */
 .welcome-hint {
   pointer-events: auto;
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
-  margin-top: 14px;
-  padding: 4px 12px;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
-  color: var(--text-faint);
+  margin-top: 18px;
+  padding: 7px 14px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: 999px;
+  color: var(--text-muted);
   font-size: 0.8rem;
   font-family: inherit;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .welcome-hint:hover {
-  background: var(--glass-bg-light);
-  border-color: var(--glass-border-subtle);
-  color: var(--text-muted);
+  background: var(--surface-1);
+  border-color: var(--glass-border);
+  color: var(--text-main);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.welcome-hint-arrow {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  transition: transform var(--transition-fast), color var(--transition-fast);
+}
+
+.welcome-hint:hover .welcome-hint-arrow {
+  color: var(--text-main);
+  transform: translateX(2px);
 }
 
 .welcome-hint-prefix {

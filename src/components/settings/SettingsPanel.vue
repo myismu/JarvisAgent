@@ -24,8 +24,12 @@
               :class="{ active: activeTab === 'general' }"
               @click="activeTab = 'general'"
             >
-              <svg viewBox="0 0 24 24" width="18" height="18">
-                <path fill="currentColor" d="M12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6A6,6 0 0,1 18,12A6,6 0 0,1 12,18M12,8A4,4 0 0,0 8,12A4,4 0 0,0 12,16A4,4 0 0,0 16,12A4,4 0 0,0 12,8M12,2L4.5,20.29L5.21,21L12,18L18.79,21L19.5,20.29L12,2Z" />
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="4" y1="21" x2="4" y2="14" /><line x1="4" y1="10" x2="4" y2="3" />
+                <line x1="12" y1="21" x2="12" y2="12" /><line x1="12" y1="8" x2="12" y2="3" />
+                <line x1="20" y1="21" x2="20" y2="16" /><line x1="20" y1="12" x2="20" y2="3" />
+                <line x1="1" y1="14" x2="7" y2="14" /><line x1="9" y1="8" x2="15" y2="8" />
+                <line x1="17" y1="16" x2="23" y2="16" />
               </svg>
               <span>{{ t('settings.tabs.general') }}</span>
             </div>
@@ -34,8 +38,10 @@
               :class="{ active: activeTab === 'presets' }"
               @click="activeTab = 'presets'"
             >
-              <svg viewBox="0 0 24 24" width="18" height="18">
-                <path fill="currentColor" d="M13,9.5H11V7.5H13V9.5M13,16.5H11V11.5H13V16.5M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22A10,10 0 0,1 2,12A10,10 0 0,1 12,2M12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20A8,8 0 0,0 20,12A8,8 0 0,0 12,4Z" />
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+                <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+                <line x1="12" y1="22.08" x2="12" y2="12" />
               </svg>
               <span>{{ t('settings.tabs.presets') }}</span>
             </div>
@@ -44,8 +50,11 @@
               :class="{ active: activeTab === 'prompts' }"
               @click="activeTab = 'prompts'"
             >
-              <svg viewBox="0 0 24 24" width="18" height="18">
-                <path fill="currentColor" d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20M8.5,11.5L10,10L12,12L14,10L15.5,11.5L13.5,13.5L15.5,15.5L14,17L12,15L10,17L8.5,15.5L10.5,13.5L8.5,11.5Z"/>
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="16" y1="13" x2="8" y2="13" />
+                <line x1="16" y1="17" x2="8" y2="17" />
               </svg>
               <span>{{ t('settings.tabs.prompts') }}</span>
             </div>
@@ -54,8 +63,8 @@
               :class="{ active: activeTab === 'tools' }"
               @click="activeTab = 'tools'"
             >
-              <svg viewBox="0 0 24 24" width="18" height="18">
-                <path fill="currentColor" d="M22.7,19L13.6,9.9C14.5,7.6 14,4.9 12.1,3C10.1,1 7.1,0.6 4.7,1.7L9,6L6,9L1.6,4.7C0.4,7.1 0.9,10.1 2.9,12.1C4.8,14 7.5,14.5 9.8,13.6L18.9,22.7C19.3,23.1 19.9,23.1 20.3,22.7L22.6,20.4C23.1,20 23.1,19.3 22.7,19Z" />
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
               </svg>
               <span>{{ t('settings.tabs.tools') }}</span>
             </div>
@@ -64,8 +73,10 @@
               :class="{ active: activeTab === 'about' }"
               @click="activeTab = 'about'"
             >
-              <svg viewBox="0 0 24 24" width="18" height="18">
-                <path fill="currentColor" d="M11,9H13V7H11M12,20C7.59,20 4,16.41 4,12C4,7.59 7.59,4 12,4C16.41,4 20,7.59 20,12C20,16.41 16.41,20 12,20M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M11,17H13V11H11V17Z" />
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="16" x2="12" y2="12" />
+                <line x1="12" y1="8" x2="12.01" y2="8" />
               </svg>
               <span>{{ t('settings.tabs.about') }}</span>
             </div>
@@ -333,7 +344,7 @@
         <div v-for="(line, i) in retiredBlockLines" :key="i" class="retired-block-line">{{ line }}</div>
       </div>
 
-      <div class="settings-footer">
+      <div v-if="activeTab === 'presets' || statusMsg" class="settings-footer">
         <span class="status-msg" :class="{ 'error': isError, 'success': isSuccess }">{{ statusMsg }}</span>
         <div class="footer-actions">
           <!-- 有**本次新引入的**退役模型时置灰：点得动再报错不如一开始就不让点 -->
@@ -1136,44 +1147,48 @@ const save = async () => {
   overflow: hidden;
 }
 
-/* 侧边栏样式 */
+/* 侧边栏样式：与主界面侧栏同源（--bg-sidebar），拉出左右双区层级 */
 .settings-sidebar {
-  width: 240px;
-  flex: 0 0 240px;
-  border-right: 1px solid var(--glass-border);
-  background: color-mix(in srgb, var(--surface-strong) 92%, var(--glass-bg-light));
+  width: 236px;
+  flex: 0 0 236px;
+  border-right: 1px solid var(--glass-border-subtle);
+  background: var(--bg-sidebar);
   display: flex;
   flex-direction: column;
 }
 
 .sidebar-nav {
-  padding: 12px;
+  padding: 12px 10px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
-  color: var(--text-muted);
-  font-size: 0.9333rem;
+  color: var(--text-soft);
+  font-size: 0.875rem;
   font-weight: 500;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .nav-item:hover {
-  background: var(--glass-bg-light);
+  background: var(--surface-1);
   color: var(--text-main);
 }
 
 .nav-item.active {
-  background: color-mix(in srgb, var(--text-main) 10%, transparent);
+  background: var(--bg-panel);
+  border-color: var(--glass-border-subtle);
   color: var(--text-main);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
 .sidebar-divider {
@@ -1240,9 +1255,11 @@ const save = async () => {
 }
 
 .profile-item.active {
-  background: color-mix(in srgb, var(--text-main) 8%, transparent);
+  background: var(--bg-panel);
+  border: 1px solid var(--glass-border-subtle);
   color: var(--text-main);
-  font-weight: 500;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
 .profile-name {
@@ -1307,17 +1324,18 @@ const save = async () => {
   border-top: 2px solid var(--text-main);
 }
 
-/* 内容区域样式 */
+/* 内容区域样式：微浅灰底托起纯白圆角分组卡片（macOS / Linear 设置页层级） */
 .settings-content {
   flex: 1;
   min-width: 0;
-  background: color-mix(in srgb, var(--surface-strong) 96%, var(--glass-bg-heavy));
+  background: color-mix(in srgb, var(--bg-sidebar) 55%, var(--bg-panel));
 }
 
 .settings-body {
   height: 100%;
-  padding: 24px 36px;
+  padding: 22px 32px 28px;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 /* 提示词 tab 自带滚动（textarea 内滚），外层锁高度让编辑器占满可视区 */
@@ -1330,8 +1348,8 @@ const save = async () => {
 .tab-content {
   display: flex;
   flex-direction: column;
-  gap: 36px;
-  max-width: 800px;
+  gap: 20px;
+  max-width: 780px;
   margin: 0 auto;
 }
 
@@ -1345,26 +1363,24 @@ const save = async () => {
   width: 100%;
 }
 
-/* === 行式布局（企业级设置页口径）===
-   去卡片化：分区之间只靠间距与小标题区分，不再用底色+描边的大卡片。
-   每个分区 = 小标题 + 若干"标签居左 / 控件居右"的设置行，行间发丝线分隔。 */
+/* 分组卡片：纯白底 + 柔和细描边，行间发丝线分隔 */
 .setting-card {
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  padding: 0;
-  box-shadow: none;
+  background: var(--bg-panel);
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 6px 16px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
 }
 
 /* 分区小标题：弱化处理（小字 + 弱色 + 字距），读作"分组标签"而非"卡片标题" */
 .card-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 2px;
+  gap: 8px;
+  margin-bottom: 0;
+  padding: 10px 2px 6px;
   color: var(--text-faint);
   border-bottom: none;
-  padding-bottom: 0;
 }
 
 /* 行式布局里图标是噪音，分区靠文字分组即可 */
@@ -1374,9 +1390,10 @@ const save = async () => {
 
 .card-header h4 {
   margin: 0;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.04em;
+  text-transform: uppercase;
   color: var(--text-faint);
 }
 
@@ -1387,10 +1404,10 @@ const save = async () => {
   flex-direction: row;
   flex-wrap: wrap;
   align-items: center;
-  column-gap: 24px;
+  column-gap: 20px;
   row-gap: 6px;
   margin-bottom: 0;
-  padding: 12px 2px;
+  padding: 13px 2px;
   border-bottom: 1px solid var(--glass-border-subtle);
 }
 
@@ -1413,32 +1430,34 @@ const save = async () => {
   order: 99;
 }
 
-/* 嵌套设置行（预设页 max_tokens）与能力徽章：独占一整行，
-   嵌套行不再画发丝线（外层已有），避免双线 */
+/* 嵌套设置行（预设页 max_tokens）与能力徽章：独占一整行，左基线严格对齐 */
 .setting-item .setting-item {
   flex-basis: 100%;
   border-bottom: none;
-  padding-bottom: 0;
+  padding: 10px 0 0;
 }
 
 .setting-item > .capability-badges {
   flex-basis: 100%;
   order: 50;
+  padding-left: 0;
 }
 
-/* 右侧控件区：不再拉满整行，收缩为固定档位的右对齐控件 */
-.setting-item input, .setting-item select {
-  flex: 0 1 320px;
-  width: auto;
-  min-width: 220px;
+/* 右侧控件区：纯白底 + 精细边框 + 统一 320px 右对齐，告别"灰底像禁用" */
+.setting-item input:not([type="range"]):not([type="checkbox"]),
+.setting-item select {
+  flex: 0 0 320px;
+  width: 320px;
+  max-width: 100%;
   height: 32px;
-  padding: 0 12px;
-  background-color: var(--glass-bg-light);
+  padding: 0 11px;
+  background-color: var(--bg-panel);
   border: 1px solid var(--glass-border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   color: var(--text-main);
-  font-size: 0.8667rem;
-  transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s;
+  font-size: 0.84rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background-color var(--transition-fast);
 }
 
 /* 包装类控件（下拉/滑杆/开关组等）右对齐且不被压缩。
@@ -1472,23 +1491,29 @@ const save = async () => {
 
 .setting-item select:hover {
   border-color: var(--text-soft);
-  background-color: var(--glass-bg);
+  background-color: var(--bg-panel);
 }
 
 .format-select {
-  width: auto !important;
-  min-width: 160px;
+  flex: 0 0 320px !important;
+  width: 320px !important;
 }
 
-/* API Key：常驻明文切换按钮（右侧内嵌，不挤压输入区） */
+/* API Key：与上下输入框保持完全一致的 320px 宽度，右边缘严丝合缝对齐 */
 .input-with-toggle {
   position: relative;
+  flex: 0 0 320px;
+  width: 320px;
+  max-width: 100%;
   display: flex;
   align-items: center;
 }
 
 .input-with-toggle input {
-  padding-right: 40px;
+  flex: 1 1 auto !important;
+  width: 100% !important;
+  min-width: 0;
+  padding-right: 38px;
 }
 
 .toggle-visibility {

@@ -42,6 +42,24 @@ const statusText = computed(() => {
 
 <template>
   <div class="about-tab">
+    <!-- 品牌头块：极简反应环标志 + 名称 + 版本徽章 -->
+    <div class="about-hero">
+      <div class="about-logo" aria-hidden="true">
+        <svg viewBox="0 0 48 48" width="44" height="44" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="24" cy="24" r="21" stroke="var(--accent-blue)" stroke-width="1.5" stroke-dasharray="6 4" opacity="0.55" />
+          <circle cx="24" cy="24" r="14" stroke="var(--accent-blue)" stroke-width="1.5" stroke-dasharray="28 60" stroke-linecap="round" />
+          <circle cx="24" cy="24" r="4.5" fill="var(--accent-blue)" />
+        </svg>
+      </div>
+      <div class="about-brand">
+        <div class="about-brand-row">
+          <span class="about-brand-name">JarvisAgent</span>
+          <span class="about-version-pill">v{{ updater.currentVersion.value || '—' }}</span>
+        </div>
+        <p class="about-brand-sub">AI 驱动的桌面端编程助手</p>
+      </div>
+    </div>
+
     <div class="about-card">
       <h4>{{ t('settings.about.title') }}</h4>
       <div class="about-row">
@@ -100,60 +118,133 @@ const statusText = computed(() => {
 .about-tab {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 18px;
 }
 
-.about-card {
-  border: 1px solid var(--glass-border);
+.about-hero {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 20px;
+  border: 1px solid var(--glass-border-subtle);
   border-radius: var(--radius-lg);
-  background: var(--glass-bg);
-  padding: 16px 18px;
+  background: var(--bg-panel);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
 }
 
-.about-card h4 {
-  margin: 0 0 12px;
-  font-size: 14px;
-  font-weight: var(--fw-semibold);
-  color: var(--text-main);
+.about-logo {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.about-row {
+.about-brand {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.about-brand-row {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
-.about-label {
-  font-size: 13px;
+.about-brand-name {
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text-main);
+}
+
+.about-version-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border-subtle);
+  background: var(--surface-1);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-soft);
+}
+
+.about-brand-sub {
+  margin: 0;
+  font-size: 0.82rem;
   color: var(--text-muted);
+}
+
+.about-card {
+  border: 1px solid var(--glass-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  padding: 14px 18px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+}
+
+.about-card h4 {
+  margin: 0 0 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.about-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--glass-border-subtle);
+}
+
+.about-row:last-of-type {
+  border-bottom: none;
+  padding-bottom: 4px;
+}
+
+.about-label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-main);
+  min-width: 72px;
 }
 
 .about-value {
   font-family: var(--font-mono);
-  font-size: 13px;
-  color: var(--text-main);
+  font-size: 0.82rem;
+  color: var(--text-muted);
 }
 
 .about-btn {
   margin-left: auto;
-  padding: 6px 14px;
+  height: 30px;
+  padding: 0 14px;
   border-radius: var(--radius-md);
   border: 1px solid var(--glass-border);
-  background: var(--glass-bg-light);
+  background: var(--bg-panel);
   color: var(--text-main);
-  font-size: 12px;
+  font-size: 0.78rem;
+  font-weight: 500;
   cursor: pointer;
-  transition: border-color var(--transition-fast), opacity var(--transition-fast);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  transition: border-color var(--transition-fast), background var(--transition-fast), opacity var(--transition-fast);
 }
 
 .about-btn:hover:not(:disabled) {
-  border-color: var(--accent-blue);
+  border-color: var(--border-strong);
+  background: var(--surface-1);
 }
 
 .about-btn.primary {
-  background: var(--accent-blue);
-  border-color: var(--accent-blue);
-  color: #fff;
+  background: var(--btn-primary-bg);
+  border-color: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
 }
 
 .about-btn:disabled {

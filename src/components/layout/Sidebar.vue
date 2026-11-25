@@ -25,6 +25,7 @@ import { loadSessionThinking } from '../../composables/useThinkingMode';
 import { useWindow } from '../../composables/useWindow';
 import { usePreferences, prefsReady } from '../../composables/usePreferences';
 import { showToast } from '../../composables/useToast';
+import { formatTokenCount } from '../../utils/tokenDisplay';
 
 defineProps<{
   collapsed: boolean;
@@ -163,8 +164,7 @@ const formatSessionTime = (timestamp: number) => {
 const formatSessionTokens = (session: SessionMeta) => {
   const total = (session.totalInputTokens || 0) + (session.totalOutputTokens || 0);
   if (!total) return '';
-  if (total >= 1000) return `${(total / 1000).toFixed(1)}k tok`;
-  return `${total} tok`;
+  return `${formatTokenCount(total)} tok`;
 };
 
 /**
@@ -638,7 +638,7 @@ onUnmounted(() => {
       <div class="sidebar-main">
       <div class="sidebar-section">
         <div class="session-btn-group">
-          <button type="button" class="new-session-btn" @click.stop="createNewSession()">
+          <button type="button" class="new-session-btn primary-new-btn" @click.stop="createNewSession()">
             <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
               <line x1="12" y1="5" x2="12" y2="19"></line>
               <line x1="5" y1="12" x2="19" y2="12"></line>
@@ -879,12 +879,12 @@ onUnmounted(() => {
 <style scoped>
 .sidebar {
   width: 250px;
-  background: var(--glass-bg);
-  border-right: 1px solid var(--glass-border);
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--glass-border-subtle);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: 12px 8px;
+  padding: 10px 8px;
   transition: width 0.25s ease, padding 0.25s ease;
   flex-shrink: 0;
 }
@@ -986,26 +986,42 @@ onUnmounted(() => {
 .session-btn-group {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin: 12px 12px;
+  gap: 2px;
+  margin: 2px 4px 12px;
 }
 
 .new-session-btn {
   background: transparent;
-  border: 1px dashed var(--glass-border-subtle);
-  color: var(--text-main);
+  border: 1px solid transparent;
+  color: var(--text-soft);
   cursor: pointer;
-  padding: 10px 12px;
+  padding: 7px 10px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   width: 100%;
   border-radius: var(--radius-md);
-  font-size: 0.85rem;
+  font-size: 0.84rem;
   font-weight: 500;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
   -webkit-app-region: no-drag;
   text-align: left;
+}
+
+/* 主入口「新建对话」：在浅灰侧栏上以微抬升白卡突出层级，其余导航项保持无边框轻盈感 */
+.primary-new-btn {
+  background: var(--bg-panel);
+  border-color: var(--glass-border-subtle);
+  color: var(--text-main);
+  font-weight: 600;
+  margin-bottom: 6px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+.primary-new-btn:hover {
+  background: var(--bg-panel);
+  border-color: var(--glass-border);
+  box-shadow: var(--shadow-sm);
 }
 
 .new-session-btn span {
@@ -1013,21 +1029,23 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.new-session-btn:hover,
+
+.new-session-btn:not(.primary-new-btn):hover,
 .project-btn:hover {
-  background: var(--glass-bg-light);
-  border: 1px solid var(--glass-border);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+  background: var(--surface-1);
+  border-color: transparent;
+  color: var(--text-main);
 }
 
 /* 视图入口按钮（技能管理 / 归档）的选中态 = “当前处于该视图”，样式与聊天视图下会话项的选中态同源，
    两者互斥由内容区视图决定：进入技能视图 / 归档页时聊天视图的会话高亮前提不再成立 */
 .skill-btn.active,
 .archive-btn.active {
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
+  background: var(--bg-panel);
+  border-color: var(--glass-border-subtle);
   color: var(--text-main);
   font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
   box-shadow: var(--shadow-sm);
 }
 

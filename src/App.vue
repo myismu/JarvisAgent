@@ -372,7 +372,8 @@ onBeforeUnmount(() => {
           </template>
           <template v-else>
             <div class="conversation-workspace">
-              <div class="conversation-tabs" role="tablist" :aria-label="t('monitor.subAgentChat.title')">
+              <!-- 仅当当前会话存在子 Agent 轨迹时才显示切换页签栏，避免纯主对话时顶部出现多余空行 -->
+              <div v-if="subAgentConversationItems.length > 0" class="conversation-tabs" role="tablist" :aria-label="t('monitor.subAgentChat.title')">
                 <button
                   class="conversation-tab parent-conversation-tab"
                   :class="{ active: activeConversationTab === 'main' }"
