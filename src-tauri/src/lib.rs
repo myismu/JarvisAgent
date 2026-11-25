@@ -9,12 +9,11 @@ pub mod command;
 pub mod core;
 pub mod infra;
 
-use crate::infra::state::state::{SessionManager, SnapshotRegistry, WorkspaceState};
-// [暂存·已注释] 原导入含 RuntimeConfigState/RuntimeSettings，因相关代码已注释，改为仅导入在用项
 use crate::core::orchestration::subagents::SubAgentMonitorState;
 use crate::core::rollback::session_manager::SnapshotManagerRegistry;
 use crate::infra::background::{BackgroundState, CompactingState};
 use crate::infra::config::config::{load_config, ConfigState};
+use crate::infra::state::state::{SessionManager, SnapshotRegistry, WorkspaceState};
 use tauri::Manager;
 
 use std::path::PathBuf;
@@ -148,8 +147,6 @@ pub fn run() {
         .manage(CompactingState::default())
         .manage(SubAgentMonitorState::default())
         .manage(ConfigState(std::sync::Arc::new(Mutex::new(load_config()))))
-        // [暂存·已注释] RuntimeSettings 已注释，暂不注册
-        // .manage(RuntimeConfigState(RuntimeSettings::default()))
         .manage(WorkspaceState(Mutex::new(None)))
         .manage(SnapshotRegistry(tokio::sync::RwLock::new(
             SnapshotManagerRegistry::new(),

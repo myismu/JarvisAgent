@@ -82,13 +82,13 @@ src-tauri/src/main.rs
 → jarvisagent_lib::run()
 → src-tauri/src/lib.rs::run()
 → 探测并锁定 data 目录（AGENT_HOME_DIR）
-→ infra::db::init() 初始化 SQLite（19 张表 + 增量迁移）
+→ infra::db::init() 初始化 SQLite（20 张表 + 增量迁移）
 → 恢复工作目录
 → 恢复或创建启动会话
 → tauri::Builder::default()
 → manage(...) 注册全局状态
 → plugin(...) 注册 Tauri 插件
-→ invoke_handler(...) 注册前端命令（~90 个）
+→ invoke_handler(...) 注册前端命令（115 个）
 → run(tauri::generate_context!())
 ```
 
@@ -97,7 +97,7 @@ src-tauri/src/main.rs
 - `SessionManager`（`infra::state::state`）：活跃会话生命周期、取消令牌、权限请求等。
 - `BackgroundState` / `CompactingState`（`infra::background`）：后台任务与压缩状态。
 - `SubAgentMonitorState`（`core::orchestration::subagents`）：子 Agent 运行状态。
-- `ConfigState` / `RuntimeConfigState`（`infra::config::config`）：应用配置。
+- `ConfigState`（`infra::config::config`）：应用配置。
 - `WorkspaceState`（`infra::state::state`）：当前工作目录。
 - `SnapshotRegistry`（`infra::state::state`）：会话级快照管理器注册表。
 

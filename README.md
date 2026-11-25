@@ -5,7 +5,7 @@
 <div align="center">
 一一一一用你自己的 API Key 运行：会读代码、改文件、跑命令的桌面端 AI 编程助手 —— 改坏了能退回去，动手前会先问你。
 
-Tauri 2 + Rust + Vue 3 · 12 家厂商 93 个模型 · 135 个 Rust 模块 / 544 个单元测试全绿
+Tauri 2 + Rust + Vue 3 · 12 家厂商 93 个模型 · 142 个 Rust 模块 / 700 个单元测试全绿
 
 <a href="SCREENSHOTS.md"><img src="screenshots/01-main-chat.png" alt="JarvisAgent 主界面" width="820"></a>
 
@@ -42,7 +42,7 @@ Tauri 2 + Rust + Vue 3 · 12 家厂商 93 个模型 · 135 个 Rust 模块 / 544
 | 桌面框架 | Tauri 2 | Rust 后端，轻量高性能；无边框透明窗口 |
 | 后端运行时 | Rust + Tokio | 异步运行时，SSE 流式处理 |
 | HTTP 客户端 | Reqwest 0.12 | 流式 API 调用，OpenAI / Anthropic 双协议 |
-| 数据库 | SQLite (rusqlite) | 18 张表，会话、消息、快照、任务、运行记录 |
+| 数据库 | SQLite (rusqlite) | 20 张表，会话、消息、快照、任务、运行记录 |
 | 分词器 | tiktoken-rs | BPE Token 计数，未知模型回退 cl100k_base，再回退字符估算 |
 | 国际化 | vue-i18n 9 | zh-CN / en-US |
 | Markdown | marked | GFM + 增量渲染 |
@@ -98,7 +98,7 @@ pnpm tauri build
 | **工作模式**（WorkMode） | Edit / Plan | 决定「直接干」还是「先出方案」：Plan 模式下写工具不可用，必须先 ProposePlan 并等审批；探索后发现影响面很小（1~2 个文件）可自行降级回 Edit |
 | **用户类型**（Audience） | 普通用户 / 开发者 | 只影响 UI 渲染与交流风格，不影响工具可用性 |
 
-**权限档位**是与模式轴独立的安全维度（不是第三个模式轴）：**请求审批（默认）** 下改文件 / 删文件 / 跑命令一律先问；**帮我批准** 下只有删除、覆盖、改名、跑命令、批量改动才问。
+**权限档位**是与模式轴独立的安全维度（不是第三个模式轴）：**请求审批（默认）** 下改文件 / 删文件 / 跑命令一律先问；**帮我批准** 下普通改动放行，只有高风险操作（如删除、危险警示类操作）才问；**完全批准** 下改动、命令与批量操作一律放行，仅保留硬拒绝边界与危险警示确认。
 
 权限判定的落点是**结构化事实**（用哪个工具、目标路径、文件是否已存在、一次影响几个文件、项目内还是项目外），而不是读用户措辞猜意图；关键词只用于弹窗里的风险提示文案。
 
@@ -155,11 +155,11 @@ JarvisAgent/
 │       └── todo/                     # Todo 组件（暂空）
 ├── src-tauri/                        # Rust 后端（三层：infra / core / command）
 │   ├── src/
-│   │   ├── lib.rs                    # Tauri 入口：数据目录 + 状态注册 + 105 个命令绑定
+│   │   ├── lib.rs                    # Tauri 入口：数据目录 + 状态注册 + 115 个命令绑定
 │   │   ├── main.rs                   # 二进制入口
 │   │   ├── infra/                    # ── 基础设施层：配置 / 数据库 / LLM / 状态 ──
 │   │   │   ├── config/               #   config.rs（AppConfig + 预设 + 原子写入）+ data_paths.rs
-│   │   │   ├── db/                   #   mod.rs（SQLite 连接）+ schema.rs（18 张表 + 迁移 v1~v20）
+│   │   │   ├── db/                   #   mod.rs（SQLite 连接）+ schema.rs（20 张表 + 迁移 v1~v29）
 │   │   │   ├── llm/                  #   api_format + api_client（固定阶梯重试 + Retry-After）
 │   │   │   │                         #   + adapters + registry（模型能力注册表）
 │   │   │   │                         #   + stream_parse（SSE 帧解析唯一实现）+ token_count
@@ -252,7 +252,7 @@ Audience 轴（谁在用）   WorkMode 轴（在干什么）
   WorkMode → 上下文快照（能力边界）+ 工具可用性（Plan 禁写）
 
 独立维度 权限档位（改动前问多严，不是第三个模式轴）：
-  请求审批 ────── 帮我批准
+  请求审批 ── 帮我批准 ── 完全批准
   ↑ 用户手动切换
   权限档位 → 执行前判定：放行 / 弹窗问 / 直接拒绝
 ```
