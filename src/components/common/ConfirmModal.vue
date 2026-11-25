@@ -73,115 +73,221 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <div v-if="open" class="confirm-modal-overlay" @click="!loading && emit('cancel')">
-      <div class="confirm-modal" @click.stop>
-        <h3>{{ title }}</h3>
-        <slot name="message">
-          <p class="confirm-message">{{ message }}</p>
-        </slot>
-        <p v-if="warning" class="confirm-warning" role="alert">{{ warning }}</p>
-        <div class="modal-actions">
-          <slot name="actions">
-            <button class="cancel-btn" :disabled="loading" @click="emit('cancel')">{{ cancelText || t('common.cancel') }}</button>
+    <Transition name="confirm-fade">
+      <div v-if="open" class="confirm-modal-overlay" @click="!loading && emit('cancel')">
+        <div class="confirm-modal" role="dialog" aria-modal="true" :aria-label="title" @click.stop>
+          <header class="confirm-header">
+            <div class="confirm-header-left">
+              <span class="confirm-dot" :class="confirmKind" aria-hidden="true"></span>
+              <h3>{{ title }}</h3>
+            </div>
             <button
-              ref="confirmBtnRef"
-              class="confirm-btn"
-              :class="confirmKind === 'danger' ? 'danger' : 'primary'"
+              type="button"
+              class="confirm-close-btn"
               :disabled="loading"
-              @click="emit('confirm')"
+              :aria-label="cancelText || t('common.cancel')"
+              @click="emit('cancel')"
             >
-              {{ loading ? t('common.processing') : (confirmText || t('common.confirm')) }}
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
             </button>
-          </slot>
+          </header>
+
+          <div class="confirm-body">
+            <slot name="message">
+              <p class="confirm-message">{{ message }}</p>
+            </slot>
+            <p v-if="warning" class="confirm-warning" :class="confirmKind" role="alert">{{ warning }}</p>
+          </div>
+
+          <footer class="modal-actions">
+            <slot name="actions">
+              <button type="button" class="cancel-btn" :disabled="loading" @click="emit('cancel')">
+                {{ cancelText || t('common.cancel') }}
+              </button>
+              <button
+                ref="confirmBtnRef"
+                type="button"
+                class="confirm-btn"
+                :class="confirmKind === 'danger' ? 'danger' : 'primary'"
+                :disabled="loading"
+                @click="emit('confirm')"
+              >
+                {{ loading ? t('common.processing') : (confirmText || t('common.confirm')) }}
+              </button>
+            </slot>
+          </footer>
         </div>
       </div>
-    </div>
+    </Transition>
   </Teleport>
 </template>
 
 <style scoped>
 .confirm-modal-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.55);
+  inset: 0;
+  background: rgba(0, 0, 0, 0.36);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 16px;
   z-index: 10000;
 }
 
 .confirm-modal {
-  background: var(--surface-strong);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-xl);
-  padding: 24px;
-  width: min(92vw, 420px);
-  box-shadow: var(--glass-shadow);
+  background: var(--surface-strong, #fff);
+  border: 1px solid var(--glass-border, rgba(0, 0, 0, 0.09));
+  border-radius: 16px;
+  width: min(92vw, 448px);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.16), 0 2px 8px rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+  color: var(--text-main);
 }
 
-.confirm-modal h3 {
-  margin: 0 0 12px;
-  font-size: 1.05rem;
-  font-weight: 700;
+.confirm-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 12px;
+}
+
+.confirm-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.confirm-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-main);
+  opacity: 0.72;
+}
+
+.confirm-dot.danger {
+  background: var(--accent-red);
+  opacity: 0.9;
+}
+
+.confirm-header h3 {
+  margin: 0;
+  font-size: 0.94rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
   color: var(--text-main);
+  line-height: 1.35;
+}
+
+.confirm-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.confirm-close-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-main) 6%, transparent);
+  color: var(--text-main);
+}
+
+.confirm-close-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.confirm-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 18px 16px;
 }
 
 .confirm-message {
-  margin: 0 0 10px;
-  color: var(--text-main);
-  line-height: 1.7;
-  font-size: 0.95rem;
+  margin: 0;
+  color: var(--text-soft);
+  line-height: 1.65;
+  font-size: 0.86rem;
   white-space: pre-wrap;
 }
 
+/* 轻量警示提示条：左侧细强调线 + 极淡底色，避免大灰盒叠加 */
 .confirm-warning {
   margin: 0;
-  padding: 12px 14px;
-  color: var(--text-soft);
-  background: var(--glass-bg-light);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-md);
-  font-size: 0.9rem;
-  font-weight: 600;
-  line-height: 1.6;
+  padding: 8px 11px;
+  border-radius: 8px;
+  border-left: 2.5px solid color-mix(in srgb, var(--text-muted) 45%, transparent);
+  background: color-mix(in srgb, var(--text-main) 3%, transparent);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 500;
+  line-height: 1.55;
   white-space: pre-wrap;
+}
+
+.confirm-warning.danger {
+  border-left-color: color-mix(in srgb, var(--accent-red) 70%, transparent);
+  background: color-mix(in srgb, var(--accent-red) 5%, transparent);
+  color: color-mix(in srgb, var(--accent-red) 82%, var(--text-main));
 }
 
 .modal-actions {
   display: flex;
-  gap: 12px;
-  margin-top: 18px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid color-mix(in srgb, var(--text-main) 7%, transparent);
+  background: color-mix(in srgb, var(--text-main) 1.5%, transparent);
 }
 
 .cancel-btn,
 .confirm-btn {
-  flex: 1;
-  min-height: 44px;
-  padding: 10px 16px;
-  border-radius: var(--radius-md);
-  font-size: 0.92rem;
-  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 500;
   cursor: pointer;
-  transition: all var(--transition-fast);
-  border: 1px solid transparent;
+  white-space: nowrap;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease, opacity 0.14s ease;
 }
 
 .cancel-btn {
-  background: var(--glass-bg-light);
+  background: transparent;
   color: var(--text-main);
-  border-color: var(--glass-border);
+  border: 1px solid color-mix(in srgb, var(--text-main) 14%, transparent);
 }
 
 .cancel-btn:hover:not(:disabled) {
-  background: var(--glass-bg);
+  background: color-mix(in srgb, var(--text-main) 5%, transparent);
+  border-color: color-mix(in srgb, var(--text-main) 22%, transparent);
 }
 
 .confirm-btn.primary {
   background: var(--btn-primary-bg);
   color: var(--btn-primary-fg);
+  border: 1px solid transparent;
 }
 
 .confirm-btn.primary:hover:not(:disabled) {
@@ -191,7 +297,7 @@ onBeforeUnmount(() => {
 .confirm-btn.danger {
   background: var(--surface-danger);
   color: var(--text-on-danger);
-  border-color: var(--border-danger);
+  border: 1px solid transparent;
 }
 
 .confirm-btn.danger:hover:not(:disabled) {
@@ -200,7 +306,28 @@ onBeforeUnmount(() => {
 
 .cancel-btn:disabled,
 .confirm-btn:disabled {
-  opacity: 0.6;
+  opacity: 0.45;
   cursor: not-allowed;
+}
+
+.confirm-fade-enter-active,
+.confirm-fade-leave-active {
+  transition: opacity 0.16s ease;
+}
+
+.confirm-fade-enter-active .confirm-modal,
+.confirm-fade-leave-active .confirm-modal {
+  transition: transform 0.16s ease, opacity 0.16s ease;
+}
+
+.confirm-fade-enter-from,
+.confirm-fade-leave-to {
+  opacity: 0;
+}
+
+.confirm-fade-enter-from .confirm-modal,
+.confirm-fade-leave-to .confirm-modal {
+  transform: translateY(6px) scale(0.985);
+  opacity: 0;
 }
 </style>

@@ -344,15 +344,16 @@ function renderTableCell(cell: any): string {
   padding: 10px 14px;
   color: var(--text-muted);
   font-size: var(--md-body-font-size);
-  border-left: 3px solid var(--glass-border);
+  border: 1px solid color-mix(in srgb, var(--text-muted) 18%, transparent);
+  border-left: 3px solid color-mix(in srgb, var(--text-muted) 42%, transparent);
   border-radius: var(--radius-md);
-  background: var(--glass-bg-light);
+  background: var(--msg-block-tint);
 }
 
-/* 引用块（含加粗标题的提示块）：中性灰 */
+/* 引用块（含加粗标题的提示块） */
 .md-blockquote:has(strong) {
-  border-left-color: var(--text-muted);
-  background: var(--glass-bg-light);
+  border-left-color: color-mix(in srgb, var(--text-main) 55%, transparent);
+  background: var(--msg-block-tint);
   color: var(--text-soft);
 }
 

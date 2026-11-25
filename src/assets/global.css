@@ -351,19 +351,15 @@ body.dragging-active .editor-container {
   --user-message-opacity: 100;
 }
 
-/* assistant 消息内「内容块」的底色（思考块 / 工具块 / 参数输出 / 日志终端）。
-   **与气泡透明度解耦**：此前它们乘以 --agent-message-opacity，默认 0 时代码块、
-   工具块的底色一起消失，整个对话区只剩纯文字 —— 这是界面发"淡"的首要根因。
-   现在内容块始终是实心底色，层级稳定，不受气泡设置影响。
-   - `--msg-block-tint`：外层容器（思考块 / 工具块 / 日志块）
-   - `--msg-block-tint-strong`：容器内的内容块（参数 / 输出 / 日志标题栏） */
+/* assistant 消息内「内容块」的底色与边框（思考块 / 工具块 / 参数输出 / 日志终端）。
+   统一采用通透纯底 + 极细描边（与 Markdown 代码块视觉同源），告别大块灰底。 */
 :root {
-  --msg-block-tint: #f7f7f7;
-  --msg-block-tint-strong: #efefef;
+  --msg-block-tint: #ffffff;
+  --msg-block-tint-strong: #fafafa;
 }
 body.dark-mode {
-  --msg-block-tint: #212121;
-  --msg-block-tint-strong: #2a2a2a;
+  --msg-block-tint: #1c1c1e;
+  --msg-block-tint-strong: #242427;
 }
 .chat-message.agent-message .message-content {
   background: rgba(var(--msg-bg-rgb), calc(var(--agent-message-opacity) / 100));

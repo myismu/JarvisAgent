@@ -349,19 +349,18 @@ const summaryText = computed(() => {
   white-space: nowrap;
 }
 
-/* 展开体：缩进内嵌面板（淡底 + 细边 + 左强调线），与思考体同一套容器语言 */
+/* 展开体：与 ExecutionTimeline 同一套通透细边框卡片语言 */
 .agent-log-body {
-  margin: 2px 0 2px 12px;
-  padding: 6px 10px;
-  border: 1px solid var(--glass-border-subtle);
-  border-left: 2px solid var(--glass-border);
-  border-radius: 0 6px 6px 0;
+  margin: 4px 0 6px 12px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--text-muted) 18%, transparent);
+  border-radius: var(--radius-md);
   background: var(--msg-block-tint);
   font-family: var(--font-mono);
   font-size: var(--code-font-size);
   --md-body-font-size: var(--code-font-size);
   color: var(--text-soft);
-  line-height: 1.5;
+  line-height: 1.55;
   max-height: 240px;
   overflow-y: auto;
   max-width: 100%;

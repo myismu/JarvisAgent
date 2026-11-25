@@ -290,18 +290,15 @@ function rowIconKind(item: DevTimelineItem): ExecutionRowIconKind {
   color: var(--text-muted);
 }
 .dev-thinking-body {
-  /* 展开态：缩进的内嵌面板（淡底 + 细边 + 左强调线），
-     与行首摘要行形成清晰层级；上下只留 2px，保持整列紧凑节奏，
-     不因为展开一块内容就把行距撑回去。 */
-  margin: 2px 0 2px 12px;
-  padding: 6px 10px;
-  border: 1px solid var(--glass-border-subtle);
-  border-left: 2px solid var(--glass-border);
-  border-radius: 0 6px 6px 0;
+  /* 展开态：与 Markdown 代码块同源的通透细边框卡片（纯底 + 1px 细腻描边 + 统一圆角） */
+  margin: 4px 0 6px 12px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--text-muted) 18%, transparent);
+  border-radius: var(--radius-md);
   background: var(--msg-block-tint);
   font-size: 0.82rem;
   color: var(--text-muted);
-  line-height: 1.6;
+  line-height: 1.65;
   max-width: 100%;
   overflow: hidden;
 }
@@ -371,12 +368,11 @@ function rowIconKind(item: DevTimelineItem): ExecutionRowIconKind {
 
 /* 工具详情 */
 .dev-tool-body {
-  /* 与思考体同一套内嵌面板语言：缩进 + 细边 + 圆角；
-     上下同样只留 2px，内部的参数/输出代码块用 tint-strong 深一档区分层级。 */
-  margin: 2px 0 2px 12px;
-  padding: 6px 8px;
-  border: 1px solid var(--glass-border-subtle);
-  border-radius: 6px;
+  /* 与 Markdown 代码块同源的通透细边框卡片：纯底 + 1px 细腻描边 + 舒展内边距 */
+  margin: 4px 0 6px 12px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--text-muted) 18%, transparent);
+  border-radius: var(--radius-md);
   background: var(--msg-block-tint);
   max-width: 100%;
   overflow: hidden;
@@ -484,15 +480,12 @@ function rowIconKind(item: DevTimelineItem): ExecutionRowIconKind {
   white-space: nowrap;
   color: var(--text-muted);
 }
-/* 展开体复刻 `.dev-thinking-body`：同一套缩进面板语言（细边 + 左强调线 + 淡底），
-   日志与思考都是“过程数据”，不该有两种容器外观。
-   上下 2px、左 12px 与思考体一致，保持整列紧凑。 */
+/* 展开体与思考/工具体同一套通透细边框卡片语言 */
 .dev-log-body {
-  margin: 2px 0 2px 12px;
-  padding: 6px 10px;
-  border: 1px solid var(--glass-border-subtle);
-  border-left: 2px solid var(--glass-border);
-  border-radius: 0 6px 6px 0;
+  margin: 4px 0 6px 12px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--text-muted) 18%, transparent);
+  border-radius: var(--radius-md);
   background: var(--msg-block-tint);
   font-family: var(--font-mono);
   font-size: var(--code-font-size);
@@ -501,7 +494,7 @@ function rowIconKind(item: DevTimelineItem): ExecutionRowIconKind {
   color: var(--text-soft);
   max-height: 240px;
   overflow-y: auto;
-  line-height: 1.5;
+  line-height: 1.55;
   max-width: 100%;
   overflow-x: hidden;
 }

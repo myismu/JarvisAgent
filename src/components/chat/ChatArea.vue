@@ -851,6 +851,7 @@ onMounted(() => {
       :title="editResendConfirm?.title || ''"
       :message="editResendConfirm?.message || ''"
       :warning="rollbackError || editResendConfirm?.warning || ''"
+      confirm-kind="danger"
       :loading="rollbackLoading"
       @cancel="cancelEditResend"
       @confirm="confirmEditResend('session', () => { editingMsgId = null; editingText = ''; editingOriginalText = ''; })"
@@ -882,28 +883,30 @@ onMounted(() => {
         <div class="edit-resend-actions">
           <button
             type="button"
-            class="edit-resend-btn primary"
-            :disabled="rollbackLoading"
-            @click="confirmEditResend('session', () => { editingMsgId = null; editingText = ''; editingOriginalText = ''; })"
-          >
-            {{ rollbackLoading ? t('common.processing') : t('rollback.editResendSessionOnly') }}
-          </button>
-          <button
-            type="button"
-            class="edit-resend-btn danger"
-            :disabled="rollbackLoading"
-            @click="confirmEditResend('both', () => { editingMsgId = null; editingText = ''; editingOriginalText = ''; })"
-          >
-            {{ rollbackLoading ? t('common.processing') : t('rollback.editResendSessionAndCode') }}
-          </button>
-          <button
-            type="button"
-            class="edit-resend-btn cancel"
+            class="edit-resend-btn ghost"
             :disabled="rollbackLoading"
             @click="cancelEditResend"
           >
             {{ t('common.cancel') }}
           </button>
+          <div class="edit-resend-primary-group">
+            <button
+              type="button"
+              class="edit-resend-btn secondary"
+              :disabled="rollbackLoading"
+              @click="confirmEditResend('session', () => { editingMsgId = null; editingText = ''; editingOriginalText = ''; })"
+            >
+              {{ rollbackLoading ? t('common.processing') : t('rollback.editResendSessionOnly') }}
+            </button>
+            <button
+              type="button"
+              class="edit-resend-btn danger"
+              :disabled="rollbackLoading"
+              @click="confirmEditResend('both', () => { editingMsgId = null; editingText = ''; editingOriginalText = ''; })"
+            >
+              {{ rollbackLoading ? t('common.processing') : t('rollback.editResendSessionAndCode') }}
+            </button>
+          </div>
         </div>
       </template>
     </ConfirmModal>
@@ -1427,15 +1430,15 @@ onMounted(() => {
 .rollback-preview-modal {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 .rollback-preview-message,
 .rollback-preview-empty {
   margin: 0;
-  color: var(--text-main);
-  line-height: 1.7;
-  font-size: 0.95rem;
+  color: var(--text-soft);
+  line-height: 1.65;
+  font-size: 0.86rem;
 }
 
 .rollback-preview-empty {
@@ -1443,18 +1446,19 @@ onMounted(() => {
 }
 
 .rollback-preview-files {
-  border: 1px solid var(--glass-border-subtle);
+  border: 1px solid color-mix(in srgb, var(--text-muted) 18%, transparent);
   border-radius: var(--radius-md);
-  background: var(--glass-bg-light);
+  background: var(--msg-block-tint);
   overflow: hidden;
 }
 
 .rollback-preview-summary {
-  padding: 9px 12px;
+  padding: 7px 12px;
   color: var(--text-muted);
-  font-size: 0.82rem;
+  font-size: 0.76rem;
   font-weight: 600;
-  border-bottom: 1px solid var(--glass-border-subtle);
+  background: color-mix(in srgb, var(--text-main) 2%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--text-muted) 14%, transparent);
 }
 
 .rollback-preview-file-list {
@@ -1664,57 +1668,68 @@ onMounted(() => {
   cursor: not-allowed;
 }
 
-/* 编辑重发二选一弹窗按钮区（竖排三键，区分仅会话 / 会话与代码 / 取消） */
+/* 编辑重发二选一弹窗底部操作栏：左幽灵取消，右紧凑双操作键 */
 .edit-resend-actions {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   width: 100%;
+}
+
+.edit-resend-primary-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .edit-resend-btn {
-  width: 100%;
-  min-height: 40px;
-  padding: 9px 14px;
-  border-radius: var(--radius-md);
-  font-size: 0.9rem;
-  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 500;
   cursor: pointer;
+  white-space: nowrap;
   border: 1px solid transparent;
-  transition: all var(--transition-fast);
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease, opacity 0.14s ease;
 }
 
-.edit-resend-btn.primary {
-  background: var(--btn-primary-bg);
-  color: var(--btn-primary-fg);
+.edit-resend-btn.ghost {
+  padding: 0 6px;
+  background: transparent;
+  color: var(--text-muted);
 }
 
-.edit-resend-btn.primary:hover:not(:disabled) {
-  background: var(--btn-primary-bg-hover);
+.edit-resend-btn.ghost:hover:not(:disabled) {
+  color: var(--text-main);
+}
+
+.edit-resend-btn.secondary {
+  background: transparent;
+  color: var(--text-main);
+  border-color: color-mix(in srgb, var(--text-main) 14%, transparent);
+}
+
+.edit-resend-btn.secondary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-main) 5%, transparent);
+  border-color: color-mix(in srgb, var(--text-main) 22%, transparent);
 }
 
 .edit-resend-btn.danger {
   background: var(--surface-danger);
   color: var(--text-on-danger);
-  border-color: var(--border-danger);
 }
 
 .edit-resend-btn.danger:hover:not(:disabled) {
   background: var(--surface-danger-hover);
 }
 
-.edit-resend-btn.cancel {
-  background: var(--glass-bg-light);
-  color: var(--text-main);
-  border-color: var(--glass-border);
-}
-
-.edit-resend-btn.cancel:hover:not(:disabled) {
-  background: var(--glass-bg);
-}
-
 .edit-resend-btn:disabled {
-  opacity: 0.55;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
