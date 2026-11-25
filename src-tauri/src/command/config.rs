@@ -8,7 +8,18 @@
 //! - `get_image_compress_config()`: 返回当前激活配置的图片压缩参数
 
 use crate::infra::config::config;
+use serde::Serialize;
 use tauri::Emitter;
+
+/// 图片压缩参数快照（从 `UiPreferences` 投影，供前端压缩管线直接消费）
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct ImageCompressConfig {
+    pub max_width: u32,
+    pub max_height: u32,
+    pub quality: f32,
+}
 
 /// 读取当前应用配置
 #[tauri::command]
@@ -42,13 +53,13 @@ pub async fn save_config_cmd(
 
 /// 获取图片压缩配置（最大宽高、质量），从 UiPreferences 读取
 #[tauri::command]
-pub async fn get_image_compress_config() -> Result<serde_json::Value, String> {
+pub async fn get_image_compress_config() -> Result<ImageCompressConfig, String> {
     let prefs = crate::command::app_config::get_ui_preferences()
         .await
         .unwrap_or_default();
-    Ok(serde_json::json!({
-        "maxWidth": prefs.image_max_width,
-        "maxHeight": prefs.image_max_height,
-        "quality": prefs.image_quality,
-    }))
+    Ok(ImageCompressConfig {
+        max_width: prefs.image_max_width,
+        max_height: prefs.image_max_height,
+        quality: prefs.image_quality,
+    })
 }

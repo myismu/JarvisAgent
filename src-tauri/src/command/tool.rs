@@ -24,8 +24,9 @@ use crate::core::tools::framework::registry::ToolRegistry;
 use serde::Serialize;
 
 /// 工具的元数据（供设置面板渲染开关列表）。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct ToolMeta {
     pub name: String,
     /// 一句话简述（`ToolDef.description`），列表上直接显示
@@ -40,6 +41,7 @@ pub struct ToolMeta {
     ///
     /// 直接透传注册表里那份 —— 它就是模型实际收到的东西，所以界面上看到的和模型
     /// 看到的一定一致，不会出现"文档说一套、模型收另一套"。
+    #[ts(type = "Record<string, unknown>")]
     pub schema: serde_json::Value,
 }
 

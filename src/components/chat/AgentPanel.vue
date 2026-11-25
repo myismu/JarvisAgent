@@ -241,7 +241,7 @@ const formatDurationMs = (ms?: number | null): string => {
   return restMinutes ? `${hours}h${restMinutes}m` : `${hours}h`;
 };
 
-const formatCountdown = (run: { status: string; startedAt: number; timeoutSecs: number }): string => {
+const formatCountdown = (run: { status: string; startedAt: number; timeoutSecs?: number }): string => {
   if (run.status !== 'running') return '';
   if (!run.startedAt || !run.timeoutSecs) return '';
   // 倒计时不是独立 ref：复用秒表的每秒刷新带动本函数重算（秒表本身只在
@@ -631,7 +631,7 @@ const backgroundStatusLabel = (status: string): string => {
                   <!-- 任务描述预览 -->
                   <div class="detail-prompt">
                     <div class="prompt-label">{{ t('monitor.taskPrompt') }}</div>
-                    <p>{{ run.summary || run.prompt || run.promptPreview || t('monitor.emptySummary') }}</p>
+                    <p>{{ run.summary || run.promptPreview || t('monitor.emptySummary') }}</p>
                   </div>
                 </div>
               </div>
@@ -672,7 +672,7 @@ const backgroundStatusLabel = (status: string): string => {
                   >&times;</button>
                 </div>
                 <div class="monitor-item-meta">
-                  <span v-if="task.task_type || task.taskType">{{ task.task_type || task.taskType }}</span>
+                  <span v-if="task.task_type">{{ task.task_type }}</span>
                   <span v-if="task.port">:{{ task.port }}</span>
                   <span v-if="task.result">{{ task.result }}</span>
                 </div>

@@ -19,8 +19,9 @@ use crate::core::agent::prompts::{
 use serde::Serialize;
 
 /// 列表项：注册表元数据 + 磁盘覆盖状态 + 当前生效版体积
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct PromptMeta {
     pub path: String,
     pub display_name: String,
@@ -40,8 +41,9 @@ pub struct PromptMeta {
 }
 
 /// 详情：编辑器初始内容 + 内置原文（供对比/恢复参考）
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct PromptDetail {
     pub path: String,
     pub display_name: String,

@@ -14,8 +14,9 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 /// 代理沙箱实例
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct AgentSandbox {
     pub sandbox_id: String,
     pub agent_id: String,
@@ -24,13 +25,15 @@ pub struct AgentSandbox {
     pub base_snapshot_id: String,
     pub workspace_path: PathBuf,
     pub status: SandboxStatus,
+    #[ts(type = "number")]
     pub created_at: u64,
     pub description: String,
 }
 
 /// 沙箱状态
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(rename_all = "lowercase")]
 pub enum SandboxStatus {
     Active,
     Completed,
@@ -39,8 +42,9 @@ pub enum SandboxStatus {
 }
 
 /// 沙箱对比统计
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct SandboxComparison {
     pub sandbox_id: String,
     pub agent_id: String,
@@ -49,6 +53,7 @@ pub struct SandboxComparison {
     pub lines_removed: usize,
     pub snapshot_count: usize,
     pub last_snapshot_id: String,
+    #[ts(optional = nullable)]
     pub last_message: Option<String>,
 }
 

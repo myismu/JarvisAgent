@@ -22,21 +22,28 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, ts_rs::TS)]
 pub struct JarvisResult {
     pub status: String,
     pub content: String,
+    #[ts(type = "number")]
     pub input_tokens: u64,
+    #[ts(type = "number")]
     pub output_tokens: u64,
+    #[ts(type = "number")]
     pub session_input_tokens: u64,
+    #[ts(type = "number")]
     pub session_output_tokens: u64,
     /// 会话累计缓存命中 / 未命中 token。
     ///
     /// 两者都为 0 表示该会话从未有请求上报缓存字段（前端据此显示 `--`，而不是 `0%`）。
+    #[ts(type = "number")]
     pub session_cache_hit_tokens: u64,
+    #[ts(type = "number")]
     pub session_cache_miss_tokens: u64,
     /// 后端为用户消息分配的 UUID，前端用于关联撤回按钮
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub user_message_id: Option<String>,
     /// 本轮创建的文件检查点 id（有文件编辑的轮次由 finalize 收尾时创建）。
     ///
@@ -44,13 +51,16 @@ pub struct JarvisResult {
     /// 靠返回值让前端实时回填撤回信息（「会话和代码撤回」立即出现），
     /// 不必等刷新走 `get_session_messages` 重查库。
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub checkpoint_id: Option<String>,
     /// 本轮是否有文件编辑补丁（与刷新路径 `rollback_info.has_file_edits` 同口径；
     /// 检查点创建失败时它仍为 true，前端据此展示 both 菜单）
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub checkpoint_has_patches: Option<bool>,
     /// break_loop 时的工具执行结果摘要（前端用于 toolBuffer，避免丢失工具执行日志）
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub tool_execution_summary: Option<String>,
     /// 本轮状态标注的 **i18n key**（前端 `t(key)` 后渲染在气泡下方的小字里）。
     ///
@@ -71,23 +81,28 @@ pub struct JarvisResult {
     /// notice 是运行状态说明（渲染在气泡**下方**的小字里）。
     /// 中断类信息走 notice，避免混进正文看起来像模型自己说的话。
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub notice_i18n_key: Option<String>,
     /// 状态标注的补充数据（可选，**原样展示、不翻译**）。
     ///
     /// 只有一种用法：句子里需要塞入无法翻译的内容时（如具体的错误文本）。
     /// 前端以 `notice.detail` 这个 key 包一层再拼到主句后面。
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub notice_detail: Option<String>,
     /// 本轮最终采用的深度思考状态（由 `core::session::thinking::decide` 裁决）。
     ///
     /// 前端用它渲染开关状态与"被模型强制夹紧"的提示，**不再自行判断**。
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub thinking_enabled: Option<bool>,
     /// 裁决原因（`ThinkingReason` 的 Debug 名，如 `ClampedByForced`）
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub thinking_reason: Option<String>,
     /// 需要提示用户时的 i18n key（前端 `t(key)` 后展示）
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub thinking_notice_i18n_key: Option<String>,
 }
 
@@ -527,8 +542,9 @@ pub struct Skill {
 }
 
 /// Skill 列表元数据（不含 body，用于列表展示）
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct SkillMeta {
     pub name: String,
     pub description: String,
@@ -538,8 +554,9 @@ pub struct SkillMeta {
 }
 
 /// Skill 完整详情（含 body，用于详情展示）
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct SkillDetail {
     pub name: String,
     pub description: String,
@@ -547,8 +564,9 @@ pub struct SkillDetail {
     pub body: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct ContextSectionSnapshot {
     pub key: String,
     pub label: String,
@@ -560,18 +578,23 @@ pub struct ContextSectionSnapshot {
     pub truncated: bool,
     /// 原始 JSON 数据（仅 messages 和 tools section 有值）
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub raw_content: Option<String>,
 }
 
 /// 单个 loop 的缓存命中记录（用于渲染回合内趋势）
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct CacheHitPoint {
     pub loop_count: usize,
+    #[ts(type = "number")]
     pub hit_tokens: u64,
+    #[ts(type = "number")]
     pub miss_tokens: u64,
     /// 命中的字段名（服务商未报告时为 None）
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub source: Option<String>,
 }
 
@@ -590,34 +613,45 @@ impl CacheHitPoint {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct SessionContextSnapshot {
     pub session_id: String,
+    #[ts(optional = nullable)]
     pub run_id: Option<String>,
     pub loop_count: usize,
     pub model: String,
     pub intent: String,
     pub api_format: String,
+    #[ts(type = "number")]
     pub created_at: u64,
     pub total_chars: usize,
     pub estimated_tokens: usize,
+    #[ts(optional, type = "number | null")]
     pub provider_input_tokens: Option<u64>,
+    #[ts(optional, type = "number | null")]
     pub provider_output_tokens: Option<u64>,
+    #[ts(optional, type = "number | null")]
     pub provider_total_tokens: Option<u64>,
     /// 缓存命中 / 未命中的输入 token。
     /// `None` = 该 provider（或中转链路）未报告该字段，**与 0 命中是两回事**。
     #[serde(default)]
+    #[ts(optional, type = "number | null")]
     pub cache_hit_tokens: Option<u64>,
     #[serde(default)]
+    #[ts(optional, type = "number | null")]
     pub cache_miss_tokens: Option<u64>,
     /// 命中的字段名（如 `prompt_cache_hit_tokens` / `cached_tokens` / `cache_read_input_tokens`）
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub cache_source: Option<String>,
     /// 本会话逐 loop 的缓存命中记录（保留最近 N 条，用于渲染趋势）
     #[serde(default)]
     pub cache_history: Vec<CacheHitPoint>,
+    #[ts(optional = nullable)]
     pub drift_percent: Option<f32>,
+    #[ts(optional = nullable)]
     pub max_context_tokens: Option<u32>,
     pub max_output_tokens: i32,
     pub message_count: usize,
@@ -654,8 +688,9 @@ pub struct SessionContextSnapshot {
 /// "哪一轮被打断"由 `agent_run_events.status` 承担。
 ///
 /// 详见 doc/状态标注符号统一与结构化改造方案.md（阶段二）。
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
 pub enum InterruptKind {
     /// 流空闲超时（SSE 阈值内零帧）
     StreamTimeout,
@@ -762,8 +797,9 @@ pub struct AgentStep {
 ///
 /// `depends_on` / `can_parallel_with` 都是**1-based 序号**，指向同一方案 tasks 数组，
 /// 与 `ProposePlan` schema 的口径一致。
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct PlanTask {
     pub subject: String,
     #[serde(default)]
@@ -774,8 +810,9 @@ pub struct PlanTask {
     pub can_parallel_with: Vec<usize>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct PlanDocument {
     pub id: String,
     #[serde(default)]
@@ -783,31 +820,39 @@ pub struct PlanDocument {
     pub title: String,
     pub content: String,
     pub status: String,
+    #[ts(optional = nullable)]
     pub path: Option<String>,
+    #[ts(type = "number")]
     pub created_at: u64,
+    #[ts(type = "number")]
     pub updated_at: u64,
+    #[ts(optional, type = "number | null")]
     pub decided_at: Option<u64>,
     /// 用户拒绝方案时填写的修改意见（与 content 分离，不覆盖原始方案）
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub rejection_feedback: Option<String>,
     /// 结构化任务分解。审批通过时据此自动建任务图。
     ///
     /// 存量方案没有这个字段（serde default 为空数组），审批时走兼容分支，
     /// 由模型按正文里的任务分解自行 `CreateTask`。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<PlanTask>>")]
     pub tasks: Vec<PlanTask>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
 pub enum TodoStatus {
     Pending,
     InProgress,
     Completed,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct TodoItem {
     pub id: String,
     /// Imperative form describing what needs to be done.
@@ -820,12 +865,14 @@ pub struct TodoItem {
     /// 存在意义：主 Agent 在调度器里阻塞期间无法调用 `UpdateTodos`，这条进度由调度器
     /// 直接回写，否则用户在几十个子任务跑完前看不到任何变化。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub progress: Option<TodoProgress>,
 }
 
 /// 某条 todo 对应的子任务完成度。
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct TodoProgress {
     pub done: usize,
     pub total: usize,
@@ -836,23 +883,26 @@ pub struct TodoProgress {
 /// 一次 `UpdateTodos` 调用产生一组；后续调用如果条目 id 与某组有交集，就更新那一组
 /// （组内替换），否则新建一组追加。这样才能同时满足两件事：长会话里多轮清单共存，
 /// 以及同一轮内条目状态的更新。
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct TodoGroup {
     pub id: String,
     pub items: Vec<TodoItem>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
 pub enum TaskStatus {
     Pending,
     InProgress,
     Completed,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct Task {
     pub id: i32,
     pub subject: String,
@@ -863,14 +913,17 @@ pub struct Task {
     pub owner: String,
     /// 进行中时显示的动态文本（如 "Fixing authentication bug"）
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub active_form: Option<String>,
     /// 任意附加元数据
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "unknown")]
     pub metadata: Option<serde_json::Value>,
     /// 该任务由哪种子代理执行（`RunSubagentsSequentially` 调度时读取）。
     ///
     /// `None` = 沿用历史行为（implementation 型）。任务整体以 JSON 存进
     /// `session_tasks.task_json`，所以新增字段**不需要 DB 迁移**。2026-09-20 新增。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub subagent_type: Option<String>,
 }

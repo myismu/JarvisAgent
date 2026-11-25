@@ -5,8 +5,9 @@
 use serde::{Deserialize, Serialize};
 
 /// 单个模型的能力描述
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct ModelCapabilities {
     /// 是否支持流式输出
     pub streaming: bool,
@@ -25,6 +26,7 @@ pub struct ModelCapabilities {
     /// - `"thinking_enable"`  —— `{enable}`（腾讯混元）
     /// - `"enable_thought"`   —— `parameters:{enable_thought}`（MiniMax）
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub thinking_param: Option<String>,
     /// 是否支持温度参数（部分推理模型开启思考后不可调）
     pub temperature: bool,
@@ -36,6 +38,7 @@ pub struct ModelCapabilities {
     pub max_tokens: u32,
     /// 最大上下文窗口 token 数
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub max_context_tokens: Option<u32>,
     /// 备注说明
     #[serde(default)]
@@ -46,6 +49,7 @@ pub struct ModelCapabilities {
     /// 缓存命中字段的写法（**可选覆盖**，省略 = 运行时按候选表自动探测）：
     /// `"deepseek" | "nested" | "flat" | "anthropic" | "none"`
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub cache_usage_style: Option<String>,
     /// 该模型支持的「思考深度档位」（可选，空 = 不声明）。
     ///
@@ -64,6 +68,7 @@ pub struct ModelCapabilities {
     /// - `"adaptive_default"`  —— **省略即思考**；关闭需显式 `{type:"disabled"}`
     /// - `"adaptive_only"`     —— 恒开、**不可关闭**（传 `disabled` 会 400），只能省略或传 `adaptive`
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub thinking_mode: Option<String>,
     /// 模型生命周期状态（**可选，省略 = `"active"`**）。
     ///
@@ -84,6 +89,7 @@ pub struct ModelCapabilities {
     /// 以后也可能退役，届时这条提示就从"有用"变成"误导"，还得持续维护。
     /// 界面统一引导用户去厂商官方文档查最新型号。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub status_note: Option<String>,
 }
 
@@ -96,8 +102,9 @@ fn default_model_status() -> String {
 }
 
 /// 注册表中的单条模型记录
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct ModelRegistryEntry {
     /// 模型 ID（用于精确或模糊匹配）
     pub id: String,

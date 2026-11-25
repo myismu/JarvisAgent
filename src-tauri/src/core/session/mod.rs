@@ -76,13 +76,16 @@ pub fn delete_image_file(filename: &str) {
 }
 
 /// 项目元信息
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct ProjectMeta {
     pub id: String,
     pub name: String,
     pub path: String,
+    #[ts(type = "number")]
     pub created_at: u64,
+    #[ts(type = "number")]
     pub updated_at: u64,
     /// 项目下的会话数
     #[serde(default)]
@@ -90,26 +93,33 @@ pub struct ProjectMeta {
 }
 
 /// 会话元信息（用于列表展示，不含完整消息体）
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct SessionMeta {
     pub id: String,
     pub title: String,
+    #[ts(type = "number")]
     pub created_at: u64,
+    #[ts(type = "number")]
     pub updated_at: u64,
     pub message_count: usize,
     #[serde(default)]
     pub is_smart_named: bool,
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub profile_id: Option<String>,
     #[serde(default)]
+    #[ts(type = "number")]
     pub total_input_tokens: u64,
     #[serde(default)]
+    #[ts(type = "number")]
     pub total_output_tokens: u64,
     /// 会话累计缓存命中 token（来自各次请求的 `prompt_cache_hit_tokens` 等字段）。
     ///
     /// 0 等价于"从未报告"——展示层据此显示 `--` 而不是 `0%`。
     #[serde(default)]
+    #[ts(type = "number")]
     pub total_cache_hit_tokens: u64,
     /// 会话累计缓存未命中 token。与命中数一样，0 表示未报告。
     ///
@@ -117,14 +127,17 @@ pub struct SessionMeta {
     /// 各家的 `input_tokens` 口径不同（Anthropic 的 `input_tokens` 本身就不含缓存读取），
     /// 相减会得出错误的未命中数。这里只忠实累加厂商报告的值。
     #[serde(default)]
+    #[ts(type = "number")]
     pub total_cache_miss_tokens: u64,
     #[serde(default = "default_title_source")]
     pub title_source: String,
     /// 所属项目 ID，None 表示无项目独立会话
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub project_id: Option<String>,
     /// 工作目录（从 projects 表派生，仅读）
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub working_directory: Option<String>,
     /// 深度思考档位（**会话级布尔**）：`true` = 本会话开启思考，`false` = 关闭。
     ///
@@ -142,12 +155,14 @@ pub struct SessionMeta {
     /// 刻意**不加** `skip_serializing_if`：前端要靠 `deletedAt: null` 与「字段缺失」区分
     /// 「未归档」与「后端没给这个字段」，省略会让两者在前端混成一种状态。
     #[serde(default)]
+    #[ts(optional, type = "number | null")]
     pub deleted_at: Option<u64>,
     /// 所属项目名（从 `projects.name` 派生，仅读）。
     ///
     /// 归档页要回答「这条会话原本属于哪个项目」——项目归档后已不在项目列表里，
     /// 前端拿不到名字就没法分组展示。无项目（独立会话）时为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub project_name: Option<String>,
 }
 
@@ -155,8 +170,9 @@ pub struct SessionMeta {
 ///
 /// 批量恢复/批量删除**不允许整批回滚**：用户勾了 10 条、其中 1 条已被别的窗口
 /// 处理掉，剩下的 9 条仍应完成。失败项逐条回报，界面才能精确提示「哪几条没成功」。
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct BatchOpFailure {
     pub id: String,
     /// 失败原因（面向用户的中文短句，直接展示）
@@ -171,8 +187,9 @@ pub struct BatchOpFailure {
 /// - `restored_project_ids`：**副作用**结果——恢复会话时连带复活的归档项目。
 ///   它与前两者没有必然数量关系（一次恢复可能复活 0 个、也可能复活 1 个），
 ///   所以必须单独回报，不能靠前端猜。
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct BatchOpResult {
     pub succeeded_ids: Vec<String>,
     pub failed: Vec<BatchOpFailure>,
@@ -219,8 +236,9 @@ pub struct SessionTokenTotals {
 /// ⚠️ 本枚举**确实**派生了 `Serialize`（事件载荷与命令回包需要它），
 /// 因此多了一套 serde 映射；`usage_tests::usage_source_serde_matches_as_str`
 /// 把两者钉死，新增变体时忘改任何一边都会变红。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
 pub enum UsageSource {
     /// 主 Agent 的主循环（每个 loop 一次模型请求）
     Main,
@@ -414,19 +432,27 @@ impl RequestUsageRecord {
 /// `unreported_*` 两个字段是**可空语义的携带者**：
 /// 展示层要能说“这 3 次请求厂商没报缓存，涉及 12k 输入 token”，
 /// 而不是把它们的缓存当成 0 算进命中率分母。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "UsageSourceAuditRow", rename_all = "camelCase")]
 pub struct UsageSourceBreakdown {
     pub source: UsageSource,
+    #[ts(type = "number")]
     pub request_count: u64,
+    #[ts(type = "number")]
     pub input_tokens: u64,
+    #[ts(type = "number")]
     pub output_tokens: u64,
     /// 已上报的命中/未命中之和（未上报的请求不参与，也不按 0 计入）
+    #[ts(type = "number")]
     pub cache_hit_tokens: u64,
+    #[ts(type = "number")]
     pub cache_miss_tokens: u64,
     /// 缓存字段未上报的请求数
+    #[ts(type = "number")]
     pub unreported_requests: u64,
     /// 这些未上报请求对应的输入 token 合计（让“不知道”也有量级）
+    #[ts(type = "number")]
     pub unreported_input_tokens: u64,
 }
 
@@ -436,17 +462,25 @@ pub struct UsageSourceBreakdown {
 /// 此时数字全为 0。调用方必须靠这个标志区分“真的没用过 token”与“没明细可拆”——
 /// 把后者当 0 展示会让用户以为历史会话白嫆。此时若要展示总量，
 /// 应回退到 `sessions.total_*`（本结构体不重复携带，避免两处口径打架）。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct UsageBreakdown {
     pub session_id: String,
+    #[ts(type = "number")]
     pub input_tokens: u64,
+    #[ts(type = "number")]
     pub output_tokens: u64,
+    #[ts(type = "number")]
     pub cache_hit_tokens: u64,
+    #[ts(type = "number")]
     pub cache_miss_tokens: u64,
     /// 明细行数（= 请求次数）
+    #[ts(type = "number")]
     pub request_count: u64,
+    #[ts(type = "number")]
     pub unreported_requests: u64,
+    #[ts(type = "number")]
     pub unreported_input_tokens: u64,
     /// 是否存在明细（`false` = 历史会话，数字不可信）
     pub has_detail: bool,

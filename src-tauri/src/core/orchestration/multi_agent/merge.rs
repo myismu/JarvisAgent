@@ -7,12 +7,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 /// 合并结果
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct MergeResult {
     pub success: bool,
     pub target_branch: String,
     pub source_branch: String,
+    #[ts(optional = nullable)]
     pub merged_snapshot_id: Option<String>,
     pub conflicts: Vec<Conflict>,
     pub auto_resolved: usize,
@@ -20,20 +22,26 @@ pub struct MergeResult {
 }
 
 /// 合并冲突详情
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct Conflict {
     pub path: String,
     pub conflict_type: ConflictType,
+    #[ts(optional = nullable)]
     pub source_content: Option<String>,
+    #[ts(optional = nullable)]
     pub target_content: Option<String>,
+    #[ts(optional = nullable)]
     pub base_content: Option<String>,
+    #[ts(optional = nullable)]
     pub resolution: Option<ConflictResolution>,
 }
 
 /// 冲突类型
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
 pub enum ConflictType {
     BothModified,
     SourceDeleted,
@@ -43,8 +51,9 @@ pub enum ConflictType {
 }
 
 /// 冲突解决策略
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[ts(tag = "type", rename_all = "snake_case")]
 pub enum ConflictResolution {
     KeepSource,
     KeepTarget,

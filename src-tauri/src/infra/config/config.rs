@@ -26,8 +26,9 @@ use tokio::sync::Mutex;
 use crate::infra::llm::api_format::ApiFormat;
 
 /// Agent 配置结构体（代表单个模型的连接信息）
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase", default)]
+#[ts(rename_all = "camelCase")]
 pub struct AgentConfig {
     /// API 格式 (anthropic 或 openai)
     pub api_format: String,
@@ -40,10 +41,13 @@ pub struct AgentConfig {
     /// 意图分类器 / 记忆 Agent 使用的模型 ID（可用更便宜的模型）
     pub utility_model: String,
     /// 模型生成的温度参数
+    #[ts(optional = nullable)]
     pub temperature: Option<f32>,
     /// 模型生成的 Top P 参数
+    #[ts(optional = nullable)]
     pub top_p: Option<f32>,
     /// 模型生成的 Top K 参数
+    #[ts(optional = nullable)]
     pub top_k: Option<u32>,
     /// Reflection 模式: "always" | "smart" | "off"
     #[serde(default = "default_reflection_mode")]
@@ -55,17 +59,23 @@ pub struct AgentConfig {
     /// 此字段仅用于**读取老 config.json 时兼容**，不做任何业务读取；
     /// 序列化时跳过，因此新写的配置不会再产生它。
     #[serde(default, skip_serializing)]
+    #[ts(skip)]
     pub thinking_default: Option<String>,
     /// 用户自定义 max_tokens（覆盖模型注册表默认值），None 表示使用注册表值
+    #[ts(optional = nullable)]
     pub max_tokens: Option<i32>,
     /// [兼容旧配置] 旧版图片/子模型字段，读取后忽略
     #[serde(default, skip_serializing)]
+    #[ts(skip)]
     pub image_max_width: Option<u32>,
     #[serde(default, skip_serializing)]
+    #[ts(skip)]
     pub image_max_height: Option<u32>,
     #[serde(default, skip_serializing)]
+    #[ts(skip)]
     pub image_quality: Option<f32>,
     #[serde(default, skip_serializing)]
+    #[ts(skip)]
     pub sub_model: Option<String>,
 }
 
@@ -100,8 +110,9 @@ impl Default for AgentConfig {
 }
 
 /// 模型预设
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct ModelProfile {
     pub id: String,
     pub name: String,
@@ -117,8 +128,9 @@ fn default_global_profile_id() -> String {
 }
 
 /// 顶级应用配置
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct AppConfig {
     pub active_profile_id: String,
     #[serde(default = "default_global_profile_id")]

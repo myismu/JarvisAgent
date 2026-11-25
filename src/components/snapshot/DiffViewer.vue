@@ -33,8 +33,8 @@ const diffLines = computed(() => {
   }
 
   if (patch.type === "update_file") {
-    const oldLines = (patch.oldContent || "").split("\n");
-    const newLines = (patch.newContent || "").split("\n");
+    const oldLines = (patch.old_content || "").split("\n");
+    const newLines = (patch.new_content || "").split("\n");
     const result: DiffLine[] = [];
 
     const maxLen = Math.max(oldLines.length, newLines.length);
@@ -81,7 +81,7 @@ const diffLines = computed(() => {
     return [
       {
         type: "context" as const,
-        content: `${patch.oldPath} → ${patch.newPath}`,
+        content: `${patch.old_path} → ${patch.new_path}`,
       },
     ];
   }
@@ -104,9 +104,9 @@ const patchTitle = computed(() => {
     case "update_file":
       return `修改: ${props.patch.path}`;
     case "rename_file":
-      return `重命名: ${props.patch.oldPath} → ${props.patch.newPath}`;
+      return `重命名: ${props.patch.old_path} → ${props.patch.new_path}`;
     default:
-      return props.patch.path;
+      return "";
   }
 });
 

@@ -933,11 +933,6 @@ export const useChatStore = defineStore("chat", () => {
           cacheHit: res.session_cache_hit_tokens || 0,
           cacheMiss: res.session_cache_miss_tokens || 0,
         });
-        // 分组用量与四个扁平总量分开写：总量回写不得冲掉分组数据。
-        // 仅在后端真的返回了明细时才覆盖（旧后端无该字段 → 保持原值）。
-        if (res.session_usage_breakdown) {
-          session.setSessionUsageBreakdown(sessionIdAtStart, res.session_usage_breakdown);
-        }
       }
       requestView.lastUserMessage = resumeOnly ? "" : msg;
 
@@ -1073,10 +1068,6 @@ export const useChatStore = defineStore("chat", () => {
           cacheHit: sessionCacheHitTokens,
           cacheMiss: sessionCacheMissTokens,
         });
-        // 后端若随本轮回执给了分组明细，则一并写入（整值覆盖，不累加）；没给就保持原值。
-        if (res.session_usage_breakdown) {
-          sessionAfterSave.setSessionUsageBreakdown(sessionIdAtStart, res.session_usage_breakdown);
-        }
       }
       // agent 完成后主动拉取最新上下文快照，使监控面板的 Session Messages 包含完整最后一轮回复
       refreshContextSnapshot(sessionIdAtStart);

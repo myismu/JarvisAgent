@@ -927,6 +927,19 @@ async fn current_main_model(
 }
 
 /// 组装前端的思考档位快照（`resolvedEnabled` 由后端裁决层算出，前端不做二次判断）。
+/// 会话深度思考档位的权威快照（用于查询、修改回包与 `session-thinking-mode-changed` 事件）
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct SessionThinkingSnapshot {
+    pub session_id: String,
+    pub thinking_enabled: bool,
+    pub resolved_enabled: bool,
+    pub reason: String,
+    #[ts(optional = nullable)]
+    pub notice_i18n_key: Option<String>,
+}
+
 ///
 /// `thinkingEnabled` 与 `resolvedEnabled` 的区别：
 /// - `thinkingEnabled`：会话库里存的值（用户意图 / 建会话时固化的值）；
@@ -937,15 +950,15 @@ fn build_thinking_snapshot(
     session_id: &str,
     session_mode: session::thinking::ThinkingMode,
     caps: Option<&crate::infra::llm::registry::ModelCapabilities>,
-) -> serde_json::Value {
+) -> SessionThinkingSnapshot {
     let decision = session::thinking::decide(None, session_mode, caps);
-    serde_json::json!({
-        "sessionId": session_id,
-        "thinkingEnabled": session_mode.0,
-        "resolvedEnabled": decision.enabled,
-        "reason": format!("{:?}", decision.reason),
-        "noticeI18nKey": decision.notice_i18n_key,
-    })
+    SessionThinkingSnapshot {
+        session_id: session_id.to_string(),
+        thinking_enabled: session_mode.0,
+        resolved_enabled: decision.enabled,
+        reason: format!("{:?}", decision.reason),
+        notice_i18n_key: decision.notice_i18n_key.map(str::to_string),
+    }
 }
 
 /// 计算「**尚无会话时**」深度思考开关该显示成什么（只读，不落库）。
@@ -965,7 +978,7 @@ fn build_thinking_snapshot(
 #[tauri::command]
 pub async fn get_pending_thinking_enabled(
     config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
-) -> Result<serde_json::Value, String> {
+) -> Result<SessionThinkingSnapshot, String> {
     let model_id = current_main_model(&config_state).await;
     let caps = crate::infra::llm::registry::query_capabilities(&model_id);
     let thinking_forced = caps.as_ref().map(|c| c.thinking_forced).unwrap_or(false);
@@ -975,18 +988,11 @@ pub async fn get_pending_thinking_enabled(
         .thinking_default;
     let resolved = session::thinking::ThinkingDefault::parse(&default_raw).resolve(thinking_forced);
 
-    let decision = session::thinking::decide(
-        None,
+    Ok(build_thinking_snapshot(
+        "",
         session::thinking::ThinkingMode(resolved),
         caps.as_ref(),
-    );
-    Ok(serde_json::json!({
-        "sessionId": "",
-        "thinkingEnabled": resolved,
-        "resolvedEnabled": decision.enabled,
-        "reason": format!("{:?}", decision.reason),
-        "noticeI18nKey": decision.notice_i18n_key,
-    }))
+    ))
 }
 
 /// 读取某会话的思考档位快照。
@@ -998,7 +1004,7 @@ pub async fn get_session_thinking(
     id: String,
     session_manager: tauri::State<'_, SessionManager>,
     config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
-) -> Result<serde_json::Value, String> {
+) -> Result<SessionThinkingSnapshot, String> {
     let ctx = session_manager.get_or_create(&id).await;
     let session_mode = session::thinking::ThinkingMode(*ctx.thinking_mode.lock().await);
 
@@ -1023,7 +1029,7 @@ pub async fn set_session_thinking_enabled(
     session_manager: tauri::State<'_, SessionManager>,
     config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
     app: tauri::AppHandle,
-) -> Result<serde_json::Value, String> {
+) -> Result<SessionThinkingSnapshot, String> {
     // 1) 落库（布尔，永不写 NULL）
     session::update_session_thinking_mode(&id, enabled)?;
 

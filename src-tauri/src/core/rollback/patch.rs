@@ -7,8 +7,9 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 /// 文件补丁（描述一次文件变更操作）
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[ts(tag = "type", rename_all = "snake_case")]
 pub enum Patch {
     CreateFile {
         path: String,
@@ -45,13 +46,13 @@ pub enum Patch {
 }
 
 /// 文本差异（由多个 hunk 组成）
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default, ts_rs::TS)]
 pub struct TextDiff {
     pub hunks: Vec<DiffHunk>,
 }
 
 /// 差异块（一个连续的变更区域）
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 pub struct DiffHunk {
     pub old_start: u32,
     pub old_lines: u32,
@@ -61,8 +62,9 @@ pub struct DiffHunk {
 }
 
 /// 差异行类型
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(tag = "type")]
+#[ts(tag = "type")]
 pub enum DiffLine {
     Context { content: String },
     Addition { content: String },
@@ -70,8 +72,9 @@ pub enum DiffLine {
 }
 
 /// 补丁摘要（用于统计展示）
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct PatchSummary {
     pub path: String,
     pub operation: String,

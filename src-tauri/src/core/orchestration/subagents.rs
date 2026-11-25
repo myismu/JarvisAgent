@@ -27,8 +27,9 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 /// 子Agent运行状态
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
 pub enum SubAgentStatus {
     Running,   // 运行中
     Completed, // 已完成
@@ -37,8 +38,9 @@ pub enum SubAgentStatus {
 }
 
 /// 子Agent执行阶段 - 用于实时状态展示
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
 pub enum SubAgentPhase {
     Starting,             // 启动中
     WaitingModel,         // 等待模型响应
@@ -49,11 +51,13 @@ pub enum SubAgentPhase {
     Finalizing,           // 收尾中
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct SubAgentRun {
     pub run_id: String,
     pub session_id: String,
+    #[ts(optional = nullable)]
     pub task_id: Option<i32>,
     pub label: String,
     pub agent_role: String,
@@ -63,40 +67,58 @@ pub struct SubAgentRun {
     pub phase: SubAgentPhase,
     pub loop_count: usize,
     pub max_loops: usize,
+    #[ts(optional = nullable)]
     pub current_tool: Option<String>,
+    #[ts(optional = nullable)]
     pub current_tool_input: Option<String>,
+    #[ts(type = "number")]
     pub input_tokens: u64,
+    #[ts(type = "number")]
     pub output_tokens: u64,
+    #[ts(type = "number")]
     pub started_at: u64,
+    #[ts(type = "number")]
     pub updated_at: u64,
+    #[ts(optional, type = "number | null")]
     pub finished_at: Option<u64>,
+    #[ts(optional = nullable)]
     pub error: Option<String>,
+    #[ts(optional = nullable)]
     pub summary: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct SubAgentTraceEvent {
     pub event_id: String,
     pub run_id: String,
     pub session_id: String,
     pub loop_index: usize,
     pub event_type: String,
+    #[ts(type = "unknown")]
     pub payload: serde_json::Value,
+    #[ts(optional = nullable)]
     pub model: Option<String>,
+    #[ts(optional, type = "number | null")]
     pub input_tokens: Option<u64>,
+    #[ts(optional, type = "number | null")]
     pub output_tokens: Option<u64>,
+    #[ts(type = "number")]
     pub timestamp: u64,
 }
 
 /// 从 SQLite 恢复会话级子 Agent 列表所需的轻量索引信息。
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct SubAgentTraceRunSummary {
     pub run_id: String,
     pub session_id: String,
+    #[ts(optional = nullable)]
     pub parent_run_id: Option<String>,
     pub label: String,
+    #[ts(type = "number")]
     pub started_at: u64,
     pub loop_count: usize,
 }

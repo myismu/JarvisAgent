@@ -1,7 +1,8 @@
-//! # ts_bindings.rs — Rust → TypeScript 类型契约守卫（ts-rs 试点）
+//! # ts_bindings.rs — Rust → TypeScript 跨端类型契约守卫（全量覆盖 115 个 Tauri 命令）
 //!
-//! 职责：将核心跨端 Rust 结构体集中导出为前端 `src/types/generated/contracts.ts`，
-//! 并在 `cargo test` 中校验磁盘文件与 Rust 定义逐字节一致。
+//! 职责：将全部 115 个 Tauri 命令与核心事件涉及的跨端 Rust 结构体（90 个类型）
+//! 集中导出为前端 `src/types/generated/contracts.ts`，并在 `cargo test` 中校验
+//! 磁盘文件与 Rust 定义逐字节一致。
 //!
 //! ## 工作方式
 //! - **平时（CI / 本地 `cargo test`）**：纯只读比对。若 Rust 改了字段却忘同步 TS，测试直接红灯拦截。
@@ -16,20 +17,166 @@
 use std::path::PathBuf;
 use ts_rs::TS;
 
-use crate::core::session::{SessionUsageBreakdownView, SessionUsageView, UsageSourceView};
+use crate::command::app_config::{CustomWindowState, UiPreferences};
+use crate::command::checkpoint::{
+    Branch as CheckpointBranch, BranchInfo, Checkpoint, CheckpointTree, FileOperation, OpType,
+    RollbackPreviewResult, RollbackRecallResult,
+};
+use crate::command::config::ImageCompressConfig;
+use crate::command::history::{
+    AgentExecutionLog as HistoryExecutionLog, AgentTextBlock as HistoryTextBlock,
+    AgentThinkingBlock as HistoryThinkingBlock, AgentToolCallView as HistoryToolCallView,
+    AgentTurnSnapshot as HistoryTurnSnapshot, AgentTurnTokens as HistoryTurnTokens,
+    PagedSessionMessages, SessionMessage,
+};
+use crate::command::permission::{
+    PendingPermissionItem, PermissionResolvedPayload, PermissionStateView, ResolvePermissionResult,
+    SessionAllowance, SessionPermissionSettingsView,
+};
+use crate::command::prompt::{PromptDetail, PromptMeta};
+use crate::command::session::SessionThinkingSnapshot;
+use crate::command::tool::ToolMeta;
+use crate::core::orchestration::agent_runs::{
+    AgentRun, AgentRunLoopEvent, AgentRunStatus, ResumeAgentRunPlan,
+};
+use crate::core::orchestration::multi_agent::merge::{
+    Conflict, ConflictResolution, ConflictType, MergeResult,
+};
+use crate::core::orchestration::multi_agent::sandbox::{
+    AgentSandbox, SandboxComparison, SandboxStatus,
+};
+use crate::core::orchestration::subagents::{
+    SubAgentPhase, SubAgentRun, SubAgentStatus, SubAgentTraceEvent, SubAgentTraceRunSummary,
+};
+use crate::core::rollback::patch::{DiffHunk, DiffLine, Patch, PatchSummary, TextDiff};
+use crate::core::rollback::snapshot::{
+    Branch as SnapshotBranch, BranchView, FileInfo, Snapshot, SnapshotNode, SnapshotSummary,
+    SnapshotTreeView, Workspace, WorkspaceState,
+};
+use crate::core::session::{
+    BatchOpFailure, BatchOpResult, ProjectMeta, SessionMeta, SessionUsageBreakdownView,
+    SessionUsageView, UsageBreakdown, UsageSource, UsageSourceBreakdown, UsageSourceView,
+};
+use crate::infra::background::{BackgroundTask, Notification as BackgroundTaskNotification};
+use crate::infra::config::config::{AgentConfig, AppConfig, ModelProfile};
+use crate::infra::llm::registry::{ModelCapabilities, ModelRegistryEntry};
 use crate::infra::shell_dialect::{ShellMode, ShellResolution, ShellSettings};
+use crate::infra::types::models::{
+    CacheHitPoint, ContextSectionSnapshot, InterruptKind, JarvisResult, PlanDocument, PlanTask,
+    SessionContextSnapshot, SkillDetail, SkillMeta, Task, TaskStatus, TodoGroup, TodoItem,
+    TodoProgress, TodoStatus,
+};
 
 /// 统一渲染所有纳入契约守卫的 TypeScript 类型定义（固定 LF 换行）。
 fn render_contracts_ts() -> String {
     let decls = [
-        // 会话用量视图契约（core/session/mod.rs）
+        // 会话元数据、批量操作与用量视图契约（core/session/mod.rs）
+        ProjectMeta::decl(),
+        SessionMeta::decl(),
+        BatchOpFailure::decl(),
+        BatchOpResult::decl(),
+        UsageSource::decl(),
+        UsageSourceBreakdown::decl(),
+        UsageBreakdown::decl(),
         UsageSourceView::decl(),
         SessionUsageBreakdownView::decl(),
         SessionUsageView::decl(),
+        SessionThinkingSnapshot::decl(),
         // Shell 方言设置与探测状态契约（infra/shell_dialect.rs）
         ShellMode::decl(),
         ShellSettings::decl(),
         ShellResolution::decl(),
+        // 配置、窗口状态与 UI 偏好契约（infra/config & command/app_config & command/config）
+        AgentConfig::decl(),
+        ModelProfile::decl(),
+        AppConfig::decl(),
+        ImageCompressConfig::decl(),
+        CustomWindowState::decl(),
+        UiPreferences::decl(),
+        // 提示词、工具、技能与模型能力注册表契约
+        PromptMeta::decl(),
+        PromptDetail::decl(),
+        ToolMeta::decl(),
+        SkillMeta::decl(),
+        SkillDetail::decl(),
+        ModelCapabilities::decl(),
+        ModelRegistryEntry::decl(),
+        // 权限状态与决议契约（command/permission.rs）
+        ResolvePermissionResult::decl(),
+        PendingPermissionItem::decl(),
+        SessionAllowance::decl(),
+        PermissionStateView::decl(),
+        SessionPermissionSettingsView::decl(),
+        PermissionResolvedPayload::decl(),
+        // 核心 Agent 返回与上下文快照契约（infra/types/models.rs）
+        JarvisResult::decl(),
+        ContextSectionSnapshot::decl(),
+        CacheHitPoint::decl(),
+        SessionContextSnapshot::decl(),
+        InterruptKind::decl(),
+        // 历史消息与分页契约（command/history.rs）
+        HistoryTurnTokens::decl(),
+        HistoryTextBlock::decl(),
+        HistoryThinkingBlock::decl(),
+        HistoryToolCallView::decl(),
+        HistoryExecutionLog::decl(),
+        HistoryTurnSnapshot::decl(),
+        SessionMessage::decl(),
+        PagedSessionMessages::decl(),
+        // 方案、待办与任务契约（infra/types/models.rs）
+        PlanTask::decl(),
+        PlanDocument::decl(),
+        TodoStatus::decl(),
+        TodoProgress::decl(),
+        TodoItem::decl(),
+        TodoGroup::decl(),
+        TaskStatus::decl(),
+        Task::decl(),
+        // Agent / 子 Agent 运行态契约（core/orchestration/）
+        AgentRunStatus::decl(),
+        AgentRun::decl(),
+        AgentRunLoopEvent::decl(),
+        ResumeAgentRunPlan::decl(),
+        SubAgentStatus::decl(),
+        SubAgentPhase::decl(),
+        SubAgentRun::decl(),
+        SubAgentTraceEvent::decl(),
+        SubAgentTraceRunSummary::decl(),
+        // 后台任务与通知契约（infra/background.rs）
+        BackgroundTask::decl(),
+        BackgroundTaskNotification::decl(),
+        // 检查点与回滚预览契约（command/checkpoint.rs）
+        OpType::decl(),
+        FileOperation::decl(),
+        Checkpoint::decl(),
+        CheckpointBranch::decl(),
+        BranchInfo::decl(),
+        CheckpointTree::decl(),
+        RollbackRecallResult::decl(),
+        RollbackPreviewResult::decl(),
+        // 快照引擎与补丁契约（core/rollback/）
+        DiffLine::decl(),
+        DiffHunk::decl(),
+        TextDiff::decl(),
+        Patch::decl(),
+        PatchSummary::decl(),
+        FileInfo::decl(),
+        WorkspaceState::decl(),
+        Workspace::decl(),
+        Snapshot::decl(),
+        SnapshotBranch::decl(),
+        SnapshotNode::decl(),
+        BranchView::decl(),
+        SnapshotTreeView::decl(),
+        SnapshotSummary::decl(),
+        // 多 Agent 沙箱与分支合并契约（core/orchestration/multi_agent/）
+        SandboxStatus::decl(),
+        AgentSandbox::decl(),
+        SandboxComparison::decl(),
+        ConflictType::decl(),
+        ConflictResolution::decl(),
+        Conflict::decl(),
+        MergeResult::decl(),
     ];
 
     let mut out = String::from(

@@ -61,35 +61,46 @@ use serde::Serialize;
 //  新增：结构化消息类型（供前端 Vue 组件渲染）
 // ═══════════════════════════════════════════════════════════════
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct SessionMessage {
     pub role: String,
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub snapshot: Option<AgentTurnSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub snapshot_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub message_id: Option<String>,
     // 用户消息的原始 HTML 内容
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub user_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub rollback_checkpoint_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub rollback_mode: Option<String>,
 }
 
-#[derive(Serialize, Clone, Default)]
+#[derive(Serialize, Clone, Default, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "HistoryTurnTokens", rename_all = "camelCase")]
 pub struct AgentTurnTokens {
+    #[ts(type = "number")]
     input: u64,
+    #[ts(type = "number")]
     output: u64,
 }
 
-#[derive(Serialize, Clone, Default)]
+#[derive(Serialize, Clone, Default, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "HistoryTurnSnapshot", rename_all = "camelCase")]
 pub struct AgentTurnSnapshot {
     version: u32,
     status: String,
@@ -97,6 +108,7 @@ pub struct AgentTurnSnapshot {
     thinking_blocks: Vec<AgentThinkingBlock>,
     tool_calls: Vec<AgentToolCallView>,
     logs: Vec<AgentExecutionLog>,
+    #[ts(optional = nullable)]
     tokens: Option<AgentTurnTokens>,
     /// 气泡下方的小字说明 —— 只给 **i18n key**，文案由前端出。
     ///
@@ -108,6 +120,7 @@ pub struct AgentTurnSnapshot {
     /// 界面切英文后中断轮次仍冒中文。现在后端只发 key（如 `notice.userCancel`），
     /// 文案统一由前端语言包提供，与运行期 `JarvisResult::notice_i18n_key` 同源。
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     notice_i18n_key: Option<String>,
     /// 本轮**净执行用时**（毫秒）：run 的 `started_at → finished_at`，再扣掉等待用户决策的时间。
     ///
@@ -115,59 +128,77 @@ pub struct AgentTurnSnapshot {
     /// 前端只在有值时显示「用时 N 秒」，不再自己按条目时间戳推算——
     /// 那种推算会因「文本块时间戳 = 块开始时刻」而把最后一段长回答整段漏掉。
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number | null")]
     duration_ms: Option<u64>,
+    #[ts(type = "number")]
     created_at: u64,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "HistoryTextBlock", rename_all = "camelCase")]
 pub struct AgentTextBlock {
     id: String,
     #[serde(rename = "loop")]
+    #[ts(rename = "loop")]
     loop_: u32,
     kind: String,
     content: String,
     status: String,
+    #[ts(type = "number")]
     timestamp: u64,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "HistoryThinkingBlock", rename_all = "camelCase")]
 pub struct AgentThinkingBlock {
     id: String,
     #[serde(rename = "loop")]
+    #[ts(rename = "loop")]
     loop_: u32,
     content: String,
     status: String,
+    #[ts(type = "number")]
     timestamp: u64,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "HistoryToolCallView", rename_all = "camelCase")]
 pub struct AgentToolCallView {
     id: String,
     #[serde(rename = "loop")]
+    #[ts(rename = "loop")]
     loop_: u32,
     name: String,
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     input: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     output: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     error: Option<String>,
     logs: Vec<String>,
+    #[ts(type = "number")]
     timestamp: u64,
+    #[ts(type = "number")]
     updated_at: u64,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "HistoryExecutionLog", rename_all = "camelCase")]
 pub struct AgentExecutionLog {
     id: String,
     #[serde(rename = "loop")]
+    #[ts(rename = "loop")]
     loop_: u32,
     content: String,
+    #[ts(type = "number")]
     timestamp: u64,
 }
 
@@ -567,13 +598,15 @@ async fn extract_session_messages(
 }
 
 /// 分页元数据
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct PagedSessionMessages {
     pub messages: Vec<SessionMessage>,
     /// 是否还有更早的历史可加载（向上翻页游标）
     pub has_more: bool,
     /// 本页最老消息的 seq（下次请求的游标）；页为空时为 None
+    #[ts(optional, type = "number | null")]
     pub oldest_seq: Option<i64>,
     /// 本页最新消息的 seq；页为空时为 None。
     ///
@@ -581,11 +614,13 @@ pub struct PagedSessionMessages {
     /// `newest_seq` 是**本页窗口的最新边界**（首屏时即会话最新端；向前翻页时
     /// 仍是那一页的尾部，不是会话最新端）。前端用它与后端 `total_count` 比较，
     /// 判断本地窗口是否已经落后于数据库（stale）。
+    #[ts(optional, type = "number | null")]
     pub newest_seq: Option<i64>,
     /// 该会话**可见消息**的总条数（与分页查询同一套可见性条件）。
     ///
     /// 注意口径是「消息条数」而不是「轮数」：`limit` 是轮数，一页可能装几十条消息。
     /// 空会话为 0。
+    #[ts(type = "number")]
     pub total_count: i64,
 }
 

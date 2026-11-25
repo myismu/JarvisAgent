@@ -25,8 +25,9 @@ pub(crate) const RUN_STALE_MS: u64 = 120_000;
 const EXIT_INTERRUPTED_SUMMARY: &str = "上次执行在应用关闭或进程结束时中断。";
 
 /// 主Agent运行状态
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
 pub enum AgentRunStatus {
     Running,     // 运行中
     Completed,   // 已完成
@@ -52,22 +53,32 @@ pub enum AgentRunStatus {
     Closed,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct AgentRun {
     pub run_id: String,
     pub session_id: String,
     pub status: AgentRunStatus,
+    #[ts(optional = nullable)]
     pub message_id: Option<String>,
     pub loop_count: usize,
+    #[ts(type = "number")]
     pub input_tokens: u64,
+    #[ts(type = "number")]
     pub output_tokens: u64,
+    #[ts(type = "number")]
     pub started_at: u64,
+    #[ts(type = "number")]
     pub updated_at: u64,
+    #[ts(optional, type = "number | null")]
     pub finished_at: Option<u64>,
+    #[ts(optional = nullable)]
     pub last_safe_point: Option<String>,
+    #[ts(optional = nullable)]
     pub summary: Option<String>,
     pub resumable: bool,
+    #[ts(optional = nullable)]
     pub resumed_from_run_id: Option<String>,
     /// 本 run **因何中断**（`None` = 未中断 / 正常结束），取值见 [`InterruptKind`] 的
     /// `as_str()`。
@@ -79,6 +90,7 @@ pub struct AgentRun {
     /// 与 `session_messages.interrupt_kind` 的关系：那是**消息级**（哪条消息被中断
     /// 收尾写下，供渲染与发送拼回标记），本列是 **run 级**（这次运行为何结束）。
     /// 前者服务"单条消息怎么显示"，后者服务"整次运行怎么恢复/判定"。
+    #[ts(optional = nullable)]
     pub interrupt_kind: Option<String>,
     /// 本 run 的**等待耗时**（毫秒）：工具执行前等用户审批累计消耗的时间。
     ///
@@ -87,6 +99,7 @@ pub struct AgentRun {
     ///
     /// 为什么不把 0 当成“没等过”：模型耗时与人类确认耗时必须分开统计，
     /// 否则审批慢会被算进执行耗时，评测结论失真。
+    #[ts(optional, type = "number | null")]
     pub wait_ms: Option<u64>,
 }
 
@@ -94,8 +107,9 @@ pub struct AgentRun {
 ///
 /// 这是崩溃重建的**唯一**数据源：`agent_runs.message_id` 定起点、
 /// `(run_id, loop_index)` 圈范围与顺序，其余全部由本结构还原。
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct AgentRunLoopEvent {
     pub event_id: String,
     pub run_id: String,
@@ -103,15 +117,21 @@ pub struct AgentRunLoopEvent {
     /// 第几轮（从 1 起），与用户可见的"第 N 轮"一致
     pub loop_index: usize,
     /// 本轮响应：结构化 `ContentBlock` 数组（text / thinking / tool_use）
+    #[ts(type = "Array<Record<string, unknown>>")]
     pub resp_blocks: Vec<ContentBlock>,
     /// 本轮工具执行结果：结构化 `ContentBlock`（ToolResult）
     #[serde(default)]
+    #[ts(type = "Array<Record<string, unknown>>")]
     pub tool_results: Vec<ContentBlock>,
     /// 'streaming' | 'complete' | 'interrupted'
     pub status: String,
+    #[ts(optional = nullable)]
     pub error: Option<String>,
+    #[ts(type = "number")]
     pub input_tokens: u64,
+    #[ts(type = "number")]
     pub output_tokens: u64,
+    #[ts(optional = nullable)]
     pub model: Option<String>,
     /// 本轮反思审查的判定：`"ok"` / `"not_ok"`；`None` = 本轮未触发反思。
     ///
@@ -123,19 +143,25 @@ pub struct AgentRunLoopEvent {
     /// 的覆盖集合 —— loop 收尾会重复写同一行（帧级通道 + 收尾覆盖），
     /// 若把反思列也纳入覆盖，后一次写入会把已记录的判定抹成 NULL。
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub reflection_judgment: Option<String>,
     /// 反思给出的原因，仅 `judgment = "not_ok"` 时有值
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub reflection_reason: Option<String>,
     /// 反思给出的修正建议，仅 `judgment = "not_ok"` 时有值
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub reflection_suggestion: Option<String>,
+    #[ts(type = "number")]
     pub started_at: u64,
+    #[ts(type = "number")]
     pub updated_at: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct ResumeAgentRunPlan {
     pub session_id: String,
     pub prompt: String,

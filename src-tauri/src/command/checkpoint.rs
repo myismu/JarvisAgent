@@ -16,34 +16,45 @@ use crate::infra::state::state::{SessionManager, SnapshotRegistry};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct Checkpoint {
     pub id: String,
     pub session_id: String,
+    #[ts(optional = nullable)]
     pub parent_id: Option<String>,
     pub branch_name: String,
+    #[ts(optional = nullable)]
     pub agent_id: Option<String>,
+    #[ts(optional = nullable)]
     pub workspace_id: Option<String>,
+    #[ts(type = "number")]
     pub created_at: u64,
     pub trigger_message: String,
     pub operations: Vec<FileOperation>,
     pub metadata: HashMap<String, String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct FileOperation {
     pub op_type: OpType,
     pub path: String,
+    #[ts(optional = nullable)]
     pub old_content_hash: Option<String>,
+    #[ts(optional = nullable)]
     pub backup_path: Option<String>,
+    #[ts(optional = nullable)]
     pub new_content_hash: Option<String>,
+    #[ts(optional = nullable)]
     pub diff_summary: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(rename_all = "lowercase")]
 pub enum OpType {
     Edit,
     Write,
@@ -52,37 +63,45 @@ pub enum OpType {
     Rename,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct Branch {
     pub name: String,
     pub session_id: String,
+    #[ts(optional = nullable)]
     pub head_checkpoint_id: Option<String>,
+    #[ts(type = "number")]
     pub created_at: u64,
+    #[ts(optional = nullable)]
     pub agent_id: Option<String>,
     pub description: String,
     pub is_active: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct CheckpointTree {
     pub session_id: String,
     pub branches: Vec<BranchInfo>,
     pub checkpoints: Vec<Checkpoint>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct BranchInfo {
     pub name: String,
+    #[ts(optional = nullable)]
     pub head_checkpoint_id: Option<String>,
     pub checkpoint_count: usize,
     pub is_active: bool,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct RollbackRecallResult {
     pub restored_files: Vec<String>,
     pub recalled_text: String,
@@ -93,8 +112,9 @@ pub struct RollbackRecallResult {
     pub restore_warnings: Vec<String>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct RollbackPreviewResult {
     pub target_checkpoint_id: String,
     pub checkpoint_label: String,

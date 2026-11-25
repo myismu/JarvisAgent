@@ -63,8 +63,8 @@ const toggleGroup = (id: string) => {
 
 const todoLabel = (todo: TodoItem): string =>
   todo.status === 'in_progress'
-    ? (todo.activeForm || todo.content || todo.text || '')
-    : (todo.content || todo.text || '');
+    ? (todo.activeForm || todo.content || '')
+    : (todo.content || '');
 
 /** 调度器回写的子任务进度，如「12/34」 */
 const progressText = computed(() => {

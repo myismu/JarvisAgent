@@ -14,7 +14,77 @@
 use crate::core::tools::framework::permission::PermissionDecision;
 use crate::core::tools::framework::policy::ApprovalMode;
 use crate::infra::state::state::SessionManager;
+use serde::Serialize;
 use tauri::Emitter;
+
+/// `resolve_permission` 命令返回值：指示前端是否需要续跑以及方案任务图是否已自动生成
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct ResolvePermissionResult {
+    pub needs_resume: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub plan_tasks_created: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub resume_with: Option<String>,
+}
+
+/// 待确认权限请求项（用于 `get_permission_state` 回包）
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct PendingPermissionItem {
+    pub id: String,
+    pub message: String,
+    pub allow_session: bool,
+    pub kind: String,
+    #[ts(optional = nullable)]
+    pub warning: Option<String>,
+}
+
+/// 会话级已允许权限范围视图（用于 `get_permission_state` 与 `get_session_permission_settings`）
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct SessionAllowance {
+    pub kind: String,
+    pub scope: String,
+    pub label: String,
+}
+
+/// `get_permission_state` 命令返回值
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct PermissionStateView {
+    pub allowance_count: usize,
+    pub allowances: Vec<SessionAllowance>,
+    pub pending_count: usize,
+    pub pending: Vec<PendingPermissionItem>,
+}
+
+/// `get_session_permission_settings` 命令返回值
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct SessionPermissionSettingsView {
+    pub approval_mode: String,
+    pub read_only: bool,
+    pub allowances: Vec<SessionAllowance>,
+}
+
+/// `permission-resolved` 事件载荷
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct PermissionResolvedPayload {
+    pub id: String,
+    pub session_id: String,
+    pub decision: String,
+    pub decision_text: String,
+}
 
 /// 「绑定项目」要求的**唯一口径**：哪些档位必须挂在项目下才能生效。
 ///
@@ -52,7 +122,7 @@ pub async fn resolve_permission(
     content: Option<String>,
     session_manager: tauri::State<'_, SessionManager>,
     app: tauri::AppHandle,
-) -> Result<serde_json::Value, String> {
+) -> Result<ResolvePermissionResult, String> {
     let ctx = session_manager.get_or_create(&session_id).await;
     // 审批通过时拿到的方案文档：稍后（等本轮执行结束后）据此自动建任务图。
     let mut approved_plan: Option<crate::infra::types::models::PlanDocument> = None;
@@ -122,17 +192,18 @@ pub async fn resolve_permission(
 
         let _ = app.emit(
             "permission-resolved",
-            serde_json::json!({
-                "id": id,
-                "sessionId": session_id,
-                "decision": parsed.status_label(),
-                "decisionText": parsed.model_note(),
-            }),
+            PermissionResolvedPayload {
+                id,
+                session_id,
+                decision: parsed.status_label().to_string(),
+                decision_text: parsed.model_note().to_string(),
+            },
         );
-        return Ok(serde_json::json!({
-            "needsResume": false,
-            "planTasksCreated": plan_tasks_created,
-        }));
+        return Ok(ResolvePermissionResult {
+            needs_resume: false,
+            plan_tasks_created: Some(plan_tasks_created),
+            resume_with: None,
+        });
     }
 
     // 循环上限续跑：请求此前因中断（取消/通道关闭）结束、channel 已死，但续跑标记还在，
@@ -145,30 +216,35 @@ pub async fn resolve_permission(
             ctx.wait_for_active_execution().await;
             let _ = app.emit(
                 "permission-resolved",
-                serde_json::json!({
-                    "id": id,
-                    "sessionId": session_id,
-                    "decision": parsed.status_label(),
-                    "decisionText": parsed.model_note(),
-                }),
+                PermissionResolvedPayload {
+                    id,
+                    session_id,
+                    decision: parsed.status_label().to_string(),
+                    decision_text: parsed.model_note().to_string(),
+                },
             );
-            return Ok(serde_json::json!({
-                "needsResume": true,
-                "resumeWith": "用户已授权继续执行，请继续之前未完成的任务。"
-            }));
+            return Ok(ResolvePermissionResult {
+                needs_resume: true,
+                plan_tasks_created: None,
+                resume_with: Some("用户已授权继续执行，请继续之前未完成的任务。".to_string()),
+            });
         }
     }
 
     let _ = app.emit(
         "permission-resolved",
-        serde_json::json!({
-            "id": id,
-            "sessionId": session_id,
-            "decision": parsed.status_label(),
-            "decisionText": parsed.model_note(),
-        }),
+        PermissionResolvedPayload {
+            id,
+            session_id,
+            decision: parsed.status_label().to_string(),
+            decision_text: parsed.model_note().to_string(),
+        },
     );
-    Ok(serde_json::json!({ "needsResume": false }))
+    Ok(ResolvePermissionResult {
+        needs_resume: false,
+        plan_tasks_created: None,
+        resume_with: None,
+    })
 }
 
 /// 取消 Agent 执行：触发取消令牌、拒绝所有待处理权限、级联取消子 Agent
@@ -228,45 +304,46 @@ pub async fn cancel_jarvis(
 pub async fn get_permission_state(
     session_id: String,
     session_manager: tauri::State<'_, SessionManager>,
-) -> Result<serde_json::Value, String> {
+) -> Result<PermissionStateView, String> {
     let ctx = session_manager.get_or_create(&session_id).await;
     // 只统计普通权限请求，排除方案审批（plan proposals 有独立的审批面板）
-    let pending_list: Vec<serde_json::Value> = ctx.pending_permissions.lock().await
+    let pending: Vec<PendingPermissionItem> = ctx
+        .pending_permissions
+        .lock()
+        .await
         .iter()
         .filter(|(k, _)| !k.starts_with("plan_"))
-        .map(|(id, entry)| serde_json::json!({
-            "id": id,
-            "message": entry.message,
+        .map(|(id, entry)| PendingPermissionItem {
+            id: id.clone(),
+            message: entry.message.clone(),
             // 只有"工具确认"且这条操作**真的有范围键**时才提供"本次会话都允许"：
             // 循环续跑确认若照抄这套语义，会顺带把其它工具调用一起放行；
             // 没有范围键的操作（例如改工作目录）点了按钮也没有任何效果。
             // 口径与 permission::request_permission 广播的 permission-request 一致。
-            "allowSession": entry.kind.allows_session_wide_approval() && !entry.allowance.is_empty(),
-            "kind": entry.kind.as_str(),
+            allow_session: entry.kind.allows_session_wide_approval() && !entry.allowance.is_empty(),
+            kind: entry.kind.as_str().to_string(),
             // 危险警示文案（无则 null）：监控面板内联卡据此做弱化的视觉分级，
             // 口径与 permission::request_permission_with_origin 广播的 permission-request 一致
-            "warning": entry.warning.clone(),
-        }))
+            warning: entry.warning.clone(),
+        })
         .collect();
-    let allowances: Vec<serde_json::Value> = ctx
+    let allowances: Vec<SessionAllowance> = ctx
         .session_allowances
         .lock()
         .await
         .iter()
-        .map(|a| {
-            serde_json::json!({
-                "kind": a.kind,
-                "scope": a.scope,
-                "label": a.label,
-            })
+        .map(|a| SessionAllowance {
+            kind: a.kind.clone(),
+            scope: a.scope.clone(),
+            label: a.label.clone(),
         })
         .collect();
-    Ok(serde_json::json!({
-        "allowanceCount": allowances.len(),
-        "allowances": allowances,
-        "pendingCount": pending_list.len(),
-        "pending": pending_list,
-    }))
+    Ok(PermissionStateView {
+        allowance_count: allowances.len(),
+        allowances,
+        pending_count: pending.len(),
+        pending,
+    })
 }
 
 /// 查询当前会话的权限设置：档位 + 只读保护 + 已允许范围
@@ -274,28 +351,26 @@ pub async fn get_permission_state(
 pub async fn get_session_permission_settings(
     session_id: String,
     session_manager: tauri::State<'_, SessionManager>,
-) -> Result<serde_json::Value, String> {
+) -> Result<SessionPermissionSettingsView, String> {
     let ctx = session_manager.get_or_create(&session_id).await;
-    let mode = ctx.approval_mode.lock().await.clone();
+    let approval_mode = ctx.approval_mode.lock().await.clone();
     let read_only = ctx.read_only_enabled().await;
-    let allowances: Vec<serde_json::Value> = ctx
+    let allowances: Vec<SessionAllowance> = ctx
         .session_allowances
         .lock()
         .await
         .iter()
-        .map(|a| {
-            serde_json::json!({
-                "kind": a.kind,
-                "scope": a.scope,
-                "label": a.label,
-            })
+        .map(|a| SessionAllowance {
+            kind: a.kind.clone(),
+            scope: a.scope.clone(),
+            label: a.label.clone(),
         })
         .collect();
-    Ok(serde_json::json!({
-        "approvalMode": mode,
-        "readOnly": read_only,
-        "allowances": allowances,
-    }))
+    Ok(SessionPermissionSettingsView {
+        approval_mode,
+        read_only,
+        allowances,
+    })
 }
 
 /// 切换当前会话的权限档位：request_approval（请求审批）/ auto_approve（帮我批准）/

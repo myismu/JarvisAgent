@@ -22,8 +22,9 @@ use std::collections::HashMap;
 use std::fs;
 use tauri::Emitter;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct CustomWindowState {
     pub width: u32,
     pub height: u32,
@@ -32,12 +33,14 @@ pub struct CustomWindowState {
     pub maximized: bool,
     pub fullscreen: bool,
     pub decorated: bool,
+    #[ts(type = "number")]
     pub updated_at: u64,
 }
 
 /// UI 偏好设置（与前端 usePreferences.ts 对应）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct UiPreferences {
     #[serde(default = "default_font_size")]
     pub font_size: i32,

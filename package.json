@@ -9,6 +9,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "test": "vitest run",
     "test:watch": "vitest",
+    "gen:types": "node -e \"const { execSync } = require('child_process'); execSync('cargo test ts_contracts_are_up_to_date', { cwd: 'src-tauri', stdio: 'inherit', env: { ...process.env, UPDATE_TS_BINDINGS: '1' } });\"",
     "preview": "vite preview",
     "tauri": "tauri"
   },

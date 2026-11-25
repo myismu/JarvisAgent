@@ -73,30 +73,38 @@ fn find_descendant_pids(parent_pid: u32) -> Vec<u32> {
 }
 
 /// 后台任务信息
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 pub struct BackgroundTask {
     pub id: String,
+    #[ts(optional = nullable)]
     pub session_id: Option<String>,
     pub command: String,
     pub status: String,
+    #[ts(optional = nullable)]
     pub result: Option<String>,
+    #[ts(optional = nullable)]
     pub port: Option<u16>,
+    #[ts(optional = nullable)]
     pub task_type: Option<String>,
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub pid: Option<u32>,
     #[serde(default)]
     pub pids: Vec<u32>,
 }
 
 /// 任务完成通知（Tauri 事件推送 + 轮询兼容）
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 pub struct Notification {
     pub task_id: String,
+    #[ts(optional = nullable)]
     pub session_id: Option<String>,
     pub status: String,
     pub command: String,
     pub result: String,
+    #[ts(optional = nullable)]
     pub port: Option<u16>,
+    #[ts(optional = nullable)]
     pub task_type: Option<String>,
 }
 

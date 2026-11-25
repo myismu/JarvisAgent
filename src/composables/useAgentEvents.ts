@@ -34,6 +34,7 @@ import type {
   TodoGroup,
   TodoUpdatePayload,
   PermissionRequest,
+  PermissionResolvedPayload,
   PlanProposal,
   PlanDocument,
   AgentStep,
@@ -503,7 +504,7 @@ export function useAgentEvents() {
       perm.enqueuePermission(event.payload);
     });
 
-    await on<{ id: string; sessionId: string; decision?: string; decisionText?: string }>("permission-resolved", (event) => {
+    await on<PermissionResolvedPayload>("permission-resolved", (event) => {
       const sid = event.payload.sessionId ?? session.activeSessionId;
       // 按 id 精确移除：一张卡的决议不能把排在它后面的请求一起抹掉
       perm.removePermission(sid, event.payload.id);

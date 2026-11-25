@@ -12,37 +12,45 @@ use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 单个快照，记录一次文件变更操作
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct Snapshot {
     pub id: String,
+    #[ts(optional = nullable)]
     pub parent_id: Option<String>,
     pub branch_name: String,
     pub patches: Vec<Patch>,
+    #[ts(optional = nullable)]
     pub message: Option<String>,
     pub is_checkpoint: bool,
+    #[ts(optional = nullable)]
     pub workspace_state: Option<WorkspaceState>,
+    #[ts(optional = nullable)]
     pub agent_id: Option<String>,
+    #[ts(optional = nullable)]
     pub workspace_id: Option<String>,
+    #[ts(type = "number")]
     pub created_at: u64,
     pub metadata: HashMap<String, String>,
 }
 
 /// 工作区状态快照（用于检查点，记录文件哈希和大小）
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default, ts_rs::TS)]
 pub struct WorkspaceState {
     pub files: HashMap<String, FileInfo>,
 }
 
 /// 文件元信息（哈希 + 大小）
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 pub struct FileInfo {
     pub hash: String,
+    #[ts(type = "number")]
     pub size: u64,
 }
 
 /// 内存中的工作区（文件路径 -> 内容映射）
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, ts_rs::TS)]
 pub struct Workspace {
     pub files: HashMap<String, String>,
     /// 回滚时需要删除的孤儿文件路径（如 RenameFile 留下的旧路径）
@@ -68,57 +76,71 @@ fn default_max_loaded_nodes() -> usize {
 }
 
 /// 分支信息
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "SnapshotBranch", rename_all = "camelCase")]
 pub struct Branch {
     pub name: String,
     pub session_id: String,
     pub head_snapshot_id: String,
+    #[ts(type = "number")]
     pub created_at: u64,
+    #[ts(optional = nullable)]
     pub agent_id: Option<String>,
     pub description: String,
     pub is_active: bool,
 }
 
 /// 快照树视图（前端展示用）
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct SnapshotTreeView {
     pub branches: Vec<BranchView>,
     pub current_branch: String,
     pub current_snapshot_id: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct BranchView {
     pub name: String,
     pub description: String,
+    #[ts(optional = nullable)]
     pub agent_id: Option<String>,
     pub is_active: bool,
     pub root: SnapshotNode,
 }
 
 /// 快照树节点（递归结构）
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct SnapshotNode {
     pub id: String,
+    #[ts(optional = nullable)]
     pub message: Option<String>,
+    #[ts(type = "number")]
     pub timestamp: u64,
     pub is_checkpoint: bool,
+    #[ts(optional = nullable)]
     pub agent_id: Option<String>,
     pub children: Vec<SnapshotNode>,
 }
 
 /// 快照摘要（精简信息，用于列表展示）
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct SnapshotSummary {
     pub id: String,
+    #[ts(optional = nullable)]
     pub message: Option<String>,
+    #[ts(type = "number")]
     pub timestamp: u64,
     pub is_checkpoint: bool,
+    #[ts(optional = nullable)]
     pub agent_id: Option<String>,
     pub patch_count: usize,
     pub patch_summary: Vec<PatchSummary>,
