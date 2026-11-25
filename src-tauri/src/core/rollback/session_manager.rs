@@ -493,8 +493,9 @@ impl SessionSnapshotManager {
         // 回滚上下文（清理判据 + 回收站恢复清单）都要趁 tree 还持有先算出来
         let ctx = super::replay::RollbackContext {
             known_paths: super::replay::known_paths_in_tree(&tree),
-            // 回滚到初始状态 = 撤销整棵树 → 树里所有"快照装不下本体"的删除都要从回收站搬回
+            // 回滚到初始状态 = 撤销整棵树 → 树里所有"快照无可用内容"的删除都要从回收站搬回
             trash_restores: super::replay::trash_restores_from_patches(
+                &self.session_id,
                 tree.nodes.values().flat_map(|node| node.patches.iter()),
             ),
         };

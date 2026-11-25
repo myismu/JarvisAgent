@@ -121,11 +121,13 @@ pub struct RollbackContext {
     pub trash_restores: std::collections::HashMap<String, String>,
 }
 
-/// 从一组补丁里挑出"快照装不下本体、只能靠回收站恢复"的删除（原路径 → 回收站位置）。
+/// 从一组补丁里挑出"快照没有可用文本内容、需靠回收站恢复"的删除（原路径 → 回收站位置）。
 ///
-/// 进这个集合必须同时满足：`content_hash` 为空（内容读不出来 = 目录 / 二进制 / 大文件）
-/// **且** 有 `trash_path`。文本文件不走这里 —— 它们的内容在快照里，回滚靠写内容恢复。
+/// 进这个集合满足：存在 `trash_path`，且满足以下任一条件：
+/// 1. `content_hash` 为空（目录 / 二进制 / 大文件，本来就不存快照内容）；
+/// 2. `content_hash` 非空，但 `snapshot_content` 表中已查不到对应内容（防御性兜底）。
 pub(crate) fn trash_restores_from_patches<'a>(
+    session_id: &str,
     patches: impl Iterator<Item = &'a Patch>,
 ) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
@@ -133,13 +135,17 @@ pub(crate) fn trash_restores_from_patches<'a>(
         if let Patch::DeleteFile {
             path,
             content_hash,
-            trash_path,
+            trash_path: Some(trash),
         } = patch
         {
-            if content_hash.is_none() {
-                if let Some(trash) = trash_path {
-                    map.insert(path.clone(), trash.clone());
-                }
+            let has_snapshot_content = content_hash.as_deref().is_some_and(|hash| {
+                super::store::load_content(session_id, hash)
+                    .ok()
+                    .flatten()
+                    .is_some()
+            });
+            if !has_snapshot_content {
+                map.insert(path.clone(), trash.clone());
             }
         }
     }
@@ -151,21 +157,33 @@ pub(crate) fn trash_restores_from_patches<'a>(
 /// 旧实现直接拿每条的 `to_summary()`：`UpdateFile` 的增删行数是**整个文件的行数**
 /// （`new_content.lines()` / `old_content.lines()`），于是改一行也会显示 +1000/-1000；
 /// 而且同一个文件在多轮里改过会重复出现。这里改为：
-/// - 按路径合并整段区间，`before` 取最早一次变更前的内容、`after` 取最后一次变更后的内容；
+/// - 按路径合并整段区间，`before` 取最早一次变更前的状态、`after` 取最后一次变更后的状态；
+/// - 显式区分"文件原本不存在（Absent）"与"文件存在但内容不可读（Opaque，如目录/二进制/内容缺失）"，
+///   避免把"删除了无快照内容的文件"误判成"建了又删（净零变化）"；
 /// - 统计两者之间的**真实行差异**；
-/// - 净变化为零（建了又删、前后一致）的路径直接不展示。
+/// - 净变化为零（建了又删、前后内容完全一致）的路径不展示。
 ///
 /// `undo_patches` 的顺序是"从 HEAD 往目标"（新 → 旧），函数内部反转成时间顺序。
 fn summarize_undo_patches(session_id: &str, undo_patches: &[Patch]) -> Vec<PatchSummary> {
     use std::collections::{BTreeMap, BTreeSet};
 
-    /// 区间起点/终点的内容。外层 `None` = 尚未初始化；内层 `None` = 文件不存在。
+    /// 区间边界处某路径的状态。
+    #[derive(Clone, PartialEq, Eq)]
+    enum FileState {
+        /// 尚未初始化
+        Unset,
+        /// 该路径在该时间点不存在（新建前 / 删除后）
+        Absent,
+        /// 该路径存在且读到了文本内容
+        Content(String),
+        /// 该路径存在，但内容不可读（目录 / 二进制 / 大文件或 snapshot_content 缺失）
+        Opaque,
+    }
+
     struct Acc {
-        before: Option<Option<String>>,
-        after: Option<Option<String>>,
-        /// 区间内最后一次变更是否是删除（用于区分"内容读不出来"与"真的删了"）。
-        deleted: bool,
-        /// 内容不可得（大文件内容已被 GC / 目录 / 二进制）时的兜底差异行数。
+        before: FileState,
+        after: FileState,
+        /// 内容不可得时的兜底差异行数（如 UpdateFile 自带 diff）。
         fallback_diff: Option<(usize, usize)>,
     }
 
@@ -208,31 +226,31 @@ fn summarize_undo_patches(session_id: &str, undo_patches: &[Patch]) -> Vec<Patch
         match patch {
             Patch::CreateFile { path, content } => {
                 let entry = files.entry(path.clone()).or_insert(Acc {
-                    before: None,
-                    after: None,
-                    deleted: false,
+                    before: FileState::Unset,
+                    after: FileState::Unset,
                     fallback_diff: None,
                 });
-                if entry.before.is_none() {
-                    entry.before = Some(None); // 区间开始时不存在
+                if entry.before == FileState::Unset {
+                    entry.before = FileState::Absent;
                 }
-                entry.after = Some(Some(content.clone()));
-                entry.deleted = false;
+                entry.after = FileState::Content(content.clone());
             }
             Patch::DeleteFile {
                 path, content_hash, ..
             } => {
                 let entry = files.entry(path.clone()).or_insert(Acc {
-                    before: None,
-                    after: None,
-                    deleted: false,
+                    before: FileState::Unset,
+                    after: FileState::Unset,
                     fallback_diff: None,
                 });
-                if entry.before.is_none() {
-                    entry.before = Some(resolve_content("", content_hash.as_ref(), session_id));
+                if entry.before == FileState::Unset {
+                    entry.before = match resolve_content("", content_hash.as_ref(), session_id) {
+                        Some(text) => FileState::Content(text),
+                        // 走到 DeleteFile 说明删前文件一定存在；读不到内容是 Opaque，不能当 Absent
+                        None => FileState::Opaque,
+                    };
                 }
-                entry.after = Some(None); // 区间结束时不存在
-                entry.deleted = true;
+                entry.after = FileState::Absent;
             }
             Patch::UpdateFile {
                 path,
@@ -242,24 +260,28 @@ fn summarize_undo_patches(session_id: &str, undo_patches: &[Patch]) -> Vec<Patch
                 ..
             } => {
                 let entry = files.entry(path.clone()).or_insert(Acc {
-                    before: None,
-                    after: None,
-                    deleted: false,
+                    before: FileState::Unset,
+                    after: FileState::Unset,
                     fallback_diff: None,
                 });
-                if entry.before.is_none() {
-                    entry.before = Some(resolve_content(
+                if entry.before == FileState::Unset {
+                    entry.before = match resolve_content(
                         old_content,
                         content_hash.as_ref().map(|(old, _)| old),
                         session_id,
-                    ));
+                    ) {
+                        Some(text) => FileState::Content(text),
+                        None => FileState::Opaque,
+                    };
                 }
-                entry.after = Some(resolve_content(
+                entry.after = match resolve_content(
                     new_content,
                     content_hash.as_ref().map(|(_, new)| new),
                     session_id,
-                ));
-                entry.deleted = false;
+                ) {
+                    Some(text) => FileState::Content(text),
+                    None => FileState::Opaque,
+                };
                 if let Some(counts) = diff_counts(patch) {
                     entry.fallback_diff = Some(counts);
                 }
@@ -287,56 +309,63 @@ fn summarize_undo_patches(session_id: &str, undo_patches: &[Patch]) -> Vec<Patch
 
     let mut summaries = Vec::new();
     for (path, acc) in files {
-        let before = acc.before.clone().flatten();
-        // `deleted` 才代表"区间结束时文件不存在"；否则 `after == None` 只表示内容读不出来。
-        let after = if acc.deleted {
-            None
-        } else {
-            acc.after.clone().flatten()
-        };
-
-        // 区间开始时不存在、结束时也不存在（建了又删）→ 净零变化，不展示。
-        if acc.deleted && matches!(acc.before, Some(None)) {
-            continue;
-        }
-        // 前后都存在且完全一致 → 这段撤回对该文件是净零变化，不展示。
-        if let (Some(before), Some(after)) = (&before, &after) {
-            if before == after {
-                continue;
+        match (&acc.before, &acc.after) {
+            // 区间开始时不存在、结束时也不存在（建了又删）→ 净零变化，不展示。
+            (FileState::Absent, FileState::Absent) => continue,
+            // 前后都存在且内容完全一致 → 净零变化，不展示。
+            (FileState::Content(before), FileState::Content(after)) if before == after => continue,
+            (FileState::Absent, FileState::Content(after)) => {
+                summaries.push(PatchSummary {
+                    path,
+                    operation: "create".to_string(),
+                    lines_added: after.lines().count(),
+                    lines_removed: 0,
+                });
+            }
+            (FileState::Absent, FileState::Opaque) => {
+                let (lines_added, lines_removed) = acc.fallback_diff.unwrap_or((0, 0));
+                summaries.push(PatchSummary {
+                    path,
+                    operation: "create".to_string(),
+                    lines_added,
+                    lines_removed,
+                });
+            }
+            (FileState::Content(before), FileState::Absent) => {
+                summaries.push(PatchSummary {
+                    path,
+                    operation: "delete".to_string(),
+                    lines_added: 0,
+                    lines_removed: before.lines().count(),
+                });
+            }
+            (FileState::Opaque, FileState::Absent) => {
+                summaries.push(PatchSummary {
+                    path,
+                    operation: "delete".to_string(),
+                    lines_added: 0,
+                    lines_removed: 0,
+                });
+            }
+            (FileState::Content(before), FileState::Content(after)) => {
+                let (lines_added, lines_removed) = line_diff_counts(before, after);
+                summaries.push(PatchSummary {
+                    path,
+                    operation: "update".to_string(),
+                    lines_added,
+                    lines_removed,
+                });
+            }
+            _ => {
+                let (lines_added, lines_removed) = acc.fallback_diff.unwrap_or((0, 0));
+                summaries.push(PatchSummary {
+                    path,
+                    operation: "update".to_string(),
+                    lines_added,
+                    lines_removed,
+                });
             }
         }
-
-        // 更新类补丁但拿不到新内容（大文件内容被 GC 等）：用该补丁自带的 diff 兜底，
-        // 至少不会把"读不出来"误报成"整文件删除"。
-        if !acc.deleted && after.is_none() {
-            let (lines_added, lines_removed) = acc.fallback_diff.unwrap_or((0, 0));
-            summaries.push(PatchSummary {
-                path,
-                operation: "update".to_string(),
-                lines_added,
-                lines_removed,
-            });
-            continue;
-        }
-
-        let operation = match (&acc.before, &acc.after) {
-            (Some(None), Some(Some(_))) => "create",
-            (Some(Some(_)), Some(None)) => "delete",
-            (Some(Some(_)), Some(Some(_))) => "update",
-            _ => "update",
-        };
-        let (lines_added, lines_removed) = match (&before, &after) {
-            (Some(before), Some(after)) => line_diff_counts(before, after),
-            (None, Some(after)) => (after.lines().count(), 0),
-            (Some(before), None) => (0, before.lines().count()),
-            (None, None) => acc.fallback_diff.unwrap_or((0, 0)),
-        };
-        summaries.push(PatchSummary {
-            path,
-            operation: operation.to_string(),
-            lines_added,
-            lines_removed,
-        });
     }
 
     // 改名补丁没有内容，单独列出（保留旧实现显示旧路径的口径）。
@@ -622,7 +651,10 @@ impl ReplayEngine {
         let current_id = tree.current_snapshot_id.clone();
         let lca = self.find_lowest_common_ancestor(tree, &current_id, target_id)?;
         let undo_patches = self.collect_undo_patches(tree, &current_id, &lca)?;
-        Ok(trash_restores_from_patches(undo_patches.iter()))
+        Ok(trash_restores_from_patches(
+            &self.session_id,
+            undo_patches.iter(),
+        ))
     }
 
     /// 回滚到初始状态（用每个文件的最早内容重建）
@@ -1581,6 +1613,66 @@ mod sweep_tests {
             (a.lines_added, a.lines_removed),
             (2, 2),
             "多轮修改应按整段净差异合并，而不是重复出现两次"
+        );
+    }
+
+    /// 删除目录/二进制（content_hash 为 None）或 snapshot_content 缺失时，
+    /// 预览必须仍展示为 delete，不得误判成「建了又删（净零变化）」而跳过。
+    #[test]
+    fn summary_keeps_delete_when_snapshot_content_is_unavailable() {
+        let patches = vec![
+            Patch::DeleteFile {
+                path: "C:/ws/assets.bin".into(),
+                content_hash: None,
+                trash_path: Some("C:/trash/1_assets.bin".into()),
+            },
+            Patch::DeleteFile {
+                path: "C:/ws/missing-content.txt".into(),
+                content_hash: Some("deadbeef_not_in_db".into()),
+                trash_path: Some("C:/trash/2_missing-content.txt".into()),
+            },
+        ];
+
+        let summaries = summarize_undo_patches("s-summary-opaque", &patches);
+        assert_eq!(
+            summaries.len(),
+            2,
+            "两项删除都不应被误判跳过：{summaries:?}"
+        );
+        for path in ["C:/ws/assets.bin", "C:/ws/missing-content.txt"] {
+            let item = summaries
+                .iter()
+                .find(|s| s.path == path)
+                .unwrap_or_else(|| panic!("应包含删除项 {path}：{summaries:?}"));
+            assert_eq!(item.operation, "delete");
+        }
+    }
+
+    /// 即使 DeleteFile 带有 content_hash，只要 snapshot_content 中查不到内容且存在 trash_path，
+    /// 也要纳入回收站兜底恢复清单。
+    #[test]
+    fn trash_restores_falls_back_when_snapshot_content_is_missing() {
+        let patches = [
+            Patch::DeleteFile {
+                path: "C:/ws/dir".into(),
+                content_hash: None,
+                trash_path: Some("C:/trash/1_dir".into()),
+            },
+            Patch::DeleteFile {
+                path: "C:/ws/deleted.txt".into(),
+                content_hash: Some("missing_hash_in_db".into()),
+                trash_path: Some("C:/trash/2_deleted.txt".into()),
+            },
+        ];
+
+        let restores = trash_restores_from_patches("s-trash-fallback", patches.iter());
+        assert_eq!(
+            restores.get("C:/ws/dir").map(String::as_str),
+            Some("C:/trash/1_dir")
+        );
+        assert_eq!(
+            restores.get("C:/ws/deleted.txt").map(String::as_str),
+            Some("C:/trash/2_deleted.txt")
         );
     }
 }

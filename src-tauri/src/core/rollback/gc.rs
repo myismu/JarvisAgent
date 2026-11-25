@@ -172,20 +172,12 @@ impl GarbageCollector {
             .collect()
     }
 
-    /// 阶段 2：清理 snapshot_content 表中未被任何 workspaceState 引用的孤儿内容
+    /// 阶段 2：清理 snapshot_content 表中未被任何快照引用的孤儿内容
     ///
-    /// 收集 tree.nodes 中所有 workspaceState 引用的 hash，
-    /// 然后删除 snapshot_content 表中不在该集合中的记录。
+    /// 收集 tree.nodes 中所有被 `workspace_state` 以及 `patches`（`DeleteFile` / `UpdateFile`）
+    /// 引用的 hash，然后删除 snapshot_content 表中不在该集合中的记录。
     fn cleanup_orphan_contents(&self, session_id: &str, tree: &SnapshotTree) -> usize {
-        // 收集所有被 workspaceState 引用的 hash
-        let mut referenced_hashes: HashSet<String> = HashSet::new();
-        for snapshot in tree.nodes.values() {
-            if let Some(ws) = &snapshot.workspace_state {
-                for file_info in ws.files.values() {
-                    referenced_hashes.insert(file_info.hash.clone());
-                }
-            }
-        }
+        let referenced_hashes = collect_referenced_content_hashes(tree);
 
         crate::infra::db::with_connection(|conn| {
             // 查询该会话的所有 content_hash
@@ -216,6 +208,41 @@ impl GarbageCollector {
         })
         .unwrap_or(0)
     }
+}
+
+/// 收集整棵快照树中所有引用到 `snapshot_content` 表的 content_hash。
+///
+/// 覆盖两处引用源：
+/// 1. 检查点快照的 `workspace_state.files`；
+/// 2. 普通快照 `patches` 里的 `DeleteFile.content_hash` 与 `UpdateFile.content_hash`。
+fn collect_referenced_content_hashes(tree: &SnapshotTree) -> HashSet<String> {
+    let mut referenced_hashes: HashSet<String> = HashSet::new();
+    for snapshot in tree.nodes.values() {
+        if let Some(ws) = &snapshot.workspace_state {
+            for file_info in ws.files.values() {
+                referenced_hashes.insert(file_info.hash.clone());
+            }
+        }
+        for patch in &snapshot.patches {
+            match patch {
+                super::patch::Patch::DeleteFile {
+                    content_hash: Some(hash),
+                    ..
+                } => {
+                    referenced_hashes.insert(hash.clone());
+                }
+                super::patch::Patch::UpdateFile {
+                    content_hash: Some((old_hash, new_hash)),
+                    ..
+                } => {
+                    referenced_hashes.insert(old_hash.clone());
+                    referenced_hashes.insert(new_hash.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+    referenced_hashes
 }
 
 /// 阶段 3 的专门测试：回收站里"没被任何快照引用"的条目该被清掉，被引用的必须留下。
@@ -381,5 +408,51 @@ mod tests {
             .insert("orphan".into(), make_branch("orphan", "missing"));
         let orphans = gc.find_orphan_branches(&tree);
         assert_eq!(orphans, vec!["orphan"]);
+    }
+
+    #[test]
+    fn referenced_content_hashes_include_patch_and_workspace_refs() {
+        let mut tree = make_tree();
+
+        // 普通快照：通过 DeleteFile / UpdateFile 引用 snapshot_content
+        let mut normal_snap = make_snapshot("s1", "main", current_timestamp());
+        normal_snap.patches = vec![
+            super::super::patch::Patch::DeleteFile {
+                path: "C:/ws/deleted.txt".to_string(),
+                content_hash: Some("hash_del".to_string()),
+                trash_path: Some("C:/trash/1_deleted.txt".to_string()),
+            },
+            super::super::patch::Patch::UpdateFile {
+                path: "C:/ws/big.txt".to_string(),
+                old_content: String::new(),
+                new_content: String::new(),
+                diff: None,
+                content_hash: Some(("hash_old".to_string(), "hash_new".to_string())),
+            },
+        ];
+        tree.nodes.insert("s1".into(), normal_snap);
+
+        // 检查点快照：通过 workspace_state 引用 snapshot_content
+        let mut cp_snap = make_snapshot("cp1", "main", current_timestamp());
+        cp_snap.is_checkpoint = true;
+        let mut files = HashMap::new();
+        files.insert(
+            "C:/ws/a.txt".to_string(),
+            super::super::snapshot::FileInfo {
+                size: 10,
+                hash: "hash_ws".to_string(),
+            },
+        );
+        cp_snap.workspace_state = Some(super::super::snapshot::WorkspaceState { files });
+        tree.nodes.insert("cp1".into(), cp_snap);
+
+        let refs = collect_referenced_content_hashes(&tree);
+        for expected in ["hash_del", "hash_old", "hash_new", "hash_ws"] {
+            assert!(
+                refs.contains(expected),
+                "应保留被引用的 hash {}，避免 GC 误删 snapshot_content",
+                expected
+            );
+        }
     }
 }
