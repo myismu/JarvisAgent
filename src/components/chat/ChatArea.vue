@@ -40,6 +40,26 @@ const {
   confirmEditResend,
   cancelEditResend,
 } = useChatRollback();
+
+/**
+ * 将后端 PatchSummary.operation 映射为撤回预览弹窗里的操作标签、样式类与悬停说明。
+ */
+function rollbackOpMeta(operation: string): {
+  kind: 'create' | 'delete' | 'update' | 'rename';
+  label: string;
+  hint: string;
+} {
+  switch (operation) {
+    case 'create':
+      return { kind: 'create', label: t('rollback.opCreate'), hint: t('rollback.opCreateHint') };
+    case 'delete':
+      return { kind: 'delete', label: t('rollback.opDelete'), hint: t('rollback.opDeleteHint') };
+    case 'rename':
+      return { kind: 'rename', label: t('rollback.opRename'), hint: t('rollback.opRenameHint') };
+    default:
+      return { kind: 'update', label: t('rollback.opUpdate'), hint: t('rollback.opUpdateHint') };
+  }
+}
 const { copyCodeBlock, copyTable, copyPlainText } = useChatClipboard();
 const responseAreaRef = ref<HTMLElement | null>(null);
 /** 视口是否贴底：滚动事件与程序化落底共同维护的统一事实源。 */
@@ -807,10 +827,15 @@ onMounted(() => {
             <div class="rollback-preview-summary">{{ t('rollback.previewSummary', { count: rollbackConfirm.files.length }) }}</div>
             <div class="rollback-preview-file-list">
               <div v-for="file in rollbackConfirm.files" :key="file.path" class="rollback-preview-file">
+                <span
+                  class="rollback-preview-op"
+                  :class="`op-${rollbackOpMeta(file.operation).kind}`"
+                  :title="rollbackOpMeta(file.operation).hint"
+                >{{ rollbackOpMeta(file.operation).label }}</span>
                 <span class="rollback-preview-path" :title="file.path">{{ file.path }}</span>
-                <span class="rollback-preview-stats">
-                  <span class="rollback-preview-added">+{{ file.linesAdded }}</span>
-                  <span class="rollback-preview-removed">-{{ file.linesRemoved }}</span>
+                <span v-if="file.linesAdded > 0 || file.linesRemoved > 0" class="rollback-preview-stats">
+                  <span v-if="file.linesAdded > 0" class="rollback-preview-added">+{{ file.linesAdded }}</span>
+                  <span v-if="file.linesRemoved > 0" class="rollback-preview-removed">-{{ file.linesRemoved }}</span>
                 </span>
               </div>
             </div>
@@ -837,10 +862,15 @@ onMounted(() => {
             <div class="rollback-preview-summary">{{ t('rollback.previewSummary', { count: editResendConfirm.files.length }) }}</div>
             <div class="rollback-preview-file-list">
               <div v-for="file in editResendConfirm.files" :key="file.path" class="rollback-preview-file">
+                <span
+                  class="rollback-preview-op"
+                  :class="`op-${rollbackOpMeta(file.operation).kind}`"
+                  :title="rollbackOpMeta(file.operation).hint"
+                >{{ rollbackOpMeta(file.operation).label }}</span>
                 <span class="rollback-preview-path" :title="file.path">{{ file.path }}</span>
-                <span class="rollback-preview-stats">
-                  <span class="rollback-preview-added">+{{ file.linesAdded }}</span>
-                  <span class="rollback-preview-removed">-{{ file.linesRemoved }}</span>
+                <span v-if="file.linesAdded > 0 || file.linesRemoved > 0" class="rollback-preview-stats">
+                  <span v-if="file.linesAdded > 0" class="rollback-preview-added">+{{ file.linesAdded }}</span>
+                  <span v-if="file.linesRemoved > 0" class="rollback-preview-removed">-{{ file.linesRemoved }}</span>
                 </span>
               </div>
             </div>
@@ -1435,8 +1465,7 @@ onMounted(() => {
 .rollback-preview-file {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   padding: 8px 12px;
   font-family: var(--font-mono);
   font-size: 0.82rem;
@@ -1447,7 +1476,36 @@ onMounted(() => {
   border-bottom: none;
 }
 
+.rollback-preview-op {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 5px;
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.rollback-preview-op.op-create {
+  color: var(--accent-green);
+  background: color-mix(in srgb, var(--accent-green) 12%, transparent);
+}
+
+.rollback-preview-op.op-delete {
+  color: var(--accent-red);
+  background: color-mix(in srgb, var(--accent-red) 12%, transparent);
+}
+
+.rollback-preview-op.op-update,
+.rollback-preview-op.op-rename {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+}
+
 .rollback-preview-path {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

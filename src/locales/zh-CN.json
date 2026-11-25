@@ -265,6 +265,14 @@
     "historyKeptSuffix": "{error}。为避免会话与文件状态不一致，已保留当前会话历史。",
     "previewSummary": "将影响 {count} 个文件",
     "previewEmpty": "未检测到需要恢复的文件。",
+    "opCreate": "新增",
+    "opCreateHint": "该文件为待撤回轮次中新建，撤回后将被移除",
+    "opDelete": "已删",
+    "opDeleteHint": "该文件在待撤回轮次中被删除，撤回后将被恢复",
+    "opUpdate": "修改",
+    "opUpdateHint": "该文件在待撤回轮次中被修改，撤回后将还原改动",
+    "opRename": "改名",
+    "opRenameHint": "该文件在待撤回轮次中被重命名，撤回后将恢复原路径",
     "scrollToBottom": "滚动到底部"
   },
   "execution": {

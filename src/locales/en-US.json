@@ -265,6 +265,14 @@
     "historyKeptSuffix": "{error}. To avoid inconsistency between session and file state, current session history was kept.",
     "previewSummary": "Will affect {count} files",
     "previewEmpty": "No files need to be restored.",
+    "opCreate": "Added",
+    "opCreateHint": "Created in the recalled rounds; rollback will remove it",
+    "opDelete": "Deleted",
+    "opDeleteHint": "Deleted in the recalled rounds; rollback will restore it",
+    "opUpdate": "Modified",
+    "opUpdateHint": "Modified in the recalled rounds; rollback will revert changes",
+    "opRename": "Renamed",
+    "opRenameHint": "Renamed in the recalled rounds; rollback will restore the original path",
     "scrollToBottom": "Scroll to bottom"
   },
   "execution": {
