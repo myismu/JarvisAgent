@@ -599,7 +599,7 @@ pub async fn run_shell(
                     ));
                 }
                 // 用户授权本会话 → 登记键（顺带放行其它已挂起的同范围请求）
-                if decision == PermissionDecision::AllowSession {
+                if matches!(decision, PermissionDecision::AllowSession { .. }) {
                     // 一次点击把各段的键都登记（用户已在卡片上看到"同时登记以下范围"）
                     for (scope, label) in keys {
                         framework::policy_guard::grant_session_allowance(

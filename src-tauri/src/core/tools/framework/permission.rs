@@ -59,10 +59,10 @@ impl PermissionKind {
 /// 模型拿着假的拒绝继续跑，前端卡片还挂着 —— 用户点"允许"已经无效。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PermissionDecision {
-    /// 用户允许这一次操作
-    Allow,
-    /// 用户授权本会话后续同类操作（会话级放行）
-    AllowSession,
+    /// 用户允许这一次操作（可附带一句给模型的审批附言）
+    Allow { feedback: Option<String> },
+    /// 用户授权本会话后续同类操作（会话级放行，可附带一句给模型的审批附言）
+    AllowSession { feedback: Option<String> },
     /// 用户明确拒绝，可带一句话说明/替代方案（会回灌给模型）
     Reject { feedback: Option<String> },
     /// 没有拿到用户结论：本轮被取消、权限通道被关闭等。**不等于拒绝**
@@ -70,11 +70,16 @@ pub enum PermissionDecision {
 }
 
 impl PermissionDecision {
+    /// 无附言的“允许一次”快捷构造
+    pub fn allow() -> Self {
+        PermissionDecision::Allow { feedback: None }
+    }
+
     /// 是否放行本次操作
     pub fn is_allowed(&self) -> bool {
         matches!(
             self,
-            PermissionDecision::Allow | PermissionDecision::AllowSession
+            PermissionDecision::Allow { .. } | PermissionDecision::AllowSession { .. }
         )
     }
 
@@ -83,10 +88,16 @@ impl PermissionDecision {
         matches!(self, PermissionDecision::Reject { .. })
     }
 
-    /// 回灌给模型的说明文本（允许类为空）
+    /// 回灌给模型的说明文本（允许类若带用户附言则返回附言，否则为空）
     pub fn model_note(&self) -> String {
         match self {
-            PermissionDecision::Allow | PermissionDecision::AllowSession => String::new(),
+            PermissionDecision::Allow { feedback }
+            | PermissionDecision::AllowSession { feedback } => feedback
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+                .unwrap_or_default(),
             PermissionDecision::Reject { feedback } => {
                 let head = "用户明确拒绝了这次操作。";
                 let tail = "不要用等价写法重试（换参数、换命令别名、换等价工具都算重试）：\
@@ -109,8 +120,8 @@ impl PermissionDecision {
     /// 审计/调试用的短标签
     pub fn status_label(&self) -> &'static str {
         match self {
-            PermissionDecision::Allow => "allow",
-            PermissionDecision::AllowSession => "allow_session",
+            PermissionDecision::Allow { .. } => "allow",
+            PermissionDecision::AllowSession { .. } => "allow_session",
             PermissionDecision::Reject { .. } => "reject",
             PermissionDecision::Interrupted { .. } => "interrupted",
         }
@@ -261,7 +272,7 @@ pub async fn request_permission_with_origin(
     // "本次会话都允许"，此时再插一张卡进去就是一张永远等不到点击的僵尸卡片。
     // 链式命令多把键：全部被允许才放行（只有一部分被覆盖仍要问）。
     if !allowance.is_empty() && ctx.allowance_covers_all(&allowance).await {
-        return PermissionDecision::Allow;
+        return PermissionDecision::allow();
     }
 
     // 生成唯一请求 ID，创建 oneshot channel 等待前端回调
@@ -469,9 +480,32 @@ mod decision_tests {
 
     #[test]
     fn allow_variants_are_allowed() {
-        assert!(PermissionDecision::Allow.is_allowed());
-        assert!(PermissionDecision::AllowSession.is_allowed());
-        assert!(!PermissionDecision::Allow.is_rejected());
+        assert!(PermissionDecision::allow().is_allowed());
+        assert!(PermissionDecision::AllowSession { feedback: None }.is_allowed());
+        assert!(!PermissionDecision::allow().is_rejected());
+        assert_eq!(PermissionDecision::allow().model_note(), "");
+    }
+
+    #[test]
+    fn allow_with_feedback_returns_trimmed_note() {
+        let allow_with_note = PermissionDecision::Allow {
+            feedback: Some("  删完顺便清一下引用  ".to_string()),
+        };
+        assert!(allow_with_note.is_allowed());
+        assert_eq!(allow_with_note.model_note(), "删完顺便清一下引用");
+
+        let allow_session_with_note = PermissionDecision::AllowSession {
+            feedback: Some("本会话放行，注意只改当前模块".to_string()),
+        };
+        assert_eq!(
+            allow_session_with_note.model_note(),
+            "本会话放行，注意只改当前模块"
+        );
+
+        let allow_blank = PermissionDecision::Allow {
+            feedback: Some("   ".to_string()),
+        };
+        assert_eq!(allow_blank.model_note(), "");
     }
 
     #[test]
@@ -517,9 +551,9 @@ mod decision_tests {
 
     #[test]
     fn status_labels_are_stable_for_audit() {
-        assert_eq!(PermissionDecision::Allow.status_label(), "allow");
+        assert_eq!(PermissionDecision::allow().status_label(), "allow");
         assert_eq!(
-            PermissionDecision::AllowSession.status_label(),
+            PermissionDecision::AllowSession { feedback: None }.status_label(),
             "allow_session"
         );
         assert_eq!(

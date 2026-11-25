@@ -174,7 +174,7 @@
     "allowShortcut": "Shortcut: A",
     "allowSessionShortcut": "Shortcut: S",
     "reject": "Reject",
-    "rejectFeedbackPlaceholder": "Reason (optional, sent to the agent — e.g. \"don't delete this file, add a comment instead\")",
+    "rejectFeedbackPlaceholder": "Note or rejection reason (optional, sent to the agent with your decision)",
     "allowOnce": "Allow once",
     "allowSession": "Allow for this project",
     "allowancesHint": "{count} allowance(s) for this project",

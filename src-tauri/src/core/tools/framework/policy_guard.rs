@@ -1164,7 +1164,7 @@ pub async fn grant_session_allowance(
     // 先收锁再唤醒：responder.send 会立刻唤醒等待方，而对方醒来马上要锁同一张表
     for (id, responder) in swept {
         println!("[JARVIS] 会话级允许覆盖了积压请求 {}，自动放行", id);
-        let _ = responder.send(PermissionDecision::Allow);
+        let _ = responder.send(PermissionDecision::allow());
         let _ = app.emit(
             "permission-resolved",
             crate::infra::types::events::PermissionResolvedEvent {
@@ -1226,7 +1226,7 @@ pub async fn sweep_pending_on_mode_change(app: &tauri::AppHandle, session_id: &s
         let facts = prepare_facts(&ctx, tool, input).await;
         let verdict = policy::judge(tool, mode, &facts.to_input());
         match verdict.outcome {
-            Outcome::Allow => swept.push((id.clone(), PermissionDecision::Allow)),
+            Outcome::Allow => swept.push((id.clone(), PermissionDecision::allow())),
             // 理论上到不了：插卡的前提就是当时判为 Ask，而 Deny 规则（越界/现有检查）
             // 排在档位之前。留着是防御——真发生了也不能让卡一直挂着。
             Outcome::Deny => swept.push((
@@ -1358,16 +1358,23 @@ pub fn read_only_deny_reason(tool: &str, input: &Value, facts: &PreparedFacts) -
     None
 }
 
-/// 执行前判定：返回 `Some(拒绝结果)` 表示**不要执行**，把这段文本作为工具结果回灌给模型。
-///
-/// 返回 `None` 表示放行。
+/// 执行前权限判定结果：区分放行（可选携带用户审批附言）与阻断。
+pub enum EnforceResult {
+    /// 放行执行；若用户在点「允许」时填写了附言，工具执行完后应追加到 tool_result 末尾回灌给模型。
+    Allow { user_note: Option<String> },
+    /// 拒绝或中断：不执行工具，直接把阻断结果回灌给模型。
+    Block(super::ToolCallResult),
+}
+
+/// 执行前判定：返回 `EnforceResult::Block` 表示**不要执行**，把这段文本作为工具结果回灌给模型；
+/// 返回 `EnforceResult::Allow` 表示放行（可附带用户在审批卡里写的附言）。
 pub async fn enforce(
     app: &tauri::AppHandle,
     session_id: &str,
     tool: &str,
     input: &Value,
     agent_type: &str,
-) -> Option<super::ToolCallResult> {
+) -> EnforceResult {
     let manager = app.state::<crate::infra::state::state::SessionManager>();
     let ctx = manager.get_or_create(session_id).await;
     let facts = prepare_facts(&ctx, tool, input).await;
@@ -1378,7 +1385,7 @@ pub async fn enforce(
     if ctx.read_only_enabled().await {
         if let Some(reason) = read_only_deny_reason(tool, input, &facts) {
             println!("[JARVIS] 只读保护拦截：工具={} 原因={}", tool, reason);
-            return Some(super::ToolCallResult::blocked(format!(
+            return EnforceResult::Block(super::ToolCallResult::blocked(format!(
                 "{}\n不要换等价写法重试；确实需要改动，请让用户先关掉只读保护开关。",
                 reason
             )));
@@ -1437,14 +1444,14 @@ pub async fn enforce(
                     facts.warning.as_deref(),
                 );
             }
-            None
+            EnforceResult::Allow { user_note: None }
         }
         Outcome::Deny => {
             println!(
                 "[JARVIS] 权限判定拒绝：工具={} 原因={}",
                 tool, decision.reason
             );
-            Some(super::ToolCallResult::blocked(format!(
+            EnforceResult::Block(super::ToolCallResult::blocked(format!(
                 "这个操作被系统拒绝，不能执行：{}\n不要换等价写法重试；改用其他方案，或向用户说明受阻点。",
                 decision.reason
             )))
@@ -1478,7 +1485,7 @@ pub async fn enforce(
                         super::permission_audit_logger::ACTION_KEY_HIT,
                         facts.warning.as_deref(),
                     );
-                    return None;
+                    return EnforceResult::Allow { user_note: None };
                 }
             }
 
@@ -1512,7 +1519,7 @@ pub async fn enforce(
                 None => (None, None),
             };
             match decision {
-                PermissionDecision::Allow => {
+                PermissionDecision::Allow { feedback } => {
                     audit.log_decision(
                         session_id,
                         agent_type,
@@ -1522,9 +1529,11 @@ pub async fn enforce(
                         super::permission_audit_logger::ACTION_ALLOW,
                         facts.warning.as_deref(),
                     );
-                    None
+                    EnforceResult::Allow {
+                        user_note: feedback,
+                    }
                 }
-                PermissionDecision::AllowSession => {
+                PermissionDecision::AllowSession { feedback } => {
                     // 链式命令：一次点击把各段的键都登记（用户看到的是"同时登记以下范围"）
                     for k in &keys {
                         grant_session_allowance(app, session_id, k.kind, &k.scope, k.label.clone())
@@ -1539,7 +1548,9 @@ pub async fn enforce(
                         super::permission_audit_logger::ACTION_ALLOW_SESSION,
                         facts.warning.as_deref(),
                     );
-                    None
+                    EnforceResult::Allow {
+                        user_note: feedback,
+                    }
                 }
                 other => {
                     audit.log_decision(
@@ -1551,7 +1562,7 @@ pub async fn enforce(
                         super::permission_audit_logger::ACTION_REJECT,
                         facts.warning.as_deref(),
                     );
-                    Some(super::ToolCallResult::blocked(format!(
+                    EnforceResult::Block(super::ToolCallResult::blocked(format!(
                         "这个操作没有执行：{}",
                         other.model_note()
                     )))

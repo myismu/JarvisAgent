@@ -343,7 +343,7 @@ export const useChatStore = defineStore("chat", () => {
   /**
    * 提交权限决策。
    * @param decision allow | allow_session | reject（allow_session=「本项目允许」：登记会话键并落盘 data/permissions/，跨会话记住）
-   * @param feedback 仅 reject 时使用：用户的拒绝说明，会回灌给模型，让它别换个写法重试
+   * @param feedback 可选的用户附言：允许时附在工具结果尾部透传给模型；拒绝时回灌给模型并禁止等价重试
    */
   async function resolvePermission(decision: string, feedback?: string) {
     const perm = usePermissionStore();

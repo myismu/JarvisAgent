@@ -174,7 +174,7 @@
     "allowShortcut": "快捷键: A",
     "allowSessionShortcut": "快捷键: S",
     "reject": "拒绝",
-    "rejectFeedbackPlaceholder": "拒绝原因（可选，会告诉 Agent，例如「别删这个文件，改成加注释」）",
+    "rejectFeedbackPlaceholder": "附言或拒绝原因（可选，会随本次决策告诉 Agent，例如「允许，顺便清理引用」或「别删，改成加注释」）",
     "allowOnce": "允许一次",
     "allowSession": "本项目允许",
     "allowancesHint": "本项目已允许 {count} 项",

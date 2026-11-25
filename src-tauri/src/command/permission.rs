@@ -106,8 +106,8 @@ fn parse_decision(decision: &str, content: Option<String>) -> PermissionDecision
         .map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty());
     match decision {
-        "allow" => PermissionDecision::Allow,
-        "allow_session" => PermissionDecision::AllowSession,
+        "allow" => PermissionDecision::Allow { feedback },
+        "allow_session" => PermissionDecision::AllowSession { feedback },
         _ => PermissionDecision::Reject { feedback },
     }
 }
@@ -643,12 +643,24 @@ mod tests {
 
     #[test]
     fn allow_variants_pass_through() {
-        assert_eq!(parse_decision("allow", None), PermissionDecision::Allow);
+        assert_eq!(parse_decision("allow", None), PermissionDecision::allow());
         assert_eq!(
             parse_decision("allow_session", None),
-            PermissionDecision::AllowSession
+            PermissionDecision::AllowSession { feedback: None }
         );
         assert!(parse_decision("allow_session", None).is_allowed());
+
+        // 允许时附带的备注也应保留并做去空白处理，供工具执行完成后透传给模型
+        assert_eq!(
+            parse_decision("allow", Some("  删完顺便清一下引用  ".to_string())),
+            PermissionDecision::Allow {
+                feedback: Some("删完顺便清一下引用".to_string())
+            }
+        );
+        assert_eq!(
+            parse_decision("allow_session", Some("   ".to_string())),
+            PermissionDecision::AllowSession { feedback: None }
+        );
     }
 
     #[test]

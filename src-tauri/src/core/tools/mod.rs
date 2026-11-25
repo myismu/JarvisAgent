@@ -342,11 +342,11 @@ pub async fn dispatch_tool_call(
     if let Some(message) = mode_block_message(name, intent, work_mode) {
         return framework::ToolCallResult::error(message);
     }
-    if let Some(result) =
-        framework::policy_guard::enforce(app, session_id, name, input, agent_type).await
-    {
-        return result;
-    }
+    let approval_note =
+        match framework::policy_guard::enforce(app, session_id, name, input, agent_type).await {
+            framework::policy_guard::EnforceResult::Allow { user_note } => user_note,
+            framework::policy_guard::EnforceResult::Block(result) => return result,
+        };
     let requested_agent_role =
         framework::agent_registry::normalize_agent_role(input["subagent_type"].as_str());
     let agent_registry = AgentRegistry::global();
@@ -374,7 +374,7 @@ pub async fn dispatch_tool_call(
     let prompt = input["prompt"].as_str().unwrap_or("");
     // 这里可以直接 await：本函数是"主 Agent 专用"的那一支，子代理路径到不了它，
     // 自递归的 opaque 环已经不存在——这正是拆函数的全部意义。
-    let (output, in_tokens, out_tokens) = run_subagent(
+    let (mut output, in_tokens, out_tokens) = run_subagent(
         app.clone(),
         prompt.to_string(),
         read_only,
@@ -386,6 +386,9 @@ pub async fn dispatch_tool_call(
         skills,
     )
     .await;
+    if let Some(note) = approval_note {
+        output.push_str(&format!("\n\n【用户审批附言】{}", note));
+    }
     framework::ToolCallResult::ok(output).with_usage(in_tokens, out_tokens)
 }
 
@@ -443,11 +446,11 @@ pub async fn dispatch_core_tool(
     // 能力/模式允许之后，才轮到"要不要问用户"或"直接拒绝"。
     // 判定依据是结构化事实（工具、路径、是否覆盖、影响几个文件），
     // 与观察层共用同一份事实采集，保证"预判"和"真实判定"口径一致。
-    if let Some(result) =
-        framework::policy_guard::enforce(app, session_id, name, input, agent_type).await
-    {
-        return result;
-    }
+    let approval_note =
+        match framework::policy_guard::enforce(app, session_id, name, input, agent_type).await {
+            framework::policy_guard::EnforceResult::Allow { user_note } => user_note,
+            framework::policy_guard::EnforceResult::Block(result) => return result,
+        };
 
     let result = match name {
         // 文件工具
@@ -544,7 +547,13 @@ pub async fn dispatch_core_tool(
         _ => return framework::ToolCallResult::error(format!("未知工具: {}", name)),
     };
 
-    // 所有工具已内置 ToolCallResult 错误标记，直接返回
+    // 所有工具已内置 ToolCallResult 错误标记，直接返回；若用户点允许时附带了备注则追加给模型
+    let mut result = result;
+    if let Some(note) = approval_note {
+        result
+            .output
+            .push_str(&format!("\n\n【用户审批附言】{}", note));
+    }
     result
 }
 

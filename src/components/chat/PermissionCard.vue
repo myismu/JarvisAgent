@@ -73,8 +73,8 @@ const handleKeydown = (e: KeyboardEvent) => {
   if (!perm.permissionRequest) return;
   if (isTypingTarget(e.target)) return;
   const key = e.key.toLowerCase();
-  if (key === 'a') { e.preventDefault(); chat.resolvePermission('allow'); }
-  else if (key === 's' && canAllowSession.value) { e.preventDefault(); chat.resolvePermission('allow_session'); }
+  if (key === 'a') { e.preventDefault(); chat.resolvePermission('allow', rejectFeedback.value); }
+  else if (key === 's' && canAllowSession.value) { e.preventDefault(); chat.resolvePermission('allow_session', rejectFeedback.value); }
   else if (key === 'r' || key === 'escape') { e.preventDefault(); chat.resolvePermission('reject', rejectFeedback.value); }
 };
 
@@ -122,7 +122,7 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
         v-if="canAllowSession"
         type="button"
         class="dock-btn dock-btn-secondary"
-        @click="chat.resolvePermission('allow_session')"
+        @click="chat.resolvePermission('allow_session', rejectFeedback)"
       >
         {{ t('permission.allowSession') }}
         <kbd class="dock-kbd">S</kbd>
@@ -130,7 +130,7 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true));
       <button
         type="button"
         class="dock-btn dock-btn-primary"
-        @click="chat.resolvePermission('allow')"
+        @click="chat.resolvePermission('allow', rejectFeedback)"
       >
         {{ t('permission.allowOnce') }}
         <kbd class="dock-kbd">A</kbd>
