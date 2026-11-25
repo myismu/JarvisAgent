@@ -1,20 +1,19 @@
-# JarvisAgent v0.5.0
+# JarvisAgent v0.5.1
 
-本次更新聚焦「界面视觉统一升级」与「工程质量体系建设」两大主线。
+本次更新聚焦「跨端双向类型契约全量收口」「前后端大模块领域化治理」与「前端组件测试体系落地」，并补充若干实用交互与安全增强。
 
-## 界面与交互体验升级
+## 功能与体验改进
 
-- **主界面与侧边栏**：启用浅灰导航底色拉出左右层级，去掉顶部冗余虚线框，以微抬升白卡突出「新建对话」主入口；无子 Agent 时自动隐藏多余的「主对话」顶栏页签；历史会话 token 读数统一为紧凑格式（如 `2.5m tok`）
-- **悬浮输入框重构**：调整为「输入区在上、极简工具栏在下」的现代 Composer 布局；遥测状态条外置到卡片正下方；高频项（模型预设、工作模式）保留在明面，审批权限、只读保护与深度思考收进右侧「会话选项」上拉面板（开启特殊安全态时自动显示紧凑微标）；隐藏单行空滚动条
-- **设置面板全面统一**：左侧改用浅灰导航栏与统一极简线性图标，右侧采用分组圆角白卡；统一输入框为白底细框并对齐 320px 右边界；修复透明度滑杆被通用输入框样式污染的问题；非预设页签隐藏空白底栏
-- **提示词 / 工具 / 关于页精修**：提示词编辑框去灰提亮；工具页开关统一为中性深色、同行卡片视觉齐平；关于页新增品牌头块与版本徽章；欢迎页快捷建议升级为可点击圆角胶囊
+- **用户消息操作栏重构**：新增一键复制与原地编辑重发，对话修改与重跑更顺手
+- **沙箱只读审批增强**：沙箱会话支持跨目录只读审批持久化，并进一步收紧只读白名单边界
+- **真实缺陷修复**：在契约对齐与模块拆分过程中，顺手修复了 5 处前后端字段漂移（含 `DiffViewer`、`AgentPanel`、`TodoPanel`、`chat.ts`）以及 2 处组件卸载时事件监听未注销泄漏（`approval-mode-changed`、`bg-task-done`）
 
-## 架构与工程质量
+## 架构治理与工程质量
 
-- **后端主循环模块化**：将 4800 行的 `pipeline.rs` 按阶段与职责拆分为 8 个子模块（`mod` / `setup` / `main_loop` / `finalize` / `recovery` / `context_metrics` / `helpers` / `tests`）；将设置页常规页签拆出为独立 `GeneralTab.vue`
-- **前端单元测试与 Bug 修复**：引入 Vitest 并补齐 7 组 48 个核心工具与权限 Store 单元测试，同步接入 CI；测试过程中发现并修复了同名工具调用带新 `toolCallId` 时误覆盖前一条记录的问题
-- **CI 门禁与类型契约**：清零全部 102 条 Rust Clippy 告警并将 `cargo clippy --all-targets -- -D warnings` 接入 CI；引入 `ts-rs` 试点自动生成会话用量与 Shell 方言前端类型契约，并内置漂移守卫测试
-- **文档与规范清理**：统一前端编码为 UTF-8 无 BOM 与 LF 换行，同步更新文档指标与三档权限说明，清理废弃的 `RuntimeSettings` 注释代码
+- **跨端双向强类型契约 100% 闭环**：通过 `ts-rs` 将全部 115 个 Tauri 命令与 36 类后端 `app.emit` 推送事件（新增 `infra/types/events.rs`，全仓动态 `json!` 事件清零）自动导出到 `src/types/generated/contracts.ts`，并由单测门禁锁死一致性
+- **前端领域化拆解**：将 1162 行的 `useAgentEvents.ts` 按事件域拆为 6 个子模块；抽离 `TerminalInput`、`SettingsPanel`、`ChatArea`、`AgentPanel` 的核心状态与副作用到领域 `composables/`
+- **后端大文件拆解与 Clippy 门禁收紧**：将 `schema.rs` 与 `repository.rs` 分别拆为领域目录（对外接口零破坏）；移除 `Cargo.toml` 中全局 `too_many_arguments = "allow"` 放行，阻断后续新增超长参数函数；全仓通过 `cargo fmt --all -- --check` 与 `cargo clippy --all-targets -- -D warnings`
+- **前端组件测试体系落地**：引入 `@vue/test-utils` 与 `happy-dom`，补齐核心 Store、事件流与 5 个高频交互组件（`RollbackConfirmModal`、`PermissionModal`、`TerminalInput`、`PlanPreviewPanel`、`SettingsPanel`）的自动化测试，前端 Vitest 用例扩充至 16 个文件 / 79 个用例
 
 ## 安装
 
