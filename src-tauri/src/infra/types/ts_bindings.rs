@@ -66,9 +66,10 @@ use crate::infra::types::events::{
     BackgroundFailedEvent, BgCompactingChangedEvent, ChatContentEvent, ChatStreamEvent,
     ChatThinkingEvent, ChatToolDebugEvent, ChatToolStartEvent, ChatTurnEndEvent,
     ChatTurnStartEvent, CheckpointCreatedEvent, MemoryUpdatedEvent, PermissionRequestEvent,
-    PermissionResolvedEvent, PlanProposalEvent, PlanProposalStreamEvent,
+    PermissionResolvedEvent, PlanProposalEvent, PlanProposalStreamEvent, ResolveUserQuestionResult,
     SessionAllowancesChangedEvent, SessionMessagesChangedEvent, SessionThinkingModeChangedEvent,
-    SnapshotCreatedEvent, SubagentTraceUpdatedEvent, TodoUpdateEvent,
+    SnapshotCreatedEvent, SubagentTraceUpdatedEvent, TodoUpdateEvent, UserQuestionAnswerItem,
+    UserQuestionItem, UserQuestionOption, UserQuestionRequestEvent, UserQuestionResolvedEvent,
 };
 use crate::infra::types::models::{
     CacheHitPoint, ContextSectionSnapshot, InterruptKind, JarvisResult, PlanDocument, PlanTask,
@@ -212,6 +213,12 @@ fn render_contracts_ts() -> String {
         MemoryUpdatedEvent::decl(),
         SubagentTraceUpdatedEvent::decl(),
         TodoUpdateEvent::decl(),
+        UserQuestionOption::decl(),
+        UserQuestionItem::decl(),
+        UserQuestionRequestEvent::decl(),
+        UserQuestionResolvedEvent::decl(),
+        UserQuestionAnswerItem::decl(),
+        ResolveUserQuestionResult::decl(),
     ];
 
     let mut out = String::from(

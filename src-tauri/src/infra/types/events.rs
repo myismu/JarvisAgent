@@ -390,3 +390,79 @@ pub struct TodoUpdateEvent {
     pub groups: Vec<TodoGroup>,
     pub session_id: String,
 }
+
+// ── 运行期用户咨询事件与答复契约（AskUser 工具） ──
+
+/// 单个咨询选项（展示文案、可选说明、是否推荐项）
+#[derive(Debug, Clone, Serialize, serde::Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserQuestionOption {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub recommended: bool,
+}
+
+/// 单道咨询问题（支持单选 / 多选与“其他”自填框）
+#[derive(Debug, Clone, Serialize, serde::Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserQuestionItem {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub header: Option<String>,
+    pub question: String,
+    #[serde(default)]
+    pub multi_select: bool,
+    pub options: Vec<UserQuestionOption>,
+    #[serde(default = "default_allow_custom")]
+    pub allow_custom: bool,
+}
+
+fn default_allow_custom() -> bool {
+    true
+}
+
+/// `user-question-request`：Agent 运行期向用户发起结构化咨询
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct UserQuestionRequestEvent {
+    pub id: String,
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub title: Option<String>,
+    pub questions: Vec<UserQuestionItem>,
+}
+
+/// `user-question-resolved`：咨询请求已作答、跳过或被取消中断
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct UserQuestionResolvedEvent {
+    pub id: String,
+    pub session_id: String,
+    /// `answered` / `skipped` / `interrupted`
+    pub status: String,
+}
+
+/// 单道题的用户答复（支持多选与自定义文本）
+#[derive(Debug, Clone, Serialize, serde::Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserQuestionAnswerItem {
+    pub question_id: String,
+    #[serde(default)]
+    pub selected_options: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub custom_text: Option<String>,
+}
+
+/// `resolve_user_question` 命令返回结果
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveUserQuestionResult {
+    pub resolved: bool,
+    pub status: String,
+}

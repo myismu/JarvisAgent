@@ -1,6 +1,11 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
-import type { PermissionRequest, PlanProposal, PlanDocument } from "../types";
+import type {
+  PermissionRequest,
+  PlanProposal,
+  PlanDocument,
+  UserQuestionRequestEvent,
+} from "../types";
 import { useSessionStore } from "./session";
 
 export const usePermissionStore = defineStore("permission", () => {
@@ -10,6 +15,8 @@ export const usePermissionStore = defineStore("permission", () => {
    * 被覆盖的请求会一直等不到回答（而界面上根本看不到它）。
    */
   const permissionRequests = ref<Record<string, PermissionRequest[]>>({});
+  /** 待用户回复的运行期咨询请求队列（按 sessionId 隔离，与权限队列同构） */
+  const userQuestions = ref<Record<string, UserQuestionRequestEvent[]>>({});
   const planProposals = ref<Record<string, PlanProposal>>({});
   const planDocumentsBySession = ref<Record<string, PlanDocument[]>>({});
 
@@ -52,6 +59,56 @@ export const usePermissionStore = defineStore("permission", () => {
     const map = { ...permissionRequests.value };
     delete map[sessionId];
     permissionRequests.value = map;
+  }
+
+  const userQuestionQueue = computed<UserQuestionRequestEvent[]>(() => {
+    const session = useSessionStore();
+    if (!session.activeSessionId) return [];
+    return userQuestions.value[session.activeSessionId] ?? [];
+  });
+
+  /** 当前会话最早的一条待回复咨询请求 */
+  const userQuestion = computed<UserQuestionRequestEvent | null>(
+    () => userQuestionQueue.value[0] ?? null
+  );
+
+  function enqueueUserQuestion(request: UserQuestionRequestEvent) {
+    const sid = request.sessionId || useSessionStore().activeSessionId;
+    if (!sid) return;
+    const existing = userQuestions.value[sid] ?? [];
+    if (existing.some((item) => item.id === request.id)) return;
+    userQuestions.value = {
+      ...userQuestions.value,
+      [sid]: [...existing, request],
+    };
+  }
+
+  function removeUserQuestion(sessionId: string | null | undefined, requestId: string) {
+    if (!sessionId) return;
+    const existing = userQuestions.value[sessionId] ?? [];
+    const next = existing.filter((item) => item.id !== requestId);
+    const map = { ...userQuestions.value };
+    if (next.length === 0) {
+      delete map[sessionId];
+    } else {
+      map[sessionId] = next;
+    }
+    userQuestions.value = map;
+  }
+
+  function clearUserQuestions(sessionId: string) {
+    const map = { ...userQuestions.value };
+    delete map[sessionId];
+    userQuestions.value = map;
+  }
+
+  /** 指定会话是否正在等待用户交互（权限审批或运行期咨询） */
+  function isSessionWaitingForUser(sessionId: string | null | undefined): boolean {
+    if (!sessionId) return false;
+    return (
+      (permissionRequests.value[sessionId]?.length ?? 0) > 0 ||
+      (userQuestions.value[sessionId]?.length ?? 0) > 0
+    );
   }
 
   const planProposal = computed(() => {
@@ -135,15 +192,22 @@ export const usePermissionStore = defineStore("permission", () => {
 
   return {
     permissionRequests,
+    userQuestions,
     planProposals,
     planDocumentsBySession,
     permissionQueue,
     permissionRequest,
+    userQuestionQueue,
+    userQuestion,
     planProposal,
     currentPlanDocuments,
     enqueuePermission,
     removePermission,
     clearPermissions,
+    enqueueUserQuestion,
+    removeUserQuestion,
+    clearUserQuestions,
+    isSessionWaitingForUser,
     upsertPlanDocument,
     updatePlanProposalContent,
     updatePlanProposalStreamingContent,

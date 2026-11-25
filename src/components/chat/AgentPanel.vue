@@ -185,7 +185,9 @@ const activeRunForElapsed = computed<AgentRun | null>(() => {
  * 等待用户授权期间冻结：那段时间 Agent 没在干活，不该记进耗时。
  * 第二个入参必须是 `Ref<boolean>`（composable 内部 watch 它），不能传函数。
  */
-const isWaitingForPermission = computed(() => permission.permissionRequest !== null);
+const isWaitingForPermission = computed(
+  () => permission.permissionRequest !== null || permission.userQuestion !== null,
+);
 const { elapsed: runElapsedSeconds } = useRunElapsed(activeRunForElapsed, isWaitingForPermission);
 
 const refreshContextSnapshot = async (sessionId?: string) => {

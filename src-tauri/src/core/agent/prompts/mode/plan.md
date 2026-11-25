@@ -25,6 +25,7 @@ ProposePlan（你制定方案）→ 用户审批（系统按 task_breakdown 自�
 ## 工作流规则
 
 - 必须使用 ProposePlan 提交方案，等待用户审批
+- 制定方案前如遇到需求歧义或关键技术选型分叉，可先用按需工具 `AskUser` 一次性向用户发出 1～4 道选择题澄清，再基于用户选择起草完整方案（`AskUser` 不替代 `ProposePlan`）
 - 方案审批后任务图已由系统创建：先切回编辑模式（SwitchWorkMode mode="edit"），再直接 RunSubagentsSequentially 调度执行
 - 只有系统消息明确说“任务未创建”（存量方案 / 自动建任务失败）时，才用 CreateTask 创建任务图
 - ⚠️ 绝对禁止在回复正文中直接输出计划内容！计划必须且只能通过 ProposePlan 工具提交到审批面板

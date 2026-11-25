@@ -508,6 +508,17 @@ pub async fn dispatch_core_tool(
             return framework::ToolCallResult::ok(report).with_usage(in_tokens, out_tokens);
         }
 
+        // 运行期结构化咨询工具（仅主 Agent 可用，子代理结构性禁止弹窗）
+        "AskUser" => {
+            if agent_type != "MAIN" {
+                return framework::ToolCallResult::error(
+                    "子代理不允许直接调用 AskUser 弹窗咨询用户，请将待确认事项汇总回报给主 Agent。"
+                        .to_string(),
+                );
+            }
+            agent_tools::ask_user(app, input, session_id).await
+        }
+
         // 方案审批工具（提交后 LLM 自行决定结束 loop）
         "ProposePlan" => {
             return framework::ToolCallResult::ok(

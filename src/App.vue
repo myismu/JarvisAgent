@@ -32,6 +32,7 @@ import Sidebar from "./components/layout/Sidebar.vue";
 import ChatArea from "./components/chat/ChatArea.vue";
 import TerminalInput from "./components/chat/TerminalInput.vue";
 import PermissionCard from "./components/chat/PermissionCard.vue";
+import UserQuestionCard from "./components/chat/UserQuestionCard.vue";
 import PlanPreviewPanel from "./components/common/PlanPreviewPanel.vue";
 import ToastHost from "./components/common/ToastHost.vue";
 import UpdatePrompt from "./components/common/UpdatePrompt.vue";
@@ -196,7 +197,7 @@ const toggleAgentMonitor = async () => {
 const rawStatus = computed(() => {
   // 等待决策优先：权限请求与方案审批期间 status 仍是 RUNNING，
   // 按「执行中」显示会让用户以为系统在转，实际卡住的是人。
-  if (permission.permissionRequest || permission.planProposal) return 'waiting';
+  if (permission.permissionRequest || permission.userQuestion || permission.planProposal) return 'waiting';
   if (session.isCurrentSessionRunning) return 'running';
   if (session.currentSessionStatus === 'INTERRUPTED') return 'interrupted';
   if (session.currentSessionStatus === 'ERROR') return 'error';
@@ -404,6 +405,7 @@ onBeforeUnmount(() => {
                          卡片高度变化由 TerminalInput 对容器的 ResizeObserver 自动测入
                          --input-area-height，聊天流底部留白无需另行补偿 -->
                     <PermissionCard />
+                    <UserQuestionCard />
                     <TerminalInput />
                   </div>
                 </section>

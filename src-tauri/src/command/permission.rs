@@ -281,6 +281,28 @@ pub async fn cancel_jarvis(
             },
         );
     }
+    // 同步排空等待用户回答的咨询框，防止取消后界面残留点不动的咨询卡片
+    let pending_qs = ctx
+        .pending_questions
+        .lock()
+        .await
+        .drain()
+        .collect::<Vec<_>>();
+    for (id, entry) in pending_qs {
+        let _ = entry.responder.send(
+            crate::infra::state::state::UserQuestionDecision::Interrupted {
+                reason: "本轮执行已被取消".to_string(),
+            },
+        );
+        let _ = app.emit(
+            "user-question-resolved",
+            crate::infra::types::events::UserQuestionResolvedEvent {
+                id,
+                session_id: session_id.clone(),
+                status: "interrupted".to_string(),
+            },
+        );
+    }
     // 级联取消该会话下所有运行中的子 Agent
     let cancelled_subagents =
         crate::core::orchestration::subagents::SubAgentMonitor::cancel_session(&app, &session_id)
@@ -524,6 +546,78 @@ pub async fn clear_session_allowances(
         },
     );
     Ok(())
+}
+
+/// 提交或跳过运行期咨询框（AskUser 工具回调入口）。
+///
+/// `decision` 支持 `"answered"`（提交答案）或 `"skipped"`（跳过，按推荐方案继续）。
+#[tauri::command]
+pub async fn resolve_user_question(
+    request_id: String,
+    session_id: String,
+    decision: String,
+    answers: Option<Vec<crate::infra::types::events::UserQuestionAnswerItem>>,
+    session_manager: tauri::State<'_, SessionManager>,
+    app: tauri::AppHandle,
+) -> Result<crate::infra::types::events::ResolveUserQuestionResult, String> {
+    let ctx = session_manager.get_or_create(&session_id).await;
+    let entry = ctx.pending_questions.lock().await.remove(&request_id);
+    let Some(entry) = entry else {
+        return Ok(crate::infra::types::events::ResolveUserQuestionResult {
+            resolved: false,
+            status: "not_found".to_string(),
+        });
+    };
+
+    let (parsed_decision, status) = if decision == "skipped" {
+        (
+            crate::infra::state::state::UserQuestionDecision::Skipped,
+            "skipped",
+        )
+    } else {
+        (
+            crate::infra::state::state::UserQuestionDecision::Answered(answers.unwrap_or_default()),
+            "answered",
+        )
+    };
+
+    let _ = entry.responder.send(parsed_decision);
+    let _ = app.emit(
+        "user-question-resolved",
+        crate::infra::types::events::UserQuestionResolvedEvent {
+            id: request_id,
+            session_id,
+            status: status.to_string(),
+        },
+    );
+
+    Ok(crate::infra::types::events::ResolveUserQuestionResult {
+        resolved: true,
+        status: status.to_string(),
+    })
+}
+
+/// 查询指定会话当前挂起的咨询请求列表（用于前端刷新/切会话后恢复咨询框）。
+#[tauri::command]
+pub async fn get_pending_user_questions(
+    session_id: String,
+    session_manager: tauri::State<'_, SessionManager>,
+) -> Result<Vec<crate::infra::types::events::UserQuestionRequestEvent>, String> {
+    let ctx = session_manager.get_or_create(&session_id).await;
+    let pending = ctx.pending_questions.lock().await;
+    let mut items = Vec::with_capacity(pending.len());
+    for (id, entry) in pending.iter() {
+        if !entry.responder.is_closed() {
+            items.push(crate::infra::types::events::UserQuestionRequestEvent {
+                id: id.clone(),
+                session_id: session_id.clone(),
+                title: entry.title.clone(),
+                questions: entry.questions.clone(),
+            });
+        }
+    }
+    items.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(items)
 }
 
 #[cfg(test)]

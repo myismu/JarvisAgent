@@ -145,7 +145,7 @@ const isSessionRunning = (sessionId: string): boolean => {
 const sessionLightStates = computed<Record<string, 'running' | 'waiting' | 'error'>>(() => {
   const states: Record<string, 'running' | 'waiting' | 'error'> = {};
   for (const session of sessions.value) {
-    if ((perm.permissionRequests[session.id]?.length ?? 0) > 0) {
+    if (perm.isSessionWaitingForUser(session.id)) {
       states[session.id] = 'waiting';
       continue;
     }

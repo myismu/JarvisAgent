@@ -154,6 +154,12 @@ import type {
   MemoryUpdatedEvent,
   SubagentTraceUpdatedEvent,
   TodoUpdateEvent,
+  UserQuestionOption,
+  UserQuestionItem,
+  UserQuestionRequestEvent,
+  UserQuestionResolvedEvent,
+  UserQuestionAnswerItem,
+  ResolveUserQuestionResult,
 } from "./generated/contracts";
 
 export type UsageSourceBreakdown = UsageSourceView;
@@ -276,6 +282,12 @@ export type {
   MemoryUpdatedEvent,
   SubagentTraceUpdatedEvent,
   TodoUpdateEvent,
+  UserQuestionOption,
+  UserQuestionItem,
+  UserQuestionRequestEvent,
+  UserQuestionResolvedEvent,
+  UserQuestionAnswerItem,
+  ResolveUserQuestionResult,
 };
 
 /**

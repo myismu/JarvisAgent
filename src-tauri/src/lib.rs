@@ -273,6 +273,8 @@ pub fn run() {
             command::tool::set_tool_active,
             command::shell::get_shell_settings,
             command::shell::save_shell_settings,
+            command::permission::resolve_user_question,
+            command::permission::get_pending_user_questions,
         ])
         .build(tauri::generate_context!())
         .expect("构建失败")

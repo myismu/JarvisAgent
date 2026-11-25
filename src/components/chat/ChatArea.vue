@@ -156,7 +156,9 @@ const runningAgentRun = computed(
 );
 // 权限卡弹出期间冻结读秒：等待用户决策的时间不属于执行用时。
 // 方案审批（planProposal）不参与冻结——本轮在提交方案时已结束，不会在读秒。
-const awaitingDecision = computed(() => Boolean(perm.permissionRequest));
+const awaitingDecision = computed(
+  () => Boolean(perm.permissionRequest || perm.userQuestion),
+);
 const { elapsed: runElapsed } = useRunElapsed(runningAgentRun, awaitingDecision);
 
 // 将 AgentTurnSnapshot 转换为 AgentCurrentTurn 格式（供 AgentTurn 组件渲染历史消息）

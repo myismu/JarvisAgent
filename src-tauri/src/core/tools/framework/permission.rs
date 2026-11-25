@@ -426,7 +426,7 @@ impl Drop for PendingPermissionGuard {
 ///
 /// 漏关的区间会让 `agent_runs.wait_ms` 少算，所以宁可重复关闭也要兜底——
 /// `closed` 标志保证"显式关闭"与"Drop 兜底"只生效一次（区间不能计两遍）。
-struct WaitIntervalGuard {
+pub(crate) struct WaitIntervalGuard {
     /// 会话上下文：区间表挂在它上面（`run_wait_intervals`，同步锁）
     ctx: Arc<SessionContext>,
     /// 区间起点（弹卡时刻）
@@ -436,7 +436,7 @@ struct WaitIntervalGuard {
 }
 
 impl WaitIntervalGuard {
-    fn new(ctx: Arc<SessionContext>) -> Self {
+    pub(crate) fn new(ctx: Arc<SessionContext>) -> Self {
         Self {
             ctx,
             start: std::time::Instant::now(),
@@ -445,7 +445,7 @@ impl WaitIntervalGuard {
     }
 
     /// 显式关闭区间（拿到结论 / 被打断的正常路径）。重复调用无害。
-    fn finish(&mut self) {
+    pub(crate) fn finish(&mut self) {
         if self.closed {
             return;
         }

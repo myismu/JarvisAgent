@@ -120,6 +120,24 @@ pub struct PendingPermission {
         tokio::sync::oneshot::Sender<crate::core::tools::framework::permission::PermissionDecision>,
 }
 
+/// 运行期咨询框的用户决策结果（与权限决策同构：区分正常回答、跳过与中断）。
+#[derive(Debug, Clone)]
+pub enum UserQuestionDecision {
+    /// 用户提交了各题答复
+    Answered(Vec<crate::infra::types::events::UserQuestionAnswerItem>),
+    /// 用户点击“跳过”，由 Agent 按推荐方案自行决策
+    Skipped,
+    /// 本轮被取消或通道关闭（不等于用户跳过）
+    Interrupted { reason: String },
+}
+
+/// 一条等待用户回复的运行期咨询请求（纯内存态，与 `PendingPermission` 同构）。
+pub struct PendingUserQuestion {
+    pub title: Option<String>,
+    pub questions: Vec<crate::infra::types::events::UserQuestionItem>,
+    pub responder: tokio::sync::oneshot::Sender<UserQuestionDecision>,
+}
+
 /// 当前会话中正在运行的一次主 Agent 执行。
 ///
 /// `id` 标识这一轮执行，不是会话 ID；完成通知供停止命令和方案审批等待真正收尾。
@@ -148,6 +166,8 @@ pub struct SessionContext {
     /// 发送端传的是结构化的 `PermissionDecision`，不是字符串——
     /// "用户拒绝"和"没等到结论"必须能区分（详见 framework::permission）
     pub pending_permissions: Mutex<HashMap<String, PendingPermission>>,
+    /// 待用户回复的运行期咨询请求（AskUser 工具挂起通道，纯内存态）
+    pub pending_questions: Mutex<HashMap<String, PendingUserQuestion>>,
     pub pending_patches: Mutex<Vec<PendingSnapshotPatch>>,
     pub pending_plan_state: Mutex<HashMap<String, PendingPlanCacheEntry>>,
     /// 统一去重缓存：category → (key → entry)，替代原先分散的 compact / consolidate / skill / subagent 缓存
@@ -254,6 +274,7 @@ impl SessionContext {
             todos: Mutex::new(Vec::new()),
             workspace: Mutex::new(None),
             pending_permissions: Mutex::new(HashMap::new()),
+            pending_questions: Mutex::new(HashMap::new()),
             pending_patches: Mutex::new(Vec::new()),
             pending_plan_state: Mutex::new(HashMap::new()),
             dedupe_cache: Mutex::new(HashMap::new()),

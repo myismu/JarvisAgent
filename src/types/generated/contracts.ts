@@ -1009,3 +1009,19 @@ export type MemoryUpdatedEvent = { sessionId: string, summary: string, };
 export type SubagentTraceUpdatedEvent = { runId: string, loopIndex: number, };
 
 export type TodoUpdateEvent = { todos: Array<TodoItem>, groups: Array<TodoGroup>, sessionId: string, };
+
+export type UserQuestionOption = { label: string, description?: string, recommended: boolean, };
+
+export type UserQuestionItem = { id: string, header?: string, question: string, multiSelect: boolean, options: Array<UserQuestionOption>, allowCustom: boolean, };
+
+export type UserQuestionRequestEvent = { id: string, sessionId: string, title?: string, questions: Array<UserQuestionItem>, };
+
+export type UserQuestionResolvedEvent = { id: string, sessionId: string,
+/**
+ * `answered` / `skipped` / `interrupted`
+ */
+status: string, };
+
+export type UserQuestionAnswerItem = { questionId: string, selectedOptions: Array<string>, customText?: string, };
+
+export type ResolveUserQuestionResult = { resolved: boolean, status: string, };

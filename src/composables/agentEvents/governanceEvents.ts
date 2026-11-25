@@ -17,6 +17,8 @@ import type {
   PermissionResolvedPayload,
   PlanDocument,
   PlanProposal,
+  UserQuestionRequestEvent,
+  UserQuestionResolvedEvent,
 } from "../../types";
 import type { AgentEventsContext, EventRegisterFn } from "./types";
 
@@ -65,6 +67,16 @@ export async function registerGovernanceEvents(
     const sid = event.payload.sessionId ?? session.activeSessionId;
     // 按 id 精确移除：一张卡的决议不能把排在它后面的请求一起抹掉
     perm.removePermission(sid, event.payload.id);
+  });
+
+  // 运行期用户咨询（AskUser 工具）
+  await on<UserQuestionRequestEvent>("user-question-request", (event) => {
+    perm.enqueueUserQuestion(event.payload);
+  });
+
+  await on<UserQuestionResolvedEvent>("user-question-resolved", (event) => {
+    const sid = event.payload.sessionId ?? session.activeSessionId;
+    perm.removeUserQuestion(sid, event.payload.id);
   });
 
   // plan proposal stream (chunked)

@@ -17,6 +17,7 @@
 //! - `memory`: 全局记忆读写（ReadMemory / UpdateMemory / ConsolidateMemory）
 //! - `propose_plan()`: 方案审批工具，推送方案到前端并阻塞等待用户决策
 
+mod ask_user;
 mod compact;
 mod memory;
 mod plan;
@@ -27,6 +28,7 @@ mod subagent;
 pub mod subagent_budget;
 mod switch_mode;
 
+pub use ask_user::ask_user;
 pub use compact::compact;
 pub use memory::{
     consolidate_memory, extract_profile, read_memory, update_memory, MEMORY_BUDGET_CHARS,
@@ -189,6 +191,44 @@ crate::define_tools! {
             schema_desc: "主动触发全局记忆整理：把当前记忆全文交给记忆整理者重写——合并同类项、删除过期与不合格条目、压缩冗余表述，不新增没有依据的事实。适合记忆出现重复/冗余，或结构损坏需要重建时使用。",
             category: "系统",
             defer: true,
+        ),
+        crate::tool_def!(
+            "AskUser",
+            desc: "运行期间向用户发起结构化选择题咨询并即时获取回复",
+            hint: "ask user question clarify choice options interactive",
+            schema_desc: "【运行期咨询工具】当执行或规划中遇到真实需求歧义、多方案分叉或缺少必要业务参数时调用，前端会弹出选择题咨询框（默认附带「其他」自填项）并暂停等待用户即时回复，拿到结果后在当前循环中继续执行。单次最多打包 1~5 道题，每题 2~6 个选项。注意：不替代 ProposePlan（整套复杂方案审批仍用 ProposePlan），也不要把能自行推断的小事拿来打扰用户。",
+            props: {
+                title: string => "可选：本次咨询卡片的简短标题（如「确认架构选型」）",
+                questions: array items {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "description": "可选：题目唯一标识（省略自动按 q1/q2 编号）"},
+                        "header": {"type": "string", "description": "可选：短标签（2~6 字，多题时用于顶部切换标签）"},
+                        "question": {"type": "string", "description": "必填：清晰的问题描述"},
+                        "multi_select": {"type": "boolean", "description": "是否允许用户多选（默认 false 单选）"},
+                        "allow_custom": {"type": "boolean", "description": "是否提供「其他」自填输入框（默认 true）"},
+                        "options": {
+                            "type": "array",
+                            "description": "2~6 个候选项，可传对象 {label, description?, recommended?} 或纯字符串",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "label": {"type": "string", "description": "选项主文案"},
+                                    "description": {"type": "string", "description": "可选：选项优缺点或补充说明"},
+                                    "recommended": {"type": "boolean", "description": "是否为推荐选项"}
+                                },
+                                "required": ["label"]
+                            }
+                        }
+                    },
+                    "required": ["question", "options"]
+                } => "必填：1~5 道结构化咨询问题",
+            },
+            required: ["questions"],
+            category: "Agent 调度",
+            defer: true,
+            read_only: true,
+            concurrency_safe: false,
         ),
         crate::tool_def!(
             "ProposePlan",
