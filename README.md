@@ -5,7 +5,7 @@
 <div align="center">
 一一一一用你自己的 API Key 运行：会读代码、改文件、跑命令的桌面端 AI 编程助手 —— 改坏了能退回去，动手前会先问你。
 
-Tauri 2 + Rust + Vue 3 · 12 家厂商 93 个模型 · 158 个 Rust 模块 / 705 个后端单测 + 63 个前端 Vitest 单测
+Tauri 2 + Rust + Vue 3 · 12 家厂商 93 个模型 · 159 个 Rust 模块 / 705 个后端单测 + 79 个前端 Vitest 单测
 
 <a href="SCREENSHOTS.md"><img src="screenshots/01-main-chat.png" alt="JarvisAgent 主界面" width="820"></a>
 
@@ -118,7 +118,7 @@ JarvisAgent/
 │   ├── api/ / pages/                 # 预留目录（暂空）
 │   ├── assets/global.css             # CSS 变量主题 + 毛玻璃令牌
 │   ├── types/
-│   │   ├── generated/contracts.ts    #   ts-rs 自动导出的跨端类型契约（90 个 Rust DTO，覆盖 115 个命令）
+│   │   ├── generated/contracts.ts    #   ts-rs 自动导出的跨端类型契约（覆盖 115 个命令 + 36 个推送事件）
 │   │   └── index.ts                  #   前端共享类型定义（重导出契约 + 前端特有视图类型）
 │   ├── stores/                       # Pinia 状态管理
 │   │   ├── session.ts                #   会话生命周期 + 消息缓冲区 + 分页游标
@@ -174,7 +174,7 @@ JarvisAgent/
 │   │   │   │                         #   + stream_parse（SSE 帧解析唯一实现）+ token_count
 │   │   │   │                         #   + context_budget（压缩判据）+ usage + usage_memory
 │   │   │   ├── state/                #   state.rs（SessionManager/WorkspaceState）
-│   │   │   ├── types/                #   models.rs + error.rs + constants.rs + ts_bindings.rs（ts-rs 导出）
+│   │   │   ├── types/                #   models.rs + events.rs（36 类推送事件）+ error.rs + constants.rs + ts_bindings.rs
 │   │   │   ├── background.rs         #   后台任务管理 + Tauri 事件推送
 │   │   │   └── debug_logger.rs       #   调试日志
 │   │   ├── core/                     # ── 业务层：Agent / 工具 / 编排 / 回滚 / 会话 ──

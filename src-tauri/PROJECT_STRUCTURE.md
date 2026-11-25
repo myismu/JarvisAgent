@@ -80,9 +80,10 @@ infra/
 │   └── state.rs                 # SessionManager、SessionContext、WorkspaceState、SnapshotRegistry
 ├── types/
 │   ├── models.rs                # 消息、工具、会话、计划文档等共享数据模型
+│   ├── events.rs                # 后端 app.emit 推送事件强类型结构体与判别联合枚举
 │   ├── error.rs                 # AgentError、ApiError、DbError 等分层错误类型
 │   ├── constants.rs             # 全局常量
-│   └── ts_bindings.rs           # ts-rs 跨端 TypeScript 契约导出与一致性门禁测试（覆盖 115 个命令）
+│   └── ts_bindings.rs           # ts-rs 跨端 TypeScript 契约导出与一致性门禁测试（覆盖 115 命令 + 36 事件）
 ├── background.rs                # 后台任务状态与输出管理（bg-task-done 事件推送）
 └── debug_logger.rs              # 调试日志
 ```
