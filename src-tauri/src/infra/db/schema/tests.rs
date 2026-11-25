@@ -1056,11 +1056,18 @@ fn v26_migration_adds_agent_runs_wait_ms_nullable() {
             |r| r.get(0),
         )
         .expect("read version");
-    assert!(version >= 26, "v26 升级后版本号至少到 26（实际 {}）", version);
+    assert!(
+        version >= 26,
+        "v26 升级后版本号至少到 26（实际 {}）",
+        version
+    );
 
     // 幂等：再次初始化不得报 duplicate column，且不破坏已有值
-    conn.execute("UPDATE agent_runs SET wait_ms = 1234 WHERE run_id = 'ar_old'", [])
-        .expect("set wait_ms");
+    conn.execute(
+        "UPDATE agent_runs SET wait_ms = 1234 WHERE run_id = 'ar_old'",
+        [],
+    )
+    .expect("set wait_ms");
     init_schema(&conn).expect("re-init idempotent");
     let after: Option<i64> = conn
         .query_row(
@@ -1275,7 +1282,10 @@ fn v28_fresh_db_creates_request_usage_table() {
     let conn = Connection::open_in_memory().expect("open memory db");
     init_schema(&conn).expect("fresh schema");
 
-    assert!(table_exists(&conn, "request_usage"), "新库建表 DDL 必须建出 request_usage");
+    assert!(
+        table_exists(&conn, "request_usage"),
+        "新库建表 DDL 必须建出 request_usage"
+    );
     for column in [
         "id",
         "session_id",
@@ -1361,7 +1371,10 @@ fn v28_migration_creates_request_usage_on_v27_db() {
     )
     .expect("create legacy v27 schema");
 
-    assert!(!table_exists(&conn, "request_usage"), "前提：v27 库不应有 request_usage");
+    assert!(
+        !table_exists(&conn, "request_usage"),
+        "前提：v27 库不应有 request_usage"
+    );
 
     init_schema(&conn).expect("upgrade v27 -> v28");
 
@@ -1397,7 +1410,11 @@ fn v28_migration_creates_request_usage_on_v27_db() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .expect("read row");
-    assert_eq!(cache, (None, None), "未上报的缓存字段必须落 NULL，不得写成 0");
+    assert_eq!(
+        cache,
+        (None, None),
+        "未上报的缓存字段必须落 NULL，不得写成 0"
+    );
 
     // 重复初始化：表与数据都不得被动过
     init_schema(&conn).expect("re-init idempotent");
@@ -1462,8 +1479,11 @@ fn v28_request_usage_cascades_on_session_delete() {
     .expect("seed rows");
 
     // 归档只是打标记：明细必须留着（归档可撤销，账不能丢）
-    conn.execute("UPDATE sessions SET deleted_at = 1700000000001 WHERE id = 's_arch'", [])
-        .expect("archive session");
+    conn.execute(
+        "UPDATE sessions SET deleted_at = 1700000000001 WHERE id = 's_arch'",
+        [],
+    )
+    .expect("archive session");
     let arch_rows: i64 = conn
         .query_row(
             "SELECT count(*) FROM request_usage WHERE session_id = 's_arch'",
@@ -1574,9 +1594,11 @@ fn v29_checkpoint_links_rebuilds_on_message_id() {
         .expect("read linked checkpoint");
     assert_eq!(checkpoint, "snap_newer");
     let total: i64 = conn
-        .query_row("SELECT count(*) FROM checkpoint_user_message_links", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT count(*) FROM checkpoint_user_message_links",
+            [],
+            |row| row.get(0),
+        )
         .expect("count links");
     assert_eq!(total, 2, "按 message_id 覆盖后仍应是两条");
 }

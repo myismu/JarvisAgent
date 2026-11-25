@@ -247,7 +247,11 @@ impl PipelineState {
     /// **同一个号**，才能落回帧级通道建的那一行——此处曾误用未自增的
     /// `total_loop_count`，把本轮内容覆盖到**上一轮**的 events 行上
     /// （上一轮 tool_results 丢失、取消标记错标上一轮）。
-    pub(super) async fn record_loop_event(&self, resp_blocks: &[ContentBlock], tool_results: &[ContentBlock]) {
+    pub(super) async fn record_loop_event(
+        &self,
+        resp_blocks: &[ContentBlock],
+        tool_results: &[ContentBlock],
+    ) {
         agent_runs::upsert_loop_event(
             &self.run_id,
             &self.sid,
@@ -466,7 +470,10 @@ impl PipelineState {
         let _ = self.app.emit(
             "chat-stream",
             crate::infra::types::events::ChatStreamEvent {
-                content: format!("\n> **[等待确认]** 代理执行已达到 {} 回合，等待用户确认是否继续。\n", crate::infra::types::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM),
+                content: format!(
+                    "\n> **[等待确认]** 代理执行已达到 {} 回合，等待用户确认是否继续。\n",
+                    crate::infra::types::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM
+                ),
                 session_id: self.sid.clone(),
                 loop_count: Some(self.total_loop_count + 1),
                 is_sub_agent: None,

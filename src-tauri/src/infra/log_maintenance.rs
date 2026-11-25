@@ -302,9 +302,7 @@ fn gzip_file(src: &Path, dest: &Path) -> io::Result<()> {
     let output = encoder.finish()?;
     output.sync_all()?;
     if fs::metadata(dest)?.len() == 0 {
-        return Err(io::Error::other(
-            "压缩产物为空，视为失败",
-        ));
+        return Err(io::Error::other("压缩产物为空，视为失败"));
     }
     Ok(())
 }

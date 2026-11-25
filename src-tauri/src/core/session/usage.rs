@@ -170,11 +170,13 @@ pub fn record_llm_usage(
         return Ok(false);
     };
 
-    record = record.tokens(usage.input_tokens, usage.output_tokens).cache(
-        usage.cache_hit_tokens,
-        usage.cache_miss_tokens,
-        usage.cache_source.as_deref(),
-    );
+    record = record
+        .tokens(usage.input_tokens, usage.output_tokens)
+        .cache(
+            usage.cache_hit_tokens,
+            usage.cache_miss_tokens,
+            usage.cache_source.as_deref(),
+        );
 
     // `Ok(None)` = 会话已归档：本次请求不入账（与主链路口径一致）
     record_request_usage(app, record).map(|written| written.is_some())
@@ -232,8 +234,11 @@ mod usage_tests {
         assert_eq!(half.cache_source, None);
 
         // 上报了 0 也必须原样保留（Some(0) 与 None 是两件事）
-        let zero = RequestUsageRecord::new("s1", UsageSource::Main)
-            .cache(Some(0), Some(100), Some("deepseek"));
+        let zero = RequestUsageRecord::new("s1", UsageSource::Main).cache(
+            Some(0),
+            Some(100),
+            Some("deepseek"),
+        );
         assert_eq!(zero.cache_hit_tokens, Some(0));
         assert_eq!(zero.cache_miss_tokens, Some(100));
         assert_eq!(zero.cache_source.as_deref(), Some("deepseek"));
@@ -346,7 +351,10 @@ mod usage_tests {
         // 总计原样透传
         assert_eq!(view.session_id, "s-fold");
         assert_eq!((view.input_tokens, view.output_tokens), (1_570, 333));
-        assert_eq!((view.cache_hit_tokens, view.cache_miss_tokens), (1_150, 165));
+        assert_eq!(
+            (view.cache_hit_tokens, view.cache_miss_tokens),
+            (1_150, 165)
+        );
 
         // 三层相加 == 总计（输入、输出两列都必须成立）
         let layers_input =
@@ -354,8 +362,14 @@ mod usage_tests {
         let layers_output = view.breakdown.main.output
             + view.breakdown.subagent.output
             + view.breakdown.system.output;
-        assert_eq!(layers_input, breakdown.input_tokens, "三层输入之和必须等于账本总计");
-        assert_eq!(layers_output, breakdown.output_tokens, "三层输出之和必须等于账本总计");
+        assert_eq!(
+            layers_input, breakdown.input_tokens,
+            "三层输入之和必须等于账本总计"
+        );
+        assert_eq!(
+            layers_output, breakdown.output_tokens,
+            "三层输出之和必须等于账本总计"
+        );
 
         // 分层归属：四个系统内部来源都进了 system（漏一个这里就会变小）
         assert_eq!(view.breakdown.main.input, 1_000);
@@ -373,7 +387,10 @@ mod usage_tests {
         let ledger = UsageBreakdown::empty("s-empty");
         let view = SessionUsageView::from_breakdown(&ledger);
 
-        assert!(!view.breakdown.has_detail, "无明细必须保持 has_detail=false");
+        assert!(
+            !view.breakdown.has_detail,
+            "无明细必须保持 has_detail=false"
+        );
         assert_eq!(view.session_id, "s-empty");
         assert_eq!(view.input_tokens, 0);
         assert_eq!(view.output_tokens, 0);
@@ -415,16 +432,7 @@ mod usage_tests {
             unreported_requests: 2,
             unreported_input_tokens: 220,
             has_detail: true,
-            sources: vec![source_row(
-                UsageSource::Main,
-                5,
-                300,
-                40,
-                60,
-                20,
-                2,
-                220,
-            )],
+            sources: vec![source_row(UsageSource::Main, 5, 300, 40, 60, 20, 2, 220)],
         };
 
         let view: SessionUsageView = SessionUsageView::from_breakdown(&breakdown);
@@ -463,7 +471,14 @@ mod usage_tests {
         keys.sort_unstable();
         assert_eq!(
             keys,
-            vec!["breakdown", "cacheHitTokens", "cacheMissTokens", "inputTokens", "outputTokens", "sessionId"],
+            vec![
+                "breakdown",
+                "cacheHitTokens",
+                "cacheMissTokens",
+                "inputTokens",
+                "outputTokens",
+                "sessionId"
+            ],
             "顶层键名必须与 SessionUsageUpdatedPayload 一致（camelCase）"
         );
 
@@ -473,7 +488,14 @@ mod usage_tests {
         breakdown_keys.sort_unstable();
         assert_eq!(
             breakdown_keys,
-            vec!["hasDetail", "main", "subagent", "system", "unreportedInput", "unreportedRequestCount"],
+            vec![
+                "hasDetail",
+                "main",
+                "subagent",
+                "system",
+                "unreportedInput",
+                "unreportedRequestCount"
+            ],
             "明细键名必须与 SessionUsageBreakdown 一致（camelCase）"
         );
 
@@ -483,7 +505,14 @@ mod usage_tests {
         main_keys.sort_unstable();
         assert_eq!(
             main_keys,
-            vec!["cacheHit", "cacheMiss", "cacheReported", "input", "output", "requestCount"],
+            vec![
+                "cacheHit",
+                "cacheMiss",
+                "cacheReported",
+                "input",
+                "output",
+                "requestCount"
+            ],
             "单桶键名必须与 UsageSourceBreakdown 一致（camelCase）"
         );
     }

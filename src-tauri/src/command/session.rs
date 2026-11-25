@@ -627,7 +627,9 @@ pub async fn auto_name_session(
 
     // 记账之后才取正文：厂商哪怕回了空正文，这次 token 也已经是事实。
     // 调用失败时 `completion` 是 `Err`，仍回退空串 —— 行为与改造前完全一致。
-    let title = completion.map(|completion| completion.text).unwrap_or_default();
+    let title = completion
+        .map(|completion| completion.text)
+        .unwrap_or_default();
 
     let title = title
         .trim()
@@ -705,9 +707,7 @@ pub async fn recall_last_message(
 }
 
 /// 这条存储消息是否是"真实用户输入"（不是工具结果 / 后台通知 / 压缩摘要）。
-fn is_real_user_message(
-    stored: &crate::core::session::repository::StoredSessionMessage,
-) -> bool {
+fn is_real_user_message(stored: &crate::core::session::repository::StoredSessionMessage) -> bool {
     use crate::infra::types::models::{Content, ContentBlock, Message, MessageSource};
 
     if stored.role != "user" || !stored.source.rendered_in_ui() {
@@ -835,10 +835,7 @@ pub(crate) async fn recall_message_locked(
     }
 
     // 顺序不能反：关联清理的子查询要靠 session_messages 里的 seq 找到 message_id。
-    crate::infra::db::delete_checkpoint_user_message_links_from_seq(
-        session_id,
-        stored_target.seq,
-    )?;
+    crate::infra::db::delete_checkpoint_user_message_links_from_seq(session_id, stored_target.seq)?;
     session::delete_session_messages_from_seq(session_id, stored_target.seq)?;
 
     if is_empty {
@@ -1129,9 +1126,7 @@ pub async fn get_session_usage_breakdown(
 /// 浮层只能退回 `hasDetail = false` 的兜底四指标，直到用户再发一轮才出现三层。
 /// 折叠仍复用 `SessionUsageView::from_breakdown`，不在前端重做第二套聚合。
 #[tauri::command]
-pub async fn get_session_usage(
-    session_id: String,
-) -> Result<session::SessionUsageView, String> {
+pub async fn get_session_usage(session_id: String) -> Result<session::SessionUsageView, String> {
     let breakdown = session::get_session_usage_breakdown(&session_id)?;
     Ok(session::SessionUsageView::from_breakdown(&breakdown))
 }

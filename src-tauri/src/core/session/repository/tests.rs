@@ -9,8 +9,8 @@
 //! - Internal: `super` (`repository`), `crate::infra::db::schema`
 //! - External: `rusqlite`
 
-use rusqlite::params;
 use super::*;
+use rusqlite::params;
 #[cfg(test)]
 mod meta_columns_tests {
     //! `sessions` / `projects` 两张表的列一致性护栏。
@@ -394,7 +394,10 @@ mod message_stats_tests {
     #[test]
     fn empty_session_reports_zero_and_no_newest_seq() {
         let conn = init_conn();
-        assert_eq!(session_message_stats_in(&conn, "s-stats").unwrap(), (0, None));
+        assert_eq!(
+            session_message_stats_in(&conn, "s-stats").unwrap(),
+            (0, None)
+        );
     }
 
     /// 只统计可见消息：hidden / recalled / compact 三类都不计入
@@ -459,7 +462,12 @@ mod archive_tests {
         .unwrap();
     }
 
-    fn insert_session(conn: &Connection, id: &str, project_id: Option<&str>, deleted_at: Option<i64>) {
+    fn insert_session(
+        conn: &Connection,
+        id: &str,
+        project_id: Option<&str>,
+        deleted_at: Option<i64>,
+    ) {
         conn.execute(
             "INSERT INTO sessions(
                 id, title, created_at, updated_at, message_count, project_id, deleted_at
@@ -505,7 +513,11 @@ mod archive_tests {
         .unwrap();
 
         assert_eq!(result.succeeded_ids, vec!["s-archived".to_string()]);
-        assert_eq!(result.failed.len(), 2, "活跃会话与不存在的会话都应进 failed");
+        assert_eq!(
+            result.failed.len(),
+            2,
+            "活跃会话与不存在的会话都应进 failed"
+        );
         assert!(
             result
                 .failed
@@ -522,7 +534,11 @@ mod archive_tests {
             "不存在的会话应明确报不存在：{:?}",
             result.failed
         );
-        assert_eq!(session_deleted_at(&conn, "s-archived"), None, "成功项应已清掉归档标记");
+        assert_eq!(
+            session_deleted_at(&conn, "s-archived"),
+            None,
+            "成功项应已清掉归档标记"
+        );
     }
 
     /// 恢复归档会话时，其归档项目在同事务内一并复活；同一项目只回报一次。
@@ -533,8 +549,7 @@ mod archive_tests {
         insert_session(&conn, "s1", Some("p1"), Some(500));
         insert_session(&conn, "s2", Some("p1"), Some(500));
 
-        let result =
-            restore_sessions_in(&conn, &["s1".to_string(), "s2".to_string()]).unwrap();
+        let result = restore_sessions_in(&conn, &["s1".to_string(), "s2".to_string()]).unwrap();
 
         assert_eq!(
             result.succeeded_ids,
@@ -563,22 +578,25 @@ mod archive_tests {
         )
         .unwrap();
 
-        let (result, pending) = purge_sessions_in(
-            &conn,
-            &["s-archived".to_string(), "s-active".to_string()],
-        )
-        .unwrap();
+        let (result, pending) =
+            purge_sessions_in(&conn, &["s-archived".to_string(), "s-active".to_string()]).unwrap();
 
         assert_eq!(result.succeeded_ids, vec!["s-archived".to_string()]);
-        assert_eq!(pending, vec!["s-archived".to_string()], "只有删成功行的 id 才需要清产物");
+        assert_eq!(
+            pending,
+            vec!["s-archived".to_string()],
+            "只有删成功行的 id 才需要清产物"
+        );
         assert_eq!(result.failed.len(), 1);
         assert_eq!(result.failed[0].id, "s-active");
         assert_eq!(result.failed[0].reason, "不在归档列表");
 
         let sessions_left: i64 = conn
-            .query_row("SELECT COUNT(*) FROM sessions WHERE id = 's-active'", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id = 's-active'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(sessions_left, 1, "活跃会话不得被彻底删除");
         let messages_left: i64 = conn
@@ -751,7 +769,10 @@ mod usage_tests {
         // 已上报的命中/未命中：900 / 2100（未上报那行不按 0 计入，但也不影响这两个和）
         assert_eq!(breakdown.cache_hit_tokens, 900);
         assert_eq!(breakdown.cache_miss_tokens, 2100);
-        assert_eq!(breakdown.unreported_requests, 1, "只有子 Agent 那行没上报缓存");
+        assert_eq!(
+            breakdown.unreported_requests, 1,
+            "只有子 Agent 那行没上报缓存"
+        );
         assert_eq!(
             breakdown.unreported_input_tokens, 500,
             "未上报的输入量要单独记，才能说清“多少 token 不知道”"
@@ -781,7 +802,11 @@ mod usage_tests {
         // 总计 = 各组之和（不允许总分另算一套而少加一组）
         assert_eq!(
             breakdown.input_tokens,
-            breakdown.sources.iter().map(|s| s.input_tokens).sum::<u64>()
+            breakdown
+                .sources
+                .iter()
+                .map(|s| s.input_tokens)
+                .sum::<u64>()
         );
 
         // 原始行：未上报必须真 NULL，上报为零必须真 0
@@ -940,7 +965,12 @@ mod usage_tests {
         .unwrap()
         .expect("活跃会话必须累加成功");
         assert_eq!(
-            (totals.input, totals.output, totals.cache_hit, totals.cache_miss),
+            (
+                totals.input,
+                totals.output,
+                totals.cache_hit,
+                totals.cache_miss
+            ),
             (100, 10, 80, 20)
         );
 

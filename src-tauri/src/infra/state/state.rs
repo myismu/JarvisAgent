@@ -625,10 +625,7 @@ impl SessionManager {
                     if let Err(e) =
                         crate::core::session::update_session_approval_mode(session_id, downgraded)
                     {
-                        eprintln!(
-                            "[JARVIS] 会话 {} 权限档位降级回写失败：{}",
-                            session_id, e
-                        );
+                        eprintln!("[JARVIS] 会话 {} 权限档位降级回写失败：{}", session_id, e);
                     }
                     println!(
                         "[JARVIS] 会话 {} 恢复时发现「完全批准」但无项目绑定，已降级为「请求审批」",

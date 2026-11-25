@@ -167,10 +167,7 @@ pub async fn compact_messages(
             .iter()
             .map(|&i| memory.messages[i].clone())
             .collect();
-        memory.sources = keep_indices
-            .iter()
-            .map(|&i| memory.sources[i])
-            .collect();
+        memory.sources = keep_indices.iter().map(|&i| memory.sources[i]).collect();
         // ⚠️ 平行数组必须同步重建：漏掉 interrupt_kinds 会让 kind 错配到别的消息上
         memory.interrupt_kinds = keep_indices
             .iter()

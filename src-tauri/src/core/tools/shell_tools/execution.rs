@@ -43,7 +43,11 @@ pub(super) fn has_file_redirect(cmd: &str) -> bool {
     while i < b.len() {
         if b[i] == b'>' {
             // `>>` 追加写：跳过第二个 '>' 再看后面是否是 '&'
-            let after = if b.get(i + 1) == Some(&b'>') { i + 2 } else { i + 1 };
+            let after = if b.get(i + 1) == Some(&b'>') {
+                i + 2
+            } else {
+                i + 1
+            };
             if b.get(after) != Some(&b'&') {
                 return true;
             }
@@ -143,10 +147,7 @@ fn posix_creates_or_truncates(cmd: &str) -> bool {
 /// 是否包含目录切换命令。按**段首命令名**判定，不用 contains：
 /// 否则 `rg "cd "`、`Select-String "cd "` 这类参数里的字样会被误拦（而且是硬拦）。
 pub(super) fn is_dir_change_command(cmd: &str) -> bool {
-    has_alias_command(
-        cmd,
-        &["cd", "sl", "chdir", "set-location", "push-location"],
-    )
+    has_alias_command(cmd, &["cd", "sl", "chdir", "set-location", "push-location"])
 }
 
 /// 检测命令是否为文件修改操作，拦截并引导 Agent 使用专用文件工具
@@ -243,7 +244,9 @@ pub fn is_file_mutation_command(cmd: &str) -> Option<&'static str> {
     if lower.contains("new-item") && lower.contains("-itemtype file") {
         return Some("请使用 WriteFile 工具，不要用 New-Item 创建文件");
     }
-    if lower.contains("remove-item") || has_alias_command(&lower, &["del", "rm", "rmdir", "deltree"]) {
+    if lower.contains("remove-item")
+        || has_alias_command(&lower, &["del", "rm", "rmdir", "deltree"])
+    {
         return Some("请使用 DeleteFile 工具，不要用 shell 命令删除文件");
     }
     // 只算真正落盘的重定向：`1>&2` / `2>&1` 这类 fd 复制不算（见 has_file_redirect）

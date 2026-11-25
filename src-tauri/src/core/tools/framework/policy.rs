@@ -1028,11 +1028,7 @@ mod tests {
         // 普通命令（无警示）也直接放行
         let decision = judge("RunCommand", ApprovalMode::FullApprove, &input);
         assert_eq!(decision.outcome, Outcome::Allow);
-        assert!(
-            decision.reason.contains("完全批准"),
-            "{}",
-            decision.reason
-        );
+        assert!(decision.reason.contains("完全批准"), "{}", decision.reason);
         // 覆盖已有文件同理（回滚系统兜底）
         let overwrite = JudgementInput {
             target_exists: Some(true),
@@ -1104,7 +1100,12 @@ mod tests {
             ..allow_input()
         };
         assert_eq!(
-            judge("RunCommand", ApprovalMode::FullApprove, &outside_readonly_cmd).outcome,
+            judge(
+                "RunCommand",
+                ApprovalMode::FullApprove,
+                &outside_readonly_cmd
+            )
+            .outcome,
             Outcome::Allow
         );
 
@@ -1279,10 +1280,22 @@ mod tests {
             out_of_workspace: vec!["C:/Windows/System32".to_string()],
             ..allow_input()
         };
-        for tool in ["WriteFile", "EditFile", "DeleteFile", "RenameFile", "RunCommand"] {
+        for tool in [
+            "WriteFile",
+            "EditFile",
+            "DeleteFile",
+            "RenameFile",
+            "RunCommand",
+        ] {
             for mode in all_modes() {
                 let decision = judge(tool, mode, &input);
-                assert_eq!(decision.outcome, Outcome::Deny, "tool={} mode={:?}", tool, mode);
+                assert_eq!(
+                    decision.outcome,
+                    Outcome::Deny,
+                    "tool={} mode={:?}",
+                    tool,
+                    mode
+                );
             }
         }
         // 后台模式即使是只读命令，越界也一律 Deny
@@ -1308,10 +1321,22 @@ mod tests {
             out_of_workspace: vec!["D:/external/docs/readme.md".to_string()],
             ..allow_input()
         };
-        for tool in ["ReadFile", "ListDirectory", "SearchRepo", "FindFiles", "SymbolSearch"] {
+        for tool in [
+            "ReadFile",
+            "ListDirectory",
+            "SearchRepo",
+            "FindFiles",
+            "SymbolSearch",
+        ] {
             for mode in [ApprovalMode::RequestApproval, ApprovalMode::AutoApprove] {
                 let decision = judge(tool, mode, &input);
-                assert_eq!(decision.outcome, Outcome::Ask, "tool={} mode={:?}", tool, mode);
+                assert_eq!(
+                    decision.outcome,
+                    Outcome::Ask,
+                    "tool={} mode={:?}",
+                    tool,
+                    mode
+                );
             }
             assert_eq!(
                 judge(tool, ApprovalMode::FullApprove, &input).outcome,

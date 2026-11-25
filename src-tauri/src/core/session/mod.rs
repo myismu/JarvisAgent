@@ -399,12 +399,7 @@ impl RequestUsageRecord {
 
     /// 缓存读数：两个值必须同真同假（厂商要么都报，要么都不报）；
     /// 只给一个时按“未上报”处理，宁可丢一个读数，也不编一个 0 出来。
-    pub fn cache(
-        mut self,
-        hit: Option<u64>,
-        miss: Option<u64>,
-        source: Option<&str>,
-    ) -> Self {
+    pub fn cache(mut self, hit: Option<u64>, miss: Option<u64>, source: Option<&str>) -> Self {
         match (hit, miss) {
             (Some(hit), Some(miss)) => {
                 self.cache_hit_tokens = Some(hit);

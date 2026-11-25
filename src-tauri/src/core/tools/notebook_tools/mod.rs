@@ -57,10 +57,12 @@ async fn active_user_message_id(app: &tauri::AppHandle, session_id: &str) -> Opt
         let index = latest_user_message_index(&session.messages)?;
         return session.message_ids.get(index).cloned();
     }
-    crate::core::session::load_session(session_id).ok().and_then(|session| {
-        let index = latest_user_message_index(&session.messages)?;
-        session.message_ids.get(index).cloned()
-    })
+    crate::core::session::load_session(session_id)
+        .ok()
+        .and_then(|session| {
+            let index = latest_user_message_index(&session.messages)?;
+            session.message_ids.get(index).cloned()
+        })
 }
 
 async fn active_run_id(app: &tauri::AppHandle, session_id: &str) -> Option<String> {

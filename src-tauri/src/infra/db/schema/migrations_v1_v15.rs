@@ -109,7 +109,9 @@ pub(super) fn migrate_v6_add_session_message_id(conn: &Connection) -> Result<(),
 }
 
 /// 为 session_messages 和 checkpoint 链接增加 message_id 解耦字段（v7 迁移）
-pub(super) fn migrate_v7_decouple_session_messages(conn: &Connection) -> Result<(), rusqlite::Error> {
+pub(super) fn migrate_v7_decouple_session_messages(
+    conn: &Connection,
+) -> Result<(), rusqlite::Error> {
     // 新数据库表尚未创建 → 跳过
     let table_exists: bool = conn
         .prepare(
@@ -304,7 +306,9 @@ pub(super) fn migrate_v10_add_projects(conn: &Connection) -> Result<(), rusqlite
 /// ⚠️ **v14 已把该列改为布尔语义**（见 [`migrate_v14_thinking_mode_to_bool`]）。
 /// 本函数保留原样是为了让"老库从任意版本升到最新"的迁移链完整——
 /// v10 的库先跑 v11 建出 TEXT 列，再跑 v14 转成布尔，与"新库直接建布尔列"同构。
-pub(super) fn migrate_v11_add_session_thinking_mode(conn: &Connection) -> Result<(), rusqlite::Error> {
+pub(super) fn migrate_v11_add_session_thinking_mode(
+    conn: &Connection,
+) -> Result<(), rusqlite::Error> {
     let has_thinking_mode = {
         let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;
         let columns: Vec<String> = stmt
@@ -411,7 +415,9 @@ pub(super) fn migrate_v14_thinking_mode_to_bool(conn: &Connection) -> Result<(),
 /// ⇒ **新增迁移若只是删列，直接用 `DROP COLUMN` 即可，不必重建表。**
 /// 本 v15 迁移保留"重建表"写法不动：它同时还要改列约束与表结构（DROP COLUMN
 /// 做不到），且既有库早已执行过，重写无收益且有风险。
-pub(super) fn migrate_v15_agent_run_events_per_loop(conn: &Connection) -> Result<(), rusqlite::Error> {
+pub(super) fn migrate_v15_agent_run_events_per_loop(
+    conn: &Connection,
+) -> Result<(), rusqlite::Error> {
     let table_exists = |name: &str| -> Result<bool, rusqlite::Error> {
         conn.query_row(
             "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
@@ -478,7 +484,9 @@ pub(super) fn migrate_v15_agent_run_events_per_loop(conn: &Connection) -> Result
 ///
 /// 刻意**不回填**：老会话没有可依据的历史数据，一律留在 0。
 /// 0 在展示层等价于"未报告"（显示 `--` 而不是 `0%`），不得编造命中率。
-pub(super) fn migrate_v12_add_session_cache_tokens(conn: &Connection) -> Result<(), rusqlite::Error> {
+pub(super) fn migrate_v12_add_session_cache_tokens(
+    conn: &Connection,
+) -> Result<(), rusqlite::Error> {
     for column in ["total_cache_hit_tokens", "total_cache_miss_tokens"] {
         let exists = {
             let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;
@@ -508,7 +516,9 @@ pub(super) fn migrate_v12_add_session_cache_tokens(conn: &Connection) -> Result<
 /// 此后该会话与设置默认解耦（切换会话/修改设置不再互相牵连）。
 ///
 /// 刻意**不回填**：老会话一律 `NULL`（等价"跟随设置默认"），与 v11 的 thinking_mode 同语义。
-pub(super) fn migrate_v13_add_session_runtime_prefs(conn: &Connection) -> Result<(), rusqlite::Error> {
+pub(super) fn migrate_v13_add_session_runtime_prefs(
+    conn: &Connection,
+) -> Result<(), rusqlite::Error> {
     for column in ["work_mode", "approval_mode", "agent_audience"] {
         let exists = {
             let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;

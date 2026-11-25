@@ -94,8 +94,7 @@ fn todo_id_for(item: &serde_json::Value, index: usize, content: &str) -> String 
 /// 抽成纯函数是为了可测：`todo_write` 本体要 `AppHandle` 与 `SessionManager`，
 /// 单测里造不出来，而这段归属判定恰恰是本工具唯一有分支的语义。
 fn apply_todo_update(groups: &mut Vec<TodoGroup>, todos: Vec<TodoItem>) -> Option<String> {
-    let incoming: std::collections::HashSet<&str> =
-        todos.iter().map(|t| t.id.as_str()).collect();
+    let incoming: std::collections::HashSet<&str> = todos.iter().map(|t| t.id.as_str()).collect();
     let target = groups
         .iter()
         .position(|g| g.items.iter().any(|i| incoming.contains(i.id.as_str())));
@@ -120,7 +119,10 @@ fn apply_todo_update(groups: &mut Vec<TodoGroup>, todos: Vec<TodoItem>) -> Optio
                 .first()
                 .map(|t| t.id.clone())
                 .unwrap_or_else(|| format!("group-{}", groups.len() + 1));
-            groups.push(TodoGroup { id: id.clone(), items: todos });
+            groups.push(TodoGroup {
+                id: id.clone(),
+                items: todos,
+            });
             Some(id)
         }
     }

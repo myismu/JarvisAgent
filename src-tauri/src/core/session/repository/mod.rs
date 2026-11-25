@@ -51,6 +51,8 @@ pub(super) use usage::{
 };
 
 #[cfg(test)]
+use crate::infra::types::models::{Message, MessageSource};
+#[cfg(test)]
 use messages::{
     find_session_message_by_id_in, is_turn_start_message, session_message_stats_in,
     stored_session_message_from_row, SESSION_MESSAGE_COLUMNS,
@@ -62,5 +64,3 @@ use sessions::{
     archive_project_in, count_deleted_sessions_in, list_deleted_sessions_in, purge_sessions_in,
     restore_sessions_in, SESSION_META_COLUMNS,
 };
-#[cfg(test)]
-use crate::infra::types::models::{Message, MessageSource};

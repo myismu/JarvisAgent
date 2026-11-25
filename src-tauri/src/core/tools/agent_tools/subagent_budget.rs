@@ -273,32 +273,37 @@ mod tests {
     /// 无进展命中：静默超过 idle 阈值即终止，并带回实际静默秒数。
     #[test]
     fn idle_timeout_is_hit() {
-        let verdict = judge(100, 181, SUBAGENT_IDLE_TIMEOUT_SECS, SUBAGENT_HARD_TIMEOUT_SECS);
+        let verdict = judge(
+            100,
+            181,
+            SUBAGENT_IDLE_TIMEOUT_SECS,
+            SUBAGENT_HARD_TIMEOUT_SECS,
+        );
         assert_eq!(verdict, BudgetVerdict::IdleTimeout { idle_secs: 181 });
     }
 
     /// 硬上限命中：总时长超过 hard 阈值即终止（即使刚刚才收到过进展）。
     #[test]
     fn hard_timeout_is_hit() {
-        let verdict = judge(3601, 1, SUBAGENT_IDLE_TIMEOUT_SECS, SUBAGENT_HARD_TIMEOUT_SECS);
-        assert_eq!(
-            verdict,
-            BudgetVerdict::HardTimeout {
-                elapsed_secs: 3601
-            }
+        let verdict = judge(
+            3601,
+            1,
+            SUBAGENT_IDLE_TIMEOUT_SECS,
+            SUBAGENT_HARD_TIMEOUT_SECS,
         );
+        assert_eq!(verdict, BudgetVerdict::HardTimeout { elapsed_secs: 3601 });
     }
 
     /// 两条都越线时报硬上限：它描述的是"整体失控"这一更根本的原因。
     #[test]
     fn hard_timeout_wins_when_both_exceeded() {
-        let verdict = judge(4000, 4000, SUBAGENT_IDLE_TIMEOUT_SECS, SUBAGENT_HARD_TIMEOUT_SECS);
-        assert_eq!(
-            verdict,
-            BudgetVerdict::HardTimeout {
-                elapsed_secs: 4000
-            }
+        let verdict = judge(
+            4000,
+            4000,
+            SUBAGENT_IDLE_TIMEOUT_SECS,
+            SUBAGENT_HARD_TIMEOUT_SECS,
         );
+        assert_eq!(verdict, BudgetVerdict::HardTimeout { elapsed_secs: 4000 });
     }
 
     /// 边界：秒数**正好等于**阈值时不终止（判据用严格大于）。
@@ -306,13 +311,23 @@ mod tests {
     fn equal_to_threshold_keeps_running() {
         // 恰好等于 idle 阈值
         assert_eq!(
-            judge(0, SUBAGENT_IDLE_TIMEOUT_SECS, SUBAGENT_IDLE_TIMEOUT_SECS, SUBAGENT_HARD_TIMEOUT_SECS),
+            judge(
+                0,
+                SUBAGENT_IDLE_TIMEOUT_SECS,
+                SUBAGENT_IDLE_TIMEOUT_SECS,
+                SUBAGENT_HARD_TIMEOUT_SECS
+            ),
             BudgetVerdict::Running,
             "idle 等于阈值不应终止"
         );
         // 恰好等于 hard 阈值
         assert_eq!(
-            judge(SUBAGENT_HARD_TIMEOUT_SECS, 0, SUBAGENT_IDLE_TIMEOUT_SECS, SUBAGENT_HARD_TIMEOUT_SECS),
+            judge(
+                SUBAGENT_HARD_TIMEOUT_SECS,
+                0,
+                SUBAGENT_IDLE_TIMEOUT_SECS,
+                SUBAGENT_HARD_TIMEOUT_SECS
+            ),
             BudgetVerdict::Running,
             "elapsed 等于阈值不应终止"
         );
@@ -328,13 +343,23 @@ mod tests {
         );
         // 阈值 +1 立刻终止（确认边界两侧行为都正确）
         assert_eq!(
-            judge(0, SUBAGENT_IDLE_TIMEOUT_SECS + 1, SUBAGENT_IDLE_TIMEOUT_SECS, SUBAGENT_HARD_TIMEOUT_SECS),
+            judge(
+                0,
+                SUBAGENT_IDLE_TIMEOUT_SECS + 1,
+                SUBAGENT_IDLE_TIMEOUT_SECS,
+                SUBAGENT_HARD_TIMEOUT_SECS
+            ),
             BudgetVerdict::IdleTimeout {
                 idle_secs: SUBAGENT_IDLE_TIMEOUT_SECS + 1
             }
         );
         assert_eq!(
-            judge(SUBAGENT_HARD_TIMEOUT_SECS + 1, 0, SUBAGENT_IDLE_TIMEOUT_SECS, SUBAGENT_HARD_TIMEOUT_SECS),
+            judge(
+                SUBAGENT_HARD_TIMEOUT_SECS + 1,
+                0,
+                SUBAGENT_IDLE_TIMEOUT_SECS,
+                SUBAGENT_HARD_TIMEOUT_SECS
+            ),
             BudgetVerdict::HardTimeout {
                 elapsed_secs: SUBAGENT_HARD_TIMEOUT_SECS + 1
             }
@@ -368,7 +393,8 @@ mod tests {
 
         // 硬上限依旧按 started_at 计：从最近进展点再往后超过 3600 秒，
         // 总耗时必然 > 3600（多 1 秒是为了避开"恰好等于阈值不终止"的边界）
-        let t_hard = budget.last_progress_at() + Duration::from_secs(SUBAGENT_HARD_TIMEOUT_SECS + 1);
+        let t_hard =
+            budget.last_progress_at() + Duration::from_secs(SUBAGENT_HARD_TIMEOUT_SECS + 1);
         assert!(matches!(
             budget.judge_at(t_hard, BudgetPhase::AwaitingModel),
             BudgetVerdict::HardTimeout { .. }

@@ -256,7 +256,11 @@ fn msys_path_to_windows(token: &str) -> Option<String> {
         rest
     } else {
         let bytes = token.as_bytes();
-        if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b'/' {
+        if bytes.len() >= 3
+            && bytes[0] == b'/'
+            && bytes[1].is_ascii_alphabetic()
+            && bytes[2] == b'/'
+        {
             // 跳过开头的 '/'，得到 `e/foo`
             &token[1..]
         } else {
@@ -287,11 +291,17 @@ fn expand_home(token: &str) -> Option<String> {
     } else {
         std::env::var("HOME").ok()?
     };
-    let rest = token.trim_start_matches('~').trim_start_matches(['/', '\\']);
+    let rest = token
+        .trim_start_matches('~')
+        .trim_start_matches(['/', '\\']);
     if rest.is_empty() {
         Some(home)
     } else {
-        Some(format!("{}\\{}", home.trim_end_matches(['/', '\\']), rest.replace('/', "\\")))
+        Some(format!(
+            "{}\\{}",
+            home.trim_end_matches(['/', '\\']),
+            rest.replace('/', "\\")
+        ))
     }
 }
 
@@ -309,7 +319,8 @@ fn is_windows_style_switch(token: &str) -> bool {
         return false;
     }
     let all_alpha = rest.chars().all(|c| c.is_ascii_alphabetic());
-    all_alpha && (rest.len() == 1 || (rest.len() <= 5 && rest.chars().all(|c| c.is_ascii_uppercase())))
+    all_alpha
+        && (rest.len() == 1 || (rest.len() <= 5 && rest.chars().all(|c| c.is_ascii_uppercase())))
 }
 
 /// POSIX token 归一：设备路径跳过、Git Bash 路径换算、`~` 展开。
@@ -361,7 +372,8 @@ fn collect_option_value_outside_path(
     if has_parent_segment(&normalized) {
         let combined = workspace.join(&normalized);
         let combined_str = combined.to_string_lossy().into_owned();
-        if !is_within_workspace(&combined_str, Some(workspace)) && !outside.contains(&combined_str) {
+        if !is_within_workspace(&combined_str, Some(workspace)) && !outside.contains(&combined_str)
+        {
             outside.push(combined_str);
         }
     }
@@ -474,9 +486,10 @@ pub fn collect_outside_command_paths_for(
                     | "bisect"
                     | "blame"
                     | "grep"
-            ) {
-                continue;
-            }
+            )
+        {
+            continue;
+        }
 
         // 跳过常见的命令关键字和 shell 内建命令
         if matches!(
@@ -575,7 +588,8 @@ pub fn collect_outside_command_paths_for(
 
         // 检查绝对路径：Windows 的 X:\ / X:/，以及 POSIX 的 / 开头路径
         if is_windows_absolute(&normalized) || normalized.starts_with('/') {
-            if !is_within_workspace(&normalized, Some(workspace)) && !outside.contains(&normalized) {
+            if !is_within_workspace(&normalized, Some(workspace)) && !outside.contains(&normalized)
+            {
                 outside.push(normalized);
             }
         }
@@ -707,7 +721,9 @@ pub fn shell_tool_short_description() -> &'static str {
 
 #[cfg(test)]
 mod path_and_truncation_tests {
-    use super::{check_command_paths, check_command_paths_for, format_shell_output, msys_path_to_windows};
+    use super::{
+        check_command_paths, check_command_paths_for, format_shell_output, msys_path_to_windows,
+    };
     use crate::infra::shell_dialect::ShellDialect;
     use std::path::{Path, PathBuf};
 
@@ -724,7 +740,10 @@ mod path_and_truncation_tests {
 
     #[test]
     fn msys_paths_map_to_drive_letters() {
-        assert_eq!(msys_path_to_windows("/e/demo/x"), Some("E:\\demo\\x".to_string()));
+        assert_eq!(
+            msys_path_to_windows("/e/demo/x"),
+            Some("E:\\demo\\x".to_string())
+        );
         assert_eq!(
             msys_path_to_windows("/c/Users/沐/.ssh"),
             Some("C:\\Users\\沐\\.ssh".to_string())
@@ -744,7 +763,9 @@ mod path_and_truncation_tests {
     fn git_bash_paths_are_checked_against_workspace() {
         let dialect = git_bash();
         let ws = Path::new("E:\\demo\\JarvisAgent");
-        assert!(check_command_paths_for(&dialect, "cat /e/demo/JarvisAgent/src/main.rs", ws).is_ok());
+        assert!(
+            check_command_paths_for(&dialect, "cat /e/demo/JarvisAgent/src/main.rs", ws).is_ok()
+        );
         assert!(check_command_paths_for(&dialect, "cat /e/other/secret.txt", ws).is_err());
         // 未换算的 POSIX 绝对路径同样越界
         assert!(check_command_paths_for(&dialect, "cat /tmp/secret", ws).is_err());
@@ -809,7 +830,10 @@ mod path_and_truncation_tests {
         assert!(stdout.len() > 200);
 
         let out = format_shell_output("echo", &stdout, "", 0, 200);
-        assert!(out.starts_with("[exit code: 0 (成功)]"), "exit code 语义行应在最前");
+        assert!(
+            out.starts_with("[exit code: 0 (成功)]"),
+            "exit code 语义行应在最前"
+        );
         assert!(out.contains("HEAD_MARK"), "头部应保留");
         assert!(out.contains("TAIL_MARK"), "尾部应保留：{}", out);
         assert!(out.contains("中间省略"), "应有中间省略提示：{}", out);

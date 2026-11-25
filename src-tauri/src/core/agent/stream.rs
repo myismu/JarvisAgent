@@ -779,10 +779,7 @@ pub async fn process_stream(
             // 移除原有的纯文本块，替换为解析出的工具调用块
             current_blocks.retain(|b| !matches!(b, ContentBlock::Text { .. }));
             for (i, (name, input_json)) in parsed.iter().enumerate() {
-                let id = format!(
-                    "call_{}",
-                    &uuid::Uuid::new_v4().simple().to_string()[..8]
-                );
+                let id = format!("call_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
                 current_blocks.push(ContentBlock::ToolUse {
                     name: name.clone(),
                     input: input_json.clone(),

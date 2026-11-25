@@ -731,7 +731,10 @@ impl PipelineState {
                                 self.sid.clone(),
                                 crate::core::session::UsageSource::Reflection,
                             )
-                            .run(self.run_id.clone(), Some((self.total_loop_count + 1) as u32))
+                            .run(
+                                self.run_id.clone(),
+                                Some((self.total_loop_count + 1) as u32),
+                            )
                             .model_id(self.cfg.utility_model.clone());
                             if let Err(err) = crate::core::session::usage::record_llm_usage(
                                 &self.app,
@@ -760,7 +763,10 @@ impl PipelineState {
                                     );
                                 }
                                 // 判断 NO：递增连续 NO 计数，并把修正建议注入 session
-                                crate::core::agent::reflection::ReflectionJudgment::NotOk { reason, suggestion } => {
+                                crate::core::agent::reflection::ReflectionJudgment::NotOk {
+                                    reason,
+                                    suggestion,
+                                } => {
                                     println!(
                                         "[审查 Agent] 判断: NO — {}\n建议: {}",
                                         reason, suggestion

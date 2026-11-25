@@ -101,20 +101,19 @@ fn latest_user_message_index(messages: &[Message]) -> Option<usize> {
 /// 当前轮用户消息的稳定 UUID。
 ///
 /// 撤回锚点必须用 ID，不能用下标：下标会被自动压缩/撤回改写，并被后续轮次复用。
-async fn active_user_message_id(
-    app: &tauri::AppHandle,
-    session_id: &str,
-) -> Option<String> {
+async fn active_user_message_id(app: &tauri::AppHandle, session_id: &str) -> Option<String> {
     if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         let session = ctx.memory.lock().await;
         let index = latest_user_message_index(&session.messages)?;
         return session.message_ids.get(index).cloned();
     }
-    crate::core::session::load_session(session_id).ok().and_then(|session| {
-        let index = latest_user_message_index(&session.messages)?;
-        session.message_ids.get(index).cloned()
-    })
+    crate::core::session::load_session(session_id)
+        .ok()
+        .and_then(|session| {
+            let index = latest_user_message_index(&session.messages)?;
+            session.message_ids.get(index).cloned()
+        })
 }
 
 async fn active_run_id(app: &tauri::AppHandle, session_id: &str) -> Option<String> {

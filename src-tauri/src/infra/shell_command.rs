@@ -114,7 +114,10 @@ pub fn split_on_double_ampersand(command: &str) -> Vec<String> {
 pub fn build_windows_ps_command(command: &str) -> String {
     let segments = split_on_double_ampersand(command);
     if segments.len() <= 1 {
-        return format!("{}{}{}{}", PS_EXIT_PREFIX, PS_UTF8_PREFIX, command, PS_EXIT_SUFFIX);
+        return format!(
+            "{}{}{}{}",
+            PS_EXIT_PREFIX, PS_UTF8_PREFIX, command, PS_EXIT_SUFFIX
+        );
     }
     let mut parts: Vec<String> = Vec::with_capacity(segments.len() * 2);
     for (idx, seg) in segments.iter().enumerate() {

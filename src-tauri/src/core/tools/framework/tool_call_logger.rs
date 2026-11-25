@@ -59,15 +59,13 @@ pub enum CorrectionStrategy {
 
 // ───────────────────────── 日志记录结构 ─────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct CorrectionInfo {
     pub is_correction: bool,
     pub corrects_seq: Option<u64>,
     pub attempt: u32,
     pub strategy: Option<CorrectionStrategy>,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DiagnosisInfo {

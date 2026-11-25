@@ -184,7 +184,9 @@ pub fn rename_project(id: &str, name: &str) -> Result<crate::core::session::Proj
 }
 
 /// 从 `projects` 的一行还原项目元数据（**按列名取值**，口径同上）。
-pub(super) fn project_meta_from_row(row: &Row<'_>) -> rusqlite::Result<crate::core::session::ProjectMeta> {
+pub(super) fn project_meta_from_row(
+    row: &Row<'_>,
+) -> rusqlite::Result<crate::core::session::ProjectMeta> {
     Ok(crate::core::session::ProjectMeta {
         id: row.get("id")?,
         name: row.get("name")?,

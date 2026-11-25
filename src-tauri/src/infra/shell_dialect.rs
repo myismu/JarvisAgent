@@ -36,8 +36,7 @@ use std::sync::OnceLock;
 /// 只有两档：自动与 PowerShell。
 /// 不提供"手动选 Git Bash"——它与"自动 + 指定 bash 路径"行为一致，
 /// 多一个选项只会让用户多理解一个概念。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, ts_rs::TS)]
 pub enum ShellMode {
     /// 自动（默认）：探测到 Git Bash 就用 Git Bash，否则用 PowerShell。
     ///
@@ -53,7 +52,6 @@ pub enum ShellMode {
     #[serde(rename = "powershell")]
     PowerShell,
 }
-
 
 /// `app-config.json` 中的 `shell` 字段
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
@@ -312,22 +310,22 @@ pub fn resolution_without_detection(settings: &ShellSettings) -> ShellResolution
         if !platform_supported || settings.mode == ShellMode::PowerShell {
             (None, None)
         } else if let Some(path) = explicit {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            (Some(path.display().to_string()), None)
+            let path = PathBuf::from(path);
+            if path.is_file() {
+                (Some(path.display().to_string()), None)
+            } else {
+                // 显式路径写错不该静默忽略：用户以为指定了 bash，实际却退回了 PowerShell。
+                (
+                    None,
+                    Some("指定的 bash.exe 路径不存在，自动模式将使用 PowerShell".to_string()),
+                )
+            }
         } else {
-            // 显式路径写错不该静默忽略：用户以为指定了 bash，实际却退回了 PowerShell。
             (
+                cached_detected_bash().map(|path| path.display().to_string()),
                 None,
-                Some("指定的 bash.exe 路径不存在，自动模式将使用 PowerShell".to_string()),
             )
-        }
-    } else {
-        (
-            cached_detected_bash().map(|path| path.display().to_string()),
-            None,
-        )
-    };
+        };
 
     ShellResolution {
         platform_supported,
@@ -346,10 +344,7 @@ mod tests {
     /// 这条守的是 `rename_all` 的坑：`PowerShell` 会被拆成 `power_shell`。
     #[test]
     fn mode_serializes_to_frontend_tokens() {
-        assert_eq!(
-            serde_json::to_string(&ShellMode::Auto).unwrap(),
-            "\"auto\""
-        );
+        assert_eq!(serde_json::to_string(&ShellMode::Auto).unwrap(), "\"auto\"");
         assert_eq!(
             serde_json::to_string(&ShellMode::PowerShell).unwrap(),
             "\"powershell\""
@@ -393,7 +388,11 @@ mod tests {
         assert_eq!(resolve(&settings), ShellDialect::PowerShell);
         let described = resolution_without_detection(&settings);
         let error = described.error.expect("应给出可见提示");
-        assert!(error.contains("bash.exe"), "提示要点明缺的是什么: {}", error);
+        assert!(
+            error.contains("bash.exe"),
+            "提示要点明缺的是什么: {}",
+            error
+        );
     }
 
     #[test]

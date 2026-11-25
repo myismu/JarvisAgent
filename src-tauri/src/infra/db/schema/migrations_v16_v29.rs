@@ -347,7 +347,9 @@ pub(super) fn migrate_v17_add_interrupt_kind(conn: &Connection) -> Result<(), ru
 /// rusqlite 0.32（`bundled`）内置 SQLite 3.46，远高于该语法要求的 3.35；
 /// 本文件既有迁移（`sessions.working_directory`、`sessions.thinking_mode`）
 /// 已在用同一语法，所以无需走"重建表"路线。
-pub(super) fn migrate_v18_drop_agent_runs_interrupt_kind(conn: &Connection) -> Result<(), rusqlite::Error> {
+pub(super) fn migrate_v18_drop_agent_runs_interrupt_kind(
+    conn: &Connection,
+) -> Result<(), rusqlite::Error> {
     // ⚠️ 表可能不存在：迁移测试用的是最小桩库（只建 sessions/app_state），
     // 早期版本库也未必有 agent_runs。必须先探表、再探列，
     // 否则 `ALTER TABLE` 一个不存在的表会直接报 "no such table"
@@ -392,7 +394,9 @@ pub(super) fn migrate_v18_drop_agent_runs_interrupt_kind(conn: &Connection) -> R
 ///
 /// ⚠️ 影响提示：**run 级别的错误原因不再单独落库**。排查错误请查
 /// `agent_run_events.error`（每轮一行、信息更详细）。
-pub(super) fn migrate_v19_drop_unused_run_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+pub(super) fn migrate_v19_drop_unused_run_columns(
+    conn: &Connection,
+) -> Result<(), rusqlite::Error> {
     // ⚠️ 表可能不存在（迁移测试的最小桩库只建 sessions/app_state），先探表再探列。
     let table_exists = conn
         .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'agent_runs'")
@@ -448,7 +452,9 @@ pub(super) fn migrate_v19_drop_unused_run_columns(conn: &Connection) -> Result<(
 /// 本列是 **run 级**（整次运行为何结束 → 恢复链判定）。粒度不同，不是冗余副本。
 ///
 /// 旧行留 `NULL`（= 未中断或早于本次迁移）。
-pub(super) fn migrate_v20_add_agent_runs_interrupt_kind(conn: &Connection) -> Result<(), rusqlite::Error> {
+pub(super) fn migrate_v20_add_agent_runs_interrupt_kind(
+    conn: &Connection,
+) -> Result<(), rusqlite::Error> {
     // ⚠️ 表可能不存在（迁移测试的最小桩库只建 sessions/app_state），先探表再探列。
     let table_exists = conn
         .prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'agent_runs'")
@@ -514,7 +520,9 @@ pub(super) fn migrate_v20_add_agent_runs_interrupt_kind(conn: &Connection) -> Re
 /// 与索引的语句 —— 迁移在本项目里是**只追加的历史记录**（参见 v18 删、
 /// v20 又加回 `agent_runs.interrupt_kind` 的先例），不回改旧步骤。
 /// 代价是老库升级会走一次"建列 → 删列"，一次性开销，可接受。
-pub(super) fn migrate_v21_message_source_and_drop_turn_id(conn: &Connection) -> Result<(), rusqlite::Error> {
+pub(super) fn migrate_v21_message_source_and_drop_turn_id(
+    conn: &Connection,
+) -> Result<(), rusqlite::Error> {
     // ⚠️ 表可能不存在（迁移测试的最小桩库只建 sessions/app_state），先探表
     let table_exists = conn
         .prepare(
@@ -628,7 +636,9 @@ pub(super) fn migrate_v22_add_reflection_columns(conn: &Connection) -> Result<()
 ///
 /// ⚠️ 这是一次性数据搬迁，**不是长期内容匹配规则**：跑完这一遍之后，
 /// 判定依据只有 `interrupt_kind` 列本身。新代码不该再往这里加条件。
-pub(super) fn migrate_v23_backfill_interrupt_kind(conn: &Connection) -> Result<(), rusqlite::Error> {
+pub(super) fn migrate_v23_backfill_interrupt_kind(
+    conn: &Connection,
+) -> Result<(), rusqlite::Error> {
     // ⚠️ 表可能不存在（迁移测试的最小桩库只建 sessions/app_state），先探表再探列
     let table_exists = conn
         .prepare(
@@ -713,7 +723,9 @@ pub(super) fn migrate_v24_subagent_trace(conn: &Connection) -> Result<(), rusqli
 }
 
 /// v25：为子 Agent 轨迹索引保存稳定显示名称，便于按会话恢复子 Agent 列表。
-pub(super) fn migrate_v25_subagent_trace_run_label(conn: &Connection) -> Result<(), rusqlite::Error> {
+pub(super) fn migrate_v25_subagent_trace_run_label(
+    conn: &Connection,
+) -> Result<(), rusqlite::Error> {
     let mut stmt = conn.prepare("PRAGMA table_info(subagent_trace_runs)")?;
     let has_label = stmt
         .query_map([], |row| row.get::<_, String>(1))?
@@ -881,7 +893,9 @@ pub(super) fn migrate_v28_request_usage(conn: &Connection) -> Result<(), rusqlit
 ///   `SessionSnapshotManager` 回填，因此旧会话仍能恢复出正确的关联。
 ///
 /// 迁移可能被重复执行（版本号读取异常、手工重跑），因此先探列、整段用事务包住。
-pub(super) fn migrate_v29_checkpoint_links_message_id(conn: &Connection) -> Result<(), rusqlite::Error> {
+pub(super) fn migrate_v29_checkpoint_links_message_id(
+    conn: &Connection,
+) -> Result<(), rusqlite::Error> {
     if !db_table_exists(conn, "checkpoint_user_message_links")? {
         return Ok(());
     }

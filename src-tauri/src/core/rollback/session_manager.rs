@@ -580,7 +580,10 @@ impl SessionSnapshotManager {
             if !ids.insert(id.clone()) {
                 break;
             }
-            current = tree.nodes.get(&id).and_then(|snapshot| snapshot.parent_id.clone());
+            current = tree
+                .nodes
+                .get(&id)
+                .and_then(|snapshot| snapshot.parent_id.clone());
         }
         ids
     }

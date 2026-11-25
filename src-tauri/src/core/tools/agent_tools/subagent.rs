@@ -734,7 +734,10 @@ pub async fn run_subagent(
     let _ = app.emit(
         "chat-stream",
         crate::infra::types::events::ChatStreamEvent {
-            content: format!("\n> **[启动子代理]** ({}, {}) 任务: `{}`\n", agent_role, mode_str, prompt),
+            content: format!(
+                "\n> **[启动子代理]** ({}, {}) 任务: `{}`\n",
+                agent_role, mode_str, prompt
+            ),
             session_id: session_id.clone(),
             loop_count: None,
             is_sub_agent: Some(true),
@@ -743,7 +746,12 @@ pub async fn run_subagent(
     let _ = app.emit(
         "agent-step",
         crate::infra::types::events::AgentStepEvent::SubagentStart {
-            task: format!("{} {} - {}", agent_role, mode_str, prompt.chars().take(100).collect::<String>()),
+            task: format!(
+                "{} {} - {}",
+                agent_role,
+                mode_str,
+                prompt.chars().take(100).collect::<String>()
+            ),
             session_id: session_id.clone(),
             is_sub_agent: true,
         },
@@ -1267,7 +1275,10 @@ pub async fn run_subagent(
                             let _ = app.emit(
                                 "chat-stream",
                                 crate::infra::types::events::ChatStreamEvent {
-                                    content: format!("\n>   - 子代理自动修复了工具 `{}` 的流式参数格式\n", name),
+                                    content: format!(
+                                        "\n>   - 子代理自动修复了工具 `{}` 的流式参数格式\n",
+                                        name
+                                    ),
                                     session_id: session_id.clone(),
                                     loop_count: None,
                                     is_sub_agent: Some(true),
@@ -1367,7 +1378,10 @@ pub async fn run_subagent(
                         let _ = app.emit(
                             "chat-stream",
                             crate::infra::types::events::ChatStreamEvent {
-                                content: format!("\n>   - 子代理工具 `{}` 参数解析失败\n>   错误: `{}`\n", name, err),
+                                content: format!(
+                                    "\n>   - 子代理工具 `{}` 参数解析失败\n>   错误: `{}`\n",
+                                    name, err
+                                ),
                                 session_id: session_id.clone(),
                                 loop_count: None,
                                 is_sub_agent: Some(true),
@@ -1427,7 +1441,8 @@ pub async fn run_subagent(
             return stop;
         }
 
-        if !spawn_tasks.is_empty() && !cancel_requested(&app, &run_id, parent_cancel.as_ref()).await {
+        if !spawn_tasks.is_empty() && !cancel_requested(&app, &run_id, parent_cancel.as_ref()).await
+        {
             let mut set = tokio::task::JoinSet::new();
             // 只登记同步 shell 命令：取消时它必须立刻停机（进程树由 exec 层守卫清理），
             // 其余工具等待自然完成，避免把一次文件写入留在中间态。

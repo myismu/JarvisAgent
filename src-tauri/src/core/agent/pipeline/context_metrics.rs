@@ -199,7 +199,10 @@ impl PipelineState {
                         self.sid.clone(),
                         crate::core::session::UsageSource::Compact,
                     )
-                    .run(self.run_id.clone(), Some((self.total_loop_count + 1) as u32))
+                    .run(
+                        self.run_id.clone(),
+                        Some((self.total_loop_count + 1) as u32),
+                    )
                     .model_id(self.cfg.utility_model.clone());
                     if let Err(err) = crate::core::session::usage::record_llm_usage(
                         &self.app,
@@ -221,10 +224,8 @@ impl PipelineState {
                     .iter()
                     .any(|existing| existing == &message_id);
                 if already_present {
-                    let needs_assistant_pad = matches!(
-                        session.messages.last(),
-                        Some(Message::User { .. }) | None
-                    );
+                    let needs_assistant_pad =
+                        matches!(session.messages.last(), Some(Message::User { .. }) | None);
                     if needs_assistant_pad {
                         // `Placeholder`：这条是**对齐填充**（保持 user/assistant 交替），
                         // 既不该给模型看也不该给用户看 —— 它原先标 `internal` 是"巧合的正确"，
@@ -429,7 +430,8 @@ impl PipelineState {
 
         // 直接数**未 strip** 的 history：Context 块会被翻译成 Text 发出去，必须计入。
         let (tool_call_count, tool_result_count, image_count) = count_blocks(history_snapshot);
-        let messages_text = crate::core::agent::context_format::format_messages_readable(history_snapshot);
+        let messages_text =
+            crate::core::agent::context_format::format_messages_readable(history_snapshot);
         let messages_json = serde_json::to_string_pretty(history_snapshot).unwrap_or_default();
         let tools_json = serde_json::to_string_pretty(tools).unwrap_or_default();
         // 分区固定为 system → messages → tools 三项，顺序不乱。
@@ -499,7 +501,11 @@ impl PipelineState {
     }
 
     /// 更新本轮请求的上下文 token 快照
-    pub(super) fn update_context_snapshot(&self, history_snapshot: &[Message], tools: &[serde_json::Value]) {
+    pub(super) fn update_context_snapshot(
+        &self,
+        history_snapshot: &[Message],
+        tools: &[serde_json::Value],
+    ) {
         fn now_ms() -> u64 {
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -621,14 +627,15 @@ impl PipelineState {
             crate::core::session::UsageSource::Main,
         )
         // loop_index 用 1 基序号，与日志/事件里的 `loopCount` 同一口径
-        .run(self.run_id.clone(), Some((self.total_loop_count + 1) as u32))
+        .run(
+            self.run_id.clone(),
+            Some((self.total_loop_count + 1) as u32),
+        )
         .model_id(self.model_id.clone())
         .tokens(input_tokens, output_tokens)
         .cache(cache_hit_tokens, cache_miss_tokens, cache_source);
 
-        if let Err(err) =
-            crate::core::session::usage::record_request_usage(&self.app, record)
-        {
+        if let Err(err) = crate::core::session::usage::record_request_usage(&self.app, record) {
             eprintln!("[JARVIS] 写入请求用量明细失败: {}", err);
         }
     }
@@ -788,7 +795,11 @@ impl PipelineState {
     /// **调用位置要求**：必须在"有工具"和"无工具"两条路径上都能到达。
     /// 旧实现只挂在工具执行分支，而"纯文本空转"走的是无工具分支，
     /// 计数器永远停在 0、看门狗结构性失效（2026-09-19 死循环事故根因）。
-    pub(super) fn update_plan_watchdog(&mut self, work_mode: &str, tool_calls: &[(String, String)]) -> bool {
+    pub(super) fn update_plan_watchdog(
+        &mut self,
+        work_mode: &str,
+        tool_calls: &[(String, String)],
+    ) -> bool {
         advance_plan_watchdog(
             work_mode,
             loop_submitted_plan(tool_calls),

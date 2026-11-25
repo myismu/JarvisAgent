@@ -11,11 +11,11 @@
 //! - Internal: `crate::core::session`, `crate::infra::db`
 //! - External: `rusqlite`
 
-use rusqlite::{params, OptionalExtension};
 use crate::core::session::{
     now_ts, RequestUsageRecord, SessionTokenTotals, UsageBreakdown, UsageSource,
     UsageSourceBreakdown,
 };
+use rusqlite::{params, OptionalExtension};
 /// 逐请求累加会话的 token 用量，返回累加**之后**的累计值。
 ///
 /// 为什么单独开一个函数而不是复用 `upsert_session`：
@@ -28,9 +28,7 @@ use crate::core::session::{
 /// 主循环与子 Agent 的每一次请求都走那条路径，回合收尾不再补交任何增量。
 ///
 /// 返回 `None` 表示会话不存在或已归档（`deleted_at` 非空），调用方据此跳过事件推送。
-#[deprecated(
-    note = "生产路径请用 usage::record_request_usage（本函数只累加、不写明细）"
-)]
+#[deprecated(note = "生产路径请用 usage::record_request_usage（本函数只累加、不写明细）")]
 pub fn accumulate_session_token_usage(
     session_id: &str,
     delta: SessionTokenTotals,

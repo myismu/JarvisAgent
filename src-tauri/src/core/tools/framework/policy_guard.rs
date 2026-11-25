@@ -448,7 +448,12 @@ mod tests {
                 "E:/other/notes/c.txt".to_string(),
             ],
         );
-        assert_eq!(keys.len(), 2, "同目录下两个文件应合并为一把范围键：{:?}", keys);
+        assert_eq!(
+            keys.len(),
+            2,
+            "同目录下两个文件应合并为一把范围键：{:?}",
+            keys
+        );
         assert_eq!(keys[0].kind, ALLOWANCE_KIND_READ_OUTSIDE);
         assert_eq!(keys[0].scope, "D:/external/docs");
         assert!(scope_covers(&keys[0].scope, "D:/external/docs/sub"));
@@ -775,10 +780,7 @@ pub const ALLOWANCE_KIND_READ_OUTSIDE: &str = "read_outside";
 /// 配合 `state.rs` 的目录前缀继承（`scope_covers`），允许一次后该外部目录及其子目录均免再问，
 /// 且由 `allowance_store::persist` 自动落盘到 `data/permissions/` 跨会话记住。
 fn read_outside_allowance_keys(tool: &str, outside_paths: &[String]) -> Vec<AllowanceKey> {
-    let tool_targets_dir = matches!(
-        tool,
-        "ListDirectory" | "SearchRepo" | "FindFiles"
-    );
+    let tool_targets_dir = matches!(tool, "ListDirectory" | "SearchRepo" | "FindFiles");
     let mut keys: Vec<AllowanceKey> = Vec::new();
     for raw in outside_paths {
         let p = std::path::Path::new(raw);
@@ -1482,7 +1484,8 @@ pub async fn enforce(
 
             // ② 弹窗问用户。把键一并交过去：一是让前端知道"本次会话都允许"是否真有
             //    明确含义（没键就别显示这个按钮），二是用户点了之后能据此消化积压。
-            let message = build_permission_message(tool, input, &facts, &decision.reason, agent_type);
+            let message =
+                build_permission_message(tool, input, &facts, &decision.reason, agent_type);
             let pending_keys: Vec<(String, String)> = keys
                 .iter()
                 .map(|k| (k.kind.to_string(), k.scope.clone()))
@@ -1601,7 +1604,11 @@ fn build_permission_message(
     // 明细：对象 → 命令（如有）→ 工具 → 风险提示 → 允许范围 → 来源
     msg.push_str(&format!("\n{}", target));
     if tool == "RunCommand" {
-        if let Some(cmd) = input["command"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(cmd) = input["command"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             msg.push_str(&format!("\n命令：{}", cmd));
         }
     }

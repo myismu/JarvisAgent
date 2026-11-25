@@ -1047,7 +1047,10 @@ mod wait_merge_tests {
 
     /// 以固定基准时刻构造区间，避开 `Instant::now()` 的不可控偏移
     fn span(base: Instant, start_ms: u64, end_ms: u64) -> (Instant, Instant) {
-        (base + Duration::from_millis(start_ms), base + Duration::from_millis(end_ms))
+        (
+            base + Duration::from_millis(start_ms),
+            base + Duration::from_millis(end_ms),
+        )
     }
 
     fn base() -> Instant {

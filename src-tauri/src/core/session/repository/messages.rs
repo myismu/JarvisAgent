@@ -14,9 +14,9 @@
 //! - Internal: `crate::infra::db`, `crate::infra::types::models`
 //! - External: `rusqlite`, `serde_json`
 
+use crate::infra::types::models::{Message, MessageSource, SessionContextSnapshot, SessionMemory};
 use rusqlite::{params, OptionalExtension, Row};
 use std::collections::HashMap;
-use crate::infra::types::models::{Message, MessageSource, SessionContextSnapshot, SessionMemory};
 #[derive(Debug, Clone)]
 pub struct StoredSessionMessage {
     pub message_id: String,
@@ -166,7 +166,8 @@ pub fn append_or_upsert_session_messages(
 ///
 /// 抽成常量后"加列只改这一行"；再配合 `stored_session_message_from_row` 的
 /// **按列名取值**，列序与列数都不再是隐式约定，这类错位在结构上不可能发生。
-pub(super) const SESSION_MESSAGE_COLUMNS: &str = "message_id, seq, role, content_json, created_at, \
+pub(super) const SESSION_MESSAGE_COLUMNS: &str =
+    "message_id, seq, role, content_json, created_at, \
      updated_at, recalled_at, hidden_at, source, interrupt_kind";
 
 pub fn list_visible_session_messages(
@@ -277,11 +278,10 @@ fn user_display_content_for_paging(content: &crate::infra::types::models::Conten
             let mut parts = String::new();
             for b in blocks {
                 match b {
-                    ContentBlock::Text { text }
-                        if !text.trim().is_empty() => {
-                            parts.push_str(text.trim());
-                            parts.push('\n');
-                        }
+                    ContentBlock::Text { text } if !text.trim().is_empty() => {
+                        parts.push_str(text.trim());
+                        parts.push('\n');
+                    }
                     // 图片是可渲染内容：有图即视为有用户输入（与渲染层一致）
                     ContentBlock::Image { .. } => {
                         parts.push_str("[image]");
@@ -583,7 +583,9 @@ pub(super) fn session_message_stats_in(
 ///
 /// 列名集合必须与 [`SESSION_MESSAGE_COLUMNS`] 一致，
 /// 由测试 `message_columns_cover_every_name_the_mapper_reads` 钉住。
-pub(super) fn stored_session_message_from_row(row: &Row<'_>) -> rusqlite::Result<StoredSessionMessage> {
+pub(super) fn stored_session_message_from_row(
+    row: &Row<'_>,
+) -> rusqlite::Result<StoredSessionMessage> {
     let seq: i64 = row.get("seq")?;
     let content_json: String = row.get("content_json")?;
     let created_at: i64 = row.get("created_at")?;

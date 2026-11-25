@@ -517,9 +517,7 @@ impl ReplayEngine {
 
     fn load_file_content(&self, hash: &str) -> Result<String, ReplayError> {
         super::store::load_content(&self.session_id, hash)
-            .map_err(|err| {
-                ReplayError::IoError(std::io::Error::other(err))
-            })
+            .map_err(|err| ReplayError::IoError(std::io::Error::other(err)))
             .map(|content| content.unwrap_or_default())
     }
 
@@ -1172,10 +1170,8 @@ mod sweep_tests {
     fn fresh_root(tag: &str) -> PathBuf {
         // 每次用唯一目录：Windows 上并行测试/残留句柄会让固定路径的 remove_dir_all
         // 偶发失败，进而把上一次测试的 tmp-e2e 带进本次前置断言（与业务逻辑无关）。
-        let root = std::env::temp_dir().join(format!(
-            "jarvis-rollback-{tag}-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("jarvis-rollback-{tag}-{}", uuid::Uuid::new_v4()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("src")).unwrap();
         root
@@ -1424,7 +1420,10 @@ mod sweep_tests {
         let files = engine
             .preview_touched_files(&tree, &root.id)
             .expect("preview round-2");
-        let a = files.iter().find(|file| file.path == "C:/ws/a.txt").expect("a.txt");
+        let a = files
+            .iter()
+            .find(|file| file.path == "C:/ws/a.txt")
+            .expect("a.txt");
         assert_eq!(
             (a.lines_added, a.lines_removed),
             (1, 1),
@@ -1522,8 +1521,9 @@ mod sweep_tests {
         );
 
         let engine = ReplayEngine::new("s-delete-after");
-        let outcome = tauri::async_runtime::block_on(engine.rollback_to(&mut tree, &target.id, &root))
-            .expect("rollback should succeed");
+        let outcome =
+            tauri::async_runtime::block_on(engine.rollback_to(&mut tree, &target.id, &root))
+                .expect("rollback should succeed");
 
         assert!(keep.exists(), "目标点已有的文件必须保留");
         assert!(!later_sub.exists(), "目标点之后在子目录新建的文件必须删除");
@@ -1568,7 +1568,9 @@ mod sweep_tests {
 
         let summaries = summarize_undo_patches("s-summary", &patches);
         assert!(
-            !summaries.iter().any(|summary| summary.path == "C:/ws/temp.txt"),
+            !summaries
+                .iter()
+                .any(|summary| summary.path == "C:/ws/temp.txt"),
             "净零变化的文件不应出现：{summaries:?}"
         );
         let a = summaries

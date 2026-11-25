@@ -742,7 +742,10 @@ pub(super) fn content_fingerprint(content: &str) -> String {
 fn path_key(path: &str) -> String {
     // 剥掉 Windows 扩展长度路径前缀 \\?\（与 resolve_path 的 strip_extended_path_prefix 同口径），
     // 再把正斜杠统一成反斜杠
-    let normalized = path.strip_prefix(r"\\?\").unwrap_or(path).replace('/', "\\");
+    let normalized = path
+        .strip_prefix(r"\\?\")
+        .unwrap_or(path)
+        .replace('/', "\\");
 
     if cfg!(windows) {
         normalized.to_lowercase()

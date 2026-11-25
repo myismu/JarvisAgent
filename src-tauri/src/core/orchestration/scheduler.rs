@@ -239,7 +239,11 @@ impl TaskScheduler {
                         crate::infra::types::events::ChatStreamEvent {
                             content: format!(
                                 "\n> {} Task #{}: {} ({}, {} tokens)\n",
-                                icon, task_id, subject, status_msg, si + so
+                                icon,
+                                task_id,
+                                subject,
+                                status_msg,
+                                si + so
                             ),
                             session_id: session_id.to_string(),
                             loop_count: None,

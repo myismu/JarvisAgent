@@ -72,7 +72,6 @@ use super::context::*;
 use super::stream::{process_stream, StreamConfig};
 use super::tools_runner::execute_tool_calls;
 
-
 mod context_metrics;
 mod finalize;
 mod helpers;

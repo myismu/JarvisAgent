@@ -52,7 +52,11 @@ impl EolView {
             map.push(i);
             if bytes[i] == b'\r' {
                 out.push(b'\n');
-                i += if bytes.get(i + 1) == Some(&b'\n') { 2 } else { 1 };
+                i += if bytes.get(i + 1) == Some(&b'\n') {
+                    2
+                } else {
+                    1
+                };
             } else {
                 out.push(bytes[i]);
                 i += 1;
@@ -652,7 +656,10 @@ mod tests {
                 replace_all: false,
             },
         ];
-        assert_eq!(super::apply_edits(content, &edits).unwrap(), "x\ny\nz\nw\r\ne");
+        assert_eq!(
+            super::apply_edits(content, &edits).unwrap(),
+            "x\ny\nz\nw\r\ne"
+        );
     }
 
     #[test]
@@ -664,7 +671,10 @@ mod tests {
             new_text: "c\nd".into(),
             replace_all: true,
         }];
-        assert_eq!(super::apply_edits(content, &edits).unwrap(), "c\nd\r\nX\r\nc\nd");
+        assert_eq!(
+            super::apply_edits(content, &edits).unwrap(),
+            "c\nd\r\nX\r\nc\nd"
+        );
     }
 
     #[test]

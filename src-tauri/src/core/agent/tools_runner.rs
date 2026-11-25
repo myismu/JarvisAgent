@@ -183,7 +183,10 @@ pub async fn execute_tool_calls(
                             status: Some("error".to_string()),
                             tool: Some(name.clone()),
                             tool_call_id: Some(id.clone()),
-                            content: Some(format!("\n> **[工具错误]** 参数解析失败: `{}` - {}\n", name, err)),
+                            content: Some(format!(
+                                "\n> **[工具错误]** 参数解析失败: `{}` - {}\n",
+                                name, err
+                            )),
                             session_id: sid.to_string(),
                             loop_count,
                         },

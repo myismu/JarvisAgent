@@ -9,21 +9,14 @@
 //! ## Dependencies
 //! - Internal: `migrations_v1_v15`, `migrations_v16_v29`
 //! - External: `rusqlite`
-mod migrations_v1_v15;
 mod migrations_v16_v29;
+mod migrations_v1_v15;
 
 #[cfg(test)]
 mod tests;
 
 use rusqlite::Connection;
 
-use migrations_v1_v15::{
-    migrate_v10_add_projects, migrate_v11_add_session_thinking_mode,
-    migrate_v12_add_session_cache_tokens, migrate_v13_add_session_runtime_prefs,
-    migrate_v14_thinking_mode_to_bool, migrate_v15_agent_run_events_per_loop,
-    migrate_v3_drop_deprecated_tables, migrate_v6_add_session_message_id,
-    migrate_v7_decouple_session_messages, migrate_v8_agent_runs_message_id,
-};
 use migrations_v16_v29::{
     migrate_v16_timestamps_to_millis, migrate_v17_add_interrupt_kind,
     migrate_v18_drop_agent_runs_interrupt_kind, migrate_v19_drop_unused_run_columns,
@@ -32,6 +25,13 @@ use migrations_v16_v29::{
     migrate_v24_subagent_trace, migrate_v25_subagent_trace_run_label, migrate_v26_run_wait_ms,
     migrate_v27_project_archive, migrate_v28_request_usage,
     migrate_v29_checkpoint_links_message_id,
+};
+use migrations_v1_v15::{
+    migrate_v10_add_projects, migrate_v11_add_session_thinking_mode,
+    migrate_v12_add_session_cache_tokens, migrate_v13_add_session_runtime_prefs,
+    migrate_v14_thinking_mode_to_bool, migrate_v15_agent_run_events_per_loop,
+    migrate_v3_drop_deprecated_tables, migrate_v6_add_session_message_id,
+    migrate_v7_decouple_session_messages, migrate_v8_agent_runs_message_id,
 };
 /// 当前 schema 版本。改这个常量时必须同时做三件事：
 /// 1. 写一个 `migrate_vNN_*` 迁移函数（老库靠它补结构）；

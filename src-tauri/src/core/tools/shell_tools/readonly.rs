@@ -982,8 +982,12 @@ mod tests {
         assert!(!is_readonly_command_windows(
             "Get-Content a.txt | Tee-Object -FilePath C:\\outside\\b.txt"
         ));
-        assert!(!is_readonly_command_windows("route add 1.2.3.4 mask 255.255.255.255 10.0.0.1"));
-        assert!(!is_readonly_command_windows("arp -s 1.2.3.4 aa-bb-cc-dd-ee-ff"));
+        assert!(!is_readonly_command_windows(
+            "route add 1.2.3.4 mask 255.255.255.255 10.0.0.1"
+        ));
+        assert!(!is_readonly_command_windows(
+            "arp -s 1.2.3.4 aa-bb-cc-dd-ee-ff"
+        ));
         assert!(!is_readonly_command_windows("gh pr reopen 123"));
         assert!(!is_readonly_command_windows("gh repo delete foo/bar"));
         // Windows 的 dir（列出目录）命令仍为只读
@@ -1109,7 +1113,11 @@ mod posix_readonly_tests {
             "sort file.txt",
             "uniq file.txt",
         ] {
-            assert!(is_readonly_command_for(&dialect, cmd), "应判为只读：{}", cmd);
+            assert!(
+                is_readonly_command_for(&dialect, cmd),
+                "应判为只读：{}",
+                cmd
+            );
         }
     }
 }

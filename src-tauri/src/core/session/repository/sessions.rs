@@ -82,7 +82,8 @@ pub fn upsert_session(meta: &SessionMeta, memory: &SessionMemory) -> Result<(), 
 /// 未改的那条查询就会在执行期抛 `Invalid column index`（例如 v11 引入
 /// `thinking_mode` 时漏改 `get_session_meta`，直接导致切换会话失败）。
 /// 以后只需要在这里加一列，并把 `session_meta_from_row` 的索引往后挪。
-pub(super) const SESSION_META_COLUMNS: &str = "s.id, s.title, s.created_at, s.updated_at, s.message_count, \
+pub(super) const SESSION_META_COLUMNS: &str =
+    "s.id, s.title, s.created_at, s.updated_at, s.message_count, \
      s.is_smart_named, s.profile_id, s.total_input_tokens, s.total_output_tokens, s.title_source, \
      s.project_id, p.path, s.thinking_mode, s.total_cache_hit_tokens, s.total_cache_miss_tokens, \
      s.deleted_at, p.name";
@@ -237,7 +238,9 @@ pub fn list_deleted_sessions() -> Result<Vec<SessionMeta>, String> {
 ///
 /// LEFT JOIN `projects` **不过滤 `p.deleted_at`**：归档页要同时展示会话与它的项目名；
 /// 项目归档时两者是一起归档的，过滤掉项目就只能看到一条没头没尾的会话。
-pub(super) fn list_deleted_sessions_in(conn: &rusqlite::Connection) -> Result<Vec<SessionMeta>, String> {
+pub(super) fn list_deleted_sessions_in(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<SessionMeta>, String> {
     let sql = format!(
         "SELECT {} FROM sessions s \
          LEFT JOIN projects p ON s.project_id = p.id \
@@ -315,7 +318,10 @@ pub fn restore_project(project_id: &str) -> Result<(), String> {
 }
 
 /// [`restore_project`] 的 connection 版。不在归档列表时报错（与 `restore_session` 同口径）。
-pub(super) fn restore_project_in(conn: &rusqlite::Connection, project_id: &str) -> Result<(), String> {
+pub(super) fn restore_project_in(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+) -> Result<(), String> {
     let changed = conn
         .execute(
             "UPDATE projects SET deleted_at = NULL WHERE id = ?1 AND deleted_at IS NOT NULL",
