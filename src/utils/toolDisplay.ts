@@ -1,4 +1,4 @@
-﻿import { i18n } from "../i18n";
+import { i18n } from "../i18n";
 import type { AgentDisplayMode, AgentToolCallView, AgentToolStatus } from "../types";
 
 const t = i18n.global.t;
