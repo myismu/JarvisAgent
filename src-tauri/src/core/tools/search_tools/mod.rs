@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tauri::Manager;
 
-use super::framework::permission::{ensure_path_permission, is_path_safe};
+use super::framework::permission::{ensure_read_path_permission, is_path_safe};
 use super::framework::registry::ToolDef;
 use crate::core::tools::framework;
 
@@ -106,18 +106,18 @@ fn resolve_path(path: Option<&str>, workspace: Option<&Path>) -> Result<PathBuf,
 }
 
 async fn ensure_resolved_path_permission(
-    app: &tauri::AppHandle,
+    _app: &tauri::AppHandle,
     raw_path: Option<&str>,
     resolved: &Path,
-    action: &str,
-    workspace: Option<&Path>,
+    _action: &str,
+    _workspace: Option<&Path>,
 ) -> Result<(), String> {
     let raw = raw_path.unwrap_or(".").trim();
     let raw = if raw.is_empty() { "." } else { raw };
     if !is_path_safe(raw) {
         return Err("路径不安全：包含 '..' 遍历".to_string());
     }
-    ensure_path_permission(app, &resolved.to_string_lossy(), action, workspace).await
+    ensure_read_path_permission(&resolved.to_string_lossy())
 }
 
 fn should_skip_dir_with_overrides(path: &Path, ignore_dirs: &[String]) -> bool {

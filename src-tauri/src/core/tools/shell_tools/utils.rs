@@ -338,48 +338,53 @@ fn is_windows_absolute(token: &str) -> bool {
         && (token.as_bytes()[2] == b'\\' || token.as_bytes()[2] == b'/')
 }
 
-/// `--opt=value` 的值如果是路径，同样要过沙箱边界（如 `npm --prefix /e/out`）。
-fn check_option_value_path(
+/// `--opt=value` 的值如果是路径，收集落在沙箱外的路径（如 `npm --prefix /e/out`）。
+fn collect_option_value_outside_path(
     value: &str,
     git_bash: bool,
     workspace: &std::path::Path,
-) -> Result<(), String> {
+    outside: &mut Vec<String>,
+) {
     let normalized = match normalize_posix_token(value, git_bash) {
-        NormalizedToken::Skip => return Ok(()),
+        NormalizedToken::Skip => return,
         NormalizedToken::Path(path) => path,
         NormalizedToken::Unchanged => value.to_string(),
     };
     if (is_windows_absolute(&normalized) || normalized.starts_with('/'))
         && !is_within_workspace(&normalized, Some(workspace))
     {
-        return Err(format!(
-            "沙箱限制：命令包含沙箱外路径 '{}'（沙箱目录为 '{}'）",
-            normalized,
-            workspace.display()
-        ));
+        if !outside.contains(&normalized) {
+            outside.push(normalized);
+        }
+        return;
     }
     if has_parent_segment(&normalized) {
         let combined = workspace.join(&normalized);
-        if !is_within_workspace(&combined.to_string_lossy(), Some(workspace)) {
-            return Err(format!(
-                "沙箱限制：命令包含越权相对路径 '{}'（解析后不在沙箱内）",
-                normalized
-            ));
+        let combined_str = combined.to_string_lossy().into_owned();
+        if !is_within_workspace(&combined_str, Some(workspace)) && !outside.contains(&combined_str) {
+            outside.push(combined_str);
         }
     }
-    Ok(())
 }
 
-pub fn check_command_paths(cmd: &str, workspace: &std::path::Path) -> Result<(), String> {
-    check_command_paths_for(&crate::infra::shell_dialect::current(), cmd, workspace)
+/// 收集命令中所有落在沙箱外的路径；遇到无法静态解析的环境变量绕过写法直接返回 `Err`。
+///
+/// 唯一口径：外层策略判定（`policy_guard`）与执行层（`execution`）共用，
+/// 避免“只读命令放行项目外、非只读命令拦截项目外”两侧口径漂移。
+pub fn collect_outside_command_paths(
+    cmd: &str,
+    workspace: &std::path::Path,
+) -> Result<Vec<String>, String> {
+    collect_outside_command_paths_for(&crate::infra::shell_dialect::current(), cmd, workspace)
 }
 
-/// 按指定方言校验命令里的路径是否都在沙箱内。
-pub fn check_command_paths_for(
+/// 按指定方言收集命令中落在沙箱外的路径；遇到环境变量构造路径等绕过手法直接返回 `Err`。
+pub fn collect_outside_command_paths_for(
     dialect: &crate::infra::shell_dialect::ShellDialect,
     cmd: &str,
     workspace: &std::path::Path,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
+    let mut outside: Vec<String> = Vec::new();
     let git_bash = dialect.is_git_bash();
     for (i, part) in split_command_tokens(cmd).into_iter().enumerate() {
         let mut trimmed = part.trim_matches('"').trim_matches('\'').to_string();
@@ -396,7 +401,7 @@ pub fn check_command_paths_for(
             // `--opt=value` 的值可能是路径（如 npm 的 --prefix），不能整条跳过
             if trimmed.starts_with('-') {
                 if let Some((_, value)) = trimmed.split_once('=') {
-                    check_option_value_path(value, git_bash, workspace)?;
+                    collect_option_value_outside_path(value, git_bash, workspace, &mut outside);
                 }
                 continue;
             }
@@ -570,31 +575,49 @@ pub fn check_command_paths_for(
 
         // 检查绝对路径：Windows 的 X:\ / X:/，以及 POSIX 的 / 开头路径
         if is_windows_absolute(&normalized) || normalized.starts_with('/') {
-            if !is_within_workspace(&normalized, Some(workspace)) {
-                return Err(format!(
-                    "沙箱限制：命令包含沙箱外路径 '{}'（沙箱目录为 '{}'）",
-                    normalized,
-                    workspace.display()
-                ));
+            if !is_within_workspace(&normalized, Some(workspace)) && !outside.contains(&normalized) {
+                outside.push(normalized);
             }
         }
         // 检查相对路径遍历：`..` 必须是独立路径段（30..42 / a..b 不算遍历）
         else if has_parent_segment(&normalized) {
             let combined = workspace.join(&normalized);
-            if !is_within_workspace(&combined.to_string_lossy(), Some(workspace)) {
-                return Err(format!(
-                    "沙箱限制：命令包含越权相对路径 '{}'（解析后不在沙箱内）",
-                    normalized
-                ));
-            }
-            // 沙箱内禁止使用环境变量构造路径（$env:VAR / %VAR%）
-            else if is_env_var_reference(&trimmed) {
-                return Err(format!(
-                    "沙箱限制：命令包含环境变量引用 '{}'，沙箱内禁止使用环境变量构造路径。请使用沙箱内的相对路径或绝对路径。",
-                    trimmed
-                ));
+            let combined_str = combined.to_string_lossy().into_owned();
+            if !is_within_workspace(&combined_str, Some(workspace))
+                && !outside.contains(&combined_str)
+            {
+                outside.push(combined_str);
             }
         }
+        // 沙箱内禁止使用环境变量构造路径（$env:VAR / %VAR% / PowerShell 未展开的 ~）
+        // 修复：原先误嵌套在 `has_parent_segment` 内部，导致不含 `..` 的 `$env:USERPROFILE\...` 漏检。
+        else if is_env_var_reference(&trimmed) {
+            return Err(format!(
+                "沙箱限制：命令包含环境变量引用 '{}'，沙箱内禁止使用环境变量构造路径。请使用明确的绝对路径或沙箱内相对路径。",
+                trimmed
+            ));
+        }
+    }
+    Ok(outside)
+}
+
+pub fn check_command_paths(cmd: &str, workspace: &std::path::Path) -> Result<(), String> {
+    check_command_paths_for(&crate::infra::shell_dialect::current(), cmd, workspace)
+}
+
+/// 按指定方言校验命令里的路径是否都在沙箱内（供非只读命令硬拦截与既有单测调用）。
+pub fn check_command_paths_for(
+    dialect: &crate::infra::shell_dialect::ShellDialect,
+    cmd: &str,
+    workspace: &std::path::Path,
+) -> Result<(), String> {
+    let outside = collect_outside_command_paths_for(dialect, cmd, workspace)?;
+    if let Some(first) = outside.first() {
+        return Err(format!(
+            "沙箱限制：命令包含沙箱外路径 '{}'（沙箱目录为 '{}'）",
+            first,
+            workspace.display()
+        ));
     }
     Ok(())
 }
@@ -757,6 +780,23 @@ mod path_and_truncation_tests {
             assert!(
                 check_command_paths(cmd, ws()).is_err(),
                 "应拦下越权路径：{}",
+                cmd
+            );
+        }
+    }
+
+    /// 回归测试：PowerShell 下不含 `..` 的环境变量/家目录引用必须被拦截
+    /// （修复原先 `else if is_env_var_reference` 误嵌套在 `has_parent_segment` 内部的 BUG）
+    #[test]
+    fn powershell_env_var_paths_without_parent_segment_are_blocked() {
+        for cmd in [
+            r"Get-Content $env:USERPROFILE\Desktop\secret.txt",
+            r"type %USERPROFILE%\Desktop\secret.txt",
+            r"Get-Content ~\Desktop\secret.txt",
+        ] {
+            assert!(
+                check_command_paths_for(&ShellDialect::PowerShell, cmd, ws()).is_err(),
+                "应拦下环境变量构造的路径：{}",
                 cmd
             );
         }

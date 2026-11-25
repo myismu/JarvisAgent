@@ -640,13 +640,44 @@ pub fn judge(tool: &str, mode: ApprovalMode, input: &JudgementInput) -> ShadowDe
         };
     }
 
-    // 2. 项目外路径（会话挂了项目 = 沙箱会话，边界即项目目录；非沙箱会话 workspace 为 None，不会走到这里）
+    // 2. 项目外路径（会话挂了项目 = 沙箱会话；非沙箱会话 workspace 为 None，不会走到这里）
+    //
+    // 口径（读写分离）：
+    // - 只读操作（只读类工具，或前台只读命令）访问项目外路径：
+    //   · 完全批准档（FullApprove）直接放行；
+    //   · 请求审批 / 帮我批准档弹窗确认（Ask），并提供「本项目允许」持久化授权（read_outside）。
+    // - 非只读操作（写工具、非只读命令、后台服务等）涉及项目外路径：
+    //   · 一律硬拒绝（Deny），不受权限档位豁免。
     if !input.out_of_workspace.is_empty() {
+        let is_readonly_op = matches!(class, Some(ToolClass::ReadOnly))
+            || (matches!(class, Some(ToolClass::RunCommand))
+                && input.command_is_readonly
+                && !input.background_run);
+        if is_readonly_op {
+            if mode == ApprovalMode::FullApprove {
+                return ShadowDecision {
+                    class,
+                    outcome: Outcome::Allow,
+                    reason: format!(
+                        "跨目录只读（完全批准档自动放行）：{}",
+                        input.out_of_workspace.join(", ")
+                    ),
+                };
+            }
+            return ShadowDecision {
+                class,
+                outcome: Outcome::Ask,
+                reason: format!(
+                    "跨目录读取项目外路径：{}",
+                    input.out_of_workspace.join(", ")
+                ),
+            };
+        }
         return ShadowDecision {
             class,
             outcome: Outcome::Deny,
             reason: format!(
-                "路径在会话绑定的项目目录（沙箱边界）外：{}。需要操作其他目录，请让用户新建不挂项目的会话（非沙箱会话）。",
+                "路径在会话绑定的项目目录（沙箱写边界）外：{}。项目会话仅允许只读访问外部路径，禁止写入或执行非只读命令；如需修改其他目录，请让用户新建不挂项目的会话（非沙箱会话）。",
                 input.out_of_workspace.join(", ")
             ),
         };
@@ -1050,12 +1081,12 @@ mod tests {
         assert_eq!(decision.outcome, Outcome::Deny);
         assert_eq!(decision.reason, "检测到危险 PowerShell 命令");
 
-        // 2) 越界路径 → 仍 Deny
+        // 2) 越界路径：写工具与非只读命令仍 Deny（硬边界）；只读工具与只读前台命令在完全批准档 Allow
         let outside = JudgementInput {
             out_of_workspace: vec!["C:/Windows/System32".to_string()],
             ..allow_input()
         };
-        for tool in ["ReadFile", "WriteFile", "RunCommand"] {
+        for tool in ["WriteFile", "DeleteFile", "RunCommand"] {
             assert_eq!(
                 judge(tool, ApprovalMode::FullApprove, &outside).outcome,
                 Outcome::Deny,
@@ -1063,6 +1094,19 @@ mod tests {
                 tool
             );
         }
+        assert_eq!(
+            judge("ReadFile", ApprovalMode::FullApprove, &outside).outcome,
+            Outcome::Allow
+        );
+        let outside_readonly_cmd = JudgementInput {
+            out_of_workspace: vec!["C:/Windows/System32".to_string()],
+            command_is_readonly: true,
+            ..allow_input()
+        };
+        assert_eq!(
+            judge("RunCommand", ApprovalMode::FullApprove, &outside_readonly_cmd).outcome,
+            Outcome::Allow
+        );
 
         // 3) 未登记分类 → 仍 Ask（并提醒补表）
         let decision = judge("SomethingNew", ApprovalMode::FullApprove, &allow_input());
@@ -1230,17 +1274,71 @@ mod tests {
     }
 
     #[test]
-    fn outside_workspace_is_denied_in_all_modes() {
+    fn outside_workspace_writes_are_denied_in_all_modes() {
         let input = JudgementInput {
             out_of_workspace: vec!["C:/Windows/System32".to_string()],
             ..allow_input()
         };
-        for tool in ["ReadFile", "WriteFile", "DeleteFile", "RunCommand"] {
+        for tool in ["WriteFile", "EditFile", "DeleteFile", "RenameFile", "RunCommand"] {
             for mode in all_modes() {
                 let decision = judge(tool, mode, &input);
-                assert_eq!(decision.outcome, Outcome::Deny, "tool={}", tool);
+                assert_eq!(decision.outcome, Outcome::Deny, "tool={} mode={:?}", tool, mode);
             }
         }
+        // 后台模式即使是只读命令，越界也一律 Deny
+        let bg_readonly = JudgementInput {
+            out_of_workspace: vec!["C:/Windows/System32".to_string()],
+            command_is_readonly: true,
+            background_run: true,
+            ..allow_input()
+        };
+        for mode in all_modes() {
+            assert_eq!(
+                judge("RunCommand", mode, &bg_readonly).outcome,
+                Outcome::Deny,
+                "bg readonly outside must deny in mode={:?}",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn outside_workspace_readonly_asks_until_full_approve() {
+        let input = JudgementInput {
+            out_of_workspace: vec!["D:/external/docs/readme.md".to_string()],
+            ..allow_input()
+        };
+        for tool in ["ReadFile", "ListDirectory", "SearchRepo", "FindFiles", "SymbolSearch"] {
+            for mode in [ApprovalMode::RequestApproval, ApprovalMode::AutoApprove] {
+                let decision = judge(tool, mode, &input);
+                assert_eq!(decision.outcome, Outcome::Ask, "tool={} mode={:?}", tool, mode);
+            }
+            assert_eq!(
+                judge(tool, ApprovalMode::FullApprove, &input).outcome,
+                Outcome::Allow,
+                "tool={}",
+                tool
+            );
+        }
+
+        // 只读前台命令访问项目外路径：非完全批准档 Ask，完全批准档 Allow
+        let readonly_cmd = JudgementInput {
+            out_of_workspace: vec!["D:/external/docs".to_string()],
+            command_is_readonly: true,
+            ..allow_input()
+        };
+        for mode in [ApprovalMode::RequestApproval, ApprovalMode::AutoApprove] {
+            assert_eq!(
+                judge("RunCommand", mode, &readonly_cmd).outcome,
+                Outcome::Ask,
+                "mode={:?}",
+                mode
+            );
+        }
+        assert_eq!(
+            judge("RunCommand", ApprovalMode::FullApprove, &readonly_cmd).outcome,
+            Outcome::Allow
+        );
     }
 
     #[test]

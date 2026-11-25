@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::core::tools::framework;
-use crate::core::tools::framework::permission::ensure_path_permission;
+use crate::core::tools::framework::permission::ensure_read_path_permission;
 
 use super::common::{
     display_path, input_patterns, input_string_list, input_usize, is_search_skipped_extension,
@@ -84,7 +84,7 @@ pub async fn search_repo(
     let use_regex = input["regex"].as_bool().unwrap_or(false);
     let case_insensitive = input["case_insensitive"].as_bool().unwrap_or(false);
     let ws = get_workspace(app, session_id).await;
-    if let Err(e) = ensure_path_permission(app, dir_str, "搜索", ws.as_deref()).await {
+    if let Err(e) = ensure_read_path_permission(dir_str) {
         return framework::ToolCallResult::error(e);
     }
 

@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::core::tools::framework;
-use crate::core::tools::framework::permission::ensure_path_permission;
+use crate::core::tools::framework::permission::ensure_read_path_permission;
 
 use super::common::{
     display_path, input_patterns, input_string_list, input_usize, is_locked_file_error,
@@ -464,7 +464,7 @@ pub async fn find_references(
         .unwrap_or(FIND_REFERENCES_DEFAULT_LIMIT)
         .min(FIND_REFERENCES_MAX_LIMIT);
     let ws = get_workspace(app, session_id).await;
-    if let Err(e) = ensure_path_permission(app, dir, "查找引用", ws.as_deref()).await {
+    if let Err(e) = ensure_read_path_permission(dir) {
         return framework::ToolCallResult::error(e);
     }
 
@@ -528,7 +528,7 @@ pub async fn find_symbol(
         .unwrap_or(FIND_SYMBOL_DEFAULT_LIMIT)
         .min(FIND_SYMBOL_MAX_LIMIT);
     let ws = get_workspace(app, session_id).await;
-    if let Err(e) = ensure_path_permission(app, dir, "查找符号", ws.as_deref()).await {
+    if let Err(e) = ensure_read_path_permission(dir) {
         return framework::ToolCallResult::error(e);
     }
 
@@ -589,7 +589,7 @@ pub async fn read_symbol(
     }
 
     let ws = get_workspace(app, session_id).await;
-    if let Err(e) = ensure_path_permission(app, path, "读取符号", ws.as_deref()).await {
+    if let Err(e) = ensure_read_path_permission(path) {
         return framework::ToolCallResult::error(e);
     }
 

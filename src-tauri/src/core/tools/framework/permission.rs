@@ -5,7 +5,8 @@
 //! ## 关键导出
 //! - `is_path_safe()`: 检查路径是否包含 `..` 遍历
 //! - `is_within_workspace()`: 检查路径是否在沙箱工作目录内
-//! - `ensure_path_permission()`: 综合权限检查（安全 + 沙箱边界）
+//! - `ensure_path_permission()`: 写操作路径权限检查（安全 + 沙箱边界硬拦截）
+//! - `ensure_read_path_permission()`: 读操作路径安全检查（拦 `..` 遍历，跨目录读取由外层策略层审批）
 //! - `request_permission()`: 向前端发送权限确认请求，**无限期等待**用户决策
 //! - `PermissionDecision`: 结构化决策结果（允许/会话级允许/明确拒绝/未取得结论）
 //!
@@ -174,6 +175,19 @@ pub fn is_within_workspace(path_str: &str, workspace_dir: Option<&Path>) -> bool
     resolved.starts_with(&ws_normalized)
 }
 
+/// 读操作路径安全校验：拦截 `..` 路径遍历，但不再因为路径在项目外而硬拒绝。
+///
+/// 跨目录读取的审批与持久化放行由外层 `policy_guard::enforce` 统一负责：
+/// - 完全批准档自动放行；
+/// - 请求审批 / 帮我批准档弹窗确认，并支持「本项目允许」持久化到 `data/permissions/`。
+pub fn ensure_read_path_permission(path_str: &str) -> Result<(), String> {
+    if !is_path_safe(path_str) {
+        return Err("路径不安全：包含 '..' 遍历".to_string());
+    }
+    Ok(())
+}
+
+/// 写操作路径权限校验：安全检查（禁 `..` 遍历）+ 沙箱边界硬拦截。
 pub async fn ensure_path_permission(
     _app: &tauri::AppHandle,
     path_str: &str,
@@ -184,12 +198,12 @@ pub async fn ensure_path_permission(
         return Err("路径不安全：包含 '..' 遍历".to_string());
     }
 
-    // 如果指定了工作目录（即沙箱会话：会话挂了项目），则强制执行边界检查
+    // 如果指定了工作目录（即沙箱会话：会话挂了项目），写操作强制锁死在项目目录内
     if let Some(ws) = workspace_dir {
         if !is_within_workspace(path_str, Some(ws)) {
             return Err(format!(
-                "沙箱边界：路径 '{}' 不在会话绑定的项目目录 '{}' 内，拒绝访问。\
-                 需要操作其他目录，请新建不挂项目的会话（非沙箱会话，无目录边界）。",
+                "沙箱写边界：路径 '{}' 不在会话绑定的项目目录 '{}' 内，禁止写入或修改。\
+                 项目会话仅允许只读访问外部路径；如需修改其他目录，请新建不挂项目的会话（非沙箱会话）。",
                 path_str,
                 ws.display()
             ));

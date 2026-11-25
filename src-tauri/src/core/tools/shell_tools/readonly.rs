@@ -337,13 +337,43 @@ fn posix_args_are_readonly(name: &str, args: &[&str]) -> bool {
     // 是否出现某个精确参数
     let has = |needle: &str| args.contains(&needle);
     match name {
-        // 执行任意命令 / 默认落盘：永不只读
-        "xargs" | "wget" => false,
-        // 就地编辑：短选项按簇判断（-i / -ni / -i.bak），长选项按前缀
-        "sed" => !args.iter().any(|arg| {
-            arg.starts_with("--in-place")
-                || (arg.starts_with('-') && !arg.starts_with("--") && arg.contains('i'))
+        // 执行任意命令 / 默认落盘：永不只读（zip 创建或更新压缩包必然写盘）
+        "xargs" | "wget" | "zip" => false,
+        // unzip 仅纯列表/完整性校验模式只读，禁止解压写盘（含 -d 指定输出目录）
+        "unzip" => {
+            let has_readonly_flag = args.iter().any(|arg| {
+                matches!(*arg, "-l" | "-t" | "-Z")
+                    || (arg.starts_with('-')
+                        && !arg.starts_with("--")
+                        && (arg.contains('l') || arg.contains('t') || arg.contains('Z')))
+            });
+            let has_extract_target = args.iter().any(|arg| *arg == "-d" || arg.starts_with("-d"));
+            has_readonly_flag && !has_extract_target
+        }
+        // awk：禁止通过 -f / --file 加载外部脚本（可绕过 `{` 拦截执行写文件或 system()）
+        "awk" => !args.iter().any(|arg| {
+            *arg == "-f"
+                || arg.starts_with("--file")
+                || (arg.starts_with("-f") && !arg.starts_with("--") && arg.len() > 2)
         }),
+        // sed：禁止就地编辑（-i）、外部脚本（-f）以及脚本中的 w 写文件指令
+        "sed" => {
+            let has_mutating_flag = args.iter().any(|arg| {
+                arg.starts_with("--in-place")
+                    || arg.starts_with("--file")
+                    || *arg == "-f"
+                    || (arg.starts_with('-')
+                        && !arg.starts_with("--")
+                        && (arg.contains('i') || arg.contains('f')))
+            });
+            // `args` 是按空白切开的，`'1w /tmp/out.txt'` 会被拆成 `'1w` 与 `/tmp/out.txt'` 两段，
+            // 因此需还原拼接后再检查 sed 的 w 写文件指令（如 `1w out`、`;w out`、`s/a/b/w out`）
+            let joined = args.join(" ");
+            let has_write_cmd = Regex::new(r#"(^|[0-9$/;\s'"])w(\s+\S|/)"#)
+                .unwrap()
+                .is_match(&joined);
+            !has_mutating_flag && !has_write_cmd
+        }
         // tee 只有"纯选项"形态才只读；一旦有文件操作数就在写盘
         "tee" => !args.iter().any(|arg| !arg.starts_with('-')),
         // find 的删除 / 执行 / 写文件动作
@@ -353,15 +383,32 @@ fn posix_args_are_readonly(name: &str, args: &[&str]) -> bool {
                 "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir" | "-fls"
             ) || arg.starts_with("-fprint")
         }),
-        // curl 的落盘与上传开关
+        // curl 的落盘、写头/cookie/trace 文件与上传开关
         "curl" => !args.iter().any(|arg| {
             matches!(
                 *arg,
-                "-o" | "-O" | "-T" | "--output" | "--remote-name" | "--remote-name-all" | "--upload-file"
+                "-o" | "-O"
+                    | "-T"
+                    | "-D"
+                    | "-c"
+                    | "--output"
+                    | "--remote-name"
+                    | "--remote-name-all"
+                    | "--upload-file"
+                    | "--dump-header"
+                    | "--cookie-jar"
+                    | "--trace"
+                    | "--trace-ascii"
             ) || arg.starts_with("--output=")
                 || arg.starts_with("--remote-name=")
                 || arg.starts_with("--upload-file=")
+                || arg.starts_with("--dump-header=")
+                || arg.starts_with("--cookie-jar=")
+                || arg.starts_with("--trace=")
+                || arg.starts_with("--trace-ascii=")
                 || (arg.starts_with("-o") && !arg.starts_with("--") && arg.len() > 2)
+                || (arg.starts_with("-D") && !arg.starts_with("--") && arg.len() > 2)
+                || (arg.starts_with("-c") && !arg.starts_with("--") && arg.len() > 2)
         }),
         // sort -o / --output 会写文件
         "sort" => !args.iter().any(|arg| {
@@ -931,8 +978,16 @@ mod tests {
         ));
         // 无脚本块时：foreach 归一为 foreach-object（不在免问名单）→ 弹卡
         assert!(!is_readonly_command_windows("foreach -MemberName Name"));
-        // where 归一为 where-object（免问名单里有）→ 免问；`where {…}` 已被否决拦住
-        assert!(is_readonly_command_windows("where Name"));
+        // 白名单收紧回归：可写盘/改状态的命令不能判为只读
+        assert!(!is_readonly_command_windows(
+            "Get-Content a.txt | Tee-Object -FilePath C:\\outside\\b.txt"
+        ));
+        assert!(!is_readonly_command_windows("route add 1.2.3.4 mask 255.255.255.255 10.0.0.1"));
+        assert!(!is_readonly_command_windows("arp -s 1.2.3.4 aa-bb-cc-dd-ee-ff"));
+        assert!(!is_readonly_command_windows("gh pr reopen 123"));
+        assert!(!is_readonly_command_windows("gh repo delete foo/bar"));
+        // Windows 的 dir（列出目录）命令仍为只读
+        assert!(is_readonly_command_windows("dir D:\\external\\docs"));
     }
 
     // --- 破坏性命令警告 ---
@@ -1010,6 +1065,15 @@ mod posix_readonly_tests {
         for cmd in [
             "sed -i 's/a/b/' file.txt",
             "sed -i.bak 's/a/b/' file.txt",
+            "sed -n '1w /tmp/out.txt' file.txt",
+            "sed -f evil.sed file.txt",
+            "awk -f evil.awk file.txt",
+            "zip out.zip file.txt",
+            "unzip a.zip -d /tmp/out",
+            "unzip a.zip",
+            "curl -D /tmp/headers.txt https://example.com",
+            "curl -c /tmp/cookies.txt https://example.com",
+            "curl --trace=/tmp/trace.txt https://example.com",
             "echo hi | tee log.txt",
             "find . -delete",
             "find . -exec rm {} +",

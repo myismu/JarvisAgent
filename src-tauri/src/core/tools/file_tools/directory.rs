@@ -12,7 +12,7 @@
 use std::path::Path;
 
 use crate::core::tools::framework;
-use crate::core::tools::framework::permission::ensure_path_permission;
+use crate::core::tools::framework::permission::ensure_read_path_permission;
 
 use super::common::{is_ignored_entry_name, is_static_asset_extension};
 use super::workspace::{get_workspace, resolve_exec_path, sandbox_missing_hint};
@@ -66,7 +66,7 @@ pub async fn list_directory(
 ) -> framework::ToolCallResult {
     let path_str = input["path"].as_str().unwrap_or(".");
     let ws = get_workspace(app, session_id).await;
-    if let Err(e) = ensure_path_permission(app, path_str, "列出", ws.as_deref()).await {
+    if let Err(e) = ensure_read_path_permission(path_str) {
         return framework::ToolCallResult::error(e);
     }
     // 执行层与校验层对齐：相对路径按沙箱目录解析（而非进程 CWD），否则会越界列出目录

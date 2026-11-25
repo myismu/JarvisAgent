@@ -4,7 +4,7 @@
     "collapseSidebar": "Collapse sidebar",
     "showAgentPanel": "Open monitor window",
     "hideAgentPanel": "Close monitor window",
-    "sandboxBoundaryTitle": "Sandbox session: agent operations and commands are confined to the project directory ({dir}); paths outside are denied.",
+    "sandboxBoundaryTitle": "Sandbox session: writes and non-readonly commands are confined to the project directory ({dir}); reading outside is allowed only via read-only tools/commands (asks unless Full Approve, with project-level persistence).",
     "noSandbox": "No sandbox",
     "noSandboxTitle": "Non-sandbox session (no project bound): no directory boundary; the agent may use absolute paths anywhere. File writes and commands still follow permission settings."
   },

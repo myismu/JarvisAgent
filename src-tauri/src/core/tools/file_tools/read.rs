@@ -10,7 +10,7 @@
 //! - Internal: `crate::core::tools::framework::permission`, `super::workspace`, `super::common`
 
 use crate::core::tools::framework;
-use crate::core::tools::framework::permission::ensure_path_permission;
+use crate::core::tools::framework::permission::ensure_read_path_permission;
 use tauri::Manager;
 
 use super::common::{
@@ -188,7 +188,7 @@ pub async fn read_file(
     let end_line = input["end_line"].as_u64().unwrap_or(usize::MAX as u64) as usize;
 
     let ws = get_workspace(app, session_id).await;
-    if let Err(e) = ensure_path_permission(app, &path, "读取", ws.as_deref()).await {
+    if let Err(e) = ensure_read_path_permission(&path) {
         return framework::ToolCallResult::error(e);
     }
     // 执行层与校验层对齐：相对路径按沙箱目录解析（而非进程 CWD），否则会越界读取
@@ -308,7 +308,7 @@ pub async fn read_file_skeleton(
 ) -> framework::ToolCallResult {
     let path = resolve_path(input);
     let ws = get_workspace(app, session_id).await;
-    if let Err(e) = ensure_path_permission(app, &path, "读取", ws.as_deref()).await {
+    if let Err(e) = ensure_read_path_permission(&path) {
         return framework::ToolCallResult::error(e);
     }
     // 执行层与校验层对齐：相对路径按沙箱目录解析（而非进程 CWD），否则会越界读取

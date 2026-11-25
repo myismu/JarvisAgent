@@ -437,6 +437,46 @@ mod tests {
         )
         .is_some());
     }
+
+    #[test]
+    fn read_outside_allowance_keys_normalize_to_dir_and_dedup() {
+        let keys = read_outside_allowance_keys(
+            "ReadFile",
+            &[
+                "D:/external/docs/a.md".to_string(),
+                "D:/external/docs/b.md".to_string(),
+                "E:/other/notes/c.txt".to_string(),
+            ],
+        );
+        assert_eq!(keys.len(), 2, "同目录下两个文件应合并为一把范围键：{:?}", keys);
+        assert_eq!(keys[0].kind, ALLOWANCE_KIND_READ_OUTSIDE);
+        assert_eq!(keys[0].scope, "D:/external/docs");
+        assert!(scope_covers(&keys[0].scope, "D:/external/docs/sub"));
+        assert_eq!(keys[1].scope, "E:/other/notes");
+
+        // 目录类工具（ListDirectory / SearchRepo / FindFiles）直接以该目录为范围键
+        let dir_keys =
+            read_outside_allowance_keys("ListDirectory", &["D:/external/docs".to_string()]);
+        assert_eq!(dir_keys.len(), 1);
+        assert_eq!(dir_keys[0].scope, "D:/external/docs");
+    }
+
+    #[test]
+    fn readonly_command_outside_path_collected_not_hard_denied() {
+        let ws = std::path::Path::new("E:/proj");
+        let verdict = inspect_existing_guards(
+            "RunCommand",
+            &json!({ "command": "Get-Content D:\\external\\a.txt" }),
+            Some(ws),
+        );
+        assert!(
+            verdict.deny_reason.is_none(),
+            "只读命令访问项目外路径应交由 judge 走跨目录审批，不应被现有守卫硬拒绝：{:?}",
+            verdict.deny_reason
+        );
+        assert!(verdict.is_readonly);
+        assert_eq!(verdict.outside_paths, vec!["D:\\external\\a.txt"]);
+    }
 }
 
 /// 一次调用的事实（判定器与观察层共用）
@@ -482,19 +522,24 @@ pub async fn prepare_facts(ctx: &SessionContext, tool: &str, input: &Value) -> P
 
     // 后台语义由入参派生（2026-11-20 合并 StartBackgroundCommand）：
     // RunCommand 的 run_in_background=true 视同从前的 Background 类 ——
-    // 目标路径取 dir、权限卡片按"起后台服务"展示、只读保护直接拒绝。
+    // 权限卡片按"起后台服务"展示、只读保护直接拒绝。
+    // 前后台模式现在都支持 `dir`（工作目录）参数，因此 RunCommand 统一采集 `dir` 用于越界判定。
     let is_background_run =
         tool == "RunCommand" && input["run_in_background"].as_bool().unwrap_or(false);
-    const BACKGROUND_PATH_FIELDS: &[&str] = &["dir"];
-    let path_fields: &[&str] = if is_background_run {
-        BACKGROUND_PATH_FIELDS
+    const RUN_COMMAND_PATH_FIELDS: &[&str] = &["dir"];
+    let path_fields: &[&str] = if tool == "RunCommand" {
+        RUN_COMMAND_PATH_FIELDS
     } else {
         policy.map(|p| p.path_fields).unwrap_or(&[])
     };
 
     let mut targets: Vec<String> = Vec::new();
     for field in path_fields {
-        if let Some(path) = input[*field].as_str() {
+        if let Some(path) = input[*field]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             targets.push(path.to_string());
         }
     }
@@ -507,7 +552,7 @@ pub async fn prepare_facts(ctx: &SessionContext, tool: &str, input: &Value) -> P
     targets.dedup();
 
     let workspace = ctx.workspace.lock().await.clone();
-    let out_of_workspace: Vec<String> = targets
+    let mut out_of_workspace: Vec<String> = targets
         .iter()
         .filter(|path| {
             workspace
@@ -537,6 +582,12 @@ pub async fn prepare_facts(ctx: &SessionContext, tool: &str, input: &Value) -> P
     };
 
     let command_info = inspect_existing_guards(tool, input, workspace.as_deref());
+    // 合并命令参数中检测出的项目外路径（供 policy::judge 按“只读 Ask/Allow、非只读 Deny”统一裁决）
+    for path in &command_info.outside_paths {
+        if !out_of_workspace.contains(path) {
+            out_of_workspace.push(path.clone());
+        }
+    }
 
     // 本轮计数（换一轮就重置）
     let turn_id = ctx
@@ -559,7 +610,16 @@ pub async fn prepare_facts(ctx: &SessionContext, tool: &str, input: &Value) -> P
         state.files.len()
     };
 
-    let allowance = allowance_keys_for(class, input, &targets, workspace.as_deref());
+    let is_readonly_outside = !out_of_workspace.is_empty()
+        && (matches!(class, Some(ToolClass::ReadOnly))
+            || (matches!(class, Some(ToolClass::RunCommand))
+                && command_info.is_readonly
+                && !is_background_run));
+    let allowance = if is_readonly_outside {
+        read_outside_allowance_keys(tool, &out_of_workspace)
+    } else {
+        allowance_keys_for(class, input, &targets, workspace.as_deref())
+    };
 
     PreparedFacts {
         class,
@@ -592,6 +652,8 @@ struct ExistingGuardVerdict {
     /// 与 `warning` 分开：`warning` 是所有提醒的合并文案，完全批准档只用本字段决定问不问。
     destructive: bool,
     is_readonly: bool,
+    /// 命令参数中解析出的项目外路径（交由 `policy::judge` 按只读/非只读分别处理）
+    outside_paths: Vec<String>,
 }
 
 fn inspect_existing_guards(
@@ -610,6 +672,7 @@ fn inspect_existing_guards(
             warning: None,
             destructive: false,
             is_readonly: false,
+            outside_paths: Vec::new(),
         };
     }
     let mut warning = match security::check_command_safety(&command) {
@@ -619,20 +682,27 @@ fn inspect_existing_guards(
                 warning: None,
                 destructive: false,
                 is_readonly: false,
+                outside_paths: Vec::new(),
             };
         }
         SafetyResult::Warn(msg) => Some(msg),
         SafetyResult::Safe => None,
     };
     let is_readonly = readonly::is_readonly_command(&command);
+    let mut outside_paths = Vec::new();
     if let Some(ws) = workspace {
-        if let Err(err) = utils::check_command_paths(&command, ws) {
-            return ExistingGuardVerdict {
-                deny_reason: Some(format!("命令里的路径越界：{}", err)),
-                warning,
-                destructive: false,
-                is_readonly,
-            };
+        match utils::collect_outside_command_paths(&command, ws) {
+            Ok(paths) => outside_paths = paths,
+            Err(err) => {
+                // 环境变量构造路径等绕过写法：无论是否只读，一律硬拒绝
+                return ExistingGuardVerdict {
+                    deny_reason: Some(format!("命令路径安全检查拦截：{}", err)),
+                    warning,
+                    destructive: false,
+                    is_readonly,
+                    outside_paths: Vec::new(),
+                };
+            }
         }
     }
     if let Some(hint) = execution::is_file_mutation_command(&command) {
@@ -641,6 +711,7 @@ fn inspect_existing_guards(
             warning,
             destructive: false,
             is_readonly,
+            outside_paths,
         };
     }
     // 破坏性操作单独标记：完全批准档只用它决定要不要问（普通提醒在该档放行）。
@@ -677,6 +748,7 @@ fn inspect_existing_guards(
         warning,
         destructive,
         is_readonly,
+        outside_paths,
     }
 }
 
@@ -693,10 +765,43 @@ pub struct AllowanceKey {
     pub label: String,
 }
 
-/// 类别常量。刻意只留 3 个（见 [`allowance_kind`] 的说明）。
+/// 类别常量：编辑项目 / 删除文件 / 跑命令 / 跨目录读取项目外路径。
 pub const ALLOWANCE_KIND_EDIT: &str = "edit_project";
 pub const ALLOWANCE_KIND_DELETE: &str = "delete";
 pub const ALLOWANCE_KIND_COMMAND: &str = "run_command";
+pub const ALLOWANCE_KIND_READ_OUTSIDE: &str = "read_outside";
+
+/// 为跨目录只读操作生成「本项目允许」范围键：每个项目外目标归一到其目录，
+/// 配合 `state.rs` 的目录前缀继承（`scope_covers`），允许一次后该外部目录及其子目录均免再问，
+/// 且由 `allowance_store::persist` 自动落盘到 `data/permissions/` 跨会话记住。
+fn read_outside_allowance_keys(tool: &str, outside_paths: &[String]) -> Vec<AllowanceKey> {
+    let tool_targets_dir = matches!(
+        tool,
+        "ListDirectory" | "SearchRepo" | "FindFiles"
+    );
+    let mut keys: Vec<AllowanceKey> = Vec::new();
+    for raw in outside_paths {
+        let p = std::path::Path::new(raw);
+        let dir_path = if tool_targets_dir || p.is_dir() {
+            p.to_path_buf()
+        } else {
+            p.parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .map(|parent| parent.to_path_buf())
+                .unwrap_or_else(|| p.to_path_buf())
+        };
+        let scope = normalize_dir_key(&dir_path);
+        if scope.is_empty() || keys.iter().any(|k| k.scope == scope) {
+            continue;
+        }
+        keys.push(AllowanceKey {
+            kind: ALLOWANCE_KIND_READ_OUTSIDE,
+            label: format!("读取项目外目录 {} 及其子目录", scope),
+            scope,
+        });
+    }
+    keys
+}
 
 /// 工具归类 → 会话级允许的类别；不提供会话级允许的类别返回 `None`。
 ///
@@ -1301,10 +1406,13 @@ pub async fn enforce(
                 ApprovalMode::FullApprove => facts.destructive_warning,
                 _ => facts.warning.is_some(),
             };
-            if matches!(mode, ApprovalMode::AutoApprove | ApprovalMode::FullApprove)
-                && !facts.command_is_readonly
-                && auto_approved_class
-                && !warning_blocks
+            let full_approve_outside_read =
+                mode == ApprovalMode::FullApprove && !facts.out_of_workspace.is_empty();
+            if full_approve_outside_read
+                || (matches!(mode, ApprovalMode::AutoApprove | ApprovalMode::FullApprove)
+                    && !facts.command_is_readonly
+                    && auto_approved_class
+                    && !warning_blocks)
             {
                 // 档位不同 → action 不同：审计流水要能直接看出"这条静默放行凭的是哪一档"，
                 // 完全批准比帮我批准宽得多，两者混记成 auto_approve 事后就分不清了。
@@ -1372,7 +1480,7 @@ pub async fn enforce(
 
             // ② 弹窗问用户。把键一并交过去：一是让前端知道"本次会话都允许"是否真有
             //    明确含义（没键就别显示这个按钮），二是用户点了之后能据此消化积压。
-            let message = build_permission_message(tool, &facts, &decision.reason, agent_type);
+            let message = build_permission_message(tool, input, &facts, &decision.reason, agent_type);
             let pending_keys: Vec<(String, String)> = keys
                 .iter()
                 .map(|k| (k.kind.to_string(), k.scope.clone()))
@@ -1464,20 +1572,37 @@ pub async fn enforce(
 /// 授权粒度是按类别合并的（例如"改项目文件"同时覆盖新建/编辑/改名）。
 fn build_permission_message(
     tool: &str,
+    input: &Value,
     facts: &PreparedFacts,
     reason: &str,
     agent_type: &str,
 ) -> String {
-    let action = facts.class.map(|c| c.label()).unwrap_or("操作");
-    let target = facts
-        .targets
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "（无具体路径）".to_string());
+    let is_outside_read = !facts.out_of_workspace.is_empty()
+        && (matches!(facts.class, Some(ToolClass::ReadOnly))
+            || (matches!(facts.class, Some(ToolClass::RunCommand)) && facts.command_is_readonly));
+    let action = if is_outside_read {
+        "跨目录读取项目外路径"
+    } else {
+        facts.class.map(|c| c.label()).unwrap_or("操作")
+    };
+    let target = if is_outside_read {
+        facts.out_of_workspace.join(", ")
+    } else {
+        facts
+            .targets
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "（无具体路径）".to_string())
+    };
     // 动作（第一行）
     let mut msg = format!("需要确认：{}", action);
-    // 明细：对象 → 工具 → 风险提示 → 允许范围 → 来源
+    // 明细：对象 → 命令（如有）→ 工具 → 风险提示 → 允许范围 → 来源
     msg.push_str(&format!("\n{}", target));
+    if tool == "RunCommand" {
+        if let Some(cmd) = input["command"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            msg.push_str(&format!("\n命令：{}", cmd));
+        }
+    }
     msg.push_str(&format!("\n工具：{}", tool));
     let _ = reason;
     if let Some(warning) = &facts.warning {
@@ -1486,13 +1611,12 @@ fn build_permission_message(
         // 免得用户找不到「本次会话都允许」按钮而困惑。
         msg.push_str("\n此命令每次都需要人工批准，无法用「本次会话都允许」。");
     }
-    // 允许范围：链式命令是多段，一次「本项目允许」会把各段的键一起登记，
-    // 所以这里必须逐个列出来——写一句"整条命令"反而掩盖了放开的宽度。
+    // 允许范围：链式命令或多目录跨读可能有多把键，一次「本项目允许」会把各键一起登记
     if !facts.allowance.is_empty() {
         if facts.allowance.len() == 1 {
             msg.push_str(&format!("\n允许范围：{}", facts.allowance[0].label));
         } else {
-            msg.push_str("\n允许范围（一条链式命令，点一次会同时登记以下范围）：");
+            msg.push_str("\n允许范围（点一次会同时登记以下范围）：");
             for key in &facts.allowance {
                 msg.push_str(&format!("\n· {}", key.label));
             }

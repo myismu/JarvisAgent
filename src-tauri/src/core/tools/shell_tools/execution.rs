@@ -14,7 +14,8 @@
 
 use super::super::framework;
 use super::super::framework::permission::{
-    is_within_workspace, request_permission_with_origin, PermissionDecision, PermissionKind,
+    is_path_safe, is_within_workspace, request_permission_with_origin, PermissionDecision,
+    PermissionKind,
 };
 use super::background::background_run_internal;
 use super::readonly::is_readonly_command;
@@ -443,10 +444,18 @@ pub async fn run_shell(
     }
 
     let ws = get_workspace(app, session_id).await;
+    // 只有「前台 + 命中只读命令白名单」才允许访问项目外路径（跨目录读取的审批由外层 policy_guard 负责）；
+    // 非只读命令与后台服务继续严格锁死在项目目录内。
+    let is_readonly_fg = !run_in_bg && is_readonly_command(cmd);
 
     // --- 2. 沙箱路径检查 ---
     if let Some(ref workspace) = ws {
-        if let Err(e) = check_command_paths(cmd, workspace) {
+        if is_readonly_fg {
+            // 只读命令：放行项目外绝对路径，但仍拦截环境变量构造路径等绕过写法
+            if let Err(e) = collect_outside_command_paths(cmd, workspace) {
+                return framework::ToolCallResult::error(e);
+            }
+        } else if let Err(e) = check_command_paths(cmd, workspace) {
             return framework::ToolCallResult::error(e);
         }
 
@@ -460,12 +469,10 @@ pub async fn run_shell(
 
     // --- 2b. 解析 dir 参数（命令的工作目录；2026-09-21 新增）---
     //
-    // 背景：RunCommand 原先恒在工作区根目录执行（dir 是悬空引用），而沙箱禁止 cd，
-    // "在子目录跑 npm install" 根本无法做到。2026-11-20 起前后台模式统一按 dir 执行，
-    // 独立的后台工具 StartBackgroundCommand 已并入本工具（run_in_background=true）。
-    //
-    // 校验口径：沙箱会话下 dir 必须落在工作区内；相对路径按工作区目录解析
-    // （复用 resolve_exec_path，避免"校验按 ws join、执行按进程 CWD"的沙箱逃逸）。
+    // 校验口径（读写分离）：
+    // - 只读前台命令：允许 dir 指向项目外绝对路径（仍拦截 `..` 路径遍历），方便直接查阅外部目录；
+    // - 非只读命令 / 后台模式：dir 必须落在项目工作区内，防止相对路径写入逃逸到项目外。
+    // 相对路径统一按工作区目录解析（复用 resolve_exec_path）。
     let exec_dir = match input["dir"]
         .as_str()
         .map(str::trim)
@@ -473,9 +480,16 @@ pub async fn run_shell(
     {
         Some(dir) => {
             if let Some(ref workspace) = ws {
-                if !is_within_workspace(dir, Some(workspace)) {
+                if is_readonly_fg {
+                    if !is_path_safe(dir) {
+                        return framework::ToolCallResult::blocked(format!(
+                            "沙箱限制：指定的 dir '{}' 包含不安全的 '..' 路径遍历。",
+                            dir
+                        ));
+                    }
+                } else if !is_within_workspace(dir, Some(workspace)) {
                     return framework::ToolCallResult::blocked(format!(
-                        "沙箱限制：指定的 dir '{}' 不在沙箱内。",
+                        "沙箱写边界：非只读命令指定的 dir '{}' 不在项目目录内。",
                         dir
                     ));
                 }
@@ -599,7 +613,12 @@ pub async fn run_shell(
         }
     }
 
-    // --- 4. 后台模式 → 委托 BackgroundManager ---
+    // --- 4. 拦截文件修改类命令（前后台统一生效），引导 Agent 使用专用文件工具 ---
+    if let Some(hint) = is_file_mutation_command(cmd) {
+        return framework::ToolCallResult::blocked(format!("被拦截：{}\n\nRunCommand 不支持文件写入/删除/重命名操作。请使用以下专用工具：\n- 创建/覆盖文件 → WriteFile\n- 修改文件内容 → EditFile\n- 删除文件 → DeleteFile\n- 重命名/移动文件 → RenameFile", hint));
+    }
+
+    // --- 5. 后台模式 → 委托 BackgroundManager ---
     if run_in_bg {
         let result = background_run_internal(app, cmd, &exec_dir, session_id).await;
         let output = if warnings.is_empty() {
@@ -610,11 +629,7 @@ pub async fn run_shell(
         return framework::ToolCallResult::ok(output);
     }
 
-    // --- 5. 同步模式 → tokio::process::Command + timeout ---
-    // 拦截文件修改类命令，引导 Agent 使用专用文件工具
-    if let Some(hint) = is_file_mutation_command(cmd) {
-        return framework::ToolCallResult::blocked(format!("被拦截：{}\n\nRunCommand 不支持文件写入/删除/重命名操作。请使用以下专用工具：\n- 创建/覆盖文件 → WriteFile\n- 修改文件内容 → EditFile\n- 删除文件 → DeleteFile\n- 重命名/移动文件 → RenameFile", hint));
-    }
+    // --- 6. 同步模式 → tokio::process::Command + timeout ---
 
     let result = tokio::time::timeout(
         Duration::from_secs(timeout_secs),

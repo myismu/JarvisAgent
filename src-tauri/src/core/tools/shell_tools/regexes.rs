@@ -295,7 +295,7 @@ pub const READONLY_CMDLETS: &[&str] = &[
     "where-object",
     "out-string",
     "out-host",
-    "tee-object",
+    // 注意：刻意不收录 tee-object，其 -FilePath 参数可直接写盘，违反只读边界。
     // 网络信息
     "get-netadapter",
     "get-netipaddress",
@@ -504,24 +504,11 @@ pub const DANGEROUS_GIT_GLOBAL_FLAGS: &[&str] = &[
     "--attr-source",
 ];
 
-pub const READONLY_GH_ARGS: &[&str] = &[
-    "auth",
-    "browse",
-    "codespace",
-    "config",
-    "gpg-key",
-    "label",
-    "release",
-    "repo",
-    "secret",
-    "ssh-key",
-    "status",
-];
+/// gh 顶层只读子命令（仅收录不含写子动作的纯读命令；pr/issue 走三级 action 白名单）
+pub const READONLY_GH_ARGS: &[&str] = &["status"];
 
-/// gh 的二级子命令中只读的 action
-pub const READONLY_GH_PR_ISSUE_ACTIONS: &[&str] = &[
-    "list", "view", "diff", "checks", "ready", "reopen", "status",
-];
+/// gh 的二级子命令（pr/issue）中纯只读的 action（剔除 ready/reopen 等写状态操作）
+pub const READONLY_GH_PR_ISSUE_ACTIONS: &[&str] = &["list", "view", "diff", "checks", "status"];
 
 pub const READONLY_DOCKER_ARGS: &[&str] = &[
     "ps", "images", "logs", "inspect", "stats", "top", "port", "diff",
@@ -550,8 +537,7 @@ pub const READONLY_WIN_COMMANDS: &[&str] = &[
     "hostname",
     "whoami",
     "ver",
-    "arp",
-    "route",
+    // 注意：刻意不收录 arp（arp -s/-d 改表）与 route（route add/delete 改路由）
     "getmac",
     "file",
     "tree",
