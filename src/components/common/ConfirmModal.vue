@@ -228,12 +228,12 @@ onBeforeUnmount(() => {
   white-space: pre-wrap;
 }
 
-/* 轻量警示提示条：左侧细强调线 + 极淡底色，避免大灰盒叠加 */
+/* 轻量警示提示条：极淡底色 + 细腻全边框，简洁克制 */
 .confirm-warning {
   margin: 0;
-  padding: 8px 11px;
+  padding: 8px 12px;
   border-radius: 8px;
-  border-left: 2.5px solid color-mix(in srgb, var(--text-muted) 45%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text-main) 10%, transparent);
   background: color-mix(in srgb, var(--text-main) 3%, transparent);
   color: var(--text-muted);
   font-size: 0.8rem;
@@ -243,7 +243,7 @@ onBeforeUnmount(() => {
 }
 
 .confirm-warning.danger {
-  border-left-color: color-mix(in srgb, var(--accent-red) 70%, transparent);
+  border-color: color-mix(in srgb, var(--accent-red) 18%, transparent);
   background: color-mix(in srgb, var(--accent-red) 5%, transparent);
   color: color-mix(in srgb, var(--accent-red) 82%, var(--text-main));
 }
