@@ -130,6 +130,33 @@ const toggleProject = (projectId: string) => {
   prefs.setSidebarCollapsedProjectIds([...next]);
 };
 
+// 启动恢复或切换活跃会话时，自动展开其所在的项目目录或独立对话目录，
+// 避免当前正在看的会话被折叠藏起来。按 activeSessionId 去重，确保后续用户手动折叠时不会反复弹开。
+let lastRevealedSessionId: string | null = null;
+watch(
+  [() => sessionStore.activeSessionId, sessions, projects, prefsReady],
+  ([activeId, sessionList, projectList, ready]) => {
+    if (!ready || !activeId || activeId === lastRevealedSessionId) return;
+    const activeSession = sessionList.find((s) => s.id === activeId);
+    if (!activeSession) return;
+    lastRevealedSessionId = activeId;
+
+    const projectId = activeSession.projectId;
+    if (projectId && projectList.some((p) => p.id === projectId)) {
+      if (projectsSectionCollapsed.value) {
+        projectsSectionCollapsed.value = false;
+      }
+      if (collapsedProjects.value.has(projectId)) {
+        const next = prefs.sidebarCollapsedProjectIds.filter((id) => id !== projectId);
+        prefs.setSidebarCollapsedProjectIds(next);
+      }
+    } else if (standaloneCollapsed.value) {
+      standaloneCollapsed.value = false;
+    }
+  },
+  { immediate: true },
+);
+
 const isSessionRunning = (sessionId: string): boolean => {
   return sessionStore.sessionViews[sessionId]?.status === "RUNNING";
 };
