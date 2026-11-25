@@ -54,7 +54,6 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eventsource_stream::Eventsource;
-use serde_json::json;
 use tauri::{Emitter, Manager};
 
 use crate::core::orchestration::agent_runs;

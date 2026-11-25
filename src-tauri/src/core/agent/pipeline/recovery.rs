@@ -90,12 +90,11 @@ impl PipelineState {
         //    状态标注走 notice 结构化下发，不再推进正文
         let _ = self.app.emit(
             "agent-step",
-            json!({
-                "type": "interrupted",
-                "reason": "pipeline_error",
-                "sessionId": self.sid,
-                "loopCount": self.total_loop_count + 1
-            }),
+            crate::infra::types::events::AgentStepEvent::Interrupted {
+                reason: "pipeline_error".to_string(),
+                session_id: self.sid.clone(),
+                loop_count: self.total_loop_count + 1,
+            },
         );
 
         {
@@ -194,14 +193,13 @@ impl PipelineState {
                         .saturating_sub(silent_secs);
                     let _ = app.emit(
                         "agent-step",
-                        json!({
-                            "type": "waiting_hint",
+                        crate::infra::types::events::AgentStepEvent::WaitingHint {
                             // 两个秒数交给前端 `notice.waitingHint` 组句
-                            "silentSecs": silent_secs,
-                            "remainSecs": remain_secs,
-                            "sessionId": sid,
-                            "loopCount": loop_count
-                        }),
+                            silent_secs,
+                            remain_secs,
+                            session_id: sid.clone(),
+                            loop_count,
+                        },
                     );
                 }
             }
@@ -329,11 +327,10 @@ impl PipelineState {
         // 状态标注走 notice 结构化下发，不再推进正文
         let _ = self.app.emit(
             "agent-step",
-            json!({
-                "type": "cancelled",
-                "sessionId": self.sid,
-                "loopCount": self.total_loop_count + 1
-            }),
+            crate::infra::types::events::AgentStepEvent::Cancelled {
+                session_id: self.sid.clone(),
+                loop_count: self.total_loop_count + 1,
+            },
         );
         // 标记 run 为 CANCELLED，并向前端发送取消通知。
         // 轮次事件同样打上 interrupted（保留帧级通道已写的半截内容）。
@@ -410,12 +407,11 @@ impl PipelineState {
         // 改由 JarvisResult.notice_i18n_key 结构化下发，前端渲染为气泡下方小字。
         let _ = self.app.emit(
             "agent-step",
-            json!({
-                "type": "interrupted",
-                "reason": "stream_idle_timeout",
-                "sessionId": self.sid,
-                "loopCount": self.total_loop_count + 1
-            }),
+            crate::infra::types::events::AgentStepEvent::Interrupted {
+                reason: "stream_idle_timeout".to_string(),
+                session_id: self.sid.clone(),
+                loop_count: self.total_loop_count + 1,
+            },
         );
         println!(
             "[JARVIS] 中断收尾完成：notice={:?}，content 长度={}",
@@ -469,11 +465,12 @@ impl PipelineState {
     pub(super) async fn request_loop_continuation(&mut self) -> bool {
         let _ = self.app.emit(
             "chat-stream",
-            json!({
-                "content": format!("\n> **[等待确认]** 代理执行已达到 {} 回合，等待用户确认是否继续。\n", crate::infra::types::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM),
-                "sessionId": self.sid,
-                "loopCount": self.total_loop_count + 1
-            }),
+            crate::infra::types::events::ChatStreamEvent {
+                content: format!("\n> **[等待确认]** 代理执行已达到 {} 回合，等待用户确认是否继续。\n", crate::infra::types::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM),
+                session_id: self.sid.clone(),
+                loop_count: Some(self.total_loop_count + 1),
+                is_sub_agent: None,
+            },
         );
         // 弹权限确认：允许 → 继续并重置本轮计数；超时/拒绝 → 置可续跑标记
         let decision = request_permission(
@@ -494,11 +491,12 @@ impl PipelineState {
             self.loop_count = 0;
             let _ = self.app.emit(
                 "chat-stream",
-                json!({
-                    "content": "\n> **[已授权]** 用户已授权继续执行。\n",
-                    "sessionId": self.sid,
-                    "loopCount": self.total_loop_count + 1
-                }),
+                crate::infra::types::events::ChatStreamEvent {
+                    content: "\n> **[已授权]** 用户已授权继续执行。\n".to_string(),
+                    session_id: self.sid.clone(),
+                    loop_count: Some(self.total_loop_count + 1),
+                    is_sub_agent: None,
+                },
             );
             true
         } else {

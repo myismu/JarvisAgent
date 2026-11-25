@@ -71,14 +71,16 @@ impl TaskScheduler {
             }
             let _ = app.emit(
                 "chat-stream",
-                serde_json::json!({
-                    "content": format!(
+                crate::infra::types::events::ChatStreamEvent {
+                    content: format!(
                         "\n> [调度启动] {} 个就绪任务\n{}\n",
                         ready_tasks.len(),
                         lines.join("\n")
                     ),
-                    "sessionId": session_id,
-                }),
+                    session_id: session_id.to_string(),
+                    loop_count: None,
+                    is_sub_agent: None,
+                },
             );
         }
 
@@ -100,10 +102,11 @@ impl TaskScheduler {
             );
             let _ = app.emit(
                 "agent-step",
-                serde_json::json!({
-                    "type": "task_scheduled", "taskId": task.id,
-                    "subject": task.subject, "sessionId": session_id,
-                }),
+                crate::infra::types::events::AgentStepEvent::TaskScheduled {
+                    task_id: task.id,
+                    subject: task.subject.clone(),
+                    session_id: session_id.to_string(),
+                },
             );
             // 同步用户可见的 TODO 清单（任务图与 TODO 是同一批任务的两个视图）
             crate::core::orchestration::todo_sync::update_task_status(
@@ -200,10 +203,11 @@ impl TaskScheduler {
 
                 let _ = app.emit(
                     "agent-step",
-                    serde_json::json!({
-                        "type": "task_completed", "taskId": task_id,
-                        "status": status_msg, "sessionId": session_id,
-                    }),
+                    crate::infra::types::events::AgentStepEvent::TaskCompleted {
+                        task_id,
+                        status: status_msg.to_string(),
+                        session_id: session_id.to_string(),
+                    },
                 );
                 // 同步 TODO 清单。注意 TaskStatus 没有 Failed，失败任务也会落到 completed；
                 // 失败详情以调度报告/时间线为准。
@@ -232,13 +236,15 @@ impl TaskScheduler {
                     };
                     let _ = app.emit(
                         "chat-stream",
-                        serde_json::json!({
-                            "content": format!(
+                        crate::infra::types::events::ChatStreamEvent {
+                            content: format!(
                                 "\n> {} Task #{}: {} ({}, {} tokens)\n",
                                 icon, task_id, subject, status_msg, si + so
                             ),
-                            "sessionId": session_id,
-                        }),
+                            session_id: session_id.to_string(),
+                            loop_count: None,
+                            is_sub_agent: None,
+                        },
                     );
                 }
 
@@ -265,10 +271,11 @@ impl TaskScheduler {
                     );
                     let _ = app.emit(
                         "agent-step",
-                        serde_json::json!({
-                            "type": "task_scheduled", "taskId": task.id,
-                            "subject": task.subject, "sessionId": session_id,
-                        }),
+                        crate::infra::types::events::AgentStepEvent::TaskScheduled {
+                            task_id: task.id,
+                            subject: task.subject.clone(),
+                            session_id: session_id.to_string(),
+                        },
                     );
                     crate::core::orchestration::todo_sync::update_task_status(
                         app,

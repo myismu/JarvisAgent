@@ -959,3 +959,53 @@ export type ConflictResolution = { "type": "keep_source" } | { "type": "keep_tar
 export type Conflict = { path: string, conflictType: ConflictType, sourceContent?: string | null, targetContent?: string | null, baseContent?: string | null, resolution?: ConflictResolution | null, };
 
 export type MergeResult = { success: boolean, targetBranch: string, sourceBranch: string, mergedSnapshotId?: string | null, conflicts: Array<Conflict>, autoResolved: number, manualRequired: number, };
+
+export type ChatTurnStartEvent = { sessionId: string, loopCount: number, };
+
+export type ChatTurnEndEvent = { has_tool: boolean, sessionId: string, loopCount: number, };
+
+export type ChatContentEvent = { content: string, sessionId: string, loopCount: number, };
+
+export type ChatThinkingEvent = { content: string, sessionId: string, loopCount?: number, isSubAgent?: boolean, };
+
+export type ChatStreamEvent = { content: string, sessionId: string, loopCount?: number, isSubAgent?: boolean, };
+
+export type ChatToolStartEvent = { sessionId: string, loopCount: number, toolCallId: string, tool: string, };
+
+export type ChatToolDebugEvent = { kind?: string, status?: string, tool?: string, toolCallId?: string, content?: string, sessionId: string, loopCount: number, };
+
+export type AgentStepEvent = { "type": "tool_call", tool: string, content: string, sessionId: string, loopCount: number, } | { "type": "tool_result", tool: string, toolCallId: string, content: string, error: string | null, sessionId: string, loopCount: number, } | { "type": "tool_error", tool: string, toolCallId: string, error: string | null, content: string, outputSummary?: string, sessionId: string, loopCount: number, } | { "type": "notice_clear", kinds: Array<string>, sessionId: string, loopCount?: number, } | { "type": "waiting_hint", silentSecs: number, remainSecs: number, sessionId: string, loopCount: number, } | { "type": "retry", attempt: number, max: number, waitSecs: number, sessionId: string, } | { "type": "reflection", sessionId: string, loopCount: number, judgment: string, reason?: string, suggestion?: string, } | { "type": "interrupted", reason: string, sessionId: string, loopCount: number, } | { "type": "cancelled", sessionId: string, loopCount: number, } | { "type": "task_scheduled", taskId: number, subject: string, sessionId: string, } | { "type": "task_completed", taskId: number, status: string, sessionId: string, } | { "type": "subagent_start", task: string, sessionId: string, isSubAgent: boolean, } | { "type": "subagent_end", sessionId: string, isSubAgent: boolean, };
+
+export type PermissionRequestEvent = { id: string, message: string, sessionId: string, kind: string, allowSession: boolean, warning: string | null, };
+
+export type PermissionResolvedEvent = { id: string, sessionId: string, decision: string, decisionText: string, };
+
+export type PlanProposalEvent = { id: string, title: string, content: string, sessionId: string, };
+
+export type PlanProposalStreamEvent = { content: string, sessionId: string, };
+
+export type ApprovalModeChangedEvent = { sessionId: string, mode: string, };
+
+export type AgentReadOnlyChangedEvent = { sessionId: string, enabled: boolean, };
+
+export type AgentWorkModeChangedEvent = { sessionId: string, from: string, to: string, reason: string, };
+
+export type SessionAllowancesChangedEvent = { sessionId: string, };
+
+export type SessionThinkingModeChangedEvent = { sessionId: string, thinkingEnabled: boolean, };
+
+export type SessionMessagesChangedEvent = { sessionId: string, count: number, lastSeq: number | null, reason: string, };
+
+export type BgCompactingChangedEvent = { sessionId: string, compacting: boolean, };
+
+export type BackgroundFailedEvent = { sessionId: string | null, taskId: string, command: string, result: string, port: number | null, taskType: string | null, };
+
+export type CheckpointCreatedEvent = { sessionId: string, checkpointId: string | null, hasPatches: boolean, canRollback: boolean, message: string, };
+
+export type SnapshotCreatedEvent = { sessionId: string, snapshotId: string, };
+
+export type MemoryUpdatedEvent = { sessionId: string, summary: string, };
+
+export type SubagentTraceUpdatedEvent = { runId: string, loopIndex: number, };
+
+export type TodoUpdateEvent = { todos: Array<TodoItem>, groups: Array<TodoGroup>, sessionId: string, };

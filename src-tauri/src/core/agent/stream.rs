@@ -409,7 +409,10 @@ pub async fn process_stream(
     if !config.is_subagent {
         let _ = app.emit(
             "chat-turn-start",
-            json!({ "sessionId": sid, "loopCount": loop_count }),
+            crate::infra::types::events::ChatTurnStartEvent {
+                session_id: sid.to_string(),
+                loop_count,
+            },
         );
     }
 
@@ -567,7 +570,11 @@ pub async fn process_stream(
                     if !config.is_subagent {
                         let _ = app.emit(
                             "chat-content",
-                            json!({ "content": text, "sessionId": sid, "loopCount": loop_count }),
+                            crate::infra::types::events::ChatContentEvent {
+                                content: text.clone(),
+                                session_id: sid.to_string(),
+                                loop_count,
+                            },
                         );
                         // 崩溃保护帧级通道（攒批；未开启时无操作）
                         if let Some(flusher) = frame_flusher.as_mut() {
@@ -623,10 +630,11 @@ pub async fn process_stream(
                         if !config.is_subagent {
                             let _ = app.emit(
                                 "chat-thinking",
-                                if config.is_subagent {
-                                    json!({ "content": text, "sessionId": sid, "isSubAgent": true })
-                                } else {
-                                    json!({ "content": text, "sessionId": sid, "loopCount": loop_count })
+                                crate::infra::types::events::ChatThinkingEvent {
+                                    content: text.clone(),
+                                    session_id: sid.to_string(),
+                                    loop_count: Some(loop_count),
+                                    is_sub_agent: None,
                                 },
                             );
                             // 崩溃保护帧级通道（思考与正文共用同一条文本流）
@@ -654,12 +662,12 @@ pub async fn process_stream(
                     if !config.is_subagent {
                         let _ = app.emit(
                             "chat-tool-start",
-                            json!({
-                                "sessionId": sid,
-                                "loopCount": loop_count,
-                                "toolCallId": id,
-                                "tool": name
-                            }),
+                            crate::infra::types::events::ChatToolStartEvent {
+                                session_id: sid.to_string(),
+                                loop_count,
+                                tool_call_id: id,
+                                tool: name,
+                            },
                         );
                         // 结构事件：工具调用开始。先 flush 攒批文本（保证落盘顺序），
                         // 再把"参数接收中"这一结构化行**立即**落盘（不能与文本合并切分）。
@@ -693,12 +701,12 @@ pub async fn process_stream(
                             if !config.is_subagent {
                                 let _ = app.emit(
                                     "chat-tool-start",
-                                    json!({
-                                        "sessionId": sid,
-                                        "loopCount": loop_count,
-                                        "toolCallId": "",
-                                        "tool": ""
-                                    }),
+                                    crate::infra::types::events::ChatToolStartEvent {
+                                        session_id: sid.to_string(),
+                                        loop_count,
+                                        tool_call_id: String::new(),
+                                        tool: String::new(),
+                                    },
                                 );
                                 // 结构事件：同上（非标准实现的 map-miss 兜底路径）
                                 if let Some(flusher) = frame_flusher.as_mut() {
@@ -735,10 +743,10 @@ pub async fn process_stream(
                                     let new_chunk = &content[sent_len..];
                                     let _ = app.emit(
                                         "plan-proposal-stream",
-                                        json!({
-                                            "content": new_chunk,
-                                            "sessionId": sid
-                                        }),
+                                        crate::infra::types::events::PlanProposalStreamEvent {
+                                            content: new_chunk.to_string(),
+                                            session_id: sid.to_string(),
+                                        },
                                     );
                                     propose_plan_stream_sent.insert(block_index, content.len());
                                 }

@@ -6,7 +6,6 @@
 //! 「权限档位」（请求审批 / 帮我批准）由用户在界面上控制，不属于本工具的职责范围。
 
 use crate::core::tools::framework;
-use serde_json::json;
 use tauri::{Emitter, Manager};
 
 /// 切换 Agent 工作模式（edit / plan，只改 WorkMode，不改 Audience）
@@ -44,12 +43,12 @@ pub async fn switch_work_mode(
 
     let _ = app.emit(
         "agent-work-mode-changed",
-        json!({
-            "sessionId": session_id,
-            "from": current_mode,
-            "to": target_mode,
-            "reason": reason,
-        }),
+        crate::infra::types::events::AgentWorkModeChangedEvent {
+            session_id: session_id.to_string(),
+            from: current_mode.clone(),
+            to: target_mode.clone(),
+            reason: reason.to_string(),
+        },
     );
 
     framework::ToolCallResult::ok(format!(

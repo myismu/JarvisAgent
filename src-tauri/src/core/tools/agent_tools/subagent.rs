@@ -17,7 +17,6 @@
 //! - 子代理使用 "SUBAGENT" 意图和 "edit" 工作模式
 
 use eventsource_stream::Eventsource;
-use serde_json::json;
 use tauri::{Emitter, Manager};
 
 use super::super::framework::agent_registry::{normalize_agent_role, AgentRegistry};
@@ -734,20 +733,20 @@ pub async fn run_subagent(
     };
     let _ = app.emit(
         "chat-stream",
-        json!({
-            "content": format!("\n> **[启动子代理]** ({}, {}) 任务: `{}`\n", agent_role, mode_str, prompt),
-            "sessionId": session_id.clone(),
-            "isSubAgent": true
-        }),
+        crate::infra::types::events::ChatStreamEvent {
+            content: format!("\n> **[启动子代理]** ({}, {}) 任务: `{}`\n", agent_role, mode_str, prompt),
+            session_id: session_id.clone(),
+            loop_count: None,
+            is_sub_agent: Some(true),
+        },
     );
     let _ = app.emit(
         "agent-step",
-        json!({
-            "type": "subagent_start",
-            "task": format!("{} {} - {}", agent_role, mode_str, prompt.chars().take(100).collect::<String>()),
-            "sessionId": session_id.clone(),
-            "isSubAgent": true
-        }),
+        crate::infra::types::events::AgentStepEvent::SubagentStart {
+            task: format!("{} {} - {}", agent_role, mode_str, prompt.chars().take(100).collect::<String>()),
+            session_id: session_id.clone(),
+            is_sub_agent: true,
+        },
     );
 
     // 子代理深度思考：**继承主 Agent 本轮档位**（设计文档 K3）。
@@ -1267,11 +1266,12 @@ pub async fn run_subagent(
                         if recovered {
                             let _ = app.emit(
                                 "chat-stream",
-                                json!({
-                                    "content": format!("\n>   - 子代理自动修复了工具 `{}` 的流式参数格式\n", name),
-                                    "sessionId": session_id.clone(),
-                                    "isSubAgent": true
-                                }),
+                                crate::infra::types::events::ChatStreamEvent {
+                                    content: format!("\n>   - 子代理自动修复了工具 `{}` 的流式参数格式\n", name),
+                                    session_id: session_id.clone(),
+                                    loop_count: None,
+                                    is_sub_agent: Some(true),
+                                },
                             );
                         }
 
@@ -1282,14 +1282,15 @@ pub async fn run_subagent(
                             summarize_tool_input(name, input).replace(['\n', '\r'], " ");
                         let _ = app.emit(
                             "chat-stream",
-                            json!({
-                                "content": format!(
+                            crate::infra::types::events::ChatStreamEvent {
+                                content: format!(
                                     "\n>   - 子代理使用工具: `{}` {}\n",
                                     name, call_detail
                                 ),
-                                "sessionId": session_id.clone(),
-                                "isSubAgent": true
-                            }),
+                                session_id: session_id.clone(),
+                                loop_count: None,
+                                is_sub_agent: Some(true),
+                            },
                         );
 
                         // 去重检查：与主 Agent 机制一致，阻止重复调用 Agent 控制工具
@@ -1365,11 +1366,12 @@ pub async fn run_subagent(
                         crate::jarvis_warn!("SUBAGENT", "[SUBAGENT] {}", failure);
                         let _ = app.emit(
                             "chat-stream",
-                            json!({
-                                "content": format!("\n>   - 子代理工具 `{}` 参数解析失败\n>   错误: `{}`\n", name, err),
-                                "sessionId": session_id.clone(),
-                                "isSubAgent": true
-                            }),
+                            crate::infra::types::events::ChatStreamEvent {
+                                content: format!("\n>   - 子代理工具 `{}` 参数解析失败\n>   错误: `{}`\n", name, err),
+                                session_id: session_id.clone(),
+                                loop_count: None,
+                                is_sub_agent: Some(true),
+                            },
                         );
                         SubAgentMonitor::record_tool_result(
                             &app,
@@ -1684,19 +1686,19 @@ pub async fn run_subagent(
 
     let _ = app.emit(
         "chat-stream",
-        json!({
-            "content": format!("\n> **[子代理执行完毕]**\n"),
-            "sessionId": session_id.clone(),
-            "isSubAgent": true
-        }),
+        crate::infra::types::events::ChatStreamEvent {
+            content: "\n> **[子代理执行完毕]**\n".to_string(),
+            session_id: session_id.clone(),
+            loop_count: None,
+            is_sub_agent: Some(true),
+        },
     );
     let _ = app.emit(
         "agent-step",
-        json!({
-            "type": "subagent_end",
-            "sessionId": session_id.clone(),
-            "isSubAgent": true
-        }),
+        crate::infra::types::events::AgentStepEvent::SubagentEnd {
+            session_id: session_id.clone(),
+            is_sub_agent: true,
+        },
     );
 
     if loop_count >= max_loops {

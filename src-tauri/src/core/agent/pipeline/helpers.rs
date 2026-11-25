@@ -67,12 +67,11 @@ pub(super) fn touch_and_clear(
     // `kinds` 带来源标记，前端只清它自己写的那一类，不误伤反思标注与中断说明。
     let _ = app.emit(
         "agent-step",
-        json!({
-            "type": "notice_clear",
-            "kinds": ["waiting_hint"],
-            "sessionId": sid,
-            "loopCount": loop_count
-        }),
+        crate::infra::types::events::AgentStepEvent::NoticeClear {
+            kinds: vec!["waiting_hint".to_string()],
+            session_id: sid.to_string(),
+            loop_count: Some(loop_count),
+        },
     );
 }
 

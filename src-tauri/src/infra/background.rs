@@ -1,4 +1,4 @@
-﻿//! 后台任务管理模块
+//! 后台任务管理模块
 //!
 //! 提供异步进程执行能力，支持：
 //! - 非阻塞启动 shell 命令（避免阻塞主对话）
@@ -580,14 +580,14 @@ impl BackgroundManager {
                 // 字段全部从 notif 取：notif 构造时已 move 掉原变量，这里不能再借用
                 let _ = app_handle.emit(
                     "background-failed",
-                    serde_json::json!({
-                        "sessionId": notif.session_id,
-                        "taskId": notif.task_id,
-                        "command": notif.command,
-                        "result": summary,
-                        "port": notif.port,
-                        "taskType": notif.task_type,
-                    }),
+                    crate::infra::types::events::BackgroundFailedEvent {
+                        session_id: notif.session_id,
+                        task_id: notif.task_id,
+                        command: notif.command,
+                        result: summary,
+                        port: notif.port,
+                        task_type: notif.task_type,
+                    },
                 );
             }
         });

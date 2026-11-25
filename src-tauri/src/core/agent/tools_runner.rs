@@ -15,7 +15,6 @@
 //! - `RunSubagentsSequentially` 工具走独立调度路径，不进入通用并行执行
 //! - 传递 work_mode 参数到工具调用链路，支持兜底防护
 
-use serde_json::json;
 use tauri::Emitter;
 
 use crate::core::orchestration::scheduler::TaskScheduler;
@@ -98,35 +97,39 @@ pub async fn execute_tool_calls(
                     if recovered {
                         let _ = app.emit(
                             "chat-tool-debug",
-                            json!({
-                                "content": format!("\n> ↻ 参数已自动修复: `{}`\n", name),
-                                "sessionId": sid,
-                                "loopCount": loop_count
-                            }),
+                            crate::infra::types::events::ChatToolDebugEvent {
+                                kind: None,
+                                status: None,
+                                tool: None,
+                                tool_call_id: None,
+                                content: Some(format!("\n> ↻ 参数已自动修复: `{}`\n", name)),
+                                session_id: sid.to_string(),
+                                loop_count,
+                            },
                         );
                     }
 
                     // emit "running" 状态事件
                     let _ = app.emit(
                         "chat-tool-debug",
-                        json!({
-                            "kind": "tool_status",
-                            "status": "running",
-                            "tool": name.clone(),
-                            "toolCallId": id.clone(),
-                            "sessionId": sid,
-                            "loopCount": loop_count
-                        }),
+                        crate::infra::types::events::ChatToolDebugEvent {
+                            kind: Some("tool_status".to_string()),
+                            status: Some("running".to_string()),
+                            tool: Some(name.clone()),
+                            tool_call_id: Some(id.clone()),
+                            content: None,
+                            session_id: sid.to_string(),
+                            loop_count,
+                        },
                     );
                     let _ = app.emit(
                         "agent-step",
-                        json!({
-                            "type": "tool_call",
-                            "tool": name,
-                            "content": input.to_string(),
-                            "sessionId": sid,
-                            "loopCount": loop_count
-                        }),
+                        crate::infra::types::events::AgentStepEvent::ToolCall {
+                            tool: name.clone(),
+                            content: input.to_string(),
+                            session_id: sid.to_string(),
+                            loop_count,
+                        },
                     );
 
                     // RunSubagentsSequentially 工具特殊处理：直接调用 TaskScheduler（内部已有并行机制）
@@ -175,30 +178,29 @@ pub async fn execute_tool_calls(
                     println!("[JARVIS] {}", failure);
                     let _ = app.emit(
                         "chat-tool-debug",
-                        json!({
-                            "kind": "tool_status",
-                            "status": "error",
-                            "tool": name.clone(),
-                            "toolCallId": id.clone(),
-                            "content": format!("\n> **[工具错误]** 参数解析失败: `{}` - {}\n", name, err),
-                            "sessionId": sid,
-                            "loopCount": loop_count
-                        }),
+                        crate::infra::types::events::ChatToolDebugEvent {
+                            kind: Some("tool_status".to_string()),
+                            status: Some("error".to_string()),
+                            tool: Some(name.clone()),
+                            tool_call_id: Some(id.clone()),
+                            content: Some(format!("\n> **[工具错误]** 参数解析失败: `{}` - {}\n", name, err)),
+                            session_id: sid.to_string(),
+                            loop_count,
+                        },
                     );
                     let _ = app.emit(
                         "agent-step",
-                        json!({
-                            "type": "tool_error",
-                            "tool": name,
+                        crate::infra::types::events::AgentStepEvent::ToolError {
+                            tool: name.clone(),
                             // 事件必须带调用 id：前端按 id 精确寻址工具调用，
                             // 仅靠工具名会让同一轮内的同名工具互相覆盖（2026-11 真实事故）。
-                            "toolCallId": id.clone(),
-                            "error": format!("{}", err),
-                            "content": failure,
-                            "output_summary": format!("参数解析失败: {}", err),
-                            "sessionId": sid,
-                            "loopCount": loop_count
-                        }),
+                            tool_call_id: id.clone(),
+                            error: Some(format!("{}", err)),
+                            content: failure.clone(),
+                            output_summary: Some(format!("参数解析失败: {}", err)),
+                            session_id: sid.to_string(),
+                            loop_count,
+                        },
                     );
                     immediate_results.push(ToolTaskResult {
                         index,
@@ -368,30 +370,40 @@ pub async fn execute_tool_calls(
         };
         let _ = app.emit(
             "chat-tool-debug",
-            json!({
-                "kind": "tool_status",
-                "status": status,
-                "tool": result.name.clone(),
-                "toolCallId": result.tool_use_id.clone(),
-                "sessionId": sid,
-                "loopCount": loop_count
-            }),
+            crate::infra::types::events::ChatToolDebugEvent {
+                kind: Some("tool_status".to_string()),
+                status: Some(status.to_string()),
+                tool: Some(result.name.clone()),
+                tool_call_id: Some(result.tool_use_id.clone()),
+                content: None,
+                session_id: sid.to_string(),
+                loop_count,
+            },
         );
 
         let is_error = status == "error";
         // 事件必须带调用 id，否则前端只能按工具名匹配，同一轮内同名工具会互相覆盖（2026-11 真实事故）。
-        let _ = app.emit(
-            "agent-step",
-            json!({
-                "type": if is_error { "tool_error" } else { "tool_result" },
-                "tool": result.name,
-                "toolCallId": result.tool_use_id.clone(),
-                "content": result.output,
-                "error": if is_error { Some(result.output.clone()) } else { None },
-                "sessionId": sid,
-                "loopCount": loop_count
-            }),
-        );
+        let step_event = if is_error {
+            crate::infra::types::events::AgentStepEvent::ToolError {
+                tool: result.name.clone(),
+                tool_call_id: result.tool_use_id.clone(),
+                content: result.output.clone(),
+                error: Some(result.output.clone()),
+                output_summary: None,
+                session_id: sid.to_string(),
+                loop_count,
+            }
+        } else {
+            crate::infra::types::events::AgentStepEvent::ToolResult {
+                tool: result.name.clone(),
+                tool_call_id: result.tool_use_id.clone(),
+                content: result.output.clone(),
+                error: None,
+                session_id: sid.to_string(),
+                loop_count,
+            }
+        };
+        let _ = app.emit("agent-step", step_event);
 
         // 截断超大工具结果，防止极长输出（如 node_modules 全量列目录）撑爆上下文
         const MAX_TOOL_RESULT_LEN: usize = 50000;

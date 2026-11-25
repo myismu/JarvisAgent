@@ -60,13 +60,13 @@ impl PipelineState {
             }
             let _ = self.app.emit(
                 "checkpoint-created",
-                serde_json::json!({
-                    "sessionId": self.sid,
-                    "checkpointId": checkpoint_id,
-                    "hasPatches": has_patches,
-                    "canRollback": true,
-                    "message": self.user_msg_preview
-                }),
+                crate::infra::types::events::CheckpointCreatedEvent {
+                    session_id: self.sid.clone(),
+                    checkpoint_id: checkpoint_id.clone(),
+                    has_patches,
+                    can_rollback: true,
+                    message: self.user_msg_preview.clone(),
+                },
             );
             (checkpoint_id, has_patches)
         };

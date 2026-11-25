@@ -232,11 +232,11 @@ pub async fn todo_write(
 
     let _ = app.emit(
         "todo-update",
-        serde_json::json!({
-            "todos": flat,
-            "groups": groups_snapshot,
-            "sessionId": session_id,
-        }),
+        crate::infra::types::events::TodoUpdateEvent {
+            todos: flat.clone(),
+            groups: groups_snapshot.clone(),
+            session_id: session_id.to_string(),
+        },
     );
 
     framework::ToolCallResult::ok(

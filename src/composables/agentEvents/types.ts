@@ -17,7 +17,7 @@ import type { useSessionStore } from "../../stores/session";
 import type { useChatStore } from "../../stores/chat";
 import type { useAgentStore } from "../../stores/agent";
 import type { usePermissionStore } from "../../stores/permission";
-import type { AgentRun } from "../../types";
+import type { AgentRun, SessionMessagesChangedEvent } from "../../types";
 
 /** 抽象事件监听注册函数（类似 Java 的 EventBus.subscribe） */
 export type EventRegisterFn = <T>(
@@ -30,12 +30,8 @@ export interface SessionCleanupPayload {
   activeSessionId?: string | null;
 }
 
-export interface SessionMessagesChangedPayload {
-  sessionId: string;
-  count: number;
-  lastSeq: number | null;
-  reason: string;
-}
+/** 复用 Rust 侧 ts-rs 自动生成的事件契约，消除手工双份维护 */
+export type SessionMessagesChangedPayload = SessionMessagesChangedEvent;
 
 export interface AgentEventsLoaders {
   refreshSessionHistory: (sessionId: string, reason: string) => Promise<void>;

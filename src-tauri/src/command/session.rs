@@ -66,12 +66,12 @@ pub async fn set_session_work_mode(
 
     let _ = app.emit(
         "agent-work-mode-changed",
-        serde_json::json!({
-            "sessionId": session_id,
-            "from": current,
-            "to": mode,
-            "reason": "用户手动切换",
-        }),
+        crate::infra::types::events::AgentWorkModeChangedEvent {
+            session_id: session_id.clone(),
+            from: current,
+            to: mode,
+            reason: "用户手动切换".to_string(),
+        },
     );
 
     Ok(())
@@ -1515,10 +1515,10 @@ impl Drop for CompactingSessionGuard<'_> {
         let _ = self.state.set_compacting(&self.session_id, false);
         let _ = self.app.emit(
             "bg-compacting-changed",
-            serde_json::json!({
-                "sessionId": self.session_id,
-                "compacting": false,
-            }),
+            crate::infra::types::events::BgCompactingChangedEvent {
+                session_id: self.session_id.clone(),
+                compacting: false,
+            },
         );
     }
 }
@@ -1535,10 +1535,10 @@ pub async fn compact_conversation(
     }
     let _ = app.emit(
         "bg-compacting-changed",
-        serde_json::json!({
-            "sessionId": session_id,
-            "compacting": true,
-        }),
+        crate::infra::types::events::BgCompactingChangedEvent {
+            session_id: session_id.clone(),
+            compacting: true,
+        },
     );
     let guard = CompactingSessionGuard {
         state: compacting.inner(),

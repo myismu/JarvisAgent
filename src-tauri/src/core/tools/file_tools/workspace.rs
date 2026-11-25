@@ -276,10 +276,10 @@ pub async fn commit_pending_snapshot(
                     }
                     let _ = app.emit(
                         "snapshot-created",
-                        serde_json::json!({
-                            "sessionId": session_id,
-                            "snapshotId": snapshot.id
-                        }),
+                        crate::infra::types::events::SnapshotCreatedEvent {
+                            session_id: session_id.to_string(),
+                            snapshot_id: snapshot.id.clone(),
+                        },
                     );
                     if mgr.should_create_checkpoint().await {
                         let _ = mgr

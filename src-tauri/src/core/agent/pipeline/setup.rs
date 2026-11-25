@@ -50,10 +50,10 @@ impl PipelineState {
         // 通知前端刷新（监控窗口 / 主窗口的开关都需要跟着显示）
         let _ = app.emit(
             "session-thinking-mode-changed",
-            serde_json::json!({
-                "sessionId": session_id,
-                "thinkingEnabled": resolved,
-            }),
+            crate::infra::types::events::SessionThinkingModeChangedEvent {
+                session_id: session_id.to_string(),
+                thinking_enabled: resolved,
+            },
         );
     }
 
@@ -386,12 +386,12 @@ impl PipelineState {
                         }
                         let _ = app.emit(
                             "agent-work-mode-changed",
-                            json!({
-                                "sessionId": session_id,
-                                "from": old_mode,
-                                "to": "edit",
-                                "reason": "方案已批准，自动切回编辑模式",
-                            }),
+                            crate::infra::types::events::AgentWorkModeChangedEvent {
+                                session_id: session_id.clone(),
+                                from: old_mode,
+                                to: "edit".to_string(),
+                                reason: "方案已批准，自动切回编辑模式".to_string(),
+                            },
                         );
                     }
                 }
@@ -487,12 +487,12 @@ impl PipelineState {
             state.detected_intent = "TASK_PLAN".to_string();
             let _ = state.app.emit(
                 "agent-work-mode-changed",
-                json!({
-                    "sessionId": state.sid,
-                    "from": current_work_mode,
-                    "to": "plan",
-                    "reason": "检测到复杂任务，自动切换到计划模式",
-                }),
+                crate::infra::types::events::AgentWorkModeChangedEvent {
+                    session_id: state.sid.clone(),
+                    from: current_work_mode,
+                    to: "plan".to_string(),
+                    reason: "检测到复杂任务，自动切换到计划模式".to_string(),
+                },
             );
         }
 

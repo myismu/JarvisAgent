@@ -1297,12 +1297,12 @@ pub fn notify_messages_changed(app: &tauri::AppHandle, session_id: &str, reason:
 
     let _ = app.emit(
         "session-messages-changed",
-        serde_json::json!({
-            "sessionId": session_id,
-            "count": stats.0,
-            "lastSeq": stats.1,
-            "reason": reason,
-        }),
+        crate::infra::types::events::SessionMessagesChangedEvent {
+            session_id: session_id.to_string(),
+            count: stats.0,
+            last_seq: stats.1,
+            reason: reason.to_string(),
+        },
     );
 }
 

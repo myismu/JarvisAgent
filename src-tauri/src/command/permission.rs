@@ -273,12 +273,12 @@ pub async fn cancel_jarvis(
         });
         let _ = app.emit(
             "permission-resolved",
-            serde_json::json!({
-                "id": id,
-                "sessionId": session_id,
-                "decision": "interrupted",
-                "decisionText": "本轮执行已被取消",
-            }),
+            crate::infra::types::events::PermissionResolvedEvent {
+                id,
+                session_id: session_id.clone(),
+                decision: "interrupted".to_string(),
+                decision_text: "本轮执行已被取消".to_string(),
+            },
         );
     }
     // 级联取消该会话下所有运行中的子 Agent
@@ -427,7 +427,10 @@ pub async fn set_session_approval_mode(
     }
     let _ = app.emit(
         "approval-mode-changed",
-        serde_json::json!({ "sessionId": session_id, "mode": mode }),
+        crate::infra::types::events::ApprovalModeChangedEvent {
+            session_id: session_id.clone(),
+            mode: mode.clone(),
+        },
     );
     println!("[JARVIS] 会话 {} 权限档位切换为：{}", session_id, mode);
 
@@ -465,7 +468,10 @@ pub async fn set_agent_read_only(
     *ctx.agent_read_only.lock().await = enabled;
     let _ = app.emit(
         "agent-read-only-changed",
-        serde_json::json!({ "sessionId": session_id, "enabled": enabled }),
+        crate::infra::types::events::AgentReadOnlyChangedEvent {
+            session_id: session_id.clone(),
+            enabled,
+        },
     );
     println!(
         "[JARVIS] 会话 {} 只读保护：{}",
@@ -493,7 +499,9 @@ pub async fn revoke_session_allowance(
     crate::core::tools::framework::allowance_store::revoke(&ctx, &kind, &scope).await;
     let _ = app.emit(
         "session-allowances-changed",
-        serde_json::json!({ "sessionId": session_id }),
+        crate::infra::types::events::SessionAllowancesChangedEvent {
+            session_id: session_id.clone(),
+        },
     );
     Ok(())
 }
@@ -511,7 +519,9 @@ pub async fn clear_session_allowances(
     crate::core::tools::framework::allowance_store::clear(&ctx).await;
     let _ = app.emit(
         "session-allowances-changed",
-        serde_json::json!({ "sessionId": session_id }),
+        crate::infra::types::events::SessionAllowancesChangedEvent {
+            session_id: session_id.clone(),
+        },
     );
     Ok(())
 }

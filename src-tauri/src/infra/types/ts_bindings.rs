@@ -61,6 +61,15 @@ use crate::infra::background::{BackgroundTask, Notification as BackgroundTaskNot
 use crate::infra::config::config::{AgentConfig, AppConfig, ModelProfile};
 use crate::infra::llm::registry::{ModelCapabilities, ModelRegistryEntry};
 use crate::infra::shell_dialect::{ShellMode, ShellResolution, ShellSettings};
+use crate::infra::types::events::{
+    AgentReadOnlyChangedEvent, AgentStepEvent, AgentWorkModeChangedEvent, ApprovalModeChangedEvent,
+    BackgroundFailedEvent, BgCompactingChangedEvent, ChatContentEvent, ChatStreamEvent,
+    ChatThinkingEvent, ChatToolDebugEvent, ChatToolStartEvent, ChatTurnEndEvent,
+    ChatTurnStartEvent, CheckpointCreatedEvent, MemoryUpdatedEvent, PermissionRequestEvent,
+    PermissionResolvedEvent, PlanProposalEvent, PlanProposalStreamEvent,
+    SessionAllowancesChangedEvent, SessionMessagesChangedEvent, SessionThinkingModeChangedEvent,
+    SnapshotCreatedEvent, SubagentTraceUpdatedEvent, TodoUpdateEvent,
+};
 use crate::infra::types::models::{
     CacheHitPoint, ContextSectionSnapshot, InterruptKind, JarvisResult, PlanDocument, PlanTask,
     SessionContextSnapshot, SkillDetail, SkillMeta, Task, TaskStatus, TodoGroup, TodoItem,
@@ -177,6 +186,32 @@ fn render_contracts_ts() -> String {
         ConflictResolution::decl(),
         Conflict::decl(),
         MergeResult::decl(),
+        // 后端推送事件契约（infra/types/events.rs，覆盖全部 25 类动态事件）
+        ChatTurnStartEvent::decl(),
+        ChatTurnEndEvent::decl(),
+        ChatContentEvent::decl(),
+        ChatThinkingEvent::decl(),
+        ChatStreamEvent::decl(),
+        ChatToolStartEvent::decl(),
+        ChatToolDebugEvent::decl(),
+        AgentStepEvent::decl(),
+        PermissionRequestEvent::decl(),
+        PermissionResolvedEvent::decl(),
+        PlanProposalEvent::decl(),
+        PlanProposalStreamEvent::decl(),
+        ApprovalModeChangedEvent::decl(),
+        AgentReadOnlyChangedEvent::decl(),
+        AgentWorkModeChangedEvent::decl(),
+        SessionAllowancesChangedEvent::decl(),
+        SessionThinkingModeChangedEvent::decl(),
+        SessionMessagesChangedEvent::decl(),
+        BgCompactingChangedEvent::decl(),
+        BackgroundFailedEvent::decl(),
+        CheckpointCreatedEvent::decl(),
+        SnapshotCreatedEvent::decl(),
+        MemoryUpdatedEvent::decl(),
+        SubagentTraceUpdatedEvent::decl(),
+        TodoUpdateEvent::decl(),
     ];
 
     let mut out = String::from(

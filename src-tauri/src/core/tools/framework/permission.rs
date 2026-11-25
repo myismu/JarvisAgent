@@ -18,7 +18,6 @@
 //!   绝不允许"等太久就默认拒绝然后继续跑"：那等于系统替用户做了决定，
 //!   模型还会拿着假的"拒绝"继续推理甚至换个写法重试。
 
-use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -310,17 +309,17 @@ pub async fn request_permission_with_origin(
 
     let _ = app.emit(
         "permission-request",
-        json!({
-            "id": id,
-            "message": message,
-            "sessionId": session_id,
-            "kind": kind.as_str(),
+        crate::infra::types::events::PermissionRequestEvent {
+            id: id.clone(),
+            message: message.to_string(),
+            session_id: session_id.to_string(),
+            kind: kind.as_str().to_string(),
             // 只有"工具确认"且这条操作**真的有范围键**时，会话级允许才有个明确的含义；
             // 否则按钮点了等于没点（旧实现里这是个会骗人的按钮）
-            "allowSession": kind.allows_session_wide_approval() && !allowance.is_empty(),
+            allow_session: kind.allows_session_wide_approval() && !allowance.is_empty(),
             // 危险警示文案（无则 null）：会话流卡片据此把风险行渲染成弱警示样式
-            "warning": warning,
-        }),
+            warning: warning.map(|w| w.to_string()),
+        },
     );
 
     // 无限期等待：只有"用户给出决策""本轮取消""权限通道关闭"能结束等待。
@@ -354,12 +353,12 @@ pub async fn request_permission_with_origin(
         if removed.is_some() {
             let _ = app.emit(
                 "permission-resolved",
-                json!({
-                    "id": id,
-                    "sessionId": session_id,
-                    "decision": decision.status_label(),
-                    "decisionText": decision.model_note(),
-                }),
+                crate::infra::types::events::PermissionResolvedEvent {
+                    id: id.clone(),
+                    session_id: session_id.to_string(),
+                    decision: decision.status_label().to_string(),
+                    decision_text: decision.model_note(),
+                },
             );
         }
     }
@@ -390,12 +389,12 @@ impl Drop for PendingPermissionGuard {
             if removed.is_some() {
                 let _ = app.emit(
                     "permission-resolved",
-                    json!({
-                        "id": id,
-                        "sessionId": session_id,
-                        "decision": "interrupted",
-                        "decisionText": "权限确认未完成：本轮执行已被中断",
-                    }),
+                    crate::infra::types::events::PermissionResolvedEvent {
+                        id,
+                        session_id,
+                        decision: "interrupted".to_string(),
+                        decision_text: "权限确认未完成：本轮执行已被中断".to_string(),
+                    },
                 );
             }
         };

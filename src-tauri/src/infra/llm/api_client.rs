@@ -26,7 +26,6 @@
 
 use std::time::Duration;
 
-use serde_json::json;
 use tauri::Emitter;
 
 use crate::infra::llm::api_format::ApiFormat;
@@ -241,14 +240,13 @@ pub async fn api_call_with_retry(
             // 与"等待提示"一致，也不落库（避免历史里堆满重试噪音）。
             let _ = app.emit(
                 "agent-step",
-                json!({
-                    "type": "retry",
-                    "attempt": attempt,
-                    "max": max_retries,
+                crate::infra::types::events::AgentStepEvent::Retry {
+                    attempt,
+                    max: max_retries,
                     // 秒数交给前端 `notice.retry` 组句 —— 后端不再产出用户可见文案
-                    "waitSecs": wait_secs,
-                    "sessionId": session_id
-                }),
+                    wait_secs,
+                    session_id: session_id.to_string(),
+                },
             );
             println!(
                 "[JARVIS] API 重试 {}/{}，等待 {}s...",
@@ -288,11 +286,11 @@ pub async fn api_call_with_retry(
                     // （只清 retry，不碰等待提示与反思标注）。
                     let _ = app.emit(
                         "agent-step",
-                        json!({
-                            "type": "notice_clear",
-                            "kinds": ["retry"],
-                            "sessionId": session_id
-                        }),
+                        crate::infra::types::events::AgentStepEvent::NoticeClear {
+                            kinds: vec!["retry".to_string()],
+                            session_id: session_id.to_string(),
+                            loop_count: None,
+                        },
                     );
                     return Ok(response);
                 }

@@ -854,10 +854,10 @@ pub async fn run_memory_curator(app: tauri::AppHandle, config: AgentConfig, sess
                 );
                 let _ = app.emit(
                     "memory-updated",
-                    serde_json::json!({
-                        "sessionId": session_id,
-                        "summary": "全局记忆已整理",
-                    }),
+                    crate::infra::types::events::MemoryUpdatedEvent {
+                        session_id: session_id.to_string(),
+                        summary: "全局记忆已整理".to_string(),
+                    },
                 );
             } else {
                 println!("[MEMORY] Skipped: memory was modified during consolidation");

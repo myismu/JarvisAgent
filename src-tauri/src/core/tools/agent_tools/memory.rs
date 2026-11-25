@@ -270,7 +270,10 @@ fn apply_memory_edit(
 fn emit_memory_updated(app: &tauri::AppHandle, session_id: &str, summary: &str) {
     let _ = app.emit(
         "memory-updated",
-        serde_json::json!({ "sessionId": session_id, "summary": summary }),
+        crate::infra::types::events::MemoryUpdatedEvent {
+            session_id: session_id.to_string(),
+            summary: summary.to_string(),
+        },
     );
 }
 

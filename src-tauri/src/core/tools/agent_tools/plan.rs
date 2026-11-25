@@ -5,7 +5,6 @@
 //! ## 关键导出
 //! - `propose_plan()`: 方案审批工具
 
-use serde_json::json;
 use tauri::{Emitter, Manager};
 
 use crate::infra::types::models::{PlanDocument, PlanTask};
@@ -382,12 +381,12 @@ pub async fn propose_plan(
     // 发送事件到前端，触发方案预览面板
     let _ = app.emit(
         "plan-proposal",
-        json!({
-            "id": id,
-            "title": title,
-            "content": content,
-            "sessionId": session_id
-        }),
+        crate::infra::types::events::PlanProposalEvent {
+            id: id.clone(),
+            title: title.to_string(),
+            content: content.to_string(),
+            session_id: session_id.to_string(),
+        },
     );
 
     // 注意：不在这里 emit chat-stream，由 pipeline 在 break_loop 时统一生成 turn 总结。
@@ -409,6 +408,7 @@ pub async fn propose_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     /// 回归锁：空 subject 也要占住自己的序号。
     ///

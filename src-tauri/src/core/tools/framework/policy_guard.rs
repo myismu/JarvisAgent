@@ -1124,7 +1124,9 @@ pub async fn grant_session_allowance(
     // 让界面的"已允许"面板立刻刷新
     let _ = app.emit(
         "session-allowances-changed",
-        serde_json::json!({ "sessionId": session_id }),
+        crate::infra::types::events::SessionAllowancesChangedEvent {
+            session_id: session_id.to_string(),
+        },
     );
 
     // 挑出会被这次允许覆盖的积压请求：工具确认 + **它需要的键已全部被允许**
@@ -1163,12 +1165,12 @@ pub async fn grant_session_allowance(
         let _ = responder.send(PermissionDecision::Allow);
         let _ = app.emit(
             "permission-resolved",
-            serde_json::json!({
-                "id": id,
-                "sessionId": session_id,
-                "decision": "allow",
-                "decisionText": "",
-            }),
+            crate::infra::types::events::PermissionResolvedEvent {
+                id,
+                session_id: session_id.to_string(),
+                decision: "allow".to_string(),
+                decision_text: String::new(),
+            },
         );
     }
 }
@@ -1260,12 +1262,12 @@ pub async fn sweep_pending_on_mode_change(app: &tauri::AppHandle, session_id: &s
         );
         let _ = app.emit(
             "permission-resolved",
-            serde_json::json!({
-                "id": id,
-                "sessionId": session_id,
-                "decision": decision.status_label(),
-                "decisionText": decision.model_note(),
-            }),
+            crate::infra::types::events::PermissionResolvedEvent {
+                id: id.clone(),
+                session_id: session_id.to_string(),
+                decision: decision.status_label().to_string(),
+                decision_text: decision.model_note(),
+            },
         );
     }
     dispatched.len()

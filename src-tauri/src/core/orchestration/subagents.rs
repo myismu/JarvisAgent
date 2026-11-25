@@ -265,7 +265,10 @@ impl SubAgentMonitor {
         })?;
         let _ = app.emit(
             "subagent-trace-updated",
-            serde_json::json!({"runId":run_id,"loopIndex":loop_index}),
+            crate::infra::types::events::SubagentTraceUpdatedEvent {
+                run_id: run_id.to_string(),
+                loop_index,
+            },
         );
         Ok(())
     }

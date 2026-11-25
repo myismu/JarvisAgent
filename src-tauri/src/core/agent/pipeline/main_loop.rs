@@ -432,11 +432,11 @@ impl PipelineState {
 
             let _ = self.app.emit(
                 "chat-turn-end",
-                json!({
-                    "has_tool": turn_has_tool,
-                    "sessionId": self.sid,
-                    "loopCount": self.total_loop_count + 1
-                }),
+                crate::infra::types::events::ChatTurnEndEvent {
+                    has_tool: turn_has_tool,
+                    session_id: self.sid.clone(),
+                    loop_count: self.total_loop_count + 1,
+                },
             );
 
             // 取消检查移到这里之前只做「下一轮是否继续」的判断。
@@ -561,11 +561,13 @@ impl PipelineState {
                     println!("[JARVIS] 响应后置拦截：检测到正文中的计划内容，重定向到 ProposePlan");
                     let _ = self.app.emit(
                         "chat-stream",
-                        json!({
-                            "content": "\n> **[方案重定向]** 检测到计划性内容，正在重定向到方案审批流程。\n",
-                            "sessionId": self.sid,
-                            "loopCount": self.total_loop_count + 1
-                        }),
+                        crate::infra::types::events::ChatStreamEvent {
+                            content: "\n> **[方案重定向]** 检测到计划性内容，正在重定向到方案审批流程。\n"
+                                .to_string(),
+                            session_id: self.sid.clone(),
+                            loop_count: Some(self.total_loop_count + 1),
+                            is_sub_agent: None,
+                        },
                     );
 
                     let redirect_msg = if work_mode == "plan" {
@@ -748,12 +750,13 @@ impl PipelineState {
                                     reflection_record = Some(("ok".to_string(), None, None));
                                     let _ = self.app.emit(
                                         "agent-step",
-                                        json!({
-                                            "type": "reflection",
-                                            "sessionId": self.sid,
-                                            "loopCount": self.total_loop_count + 1,
-                                            "judgment": "ok",
-                                        }),
+                                        crate::infra::types::events::AgentStepEvent::Reflection {
+                                            session_id: self.sid.clone(),
+                                            loop_count: self.total_loop_count + 1,
+                                            judgment: "ok".to_string(),
+                                            reason: None,
+                                            suggestion: None,
+                                        },
                                     );
                                 }
                                 // 判断 NO：递增连续 NO 计数，并把修正建议注入 session
@@ -771,14 +774,13 @@ impl PipelineState {
                                     ));
                                     let _ = self.app.emit(
                                         "agent-step",
-                                        json!({
-                                            "type": "reflection",
-                                            "sessionId": self.sid,
-                                            "loopCount": self.total_loop_count + 1,
-                                            "judgment": "not_ok",
-                                            "reason": reason,
-                                            "suggestion": suggestion,
-                                        }),
+                                        crate::infra::types::events::AgentStepEvent::Reflection {
+                                            session_id: self.sid.clone(),
+                                            loop_count: self.total_loop_count + 1,
+                                            judgment: "not_ok".to_string(),
+                                            reason: Some(reason.clone()),
+                                            suggestion: Some(suggestion.clone()),
+                                        },
                                     );
 
                                     // 注入修正建议到 session

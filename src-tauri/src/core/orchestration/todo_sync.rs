@@ -142,11 +142,11 @@ fn emit_todo_update(app: &tauri::AppHandle, session_id: &str, groups: &[TodoGrou
         .collect();
     let _ = app.emit(
         "todo-update",
-        serde_json::json!({
-            "todos": flat,
-            "groups": groups,
-            "sessionId": session_id,
-        }),
+        crate::infra::types::events::TodoUpdateEvent {
+            todos: flat,
+            groups: groups.to_vec(),
+            session_id: session_id.to_string(),
+        },
     );
 }
 
