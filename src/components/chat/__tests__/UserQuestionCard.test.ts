@@ -125,15 +125,19 @@ describe("UserQuestionCard.vue", () => {
     });
     await nextTick();
 
+    // 第一题尚未答完全部题目时，不显示「提交回复」，只引导「下一题」
+    expect(wrapper.find(".uq-btn-submit").exists()).toBe(false);
+
     // 第一题多选两项 + 自填补充
     const firstOpts = wrapper.findAll("button.uq-option");
     await firstOpts[0].trigger("click");
     await firstOpts[1].trigger("click");
     await wrapper.find(".uq-custom-input").setValue("需要支持跳过按钮");
 
-    // 切到第二题并直接填“其他”自填
+    // 切到第二题（最后一题）后才显示「提交回复」并直接填“其他”自填
     await wrapper.findAll(".uq-tab")[1].trigger("click");
     await nextTick();
+    expect(wrapper.find(".uq-btn-submit").exists()).toBe(true);
     await wrapper.find(".uq-custom-input").setValue("右侧抽屉");
 
     await wrapper.find(".uq-btn-submit").trigger("click");

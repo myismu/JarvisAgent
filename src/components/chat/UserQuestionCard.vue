@@ -68,6 +68,15 @@ const answeredCount = computed(
   () => questions.value.filter((q) => isQuestionAnswered(q)).length,
 );
 
+/** 多题场景下：仅在最后一题或全部题目均已作答时才显示「提交回复」，前面题目只引导「下一题」 */
+const showSubmitButton = computed(() => {
+  if (questions.value.length <= 1) return true;
+  return (
+    currentIndex.value === questions.value.length - 1 ||
+    answeredCount.value === questions.value.length
+  );
+});
+
 const canSubmit = computed(() => {
   if (!activeRequest.value || isSubmitting.value) return false;
   // 至少有一道题作答即可提交（未填题后端会自动提示按推荐方案处理）
@@ -245,6 +254,7 @@ async function submitDecision(decision: 'answered' | 'skipped') {
             下一题
           </button>
           <button
+            v-if="showSubmitButton"
             type="button"
             class="uq-btn uq-btn-submit"
             :disabled="!canSubmit"
@@ -261,7 +271,9 @@ async function submitDecision(decision: 'answered' | 'skipped') {
 <style scoped>
 .uq-card {
   width: 100%;
-  margin-bottom: 8px;
+  max-width: min(85%, 960px); /* 与 TerminalInput(.chat-input-wrapper) 保持完全等宽 */
+  margin: 0 auto 8px;
+  box-sizing: border-box;
   padding: 12px 14px;
   border-radius: var(--radius-lg, 14px);
   background: var(--glass-bg-heavy, #fff);

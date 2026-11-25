@@ -505,6 +505,15 @@ pub const TOOL_POLICIES: &[(&str, ToolPolicy)] = &[
         },
     ),
     (
+        "AskUser",
+        ToolPolicy {
+            class: ToolClass::SessionMgmt,
+            path_fields: &[],
+            command_field: None,
+            patch_field: None,
+        },
+    ),
+    (
         "SwitchWorkMode",
         ToolPolicy {
             class: ToolClass::AppControl,
