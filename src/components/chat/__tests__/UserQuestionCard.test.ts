@@ -72,14 +72,22 @@ describe("UserQuestionCard.vue", () => {
 
     expect(wrapper.find(".uq-card").exists()).toBe(true);
     expect(wrapper.find(".uq-title").text()).toBe("确认存储方案");
-    expect(wrapper.find(".uq-btn-submit").attributes("disabled")).toBeDefined();
+    expect(wrapper.find(".uq-progress").text()).toBe("0/1");
+    expect(wrapper.find(".uq-btn-primary").attributes("disabled")).toBeDefined();
+
+    // 点击折叠按钮收起内容，再点击展开
+    await wrapper.find(".uq-collapse-btn").trigger("click");
+    expect(wrapper.find(".uq-collapsible").exists()).toBe(false);
+    await wrapper.find(".uq-collapse-btn").trigger("click");
+    expect(wrapper.find(".uq-collapsible").exists()).toBe(true);
 
     // 选择第一项 SQLite
     await wrapper.findAll("button.uq-option")[0].trigger("click");
-    expect(wrapper.find(".uq-btn-submit").attributes("disabled")).toBeUndefined();
+    expect(wrapper.find(".uq-progress").text()).toBe("1/1");
+    expect(wrapper.find(".uq-btn-primary").attributes("disabled")).toBeUndefined();
 
     // 点击提交
-    await wrapper.find(".uq-btn-submit").trigger("click");
+    await wrapper.find(".uq-btn-primary").trigger("click");
     await flushPromises();
 
     expect(invokeMock).toHaveBeenCalledWith("resolve_user_question", {
@@ -126,7 +134,7 @@ describe("UserQuestionCard.vue", () => {
     await nextTick();
 
     // 第一题尚未答完全部题目时，不显示「提交回复」，只引导「下一题」
-    expect(wrapper.find(".uq-btn-submit").exists()).toBe(false);
+    expect(wrapper.find(".uq-btn-primary").exists()).toBe(false);
 
     // 第一题多选两项 + 自填补充
     const firstOpts = wrapper.findAll("button.uq-option");
@@ -137,10 +145,10 @@ describe("UserQuestionCard.vue", () => {
     // 切到第二题（最后一题）后才显示「提交回复」并直接填“其他”自填
     await wrapper.findAll(".uq-tab")[1].trigger("click");
     await nextTick();
-    expect(wrapper.find(".uq-btn-submit").exists()).toBe(true);
+    expect(wrapper.find(".uq-btn-primary").exists()).toBe(true);
     await wrapper.find(".uq-custom-input").setValue("右侧抽屉");
 
-    await wrapper.find(".uq-btn-submit").trigger("click");
+    await wrapper.find(".uq-btn-primary").trigger("click");
     await flushPromises();
 
     expect(invokeMock).toHaveBeenCalledWith("resolve_user_question", {
@@ -194,7 +202,7 @@ describe("UserQuestionCard.vue", () => {
     // 切回会话 A 并点击跳过
     sessionStore.activeSessionId = "s-a";
     await nextTick();
-    await wrapper.find(".uq-btn-skip").trigger("click");
+    await wrapper.find(".uq-btn-ghost").trigger("click");
     await flushPromises();
 
     expect(invokeMock).toHaveBeenCalledWith("resolve_user_question", {
