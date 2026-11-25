@@ -1,14 +1,14 @@
 <!--
 # UserQuestionCard.vue — 运行期用户咨询卡片（AskUser 工具）
 
-挂在输入区上方（与 TerminalInput 完全等宽），当 Agent 运行期间需要澄清需求或确认方案分叉时弹出，
-支持一键折叠/展开、单题/多题切换、单选/多选选项卡片、内置「其他」自填输入框，以及「提交回复 / 跳过」决策出口。
+复用 `ComposerDockCard` 统一骨架，承载单题/多题切换、单选/多选选项卡片、
+内置「其他」无边框自填输入框，以及「提交回复 / 跳过」决策出口。
 
 ## Key Exports
 - 默认导出组件：运行期咨询卡片
 
 ## Dependencies
-- Internal: `@/stores/permission`, `@/types`
+- Internal: `./ComposerDockCard.vue`, `@/stores/permission`, `@/types`
 - External: `@tauri-apps/api/core`, `vue`
 -->
 <script setup lang="ts">
@@ -16,6 +16,7 @@ import { computed, reactive, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { usePermissionStore } from '../../stores/permission';
 import type { UserQuestionAnswerItem, UserQuestionItem } from '../../types';
+import ComposerDockCard from './ComposerDockCard.vue';
 
 const perm = usePermissionStore();
 const activeRequest = computed(() => perm.userQuestion);
@@ -151,255 +152,120 @@ async function submitDecision(decision: 'answered' | 'skipped') {
 </script>
 
 <template>
-  <Transition name="uq-slide">
-    <section
-      v-if="activeRequest && currentQuestion"
-      class="uq-card"
-      :class="{ collapsed: isCollapsed }"
-      aria-label="Agent 咨询"
-    >
-      <header class="uq-header" @click="isCollapsed = !isCollapsed">
-        <div class="uq-header-left">
-          <span class="uq-dot" aria-hidden="true"></span>
-          <span class="uq-title">{{ activeRequest.title || '需要你确认以下问题' }}</span>
-        </div>
-        <div class="uq-header-right">
-          <span class="uq-progress">{{ answeredCount }}/{{ questions.length }}</span>
-          <button
-            type="button"
-            class="uq-collapse-btn"
-            :aria-expanded="!isCollapsed"
-            :title="isCollapsed ? '展开咨询' : '收起咨询'"
-            @click.stop="isCollapsed = !isCollapsed"
-          >
-            <svg
-              class="uq-chevron"
-              :class="{ rotated: isCollapsed }"
-              viewBox="0 0 24 24"
-              width="14"
-              height="14"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
-          </button>
-        </div>
-      </header>
-
-      <div v-if="!isCollapsed" class="uq-collapsible">
-        <!-- 多题场景下的顶部轻量标签栏 -->
-        <div v-if="questions.length > 1" class="uq-tabs" role="tablist">
-          <button
-            v-for="(q, idx) in questions"
-            :key="q.id"
-            type="button"
-            class="uq-tab"
-            :class="{ active: idx === currentIndex, answered: isQuestionAnswered(q) }"
-            @click="currentIndex = idx"
-          >
-            <span class="uq-tab-index">{{ idx + 1 }}</span>
-            <span class="uq-tab-label">{{ q.header || `问题 ${idx + 1}` }}</span>
-          </button>
-        </div>
-
-        <div class="uq-body">
-          <div class="uq-question-line">
-            <p class="uq-question-text">{{ currentQuestion.question }}</p>
-            <span class="uq-mode-tag">{{ currentQuestion.multiSelect ? '多选' : '单选' }}</span>
-          </div>
-
-          <div class="uq-options">
-            <button
-              v-for="opt in currentQuestion.options"
-              :key="opt.label"
-              type="button"
-              class="uq-option"
-              :class="{ selected: (selectedMap[currentQuestion.id] ?? []).includes(opt.label) }"
-              @click="toggleOption(currentQuestion, opt.label)"
-            >
-              <span class="uq-indicator" :class="{ multi: currentQuestion.multiSelect }"></span>
-              <span class="uq-option-content">
-                <span class="uq-option-head">
-                  <span class="uq-option-label">{{ opt.label }}</span>
-                  <span v-if="opt.recommended" class="uq-rec-pill">推荐</span>
-                </span>
-                <span v-if="opt.description" class="uq-option-desc">{{ opt.description }}</span>
-              </span>
-            </button>
-
-            <!-- 内置「其他」自填选项 -->
-            <div
-              v-if="currentQuestion.allowCustom"
-              class="uq-option uq-custom-option"
-              :class="{ selected: customEnabledMap[currentQuestion.id] }"
-              @click="toggleCustomOption(currentQuestion)"
-            >
-              <span class="uq-indicator" :class="{ multi: currentQuestion.multiSelect }"></span>
-              <div class="uq-custom-body" @click.stop>
-                <span class="uq-option-label uq-custom-title" @click="toggleCustomOption(currentQuestion)">
-                  其他
-                </span>
-                <input
-                  type="text"
-                  class="uq-custom-input"
-                  :value="customTextMap[currentQuestion.id] ?? ''"
-                  placeholder="输入你的自定义想法或补充说明..."
-                  @focus="customEnabledMap[currentQuestion.id] = true"
-                  @input="onCustomInput(currentQuestion, ($event.target as HTMLInputElement).value)"
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <footer class="uq-footer">
-          <div class="uq-footer-left">
-            <button
-              type="button"
-              class="uq-btn-ghost"
-              :disabled="isSubmitting"
-              @click="submitDecision('skipped')"
-            >
-              跳过，按推荐继续
-            </button>
-          </div>
-          <div class="uq-footer-right">
-            <button
-              v-if="questions.length > 1 && currentIndex > 0"
-              type="button"
-              class="uq-btn uq-btn-secondary"
-              @click="currentIndex -= 1"
-            >
-              上一题
-            </button>
-            <button
-              v-if="questions.length > 1 && currentIndex < questions.length - 1"
-              type="button"
-              class="uq-btn uq-btn-secondary"
-              @click="currentIndex += 1"
-            >
-              下一题
-            </button>
-            <button
-              v-if="showSubmitButton"
-              type="button"
-              class="uq-btn uq-btn-primary"
-              :disabled="!canSubmit"
-              @click="submitDecision('answered')"
-            >
-              {{ isSubmitting ? '提交中...' : '提交回复' }}
-            </button>
-          </div>
-        </footer>
+  <ComposerDockCard
+    :visible="Boolean(activeRequest && currentQuestion)"
+    :title="activeRequest?.title || '需要你确认以下问题'"
+    :counter="`${answeredCount}/${questions.length}`"
+    v-model:collapsed="isCollapsed"
+    aria-label="Agent 咨询"
+  >
+    <template v-if="currentQuestion">
+      <!-- 多题场景下的顶部轻量标签栏 -->
+      <div v-if="questions.length > 1" class="uq-tabs" role="tablist">
+        <button
+          v-for="(q, idx) in questions"
+          :key="q.id"
+          type="button"
+          class="uq-tab"
+          :class="{ active: idx === currentIndex, answered: isQuestionAnswered(q) }"
+          @click="currentIndex = idx"
+        >
+          <span class="uq-tab-index">{{ idx + 1 }}</span>
+          <span class="uq-tab-label">{{ q.header || `问题 ${idx + 1}` }}</span>
+        </button>
       </div>
-    </section>
-  </Transition>
+
+      <div class="uq-question-line">
+        <p class="uq-question-text">{{ currentQuestion.question }}</p>
+        <span class="uq-mode-tag">{{ currentQuestion.multiSelect ? '多选' : '单选' }}</span>
+      </div>
+
+      <div class="uq-options">
+        <button
+          v-for="opt in currentQuestion.options"
+          :key="opt.label"
+          type="button"
+          class="uq-option"
+          :class="{ selected: (selectedMap[currentQuestion.id] ?? []).includes(opt.label) }"
+          @click="toggleOption(currentQuestion, opt.label)"
+        >
+          <span class="uq-indicator" :class="{ multi: currentQuestion.multiSelect }"></span>
+          <span class="uq-option-content">
+            <span class="uq-option-head">
+              <span class="uq-option-label">{{ opt.label }}</span>
+              <span v-if="opt.recommended" class="uq-rec-pill">推荐</span>
+            </span>
+            <span v-if="opt.description" class="uq-option-desc">{{ opt.description }}</span>
+          </span>
+        </button>
+
+        <!-- 内置「其他」自填选项 -->
+        <div
+          v-if="currentQuestion.allowCustom"
+          class="uq-option uq-custom-option"
+          :class="{ selected: customEnabledMap[currentQuestion.id] }"
+          @click="toggleCustomOption(currentQuestion)"
+        >
+          <span class="uq-indicator" :class="{ multi: currentQuestion.multiSelect }"></span>
+          <div class="uq-custom-body" @click.stop>
+            <span class="uq-option-label uq-custom-title" @click="toggleCustomOption(currentQuestion)">
+              其他
+            </span>
+            <input
+              type="text"
+              class="uq-custom-input"
+              :value="customTextMap[currentQuestion.id] ?? ''"
+              placeholder="输入你的自定义想法或补充说明..."
+              @focus="customEnabledMap[currentQuestion.id] = true"
+              @input="onCustomInput(currentQuestion, ($event.target as HTMLInputElement).value)"
+            />
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <template #footer-left>
+      <button
+        type="button"
+        class="dock-btn-ghost"
+        :disabled="isSubmitting"
+        @click="submitDecision('skipped')"
+      >
+        跳过，按推荐继续
+      </button>
+    </template>
+
+    <template #footer-right>
+      <button
+        v-if="questions.length > 1 && currentIndex > 0"
+        type="button"
+        class="dock-btn dock-btn-secondary"
+        @click="currentIndex -= 1"
+      >
+        上一题
+      </button>
+      <button
+        v-if="questions.length > 1 && currentIndex < questions.length - 1"
+        type="button"
+        class="dock-btn dock-btn-secondary"
+        @click="currentIndex += 1"
+      >
+        下一题
+      </button>
+      <button
+        v-if="showSubmitButton"
+        type="button"
+        class="dock-btn dock-btn-primary"
+        :disabled="!canSubmit"
+        @click="submitDecision('answered')"
+      >
+        {{ isSubmitting ? '提交中...' : '提交回复' }}
+      </button>
+    </template>
+  </ComposerDockCard>
 </template>
 
 <style scoped>
-.uq-card {
-  width: 100%;
-  max-width: min(85%, 960px); /* 与 TerminalInput(.chat-input-wrapper) 完全等宽 */
-  margin: 0 auto 10px;
-  box-sizing: border-box;
-  padding: 12px 16px 14px;
-  border-radius: 16px;
-  background: var(--surface-strong, #fff);
-  border: 1px solid var(--glass-border, rgba(0, 0, 0, 0.09));
-  box-shadow: var(--shadow-md, 0 6px 20px rgba(0, 0, 0, 0.06));
-  color: var(--text-main);
-  transition: padding 0.16s ease, box-shadow 0.16s ease;
-}
-
-.uq-card.collapsed {
-  padding: 10px 16px;
-}
-
-.uq-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  cursor: pointer;
-  user-select: none;
-}
-
-.uq-header-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.uq-dot {
-  flex-shrink: 0;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--text-main);
-  opacity: 0.72;
-}
-
-.uq-title {
-  font-size: 0.84rem;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.uq-header-right {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.uq-progress {
-  font-size: 0.74rem;
-  font-weight: 500;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.uq-collapse-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: none;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-
-.uq-collapse-btn:hover {
-  background: color-mix(in srgb, var(--text-main) 6%, transparent);
-  color: var(--text-main);
-}
-
-.uq-chevron {
-  transition: transform 0.18s ease;
-}
-
-.uq-chevron.rotated {
-  transform: rotate(180deg);
-}
-
-.uq-collapsible {
-  margin-top: 10px;
-}
-
 .uq-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -604,81 +470,4 @@ async function submitDecision(decision: 'answered' | 'skipped') {
   outline: none;
   box-shadow: none;
 }
-
-.uq-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--glass-border-subtle, rgba(0, 0, 0, 0.06));
-}
-
-.uq-footer-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.uq-btn-ghost {
-  padding: 5px 6px;
-  border: none;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 0.76rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: color 0.15s ease, background 0.15s ease;
-}
-
-.uq-btn-ghost:hover:not(:disabled) {
-  color: var(--text-main);
-  background: color-mix(in srgb, var(--text-main) 4%, transparent);
-}
-
-.uq-btn-ghost:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.uq-btn {
-  padding: 6px 14px;
-  border-radius: 8px;
-  font-size: 0.78rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
-}
-
-.uq-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.uq-btn-secondary {
-  border: 1px solid var(--glass-border, rgba(0, 0, 0, 0.14));
-  background: var(--surface-strong, #fff);
-  color: var(--text-main);
-}
-
-.uq-btn-secondary:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--text-main) 35%, transparent);
-  background: color-mix(in srgb, var(--text-main) 3%, transparent);
-}
-
-.uq-btn-primary {
-  border: 1px solid var(--btn-primary-bg, var(--text-main));
-  background: var(--btn-primary-bg, var(--text-main));
-  color: var(--btn-primary-fg, #fff);
-}
-
-.uq-btn-primary:hover:not(:disabled) {
-  opacity: 0.9;
-}
-
-.uq-slide-enter-active { transition: all 0.18s ease-out; }
-.uq-slide-leave-active { transition: all 0.14s ease-in; }
-.uq-slide-enter-from { opacity: 0; transform: translateY(8px); }
-.uq-slide-leave-to { opacity: 0; transform: translateY(4px); }
 </style>
