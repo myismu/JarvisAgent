@@ -263,7 +263,9 @@ function updateTool(
 ) {
   const id = (toolCallId ?? "").trim();
   let item = id ? turn.toolCalls.find((tool) => tool.id === id) : undefined;
-  if (!item) {
+  // 只有事件本身没有 toolCallId（老数据）时，才退回按工具名兜底；
+  // 明确带了新 toolCallId 但列表里尚不存在时，不得误改已有同名条目，应返回 false 让调用方新建。
+  if (!item && !id) {
     if (!name) return false;
     // 旧数据兜底：取最后一条同名条目
     item = [...turn.toolCalls].reverse().find((tool) => tool.name === name);

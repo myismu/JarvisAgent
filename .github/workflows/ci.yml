@@ -62,5 +62,8 @@ jobs:
       - name: 安装依赖（冻结锁文件，不许 CI 里改动它）
         run: pnpm install --frozen-lockfile
 
+      - name: 前端单元测试
+        run: pnpm test
+
       - name: 类型检查与构建
         run: pnpm build
