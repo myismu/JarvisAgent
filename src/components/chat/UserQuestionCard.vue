@@ -583,24 +583,26 @@ async function submitDecision(decision: 'answered' | 'skipped') {
 .uq-custom-input {
   width: 100%;
   box-sizing: border-box;
-  padding: 6px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--glass-border-subtle, rgba(0, 0, 0, 0.12));
-  background: var(--surface-strong, #fff);
+  padding: 2px 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
   color: var(--text-main);
   font-size: 0.8rem;
+  line-height: 1.45;
   outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: none;
 }
 
 .uq-custom-input::placeholder {
   color: var(--text-muted);
-  opacity: 0.75;
+  opacity: 0.72;
 }
 
 .uq-custom-input:focus {
-  border-color: color-mix(in srgb, var(--text-main) 45%, transparent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--text-main) 8%, transparent);
+  border: none;
+  outline: none;
+  box-shadow: none;
 }
 
 .uq-footer {
