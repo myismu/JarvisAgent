@@ -15,10 +15,11 @@ import { computed, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { emit, listen } from '@tauri-apps/api/event';
+import { emit } from '@tauri-apps/api/event';
 import { useWindow } from '../../composables/useWindow';
 import { useAgentEvents } from '../../composables/useAgentEvents';
 import { useRunElapsed } from '../../composables/useRunElapsed';
+import { useBackgroundTasks } from '../../composables/agent/useBackgroundTasks';
 import { useSessionStore } from '../../stores/session';
 import { useAgentStore } from '../../stores/agent';
 import { usePermissionStore } from '../../stores/permission';
@@ -150,13 +151,18 @@ const { persistCurrentWindowState } = useWindow();
 const { t } = useI18n();
 const props = defineProps<{ standalone?: boolean }>();
 
-const backgroundTasks = ref<BackgroundTask[]>([]);
-const dismissingTasks = ref<Set<string>>(new Set());
-let backgroundTimer: ReturnType<typeof setInterval> | null = null;
-
 const panelVisible = computed(() => props.standalone || agent.showAgentPanel);
 const standalone = computed(() => props.standalone);
 const currentContextSnapshot = computed(() => agent.currentContextSnapshot);
+const {
+  backgroundTasks,
+  dismissingTasks,
+  recentBackgroundTasks,
+  runningBackgroundCount,
+  dismissTask,
+  killTask,
+  clearAllDoneTasks,
+} = useBackgroundTasks(panelVisible);
 
 /**
  * 标题旁本轮秒数的数据源：本会话**正在跑**的那条 `AgentRun`。
@@ -194,8 +200,6 @@ const refreshContextSnapshot = async (sessionId?: string) => {
 };
 const currentSubAgents = computed(() => agent.currentSubAgentRuns.slice(0, 12));
 const activeSubAgentCount = computed(() => agent.currentSubAgentRuns.filter((run) => run.status === 'running').length);
-const recentBackgroundTasks = computed(() => backgroundTasks.value.slice(0, 4));
-const runningBackgroundCount = computed(() => backgroundTasks.value.filter((task) => task.status === 'running').length);
 const recentPlans = computed(() => permission.currentPlanDocuments.slice(0, 3));
 
 const expandedSubAgents = ref<Set<string>>(new Set());
@@ -349,73 +353,6 @@ const planStatusLabel = (status: string): string => {
     default: return status;
   }
 };
-
-const refreshBackgroundTasks = async () => {
-  try {
-    const sid = session.activeSessionId;
-    backgroundTasks.value = await invoke<BackgroundTask[]>('get_background_tasks', { sessionId: sid });
-  } catch (err) {
-    console.error('加载后台任务失败:', err);
-  }
-};
-
-const dismissTask = async (taskId: string) => {
-  dismissingTasks.value.add(taskId);
-  try {
-    await invoke('dismiss_background_task', { taskId });
-    backgroundTasks.value = backgroundTasks.value.filter((t) => t.id !== taskId);
-  } catch (err) {
-    console.error('清理后台任务失败:', err);
-  } finally {
-    dismissingTasks.value.delete(taskId);
-  }
-};
-
-const killTask = async (taskId: string) => {
-  dismissingTasks.value.add(taskId);
-  try {
-    await invoke('kill_background_task', { taskId });
-    await refreshBackgroundTasks();
-  } catch (err) {
-    console.error('终止后台任务失败:', err);
-  } finally {
-    dismissingTasks.value.delete(taskId);
-  }
-};
-
-const clearAllDoneTasks = async () => {
-  const sid = session.activeSessionId;
-  if (!sid) return;
-  try {
-    await invoke('clear_session_background_tasks', { sessionId: sid });
-    await refreshBackgroundTasks();
-  } catch (err) {
-    console.error('清理后台任务失败:', err);
-  }
-};
-
-// 监听后台任务完成事件（Tauri 推送，0 延迟，替代轮询的即时通路）
-listen("bg-task-done", () => {
-  refreshBackgroundTasks();
-});
-
-watch(panelVisible, (visible) => {
-  if (visible) {
-    refreshBackgroundTasks();
-    // 保留 3s 轮询作为兜底（首次加载 + 异常恢复）
-    if (!backgroundTimer) {
-      backgroundTimer = setInterval(refreshBackgroundTasks, 3000);
-    }
-  } else if (backgroundTimer) {
-    clearInterval(backgroundTimer);
-    backgroundTimer = null;
-  }
-}, { immediate: true });
-
-onUnmounted(() => {
-  // 秒表的定时器由 `useRunElapsed` 自己在 scope 销毁时清理，这里只管后台任务轮询
-  if (backgroundTimer) clearInterval(backgroundTimer);
-});
 
 const closePanel = async () => {
   agent.showAgentPanel = false;

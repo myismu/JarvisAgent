@@ -7,7 +7,8 @@ import { usePermissionStore } from '../../stores/permission';
 import { useAgentStore } from '../../stores/agent';
 import { usePreferences } from '../../composables/usePreferences';
 import { useRunElapsed } from '../../composables/useRunElapsed';
-import { invoke } from '@tauri-apps/api/core';
+import { getRollbackMenuPosition, useChatRollback } from '../../composables/chat/useChatRollback';
+import { useChatClipboard } from '../../composables/chat/useChatClipboard';
 import ConfirmModal from '../common/ConfirmModal.vue';
 import AgentTurn from './AgentTurn.vue';
 import AgentTurnNotice from './AgentTurnNotice.vue';
@@ -16,48 +17,7 @@ import WelcomeScreen from './WelcomeScreen.vue';
 import MessageRail from './MessageRail.vue';
 import { noticeTextFromBackend } from '../../utils/agentTurnState';
 import { plainUserText, isLongUserText } from '../../utils/userMessage';
-import type { PlanDocument, AgentTurnSnapshot, AgentCurrentTurn } from '../../types';
-
-interface RollbackPreviewFile {
-  path: string;
-  linesAdded: number;
-  linesRemoved: number;
-}
-
-interface RollbackPreviewResult {
-  targetCheckpointId: string;
-  checkpointLabel: string;
-  files: RollbackPreviewFile[];
-  /** 目标是否是"会话开始前"（撤销全部代码改动）。 */
-  initialState: boolean;
-  /** 被撤回消息是第几轮（从 1 开始）。 */
-  roundNumber: number;
-  /** 从被撤回消息起、到会话结束共有多少轮。 */
-  affectedRounds: number;
-}
-
-interface RollbackRecallResult {
-  restoredFiles: string[];
-  recalledText: string;
-  /**
-   * 回滚后**没能恢复**的对象（快照无内容 且 回收站副本缺失）。
-   * 非空 = 工作区与目标检查点不完全一致，必须提示用户。
-   */
-  restoreWarnings?: string[];
-}
-
-interface RollbackPreviewState {
-  loading: boolean;
-  checkpointId: string;
-  files: RollbackPreviewFile[];
-  targetCheckpointId: string;
-  checkpointLabel: string;
-  error: string;
-  /** 目标是否是"会话开始前"（撤销全部代码改动）。 */
-  initialState: boolean;
-  roundNumber: number;
-  affectedRounds: number;
-}
+import type { AgentTurnSnapshot, AgentCurrentTurn } from '../../types';
 
 const { t } = useI18n();
 
@@ -66,6 +26,17 @@ const chat = useChatStore();
 const perm = usePermissionStore();
 const agent = useAgentStore();
 const prefs = usePreferences();
+const {
+  rollbackMenu,
+  rollbackConfirm,
+  rollbackLoading,
+  rollbackError,
+  closeRollbackMenu,
+  handleRollbackClickVue,
+  executeRollback,
+  confirmRollback,
+} = useChatRollback();
+const { copyCodeBlock, copyTable } = useChatClipboard();
 const responseAreaRef = ref<HTMLElement | null>(null);
 /** 视口是否贴底：滚动事件与程序化落底共同维护的统一事实源。 */
 const atBottom = ref(true);
@@ -251,51 +222,6 @@ function toggleUserMsgExpand(msgId: string) {
   }
   expandedUserMsgs.value = next;
 }
-
-const rollbackMenu = ref<{
-  visible: boolean;
-  x: number;
-  y: number;
-  snapshotId: string | null;
-  rollbackMode: 'both' | 'session';
-  messageId: string | null;
-  fallbackSnapshotId: string;
-}>({
-  visible: false,
-  x: 0,
-  y: 0,
-  snapshotId: null,
-  rollbackMode: 'session',
-  fallbackSnapshotId: '',
-  messageId: null,
-});
-
-const rollbackConfirm = ref<{
-  mode: 'both' | 'session';
-  snapshotId: string;
-  fallbackSnapshotId: string;
-  messageId: string | null;
-  title: string;
-  message: string;
-  files: RollbackPreviewFile[];
-  warning?: string;
-  /** 仅提示态：弹窗只用于告知结果（如"有对象未能恢复"），确认/关闭都只是关掉它 */
-  noticeOnly?: boolean;
-} | null>(null);
-
-const rollbackPreview = ref<RollbackPreviewState>({
-  loading: false,
-  checkpointId: '',
-  files: [],
-  targetCheckpointId: '',
-  checkpointLabel: '',
-  error: '',
-  initialState: false,
-  roundNumber: 0,
-  affectedRounds: 0,
-});
-const rollbackLoading = ref(false);
-const rollbackError = ref('');
 
 const isResponseAtBottom = () => {
   if (!responseAreaRef.value) return false;
@@ -485,130 +411,13 @@ const handleContextMenu = (e: MouseEvent) => {
   };
 };
 
-// 使用 Vue 数据驱动的回滚按钮点击。
-// 不传 v-for 下标：渲染列表是"聚合气泡"，与后端原始消息表的下标不是同一坐标系；
-// 后端只认 messageId（及快照 ID）这两个稳定锚点。
-const handleRollbackClickVue = (message: any, event: MouseEvent) => {
-  const rollbackMode = message.rollbackMode === 'both' ? 'both' : 'session';
-  const rollbackCheckpointId = message.rollbackCheckpointId || '';
-  const position = getRollbackMenuPosition(event.clientX, event.clientY, rollbackMode);
-
-  rollbackMenu.value = {
-    visible: true,
-    x: position.left,
-    y: position.top,
-    snapshotId: rollbackCheckpointId,
-    rollbackMode,
-    messageId: message.messageId || null,
-    fallbackSnapshotId: '',
-  };
-};
-
-// handleRollbackClick 保留用于 @click 委托（旧 DOM 路径兼容）
-const handleRollbackClick = (_e: MouseEvent) => {
-  /* now handled by handleRollbackClickVue via @click.stop */
-};
-
-const copyText = async (text: string, html?: string) => {
-  if (html && navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
-    try {
-      await navigator.clipboard.write([
-        new ClipboardItem({
-          'text/html': new Blob([html], { type: 'text/html' }),
-          'text/plain': new Blob([text], { type: 'text/plain' }),
-        }),
-      ]);
-      return;
-    } catch {
-      // Fall back to plain text below when rich clipboard writes are unavailable.
-    }
-  }
-
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  textarea.setAttribute('readonly', '');
-  textarea.style.position = 'fixed';
-  textarea.style.left = '-9999px';
-  textarea.style.opacity = '0';
-  document.body.appendChild(textarea);
-  textarea.select();
-  document.execCommand('copy');
-  document.body.removeChild(textarea);
-};
-
-const showCopiedState = (button: HTMLButtonElement) => {
-  const previousText = button.textContent || t('common.copy');
-  button.textContent = t('common.copied');
-  button.classList.add('copied');
-  window.setTimeout(() => {
-    button.textContent = previousText;
-    button.classList.remove('copied');
-  }, 1200);
-};
-
-const copyCodeBlock = async (button: HTMLButtonElement) => {
-  const block = button.closest('.markdown-code-block, .md-code-block');
-  const code = block?.querySelector('pre code')?.textContent || '';
-  if (!code.trim()) return;
-  await copyText(code);
-  showCopiedState(button);
-};
-
-const normalizeMarkdownTableCell = (cell?: HTMLTableCellElement) => {
-  if (!cell) return '';
-  return cell.innerText
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/\\/g, '\\\\')
-    .replace(/\|/g, '\\|');
-};
-
-const markdownAlignment = (cell?: HTMLTableCellElement) => {
-  const align = (cell?.getAttribute('align') || '').toLowerCase();
-  if (align === 'center') return ':---:';
-  if (align === 'right') return '---:';
-  return '---';
-};
-
-const tableToMarkdown = (table: HTMLTableElement) => {
-  const rows = Array.from(table.rows);
-  if (rows.length === 0) return '';
-
-  const headerRow = table.tHead?.rows[0] || rows[0];
-  const bodyRows = rows.filter((row) => row !== headerRow);
-  const columnCount = Math.max(...rows.map((row) => row.cells.length), 1);
-  const readRow = (row: HTMLTableRowElement) =>
-    Array.from({ length: columnCount }, (_, index) => normalizeMarkdownTableCell(row.cells[index]));
-
-  const header = readRow(headerRow);
-  const separator = Array.from({ length: columnCount }, (_, index) =>
-    markdownAlignment(headerRow.cells[index])
-  );
-  const body = bodyRows.map((row) => `| ${readRow(row).join(' | ')} |`);
-
-  return [`| ${header.join(' | ')} |`, `| ${separator.join(' | ')} |`, ...body].join('\n');
-};
-
-const copyTable = async (button: HTMLButtonElement) => {
-  const wrap = button.closest('.markdown-table-wrap, .md-table-wrap');
-  const table = wrap?.querySelector('table') as HTMLTableElement | null | undefined;
-  if (!table) return;
-  await copyText(tableToMarkdown(table), table.outerHTML);
-  showCopiedState(button);
-};
-
 const handleResponseClick = (e: MouseEvent) => {
   const target = e.target as HTMLElement;
   const codeCopyButton = target.closest<HTMLButtonElement>('.code-copy-btn');
   if (codeCopyButton) {
     e.preventDefault();
     e.stopPropagation();
-    copyCodeBlock(codeCopyButton);
+    void copyCodeBlock(codeCopyButton);
     return;
   }
 
@@ -616,214 +425,8 @@ const handleResponseClick = (e: MouseEvent) => {
   if (tableCopyButton) {
     e.preventDefault();
     e.stopPropagation();
-    copyTable(tableCopyButton);
+    void copyTable(tableCopyButton);
     return;
-  }
-
-  handleRollbackClick(e);
-};
-
-const closeRollbackMenu = () => {
-  rollbackMenu.value.visible = false;
-};
-
-const getRollbackMenuPosition = (x: number, y: number, rollbackMode: 'both' | 'session') => {
-  const menuWidth = 220;
-  const menuHeight = rollbackMode === 'both' ? 118 : 74;
-  const margin = 12;
-
-  let left = x;
-  let top = y;
-
-  if (left + menuWidth > window.innerWidth - margin) {
-    left = window.innerWidth - menuWidth - margin;
-  }
-  if (top + menuHeight > window.innerHeight - margin) {
-    top = window.innerHeight - menuHeight - margin;
-  }
-
-  left = Math.max(margin, left);
-  top = Math.max(margin, top);
-
-  return { left, top };
-};
-
-const executeRollback = async (mode: 'both' | 'session') => {
-  rollbackError.value = '';
-  rollbackPreview.value.error = '';
-  if (mode === 'both') {
-    rollbackLoading.value = true;
-    rollbackPreview.value.loading = true;
-    try {
-      const sessionId = session.activeSessionId;
-      if (!sessionId) {
-        alert(t('rollback.noSession'));
-        return;
-      }
-      const result = await invoke<RollbackPreviewResult>('preview_rollback_to_checkpoint_with_recall', {
-        sessionId,
-        checkpointId: rollbackMenu.value.snapshotId || rollbackMenu.value.fallbackSnapshotId || '',
-        messageId: rollbackMenu.value.messageId,
-      });
-      rollbackPreview.value = {
-        loading: false,
-        checkpointId: result.targetCheckpointId,
-        files: result.files,
-        targetCheckpointId: result.targetCheckpointId,
-        checkpointLabel: result.checkpointLabel,
-        error: '',
-        initialState: result.initialState,
-        roundNumber: result.roundNumber,
-        affectedRounds: result.affectedRounds,
-      };
-    } catch (err) {
-      const message = normalizeRollbackError(err);
-      rollbackPreview.value.loading = false;
-      rollbackPreview.value.error = message;
-      rollbackError.value = message;
-      // 预览失败 = 目标区间无法安全确定，后端不会执行任何撤回。
-      // 必须明确告知用户，否则菜单关掉后看起来像"什么都没发生"。
-      alert(message);
-      return;
-    } finally {
-      rollbackPreview.value.loading = false;
-      rollbackLoading.value = false;
-    }
-  }
-
-  // 确认文案必须说清真实影响区间：是"全部代码改动"还是"从第 N 轮起的 M 轮"。
-  // 旧文案固定写"这条消息以及其后的代码改动"，与后端实际解析出的范围脱节。
-  const previewMessage = mode === 'both'
-    ? rollbackPreview.value.initialState
-      ? t('rollback.confirmBothInitialMessage', { count: rollbackPreview.value.files.length })
-      : t('rollback.confirmBothRangeMessage', {
-          round: rollbackPreview.value.roundNumber,
-          rounds: rollbackPreview.value.affectedRounds,
-          count: rollbackPreview.value.files.length,
-        })
-    : t('rollback.confirmSessionMessage');
-
-  rollbackConfirm.value = {
-    mode,
-    snapshotId: rollbackMenu.value.snapshotId || '',
-    fallbackSnapshotId: rollbackMenu.value.fallbackSnapshotId,
-    messageId: rollbackMenu.value.messageId,
-    title: mode === 'both' ? t('rollback.confirmBothTitle') : t('rollback.confirmSessionTitle'),
-    message: previewMessage,
-    files: mode === 'both' ? rollbackPreview.value.files : [],
-    warning:
-      mode === 'both'
-        ? t('rollback.warningBoth')
-        : t('rollback.warningSession'),
-  };
-};
-
-const normalizeRollbackError = (err: unknown) => {
-  const raw = typeof err === 'string' ? err : err instanceof Error ? err.message : String(err || t('common.unknownError'));
-  if (raw.includes(t('rollback.historyKept'))) {
-    return raw;
-  }
-  return t('rollback.historyKeptSuffix', { error: raw });
-};
-
-const confirmRollback = async () => {
-  if (!rollbackConfirm.value) return;
-  // 仅提示态：只是通知，点任何按钮都只关掉弹窗（绝不能重复执行回滚）
-  if (rollbackConfirm.value.noticeOnly) {
-    rollbackConfirm.value = null;
-    return;
-  }
-
-  rollbackLoading.value = true;
-  rollbackError.value = '';
-  let restoreWarnings: string[] = [];
-  try {
-    const sessionId = session.activeSessionId;
-    if (!sessionId) {
-      alert(t('rollback.noSession'));
-      return;
-    }
-
-    let recalledText: string | null = null;
-    const rollbackMessageId = rollbackConfirm.value.messageId;
-    if (rollbackConfirm.value.snapshotId || rollbackConfirm.value.fallbackSnapshotId || rollbackConfirm.value.mode === 'both') {
-      // 有 checkpointId 或需要回滚代码（后端会按传入快照恢复文件）
-      const result = await invoke<RollbackRecallResult>('rollback_to_checkpoint_with_recall', {
-        sessionId,
-        checkpointId: rollbackConfirm.value.snapshotId || rollbackConfirm.value.fallbackSnapshotId || '',
-        rollbackFiles: rollbackConfirm.value.mode === 'both',
-        messageId: rollbackMessageId,
-      });
-      recalledText = result.recalledText;
-      restoreWarnings = result.restoreWarnings ?? [];
-    } else if (rollbackMessageId) {
-      recalledText = await invoke<string | null>('recall_message', {
-        sessionId,
-        messageId: rollbackMessageId,
-      });
-    } else {
-      recalledText = await invoke<string | null>('recall_last_message', { sessionId });
-    }
-
-    // 有对象没能恢复 → 改用"仅提示"态复用这个弹窗告知用户（工作区与目标检查点不一致）；
-    // 否则照常关掉。
-    rollbackConfirm.value = restoreWarnings.length
-      ? {
-          mode: 'session',
-          snapshotId: '',
-          fallbackSnapshotId: '',
-          messageId: null,
-          title: t('rollback.restoreWarningsTitle'),
-          message: t('rollback.restoreWarningsMessage'),
-          files: [],
-          warning: restoreWarnings.join('\n'),
-          noticeOnly: true,
-        }
-      : null;
-    rollbackPreview.value = {
-      loading: false,
-      checkpointId: '',
-      files: [],
-      targetCheckpointId: '',
-      checkpointLabel: '',
-      error: '',
-      initialState: false,
-      roundNumber: 0,
-      affectedRounds: 0,
-    };
-    closeRollbackMenu();
-
-    if (recalledText) {
-      chat.rollbackRecalledMessage = recalledText;
-    }
-
-    try {
-      try {
-        // 回滚已截断会话消息：走入口三强制重载，分页首屏与游标一起重置
-        await chat.reloadSessionView(sessionId, 'rollback');
-      } catch (err) {
-        // 结构化加载失败，没有 HTML 兜底了（那条通道已删除，见 session store 的说明）：
-        // 置一个标记，由界面显示可翻译的提示，而不是让用户对着空白猜
-        console.error('加载会话消息失败:', err);
-        session.setSessionLoadError(sessionId, true);
-      }
-      const planDocuments = await invoke<PlanDocument[]>('list_plan_documents', { sessionId });
-      perm.planDocumentsBySession = {
-        ...perm.planDocumentsBySession,
-        [sessionId]: planDocuments,
-      };
-      delete perm.planProposals[sessionId];
-      chat.triggerRender();
-    } catch {
-      session.resetSessionView(sessionId);
-      chat.triggerRender();
-    }
-  } catch (err) {
-    const message = normalizeRollbackError(err);
-    console.error('回滚失败:', err);
-    rollbackError.value = message;
-  } finally {
-    rollbackLoading.value = false;
   }
 };
 

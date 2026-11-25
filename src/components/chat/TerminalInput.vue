@@ -15,140 +15,131 @@ import { useI18n } from 'vue-i18n';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useSessionStore } from '../../stores/session';
 import { useChatStore } from '../../stores/chat';
-import { useAgentStore } from '../../stores/agent';
 import { usePreferences, prefsReady } from '../../composables/usePreferences';
-import { useThinkingMode } from '../../composables/useThinkingMode';
-import { isThinkingToggleDisabled, type ThinkingCaps } from '../../utils/thinking';
-import { resolveContextTokens } from '../../utils/contextUsage';
-import { createEmptySessionUsageBreakdown } from '../../utils/usageBreakdown';
+import { useTurnMetrics } from '../../composables/input/useTurnMetrics';
+import { useMediaAttachments } from '../../composables/input/useMediaAttachments';
+import { useProfileSwitcher } from '../../composables/input/useProfileSwitcher';
+import { useSessionControlModes } from '../../composables/input/useSessionControlModes';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, UnlistenFn } from '@tauri-apps/api/event';
-import { readFile } from '@tauri-apps/plugin-fs';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import ConfirmModal from '../common/ConfirmModal.vue';
 import CacheHitTooltip from './CacheHitTooltip.vue';
 import type { AgentApprovalMode, AgentUserMode, AgentWorkMode } from '../../types';
 
 const { t } = useI18n();
+const session = useSessionStore();
+const chat = useChatStore();
+const uiPrefs = usePreferences();
 
 const userInput = ref("");
 const isDragging = ref(false);
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 
-/**
- * 待发送的附件。
- *
- * `natural*` 是原图尺寸、`compressed*` 是压缩后尺寸 —— 两者都留着只为了在缩略图上
- * 悬停时告诉用户"这张图被压到多大、大概吃多少 token"。**它们不参与发送**，
- * 发送用的仍是 `base64`；后端也只认 base64。
- *
- * 尺寸为 `null` 表示这张图没能解码（`createImageBitmap` 失败），此时提示里降级显示。
- */
-interface MediaFile {
-  path: string;
-  type: 'image' | 'video';
-  url: string;
-  base64: string;
-  naturalWidth: number | null;
-  naturalHeight: number | null;
-  compressedWidth: number | null;
-  compressedHeight: number | null;
-}
-
-const mediaFiles = ref<MediaFile[]>([]);
-const showVisionWarning = ref(false);
-const showProfileCacheWarning = ref(false);
-const pendingProfileId = ref<string | null>(null);
-
-/**
- * 切预设时撞到退役模型的阻断提示。
- *
- * 与设置面板的"禁止保存"是**同一判据**（注册表 `status === "retired"`），
- * 但这里必须单独拦一次：设置面板管的是"能不能写进配置"，这里管的是
- * "能不能切过去"。切过去会把会话的 `profile_id` 落库，之后每次发消息
- * 都拿着一个必然失败的模型去打上游 —— 而且老会话本来就可能是这个预设。
- */
-const retiredSwitchNotice = ref<{
-  profileName: string
-  field: 'mainModel' | 'utilityModel'
-  modelId: string
-} | null>(null)
-
-/**
- * 退役阻断提示的文案：按「主模型 / 工具代理模型」分支。
- *
- * **刻意不写"建议换成 X"**——建议会被时间淘汰，且过期后从"有用"变成"误导"。
- * 统一引导去厂商官方文档查最新型号。
- */
-const retiredSwitchMessage = computed(() => {
-  const n = retiredSwitchNotice.value
-  if (!n) return ''
-  const key = n.field === 'mainModel'
-    ? 'settings.profiles.switchBlockedRetired'
-    : 'settings.profiles.switchBlockedRetiredUtility'
-  return t(key, { name: n.profileName, model: n.modelId })
-})
-
-const session = useSessionStore();
-const chat = useChatStore();
-const agent = useAgentStore();
-const uiPrefs = usePreferences();
-
-const isRunning = computed(() =>
-  session.getSessionView(session.activeSessionId).status === 'RUNNING'
+const isRunning = computed(
+  () => session.getSessionView(session.activeSessionId).status === 'RUNNING',
 );
-
-// 压缩状态按对话维护；输入框只投影当前激活对话的状态。
-const compactingSessionIds = ref<Set<string>>(new Set());
-const compactingEventVersions = new Map<string, number>();
-const compactingQueryVersions = new Map<string, number>();
-const isCompacting = computed(() => {
-  const sessionId = session.activeSessionId;
-  return !!sessionId && compactingSessionIds.value.has(sessionId);
+const isStopping = computed(() => session.getSessionView(session.activeSessionId).stopping);
+const showInterruptedResumeHint = computed(() => {
+  const view = session.currentSessionView;
+  return !isRunning.value && (view.status === "INTERRUPTED" || Boolean(view.resumableRunId));
 });
 
-function applyCompactingStatus(sessionId: string, compacting: boolean) {
-  compactingEventVersions.set(sessionId, (compactingEventVersions.get(sessionId) ?? 0) + 1);
-  const next = new Set(compactingSessionIds.value);
-  if (compacting) next.add(sessionId);
-  else next.delete(sessionId);
-  compactingSessionIds.value = next;
-}
+const adjustHeight = () => {
+  const el = inputRef.value;
+  if (!el) return;
+  el.style.height = 'auto';
+  const newHeight = Math.min(el.scrollHeight, 200);
+  el.style.height = `${newHeight}px`;
+};
 
-async function syncCompactingStatus(sessionId: string) {
-  const queryVersion = (compactingQueryVersions.get(sessionId) ?? 0) + 1;
-  compactingQueryVersions.set(sessionId, queryVersion);
-  const eventVersion = compactingEventVersions.get(sessionId) ?? 0;
-  try {
-    const compacting = await invoke<boolean>('is_session_compacting', { sessionId });
-    // 查询期间若到达了新事件，查询结果已过时；同样丢弃较早发出的重复查询。
-    if (
-      compactingQueryVersions.get(sessionId) !== queryVersion
-      || (compactingEventVersions.get(sessionId) ?? 0) !== eventVersion
-    ) return;
-    const next = new Set(compactingSessionIds.value);
-    if (compacting) next.add(sessionId);
-    else next.delete(sessionId);
-    compactingSessionIds.value = next;
-  } catch { /* 保留最近一次已知状态 */ }
-}
+const handleInput = () => {
+  adjustHeight();
+};
 
-watch(() => session.activeSessionId, (sessionId) => {
-  if (sessionId) void syncCompactingStatus(sessionId);
-}, { immediate: true });
+// ── 概览栏指标（上下文占用、缓存命中、轮/步、吞吐量） ──
+const {
+  CONTEXT_RING_CIRCUMFERENCE,
+  sessionTokenTotal,
+  usageBreakdown,
+  contextTokens,
+  contextUsageLabel,
+  contextRingDash,
+  cacheUsage,
+  currentOutputTokens,
+  barCacheUsage,
+  turnProgressLabel,
+  throughputLabel,
+  showCacheTip,
+  showContextTip,
+  openContextPanel,
+} = useTurnMetrics();
+
+// ── 预设切换、模型能力探测与深度思考联动 ──
+const {
+  appConfig,
+  agentModel,
+  showProfileMenu,
+  profileMenuRef,
+  showProfileCacheWarning,
+  pendingProfileId,
+  retiredSwitchNotice,
+  retiredSwitchMessage,
+  isThinkingForced,
+  canModelThink,
+  canModelVision,
+  isThinkingActive,
+  thinkingSaving,
+  thinkingToggleDisabled,
+  thinkingLocked,
+  toggleThinking,
+  loadConfig,
+  switchProfile,
+  confirmSwitchProfile,
+  openProfileMenuLayout,
+} = useProfileSwitcher();
+
+// ── 图片/媒体附件与压缩管线 ──
+const {
+  mediaFiles,
+  showVisionWarning,
+  mediaTooltip,
+  processDroppedFiles,
+  handlePaste,
+  removeMediaFile,
+  clearMediaFiles,
+  hideVisionWarning,
+} = useMediaAttachments({
+  canModelVision,
+  userInput,
+  inputRef,
+  adjustHeight,
+});
+
+// ── 工作模式、权限档位、只读保护与压缩状态 ──
+const {
+  isCompacting,
+  applyCompactingStatus,
+  syncCompactingStatus,
+  showWorkModeMenu,
+  showApprovalMenu,
+  showOptionsMenu,
+  currentWorkMode,
+  currentApprovalMode,
+  agentReadOnly,
+  workModeWarning,
+  approvalModeOptions,
+  toggleReadOnly,
+  applyApprovalMode,
+  applyWorkMode,
+  syncPermissionFromSession,
+  hideWorkModeWarning,
+} = useSessionControlModes();
 
 // ── 未发送草稿：按会话隔离 ──
-//
-// 输入框是**常驻组件**（App.vue 里的 `<TerminalInput />` 没有 key），切会话时实例
-// 不重建，`userInput` 不会自动清空。不做隔离的话，在 A 里打了一半切到 B，文字会
-// 留在 B 的输入框里——一回车就发错了会话。
-//
-// 存储分两层：`uiPrefs` 里的 `inputDrafts` 同时是内存态和落盘态（data/app-config.json），
-// 所以不再另建一份 Map——两份状态只会产生不一致。
 const NEW_SESSION_DRAFT_KEY = '__new__';
 const draftKeyOf = (sessionId: string | null) => sessionId || NEW_SESSION_DRAFT_KEY;
 
 function restoreDraftForCurrentSession() {
-  // 偏好加载完成前用户已经开始打字时不覆盖：真实输入优先于历史草稿
   if (userInput.value) return;
   userInput.value = uiPrefs.getInputDraft(draftKeyOf(session.activeSessionId));
   nextTick(() => {
@@ -156,27 +147,21 @@ function restoreDraftForCurrentSession() {
   });
 }
 
-// 偏好是异步拉的：早于它返回就读只会拿到默认值（草稿全空）
 watch(prefsReady, (ready) => {
   if (ready) restoreDraftForCurrentSession();
 }, { immediate: true });
 
 watch(() => session.activeSessionId, (next, prev) => {
-  // 先把旧会话的现场存起来，再取新会话的
   uiPrefs.setInputDraft(draftKeyOf(prev), userInput.value);
   userInput.value = uiPrefs.getInputDraft(draftKeyOf(next));
-  // 附件不跨会话：base64 体积大，且图跟的是具体任务，串到下一个会话没有意义
-  mediaFiles.value.forEach(m => {
-    if (m.url) URL.revokeObjectURL(m.url);
-  });
-  mediaFiles.value = [];
-  showVisionWarning.value = false;
+  // 附件不跨会话，切换时释放 ObjectURL 并清空
+  clearMediaFiles();
   nextTick(() => {
     adjustHeight();
   });
 });
 
-// 欢迎页快捷指令：一次性草稿，填入后清空并聚焦（见 session store 的 inputDraft 注释）
+// 欢迎页快捷指令：一次性草稿，填入后清空并聚焦
 watch(() => session.inputDraft, (draft) => {
   if (!draft) return;
   userInput.value = draft;
@@ -187,1089 +172,81 @@ watch(() => session.inputDraft, (draft) => {
   });
 });
 
-const sessionTokenTotal = computed(() => (session.totalInputTokens || 0) + (session.totalOutputTokens || 0));
-
-/**
- * 会话用量的按来源分组快照（主对话 / 子 Agent / 系统开销 / 未上报请求）。
- *
- * 只负责转交给浮层 `CacheHitTooltip`，本组件**不做任何聚合**：
- * 分组口径由后端 `UsageSource` 决定，归一化（缺字段补 0）在 `utils/usageBreakdown.ts`。
- * 两处重新聚合就会多出第三套口径，和累计值对不上时没人能说清谁对。
- *
- * 取不到时回退到「归零 + hasDetail=false」的占位：浮层靠这个标志
- * 退回只显示累计值，**不会把缺明细画成三层 0**（那会被读成「主对话没花 token」）。
- */
-const usageBreakdown = computed(
-  () => session.currentSessionView?.sessionUsageBreakdown ?? createEmptySessionUsageBreakdown(),
-);
-
-/**
- * 当前上下文占用。
- *
- * 口径统一在 `utils/contextUsage.ts`（右侧监控面板 `ContextInspector.vue` 用的是同一个函数）：
- * 优先取 `providerInputTokens`——最近一次请求**实际发出去**的 prompt token 总量，
- * 也是"上下文有多大"唯一权威的答案；厂商没上报才退回本地估算（**系统性偏低**，见该模块注释）。
- * 它同时也是浮层里「命中 X / 共 Y 输入 token」的 Y，两处显示同一个数才不会互相打架。
- */
-const contextTokens = computed(() => resolveContextTokens(agent.currentContextSnapshot));
-
-/**
- * 上下文窗口上限（快照的 `maxContextTokens`）。
- *
- * 来源是**编译期内嵌的 `model_registry.json`**（不是 API 上报，见 `registry.rs:64`），
- * 模型没登记窗口时为 null——此时不猜、只报已用量，并给一句「未知上下文窗口」的提示。
- */
-const contextWindow = computed(() => agent.currentContextSnapshot?.maxContextTokens ?? null);
-
-/**
- * 上下文占用读数（Codex / WorkBuddy 同款结构）：`70.8% · 212.5K / 300.0K 上下文已使用`。
- *
- * 概览栏不再直接铺这行字，而是收进**进度环的悬停浮层**（环由 `contextRingDash` 画）；
- * 窗口未登记时环不填色，读数里补一句「窗口未知」——不知道分母就不编百分比，
- * 与"未知 ≠ 0"的既有口径一致。
- *
- * 与「本次上下文」**共用同一个分子**（`contextTokens`，provider 实测优先）——同一行里
- * 百分比、已用、窗口三者必须自洽，若这里改用估算值就会出现"已用 / 窗口"与百分比对不上。
- *
- * 读数**把口径词「本次上下文」写在最前面**：概览栏上的缓存读数是会话累计
- * （「累计命中」），而环里这个是最近一次请求的 prompt。两个词都在不 hover 时可见，
- * 才不会被读混 —— 之前裸的「212.5K / 300.0K」就和累计量级太像了。
- *
- * ⚠️ **未扣输出预算**：环与读数展示的是「已用 / 窗口」，没有为下一次回复的 `max_tokens` 预留。
- * （此前快照里的 `maxOutputTokens` 是硬编码常量、不可信，故无从扣减；2026-09-17 起该字段已与
- * 请求体 `max_tokens` 同源，技术上前提具备。扣不扣是**口径选择**——「占窗口多少」还是「还剩多少可输入」，
- * 前者更贴近各家工具的通行展示，故暂不扣。）
- */
-const contextUsageLabel = computed(() => {
-  if (contextTokens.value <= 0) return null;
-  const used = formatToken(contextTokens.value);
-  const max = contextWindow.value;
-  if (!max) {
-    return `${t('input.tokenContext')} ${used} · ${t('input.tokenWindowUnknown')}`;
+watch(() => chat.rollbackRecalledMessage, (msg) => {
+  if (msg) {
+    userInput.value = msg;
+    chat.rollbackRecalledMessage = "";
+    nextTick(() => {
+      inputRef.value?.focus();
+      adjustHeight();
+    });
   }
-  const percent = Math.min(100, Math.round((contextTokens.value / max) * 1000) / 10);
-  return `${t('input.tokenContext')} ${percent.toFixed(1)}% · ${used} / ${formatToken(max)}`;
 });
 
-/** 进度环的圆周长（r=9，必须与模板里 `<circle r>` 一致，否则环会画不满/溢出） */
-const CONTEXT_RING_CIRCUMFERENCE = 2 * Math.PI * 9;
-
-/**
- * 进度环填充长度。窗口未知或无读数时返回 0：只画灰色轨道，**不画进度**——
- * 不知道分母就不能把环填到某个比例，那等于编一个占用率出来。
- */
-const contextRingDash = computed(() => {
-  const max = contextWindow.value;
-  if (!max || contextTokens.value <= 0) return 0;
-  const ratio = Math.min(1, contextTokens.value / max);
-  return ratio * CONTEXT_RING_CIRCUMFERENCE;
-});
-
-/**
- * 单次口径的缓存命中读数（来自最近一次请求的上下文快照，由 `context-snapshot-updated` 事件刷新）。
- *
- * 语义（与后端 `infra/llm/usage.rs` 一致）：
- * - 未报告 → 「缓存未报告」（**不是 0%**，因为"没数据"和"没命中"是两回事）
- * - 报告了但为 0 → 「缓存预热中」（GLM 等档位前 1~2 次请求不命中属正常）
- * - 有命中 → 「缓存命中 N%」（**仅浮层用**；概览栏走下面另一个 computed）
- *
- * 这里**只报当前值**：逐 loop 趋势属于详细视图的内容，统一由右侧上下文监控面板
- * （`ContextInspector.vue` 的趋势柱）承担。原先把它拼进 tooltip，会让这个 hover
- * 表面随会话轮数长期挂着最多 10 个百分比，把「当前命中」这个主信息淹没掉；
- * 而趋势原本要解决的「单看一个数字会被预热期误导」（GLM 前 1~2 轮 0%、第 3 轮才命中）
- * 在面板里有柱状图承担，不需要在概览栏重复一遍。
- *
- * 明细改走自定义浮层 `CacheHitTooltip`：原生 `title` 样式跟随系统、约 1 秒延迟、
- * 单行不换行，塞不下进度条，也没法分组——而浮层里要同时装「本次请求」（当前命中）
- * 与「会话累计」（输入 / 输出 / 合计 + 会话级命中率 / 未命中）两个口径，
- * 分组标题必须能把它们隔开。后两行是解读「合计」的前提：`合计 ≈ 输入`，
- * 而输入是每轮重发整份上下文的累加值，脱离命中率就会被读成"真跑了这么多 token"。
- *
- * 概览栏因此只留两段，且**两段口径不同、各自把口径词写在标签里**：
- * - 「本次上下文」= 最近一次请求的 prompt。它**只能是瞬时值**——上下文不累加，
- *   随对话增长、随压缩缩小，也是"窗口还剩多少"与压缩判断的唯一依据；
- * - 「累计命中」= 整个会话的缓存命中率。比单次更稳、直接对应真实成本，
- *   并且避开了单次口径的已知偏差（多 loop 回合里单次只反映**最后一个 loop**，
- *   而那时前缀最暖 → 系统性偏乐观。实测同一次会话「本次 81%」vs「累计 88%」）。
- *
- * 会话累计的输入 / 输出 / 合计收进浮层，并在浮层里按「主对话 / 子 Agent / 系统开销」
- * 三层拆开（谁把 token 花掉的，在概览位上看不出来，只能进浮层）；
- * 浮层「本次请求」组保留单次命中率，于是"单次 vs 累计"在界面上构成完整对照：
- * 栏上「本次上下文 + 累计命中」，浮层「本次请求 + 会话累计」。
- *
- * 栏上两个标签的措辞**必须带口径词**（「本次上下文」/「累计命中」），并且不引入
- * 价格与成本概念：同一份用量在不同厂商/不同套餐下的计价规则不同，界面不做换算，
- * 只报 token 与命中率这两个可核实的量。
- *
- * 为什么口径词必须写进标签本身，而不是靠浮层的分组标题承担：
- * 概览栏**没有分组标题**，浮层的口径对照要 hover 之后才出现。实测反馈就是——
- * 裸的「上下文 9.2k · 缓存命中 81%」被读成了会话累计值（尤其它和
- * 「会话累计 输入 16.6k」量级接近）。所以标签自带口径词，让两种口径在
- * **不 hover 时也同时可见**。
- *
- * 单次口径的字段来源：快照的 `cacheHitTokens` / `cacheMissTokens` 由
- * `repository::update_context_snapshot_usage` **覆盖写入**（不是累加），
- * 所以「本次」= 最近一次请求，而不是整轮。
- *
- * 概览栏原先放的是「合计」（会话累计输入 + 输出），换掉它的理由：
- * `合计 ≈ 输入`，而输入是每轮重发整份上下文的累加值——单看会读成"干了 1.8M token 的活"，
- * 实际是"同一个上下文重发了 58 次、其中 97.2% 走缓存"。这类数字必须配着命中率才能解读，
- * 那它就该待在浮层里，而不是占据概览位。
- *
- * 这个 computed 是**单次口径**，只喂浮层 `CacheHitTooltip` 的「本次请求」组
- * （浮层靠 `state === null` 判断要不要渲染那一整组）。
- * 概览栏上的读数走下面另一个 computed `barCacheUsage`（**会话累计**口径）。
- * 两者数据源不同，**不要合并**。
- */
-const cacheUsage = computed(() => {
-  const snap = agent.currentContextSnapshot;
-  if (!snap) return null;
-  const hit = snap.cacheHitTokens ?? null;
-  if (hit === null) {
-    return {
-      label: t('input.cacheNotReported'),
-      state: 'unknown' as const,
-      percent: null,
-      hitTokens: null,
-      totalTokens: null,
-    };
-  }
-  const total = hit + (snap.cacheMissTokens ?? 0);
-  if (!total) return null;
-  const percent = Math.round((hit / total) * 100);
-  if (hit === 0) {
-    return {
-      label: t('input.cacheLabelWarmup'),
-      state: 'warmup' as const,
-      percent: 0,
-      hitTokens: 0,
-      totalTokens: total,
-    };
-  }
-  return {
-    label: `${t('input.cacheLabel')} ${percent}%`,
-    state: 'hit' as const,
-    percent,
-    hitTokens: hit,
-    totalTokens: total,
-  };
-});
-
-/**
- * 本次请求的输出 token（与 `cacheUsage` 同源：最近一次请求的上下文快照）。
- *
- * 浮层的「本次请求」和会话表一样按 输入 / 命中 / 未命中 / 输出 四项展示；
- * 输出单价与输入不同，缺了它就没法单独算这一笔账。
- * 厂商没给输出字段时保留 null，由浮层显示 `--`，不回退成 0。
- */
-const currentOutputTokens = computed(
-  () => agent.currentContextSnapshot?.providerOutputTokens ?? null,
-);
-
-/**
- * 概览栏上的缓存读数——**会话累计**口径（不是最近一次请求）。
- *
- * 为什么栏上用累计而不是单次：多 loop 的回合里，单次命中率只反映**最后一个 loop**，
- * 而那时前缀最暖 → **系统性偏乐观**（实测同一次会话里「本次 81%」vs「累计 88%」）。
- * 累计值更稳，且直接对应真实成本。
- *
- * 数据源是 `session.totalCacheHitTokens` / `totalCacheMissTokens`
- * （后端 `sessions` 表累加，见 `core/session/mod.rs:487`），
- * 与浮层「会话累计」组里的命中率是**同一个数**，两处不会打架。
- *
- * `hit + miss === 0` 判为「未报告」而不是 0%：后端对未上报端点会把两列都留在 0，
- * 所以两列全 0 恰好等价于"没数据"（与 `CacheHitTooltip` 的 `hasSessionCache` 同判据）。
- *
- * 百分比规则（`<1%`）必须与 `CacheHitTooltip` 的 `sessionHitPercentText` 保持一致：
- * 有命中却四舍五入成 `0%` 会和"一次都没命中"混淆。
- */
-const barCacheUsage = computed(() => {
-  // 还没跑过任何请求时不显示，避免开局就挂一条「未报告」噪音
-  if (!agent.currentContextSnapshot) return null;
-
-  const hit = session.totalCacheHitTokens || 0;
-  const miss = session.totalCacheMissTokens || 0;
-  if (hit + miss <= 0) {
-    return { label: t('input.cacheNotReported'), state: 'unknown' as const };
-  }
-  if (hit === 0) {
-    // 整个会话至今一次都没命中：预热期（或该端点根本不缓存），沿用原有蓝色状态
-    return { label: t('input.cacheLabelWarmup'), state: 'warmup' as const };
-  }
-  const raw = (hit / (hit + miss)) * 100;
-  const text = raw < 1 ? '<1' : `${Math.round(raw)}`;
-  return { label: `${t('input.cacheLabelSession')} ${text}%`, state: 'hit' as const };
-});
-
-/**
- * 「轮」= 这是本会话的**第几轮对话**（第几条用户消息），累计、不随 run 重置。
- *
- * 数据源是**已持久化且已加载**的 `agent_runs`：一条用户消息 = 一个 run
- * （后端 `start_run()` 落库后紧接着 `emit_run()` 推送；切会话 / 重启时由
- * `loadAgentRunsFromBackend()` 整批拉回）—— 所以它天然满足"重启后还在"，无需新增存储。
- *
- * 为什么不数 `view.messages`：消息是**分页加载**的（每次 5 条），长会话会少算。
- *
- * `currentAgentRuns` 按 `startedAt` **降序**，所以序号 = 总数 − 下标；
- * 没有正在运行的 run 时（回合已结束）取下标 0，即"刚跑完的那一轮"。
- */
-/**
- * 概览栏那两个读数所指的**同一个 run**。
- *
- * 取法：活跃 run 优先；**没有活跃 run 时退化到本会话最近的一个 run**
- * （`currentAgentRuns` 按 `startedAt` 降序，所以 `[0]` 就是最近那个）。
- *
- * 为什么必须有这个退化 —— 这是实测踩到的坑：重启 App 后没有任何活跃 run，
- * `activeRunId` 是 null。若「步」只认 `activeRunId` 去查 events，就永远查不到值，
- * 界面上只剩「第 N 轮」而没有步数（重启后打开会话时就是这样）。
- *
- * 为什么两个读数共用同一个 run：否则它们可能指向不同的一轮 ——
- * 比如「轮」取最近、而「步」取了某个更早的活跃 run，两个数字就对不上了。
- */
-const currentTurnRun = computed(() => {
-  const runs = agent.currentAgentRuns;
-  const activeRunId = session.currentSessionView?.activeRunId;
-  if (activeRunId) {
-    const active = runs.find((run) => run.runId === activeRunId);
-    if (active) return active;
-  }
-  return runs[0] ?? null;
-});
-
-const conversationTurn = computed(() => {
-  const runs = agent.currentAgentRuns;
-  const run = currentTurnRun.value;
-  if (!runs.length || !run) return 0;
-  const index = runs.findIndex((item) => item.runId === run.runId);
-  return runs.length - (index < 0 ? 0 : index);
-});
-
-/**
- * 「步」= 本轮 agent 跑到了第几次 loop 迭代（think → act → observe）。
- *
- * **纯聊天也至少是 1 步**：一条用户消息必然跑一个 loop —— 于是"轮"和"步"总是同时有值，
- * 不会出现「只有轮、没有步」的割裂。（上一版把步定义成"工具调用数"，纯聊天时恒为 0，
- * 那一格就退化成光秃秃的"第 1 轮"—— 问题出在定义，不是渲染。）
- *
- * 三个来源各覆盖一段窗口，取最大（任一窗口内它都单调不减，所以 max 是安全的）：
- * 1. `currentTurn.loop` —— 运行中由事件驱动，最精确
- * 2. `loopStepCount` —— 内存快照（`chat-turn-start` 写入），覆盖"回合刚结束、未重载"
- * 3. `agent_run_events` 行数 —— **持久化事实源**（每 loop 一行），覆盖重启 / 切会话
- *
- * ⚠️ 不能读 `agent_runs.loop_count` —— 那是从未被维护的死字段，恒为 0。
- */
-const turnStepCount = computed(() => {
-  const view = session.currentSessionView;
-  const live = view?.currentTurn?.loop || 0;
-  const snapshot = view?.loopStepCount || 0;
-  // ⚠️ 第 3 源**不能挂在 `activeRunId` 上**：重启后它必然是 null，那条源就永远取不到值
-  // （实测：重启后打开会话，轮数正常、步数消失）。必须落在「活跃 run ?? 最近的 run」上。
-  const runId = currentTurnRun.value?.runId;
-  const persisted = runId ? agent.getAgentRunEvents(runId).length : 0;
-  return Math.max(live, snapshot, persisted);
-});
-
-/**
- * 概览栏的「第 N 轮 · 第 M 步」。
- *
- * 两者恒同时有值（轮 ≥ 1 由 run 记录决定，步 ≥ 1 由 loop 决定），所以不存在只有一半的中间态。
- */
-const turnProgressLabel = computed(() => {
-  const turn = conversationTurn.value;
-  if (!turn) return null;
-  const step = turnStepCount.value;
-  const turnText = t('input.turnLabel', { loop: turn });
-  return step > 0 ? `${turnText} · ${t('input.stepLabel', { step })}` : turnText;
-});
-
-/**
- * 最近一次请求的输出速度（token/秒）。
- *
- * 口径见 `session.settleRequestThroughput`：**只算最近一次请求**，不是会话累计。
- * 未采样时返回 null —— 不显示占位符，宁可不占这一格。
- */
-const throughputLabel = computed(() => {
-  const rate = session.currentSessionView?.lastRequestTokPerSec;
-  if (typeof rate !== 'number' || !Number.isFinite(rate) || rate <= 0) return null;
-  return `${rate.toFixed(1)} tok/s`;
-});
-
-// 缓存读数浮层：hover 时展示明细（命中率进度条 + token 明细）
-const showCacheTip = ref(false);
-
-// 上下文进度环的浮层：只在悬停进度环时出现（与上面那个缓存浮层互不干扰）
-const showContextTip = ref(false);
-
-const openContextPanel = () => {
-  // 打开右侧上下文监控窗口（App.vue 监听该状态并负责开窗）
-  agent.showAgentPanel = true;
+const closeMenuOnOutsideClick = (e: MouseEvent) => {
+  const target = e.target as HTMLElement;
+  if (!target.closest('.profile-selector')) showProfileMenu.value = false;
+  if (!target.closest('.work-mode-selector')) showWorkModeMenu.value = false;
+  if (!target.closest('.approval-selector')) showApprovalMenu.value = false;
+  if (!target.closest('.options-selector')) showOptionsMenu.value = false;
 };
-
-const formatToken = (n: number): string => {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1000).toFixed(1)}k`;
-  return `${n}`;
-};
-
-// WorkMode 状态，与 usePreferences 双向同步 + 监听后端切换
-const showWorkModeMenu = ref(false);
-const showApprovalMenu = ref(false);
-const showOptionsMenu = ref(false);
-const currentWorkMode = ref<AgentWorkMode>(uiPrefs.agentWorkMode.value);
-// 模式切换失败的提示（后端拒绝时显示）
-const workModeWarning = ref("");
-
-/**
- * 设置页改了默认值 → 只在**新建会话界面**（无 activeSessionId）刷新选择器。
- *
- * 刻意不在"已有会话"下跟改：设置里的是**默认值**，只作用于新会话；已有会话的显示
- * 来自 session 表，不该被设置页的改动牵动（否则用户在设置页调默认，正开着的会话
- * 选择器跟着跳，语义就乱了）。顺带清掉新建态的 pending——设置页的显式意图更新，
- * 以最新为准。
- */
-watch(() => uiPrefs.agentWorkMode.value, (val) => {
-  if (session.activeSessionId) return;
-  session.pendingWorkMode = null;
-  currentWorkMode.value = val;
-});
-
-/** 权限档位的默认值改动，与工作模式同构：只刷新新建态选择器 */
-watch(() => uiPrefs.agentApprovalMode.value, (val) => {
-  if (session.activeSessionId) return;
-  session.pendingApprovalMode = null;
-  currentApprovalMode.value = val;
-});
 
 let unlistenDragDrop: (() => void) | null = null;
 let unlistenConfig: UnlistenFn | null = null;
 let unlistenWorkMode: UnlistenFn | null = null;
+let unlistenApprovalMode: UnlistenFn | null = null;
+let unlistenCompacting: UnlistenFn | null = null;
+let unlistenSessionCompacted: UnlistenFn | null = null;
 
-const appConfig = ref<any>(null);
-const agentModel = computed(() => appConfig.value?.mainModel || '—');
-const showProfileMenu = ref(false);
-/** 预设菜单 DOM 引用：用于打开时把当前预设滚到可见处 */
-const profileMenuRef = ref<HTMLElement | null>(null);
-/**
- * 模型思考能力（唯一来源）。
- *
- * 由 `checkModelCapabilities` 异步填充，交给 `useThinkingMode` 做同步投影。
- * 注意：它**只影响 UI 显示**，不再决定"发什么参数"——本轮 thinking 由后端按
- * `sessionId` 自行裁决，因此这里即使短暂过期也污染不到真实请求。
- */
-const modelThinkingCaps = ref<ThinkingCaps | null>(null);
-const isThinkingForced = computed(() => modelThinkingCaps.value?.thinking_forced ?? false);
-const canModelThink = computed(() => modelThinkingCaps.value?.thinking ?? true);
-const canModelVision = ref(true);
+// 将输入区实际高度写入根级 CSS 变量 `--input-area-height`，供消息列表底部留白与回底按钮对齐
+const inputAreaRef = ref<HTMLElement | null>(null);
+let inputAreaObserver: ResizeObserver | null = null;
 
-/** 深度思考档位：会话级状态（切会话即切档位），不再是组件本地 ref */
-const {
-  isThinkingActive,
-  saving: thinkingSaving,
-  toggleThinking: toggleThinkingMode,
-} = useThinkingMode(modelThinkingCaps);
-
-/**
- * 点击深度思考开关。
- *
- * 与工作模式/权限档位同一套三值分治：**拨动只改界面值**，写入 session 表
- * 推迟到"发送消息"那一刻（`chat.ensureActiveSessionForSend`）。
- * 尚无会话时把界面值也记进 `pendingThinkingEnabled`，供发送时转交后端。
- */
-const toggleThinking = () => {
-  toggleThinkingMode();
-  if (!session.activeSessionId) {
-    session.pendingThinkingEnabled = isThinkingActive.value;
-  }
-};
-
-/** 开关是否可点：模型不支持思考 / 强制思考时都不可点（点了也没用，但有文案解释） */
-const thinkingToggleDisabled = computed(() => isThinkingToggleDisabled(modelThinkingCaps.value));
-
-/**
- * 锁定态：模型强制开启思考，用户**改不了**（如 DeepSeek）。
- *
- * 注意 UI 上它读作"开启"而非"禁用"——思考确实是开着的，只是不可改。
- * 早期用 `.disabled { filter: grayscale(1) }` 把它整块灰掉，看起来像坏了。
- */
-const thinkingLocked = computed(
-  () => isThinkingForced.value && canModelThink.value && !thinkingSaving.value,
-);
-
-/**
- * 图片压缩参数直接读全局偏好（唯一来源是 `UiPreferences`，取值口径与后端
- * `get_image_compress_config` 完全一致）。
- *
- * 早期这里是"挂载时 invoke 一次、之后永不刷新"：用户在设置里改了档位，
- * 得等下次 `config-updated` 事件（只有存预设才发）才会重新拉，表现就是改完不生效。
- * 现在改成 computed，跟着偏好的响应式数据实时变（设置面板改档位后同窗口立即生效）。
- */
-const imageCompressConfig = computed(() => ({
-  maxWidth: uiPrefs.imageMaxWidth,
-  maxHeight: uiPrefs.imageMaxHeight,
-  quality: uiPrefs.imageQuality,
-}));
-
-const showInterruptedResumeHint = computed(() => {
-  const view = session.currentSessionView;
-  return !isRunning && (view.status === "INTERRUPTED" || Boolean(view.resumableRunId));
-});
-
-/**
- * 把压缩后的尺寸换算成"大约多少 token"。
- *
- * 口径：Anthropic 官方给出的图像 token 估算式 `(宽 × 高) / 750`。
- * 这是**展示用的估算值**，不参与任何请求构造 —— 真实用量以 API 返回为准。
- * 只给用户一个"这张图大概多贵"的数量级，因此不追求逐像素精确。
- */
-const estimateImageTokens = (w: number | null, h: number | null): number | null => {
-  if (!w || !h) return null;
-  return Math.round((w * h) / 750);
-};
-
-const compressImage = async (
-  fileData: Uint8Array,
-  mimeType: string,
-): Promise<{
-  base64: string;
-  mimeType: string;
-  naturalWidth: number;
-  naturalHeight: number;
-  compressedWidth: number;
-  compressedHeight: number;
-}> => {
-  const { maxWidth, maxHeight, quality } = imageCompressConfig.value;
-  const blob = new Blob([new Uint8Array(fileData)], { type: mimeType });
-  const bitmap = await createImageBitmap(blob);
-
-  const naturalWidth = bitmap.width;
-  const naturalHeight = bitmap.height;
-  let w = naturalWidth;
-  let h = naturalHeight;
-
-  if (w > maxWidth || h > maxHeight) {
-    const ratio = Math.min(maxWidth / w, maxHeight / h);
-    w = Math.round(w * ratio);
-    h = Math.round(h * ratio);
-  }
-
-  const canvas = new OffscreenCanvas(w, h);
-  const ctx = canvas.getContext('2d')!;
-  ctx.drawImage(bitmap, 0, 0, w, h);
-  bitmap.close();
-
-  const outputType = mimeType === 'image/png' ? 'image/png' : 'image/jpeg';
-  const outputBlob = await canvas.convertToBlob({ type: outputType, quality });
-  const reader = new FileReader();
-
-  return new Promise((resolve) => {
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      resolve({
-        base64: dataUrl,
-        mimeType: outputType,
-        naturalWidth,
-        naturalHeight,
-        compressedWidth: w,
-        compressedHeight: h,
-      });
-    };
-    reader.readAsDataURL(outputBlob);
-  });
-};
-
-const checkModelCapabilities = async (modelId: string) => {
-  if (!modelId) return;
-  try {
-    const caps = await invoke<any>('get_model_capabilities', { modelId });
-    if (caps) {
-      canModelVision.value = caps.vision ?? true;
-      // 只更新能力；开关档位由 useThinkingMode 依据"会话档位 + 能力"统一投影，
-      // 这里不再直接改写开关（改造前正是在这里漏掉了 isThinkingActive 的重置，
-      // 导致切预设后沿用上一个预设的档位）。
-      modelThinkingCaps.value = {
-        thinking: caps.thinking ?? true,
-        thinking_forced: caps.thinkingForced ?? false,
-      };
-    } else {
-      // 注册表里没有该模型（自定义模型）：保守口径——支持思考、不强制
-      canModelVision.value = true;
-      modelThinkingCaps.value = { thinking: true, thinking_forced: false };
-    }
-  } catch (e) {
-    console.error('Failed to check model capabilities:', e);
-    canModelVision.value = true;
-    modelThinkingCaps.value = { thinking: true, thinking_forced: false };
-  }
-};
-
-const loadConfig = async () => {
-  try {
-    appConfig.value = await invoke('get_config');
-    const activeProfile = appConfig.value.profiles.find((p: any) => p.id === appConfig.value.activeProfileId);
-    if (activeProfile) {
-      await checkModelCapabilities(activeProfile.config.mainModel);
-    }
-  } catch (e) {
-    console.error('Failed to load config for input box:', e);
-  }
-};
-
-/**
- * 激活预设变化时重新探测模型能力。
- *
- * 切会话（`Sidebar` 会把该会话的 `profileId` 写回激活预设）与切预设都会改变
- * `activeProfileId`；不重探就会一直拿着上一个预设的能力结论，开关的禁用态与
- * 提示文案都会滞后。
- */
-watch(
-  () => appConfig.value?.activeProfileId,
-  (profileId, prevId) => {
-    if (!profileId || profileId === prevId || !appConfig.value) return;
-    const activeProfile = appConfig.value.profiles?.find((p: any) => p.id === profileId);
-    if (activeProfile) {
-      void checkModelCapabilities(activeProfile.config.mainModel);
-    }
-  },
-);
-
-/**
- * 查该预设的主模型 / 工具代理模型是否已被官方宣布退役。
- *
- * 探测失败**不阻断**切换：拿不到能力时我们只是"不知道"，按「未知 ≠ 不可用」
- * 的口径放行（同 `utils/thinking.ts` 的 `isThinkingToggleDisabled`）。
- */
-const findRetiredModel = async (profile: any) => {
-  for (const field of ['mainModel', 'utilityModel'] as const) {
-    const modelId = profile?.config?.[field]
-    if (!modelId) continue
-    try {
-      const caps = await invoke<any>('get_model_capabilities', { modelId })
-      if (caps?.status === 'retired') {
-        return { field, modelId }
-      }
-    } catch { /* 探测失败 → 视为未知，不阻断 */ }
-  }
-  return null
-}
-
-const switchProfile = async (id: string) => {
-  if (!appConfig.value) return
-
-  // 退役模型拦截放在**最前面**：它比"prompt cache 失效"更硬。
-  // 那个弹窗问的是"要不要换"，而退役模型是"换过去也没用"——问了也白问。
-  const targetProfile = appConfig.value.profiles?.find((p: any) => p.id === id)
-  if (targetProfile) {
-    const hit = await findRetiredModel(targetProfile)
-    if (hit) {
-      retiredSwitchNotice.value = { profileName: targetProfile.name, ...hit }
-      return
-    }
-  }
-
-  // 如果已有会话消息，切换模型会导致 prompt cache 失效，需确认。
-  //
-  // ⚠️ 2026-11-22：原先这里用全量 `get_session_messages` 只为判断「有没有消息」，
-  // 等于把整个会话拉过 IPC 再丢掉（后端还要跑恢复闸门 + 快照扫描 + turn 聚合）。
-  // 改用上下文快照里的 `messageCount`：后端每轮写入的会话消息数，按 sessionId
-  // 索引，切会话时已经加载。零 IPC，且语义更贴合 —— 缓存失效的前提就是
-  // 「这会话跑过请求」，从未跑过的会话快照为 null，正好按「无历史」处理。
-  if (session.activeSessionId) {
-    const snap = agent.currentContextSnapshot;
-    if ((snap?.messageCount ?? 0) > 0) {
-      pendingProfileId.value = id;
-      showProfileCacheWarning.value = true;
-      return;
-    }
-  }
-  await doSwitchProfile(id);
-};
-
-const confirmSwitchProfile = async () => {
-  showProfileCacheWarning.value = false;
-  if (pendingProfileId.value) {
-    await doSwitchProfile(pendingProfileId.value);
-    pendingProfileId.value = null;
-  }
-};
-
-const doSwitchProfile = async (id: string) => {
-  if (!appConfig.value) return;
-  const currentSessionId = await invoke<string | null>('get_active_session_id').catch(() => null);
-  appConfig.value.activeProfileId = id;
-  try {
-    await invoke('save_config_cmd', { newConfig: appConfig.value });
-    if (currentSessionId) {
-      await invoke('update_session_profile', { id: currentSessionId, profileId: id });
-    }
-    showProfileMenu.value = false;
-    const activeProfile = appConfig.value.profiles.find((p: any) => p.id === id);
-    if (activeProfile) {
-      await checkModelCapabilities(activeProfile.config.mainModel);
-    }
-    // 切模型后**不刷新历史**：消息列表与撤回锚点都不随模型预设变化。
-    // 撤回锚点（messageId / rollbackCheckpointId）是会话消息自身的元数据，落在
-    // `session_messages`，与「当前用哪个模型」无关；这里原先的“切模型后重拉首屏”
-    // 只会在切预设时白拉一次 IPC + 把上滑加载的窗口归位。
-    // 真正需要重拉历史的四类场景（压缩 / 回滚 / 中断恢复 / 撤回）由各自主路径负责。
-  } catch (e) {
-    console.error('Failed to switch profile:', e);
-  }
-};
-
-/** 当前权限档位（请求审批 / 帮我批准 / 完全批准）：后端会话状态为准 */
-const currentApprovalMode = ref<AgentApprovalMode>(uiPrefs.agentApprovalMode.value);
-
-/**
- * 当前会话是否**绑定项目** —— 「完全批准」（full_approve）档的开放条件。
- *
- * 为什么第三档要看这个：full_approve 连改动/删除/改名/命令都不再问，安全垫只有
- * 项目的回滚快照与回收站（删除是可恢复的软删）。这两个能力都挂在项目目录（沙箱根）上，
- * 独立会话没有沙箱根，也就没有回滚依据，所以只给两档。
- *
- * 数据来源（本组件既有口径）：
- * - 已有会话：`session.workingDirectory`，后端由 sessions LEFT JOIN projects 派生的
- *   `p.path`，非空即已绑定项目（独立会话恒为 null）；
- * - 新建会话态（尚未发首条消息）：还没有会话 meta，绑定关系暂存在 `session.pendingProjectId`。
- */
-const projectBound = computed(() => {
-  if (session.activeSessionId) return !!session.workingDirectory;
-  return !!session.pendingProjectId;
-});
-
-/**
- * 权限档位选择器要渲染的档位列表。
- *
- * 绑定项目 → 三档；否则两档。额外兜一条：当前值已经是 full_approve 时也把它渲染出来，
- * 否则会出现「没有任何一项高亮、也没有入口切回两档」的情况（例如项目已归档但会话仍可访问）。
- */
-const approvalModeOptions = computed<AgentApprovalMode[]>(() => {
-  const modes: AgentApprovalMode[] = ['request_approval', 'auto_approve'];
-  if (projectBound.value || currentApprovalMode.value === 'full_approve') {
-    modes.push('full_approve');
-  }
-  return modes;
-});
-
-/**
- * 只读保护（本会话禁止一切改动）：后端会话状态为准，**不落盘**。
- *
- * 三层语义里它只有"会话界面值"这一条通道——既没有设置默认值，也没有 session 表列
- * （后端 `set_agent_read_only` 刻意纯内存，理由见该命令的 doc：记住会变成幽灵故障）。
- * 因此新建会话态拨的那一下只能靠 `session.pendingReadOnly` 内存兜住。
- */
-const agentReadOnly = ref(false);
-
-/**
- * 只读保护是独立闸门：不看权限档位、不看工作模式，切模式绕不过它。
- *
- * 两条分支：
- * - **已有会话**：直接调后端（它会立刻生效，且只活在进程内存里）。
- * - **新建会话态**（尚未发首条消息，会话还不存在）：后端没有 sessionId 可写，
- *   只记进 `pendingReadOnly`；发消息创建会话时由 `chat.ts` 统一转交给后端。
- *   这与工作模式/档位的 pending 同构，区别只在于**没有设置默认值可回落**。
- */
-const toggleReadOnly = async () => {
-  const next = !agentReadOnly.value;
-  const prev = agentReadOnly.value;
-  workModeWarning.value = '';
-  try {
-    if (session.activeSessionId) {
-      await invoke('set_agent_read_only', { sessionId: session.activeSessionId, enabled: next });
-    } else {
-      // 无会话态：只记"待应用选择"，等首条消息创建会话时再让后端生效
-      session.pendingReadOnly = next;
-    }
-    agentReadOnly.value = next;
-  } catch (e) {
-    agentReadOnly.value = prev;
-    workModeWarning.value = String(e);
-    console.error('Failed to toggle read-only protection:', e);
-  }
-};
-
-/**
- * 权限档位只改档位，**不碰工作模式**（两条轴分开：一个是"问得多严"，一个是"先出方案还是直接干"）。
- *
- * 两个分支，判据是「会话是否已存在」：
- * - **已有会话**：立即写后端（`set_session_approval_mode`）。它会落库、广播
- *   `approval-mode-changed`，并把**已经挂起的权限卡**按新档位重判
- *   （`sweep_pending_on_mode_change`）。运行期间切档必须走这条路——只记 pending、
- *   等发消息才落库的话，当前这一轮仍按旧档位判定（切了等于没切）。
- *   注意：full_approve 只在绑定项目的会话里可选（见 `projectBound` / `approvalModeOptions`），
- *   前端不在这里再拦一次——允许的档位列表已经决定了用户点不到它。
- * - **无会话态**（尚未发首条消息，会话还不存在）：只记 pending，创建会话时由
- *   `chat.ts flushPendingSessionPrefs` 统一转交。
- *
- * 乐观更新：点完立刻换显示，后端拒绝时回滚并提示，避免「点了没反应」。
- */
-const applyApprovalMode = async (mode: AgentApprovalMode) => {
-  showApprovalMenu.value = false;
-  if (mode === currentApprovalMode.value) return;
-  const prev = currentApprovalMode.value;
-  workModeWarning.value = '';
-  currentApprovalMode.value = mode;
-  try {
-    const sid = session.activeSessionId;
-    if (sid) {
-      await invoke('set_session_approval_mode', { sessionId: sid, mode });
-      // 已经落库：pending 若还留着，下次发送会用旧意图把刚写的值盖回去
-      session.pendingApprovalMode = null;
-    } else {
-      session.pendingApprovalMode = mode;
-    }
-  } catch (e) {
-    currentApprovalMode.value = prev;
-    workModeWarning.value = String(e);
-    console.error('Failed to switch approval mode:', e);
-  }
-};
-
-/**
- * 工作模式只改模式（编辑 / 规划），**不碰权限档位**。
- * 与档位同构：已有会话立即写后端（否则运行期间切模式同样「切了等于没切」），
- * 无会话态才记 pending，等首条消息创建会话时转交。
- */
-const applyWorkMode = async (mode: AgentUserMode) => {
-  showWorkModeMenu.value = false;
-  if (mode === currentWorkMode.value) return;
-  const prev = currentWorkMode.value;
-  workModeWarning.value = '';
-  currentWorkMode.value = mode;
-  try {
-    const sid = session.activeSessionId;
-    if (sid) {
-      await invoke('set_session_work_mode', { sessionId: sid, mode });
-      session.pendingWorkMode = null;
-    } else {
-      session.pendingWorkMode = mode;
-    }
-  } catch (e) {
-    currentWorkMode.value = prev;
-    workModeWarning.value = String(e);
-    console.error('Failed to switch work mode:', e);
-  }
-};
-
-/**
- * 会话状态才是事实来源：切换会话 / 刷新后校准档位与模式。
- *
- * 两条分支对应两套取值来源：
- * - **无会话态**（新建会话尚未发送首条消息）：取设置默认值。pending 只在这个态下
- *   有意义——用户在新会话界面拨过、还没发消息，得把这份"意图"显示住。
- * - **有会话**：一律从 session 表读（`get_session_work_mode` /
- *   `get_session_permission_settings`），界面值 = 该会话已落库的定论。
- *
- * pending 的清理：切到**任何已有会话**都要清空。它只属于"即将出生的那个新会话"，
- * 若不清，上一个新建界面的拨动会跟着泄漏进你刚切进来的会话显示里。
- *
- * 注意：这里不把会话值反写进 UI 偏好——模式/档位是会话级属性（后端已落库），
- * 反写会把"设置里的默认"悄悄覆盖成"最后看过的会话"，默认设置形同虚设。
- */
-const syncPermissionFromSession = async () => {
-  const sid = session.activeSessionId;
-  if (!sid) {
-    // 新建会话界面：优先回显"待应用选择"（用户刚在新会话里点过的），否则回落设置默认。
-    // 只读没有设置默认值可回落，所以基准是 false（新建会话默认不开启保护）。
-    currentWorkMode.value = session.pendingWorkMode ?? uiPrefs.agentWorkMode.value;
-    currentApprovalMode.value = session.pendingApprovalMode ?? uiPrefs.agentApprovalMode.value;
-    agentReadOnly.value = session.pendingReadOnly ?? false;
-    return;
-  }
-  // 进入已有会话：pending 只服务于新建态，离开新建态即作废
-  // （拨完没发消息就切走 = 没表态，切回来仍是 session 表里的原值）
-  session.pendingWorkMode = null;
-  session.pendingApprovalMode = null;
-  session.pendingReadOnly = null;
-  session.pendingThinkingEnabled = null;
-  try {
-    const mode = await invoke<AgentWorkMode>('get_session_work_mode', { sessionId: sid });
-    currentWorkMode.value = mode;
-    const settings = await invoke<{ approvalMode: AgentApprovalMode; readOnly?: boolean }>(
-      'get_session_permission_settings',
-      { sessionId: sid },
-    );
-    currentApprovalMode.value = settings.approvalMode;
-    agentReadOnly.value = settings.readOnly === true;
-  } catch (e) {
-    console.error('Failed to read session permission settings:', e);
-  }
-};
-
-watch(() => session.activeSessionId, syncPermissionFromSession);
-
-const hideWorkModeWarning = () => {
-  workModeWarning.value = '';
-};
-
-const closeMenuOnOutsideClick = (e: MouseEvent) => {
-  const target = e.target as HTMLElement;
-  if (!target.closest('.profile-selector')) {
-    showProfileMenu.value = false;
-  }
-  if (!target.closest('.work-mode-selector')) {
-    showWorkModeMenu.value = false;
-  }
-  if (!target.closest('.approval-selector')) {
-    showApprovalMenu.value = false;
-  }
-  if (!target.closest('.options-selector')) {
-    showOptionsMenu.value = false;
-  }
-};
-
-/**
- * 打开预设菜单时：① 按**实测可用空间**限制菜单高度 ② 把当前预设滚到可见处。
- *
- * 为什么不用固定 `vh`：输入区本身可能很高（用户粘贴了长文本、带附件预览），
- * 此时"按钮上方到窗口顶部"的可用空间远小于 55vh，固定值会让菜单顶出窗口被裁。
- * 这里用 `getBoundingClientRect()` 实测，再留出菜单与按钮之间的 12px 间隙和 12px 呼吸位。
- */
-const MENU_GAP = 12;
-const MENU_SAFE_MARGIN = 12;
-const MENU_MAX_HEIGHT = 340;
-
-const openProfileMenuLayout = async () => {
-  await nextTick();
-  const menu = profileMenuRef.value;
-  if (!menu) return;
-
-  const btn = menu.parentElement?.querySelector<HTMLElement>('.profile-btn');
-  if (btn) {
-    const spaceAbove = btn.getBoundingClientRect().top - MENU_GAP - MENU_SAFE_MARGIN;
-    const height = Math.max(120, Math.min(MENU_MAX_HEIGHT, Math.floor(spaceAbove)));
-    menu.style.maxHeight = `${height}px`;
-  }
-
-  // 当前项已在视野内时 `block: 'nearest'` 不会滚动，避免无谓跳动
-  const activeItem = menu.querySelector<HTMLElement>('.profile-menu-item.active');
-  activeItem?.scrollIntoView({ block: 'nearest' });
-};
-
-const hideVisionWarning = () => {
-  showVisionWarning.value = false;
-};
-
-/**
- * 缩略图悬停提示：讲清"这张图被压到多大、大概吃多少 token"。
- *
- * 存在的理由：图片 token 混在总输入里根本看不出来（系统提示词+工具定义占大头），
- * 用户没法判断压缩档位到底有没有生效。这里把原图→压缩后的尺寸和估算 token 直接摆出来，
- * 切换档位时一眼可见。
- */
-const mediaTooltip = (media: MediaFile): string => {
-  const lines: string[] = [media.path.split(/[/\\]/).pop() || media.path];
-
-  if (media.naturalWidth && media.naturalHeight) {
-    let sizeLine = `${media.naturalWidth}×${media.naturalHeight}`;
-    // 只有真的缩放过才显示箭头，避免"1920×1080 → 1920×1080"这种废话
-    if (
-      media.compressedWidth &&
-      media.compressedHeight &&
-      (media.compressedWidth !== media.naturalWidth || media.compressedHeight !== media.naturalHeight)
-    ) {
-      sizeLine += ` → ${media.compressedWidth}×${media.compressedHeight}`;
-    } else {
-      sizeLine += ` → ${t('input.imageNotCompressed')}`;
-    }
-    lines.push(sizeLine);
-  }
-
-  const tokens = estimateImageTokens(media.compressedWidth, media.compressedHeight);
-  if (tokens !== null) {
-    lines.push(t('input.imageTokenEstimate', { count: tokens.toLocaleString() }));
-  }
-
-  if (media.type === 'video') {
-    lines.push(t('input.videoTokenUnknown'));
-  }
-
-  return lines.join('\n');
-};
-
-const processDroppedFiles = async (paths: string[]) => {
-  let hasMediaFiles = false;
-  
-  for (const droppedPath of paths) {
-    const lowerPath = droppedPath.toLowerCase();
-    const isImage = lowerPath.endsWith('.jpg') || lowerPath.endsWith('.jpeg') || lowerPath.endsWith('.png') || lowerPath.endsWith('.gif') || lowerPath.endsWith('.webp');
-    const isVideo = lowerPath.endsWith('.mp4') || lowerPath.endsWith('.webm') || lowerPath.endsWith('.mov');
-    
-    if (isImage || isVideo) {
-      hasMediaFiles = true;
-      
-      let url = '';
-      let base64 = '';
-      // 尺寸在解码失败时保持 null → 缩略图提示降级显示，不编造数字
-      let naturalWidth: number | null = null;
-      let naturalHeight: number | null = null;
-      let compressedWidth: number | null = null;
-      let compressedHeight: number | null = null;
-
-      if (isImage && canModelVision.value) {
-        try {
-          const fileData = await readFile(droppedPath);
-          const ext = lowerPath.split('.').pop() || 'png';
-          const mimeType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 
-                           ext === 'gif' ? 'image/gif' : 
-                           ext === 'webp' ? 'image/webp' : 'image/png';
-          
-          const compressed = await compressImage(new Uint8Array(fileData), mimeType);
-          base64 = compressed.base64;
-          naturalWidth = compressed.naturalWidth;
-          naturalHeight = compressed.naturalHeight;
-          compressedWidth = compressed.compressedWidth;
-          compressedHeight = compressed.compressedHeight;
-          url = URL.createObjectURL(new Blob([new Uint8Array(fileData)], { type: mimeType }));
-        } catch (e) {
-          console.error('Failed to read image file:', e);
-        }
-      }
-      
-      mediaFiles.value.push({
-        path: droppedPath,
-        type: isImage ? 'image' : 'video',
-        url,
-        base64,
-        naturalWidth,
-        naturalHeight,
-        compressedWidth,
-        compressedHeight,
-      });
-    } else {
-      if (userInput.value) {
-        userInput.value += ` ${droppedPath}`;
-      } else {
-        userInput.value = droppedPath;
-      }
-    }
-  }
-  
-  if (hasMediaFiles && !canModelVision.value) {
-    showVisionWarning.value = true;
-  }
-  
-  nextTick(() => {
-    inputRef.value?.focus();
-    adjustHeight();
-  });
-};
-
-/**
- * 从文件名推断图片 MIME。
- *
- * 资源管理器里"复制文件"再粘贴时，WebView2 给出的 DataTransferItem.type 可能为空，
- * 此时只能靠扩展名兜底；推断不出来就当作不是图片，放行默认粘贴。
- */
-const inferImageMime = (name: string): string | null => {
-  const ext = name.split('.').pop()?.toLowerCase() || '';
-  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
-  if (ext === 'png') return 'image/png';
-  if (ext === 'gif') return 'image/gif';
-  if (ext === 'webp') return 'image/webp';
-  return null;
-};
-
-/**
- * 粘贴剪贴板图片（Ctrl+V）。
- *
- * 拖拽拿到的是文件路径（Tauri 原生事件），剪贴板截图是内存位图、没有路径，
- * 所以必须从 paste 事件的 clipboardData 里取 File，再汇入与拖拽相同的压缩管线。
- *
- * 非视觉模型没有"仅传路径"的退路（位图无路径可传），这里只提示不附加；
- * 且不拦截默认行为，剪贴板若同时带文本，文本仍能正常粘贴。
- */
-const handlePaste = async (event: ClipboardEvent) => {
-  const items = event.clipboardData?.items;
-  if (!items) return;
-
-  let file: File | null = null;
-  let mimeType = '';
-  for (const item of Array.from(items)) {
-    if (item.kind !== 'file') continue;
-    const candidate = item.getAsFile();
-    if (!candidate) continue;
-    const mime = item.type.startsWith('image/') ? item.type : inferImageMime(candidate.name);
-    if (mime) {
-      file = candidate;
-      mimeType = mime;
-      break;
-    }
-  }
-  // 没有图片项：可能是纯文本粘贴，交给 textarea 默认行为
-  if (!file) return;
-
-  if (!canModelVision.value) {
-    showVisionWarning.value = true;
-    return;
-  }
-
-  // 必须在事件同步阶段拦截，否则 await 之后默认粘贴已经执行
-  event.preventDefault();
-
-  try {
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const compressed = await compressImage(bytes, mimeType);
-    // 剪贴板图片没有真实路径：生成一个仅用于缩略图展示与悬停提示的名字
-    const ext = compressed.mimeType === 'image/png' ? 'png' : 'jpg';
-    const now = new Date();
-    const stamp = [now.getHours(), now.getMinutes(), now.getSeconds()]
-      .map((n) => String(n).padStart(2, '0'))
-      .join('');
-    mediaFiles.value.push({
-      path: `粘贴图片-${stamp}.${ext}`,
-      type: 'image',
-      url: URL.createObjectURL(file),
-      base64: compressed.base64,
-      naturalWidth: compressed.naturalWidth,
-      naturalHeight: compressed.naturalHeight,
-      compressedWidth: compressed.compressedWidth,
-      compressedHeight: compressed.compressedHeight,
-    });
-  } catch (e) {
-    console.error('Failed to paste image:', e);
+const syncInputAreaHeight = () => {
+  const host = inputAreaRef.value?.closest('.floating-terminal-container') as HTMLElement | null;
+  if (!host) return;
+  const height = Math.round(host.getBoundingClientRect().height);
+  if (height > 0) {
+    document.documentElement.style.setProperty('--input-area-height', `${height}px`);
   }
 };
 
 onMounted(async () => {
   await loadConfig();
-  // 档位/模式控件以会话状态为准（刷新后恢复显示）
   await syncPermissionFromSession();
-  // 如果没有活跃会话，将模型初始化为全局默认
   if (!session.activeSessionId && appConfig.value?.globalProfileId) {
     appConfig.value.activeProfileId = appConfig.value.globalProfileId;
     await invoke('save_config_cmd', { newConfig: appConfig.value });
   }
 
-  unlistenConfig = await listen('config-updated', async () => {
-    // **配置事件不参与消息刷新**：这里只重读配置（模型名 / 模型能力 / 预设列表）。
-    //
-    // 本事件不只由「保存配置 / 切模型」触发：后端 `align_active_profile_to_session`
-    // （command/session.rs）在**切换会话**时也会发它（两个会话预设不同时）。
-    // 原先这里顺带重拉一次历史，于是切会话时 Sidebar 刚加载好的 5 轮首屏会被
-    // 整个会话覆盖（用户实测：切到长对话后加载出绝大部分历史）。
-    // 消息加载已统一收口到 chat store 的三个入口，事件里不再插手。
-    loadConfig();
+  unlistenConfig = await listen('config-updated', () => {
+    void loadConfig();
   });
-
-  // 监听 Agent 自动切换 WorkMode 的事件
-  unlistenWorkMode = await listen<{ from: string; to: string; reason: string }>('agent-work-mode-changed', (event) => {
-    currentWorkMode.value = event.payload.to as AgentWorkMode;
-  });
-
-  // 权限档位变化（用户在设置面板里改了，或后端初始化）
-  await listen<{ mode: AgentApprovalMode }>('approval-mode-changed', (event) => {
-    currentApprovalMode.value = event.payload.mode;
-  });
-  // 监听监控窗口上下文压缩状态，压缩期间禁用输入
-  unlistenCompacting = await listen<{ sessionId: string; compacting: boolean }>('bg-compacting-changed', (event) => {
-    const payload = event.payload;
-    if (payload?.sessionId) applyCompactingStatus(payload.sessionId, payload.compacting);
-  });
+  unlistenWorkMode = await listen<{ from: string; to: string; reason: string }>(
+    'agent-work-mode-changed',
+    (event) => {
+      currentWorkMode.value = event.payload.to as AgentWorkMode;
+    },
+  );
+  unlistenApprovalMode = await listen<{ mode: AgentApprovalMode }>(
+    'approval-mode-changed',
+    (event) => {
+      currentApprovalMode.value = event.payload.mode;
+    },
+  );
+  unlistenCompacting = await listen<{ sessionId: string; compacting: boolean }>(
+    'bg-compacting-changed',
+    (event) => {
+      if (event.payload?.sessionId) {
+        applyCompactingStatus(event.payload.sessionId, event.payload.compacting);
+      }
+    },
+  );
   unlistenSessionCompacted = await listen<{ sessionId: string }>('session-compacted', (event) => {
-    const sessionId = event.payload?.sessionId;
-    if (sessionId) applyCompactingStatus(sessionId, false);
+    if (event.payload?.sessionId) {
+      applyCompactingStatus(event.payload.sessionId, false);
+    }
   });
-  // 挂载时主动查询后端，防止 F5 刷新丢失"压缩中"状态
   if (session.activeSessionId) {
     await syncCompactingStatus(session.activeSessionId);
   }
@@ -1285,44 +262,15 @@ onMounted(async () => {
       isDragging.value = false;
       document.body.classList.remove('dragging-active');
     }
-    
-    if (event.payload.type === 'drop') {
-      const paths = event.payload.paths;
-      if (paths.length > 0) {
-        processDroppedFiles(paths);
-      }
+    if (event.payload.type === 'drop' && event.payload.paths.length > 0) {
+      void processDroppedFiles(event.payload.paths);
     }
   });
 });
 
-/**
- * 把「输入区实际高度」写成根级 CSS 变量 `--input-area-height`。
- *
- * 为什么需要：消息列表的底部留白（`.response-area` 的 padding-bottom）和「滚动到底部」
- * 按钮的悬浮位置都必须贴着浮动输入框，而输入框高度是**内容/窗口驱动**的 —— 多行输入、
- * 附件条、权限卡片、计划面板、窄窗口下文字换行变多，都会改变它的高度。
- * 以前这两处各自硬编码了魔数（padding 200px、按钮 bottom 180px，分散在两个文件里），
- * 窗口或内容一变就失配：按钮压住输入框、或最后几条消息被输入框遮住。
- * 现在改为「一处测量、多处消费」。
- *
- * 观察的是外层 `.floating-terminal-container`（含它 32px 的 padding），
- * 这样量到的是「输入区整体占位高度」，直接用即可。
- */
-const inputAreaRef = ref<HTMLElement | null>(null);
-let inputAreaObserver: ResizeObserver | null = null;
-
-const syncInputAreaHeight = () => {
-  const host = inputAreaRef.value?.closest('.floating-terminal-container') as HTMLElement | null;
-  if (!host) return;
-  const height = Math.round(host.getBoundingClientRect().height);
-  if (height > 0) {
-    document.documentElement.style.setProperty('--input-area-height', `${height}px`);
-  }
-};
-
 onMounted(() => {
   const host = inputAreaRef.value?.closest('.floating-terminal-container') as HTMLElement | null;
-  syncInputAreaHeight(); // 首帧先量一次，避免先用兜底值闪一下
+  syncInputAreaHeight();
   if (!host || typeof ResizeObserver === 'undefined') return;
   inputAreaObserver = new ResizeObserver(syncInputAreaHeight);
   inputAreaObserver.observe(host);
@@ -1332,6 +280,7 @@ onUnmounted(() => {
   if (unlistenDragDrop) unlistenDragDrop();
   if (unlistenConfig) unlistenConfig();
   if (unlistenWorkMode) unlistenWorkMode();
+  if (unlistenApprovalMode) unlistenApprovalMode();
   if (unlistenCompacting) unlistenCompacting();
   if (unlistenSessionCompacted) unlistenSessionCompacted();
 });
@@ -1342,18 +291,6 @@ onBeforeUnmount(() => {
   inputAreaObserver = null;
   document.documentElement.style.removeProperty('--input-area-height');
 });
-
-const adjustHeight = () => {
-  const el = inputRef.value;
-  if (!el) return;
-  el.style.height = 'auto';
-  const newHeight = Math.min(el.scrollHeight, 200);
-  el.style.height = `${newHeight}px`;
-};
-
-const handleInput = () => {
-  adjustHeight();
-};
 
 const handleKeydown = (e: KeyboardEvent) => {
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -1368,14 +305,11 @@ const handleSubmit = () => {
   const msg = userInput.value.trim();
   if (msg || mediaFiles.value.length > 0) {
     const imageBase64List = mediaFiles.value
-      .filter(m => m.type === 'image' && m.base64)
-      .map(m => m.base64);
-    // 不再回传本地的思考开关值：本轮 thinking 由后端按 sessionId + 会话档位自行裁决，
-    // 这样即使 UI 投影短暂过期（如能力查询未返回）也污染不到真实请求。
+      .filter((m) => m.type === 'image' && m.base64)
+      .map((m) => m.base64);
     const submittedMediaFiles = [...mediaFiles.value];
     const sendPromise = chat.sendToJarvis(msg, null, imageBase64List);
     userInput.value = '';
-    // 清空当前草稿；若后端尚未接收本轮，会在 Promise 返回后恢复原文和附件。
     uiPrefs.setInputDraft(draftKeyOf(session.activeSessionId), '');
     mediaFiles.value = [];
     showVisionWarning.value = false;
@@ -1385,7 +319,6 @@ const handleSubmit = () => {
         const retrySessionId = retryDraft.sessionId;
         const retryDraftKey = draftKeyOf(retrySessionId);
         if (retrySessionId === session.activeSessionId) {
-          // 发送等待期间用户若又输入了内容，保留两段文本和附件，不覆盖新草稿。
           userInput.value = userInput.value
             ? `${retryDraft.text}\n\n${userInput.value}`
             : retryDraft.text;
@@ -1398,10 +331,9 @@ const handleSubmit = () => {
           });
           return;
         }
-        // 切换会话期间被拒绝：把文本放回原会话草稿，附件 URL 仍需释放。
         uiPrefs.setInputDraft(retryDraftKey, retryDraft.text);
       }
-      submittedMediaFiles.forEach(m => {
+      submittedMediaFiles.forEach((m) => {
         if (m.url) URL.revokeObjectURL(m.url);
       });
     });
@@ -1411,51 +343,10 @@ const handleSubmit = () => {
   }
 };
 
-let unlistenCompacting: UnlistenFn | null = null;
-let unlistenSessionCompacted: UnlistenFn | null = null;
-
-/**
- * 「正在停止」：已发出停止请求、但本轮尚未真正收尾。
- *
- * 状态挂在会话视图上（`view.stopping`）而不是组件局部变量：
- * - 点击后立即生效，按钮显示 spinner 并禁用，防止用户以为没效果而反复点击；
- * - 切走再切回同一会话，停止中的反馈仍然正确；
- * - 直到 `sendToJarvis` 收尾（状态回落到 IDLE/ERROR）才结束，覆盖后端
- *   「等工具批次结束才能停」的真实耗时，而不是只覆盖一次毫秒级的 IPC 往返。
- *
- * 注意这里**不叠加** `status === 'RUNNING'`：后端收尾时 `agent-run-updated`
- * 会先把视图改成 INTERRUPTED，而 `ask_jarvis` 的取消回执稍后才到。
- * 若此时就收起 spinner，输入框会短暂恢复成可发送状态，而上一轮其实还在
- * 释放资源，新消息会被后端以"上一轮正在停止中"拒绝。
- */
-const isStopping = computed(() => session.getSessionView(session.activeSessionId).stopping);
-
 const handleCancel = async () => {
-  // 按钮虽然 disabled，键盘触发/连点仍可能进来；停止中的重复点击直接忽略
   if (isStopping.value) return;
   await chat.cancelJarvis(session.activeSessionId ?? undefined);
 };
-
-const removeMediaFile = (index: number) => {
-  const [removed] = mediaFiles.value.splice(index, 1);
-  if (removed?.url) {
-    URL.revokeObjectURL(removed.url);
-  }
-  if (mediaFiles.value.length === 0) {
-    showVisionWarning.value = false;
-  }
-};
-
-watch(() => chat.rollbackRecalledMessage, (msg) => {
-  if (msg) {
-    userInput.value = msg;
-    chat.rollbackRecalledMessage = "";
-    nextTick(() => {
-      inputRef.value?.focus();
-      adjustHeight();
-    });
-  }
-});
 
 const handleRecallEdit = async () => {
   const text = await chat.recallAndEdit();
