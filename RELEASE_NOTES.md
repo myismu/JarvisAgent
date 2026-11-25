@@ -1,19 +1,25 @@
-# JarvisAgent v0.5.1
+# JarvisAgent v0.6.0
 
-本次更新聚焦「跨端双向类型契约全量收口」「前后端大模块领域化治理」与「前端组件测试体系落地」，并补充若干实用交互与安全增强。
+本次更新正式引入「MCP（Model Context Protocol）扩展体系」「会话图片全链路渲染与视觉回看」与「运行期咨询工具 `AskUser`」，并同步打磨了审批、回滚预览与界面交互细节。
 
-## 功能与体验改进
+## 核心新特性
 
-- **用户消息操作栏重构**：新增一键复制与原地编辑重发，对话修改与重跑更顺手
-- **沙箱只读审批增强**：沙箱会话支持跨目录只读审批持久化，并进一步收紧只读白名单边界
-- **真实缺陷修复**：在契约对齐与模块拆分过程中，顺手修复了 5 处前后端字段漂移（含 `DiffViewer`、`AgentPanel`、`TodoPanel`、`chat.ts`）以及 2 处组件卸载时事件监听未注销泄漏（`approval-mode-changed`、`bg-task-done`）
+- **MCP（Model Context Protocol）客户端接入与扩展中心**：
+  - 后端集成官方 `rmcp` SDK，支持本地 `stdio` 与远程 `Streamable HTTP` 两类 MCP 服务，提供懒启动、空闲自动休眠、并发启动合并与单服务串行调用锁，应用退出自动回收全部子进程
+  - 接入按需发现体系（`ConnectMcpServer`、`ListMcpResources`、`ReadMcpResource`）与信任分级审批（未信任服务按单工具审批，已信任服务按服务级放行）；规划模式与子代理隔离 MCP
+  - 前端将侧边栏「技能」升级为「扩展」统一管理页，支持可视化新增/编辑/JSON 批量导入 MCP 服务、连接测试、停用/休眠、按单工具开关与实时日志查看，并在聊天输入框新增 MCP Prompt 模板选择器
+- **会话图片全链路与视觉回看**：
+  - 新增只读自定义协议 `jarvis-attachment` 与 Markdown `attachment://` 图片地址解析，支持 Agent 与 MCP 工具返回的图片直连 SQLite 附件表安全渲染
+  - 视觉模型可原生查看 MCP 工具与历史会话图片；新增只读按需工具 `ViewSessionImage`（按 `session_id` 强隔离）支持按需回看已折叠的往轮图片
+  - 修复应用重启后用户历史图片丢失回显、以及工具返回图片被误识别为右侧用户消息的问题
+- **运行期咨询工具 `AskUser`**：
+  - 模型在执行复杂任务遇到分歧时，可向用户发起结构化单选/多选提问；前端新增可折叠咨询卡片（抽离 `ComposerDockCard` 骨架与权限卡统一视觉）
 
-## 架构治理与工程质量
+## 体验优化与缺陷修复
 
-- **跨端双向强类型契约 100% 闭环**：通过 `ts-rs` 将全部 115 个 Tauri 命令与 36 类后端 `app.emit` 推送事件（新增 `infra/types/events.rs`，全仓动态 `json!` 事件清零）自动导出到 `src/types/generated/contracts.ts`，并由单测门禁锁死一致性
-- **前端领域化拆解**：将 1162 行的 `useAgentEvents.ts` 按事件域拆为 6 个子模块；抽离 `TerminalInput`、`SettingsPanel`、`ChatArea`、`AgentPanel` 的核心状态与副作用到领域 `composables/`
-- **后端大文件拆解与 Clippy 门禁收紧**：将 `schema.rs` 与 `repository.rs` 分别拆为领域目录（对外接口零破坏）；移除 `Cargo.toml` 中全局 `too_many_arguments = "allow"` 放行，阻断后续新增超长参数函数；全仓通过 `cargo fmt --all -- --check` 与 `cargo clippy --all-targets -- -D warnings`
-- **前端组件测试体系落地**：引入 `@vue/test-utils` 与 `happy-dom`，补齐核心 Store、事件流与 5 个高频交互组件（`RollbackConfirmModal`、`PermissionModal`、`TerminalInput`、`PlanPreviewPanel`、`SettingsPanel`）的自动化测试，前端 Vitest 用例扩充至 16 个文件 / 79 个用例
+- **审批与回滚增强**：允许审批支持携带用户附言透传给模型；撤回预览文件列表增加操作类型标签并隐藏零行统计；修复回滚 GC 误删快照内容与删除预览净零误判问题
+- **界面视觉统一**：统一过程面板通透细边风格、重构确认弹窗样式；界面文案统一为「项目会话」与「独立对话」并精简顶栏样式；启动恢复或切换会话时自动展开当前活跃会话目录
+- **测试覆盖补强**：补齐会话图片强隔离、路径穿越校验、新按需工具模式拦截、`McpManager` 生命周期与空闲休眠、折叠占位符与前端 Markdown 图片解析等单元测试（前端 Vitest 扩展至 20 个文件 / 91 个用例）
 
 ## 安装
 
