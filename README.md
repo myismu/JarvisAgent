@@ -3,9 +3,9 @@
 [![CI](https://github.com/myismu/JarvisAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/myismu/JarvisAgent/actions/workflows/ci.yml)
 
 <div align="center">
-一一一一用你自己的 API Key 运行：会读代码、改文件、跑命令的桌面端 AI 编程助手 —— 改坏了能退回去，动手前会先问你。
+用你自己的 API Key 运行：会读代码、改文件、跑命令的桌面端 AI 编程助手 —— 改坏了能退回去，动手前会先问你。
 
-Tauri 2 + Rust + Vue 3 · 12 家厂商 93 个模型 · 159 个 Rust 模块 / 705 个后端单测 + 79 个前端 Vitest 单测
+Tauri 2 + Rust + Vue 3 · 12 家厂商 93 个模型 · 169 个 Rust 模块 / 735 个后端单测 + 91 个前端 Vitest 单测
 
 <a href="SCREENSHOTS.md"><img src="screenshots/01-main-chat.png" alt="JarvisAgent 主界面" width="820"></a>
 
@@ -27,22 +27,26 @@ Tauri 2 + Rust + Vue 3 · 12 家厂商 93 个模型 · 159 个 Rust 模块 / 705
 
 - **多 Agent 编排** — 依赖图任务调度（`JoinSet` 流式执行，完成即级联解锁，无依赖任务自动并行）+ 子代理独立上下文与独立 token 计量 + 沙箱分支与补丁级三方合并
 
+- **MCP 生态接入与扩展中心** — 作为 MCP Host，基于官方 `rmcp` SDK 支持 `stdio`（无黑窗子进程）与 `Streamable HTTP` 双传输；提供懒启动、本地能力缓存与 `mcp__{server}__{tool}` 命名空间映射，将外部工具、资源与 Prompt 模板统一纳入渐进式披露目录和权限管控；前端提供扩展中心（`ExtensionHub` / `McpPanel`）与 Prompt 快捷选择
+
+- **运行期交互咨询与审批附言** — 执行或规划中遇到真实需求歧义或方案分叉时，Agent 可调用 `AskUser` 弹出结构化选择题咨询卡片（支持单选、多选与自定义回答）并在当前循环内即时续跑；权限审批在允许与拒绝时均支持附言透传给模型
+
 - **跨模型 Prompt Cache 字节恒定** — 工具定义、系统提示词、消息结构在会话内保持字节级稳定，模式切换、工具开关、提示词编辑都不破坏前缀缓存。这是贯穿提示词 / 工具 / 上下文三个系统的一条硬约束：缓存前缀排在消息之前，动一个字节则后续全部历史失效
 
 - **多模型接入** — 12 家厂商共 93 个模型（67 个在售，其余为退役 / 即将下线 / 别名路由记录，逐条维护生命周期状态），OpenAI 与 Anthropic 双协议。SSE 协议解析收敛在单一模块，业务层只见统一事件；超时分层施加（不设整体时限，以免掐断长流式生成）、固定阶梯重试、429 限流、跨厂商用量字段归一化（未知不冒充 0）
 
-- **桌面端体验** — 类 IDE 毛玻璃界面、明暗主题、中英双语、图片输入；13 个内置提示词与 1 个可选个人规则文件、全部工具均可在设置中查看与调整（磁盘优先、内置兜底）
+- **桌面端体验** — 类 IDE 毛玻璃界面、明暗主题、中英双语、图片输入与历史图片按需回看（`ViewSessionImage`）；13 个内置提示词与 1 个可选个人规则文件、全部工具与 MCP 服务均可在界面中查看与调整（磁盘优先、内置兜底）
 
 ## 技术栈
 
 | 层级 | 技术 | 说明 |
 |------|------|------|
 | 前端框架 | Vue 3.5 + TypeScript | Composition API + `<script setup>` |
-| 状态管理 | Pinia 3 | 5 个 Store：session / chat / agent / permission / appView |
+| 状态管理 | Pinia 3 | 6 个 Store：session / chat / agent / permission / appView / mcp |
 | 桌面框架 | Tauri 2 | Rust 后端，轻量高性能；无边框透明窗口 |
 | 后端运行时 | Rust + Tokio | 异步运行时，SSE 流式处理 |
 | HTTP 客户端 | Reqwest 0.12 | 流式 API 调用，OpenAI / Anthropic 双协议 |
-| 数据库 | SQLite (rusqlite) | 20 张表，会话、消息、快照、任务、运行记录 |
+| 数据库 | SQLite (rusqlite) | 21 张表，会话、消息、快照、任务、运行记录、请求用量 |
 | 分词器 | tiktoken-rs | BPE Token 计数，未知模型回退 cl100k_base，再回退字符估算 |
 | 国际化 | vue-i18n 9 | zh-CN / en-US |
 | Markdown | marked | GFM + 增量渲染 |
@@ -118,14 +122,15 @@ JarvisAgent/
 │   ├── api/ / pages/                 # 预留目录（暂空）
 │   ├── assets/global.css             # CSS 变量主题 + 毛玻璃令牌
 │   ├── types/
-│   │   ├── generated/contracts.ts    #   ts-rs 自动导出的跨端类型契约（覆盖 115 个命令 + 36 个推送事件）
+│   │   ├── generated/contracts.ts    #   ts-rs 自动导出的跨端类型契约（覆盖 133 个命令 + 28 类强类型推送事件）
 │   │   └── index.ts                  #   前端共享类型定义（重导出契约 + 前端特有视图类型）
 │   ├── stores/                       # Pinia 状态管理
 │   │   ├── session.ts                #   会话生命周期 + 消息缓冲区 + 分页游标
 │   │   ├── chat.ts                   #   核心交互：发送/取消/撤回/渲染/懒加载
 │   │   ├── agent.ts                  #   Agent/子代理运行状态 + 上下文快照 + 面板显隐
-│   │   ├── permission.ts             #   权限请求 + 方案审批状态（按会话排队）
-│   │   └── appView.ts                #   主内容区视图切换（聊天 / 技能管理）
+│   │   ├── permission.ts             #   权限请求 + 方案审批 + 运行期咨询状态（按会话排队）
+│   │   ├── mcp.ts                    #   MCP 服务配置、运行状态与能力缓存
+│   │   └── appView.ts                #   主内容区视图切换（聊天 / 扩展中心）
 │   ├── composables/
 │   │   ├── useAgentEvents.ts         #   后端事件监听装配入口（具体领域逻辑在 agentEvents/ 目录）
 │   │   ├── agentEvents/              #   按事件域拆分（types / runState / loaders / governance / stream / lifecycle）
@@ -152,32 +157,36 @@ JarvisAgent/
 │       ├── layout/                   # TitleBar, Sidebar
 │       ├── chat/                     # ChatArea, TerminalInput, AgentPanel, AgentTurn,
 │       │                             # AgentTurnNotice, MessageRail, ExecutionPanel,
-│       │                             # ThinkingStatus, TodoPanel, ToolCallGroup,
-│       │                             # PermissionCard, ContextInspector, CacheHitTooltip,
-│       │                             # AgentSnapshotSection, WelcomeScreen
+│       │                             # ExecutionTimeline, ThinkingStatus, TodoPanel, ToolCallGroup,
+│       │                             # PermissionCard, UserQuestionCard, ComposerDockCard,
+│       │                             # McpPromptPickerModal, SubAgentChatPane, ContextInspector,
+│       │                             # CacheHitTooltip, AgentSnapshotSection, WelcomeScreen
 │       ├── common/                   # PermissionModal, PlanPreviewPanel, ConfirmModal,
-│       │                             # RollbackConfirmModal, StreamingMarkdown, ToastHost
+│       │                             # RollbackConfirmModal, StreamingMarkdown, ToastHost, UpdatePrompt
 │       ├── checkpoint/               # CheckpointTimeline
 │       ├── snapshot/                 # SnapshotTimeline, DiffViewer, LivePreview, FileOpIcon
 │       ├── settings/                 # SettingsPanel（五页签）+ PromptsTab + ToolsPanel
+│       ├── extension/                # ExtensionHub, McpPanel, McpServerCard, McpServerDetail, McpServerEditor
 │       ├── skill/                    # SkillManager, SkillMarket, SkillCard, SkillDetailPanel
 │       └── todo/                     # Todo 组件（暂空）
 ├── src-tauri/                        # Rust 后端（三层：infra / core / command）
 │   ├── src/
-│   │   ├── lib.rs                    # Tauri 入口：数据目录 + 状态注册 + 115 个命令绑定
+│   │   ├── lib.rs                    # Tauri 入口：数据目录 + 状态注册 + 133 个命令绑定
 │   │   ├── main.rs                   # 二进制入口
 │   │   ├── infra/                    # ── 基础设施层：配置 / 数据库 / LLM / 状态 ──
 │   │   │   ├── config/               #   config.rs（AppConfig + 预设 + 原子写入）+ data_paths.rs
-│   │   │   ├── db/                   #   mod.rs（SQLite 连接）+ schema/（20 张表 + 迁移 v1~v29 分卷）
+│   │   │   ├── db/                   #   mod.rs（SQLite 连接）+ schema/（21 张表 + 迁移 v1~v29 分卷）
 │   │   │   ├── llm/                  #   api_format + api_client（固定阶梯重试 + Retry-After）
 │   │   │   │                         #   + adapters + registry（模型能力注册表）
 │   │   │   │                         #   + stream_parse（SSE 帧解析唯一实现）+ token_count
 │   │   │   │                         #   + context_budget（压缩判据）+ usage + usage_memory
 │   │   │   ├── state/                #   state.rs（SessionManager/WorkspaceState）
-│   │   │   ├── types/                #   models.rs + events.rs（36 类推送事件）+ error.rs + constants.rs + ts_bindings.rs
+│   │   │   ├── types/                #   models.rs + events.rs（28 类强类型事件契约）+ error.rs + constants.rs + ts_bindings.rs
 │   │   │   ├── background.rs         #   后台任务管理 + Tauri 事件推送
+│   │   │   ├── shell_command.rs / shell_dialect.rs  # Shell 命令切分与方言适配（PowerShell / Git Bash）
+│   │   │   ├── log_maintenance.rs    #   日志滚动归档与过期清理
 │   │   │   └── debug_logger.rs       #   调试日志
-│   │   ├── core/                     # ── 业务层：Agent / 工具 / 编排 / 回滚 / 会话 ──
+│   │   ├── core/                     # ── 业务层：Agent / MCP / 工具 / 编排 / 回滚 / 会话 ──
 │   │   │   ├── agent/
 │   │   │   │   ├── pipeline/         #   四阶段 Agent 管线目录（mod / setup / main_loop / finalize / recovery / context_metrics / helpers / tests）
 │   │   │   │   ├── stream.rs         #   流式事件副作用处理（协议解析在 infra/llm/stream_parse）
@@ -186,6 +195,7 @@ JarvisAgent/
 │   │   │   │   ├── prompts.rs        #   系统提示词多维组装（按 P0/P1/P2 分层 + 磁盘覆盖层）
 │   │   │   │   ├── prompts/          #   13 个提示词模板（base / audience / mode / os / subagent）
 │   │   │   │   └── reflection/       #   反思审查（mod / prompt / strategy）
+│   │   │   ├── mcp/                  #   MCP Host 管理：config / naming / client（rmcp stdio+HTTP）/ manager / catalog
 │   │   │   ├── complex_task.rs       #   复杂任务检测：is_complex_task 命中 → 强制 Plan 审批
 │   │   │   │                         #   + detect_plan_in_text 正文方案检测 → 重定向 ProposePlan
 │   │   │   ├── orchestration/        #   scheduler + subagents + agent_runs + tasks
@@ -199,7 +209,7 @@ JarvisAgent/
 │   │   │   └── tools/                #   工具系统中枢 + 8 个子系统：
 │   │   │       ├── file_tools/       #   文件读写/编辑/搜索/符号（14 个文件）
 │   │   │       ├── shell_tools/      #   Shell + 后台任务 + 安全检查（git 走 RunCommand，无专用工具）
-│   │   │       ├── agent_tools/      #   子代理、技能、压缩、方案审批、模式切换、记忆
+│   │   │       ├── agent_tools/      #   子代理、技能、压缩、方案审批、模式切换、记忆、AskUser、MCP 资源、会话图片回看
 │   │   │       ├── task_tools/       #   持久化任务 CRUD + 轻量待办
 │   │   │       │   └── persistent/   #   任务 CRUD 实现（create/update/delete/list/get/summary）
 │   │   │       ├── search_tools/     #   Glob + Grep 搜索
@@ -207,12 +217,13 @@ JarvisAgent/
 │   │   │       ├── system_tools/     #   系统工具（当前无模型可调用项，见模块注释）
 │   │   │       └── framework/        #   工具注册表、能力清单、权限判定、渐进式披露、
 │   │   │                             #   允许清单落盘、审计与调用日志、工具开关过滤
-│   │   └── command/                  # ── Tauri 命令层（12 个模块 / 14 个文件）──
+│   │   └── command/                  # ── Tauri 命令层（14 个模块 / 16 个文件）──
 │   │       ├── session.rs            #   会话 CRUD + 撤回 + 后台任务 + 子代理查询
 │   │       ├── config.rs / app_config.rs  # 配置读写 / 窗口状态 + UI 偏好
 │   │       ├── checkpoint.rs / snapshot.rs # 检查点回滚 / 快照引擎命令
-│   │       ├── permission.rs / history.rs  # 权限回调 / 历史渲染
+│   │       ├── permission.rs / history.rs  # 权限与咨询回调 / 历史渲染
 │   │       ├── prompt.rs / tool.rs   #   提示词磁盘化读写 / 工具开关
+│   │       ├── mcp.rs / shell.rs     #   MCP 服务管理与 Prompt 渲染 / Shell 方言探测
 │   │       ├── history_types.rs      #   历史渲染类型定义
 │   │       ├── mod.rs                #   命令模块注册
 │   │       └── merge.rs / sandbox.rs / skill.rs
@@ -369,19 +380,21 @@ CreateTask 创建任务图 → UpdateTask 设 blocked_by 依赖
 
 ### 前端事件架构
 
-后端通过 Tauri 事件向前端推送 34 个 kebab-case 事件，`src/composables/useAgentEvents.ts` 是集中监听中枢：
+后端通过 Tauri 事件向前端推送强类型 kebab-case 事件（`events.rs` 定义 28 类强类型事件契约），`src/composables/useAgentEvents.ts` 是集中监听中枢：
 
 ```
 Rust emit("chat-content")  ──→ useAgentEvents.listen() ──→ sessionStore 写入 buffer
                                                           └→ chatStore.triggerRender()
 
 其余事件各自独立送达，不经 chat-content 分流：
-  agent-step             → agentStore（运行状态）
-  permission-request     → permissionStore（弹窗）
-  plan-proposal(-stream) → permissionStore（方案审批）
-  chat-turn-start/end    → 轮次边界与收尾
-  subagent-updated       → 2s 批量节流更新
-  bg-task-done           → AgentPanel 即时刷新（另留 3s 轮询兜底）
+  agent-step               → agentStore（运行状态）
+  permission-request       → permissionStore（弹窗）
+  plan-proposal(-stream)   → permissionStore（方案审批）
+  user-question-request    → permissionStore（运行期咨询卡片）
+  mcp-server-status        → mcpStore（MCP 服务状态更新）
+  chat-turn-start/end      → 轮次边界与收尾
+  subagent-updated         → 2s 批量节流更新
+  bg-task-done             → AgentPanel 即时刷新（另留 3s 轮询兜底）
   todo-update / memory-updated / session-usage-updated / context-snapshot-updated / ...
 ```
 
@@ -389,7 +402,7 @@ Rust emit("chat-content")  ──→ useAgentEvents.listen() ──→ sessionSt
 
 ## 内置工具一览
 
-共 38 个模型可调用工具。核心工具 schema 常驻，其余为按需工具（`GetToolCatalog` → `DiscoverTools` → `ExecuteTool` 三步取用）。
+共 38 个内置模型可调用工具（外加动态接入的 MCP 外部工具）。核心工具 schema 常驻，其余为按需工具（`GetToolCatalog` → `DiscoverTools` → `ExecuteTool` 三步取用）。
 
 | 类别 | 工具 | 说明 |
 |------|------|------|
@@ -402,9 +415,10 @@ Rust emit("chat-content")  ──→ useAgentEvents.listen() ──→ sessionSt
 | 任务 | CreateTask, UpdateTask, DeleteTask, ListTasks, GetTask, SummarizeTasks | 持久化任务图 CRUD |
 | 待办 | UpdateTodos | 轻量待办清单 |
 | 子代理 | RunSubagent, RunSubagentsSequentially | 委派子代理、启动调度器 |
-| 规划 | ProposePlan, SwitchWorkMode | 方案审批、模式切换 |
-| 工具发现 | DiscoverTools, GetToolCatalog, ExecuteTool | 渐进式披露：搜索/列举/执行按需工具 |
-| 会话 | CompactConversation | 手动压缩对话历史 |
+| 规划与咨询 | ProposePlan, SwitchWorkMode, AskUser | 方案审批、模式切换、运行期结构化咨询 |
+| 工具发现 | DiscoverTools, GetToolCatalog, ExecuteTool | 渐进式披露：搜索/列举/执行按需工具与 MCP 外部工具 |
+| MCP 扩展 | ConnectMcpServer, ListMcpResources, ReadMcpResource | 按需连接 MCP 服务、列举与读取外部资源 |
+| 会话与视觉 | CompactConversation, ViewSessionImage | 手动压缩对话历史、回看本会话历史图片 |
 | 记忆 | ReadMemory, UpdateMemory, ConsolidateMemory | 读/写/整理全局记忆文件 |
 | 技能 | LoadSkill | 按名称加载技能知识 |
 | Notebook | EditNotebook | Jupyter Notebook cell 编辑 |
@@ -421,7 +435,7 @@ Rust emit("chat-content")  ──→ useAgentEvents.listen() ──→ sessionSt
 
 ## 致谢
 
-- **[learn-Code-code](https://github.com/shareAI-lab/learn-claude-code)** — 架构设计的灵感来源
+- **[learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)** — 架构设计的灵感来源
 
 ## 许可证
 
