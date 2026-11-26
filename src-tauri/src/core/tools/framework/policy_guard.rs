@@ -398,13 +398,15 @@ mod tests {
     #[test]
     fn mcp_allowance_key_granularity_matches_trust_level() {
         // 未信任服务：单工具级（mcp_tool + 完整工具名）
-        let untrusted = mcp_allowance_keys("mcp__playwright__browser_click", Some("playwright"), false);
+        let untrusted =
+            mcp_allowance_keys("mcp__playwright__browser_click", Some("playwright"), false);
         assert_eq!(untrusted.len(), 1);
         assert_eq!(untrusted[0].kind, ALLOWANCE_KIND_MCP_TOOL);
         assert_eq!(untrusted[0].scope, "mcp__playwright__browser_click");
 
         // 已信任服务：整服务级（mcp_server + 服务名）
-        let trusted = mcp_allowance_keys("mcp__playwright__browser_click", Some("playwright"), true);
+        let trusted =
+            mcp_allowance_keys("mcp__playwright__browser_click", Some("playwright"), true);
         assert_eq!(trusted.len(), 1);
         assert_eq!(trusted[0].kind, ALLOWANCE_KIND_MCP_SERVER);
         assert_eq!(trusted[0].scope, "playwright");
@@ -1394,11 +1396,7 @@ pub fn read_only_deny_reason(tool: &str, input: &Value, facts: &PreparedFacts) -
 /// - 已信任服务：整服务级键（`mcp_server` + 服务名），一次点击放行该服务的全部工具；
 /// - 未信任服务：单工具级键（`mcp_tool` + 完整工具名），精细放行单个工具；
 ///   若此前给已信任服务授予过整服务键、之后又取消信任，因查找键切回 `mcp_tool`，整服务键自动失效。
-fn mcp_allowance_keys(
-    tool: &str,
-    server_name: Option<&str>,
-    trusted: bool,
-) -> Vec<AllowanceKey> {
+fn mcp_allowance_keys(tool: &str, server_name: Option<&str>, trusted: bool) -> Vec<AllowanceKey> {
     if trusted {
         if let Some(srv) = server_name {
             return vec![AllowanceKey {

@@ -99,14 +99,7 @@ pub fn collect_available_mcp_tools(
 
         for tool in &caps.tools {
             let qualified_name = name_map.register(server_name, &tool.name);
-            if is_server_tool_available(
-                cfg,
-                status,
-                has_cached,
-                &tool.name,
-                intent,
-                work_mode,
-            ) {
+            if is_server_tool_available(cfg, status, has_cached, &tool.name, intent, work_mode) {
                 result.push(McpToolDescriptor {
                     qualified_name,
                     server_name: server_name.clone(),
@@ -295,7 +288,11 @@ mod tests {
     use crate::core::mcp::config::{CachedServerCapabilities, McpIsolation};
     use std::collections::BTreeMap;
 
-    fn sample_setup() -> (McpServersFile, McpCacheFile, HashMap<String, McpServerStatus>) {
+    fn sample_setup() -> (
+        McpServersFile,
+        McpCacheFile,
+        HashMap<String, McpServerStatus>,
+    ) {
         let mut configs = McpServersFile::default();
         configs.mcp_servers.insert(
             "fs".to_string(),
@@ -348,10 +345,15 @@ mod tests {
         // 子代理：全禁
         let in_subagent =
             collect_available_mcp_tools(&configs, &cache, &statuses, "SUBAGENT", "edit");
-        assert!(in_subagent.is_empty(), "子代理模式下绝不允许出现任何 MCP 工具");
+        assert!(
+            in_subagent.is_empty(),
+            "子代理模式下绝不允许出现任何 MCP 工具"
+        );
 
         // CHAT / QUESTION：全禁
-        assert!(collect_available_mcp_tools(&configs, &cache, &statuses, "CHAT", "edit").is_empty());
+        assert!(
+            collect_available_mcp_tools(&configs, &cache, &statuses, "CHAT", "edit").is_empty()
+        );
         assert!(
             collect_available_mcp_tools(&configs, &cache, &statuses, "QUESTION", "edit").is_empty()
         );
@@ -367,7 +369,9 @@ mod tests {
         // 新导入、从未连接过（无缓存）→ 待连接
         let mut fresh = configs.mcp_servers["fs"].clone();
         fresh.disabled_tools.clear();
-        configs.mcp_servers.insert("fresh".to_string(), fresh.clone());
+        configs
+            .mcp_servers
+            .insert("fresh".to_string(), fresh.clone());
         // 已停用且无缓存 → 不应出现
         let mut off = fresh.clone();
         off.enabled = false;

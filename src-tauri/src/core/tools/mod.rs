@@ -557,12 +557,8 @@ pub async fn dispatch_core_tool(
         "SwitchWorkMode" => agent_tools::switch_work_mode(app, input, session_id).await,
 
         // MCP 连接与资源按需工具
-        "ConnectMcpServer" => {
-            agent_tools::connect_mcp_server(app, input, intent, work_mode).await
-        }
-        "ListMcpResources" => {
-            agent_tools::list_mcp_resources(app, input, intent, work_mode).await
-        }
+        "ConnectMcpServer" => agent_tools::connect_mcp_server(app, input, intent, work_mode).await,
+        "ListMcpResources" => agent_tools::list_mcp_resources(app, input, intent, work_mode).await,
         "ReadMcpResource" => {
             agent_tools::read_mcp_resource(app, input, session_id, intent, work_mode).await
         }

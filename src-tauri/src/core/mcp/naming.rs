@@ -273,7 +273,8 @@ mod tests {
         assert!(cn.starts_with("srv_"));
         assert!(validate_server_name(&cn).is_ok());
 
-        let (long, changed_long) = sanitize_server_name("a_very_long_mcp_server_name_exceeding_limit");
+        let (long, changed_long) =
+            sanitize_server_name("a_very_long_mcp_server_name_exceeding_limit");
         assert!(changed_long);
         assert!(long.len() <= MAX_SERVER_NAME_LEN);
         assert!(validate_server_name(&long).is_ok());

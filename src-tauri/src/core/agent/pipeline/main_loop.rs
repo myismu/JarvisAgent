@@ -428,9 +428,10 @@ impl PipelineState {
                 std::mem::take(&mut *guard)
             };
             if !pending_images.is_empty() {
-                let supports_vision = crate::infra::llm::registry::query_capabilities(&self.model_id)
-                    .map(|c| c.vision)
-                    .unwrap_or(false);
+                let supports_vision =
+                    crate::infra::llm::registry::query_capabilities(&self.model_id)
+                        .map(|c| c.vision)
+                        .unwrap_or(false);
                 if supports_vision {
                     for (media_type, filename) in pending_images {
                         tool_results.push(ContentBlock::Image {

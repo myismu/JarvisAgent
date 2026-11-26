@@ -482,43 +482,36 @@ async fn execute_mcp_deferred_tool(
     };
 
     // 2. 权限判定与审批（ExternalService 类 + 信任模型）
-    let approval_note = match super::policy_guard::enforce(
-        app,
-        session_id,
-        qualified_name,
-        args,
-        agent_type,
-    )
-    .await
-    {
-        super::policy_guard::EnforceResult::Allow { user_note } => user_note,
-        super::policy_guard::EnforceResult::Block(blocked) => {
-            logger.log_deferred_call(
-                session_id,
-                agent_type,
-                qualified_name,
-                raw_input,
-                intent,
-                work_mode,
-                super::tool_call_logger::ToolCallStatus::Blocked,
-                Some(super::tool_call_logger::ErrorType::ModeBlocked),
-                Some(blocked.output.chars().take(500).collect()),
-                searched_before,
-                super::tool_call_logger::TokenUsage::NONE,
-            );
-            return blocked;
-        }
-    };
+    let approval_note =
+        match super::policy_guard::enforce(app, session_id, qualified_name, args, agent_type).await
+        {
+            super::policy_guard::EnforceResult::Allow { user_note } => user_note,
+            super::policy_guard::EnforceResult::Block(blocked) => {
+                logger.log_deferred_call(
+                    session_id,
+                    agent_type,
+                    qualified_name,
+                    raw_input,
+                    intent,
+                    work_mode,
+                    super::tool_call_logger::ToolCallStatus::Blocked,
+                    Some(super::tool_call_logger::ErrorType::ModeBlocked),
+                    Some(blocked.output.chars().take(500).collect()),
+                    searched_before,
+                    super::tool_call_logger::TokenUsage::NONE,
+                );
+                return blocked;
+            }
+        };
 
     // 3. 取会话取消令牌并调用 MCP 服务（若处于 Idle 会自动透明拉起）
-    let cancel_token = if let Some(sm) =
-        app.try_state::<crate::infra::state::state::SessionManager>()
-    {
-        let ctx = sm.get_or_create(session_id).await;
-        ctx.current_cancel_token()
-    } else {
-        None
-    };
+    let cancel_token =
+        if let Some(sm) = app.try_state::<crate::infra::state::state::SessionManager>() {
+            let ctx = sm.get_or_create(session_id).await;
+            ctx.current_cancel_token()
+        } else {
+            None
+        };
 
     let call_result = mcp_state
         .0
@@ -558,9 +551,7 @@ async fn execute_mcp_deferred_tool(
                     }
                     output.push_str(&saved_notes.join("\n"));
                 }
-                if let Some(sm) =
-                    app.try_state::<crate::infra::state::state::SessionManager>()
-                {
+                if let Some(sm) = app.try_state::<crate::infra::state::state::SessionManager>() {
                     let ctx = sm.get_or_create(session_id).await;
                     let mut pending = ctx.pending_tool_images.lock().await;
                     pending.extend(saved_for_vision);

@@ -376,9 +376,7 @@ impl McpManager {
             .mcp_servers
             .get(server_name)?
             .clone();
-        let transport = cfg
-            .transport_kind()
-            .unwrap_or(McpTransportKind::Stdio);
+        let transport = cfg.transport_kind().unwrap_or(McpTransportKind::Stdio);
         let (status, last_error) = {
             let rts = self.runtimes.read().await;
             match rts.get(server_name) {
@@ -534,10 +532,7 @@ impl McpManager {
     }
 
     /// 列出指定服务（或全部服务）缓存的 Prompt 模板列表
-    pub async fn list_prompts(
-        &self,
-        server_name: Option<&str>,
-    ) -> Vec<(String, CachedPromptInfo)> {
+    pub async fn list_prompts(&self, server_name: Option<&str>) -> Vec<(String, CachedPromptInfo)> {
         let configs = self.configs.read().await.clone();
         let cache = self.cache.read().await.clone();
         let mut out = Vec::new();
@@ -736,7 +731,8 @@ impl McpManager {
         inst.touch().await;
 
         if res.is_err() && inst.session.is_closed() {
-            self.mark_disconnected(server_name, "子进程连接已断开").await;
+            self.mark_disconnected(server_name, "子进程连接已断开")
+                .await;
         }
         res
     }

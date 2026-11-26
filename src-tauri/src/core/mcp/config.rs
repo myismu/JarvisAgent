@@ -141,12 +141,17 @@ impl McpServerConfig {
             (false, true) => {
                 let url = self.url.as_deref().unwrap().trim();
                 if !url.starts_with("http://") && !url.starts_with("https://") {
-                    return Err(format!("远程服务 URL '{}' 必须以 http:// 或 https:// 开头", url));
+                    return Err(format!(
+                        "远程服务 URL '{}' 必须以 http:// 或 https:// 开头",
+                        url
+                    ));
                 }
                 Ok(McpTransportKind::StreamableHttp)
             }
             (true, true) => Err("不能同时配置 command（stdio）和 url（HTTP）".to_string()),
-            (false, false) => Err("必须配置 command（本地 stdio）或 url（远程 HTTP）之一".to_string()),
+            (false, false) => {
+                Err("必须配置 command（本地 stdio）或 url（远程 HTTP）之一".to_string())
+            }
         }
     }
 
@@ -369,10 +374,11 @@ pub fn save_capabilities_cache(cache: &McpCacheFile) -> Result<(), String> {
     save_capabilities_cache_to(&data_paths::mcp_cache_path(), cache)
 }
 
+/// JSON 批量导入解析结果：`(校验通过的待保存配置列表, 逐条结果报告)`
+pub type ParsedImportBatch = (Vec<(String, McpServerConfig)>, Vec<McpImportItemResult>);
+
 /// 解析用户粘贴的 JSON：兼容 `{ "mcpServers": { ... } }` 或直接粘贴 `{ "fs": { "command": ... } }`
-pub fn parse_import_json(
-    raw_json: &str,
-) -> Result<(Vec<(String, McpServerConfig)>, Vec<McpImportItemResult>), String> {
+pub fn parse_import_json(raw_json: &str) -> Result<ParsedImportBatch, String> {
     let value: serde_json::Value =
         serde_json::from_str(raw_json).map_err(|e| format!("JSON 语法错误: {}", e))?;
 

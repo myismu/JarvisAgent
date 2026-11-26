@@ -432,7 +432,10 @@ mod tests {
                     ContentBlock::Text { text } => {
                         assert_eq!(text, "[图片: image/jpeg | filename=45dc870d_148726fc.jpg]");
                     }
-                    other => panic!("带 file_path 的往轮图片应折叠并保留 filename=，实际: {:?}", other),
+                    other => panic!(
+                        "带 file_path 的往轮图片应折叠并保留 filename=，实际: {:?}",
+                        other
+                    ),
                 }
                 match &blocks[1] {
                     ContentBlock::Text { text } => assert_eq!(text, "[图片: image/png]"),

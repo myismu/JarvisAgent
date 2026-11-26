@@ -72,11 +72,11 @@ use crate::infra::types::events::{
     BackgroundFailedEvent, BgCompactingChangedEvent, ChatContentEvent, ChatStreamEvent,
     ChatThinkingEvent, ChatToolDebugEvent, ChatToolStartEvent, ChatTurnEndEvent,
     ChatTurnStartEvent, CheckpointCreatedEvent, McpServerStatusEvent, MemoryUpdatedEvent,
-    PermissionRequestEvent,
-    PermissionResolvedEvent, PlanProposalEvent, PlanProposalStreamEvent, ResolveUserQuestionResult,
-    SessionAllowancesChangedEvent, SessionMessagesChangedEvent, SessionThinkingModeChangedEvent,
-    SnapshotCreatedEvent, SubagentTraceUpdatedEvent, TodoUpdateEvent, UserQuestionAnswerItem,
-    UserQuestionItem, UserQuestionOption, UserQuestionRequestEvent, UserQuestionResolvedEvent,
+    PermissionRequestEvent, PermissionResolvedEvent, PlanProposalEvent, PlanProposalStreamEvent,
+    ResolveUserQuestionResult, SessionAllowancesChangedEvent, SessionMessagesChangedEvent,
+    SessionThinkingModeChangedEvent, SnapshotCreatedEvent, SubagentTraceUpdatedEvent,
+    TodoUpdateEvent, UserQuestionAnswerItem, UserQuestionItem, UserQuestionOption,
+    UserQuestionRequestEvent, UserQuestionResolvedEvent,
 };
 use crate::infra::types::models::{
     CacheHitPoint, ContextSectionSnapshot, InterruptKind, JarvisResult, PlanDocument, PlanTask,

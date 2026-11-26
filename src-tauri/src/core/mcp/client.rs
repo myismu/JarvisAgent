@@ -164,7 +164,8 @@ impl ClientHandler for McpClientHandler {
     }
 
     async fn on_tool_list_changed(&self, _context: NotificationContext<RoleClient>) {
-        self.logs.push("[notify] 收到 tools/list_changed，刷新工具缓存");
+        self.logs
+            .push("[notify] 收到 tools/list_changed，刷新工具缓存");
         if let Some(ref tx) = self.notify_tx {
             let _ = tx.send((self.server_name.clone(), McpListChangedKind::Tools));
         }
@@ -210,9 +211,7 @@ impl McpClientSession {
         logs: McpLogRing,
         notify_tx: Option<mpsc::UnboundedSender<(String, McpListChangedKind)>>,
     ) -> Result<Self, McpClientError> {
-        let kind = config
-            .validate()
-            .map_err(McpClientError::InvalidConfig)?;
+        let kind = config.validate().map_err(McpClientError::InvalidConfig)?;
         let timeout_secs = config.startup_timeout_sec;
 
         match kind {
@@ -322,13 +321,11 @@ impl McpClientSession {
         T: rmcp::transport::IntoTransport<RoleClient, E, A>,
         E: std::error::Error + Send + Sync + 'static,
     {
-        let service = tokio::time::timeout(
-            Duration::from_secs(timeout_secs),
-            handler.serve(transport),
-        )
-        .await
-        .map_err(|_| McpClientError::ConnectTimeout(timeout_secs))?
-        .map_err(|e| McpClientError::ConnectFailed(e.to_string()))?;
+        let service =
+            tokio::time::timeout(Duration::from_secs(timeout_secs), handler.serve(transport))
+                .await
+                .map_err(|_| McpClientError::ConnectTimeout(timeout_secs))?
+                .map_err(|e| McpClientError::ConnectFailed(e.to_string()))?;
 
         logs.push("[client] MCP 握手成功");
         Ok(Self { service, logs })
@@ -353,8 +350,10 @@ impl McpClientSession {
             .await
             .map_err(|_| McpClientError::CallTimeout(timeout_secs))?
             .unwrap_or_else(|err| {
-                self.logs
-                    .push(&format!("[warn] list_all_tools 失败（视为无工具）: {}", err));
+                self.logs.push(&format!(
+                    "[warn] list_all_tools 失败（视为无工具）: {}",
+                    err
+                ));
                 Vec::new()
             });
 
@@ -535,12 +534,9 @@ impl McpClientSession {
             params.arguments = Some(map);
         }
 
-        let result = run_with_timeout_and_cancel(
-            self.service.get_prompt(params),
-            timeout_secs,
-            None,
-        )
-        .await?;
+        let result =
+            run_with_timeout_and_cancel(self.service.get_prompt(params), timeout_secs, None)
+                .await?;
 
         let messages = result
             .messages

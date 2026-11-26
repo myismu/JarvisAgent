@@ -39,7 +39,10 @@ pub async fn view_session_image(
                 for (name, mime) in list {
                     lines.push(format!("- {} ({})", name, mime));
                 }
-                lines.push("如需查看具体图片细节，请传入 filename 参数再次调用 ViewSessionImage。".to_string());
+                lines.push(
+                    "如需查看具体图片细节，请传入 filename 参数再次调用 ViewSessionImage。"
+                        .to_string(),
+                );
                 ToolCallResult::ok(lines.join("\n"))
             }
             Err(err) => ToolCallResult::error(format!("查询会话图片列表失败: {}", err)),
@@ -47,17 +50,19 @@ pub async fn view_session_image(
     };
 
     // 按当前 session_id 强隔离查询，绝不允许访问其他会话的图片
-    let (filename, media_type) =
-        match resource_repository::load_session_attachment_meta(session_id, target_name) {
-            Ok(Some(meta)) => meta,
-            Ok(None) => {
-                return ToolCallResult::error(format!(
+    let (filename, media_type) = match resource_repository::load_session_attachment_meta(
+        session_id,
+        target_name,
+    ) {
+        Ok(Some(meta)) => meta,
+        Ok(None) => {
+            return ToolCallResult::error(format!(
                     "当前会话中未找到图片 '{}'（只能查看本会话内的图片附件；省略 filename 可列出本会话所有图片）。",
                     target_name
                 ));
-            }
-            Err(err) => return ToolCallResult::error(format!("读取会话图片失败: {}", err)),
-        };
+        }
+        Err(err) => return ToolCallResult::error(format!("读取会话图片失败: {}", err)),
+    };
 
     if let Some(sm) = app.try_state::<crate::infra::state::state::SessionManager>() {
         let ctx = sm.get_or_create(session_id).await;

@@ -54,7 +54,10 @@ pub async fn list_mcp_resources(
             .as_deref()
             .map(|m| format!(" [{}]", m))
             .unwrap_or_default();
-        lines.push(format!("- [{}] {} ({}){}{}", srv, res.name, res.uri, mime, desc));
+        lines.push(format!(
+            "- [{}] {} ({}){}{}",
+            srv, res.name, res.uri, mime, desc
+        ));
     }
     ToolCallResult::ok(lines.join("\n"))
 }
@@ -73,11 +76,19 @@ pub async fn read_mcp_resource(
         );
     }
 
-    let server = match input["server"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+    let server = match input["server"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(s) => s,
         None => return ToolCallResult::error("缺少必填参数 'server'（MCP 服务名）。".to_string()),
     };
-    let uri = match input["uri"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+    let uri = match input["uri"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(u) => u,
         None => return ToolCallResult::error("缺少必填参数 'uri'（资源 URI）。".to_string()),
     };
@@ -86,14 +97,13 @@ pub async fn read_mcp_resource(
         return ToolCallResult::error("MCP 管理器未初始化。".to_string());
     };
 
-    let cancel_token = if let Some(sm) =
-        app.try_state::<crate::infra::state::state::SessionManager>()
-    {
-        let ctx = sm.get_or_create(session_id).await;
-        ctx.current_cancel_token()
-    } else {
-        None
-    };
+    let cancel_token =
+        if let Some(sm) = app.try_state::<crate::infra::state::state::SessionManager>() {
+            let ctx = sm.get_or_create(session_id).await;
+            ctx.current_cancel_token()
+        } else {
+            None
+        };
 
     match state
         .0
@@ -124,7 +134,11 @@ pub async fn connect_mcp_server(
         .filter(|s| !s.is_empty())
     {
         Some(s) => s,
-        None => return ToolCallResult::error("缺少必填参数 'server'（要连接的 MCP 服务名）。".to_string()),
+        None => {
+            return ToolCallResult::error(
+                "缺少必填参数 'server'（要连接的 MCP 服务名）。".to_string(),
+            )
+        }
     };
 
     let Some(state) = app.try_state::<McpManagerState>() else {
