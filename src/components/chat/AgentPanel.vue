@@ -11,11 +11,18 @@
 - External: `@tauri-apps/api/core`
 -->
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { emit } from '@tauri-apps/api/event';
+import {
+  clearSessionAllowances as clearSessionAllowancesApi,
+  getPermissionState,
+  getSessionContextSnapshot,
+  listenTyped,
+  resolvePermission as resolvePermissionApi,
+  revokeSessionAllowance,
+} from '../../api';
 import { useWindow } from '../../composables/useWindow';
 import { useAgentEvents } from '../../composables/useAgentEvents';
 import { useRunElapsed } from '../../composables/useRunElapsed';
@@ -23,7 +30,14 @@ import { useBackgroundTasks } from '../../composables/agent/useBackgroundTasks';
 import { useSessionStore } from '../../stores/session';
 import { useAgentStore } from '../../stores/agent';
 import { usePermissionStore } from '../../stores/permission';
-import type { AgentRun, BackgroundTask, PlanDocument, SessionContextSnapshot, SubAgentTraceEvent } from '../../types';
+import type {
+  AgentRun,
+  BackgroundTask,
+  PendingPermissionItem,
+  PlanDocument,
+  SessionAllowance,
+  SubAgentTraceEvent,
+} from '../../types';
 import ContextInspector from './ContextInspector.vue';
 
 const session = useSessionStore();
@@ -67,9 +81,9 @@ function lightForStatus(status: string): string {
 
 // ── 权限状态 ──
 const permissionAllowanceCount = ref(0)
-const permissionAllowances = ref<Array<{ kind: string; scope: string; label: string }>>([])
+const permissionAllowances = ref<SessionAllowance[]>([])
 const permissionPendingCount = ref(0)
-const pendingPermissions = ref<Array<{ id: string; message: string; allowSession?: boolean; kind?: string; warning?: string | null }>>([])
+const pendingPermissions = ref<PendingPermissionItem[]>([])
 
 /**
  * 已允许清单是否展开。
@@ -78,7 +92,12 @@ const pendingPermissions = ref<Array<{ id: string; message: string; allowSession
  * 在独立监控窗口里长期吃掉约四分之一高度。清单是低频查看项，收起后只留一行计数。
  */
 const showAllowances = ref(false)
-let permissionPollTimer: ReturnType<typeof setInterval> | null = null
+const { persistCurrentWindowState } = useWindow();
+const { t } = useI18n();
+const props = defineProps<{ standalone?: boolean }>();
+
+const panelVisible = computed(() => props.standalone || agent.showAgentPanel);
+const standalone = computed(() => props.standalone);
 
 const loadPermissionState = async () => {
   // 切会话时先清空：权限允许是"每个会话各自的内存态"，
@@ -91,24 +110,23 @@ const loadPermissionState = async () => {
     return
   }
   try {
-    const state = await invoke<any>('get_permission_state', { sessionId: session.activeSessionId })
+    const state = await getPermissionState(session.activeSessionId)
     permissionAllowanceCount.value = state.allowanceCount ?? 0
-    permissionAllowances.value = (state.allowances ?? []) as Array<{ kind: string; scope: string; label: string }>
+    permissionAllowances.value = state.allowances ?? []
     permissionPendingCount.value = state.pendingCount ?? 0
-    pendingPermissions.value = (state.pending ?? []) as Array<{
-      id: string;
-      message: string;
-      allowSession?: boolean;
-      kind?: string;
-      warning?: string | null;
-    }>
+    pendingPermissions.value = state.pending ?? []
   } catch { /* ignore */ }
 }
 
 const resolvePermission = async (id: string, decision: string) => {
   if (!session.activeSessionId) return
   try {
-    await invoke('resolve_permission', { id, sessionId: session.activeSessionId, decision, content: null })
+    await resolvePermissionApi({
+      id,
+      sessionId: session.activeSessionId,
+      decision,
+      content: null,
+    })
     // 后端已决议，本地队列同步出队，避免卡片残留
     permission.removePermission(session.activeSessionId, id)
     await loadPermissionState()
@@ -119,7 +137,7 @@ const resolvePermission = async (id: string, decision: string) => {
 const clearSessionAllowances = async () => {
   if (!session.activeSessionId) return
   try {
-    await invoke('clear_session_allowances', { sessionId: session.activeSessionId })
+    await clearSessionAllowancesApi(session.activeSessionId)
     permissionAllowanceCount.value = 0
     permissionAllowances.value = []
   } catch { /* ignore */ }
@@ -129,30 +147,64 @@ const clearSessionAllowances = async () => {
 const revokeAllowance = async (allowance: { kind: string; scope: string }) => {
   if (!session.activeSessionId) return
   try {
-    await invoke('revoke_session_allowance', {
-      sessionId: session.activeSessionId,
-      kind: allowance.kind,
-      scope: allowance.scope,
-    })
+    await revokeSessionAllowance(session.activeSessionId, allowance.kind, allowance.scope)
     await loadPermissionState()
   } catch { /* ignore */ }
 }
 
-watch(() => session.activeSessionId, () => {
-  loadPermissionState()
-}, { immediate: true })
+// 切会话或面板由隐转显时即时拉取权限状态，彻底移除 2s 轮询定时器
+watch(
+  [() => session.activeSessionId, panelVisible],
+  ([activeSid, visible]) => {
+    if (!activeSid || visible) {
+      void loadPermissionState();
+    }
+  },
+  { immediate: true },
+);
 
-// 每 2s 轮询权限状态（轻量，无需复杂事件系统）
-permissionPollTimer = setInterval(loadPermissionState, 2000)
+let permissionListenersDisposed = false;
+const permissionUnlisteners: Array<() => void> = [];
+
+onMounted(async () => {
+  const refreshIfRelevant = (eventSessionId?: string | null) => {
+    if (!panelVisible.value) return;
+    if (eventSessionId && eventSessionId !== session.activeSessionId) return;
+    void loadPermissionState();
+  };
+
+  const register = async (stopPromise: Promise<() => void>) => {
+    const stop = await stopPromise;
+    if (permissionListenersDisposed) {
+      stop();
+      return;
+    }
+    permissionUnlisteners.push(stop);
+  };
+
+  await register(
+    listenTyped('permission-request', (event) => {
+      refreshIfRelevant(event.payload?.sessionId);
+    }),
+  );
+  await register(
+    listenTyped('permission-resolved', (event) => {
+      refreshIfRelevant(event.payload?.sessionId);
+    }),
+  );
+  await register(
+    listenTyped('session-allowances-changed', (event) => {
+      refreshIfRelevant(event.payload?.sessionId);
+    }),
+  );
+});
+
 onUnmounted(() => {
-  if (permissionPollTimer) clearInterval(permissionPollTimer)
-})
-const { persistCurrentWindowState } = useWindow();
-const { t } = useI18n();
-const props = defineProps<{ standalone?: boolean }>();
-
-const panelVisible = computed(() => props.standalone || agent.showAgentPanel);
-const standalone = computed(() => props.standalone);
+  permissionListenersDisposed = true;
+  while (permissionUnlisteners.length > 0) {
+    permissionUnlisteners.pop()?.();
+  }
+});
 const currentContextSnapshot = computed(() => agent.currentContextSnapshot);
 const {
   backgroundTasks,
@@ -194,9 +246,7 @@ const refreshContextSnapshot = async (sessionId?: string) => {
   const targetSessionId = sessionId ?? session.activeSessionId;
   if (!targetSessionId) return;
   try {
-    const snapshot = await invoke<SessionContextSnapshot | null>('get_session_context_snapshot', {
-      sessionId: targetSessionId,
-    });
+    const snapshot = await getSessionContextSnapshot(targetSessionId);
     agent.upsertContextSnapshot(snapshot);
   } catch { /* ignore */ }
 };

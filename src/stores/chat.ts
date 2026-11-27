@@ -1,22 +1,58 @@
+/**
+ * # chat.ts — 核心对话交互、历史分页与流式渲染节流 Store
+ *
+ * 负责发送/取消/撤回/续跑主流程、会话视图按需装载与上滑翻页、权限与方案审批回调，
+ * 以及按会话隔离的非响应式流式渲染节流控制。
+ *
+ * ## Key Exports
+ * - `useChatStore()`: 对话主流程 Pinia Store
+ *
+ * ## Dependencies
+ * - Internal: `./session`, `./agent`, `./permission`, `@/composables/usePreferences`, `@/utils/agentTurnState`
+ * - External: `pinia`, `@tauri-apps/api/core`
+ */
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
-import { invoke } from "@tauri-apps/api/core";
-import type { JarvisResult, SessionUsageView } from "../types";
+import {
+  askJarvis,
+  cancelJarvis as cancelJarvisApi,
+  cancelSubagentRun as cancelSubagentRunApi,
+  createSession,
+  getConfig,
+  getSessionContextSnapshot,
+  getSessionMessagesPaged,
+  getSessionUsage,
+  prepareResumeAgentRun,
+  recallMessage,
+  recoverInterruptedSessionMessages,
+  resolvePermission as resolvePermissionApi,
+  resumeJarvis,
+  setAgentReadOnly,
+  setSessionApprovalMode,
+  setSessionThinkingEnabled,
+  setSessionWorkMode,
+  updateSessionProfile,
+} from "../api";
 import { useSessionStore } from "./session";
 import { useAgentStore } from "./agent";
 import { usePermissionStore } from "./permission";
 import { usePreferences } from "../composables/usePreferences";
 import { buildAgentTurnSnapshot } from "../utils/agentTurnState";
+import { isCommandError } from "../utils/commandError";
 import {
   stripPseudoToolCalls,
 } from "../utils/agentTurnRender";
 
-/** 从 Tauri 序列化的 Rust 枚举错误中提取人类可读消息 */
+/** 从 Tauri 序列化的 Rust 结构化错误（CommandError / AgentError）中提取人类可读消息 */
 function extractErrorMessage(err: unknown): string {
   if (typeof err === "string") {
     const parsed = tryParseApiErrorBody(err);
     if (parsed) return parsed;
     return err;
+  }
+  if (isCommandError(err)) {
+    const parsed = tryParseApiErrorBody(err.message);
+    return parsed || err.message;
   }
   if (err instanceof Error) return err.message;
   if (typeof err !== "object" || err === null) return String(err);
@@ -116,7 +152,7 @@ function buildFinalResponseParts(
 /** agent 完成后拉取最新上下文快照，使监控面板显示完整的最后一轮回复 */
 async function refreshContextSnapshot(sessionId: string) {
   try {
-    const snapshot = await invoke<any>('get_session_context_snapshot', { sessionId });
+    const snapshot = await getSessionContextSnapshot(sessionId);
     if (snapshot) {
       useAgentStore().upsertContextSnapshot(snapshot);
     }
@@ -152,22 +188,6 @@ function resolveRunDurationMs(sessionId: string, messageId?: string | null): num
   const waitMs = Math.max(0, run.waitMs ?? 0);
   const elapsed = (run.finishedAt ?? run.startedAt) - run.startedAt;
   return Math.max(0, elapsed - waitMs);
-}
-
-/**
- * `get_session_messages_paged` 的返回类型（与后端 `PagedSessionMessages` 字段一一对应）。
- *
- * - `oldestSeq`：本页最老消息的 seq，作为上滑翻页游标；
- * - `newestSeq`：本页最新消息的 seq；首屏那一页即**后端最新端**，写进 `loadedNewestSeq`
- *   （空会话为 null）；
- * - `totalCount`：该会话可见消息总条数（口径是消息数，不是轮数）。
- */
-interface PagedSessionMessagesResponse {
-  messages: any[];
-  hasMore: boolean;
-  oldestSeq: number | null;
-  newestSeq: number | null;
-  totalCount: number;
 }
 
 export const useChatStore = defineStore("chat", () => {
@@ -281,15 +301,55 @@ export const useChatStore = defineStore("chat", () => {
     },
   });
 
+  /**
+   * 按会话隔离的渲染节流内部状态（刻意不放入响应式的 `sessionViews`）。
+   *
+   * 挂在 store 实例内而非模块全局，保证多实例与 Vitest 用例间隔离；
+   * 回调闭包捕获发起时的 `targetKey`，防止 33ms 窗口内切会话导致原会话 `throttling` 永久锁死。
+   */
+  interface RenderThrottleState {
+    throttling: boolean;
+    lastRenderAt: number;
+    timerId: ReturnType<typeof setTimeout> | null;
+    rafId: number | null;
+  }
+  const renderThrottleStates = new Map<string, RenderThrottleState>();
+
+  function getRenderThrottleState(sessionKey: string): RenderThrottleState {
+    let state = renderThrottleStates.get(sessionKey);
+    if (!state) {
+      state = { throttling: false, lastRenderAt: 0, timerId: null, rafId: null };
+      renderThrottleStates.set(sessionKey, state);
+    }
+    return state;
+  }
+
   function resetRenderState(sessionId?: string | null) {
     const session = useSessionStore();
-    const view = session.getSessionView(sessionId ?? session.activeSessionId);
-    view.throttling = false;
-    view.lastRenderAt = 0;
+    const key = session.getSessionKey(sessionId ?? session.activeSessionId);
+    const state = renderThrottleStates.get(key);
+    if (state) {
+      if (state.timerId !== null) {
+        clearTimeout(state.timerId);
+        state.timerId = null;
+      }
+      if (state.rafId !== null && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(state.rafId);
+        state.rafId = null;
+      }
+      renderThrottleStates.delete(key);
+    }
   }
 
   function registerScrollCb(cb: (force?: boolean) => void) {
     scrollToBottomCb = cb;
+  }
+
+  /** 注销滚动回调：仅当当前回调与传入引用一致时清除，避免旧实例卸载误清已挂载的新实例回调 */
+  function unregisterScrollCb(cb: (force?: boolean) => void) {
+    if (scrollToBottomCb === cb) {
+      scrollToBottomCb = null;
+    }
   }
 
   function forceScrollToBottom() {
@@ -300,27 +360,34 @@ export const useChatStore = defineStore("chat", () => {
     scrollToBottomCb?.(false);
   }
 
-  function triggerRender() {
+  function triggerRender(sessionId?: string | null) {
     const session = useSessionStore();
-    const view = session.getSessionView(session.activeSessionId);
-    if (view.throttling) return;
+    const targetKey = session.getSessionKey(sessionId ?? session.activeSessionId);
+    const state = getRenderThrottleState(targetKey);
+    if (state.throttling) return;
     const now = performance.now();
-    const elapsed = now - view.lastRenderAt;
+    const elapsed = now - state.lastRenderAt;
     const MIN_INTERVAL = 33;
     if (elapsed < MIN_INTERVAL) {
-      view.throttling = true;
-      setTimeout(() => {
-        const view2 = session.getSessionView(session.activeSessionId);
-        view2.lastRenderAt = performance.now();
-        renderTick.value++;
-        view2.throttling = false;
+      state.throttling = true;
+      state.timerId = setTimeout(() => {
+        state.timerId = null;
+        state.lastRenderAt = performance.now();
+        // 无论期间是否切换了活跃会话，都必须复位发起时的原会话状态
+        state.throttling = false;
+        if (session.getSessionKey(session.activeSessionId) === targetKey) {
+          renderTick.value++;
+        }
       }, MIN_INTERVAL - elapsed);
     } else {
-      view.throttling = true;
-      view.lastRenderAt = now;
-      requestAnimationFrame(() => {
-        renderTick.value++;
-        view.throttling = false;
+      state.throttling = true;
+      state.lastRenderAt = now;
+      state.rafId = requestAnimationFrame(() => {
+        state.rafId = null;
+        state.throttling = false;
+        if (session.getSessionKey(session.activeSessionId) === targetKey) {
+          renderTick.value++;
+        }
       });
     }
   }
@@ -353,7 +420,7 @@ export const useChatStore = defineStore("chat", () => {
       const reqId = request.id;
       const sid = request.sessionId ?? session.activeSessionId;
       const trimmed = feedback?.trim() ?? "";
-      const result = await invoke<{ needsResume?: boolean; resumeWith?: string }>("resolve_permission", {
+      const result = await resolvePermissionApi({
         id: reqId,
         sessionId: sid,
         decision,
@@ -368,10 +435,7 @@ export const useChatStore = defineStore("chat", () => {
         requestView.streamActive = false;
         // 续跑是新一轮：重新生成本轮 live 标识，收尾消息与它保持同一个 vnode key。
         requestView.liveTurnId = `live_${crypto.randomUUID()}`;
-        const res = await invoke<JarvisResult>("resume_jarvis", {
-          sessionId: sid,
-          reason: result.resumeWith,
-        });
+        const res = await resumeJarvis(sid, result.resumeWith);
         if (res.status !== "PAUSED_LOOP_LIMIT") {
           const resumeContent = stripPseudoToolCalls(res.content);
           const snapshot = buildAgentTurnSnapshot(
@@ -397,12 +461,7 @@ export const useChatStore = defineStore("chat", () => {
     const sid = perm.planProposal?.sessionId || planDoc?.sessionId || session.activeSessionId;
     if (!planId || !sid) return null;
 
-    const result = await invoke<{
-      needsResume?: boolean;
-      resumeMessage?: string;
-      /** 审批通过时后端是否已按方案任务分解自动建好任务图 */
-      planTasksCreated?: boolean;
-    }>("resolve_permission", {
+    const result = await resolvePermissionApi({
       id: planId,
       sessionId: sid,
       decision,
@@ -476,7 +535,7 @@ export const useChatStore = defineStore("chat", () => {
     const session = useSessionStore();
     if (session.pendingWorkMode) {
       try {
-        await invoke("set_session_work_mode", { sessionId, mode: session.pendingWorkMode });
+        await setSessionWorkMode(sessionId, session.pendingWorkMode);
       } catch (e) {
         console.error('Failed to apply pending work mode:', e);
       }
@@ -484,7 +543,7 @@ export const useChatStore = defineStore("chat", () => {
     }
     if (session.pendingApprovalMode) {
       try {
-        await invoke("set_session_approval_mode", { sessionId, mode: session.pendingApprovalMode });
+        await setSessionApprovalMode(sessionId, session.pendingApprovalMode);
       } catch (e) {
         console.error('Failed to apply pending approval mode:', e);
       }
@@ -495,10 +554,7 @@ export const useChatStore = defineStore("chat", () => {
     // 前端从不解析"跟随全局"，也不读设置默认值。
     if (session.pendingThinkingEnabled !== null) {
       try {
-        await invoke("set_session_thinking_enabled", {
-          id: sessionId,
-          enabled: session.pendingThinkingEnabled,
-        });
+        await setSessionThinkingEnabled(sessionId, session.pendingThinkingEnabled);
       } catch (e) {
         console.error('Failed to apply pending thinking mode:', e);
       }
@@ -508,7 +564,7 @@ export const useChatStore = defineStore("chat", () => {
     // 也是一次有效表态，必须转交；只有 `null`（用户没拨过）才跳过。
     if (session.pendingReadOnly !== null) {
       try {
-        await invoke("set_agent_read_only", { sessionId, enabled: session.pendingReadOnly });
+        await setAgentReadOnly(sessionId, session.pendingReadOnly);
       } catch (e) {
         console.error('Failed to apply pending read-only flag:', e);
       }
@@ -525,9 +581,7 @@ export const useChatStore = defineStore("chat", () => {
       return session.activeSessionId;
     }
 
-    const meta = await invoke<any>("create_session", {
-      projectId: session.pendingProjectId,
-    });
+    const meta = await createSession(session.pendingProjectId);
 
     // 新建会话界面选过的模式/档位（pending）：应用到刚创建的会话——
     // 必须在赋值 activeSessionId 之前完成，syncPermissionFromSession 的 watch
@@ -547,11 +601,11 @@ export const useChatStore = defineStore("chat", () => {
     });
 
     // 记录新建会话使用的模型，后续切回来时自动恢复
-    const config = await invoke<any>("get_config");
+    const config = await getConfig();
     if (config.activeProfileId) {
-      await invoke("update_session_profile", { id: meta.id, profileId: config.activeProfileId });
+      await updateSessionProfile(meta.id, config.activeProfileId);
     }
-    return meta.id as string;
+    return meta.id;
   }
 
   /**
@@ -605,14 +659,11 @@ export const useChatStore = defineStore("chat", () => {
     const task = (async () => {
       try {
         const [res, usage] = await Promise.all([
-          invoke<PagedSessionMessagesResponse>(
-            "get_session_messages_paged",
-            { sessionId, beforeSeq: null, limit: 5 },
-          ),
+          getSessionMessagesPaged(sessionId, null, 5),
           // 用量视图与首屏并行回读：启动 / 切会话时分组明细没有事件可回放，
           // 不回读就只剩 `hasDetail = false` 的兜底四指标。
           // 失败不能拖垮消息窗口 —— 浮层退回兜底值即可。
-          invoke<SessionUsageView>("get_session_usage", { sessionId }).catch((err) => {
+          getSessionUsage(sessionId).catch((err) => {
             console.warn(`[chat] session-usage load failed: session=${sessionId}`, err);
             return null;
           }),
@@ -621,7 +672,12 @@ export const useChatStore = defineStore("chat", () => {
         session.replaceSessionMessages(sessionId, res.messages);
         // 分页边界：最老端 = 后端下发的 oldestSeq（上滑游标）；
         // 最新端 = 后端下发的 newestSeq（首屏即会话最新端，空会话为 null）
-        session.setSessionPaging(sessionId, res.oldestSeq, res.hasMore, res.newestSeq);
+        session.setSessionPaging(
+          sessionId,
+          res.oldestSeq ?? null,
+          res.hasMore,
+          res.newestSeq ?? null,
+        );
         // 只在视图里还**没有**明细时写入：重载可能发生在运行中，
         // 事件通道推来的分组比这次回读更新；无条件覆盖会把新数据冲回旧快照。
         if (usage && !session.getSessionView(sessionId).sessionUsageBreakdown.hasDetail) {
@@ -756,10 +812,7 @@ export const useChatStore = defineStore("chat", () => {
     view.pagedLoadingOlder = true;
     const start = Date.now();
     try {
-      const res = await invoke<PagedSessionMessagesResponse>(
-        "get_session_messages_paged",
-        { sessionId, beforeSeq: view.pagedOldestSeq, limit: 5 },
-      );
+      const res = await getSessionMessagesPaged(sessionId, view.pagedOldestSeq, 5);
       if (!res.messages.length) {
         session.setSessionPaging(sessionId, null, false);
         return false;
@@ -771,7 +824,7 @@ export const useChatStore = defineStore("chat", () => {
         await new Promise((resolve) => setTimeout(resolve, 300 - elapsed));
       }
       session.prependSessionMessages(sessionId, res.messages);
-      session.setSessionPaging(sessionId, res.oldestSeq, res.hasMore);
+      session.setSessionPaging(sessionId, res.oldestSeq ?? null, res.hasMore);
       return true;
     } finally {
       view.pagedLoadingOlder = false;
@@ -837,9 +890,7 @@ export const useChatStore = defineStore("chat", () => {
     requestView.liveTurnId = `live_${crypto.randomUUID()}`;
 
     try {
-      const recovered = await invoke<boolean>("recover_interrupted_session_messages", {
-        sessionId: sessionIdAtStart,
-      });
+      const recovered = await recoverInterruptedSessionMessages(sessionIdAtStart);
       if (recovered) {
         // 恢复落库的消息在尾部，必然包含在首屏窗口内：走入口三强制重载（首屏 + 分页游标重置）
         await reloadSessionView(sessionIdAtStart, 'interrupt-recovery');
@@ -886,11 +937,8 @@ export const useChatStore = defineStore("chat", () => {
 
     try {
       const res = resumeOnly
-        ? await invoke<JarvisResult>("resume_jarvis", {
-            sessionId: sessionIdAtStart,
-            reason: msg,
-          })
-        : await invoke<JarvisResult>("ask_jarvis", {
+        ? await resumeJarvis(sessionIdAtStart, msg)
+        : await askJarvis({
             sessionId: sessionIdAtStart,
             msg,
             thinkingOverride: thinkingOverride ?? null,
@@ -1156,7 +1204,7 @@ export const useChatStore = defineStore("chat", () => {
     perm.clearPermissions(targetSid);
     delete perm.planProposals[targetSid];
     try {
-      await invoke("cancel_jarvis", { sessionId: targetSid });
+      await cancelJarvisApi(targetSid);
       return true;
     } catch (err) {
       // 命令失败（IPC 异常等）时撤回「停止中」，否则按钮会永远禁用
@@ -1180,7 +1228,7 @@ export const useChatStore = defineStore("chat", () => {
     }
 
     try {
-      const recalledText = await invoke<string>("recall_message", {
+      const recalledText = await recallMessage({
         sessionId,
         messageId: target.messageId,
         pruneMetadataCutoff: null,
@@ -1214,7 +1262,7 @@ export const useChatStore = defineStore("chat", () => {
   async function cancelSubAgentRun(runId: string) {
     const agent = useAgentStore();
     try {
-      const run = await invoke<import("../types").SubAgentRun>("cancel_subagent_run", { runId });
+      const run = await cancelSubagentRunApi(runId);
       agent.subAgentRuns = {
         ...agent.subAgentRuns,
         [run.runId]: run,
@@ -1227,10 +1275,7 @@ export const useChatStore = defineStore("chat", () => {
   async function resumeAgentRun(runId: string) {
     const session = useSessionStore();
     try {
-      const plan = await invoke<{ sessionId: string; prompt: string }>(
-        "prepare_resume_agent_run",
-        { runId }
-      );
+      const plan = await prepareResumeAgentRun(runId);
       if (plan.sessionId !== session.activeSessionId) {
         console.warn("恢复执行的会话不是当前会话", plan.sessionId);
         return;
@@ -1269,6 +1314,7 @@ export const useChatStore = defineStore("chat", () => {
     messages,
     resetRenderState,
     registerScrollCb,
+    unregisterScrollCb,
     forceScrollToBottom,
     followScrollToBottom,
     triggerRender,

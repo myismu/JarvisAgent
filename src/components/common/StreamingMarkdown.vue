@@ -1,270 +1,99 @@
 <!--
-# StreamingMarkdown.vue — 流式 Markdown 渲染组件
+# StreamingMarkdown.vue — 流式 Markdown 增量渲染组件
 
-将 Agent 输出的 Markdown 增量渲染为 HTML，含代码块、引用块等样式。
+将 Agent 输出的 Markdown 增量渲染为静态 HTML 块：
+- 已跨过安全段落边界的内容仅解析一次并固化至 `shallowRef` 冻结块，配合 `v-memo` 零重算；
+- 活跃尾部仅包含当前未闭合的最后一个段落或代码块，单次追加复杂度降至 `O(Δ)`。
+
+## Dependencies
+- Internal: `@/utils/streamingMarkdown`
 
 ## Constraints
 - 内容样式保持中性灰阶；语义色仅用于真实错误内容
+- 冻结块与活跃块均通过 `v-html` 渲染，样式统一使用 `:deep(.md-*)` 保持与原有 `(0,2,0)` 特异性一致
 -->
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
-import { marked } from 'marked';
-// 确保 marked 自定义渲染器（含本地图片 convertFileSrc 转换）已注册到全局实例
-import '../../utils/markdown';
+import { shallowRef, watch } from 'vue';
+import {
+  advanceSafeBoundary,
+  createIncrementalScanState,
+  renderMarkdownSliceToBlocks,
+  renderMarkdownSliceToHtml,
+  type FrozenMarkdownBlock,
+} from '../../utils/streamingMarkdown';
 
 const props = defineProps<{
   content: string;
 }>();
 
-const frozenBoundary = ref(0);
-const frozenTokens = ref<any[]>([]);
+/** 已冻结的静态块列表（使用 shallowRef 避免 Vue 对只读 HTML 块做深层 Proxy 包装） */
+const frozenBlocks = shallowRef<FrozenMarkdownBlock[]>([]);
+/** 当前活跃尾部的渲染 HTML（仅包含未跨过安全边界的最后一段） */
+const activeHtml = shallowRef('');
 
-function findLastSafeBoundary(content: string): number {
-  let inCodeBlock = false;
-  let lastBoundary = 0;
-  let i = 0;
-
-  while (i < content.length) {
-    if (
-      i <= content.length - 3 &&
-      content[i] === '`' &&
-      content[i + 1] === '`' &&
-      content[i + 2] === '`'
-    ) {
-      inCodeBlock = !inCodeBlock;
-      i += 3;
-      continue;
-    }
-
-    if (
-      !inCodeBlock &&
-      i < content.length - 1 &&
-      content[i] === '\n' &&
-      content[i + 1] === '\n'
-    ) {
-      lastBoundary = i + 2;
-    }
-
-    i++;
-  }
-
-  return lastBoundary;
-}
-
-// 记录上一次的内容，用于检测是增量追加还是整体切换
+// 以下状态均为渲染内部游标，刻意不做成响应式，避免触发多余重绘
+let scanState = createIncrementalScanState();
+let frozenBoundary = 0;
 let lastContent = '';
+let nextBlockId = 1;
+
+function resetIncrementalState() {
+  scanState = createIncrementalScanState();
+  frozenBoundary = 0;
+  lastContent = '';
+  frozenBlocks.value = [];
+  activeHtml.value = '';
+}
 
 watch(
   () => props.content,
   (newContent) => {
     if (!newContent) {
-      frozenBoundary.value = 0;
-      frozenTokens.value = [];
-      lastContent = '';
+      resetIncrementalState();
       return;
     }
 
-    // 内容不是从上次的末尾追加（而是整体切换）→ 清除缓存重新解析
+    // 内容并非在上一次末尾追加（如切换消息、替换全文或被截断）时重置增量缓存
     if (!newContent.startsWith(lastContent)) {
-      frozenBoundary.value = 0;
-      frozenTokens.value = [];
+      scanState = createIncrementalScanState();
+      frozenBoundary = 0;
+      frozenBlocks.value = [];
     }
     lastContent = newContent;
 
-    const boundary = findLastSafeBoundary(newContent);
+    // 仅从上次 scannedOffset 起单向增量扫描新增字符（O(Δ)），绝不回扫前文
+    const boundary = advanceSafeBoundary(newContent, scanState);
 
-    if (boundary > frozenBoundary.value) {
-      frozenBoundary.value = boundary;
-      try {
-        frozenTokens.value = marked
-          .lexer(newContent.substring(0, boundary))
-          .filter((t: any) => t.type !== 'space');
-      } catch {
-        frozenTokens.value = [];
-      }
-    } else if (frozenBoundary.value > 0 && boundary < frozenBoundary.value) {
-      frozenBoundary.value = boundary;
-      if (boundary > 0) {
-        try {
-          frozenTokens.value = marked
-            .lexer(newContent.substring(0, boundary))
-            .filter((t: any) => t.type !== 'space');
-        } catch {
-          frozenTokens.value = [];
-        }
-      } else {
-        frozenTokens.value = [];
+    if (boundary > frozenBoundary) {
+      const newlyFrozenSlice = newContent.slice(frozenBoundary, boundary);
+      const { blocks, nextId } = renderMarkdownSliceToBlocks(newlyFrozenSlice, nextBlockId);
+      nextBlockId = nextId;
+      frozenBoundary = boundary;
+      if (blocks.length > 0) {
+        frozenBlocks.value = [...frozenBlocks.value, ...blocks];
       }
     }
+
+    const activeSlice = newContent.slice(frozenBoundary);
+    activeHtml.value = activeSlice ? renderMarkdownSliceToHtml(activeSlice) : '';
   },
   { immediate: true },
 );
-
-const activeContent = computed(() => {
-  return props.content.substring(frozenBoundary.value);
-});
-
-const activeTokens = computed(() => {
-  if (!activeContent.value) return [];
-  try {
-    return marked
-      .lexer(activeContent.value)
-      .filter((t: any) => t.type !== 'space');
-  } catch {
-    return [];
-  }
-});
-
-function renderInlineTokens(tokens: any[] | undefined): string {
-  if (!tokens || tokens.length === 0) return '';
-  try {
-    const raw = tokens.map((t: any) => t.raw || '').join('');
-    return marked.parseInline(raw) as string;
-  } catch {
-    return tokens.map((t: any) => t.raw || '').join('');
-  }
-}
-
-function renderTableCell(cell: any): string {
-  return renderInlineTokens(cell.tokens || []);
-}
 </script>
 
 <template>
   <div class="streaming-markdown">
-    <!-- 冻结区：已完成的段落，DOM 永远不变 -->
-    <template v-for="(token, index) in frozenTokens" :key="`f-${index}`">
-      <p
-        v-if="token.type === 'paragraph'"
-        class="md-paragraph"
-        v-html="renderInlineTokens(token.tokens)"
-      />
-      <h1 v-else-if="token.type === 'heading' && token.depth === 1" class="md-h1" v-html="renderInlineTokens(token.tokens)" />
-      <h2 v-else-if="token.type === 'heading' && token.depth === 2" class="md-h2" v-html="renderInlineTokens(token.tokens)" />
-      <h3 v-else-if="token.type === 'heading' && token.depth === 3" class="md-h3" v-html="renderInlineTokens(token.tokens)" />
-      <h4 v-else-if="token.type === 'heading' && token.depth === 4" class="md-h4" v-html="renderInlineTokens(token.tokens)" />
-      <h5 v-else-if="token.type === 'heading' && token.depth === 5" class="md-h5" v-html="renderInlineTokens(token.tokens)" />
-      <h6 v-else-if="token.type === 'heading' && token.depth === 6" class="md-h6" v-html="renderInlineTokens(token.tokens)" />
-      <div v-else-if="token.type === 'code'" class="md-code-block">
-        <div v-if="token.lang" class="md-code-header">
-          <span class="md-code-lang">{{ token.lang }}</span>
-        </div>
-        <pre><code :class="token.lang ? `language-${token.lang}` : ''">{{ token.text }}</code></pre>
-      </div>
-      <ul v-else-if="token.type === 'list' && !token.ordered" class="md-ul">
-        <li
-          v-for="(item, i) in token.items"
-          :key="`fli-${index}-${i}`"
-          class="md-li"
-          v-html="renderInlineTokens(item.tokens)"
-        />
-      </ul>
-      <ol v-else-if="token.type === 'list' && token.ordered" class="md-ol" :start="token.start || 1">
-        <li
-          v-for="(item, i) in token.items"
-          :key="`foli-${index}-${i}`"
-          class="md-li"
-          v-html="renderInlineTokens(item.tokens)"
-        />
-      </ol>
-      <blockquote v-else-if="token.type === 'blockquote'" class="md-blockquote">
-        <StreamingMarkdown :content="token.text" />
-      </blockquote>
-      <div v-else-if="token.type === 'table'" class="md-table-wrap">
-        <table class="md-table">
-          <thead>
-            <tr>
-              <th
-                v-for="(cell, i) in token.header"
-                :key="`fth-${index}-${i}`"
-                :align="cell.align || undefined"
-                v-html="renderTableCell(cell)"
-              />
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(row, ri) in token.rows" :key="`ftr-${index}-${ri}`">
-              <td
-                v-for="(cell, ci) in row"
-                :key="`ftd-${index}-${ri}-${ci}`"
-                :align="cell.align || undefined"
-                v-html="renderTableCell(cell)"
-              />
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <hr v-else-if="token.type === 'hr'" class="md-hr" />
-    </template>
+    <!-- 冻结区：已完成段落已固化为不可变 HTML 块，v-memo 锁定后流式期间零重绘 -->
+    <div
+      v-for="block in frozenBlocks"
+      :key="block.id"
+      v-memo="[block.id]"
+      class="md-block-slot"
+      v-html="block.html"
+    />
 
-    <!-- 活跃区：最后一个未完成的段落，每次更新重新解析 -->
-    <template v-for="(token, index) in activeTokens" :key="`a-${index}`">
-      <p
-        v-if="token.type === 'paragraph'"
-        class="md-paragraph"
-        v-html="renderInlineTokens(token.tokens)"
-      />
-      <h1 v-else-if="token.type === 'heading' && token.depth === 1" class="md-h1" v-html="renderInlineTokens(token.tokens)" />
-      <h2 v-else-if="token.type === 'heading' && token.depth === 2" class="md-h2" v-html="renderInlineTokens(token.tokens)" />
-      <h3 v-else-if="token.type === 'heading' && token.depth === 3" class="md-h3" v-html="renderInlineTokens(token.tokens)" />
-      <h4 v-else-if="token.type === 'heading' && token.depth === 4" class="md-h4" v-html="renderInlineTokens(token.tokens)" />
-      <h5 v-else-if="token.type === 'heading' && token.depth === 5" class="md-h5" v-html="renderInlineTokens(token.tokens)" />
-      <h6 v-else-if="token.type === 'heading' && token.depth === 6" class="md-h6" v-html="renderInlineTokens(token.tokens)" />
-      <div v-else-if="token.type === 'code'" class="md-code-block">
-        <div v-if="token.lang" class="md-code-header">
-          <span class="md-code-lang">{{ token.lang }}</span>
-        </div>
-        <pre><code :class="token.lang ? `language-${token.lang}` : ''">{{ token.text }}</code></pre>
-      </div>
-      <ul v-else-if="token.type === 'list' && !token.ordered" class="md-ul">
-        <li
-          v-for="(item, i) in token.items"
-          :key="`ali-${index}-${i}`"
-          class="md-li"
-          v-html="renderInlineTokens(item.tokens)"
-        />
-      </ul>
-      <ol v-else-if="token.type === 'list' && token.ordered" class="md-ol" :start="token.start || 1">
-        <li
-          v-for="(item, i) in token.items"
-          :key="`aoli-${index}-${i}`"
-          class="md-li"
-          v-html="renderInlineTokens(item.tokens)"
-        />
-      </ol>
-      <blockquote v-else-if="token.type === 'blockquote'" class="md-blockquote">
-        <StreamingMarkdown :content="token.text" />
-      </blockquote>
-      <div v-else-if="token.type === 'table'" class="md-table-wrap">
-        <table class="md-table">
-          <thead>
-            <tr>
-              <th
-                v-for="(cell, i) in token.header"
-                :key="`ath-${index}-${i}`"
-                :align="cell.align || undefined"
-                v-html="renderTableCell(cell)"
-              />
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(row, ri) in token.rows" :key="`atr-${index}-${ri}`">
-              <td
-                v-for="(cell, ci) in row"
-                :key="`atd-${index}-${ri}-${ci}`"
-                :align="cell.align || undefined"
-                v-html="renderTableCell(cell)"
-              />
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <hr v-else-if="token.type === 'hr'" class="md-hr" />
-      <span v-else-if="token.type === 'text'" class="md-text">
-        {{ token.raw }}
-      </span>
-      <span v-else class="md-raw">{{ token.raw }}</span>
-    </template>
+    <!-- 活跃区：仅包含当前未闭合的最后一个段落/代码块 -->
+    <div v-if="activeHtml" class="md-block-slot md-active-slot" v-html="activeHtml" />
   </div>
 </template>
 
@@ -273,7 +102,11 @@ function renderTableCell(cell: any): string {
   line-height: 1.72;
 }
 
-.md-h1 {
+.md-block-slot {
+  display: block;
+}
+
+:deep(.md-h1) {
   margin: 0 0 14px;
   padding-bottom: 10px;
   color: var(--text-main);
@@ -283,7 +116,7 @@ function renderTableCell(cell: any): string {
   border-bottom: 1px solid var(--glass-border-subtle);
 }
 
-.md-h2 {
+:deep(.md-h2) {
   margin: 22px 0 10px;
   /* 正文标题统一走主文字色：给标题上蓝色是「AI 模板感」最明显的来源之一，
      Codex / DSH 的 markdown 标题也都只用字号+字重分层级，不上彩色 */
@@ -293,7 +126,7 @@ function renderTableCell(cell: any): string {
   line-height: 1.35;
 }
 
-.md-h3 {
+:deep(.md-h3) {
   margin: 18px 0 8px;
   color: var(--text-main);
   font-size: 0.96rem;
@@ -301,9 +134,9 @@ function renderTableCell(cell: any): string {
   line-height: 1.4;
 }
 
-.md-h4,
-.md-h5,
-.md-h6 {
+:deep(.md-h4),
+:deep(.md-h5),
+:deep(.md-h6) {
   margin: 14px 0 6px;
   color: var(--text-main);
   font-weight: 700;
@@ -312,24 +145,24 @@ function renderTableCell(cell: any): string {
 
 /* 显式给字号：此前 h4/h5/h6 没写 font-size，会落回浏览器默认的
    1em / 0.83em / 0.67em —— 在 14.25px 正文下 h6 只有 ~9.5px，基本不可读。 */
-.md-h4 { font-size: 0.94rem; }
-.md-h5 { font-size: 0.92rem; }
-.md-h6 { font-size: 0.9rem; }
+:deep(.md-h4) { font-size: 0.94rem; }
+:deep(.md-h5) { font-size: 0.92rem; }
+:deep(.md-h6) { font-size: 0.9rem; }
 
-.md-paragraph {
+:deep(.md-paragraph) {
   margin: 9px 0;
   color: var(--text-main);
   font-size: var(--md-body-font-size);
   line-height: 1.72;
 }
 
-.md-ul,
-.md-ol {
+:deep(.md-ul),
+:deep(.md-ol) {
   margin: 9px 0;
   padding-left: 24px;
 }
 
-.md-li {
+:deep(.md-li) {
   margin: 5px 0;
   color: var(--text-main);
   /* 显式写死，不再靠从 .message-content 继承 —— 继承会让列表和段落差 0.75px */
@@ -337,11 +170,11 @@ function renderTableCell(cell: any): string {
   line-height: 1.68;
 }
 
-.md-li::marker {
+:deep(.md-li::marker) {
   color: var(--text-muted);
 }
 
-.md-blockquote {
+:deep(.md-blockquote) {
   margin: 12px 0;
   padding: 10px 14px;
   color: var(--text-muted);
@@ -353,17 +186,17 @@ function renderTableCell(cell: any): string {
 }
 
 /* 引用块（含加粗标题的提示块） */
-.md-blockquote:has(strong) {
+:deep(.md-blockquote:has(strong)) {
   border-left-color: color-mix(in srgb, var(--text-main) 55%, transparent);
   background: var(--msg-block-tint);
   color: var(--text-soft);
 }
 
-.md-blockquote :deep(p) {
+:deep(.md-blockquote p) {
   margin: 0;
 }
 
-.md-code-block {
+:deep(.md-code-block) {
   margin: 12px 0;
   border: 1px solid var(--glass-border-subtle);
   border-radius: var(--radius-md);
@@ -372,7 +205,7 @@ function renderTableCell(cell: any): string {
   overflow: hidden;
 }
 
-.md-code-header {
+:deep(.md-code-header) {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -385,21 +218,21 @@ function renderTableCell(cell: any): string {
   font-size: var(--code-font-size);
 }
 
-.md-code-lang {
+:deep(.md-code-lang) {
   font-size: 0.88em;
   font-weight: 600;
   color: var(--text-muted);
   font-family: var(--font-mono);
 }
 
-.md-code-block pre {
+:deep(.md-code-block pre) {
   margin: 0;
   padding: 14px 16px;
   overflow-x: auto;
   background: transparent;
 }
 
-.md-code-block code {
+:deep(.md-code-block code) {
   font-family: var(--font-mono);
   /* --code-font-size 是正文的固定倍率（见 global.css）；0.85em 仅作变量缺失时的回退 */
   font-size: var(--code-font-size, 0.85em);
@@ -410,21 +243,21 @@ function renderTableCell(cell: any): string {
   border: none;
 }
 
-.md-table-wrap {
+:deep(.md-table-wrap) {
   margin: 12px 0;
   overflow-x: auto;
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
 }
 
-.md-table {
+:deep(.md-table) {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
 }
 
-.md-table th,
-.md-table td {
+:deep(.md-table th),
+:deep(.md-table td) {
   padding: 9px 12px;
   text-align: left;
   border-bottom: 1px solid var(--glass-border-subtle);
@@ -432,26 +265,26 @@ function renderTableCell(cell: any): string {
   font-size: var(--md-body-font-size);
 }
 
-.md-table th {
+:deep(.md-table th) {
   font-weight: var(--fw-bold);
   background: color-mix(in srgb, var(--bg-panel) 50%, transparent);
 }
 
-.md-table tr:last-child td {
+:deep(.md-table tr:last-child td) {
   border-bottom: 0;
 }
 
-.md-hr {
+:deep(.md-hr) {
   margin: 16px 0;
   border: 0;
   border-top: 1px solid var(--glass-border-subtle);
 }
 
-.md-text {
+:deep(.md-text) {
   white-space: pre-wrap;
 }
 
-.md-raw {
+:deep(.md-raw) {
   white-space: pre-wrap;
   color: var(--text-muted);
 }

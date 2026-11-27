@@ -1,5 +1,16 @@
+<!--
+# ChatArea.vue — 主对话消息列表与交互区
+
+渲染历史与当前流式轮次消息，处理切会话锚定、上滑懒加载、消息原地编辑、代码/表格复制与回滚菜单交互。
+
+## Key Exports
+- `ChatArea`: 主对话区域组件
+
+## Dependencies
+- Internal: `@/stores/session`, `@/stores/chat`, `@/stores/permission`, `@/stores/agent`, `@/composables/chat/*`
+-->
 <script setup lang="ts">
-import { ref, onMounted, nextTick, computed, watch } from 'vue';
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useSessionStore } from '../../stores/session';
 import { useChatStore } from '../../stores/chat';
@@ -9,14 +20,15 @@ import { usePreferences } from '../../composables/usePreferences';
 import { useRunElapsed } from '../../composables/useRunElapsed';
 import { getRollbackMenuPosition, useChatRollback } from '../../composables/chat/useChatRollback';
 import { useChatClipboard } from '../../composables/chat/useChatClipboard';
+import { useChatScroll } from '../../composables/chat/useChatScroll';
 import ConfirmModal from '../common/ConfirmModal.vue';
 import AgentTurn from './AgentTurn.vue';
 import AgentTurnNotice from './AgentTurnNotice.vue';
 import TodoPanel from './TodoPanel.vue';
 import WelcomeScreen from './WelcomeScreen.vue';
 import MessageRail from './MessageRail.vue';
+import UserMessageBubble from './UserMessageBubble.vue';
 import { noticeTextFromBackend } from '../../utils/agentTurnState';
-import { plainUserText, isLongUserText } from '../../utils/userMessage';
 import type { AgentTurnSnapshot, AgentCurrentTurn } from '../../types';
 
 const { t } = useI18n();
@@ -61,19 +73,8 @@ function rollbackOpMeta(operation: string): {
   }
 }
 const { copyCodeBlock, copyTable, copyPlainText } = useChatClipboard();
-const responseAreaRef = ref<HTMLElement | null>(null);
-/** 视口是否贴底：滚动事件与程序化落底共同维护的统一事实源。 */
-const atBottom = ref(true);
-/**
- * 流式跟随开关 = 「自动跟随滚动」偏好开 且 视口贴底。
- *
- * 偏好是总闸：关闭时流式过程不做程序化吸底（renderTick / store 流式回调路径全部拦下），
- * 只保留手动「滚动到底」按钮；开跑瞬间与切会话的定位（force 路径）是导航行为，不受此约束。
- * 之前这里只是挂载时读了一次偏好的 ref，随后被滚动事件覆写、被开跑强制落底无条件置回 true，
- * 设置开关形同虚设——根因是「跟随」与「定位」两个概念混在同一个变量里。
- */
-const shouldFollowStream = computed(() => prefs.autoScroll && atBottom.value);
 const currentTurn = computed(() => session.currentSessionView.currentTurn);
+const currentTurnRevision = computed(() => currentTurn.value.revision);
 const hasCurrentTurnContent = computed(() => {
   const turn = currentTurn.value;
   return Boolean(
@@ -228,88 +229,24 @@ function convertSnapshotToTurn(snapshot: AgentTurnSnapshot): AgentCurrentTurn {
   return turn;
 }
 
-const expandedUserMsgs = ref(new Set<string>());
-
-// ── 用户消息操作栏：复制反馈 + 原地编辑 ──
-const copiedUserMsgId = ref<string | null>(null);
-let copiedUserMsgTimer: number | null = null;
-
 const editingMsgId = ref<string | null>(null);
-const editingText = ref('');
-const editingOriginalText = ref('');
-const editTextareaRef = ref<HTMLTextAreaElement | null>(null);
-
-async function handleCopyUserMsg(message: any) {
-  const text = getUserMsgText(message);
-  if (!text) return;
-  const ok = await copyPlainText(text);
-  if (!ok) return;
-  copiedUserMsgId.value = message.id;
-  if (copiedUserMsgTimer !== null) {
-    window.clearTimeout(copiedUserMsgTimer);
-  }
-  copiedUserMsgTimer = window.setTimeout(() => {
-    copiedUserMsgId.value = null;
-    copiedUserMsgTimer = null;
-  }, 1500);
-}
-
-function resizeEditTextarea(el?: HTMLTextAreaElement | null) {
-  const target = el ?? editTextareaRef.value;
-  if (!target) return;
-  target.style.height = 'auto';
-  target.style.height = `${Math.min(target.scrollHeight, 360)}px`;
-}
 
 function startEditUserMsg(message: any) {
   if (session.isCurrentSessionRunning || rollbackLoading.value) return;
   closeRollbackMenu();
-  const original = getUserMsgText(message);
   editingMsgId.value = message.id;
-  editingText.value = original;
-  editingOriginalText.value = original;
-  nextTick(() => {
-    const el = editTextareaRef.value;
-    if (!el) return;
-    resizeEditTextarea(el);
-    el.focus();
-    const len = el.value.length;
-    el.setSelectionRange(len, len);
-  });
 }
 
 function cancelEditUserMsg() {
   if (rollbackLoading.value) return;
   editingMsgId.value = null;
-  editingText.value = '';
-  editingOriginalText.value = '';
 }
 
-function canConfirmEdit(message: any): boolean {
-  const trimmed = editingText.value.trim();
-  const hasImages = Array.isArray(message.images) && message.images.length > 0;
-  if (!trimmed && !hasImages) return false;
-  return editingText.value !== editingOriginalText.value;
-}
-
-async function handleConfirmEditUserMsg(message: any) {
+async function handleConfirmEditUserMsg(message: any, nextText: string) {
   if (rollbackLoading.value || session.isCurrentSessionRunning) return;
-  if (!canConfirmEdit(message)) return;
-  await submitEditedMessage(message, editingText.value, () => {
+  await submitEditedMessage(message, nextText, () => {
     editingMsgId.value = null;
-    editingText.value = '';
-    editingOriginalText.value = '';
   });
-}
-
-function handleEditKeydown(e: KeyboardEvent, message: any) {
-  if (e.key === 'Escape') {
-    e.preventDefault();
-    cancelEditUserMsg();
-  } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-    e.preventDefault();
-    void handleConfirmEditUserMsg(message);
-  }
 }
 
 function isRollbackMenuActiveFor(message: any): boolean {
@@ -321,194 +258,21 @@ function isRollbackMenuActiveFor(message: any): boolean {
   return false;
 }
 
-// 消息对象 → 纯文本。判定阈值统一放在 utils/userMessage，子 Agent 轨迹共用同一份。
-function getUserMsgText(message: any): string {
-  return plainUserText(message.text ?? message.userContent ?? message.content ?? '');
-}
-
-function isUserMsgLong(text: string): boolean {
-  return isLongUserText(text);
-}
-
-function toggleUserMsgExpand(msgId: string) {
-  const next = new Set(expandedUserMsgs.value);
-  if (next.has(msgId)) {
-    next.delete(msgId);
-  } else {
-    next.add(msgId);
-  }
-  expandedUserMsgs.value = next;
-}
-
-const isResponseAtBottom = () => {
-  if (!responseAreaRef.value) return false;
-  const { scrollTop, scrollHeight, clientHeight } = responseAreaRef.value;
-  return scrollHeight - scrollTop - clientHeight <= 35;
-};
-
-const setResponseScrollToBottom = () => {
-  if (!responseAreaRef.value) return;
-  responseAreaRef.value.scrollTop = responseAreaRef.value.scrollHeight;
-};
-
-const forceScrollToBottomAfterRender = async () => {
-  // 只恢复「贴底」事实，不越过跟随总闸：之后是否持续跟随由 shouldFollowStream
-  // （偏好 且 贴底）决定。这里始终要落底——它承担开跑定位与切会话锚定，属导航行为。
-  atBottom.value = true;
-
-  await nextTick();
-  setResponseScrollToBottom();
-
-  // 渲染是分帧进行的（StreamingMarkdown 逐帧撑高内容）：单次滚动只会停在
-  // "当时的底部"，后续帧内容继续变长就把视口顶离底部——表现为进入会话时
-  // 先看到中间位置、过一会儿才滑到底。持续跟随到高度连续 2 帧稳定才算落底。
-  let lastHeight = -1;
-  let stableFrames = 0;
-  let totalFrames = 0;
-  await new Promise<void>((resolve) => {
-    const tick = () => {
-      if (!responseAreaRef.value) return resolve();
-      setResponseScrollToBottom();
-      const h = responseAreaRef.value.scrollHeight;
-      stableFrames = h === lastHeight ? stableFrames + 1 : 0;
-      lastHeight = h;
-      totalFrames += 1;
-      if (stableFrames >= 2 || totalFrames > 60) return resolve();
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-  });
-};
-
-const scrollToBottom = async (force = false) => {
-  if (force) {
-    await forceScrollToBottomAfterRender();
-    return;
-  }
-
-  // 跟随判定收口在 shouldFollowStream（偏好 且 贴底）：
-  // 偏好关闭时，流式回调 / renderTick 到这里都会被拦下，不再"贴底就吸"。
-  // force（点按钮 / 开跑 / 切会话）是显式定位，不受总闸约束。
-  const shouldScroll = force || shouldFollowStream.value;
-
-  await nextTick();
-  if (responseAreaRef.value && shouldScroll) {
-    responseAreaRef.value.scrollTop = responseAreaRef.value.scrollHeight;
-  }
-};
-
-const handleResponseScroll = () => {
-  atBottom.value = isResponseAtBottom();
-  // 懒加载：滚动接近顶部（<60px）时加载更早的历史；防重入与 hasMore 由 store 状态保证
-  void maybeLoadOlderMessages();
-};
-
-/** 懒加载锚定期标志：头部插入 → 渲染 → 补偿滚动期间屏蔽再次触发（否则会连续加载两页并回弹） */
-const historyAnchoring = ref(false);
-
-/** 懒加载：上滑到顶触发加载更早历史，插入后做滚动锚定（补偿 scrollHeight 差值，视口不跳） */
-const maybeLoadOlderMessages = async () => {
-  const el = responseAreaRef.value;
-  if (!el) return;
-  const view = session.currentSessionView;
-  if (!view.pagedHasMore || view.pagedLoadingOlder || historyAnchoring.value) return;
-  if (el.scrollTop > 60) return;
-  const sid = session.activeSessionId;
-  if (!sid) return;
-  const prevHeight = el.scrollHeight;
-  const prevTop = el.scrollTop;
-  historyAnchoring.value = true;
-  const loaded = await chat.loadSessionMessagesOlder(sid);
-  if (!loaded) {
-    historyAnchoring.value = false;
-    return;
-  }
-  // 双 rAF：等 Vue 渲染与浏览器布局稳定后再补偿——单 nextTick 时流式组件可能
-  // 还在继续撑高内容，补偿量不足就会"往回弹"
-  await nextTick();
-  await new Promise<void>((resolve) =>
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-  );
-  if (responseAreaRef.value) {
-    responseAreaRef.value.scrollTop =
-      prevTop + (responseAreaRef.value.scrollHeight - prevHeight);
-  }
-  historyAnchoring.value = false;
-};
-
-const showScrollToBottom = computed(() => {
-  // 用贴底事实（atBottom）而非跟随开关判断：跟随关闭（偏好关）但视口仍贴底时，不该显示按钮
-  return !atBottom.value && (chat.messages.length > 0 || hasCurrentTurnContent.value);
-});
-
-/** 懒加载提示条三态：加载中（转圈）/ 上滑提示 / 已加载全部（翻到最老后常驻小字） */
-const showHistoryLoader = computed(() => {
-  const v = session.currentSessionView;
-  return v.pagedHasMore || v.pagedLoadingOlder || v.pagedOldestSeq !== null;
-});
-const historyLoaderText = computed(() => {
-  const v = session.currentSessionView;
-  if (v.pagedLoadingOlder) return t('chat.loadingOlderMessages');
-  if (v.pagedHasMore) return t('chat.scrollForOlderMessages');
-  return v.pagedOldestSeq !== null ? t('chat.allMessagesLoaded') : '';
-});
-
-watch(() => session.isCurrentSessionRunning, (running) => {
-  if (running) {
-    scrollToBottom(true);
-  }
-});
-
-const pendingInitialScrollSessionKey = ref<string | null>(null);
-const currentSessionKey = computed(() => session.activeSessionId || '__default__');
-/**
- * 切会话锚定期：消息列表渲染是分帧撑高的，若渲染过程可见，用户会先看到
- * 中间位置的内容、再"滚"到底——主流聊天应用（微信/Discord）都是直接出现
- * 在最新消息。实现：锚定期列表 `visibility: hidden`（保留布局，滚动定位
- * 照常计算），稳定落底后一次性显现——用户看到的就是"直接在最新消息"。
- */
-const initialAnchoring = ref(false);
-
-watch(currentSessionKey, (key) => {
-  pendingInitialScrollSessionKey.value = key;
-  initialAnchoring.value = true;
-  // 切换会话时退出可能停留的原地编辑态，避免跨会话误操作
-  editingMsgId.value = null;
-  editingText.value = '';
-  editingOriginalText.value = '';
-}, { immediate: true });
-
-watch(
-  () => [
-    currentSessionKey.value,
-    // 用生命周期状态而不是"是否有内容"：ready/stale 都代表"曾经载入过"，
-    // 可以立即落底；idle/loading 阶段则等到内容真正到位再锚定
-    session.currentSessionView.hydration,
-    chat.messages.length,
-    hasCurrentTurnContent.value,
-  ],
-  async ([key, hydration, msgCount, hasTurnContent]) => {
-    if (pendingInitialScrollSessionKey.value !== key) return;
-    const loaded = hydration === 'ready' || hydration === 'stale';
-    if (!loaded && !msgCount && !hasTurnContent) return;
-
-    pendingInitialScrollSessionKey.value = null;
-    // 锚定期：列表不可见状态下稳定落底，完成后一次性显现（直接在最新消息）
-    await forceScrollToBottomAfterRender();
-    initialAnchoring.value = false;
+const {
+  responseAreaRef,
+  initialAnchoring,
+  showScrollToBottom,
+  showHistoryLoader,
+  historyLoaderText,
+  scrollToBottom,
+  handleResponseScroll,
+} = useChatScroll({
+  hasCurrentTurnContent,
+  currentTurnRevision,
+  onSessionChange: () => {
+    // 切换会话时退出可能停留的原地编辑态，避免跨会话误操作
+    editingMsgId.value = null;
   },
-  { immediate: true, flush: 'post' }
-);
-
-watch(() => [chat.renderTick, currentTurn.value.revision], () => {
-  if (shouldFollowStream.value) {
-    scrollToBottom();
-    return;
-  }
-  // 未在跟随（偏好关或已上滑）时：内容增长只把视口"顶离"底部、不产生 scroll 事件，
-  // 贴底状态必须在这里重算，否则视口漂离后「滚动到底」按钮永远不会出现。
-  // 顺序不能反：先重算再判断会把"即将跟随"的一帧误判成已离底，跟随会被自己掐断。
-  atBottom.value = isResponseAtBottom();
 });
 
 const handleContextMenu = (e: MouseEvent) => {
@@ -551,15 +315,21 @@ const handleResponseClick = (e: MouseEvent) => {
   }
 };
 
+const handleDocumentClick = (e: MouseEvent) => {
+  const target = e.target as HTMLElement | null;
+  if (!target) return;
+  if (target.closest('.rollback-trigger')) return;
+  if (!target.closest('.rollback-menu')) {
+    closeRollbackMenu();
+  }
+};
+
 onMounted(() => {
-  chat.registerScrollCb(scrollToBottom);
-  document.addEventListener('click', (e) => {
-    const target = e.target as HTMLElement;
-    if (target.closest('.rollback-trigger')) return;
-    if (!target.closest('.rollback-menu')) {
-      closeRollbackMenu();
-    }
-  });
+  document.addEventListener('click', handleDocumentClick);
+});
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleDocumentClick);
 });
 </script>
 
@@ -592,171 +362,20 @@ onMounted(() => {
       <!-- 结构化消息列表（Vue 组件渲染） -->
       <template v-for="(message, index) in renderMessages" :key="message.id">
         <!-- 用户消息 -->
-        <div
+        <UserMessageBubble
           v-if="message.role === 'user'"
-          class="chat-message user-message"
-          :class="{
-            'is-editing-row': editingMsgId === message.id,
-            'menu-open': isRollbackMenuActiveFor(message),
-          }"
-          :data-msg-id="message.id"
-        >
-          <div
-            class="message-content"
-            :class="{ 'is-editing': editingMsgId === message.id }"
-            :data-user-message-index="index"
-            :data-message-id="message.messageId"
-            :data-rollback-checkpoint-id="message.rollbackCheckpointId || ''"
-            :data-rollback-mode="message.rollbackMode || 'session'"
-          >
-            <!-- 图片 -->
-            <div v-if="message.images && message.images.length > 0" class="user-images">
-              <img
-                v-for="(img, imgIdx) in message.images"
-                :key="`img-${imgIdx}`"
-                :src="img"
-                class="user-image"
-                alt="用户发送的图片"
-              />
-            </div>
-            <!-- 原地编辑态 -->
-            <template v-if="editingMsgId === message.id">
-              <textarea
-                :ref="(el) => { if (el) editTextareaRef = el as HTMLTextAreaElement; }"
-                v-model="editingText"
-                class="user-edit-textarea"
-                rows="1"
-                :disabled="rollbackLoading"
-                @input="resizeEditTextarea()"
-                @keydown="handleEditKeydown($event, message)"
-              />
-              <div class="user-edit-footer">
-                <span class="user-edit-hint">{{ t('chat.editHint') }}</span>
-                <div class="user-edit-buttons">
-                  <button
-                    type="button"
-                    class="user-edit-btn cancel"
-                    :disabled="rollbackLoading"
-                    @click="cancelEditUserMsg"
-                  >
-                    {{ t('common.cancel') }}
-                  </button>
-                  <button
-                    type="button"
-                    class="user-edit-btn confirm"
-                    :disabled="rollbackLoading || session.isCurrentSessionRunning || !canConfirmEdit(message)"
-                    @click="handleConfirmEditUserMsg(message)"
-                  >
-                    {{ rollbackLoading ? t('common.processing') : t('chat.editConfirm') }}
-                  </button>
-                </div>
-              </div>
-            </template>
-            <!-- 正常展示态 -->
-            <template v-else>
-              <div class="user-text" :class="{ collapsed: isUserMsgLong(getUserMsgText(message)) && !expandedUserMsgs.has(message.id) }">
-                {{ getUserMsgText(message) }}
-              </div>
-              <button
-                v-if="isUserMsgLong(getUserMsgText(message))"
-                class="user-msg-toggle"
-                @click="toggleUserMsgExpand(message.id)"
-              >
-                {{ expandedUserMsgs.has(message.id) ? t('chat.collapse') : t('chat.expandAll') }}
-              </button>
-            </template>
-          </div>
-          <!-- 气泡下方右侧：无外框纯幽灵图标操作栏（复制 / 修改 / 撤回） -->
-          <div v-if="editingMsgId !== message.id" class="user-msg-actions">
-            <button
-              type="button"
-              class="user-action-btn"
-              :class="{ 'is-copied': copiedUserMsgId === message.id }"
-              :title="copiedUserMsgId === message.id ? t('chat.copied') : t('chat.copyMessage')"
-              :aria-label="copiedUserMsgId === message.id ? t('chat.copied') : t('chat.copyMessage')"
-              @click.stop="handleCopyUserMsg(message)"
-            >
-              <svg
-                v-if="copiedUserMsgId === message.id"
-                viewBox="0 0 24 24"
-                width="14"
-                height="14"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <polyline points="20 6 9 17 4 12" />
-              </svg>
-              <svg
-                v-else
-                viewBox="0 0 24 24"
-                width="14"
-                height="14"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.75"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-              </svg>
-            </button>
-            <button
-              v-if="message.rollbackCheckpointId || message.messageId"
-              type="button"
-              class="user-action-btn"
-              :disabled="session.isCurrentSessionRunning || rollbackLoading"
-              :title="t('chat.editMessage')"
-              :aria-label="t('chat.editMessage')"
-              @click.stop="startEditUserMsg(message)"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                width="14"
-                height="14"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.75"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M12 20h9" />
-                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
-              </svg>
-            </button>
-            <button
-              v-if="message.rollbackCheckpointId || message.messageId"
-              type="button"
-              class="user-action-btn rollback-trigger"
-              :data-cp-id="message.rollbackCheckpointId || ''"
-              :disabled="session.isCurrentSessionRunning || rollbackLoading"
-              :title="t('rollback.trigger')"
-              :aria-label="t('rollback.trigger')"
-              @click.stop="handleRollbackClickVue(message, $event)"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                width="14"
-                height="14"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.75"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M9 14 4 9l5-5" />
-                <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5V20" />
-              </svg>
-            </button>
-          </div>
-        </div>
+          :message="message"
+          :index="index"
+          :is-editing="editingMsgId === message.id"
+          :menu-open="isRollbackMenuActiveFor(message)"
+          :disabled="session.isCurrentSessionRunning || rollbackLoading"
+          :rollback-loading="rollbackLoading"
+          :copy-plain-text="copyPlainText"
+          @start-edit="startEditUserMsg"
+          @cancel-edit="cancelEditUserMsg"
+          @confirm-edit="handleConfirmEditUserMsg"
+          @open-rollback="handleRollbackClickVue"
+        />
         <!-- Agent 消息：历史快照与 live 轮次走**同一条**渲染语句。
              live 项由 renderMessages 追加在列表末尾，key 与收尾后的正式消息一致，
              所以收尾时 Vue 会 patch 复用这棵子树，而不是卸载再挂载（那会闪一下）。 -->
@@ -854,7 +473,7 @@ onMounted(() => {
       confirm-kind="danger"
       :loading="rollbackLoading"
       @cancel="cancelEditResend"
-      @confirm="confirmEditResend('session', () => { editingMsgId = null; editingText = ''; editingOriginalText = ''; })"
+      @confirm="confirmEditResend('session', () => { editingMsgId = null; })"
     >
       <template #message>
         <div v-if="editResendConfirm" class="rollback-preview-modal">
@@ -894,7 +513,7 @@ onMounted(() => {
               type="button"
               class="edit-resend-btn secondary"
               :disabled="rollbackLoading"
-              @click="confirmEditResend('session', () => { editingMsgId = null; editingText = ''; editingOriginalText = ''; })"
+              @click="confirmEditResend('session', () => { editingMsgId = null; })"
             >
               {{ rollbackLoading ? t('common.processing') : t('rollback.editResendSessionOnly') }}
             </button>
@@ -902,7 +521,7 @@ onMounted(() => {
               type="button"
               class="edit-resend-btn danger"
               :disabled="rollbackLoading"
-              @click="confirmEditResend('both', () => { editingMsgId = null; editingText = ''; editingOriginalText = ''; })"
+              @click="confirmEditResend('both', () => { editingMsgId = null; })"
             >
               {{ rollbackLoading ? t('common.processing') : t('rollback.editResendSessionAndCode') }}
             </button>
@@ -1585,87 +1204,12 @@ onMounted(() => {
   color: var(--accent-green);
 }
 
-/* 原地编辑态：气泡平滑切换为聚焦输入框，底部内嵌快捷键提示与确认/取消 */
+/* 原地编辑态：气泡平滑切换为聚焦输入框，内部输入与按钮样式归属 UserMessageBubble.vue */
 :deep(.user-message .message-content.is-editing) {
   width: min(560px, 85%);
   border: 1px solid color-mix(in srgb, var(--accent-blue) 65%, transparent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 12%, transparent);
   transform: none;
-}
-
-.user-edit-textarea {
-  width: 100%;
-  min-height: 44px;
-  max-height: 360px;
-  padding: 0;
-  margin: 0;
-  border: none;
-  outline: none;
-  resize: none;
-  background: transparent;
-  color: var(--text-main);
-  font-family: inherit;
-  font-size: 0.95rem;
-  line-height: 1.6;
-  letter-spacing: 0.01em;
-  overflow-y: auto;
-}
-
-.user-edit-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid color-mix(in srgb, var(--text-main) 8%, transparent);
-}
-
-.user-edit-hint {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  user-select: none;
-}
-
-.user-edit-buttons {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.user-edit-btn {
-  padding: 5px 12px;
-  border-radius: 6px;
-  font-size: 0.82rem;
-  font-weight: 600;
-  cursor: pointer;
-  border: 1px solid transparent;
-  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
-}
-
-.user-edit-btn.cancel {
-  background: transparent;
-  color: var(--text-muted);
-  border-color: var(--glass-border-subtle);
-}
-
-.user-edit-btn.cancel:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--text-main) 7%, transparent);
-  color: var(--text-main);
-}
-
-.user-edit-btn.confirm {
-  background: var(--btn-primary-bg);
-  color: var(--btn-primary-fg);
-}
-
-.user-edit-btn.confirm:hover:not(:disabled) {
-  background: var(--btn-primary-bg-hover);
-}
-
-.user-edit-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
 }
 
 /* 编辑重发二选一弹窗底部操作栏：左幽灵取消，右紧凑双操作键 */

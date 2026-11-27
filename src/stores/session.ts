@@ -1,5 +1,19 @@
+/**
+ * # session.ts — 会话视图、消息缓冲区与用量状态管理
+ *
+ * 按 `sessionId` 隔离维护每个会话的视图状态、消息分页游标、流式缓冲与累计用量，
+ * 是 `agent` / `permission` / `chat` 三个上层 Store 的单一底层依赖。
+ *
+ * ## Key Exports
+ * - `useSessionStore()`: 会话状态 Pinia Store
+ * - `SessionHydration` / `SessionViewState` / `SessionUsageTotals`: 会话视图与用量类型
+ *
+ * ## Dependencies
+ * - Internal: `@/types`, `@/utils/agentTurnState`, `@/utils/userMessage`, `@/utils/usageBreakdown`
+ * - External: `pinia`
+ */
 import { defineStore } from "pinia";
-import { ref, computed } from "vue";
+import { ref, computed, markRaw } from "vue";
 import type {
   AgentCurrentTurn,
   AgentApprovalMode,
@@ -98,8 +112,6 @@ export interface SessionViewState {
    */
   liveTurnId: string | null;
   currentTurn: AgentCurrentTurn;
-  throttling: boolean;
-  lastRenderAt: number;
   /** 懒加载：当前已加载最老消息的 seq（游标），null = 未分页/已全量 */
   pagedOldestSeq: number | null;
   /** 懒加载：是否还有更早的历史可加载 */
@@ -194,8 +206,6 @@ function createEmptySessionView(hydration: SessionHydration = 'idle'): SessionVi
     resumableRunId: null,
     liveTurnId: null,
     currentTurn: createEmptyAgentCurrentTurn(),
-    throttling: false,
-    lastRenderAt: 0,
     pagedOldestSeq: null,
     pagedHasMore: false,
     pagedLoadingOlder: false,
@@ -344,18 +354,29 @@ export const useSessionStore = defineStore("session", () => {
     getSessionView(sessionId).loadError = failed;
   }
 
+/**
+ * 将后端加载的只读历史消息归一化并标记 `markRaw`：
+ * 历史消息及其深层 `snapshot`（含数百个 textBlocks / toolCalls / logs）一经落库即不可变，
+ * 跳过 Vue 深度响应式 Proxy 包装可显著降低长会话内存占用，并确保 `ChatArea` 的 WeakMap 缓存命中原始引用。
+ */
+function normalizeHistoryMessage(msg: any) {
+  const normalized = {
+    ...msg,
+    snapshot: msg.snapshot && typeof msg.snapshot === "object" ? markRaw(msg.snapshot) : msg.snapshot,
+    // 后端返回 userContent，前端 Vue 组件使用 text/images（或 content 作为兼容）
+    content: msg.content ?? msg.userContent,
+    text: msg.text ?? (msg.role === "user" ? msg.userContent?.replace(/<[^>]*>/g, "") : undefined),
+    // 历史用户消息的图片内联在 userContent 的 <img> 里，这里提取出来供气泡渲染
+    images:
+      msg.images ??
+      (msg.role === "user" ? nonEmptyOrUndefined(extractUserImages(msg.userContent)) : undefined),
+  };
+  return markRaw(normalized);
+}
+
   function replaceSessionMessages(sessionId: string | null | undefined, messages: any[]) {
     const view = getSessionView(sessionId);
-    view.messages = messages.map((msg) => ({
-      ...msg,
-      // 后端返回 userContent，前端 Vue 组件使用 text/images（或 content 作为兼容）
-      content: msg.content ?? msg.userContent,
-      text: msg.text ?? (msg.role === 'user' ? msg.userContent?.replace(/<[^>]*>/g, '') : undefined),
-      // 历史用户消息的图片内联在 userContent 的 <img> 里，这里提取出来供气泡渲染
-      images:
-        msg.images ??
-        (msg.role === 'user' ? nonEmptyOrUndefined(extractUserImages(msg.userContent)) : undefined),
-    }));
+    view.messages = messages.map(normalizeHistoryMessage);
     view.loadError = false;
     // 整批替换完成 = 窗口就绪；上一次的脏原因到此失效
     view.hydration = 'ready';
@@ -383,6 +404,14 @@ export const useSessionStore = defineStore("session", () => {
 
   function appendSessionMessage(sessionId: string | null | undefined, message: any) {
     const view = getSessionView(sessionId);
+    // 仅对不可变 Agent 终态快照套用 markRaw；刚发出的 pending 用户消息仍需在回执/run 到达时响应式回填 messageId / rollbackMode
+    if (message && typeof message === "object" && message.snapshot && typeof message.snapshot === "object") {
+      markRaw(message.snapshot);
+      if (message.role === "agent") {
+        view.messages.push(markRaw(message));
+        return;
+      }
+    }
     view.messages.push(message);
   }
 
@@ -390,14 +419,7 @@ export const useSessionStore = defineStore("session", () => {
   function prependSessionMessages(sessionId: string | null | undefined, messages: any[]) {
     if (!messages.length) return;
     const view = getSessionView(sessionId);
-    const mapped = messages.map((msg) => ({
-      ...msg,
-      content: msg.content ?? msg.userContent,
-      text: msg.text ?? (msg.role === 'user' ? msg.userContent?.replace(/<[^>]*>/g, '') : undefined),
-      images:
-        msg.images ??
-        (msg.role === 'user' ? nonEmptyOrUndefined(extractUserImages(msg.userContent)) : undefined),
-    }));
+    const mapped = messages.map(normalizeHistoryMessage);
     view.messages.unshift(...mapped);
   }
 
