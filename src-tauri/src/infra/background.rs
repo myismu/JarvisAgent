@@ -30,46 +30,129 @@ fn kill_process_tree(pid: u32) {
     }
 }
 
-/// 递归查找指定 PID 的所有子孙进程（Windows WMI）
-/// 用于确保能定位并终止整棵进程树，防止 node/npm 等子进程变孤儿
-fn find_descendant_pids(parent_pid: u32) -> Vec<u32> {
-    if !cfg!(target_os = "windows") || parent_pid == 0 {
+/// 一次性查询 Windows 进程父子关系快照表 `(parent_pid, child_pid)`。
+///
+/// 此前对进程树的每一层、每个节点各启动一次 PowerShell，单次终止可能拉起 5~10 个进程耗时数秒；
+/// 改为单次 PowerShell 采样全量 `(ParentProcessId, ProcessId)` 并在 Rust 内存内完成 BFS。
+fn snapshot_windows_process_edges() -> Vec<(u32, u32)> {
+    if !cfg!(target_os = "windows") {
         return vec![];
     }
-    let mut all = Vec::new();
-    let mut queue = vec![parent_pid];
-    // 限制递归深度防止无限循环
-    for _ in 0..10 {
+    let Ok(out) = std::process::Command::new("powershell")
+        .no_window()
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ParentProcessId) $($_.ProcessId)\" }",
+        ])
+        .output()
+    else {
+        return vec![];
+    };
+
+    parse_process_edges(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn parse_process_edges(stdout: &str) -> Vec<(u32, u32)> {
+    let mut edges = Vec::new();
+    for line in stdout.lines() {
+        let mut parts = line.split_whitespace();
+        let (Some(p), Some(c)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        if let (Ok(parent), Ok(child)) = (p.parse::<u32>(), c.parse::<u32>()) {
+            if child > 0 {
+                edges.push((parent, child));
+            }
+        }
+    }
+    edges
+}
+
+/// 纯内存 BFS：基于 `(parent_pid, child_pid)` 边表收集 `roots` 的全部子孙 PID（不含 `roots` 自身，防环且限深）。
+fn collect_descendants_from_edges(roots: &[u32], edges: &[(u32, u32)]) -> Vec<u32> {
+    let mut children_map: HashMap<u32, Vec<u32>> = HashMap::new();
+    for &(parent, child) in edges {
+        children_map.entry(parent).or_default().push(child);
+    }
+
+    let mut visited: std::collections::HashSet<u32> =
+        roots.iter().copied().filter(|&p| p > 0).collect();
+    let mut queue: Vec<u32> = visited.iter().copied().collect();
+    let mut descendants = Vec::new();
+
+    for _ in 0..16 {
         if queue.is_empty() {
             break;
         }
         let current = std::mem::take(&mut queue);
-        for pid in &current {
-            if let Ok(out) = std::process::Command::new("powershell")
-                .no_window()
-                .args([
-                    "-NoProfile",
-                    "-Command",
-                    &format!(
-                        "(Get-CimInstance Win32_Process -Filter \"ParentProcessId={}\").ProcessId",
-                        pid
-                    ),
-                ])
-                .output()
-            {
-                let text = String::from_utf8_lossy(&out.stdout);
-                for line in text.lines().map(|l| l.trim()) {
-                    if let Ok(c) = line.parse::<u32>() {
-                        if c > 0 && !all.contains(&c) {
-                            all.push(c);
-                            queue.push(c);
-                        }
+        for pid in current {
+            if let Some(children) = children_map.get(&pid) {
+                for &child in children {
+                    if child > 0 && visited.insert(child) {
+                        descendants.push(child);
+                        queue.push(child);
                     }
                 }
             }
         }
     }
-    all
+    descendants
+}
+
+/// 收集指定根 PID 列表的完整进程树（去重，后代在前、根在后，便于自底向上终止）。
+fn collect_process_tree_targets(seed_pids: &[u32]) -> Vec<u32> {
+    let mut roots = Vec::new();
+    for &pid in seed_pids {
+        if pid > 0 && !roots.contains(&pid) {
+            roots.push(pid);
+        }
+    }
+    if roots.is_empty() {
+        return vec![];
+    }
+    let edges = snapshot_windows_process_edges();
+    let descendants = collect_descendants_from_edges(&roots, &edges);
+
+    // 自底向上：最深后代先杀，最后杀根进程，防止父进程退出后子进程变为孤儿
+    let mut targets = Vec::with_capacity(descendants.len() + roots.len());
+    targets.extend(descendants.into_iter().rev());
+    targets.extend(roots);
+    targets
+}
+
+/// 阻塞式终止整批根 PID 及其所有子孙进程（供 `spawn_blocking` 与退出同步路径共用）。
+fn kill_pids_and_descendants(seed_pids: &[u32]) -> Vec<u32> {
+    let targets = collect_process_tree_targets(seed_pids);
+    for &pid in &targets {
+        kill_process_tree(pid);
+    }
+    targets
+}
+
+/// 查找单个根 PID 的全部后代 PID（单次 WMI 快照采样）。
+fn find_descendant_pids(parent_pid: u32) -> Vec<u32> {
+    if !cfg!(target_os = "windows") || parent_pid == 0 {
+        return vec![];
+    }
+    let edges = snapshot_windows_process_edges();
+    collect_descendants_from_edges(&[parent_pid], &edges)
+}
+
+/// 提取某任务记录的全部种子 PID（合并 `task.pid` 与 `task.pids`，覆盖启动前 1.5s 窗口）。
+fn extract_task_seed_pids(task: &BackgroundTask) -> Vec<u32> {
+    let mut seeds = Vec::new();
+    if let Some(root) = task.pid {
+        if root > 0 {
+            seeds.push(root);
+        }
+    }
+    for &pid in &task.pids {
+        if pid > 0 && !seeds.contains(&pid) {
+            seeds.push(pid);
+        }
+    }
+    seeds
 }
 
 /// 后台任务信息
@@ -108,6 +191,9 @@ pub struct Notification {
     pub task_type: Option<String>,
 }
 
+/// 受异步锁保护的后台子进程句柄别名（供管理器存储与无锁查杀摘取共用）。
+type ChildProcessHandle = Arc<tokio::sync::Mutex<Option<tokio::process::Child>>>;
+
 /// 后台任务管理器
 ///
 /// 维护所有运行中任务的状态和子进程句柄，用于状态查询与安全终止。
@@ -115,7 +201,7 @@ pub struct Notification {
 /// 不再经会话上下文注入（前端小字提醒用户，由用户决定是否让 Agent 排查）。
 pub struct BackgroundManager {
     pub tasks: HashMap<String, BackgroundTask>,
-    pub child_processes: HashMap<String, Arc<tokio::sync::Mutex<Option<tokio::process::Child>>>>,
+    pub child_processes: HashMap<String, ChildProcessHandle>,
 }
 
 impl Default for BackgroundManager {
@@ -132,62 +218,35 @@ impl BackgroundManager {
         }
     }
 
-    /// 终止单个后台任务进程（内部方法）
-    async fn kill_inner(&mut self, task_id: &str) {
-        // 优先通过 task.pids（完整进程树）终止
-        let pids: Vec<u32> = self
-            .tasks
-            .get(task_id)
-            .map(|t| t.pids.clone())
-            .unwrap_or_default();
+    /// 摘取全部运行中任务的终止目标并标记为 `killed`（仅修改内存态，绝不在锁内做同步进程查杀）。
+    fn detach_all_running_for_kill(&mut self) -> (usize, Vec<u32>, Vec<ChildProcessHandle>) {
+        let mut count = 0usize;
+        let mut seed_pids = Vec::new();
+        let mut children = Vec::new();
 
-        // 递归查找所有存活后代一并终止
-        let mut all_targets: Vec<u32> = pids.clone();
-        for pid in &pids {
-            for d in find_descendant_pids(*pid) {
-                if !all_targets.contains(&d) {
-                    all_targets.push(d);
-                }
-            }
-        }
-
-        // 自底向上杀：先杀后代再杀根
-        for pid in all_targets.iter() {
-            kill_process_tree(*pid);
-        }
-
-        // 最后尝试通过 child 句柄终止
-        if let Some(child_arc) = self.child_processes.remove(task_id) {
-            if let Ok(mut guard) = child_arc.try_lock() {
-                if let Some(ref mut child) = *guard {
-                    let _ = child.start_kill();
-                }
-            }
-        }
-
-        if let Some(task) = self.tasks.get_mut(task_id) {
-            if task.status == "running" {
-                task.status = "killed".to_string();
-            }
-        }
-        println!(
-            "[BACKGROUND] Killed task {} (pids: {:?})",
-            task_id, all_targets
-        );
-    }
-
-    /// 终止所有运行中的后台任务进程（撤回前调用，释放文件锁）
-    pub async fn kill_all(&mut self) {
-        let ids: Vec<String> = self
+        let running_ids: Vec<String> = self
             .tasks
             .iter()
             .filter(|(_, t)| t.status == "running")
             .map(|(id, _)| id.clone())
             .collect();
-        for id in &ids {
-            self.kill_inner(id).await;
+
+        for id in running_ids {
+            count += 1;
+            if let Some(task) = self.tasks.get_mut(&id) {
+                for pid in extract_task_seed_pids(task) {
+                    if !seed_pids.contains(&pid) {
+                        seed_pids.push(pid);
+                    }
+                }
+                task.status = "killed".to_string();
+            }
+            if let Some(child_arc) = self.child_processes.remove(&id) {
+                children.push(child_arc);
+            }
         }
-        println!("[BACKGROUND] Killed {} running tasks", ids.len());
+
+        (count, seed_pids, children)
     }
 
     /// 从命令字符串中检测服务端口和任务类型
@@ -495,12 +554,15 @@ impl BackgroundManager {
             // 此时 stdout/stderr 已在后台读取，不会阻塞进程
             tokio::time::sleep(Duration::from_millis(1500)).await;
             if let Some(root_pid) = child_pid {
-                let descendants = find_descendant_pids(root_pid);
+                let descendants =
+                    tokio::task::spawn_blocking(move || find_descendant_pids(root_pid))
+                        .await
+                        .unwrap_or_default();
                 let mut all_pids = vec![root_pid];
                 all_pids.extend(descendants);
                 let mut bg = state_clone.lock().await;
                 if let Some(task) = bg.tasks.get_mut(&task_id_async) {
-                    task.pids = all_pids.clone();
+                    task.pids = all_pids;
                 }
             }
 
@@ -556,14 +618,16 @@ impl BackgroundManager {
             if let Some(st) = app_handle.try_state::<BackgroundState>() {
                 let mut bg = st.0.lock().await;
                 if let Some(task) = bg.tasks.get_mut(&task_id_async) {
-                    task.status = status.to_string();
-                    task.result = Some(notif.result.clone());
-                    // 用户主动 kill 的任务不算失败（他自己停的），不发失败提醒
+                    // 先检查是否已被用户主动 kill，再决定是否覆盖状态（此前先覆盖再判断导致永远为 false）
                     was_killed = task.status == "killed";
+                    if !was_killed {
+                        task.status = status.to_string();
+                    }
+                    task.result = Some(notif.result.clone());
+                } else {
+                    // 记录已被 `kill_task` 移除也属于用户主动终止，不触发失败提醒
+                    was_killed = true;
                 }
-                // 不删 child_processes：服务类后台任务（npm run dev 等）的
-                // 子进程（node/nodemon）会随 PowerShell 退出而 orphan，
-                // handle 是最后能杀进程树的手段，保留待用户主动 dismiss/kill
             }
 
             // 失败小字提醒：任务以 error 结束（且不是用户主动 kill）时，
@@ -687,12 +751,32 @@ impl BackgroundManager {
         }
     }
 
-    /// 终止所有运行中的后台任务（撤回文件前调用，释放文件锁）
+    /// 终止所有运行中的后台任务（撤回文件前调用，释放文件锁）。
+    ///
+    /// 先持短锁摘取目标 PID 与子进程句柄后立即释放锁，再在 `spawn_blocking` 中批量查杀，
+    /// 避免在持有 `BackgroundState` 锁或 Tokio worker 上同步阻塞。
     pub async fn kill_all_background(app: &tauri::AppHandle) {
-        if let Some(state) = app.try_state::<BackgroundState>() {
+        let Some(state) = app.try_state::<BackgroundState>() else {
+            return;
+        };
+        let (count, seed_pids, children) = {
             let mut bg = state.0.lock().await;
-            bg.kill_all().await;
+            bg.detach_all_running_for_kill()
+        };
+
+        for child_arc in children {
+            if let Ok(mut guard) = child_arc.try_lock() {
+                if let Some(ref mut child) = *guard {
+                    let _ = child.start_kill();
+                }
+            }
         }
+
+        if !seed_pids.is_empty() {
+            let _ =
+                tokio::task::spawn_blocking(move || kill_pids_and_descendants(&seed_pids)).await;
+        }
+        println!("[BACKGROUND] Killed {} running tasks", count);
     }
 
     /// 移除单个后台任务（仅清理记录，不杀进程）
@@ -708,23 +792,22 @@ impl BackgroundManager {
 
     /// 同步杀所有运行中任务的进程树（用于退出时清理，不依赖 tokio runtime）
     pub fn kill_all_process_tree(&mut self) {
-        for (task_id, task) in &self.tasks {
-            if task.status != "running" {
-                continue;
-            }
-            // 通过存储的完整 PID 列表终止
-            let mut all_targets: Vec<u32> = task.pids.clone();
-            for pid in &task.pids {
-                for d in find_descendant_pids(*pid) {
-                    if !all_targets.contains(&d) {
-                        all_targets.push(d);
+        let mut all_seeds = Vec::new();
+        let running_ids: Vec<String> = self
+            .tasks
+            .iter()
+            .filter(|(_, task)| task.status == "running")
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for task_id in &running_ids {
+            if let Some(task) = self.tasks.get(task_id) {
+                for pid in extract_task_seed_pids(task) {
+                    if !all_seeds.contains(&pid) {
+                        all_seeds.push(pid);
                     }
                 }
             }
-            for pid in &all_targets {
-                kill_process_tree(*pid);
-            }
-            // 再通过 child 句柄尝试
             if let Some(child_arc) = self.child_processes.remove(task_id) {
                 if let Ok(mut guard) = child_arc.try_lock() {
                     if let Some(ref mut child) = *guard {
@@ -733,52 +816,53 @@ impl BackgroundManager {
                 }
             }
         }
+        if !all_seeds.is_empty() {
+            let _ = kill_pids_and_descendants(&all_seeds);
+        }
         self.tasks.clear();
         self.child_processes.clear();
     }
 
-    /// 终止并移除单个后台任务（杀进程 + 清理记录）
+    /// 终止并移除单个后台任务（短锁摘取目标 + 锁外 `spawn_blocking` 终止整棵进程树）
     pub async fn kill_task(app: &tauri::AppHandle, task_id: &str) -> bool {
-        if let Some(state) = app.try_state::<BackgroundState>() {
+        let Some(state) = app.try_state::<BackgroundState>() else {
+            return false;
+        };
+
+        let (seed_pids, child_arc) = {
             let mut bg = state.0.lock().await;
-
-            // 收集全部待杀 PID：从 task.pids + 递归查找存活后代
-            let mut all_targets: Vec<u32> = Vec::new();
-            if let Some(task) = bg.tasks.get(task_id) {
-                all_targets.extend(&task.pids);
-                for pid in &task.pids {
-                    for d in find_descendant_pids(*pid) {
-                        if !all_targets.contains(&d) {
-                            all_targets.push(d);
-                        }
-                    }
-                }
-            }
-
-            // 自底向上杀干净整个进程树
-            for pid in &all_targets {
-                kill_process_tree(*pid);
-            }
-
-            // 再通过 child 句柄兜底
-            if let Some(child_arc) = bg.child_processes.remove(task_id) {
-                if let Ok(mut guard) = child_arc.try_lock() {
-                    if let Some(ref mut child) = *guard {
-                        let _ = child.start_kill();
-                    }
-                }
-            }
-
-            let killed = !all_targets.is_empty();
+            let seeds = bg
+                .tasks
+                .get(task_id)
+                .map(extract_task_seed_pids)
+                .unwrap_or_default();
+            let child = bg.child_processes.remove(task_id);
             bg.remove_task(task_id);
-            println!(
-                "[BACKGROUND] Killed task {} (pids: {:?}, effective: {})",
-                task_id, all_targets, killed
-            );
-            killed
-        } else {
-            false
+            (seeds, child)
+        };
+
+        if let Some(child_arc) = child_arc {
+            if let Ok(mut guard) = child_arc.try_lock() {
+                if let Some(ref mut child) = *guard {
+                    let _ = child.start_kill();
+                }
+            }
         }
+
+        let all_targets = if seed_pids.is_empty() {
+            vec![]
+        } else {
+            tokio::task::spawn_blocking(move || kill_pids_and_descendants(&seed_pids))
+                .await
+                .unwrap_or_default()
+        };
+
+        let killed = !all_targets.is_empty();
+        println!(
+            "[BACKGROUND] Killed task {} (pids: {:?}, effective: {})",
+            task_id, all_targets, killed
+        );
+        killed
     }
 
     /// 清理指定会话的非运行中任务
@@ -814,16 +898,50 @@ impl Default for CompactingState {
 
 impl CompactingState {
     pub fn is_compacting(&self, session_id: &str) -> bool {
-        self.0.lock().unwrap().contains(session_id)
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(session_id)
     }
 
     /// 原子更新单会话压缩状态；开始时返回 false 表示已有压缩任务占用。
     pub fn set_compacting(&self, session_id: &str, active: bool) -> bool {
-        let mut set = self.0.lock().unwrap();
+        let mut set = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if active {
             set.insert(session_id.to_string())
         } else {
             set.remove(session_id)
         }
+    }
+}
+
+#[cfg(test)]
+mod process_tree_tests {
+    use super::*;
+
+    #[test]
+    fn parses_parent_child_edges_and_skips_malformed_lines() {
+        let sample = "100 200\n  200   301 \nbad line\n200 0\n301 401\n";
+        assert_eq!(
+            parse_process_edges(sample),
+            vec![(100, 200), (200, 301), (301, 401)]
+        );
+    }
+
+    #[test]
+    fn collects_multilevel_descendants_and_handles_cycles() {
+        let edges = vec![
+            (100, 200),
+            (100, 201),
+            (200, 300),
+            (300, 100), // 构造环路验证不死循环
+            (999, 888), // 无关进程树不应被误伤
+        ];
+        let mut descendants = collect_descendants_from_edges(&[100], &edges);
+        descendants.sort_unstable();
+        assert_eq!(descendants, vec![200, 201, 300]);
     }
 }

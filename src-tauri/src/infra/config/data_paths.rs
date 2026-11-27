@@ -45,6 +45,11 @@ pub fn config_path() -> PathBuf {
     global_dir().join(constants::FILE_CONFIG)
 }
 
+/// 应用本地配置文件路径（`data/app-config.json`，存窗口状态、UI 偏好、技能/工具开关与 Shell 方言）
+pub fn app_config_path() -> PathBuf {
+    data_root().join("app-config.json")
+}
+
 pub fn sqlite_db_path() -> PathBuf {
     data_root().join("jarvis.sqlite3")
 }

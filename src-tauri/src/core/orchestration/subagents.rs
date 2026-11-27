@@ -192,7 +192,7 @@ impl SubAgentMonitor {
     }
 
     pub fn list_trace_runs(session_id: &str) -> Result<Vec<SubAgentTraceRunSummary>, String> {
-        crate::infra::db::with_connection(|conn| {
+        crate::infra::db::with_read_connection(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT r.run_id, r.session_id, r.parent_run_id, r.label, r.started_at,
@@ -274,7 +274,7 @@ impl SubAgentMonitor {
     }
 
     pub fn list_trace_events(run_id: &str) -> Result<Vec<SubAgentTraceEvent>, String> {
-        crate::infra::db::with_connection(|conn| {
+        crate::infra::db::with_read_connection(|conn| {
             let mut stmt = conn.prepare("SELECT event_id, run_id, session_id, loop_index, event_type, payload_json, model, input_tokens, output_tokens, timestamp FROM subagent_trace_events WHERE run_id=?1 ORDER BY loop_index, timestamp").map_err(|e| e.to_string())?;
             let rows = stmt
                 .query_map([run_id], |row| {

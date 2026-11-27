@@ -71,6 +71,19 @@ impl ApprovalMode {
             _ => ApprovalMode::RequestApproval,
         }
     }
+
+    /// 该权限档位是否要求会话必须绑定项目目录（用于界定自动放行范围）。
+    pub fn requires_project(&self) -> bool {
+        *self == ApprovalMode::FullApprove
+    }
+}
+
+/// 「绑定项目」要求的**唯一口径**：哪些档位必须挂在项目下才能生效。
+///
+/// 设置路径（`command::permission::set_session_approval_mode`）与会话恢复降级路径
+/// （`SessionManager::get_or_create`）共用此函数，避免两处口径漂移。
+pub fn mode_requires_project(mode: &str) -> bool {
+    ApprovalMode::from_str(mode).requires_project()
 }
 
 /// 工具归类。判定规则按这个分类走，而不是按工具名散落判断。

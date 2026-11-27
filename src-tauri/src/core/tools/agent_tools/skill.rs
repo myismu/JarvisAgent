@@ -16,9 +16,9 @@ pub async fn load_skill(
     session_id: &str,
 ) -> framework::ToolCallResult {
     let skill_name = input["name"].as_str().unwrap_or("");
-    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
+    if let Some(manager) = app.try_state::<crate::core::runtime::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
-        let scope = crate::infra::state::state::active_run_scope_key(app, session_id).await;
+        let scope = crate::core::runtime::active_run_scope_key(app, session_id).await;
         let key = format!("{}:{}", scope, skill_name.to_ascii_lowercase());
         let mut cache = ctx.dedupe_cache.lock().await;
         let state = cache.entry("skill".to_string()).or_default();
@@ -31,7 +31,7 @@ pub async fn load_skill(
         }
         state.insert(
             key,
-            crate::infra::state::state::ToolDedupeCacheEntry {
+            crate::core::runtime::ToolDedupeCacheEntry {
                 display: skill_name.to_string(),
                 suppressed_count: 0,
                 running: false,
@@ -39,7 +39,7 @@ pub async fn load_skill(
         );
     }
     let skills = load_all_skills();
-    let activations = crate::command::app_config::get_all_skill_activations();
+    let activations = crate::infra::config::app_config::get_all_skill_activations();
     match skills.iter().find(|s| s.name == skill_name) {
         Some(skill) => {
             let active = activations.get(&skill.name).copied().unwrap_or(true);

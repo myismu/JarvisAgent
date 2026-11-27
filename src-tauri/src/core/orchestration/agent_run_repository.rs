@@ -78,7 +78,7 @@ pub fn upsert_run(run: &AgentRun) -> Result<(), String> {
 }
 
 pub fn list_runs(session_id: Option<&str>) -> Result<Vec<AgentRun>, String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         let sql = if session_id.is_some() {
             format!(
                 "SELECT {} FROM agent_runs WHERE session_id = ?1 ORDER BY started_at",
@@ -112,7 +112,7 @@ pub fn list_runs_by_message_id(message_id: &str) -> Result<Vec<AgentRun>, String
     if message_id.is_empty() {
         return Ok(Vec::new());
     }
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {} FROM agent_runs WHERE message_id = ?1 ORDER BY started_at",
@@ -129,7 +129,7 @@ pub fn list_runs_by_message_id(message_id: &str) -> Result<Vec<AgentRun>, String
 }
 
 pub fn load_run(run_id: &str) -> Result<Option<AgentRun>, String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         conn.query_row(
             &format!("SELECT {} FROM agent_runs WHERE run_id = ?1", RUN_COLUMNS),
             [run_id],
@@ -145,7 +145,7 @@ pub fn find_by_message_id(message_id: &str) -> Result<Option<AgentRun>, String> 
     if message_id.is_empty() {
         return Ok(None);
     }
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         conn.query_row(
             &format!(
                 "SELECT {} FROM agent_runs WHERE message_id = ?1 ORDER BY started_at DESC LIMIT 1",
@@ -365,7 +365,7 @@ const LOOP_EVENT_COLUMNS: &str = "event_id, run_id, session_id, loop_index, resp
 
 /// ⚠️ `ORDER BY loop_index` 必须显式写：不依赖 SQLite 的插入顺序。
 pub fn load_loop_events(run_id: &str) -> Result<Vec<AgentRunLoopEvent>, String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {} FROM agent_run_events WHERE run_id = ?1 ORDER BY loop_index",

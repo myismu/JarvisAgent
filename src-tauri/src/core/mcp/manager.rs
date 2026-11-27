@@ -21,6 +21,7 @@ use crate::core::mcp::config::{
     McpServerConfig, McpServersFile, McpToolHints, McpTransportKind,
 };
 use crate::core::mcp::naming::{validate_server_name, McpToolNameMap};
+pub use crate::infra::types::events::McpServerStatus;
 use crate::infra::types::events::McpServerStatusEvent;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -30,25 +31,6 @@ use tauri::Emitter;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
-
-/// MCP 服务运行状态
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(rename_all = "snake_case")]
-pub enum McpServerStatus {
-    /// 已停用（`enabled = false`）
-    Disabled,
-    /// 待机（已启用但尚未启动，懒启动默认态，零进程开销）
-    Idle,
-    /// 正在启动并握手
-    Starting,
-    /// 已就绪，可正常调用
-    Ready,
-    /// 启动失败或进程意外退出
-    Failed,
-    /// 已主动停止
-    Stopped,
-}
 
 /// 实例索引复合键（预留二期会话级隔离）
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

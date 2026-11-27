@@ -97,13 +97,12 @@ pub async fn read_mcp_resource(
         return ToolCallResult::error("MCP 管理器未初始化。".to_string());
     };
 
-    let cancel_token =
-        if let Some(sm) = app.try_state::<crate::infra::state::state::SessionManager>() {
-            let ctx = sm.get_or_create(session_id).await;
-            ctx.current_cancel_token()
-        } else {
-            None
-        };
+    let cancel_token = if let Some(sm) = app.try_state::<crate::core::runtime::SessionManager>() {
+        let ctx = sm.get_or_create(session_id).await;
+        ctx.current_cancel_token()
+    } else {
+        None
+    };
 
     match state
         .0

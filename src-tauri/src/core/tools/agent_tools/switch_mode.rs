@@ -14,7 +14,7 @@ pub async fn switch_work_mode(
     input: &serde_json::Value,
     session_id: &str,
 ) -> framework::ToolCallResult {
-    let session_manager = app.state::<crate::infra::state::state::SessionManager>();
+    let session_manager = app.state::<crate::core::runtime::SessionManager>();
     let ctx = session_manager.get_or_create(session_id).await;
     let current_mode = ctx.agent_work_mode.lock().await.clone();
     let target_mode = input["mode"].as_str().unwrap_or("edit").to_string();

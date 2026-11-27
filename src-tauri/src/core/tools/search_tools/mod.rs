@@ -75,7 +75,7 @@ const SKIP_DIRS: &[&str] = &[
 ];
 
 async fn get_workspace(app: &tauri::AppHandle, session_id: &str) -> Option<PathBuf> {
-    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
+    if let Some(manager) = app.try_state::<crate::core::runtime::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         return ctx.workspace.lock().await.clone();
     }

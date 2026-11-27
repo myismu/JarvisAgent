@@ -64,7 +64,7 @@ pub async fn view_session_image(
         Err(err) => return ToolCallResult::error(format!("读取会话图片失败: {}", err)),
     };
 
-    if let Some(sm) = app.try_state::<crate::infra::state::state::SessionManager>() {
+    if let Some(sm) = app.try_state::<crate::core::runtime::SessionManager>() {
         let ctx = sm.get_or_create(session_id).await;
         ctx.pending_tool_images
             .lock()

@@ -9,7 +9,7 @@
 
 use crate::core::orchestration::multi_agent::{Conflict, ConflictResolution, MergeResult};
 use crate::core::rollback::Snapshot;
-use crate::infra::state::state::SnapshotRegistry;
+use crate::core::runtime::SnapshotRegistry;
 use std::collections::HashMap as StdHashMap;
 
 /// 预览两个分支的合并结果

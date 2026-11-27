@@ -21,7 +21,7 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
-use crate::infra::state::state::{SessionAllowance, SessionContext};
+use crate::core::runtime::{SessionAllowance, SessionContext};
 
 /// 单条落盘授权（比内存结构多来源信息，供管理面板展示）
 #[derive(Serialize, Deserialize, Clone)]

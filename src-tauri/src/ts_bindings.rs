@@ -1,8 +1,7 @@
-//! # ts_bindings.rs — Rust → TypeScript 跨端类型契约守卫（全量覆盖 115 个 Tauri 命令）
+//! # ts_bindings.rs — Rust → TypeScript 跨端类型契约守卫（覆盖全部 133 个 Tauri 命令与 28 类推送事件）
 //!
-//! 职责：将全部 115 个 Tauri 命令与核心事件涉及的跨端 Rust 结构体（90 个类型）
-//! 集中导出为前端 `src/types/generated/contracts.ts`，并在 `cargo test` 中校验
-//! 磁盘文件与 Rust 定义逐字节一致。
+//! 职责：将全部 Tauri 命令与核心事件涉及的跨端 Rust 结构体集中导出为前端
+//! `src/types/generated/contracts.ts`，并在 `cargo test` 中校验磁盘文件与 Rust 定义逐字节一致。
 //!
 //! ## 工作方式
 //! - **平时（CI / 本地 `cargo test`）**：纯只读比对。若 Rust 改了字段却忘同步 TS，测试直接红灯拦截。
@@ -10,14 +9,13 @@
 //!   `UPDATE_TS_BINDINGS=1 cargo test ts_contracts_are_up_to_date`
 //!   （PowerShell：`$env:UPDATE_TS_BINDINGS="1"; cargo test ts_contracts_are_up_to_date`）
 //!
-//! ## 为什么集中生成单文件而不是散落多文件
-//! 避免多个生成文件之间产生交叉相对导入；前端只需从 `@/types/generated/contracts`
-//! 统一引入，所有导出类型在同一文件内自然互相引用。
+//! ## 为什么放在顶层 crate 根而非 `infra/`
+//! 契约守卫需要同时引用 `infra`、`core`、`command` 三层的 DTO，放在顶层 `#[cfg(test)]`
+//! 模块可确保 `infra/` 保持严格单向依赖，不反向引用上层模块。
 
 use std::path::PathBuf;
 use ts_rs::TS;
 
-use crate::command::app_config::{CustomWindowState, UiPreferences};
 use crate::command::checkpoint::{
     Branch as CheckpointBranch, BranchInfo, Checkpoint, CheckpointTree, FileOperation, OpType,
     RollbackPreviewResult, RollbackRecallResult,
@@ -64,9 +62,11 @@ use crate::core::session::{
     SessionUsageView, UsageBreakdown, UsageSource, UsageSourceBreakdown, UsageSourceView,
 };
 use crate::infra::background::{BackgroundTask, Notification as BackgroundTaskNotification};
+use crate::infra::config::app_config::{CustomWindowState, UiPreferences};
 use crate::infra::config::config::{AgentConfig, AppConfig, ModelProfile};
 use crate::infra::llm::registry::{ModelCapabilities, ModelRegistryEntry};
 use crate::infra::shell_dialect::{ShellMode, ShellResolution, ShellSettings};
+use crate::infra::types::error::{CommandError, ErrorCode};
 use crate::infra::types::events::{
     AgentReadOnlyChangedEvent, AgentStepEvent, AgentWorkModeChangedEvent, ApprovalModeChangedEvent,
     BackgroundFailedEvent, BgCompactingChangedEvent, ChatContentEvent, ChatStreamEvent,
@@ -103,7 +103,7 @@ fn render_contracts_ts() -> String {
         ShellMode::decl(),
         ShellSettings::decl(),
         ShellResolution::decl(),
-        // 配置、窗口状态与 UI 偏好契约（infra/config & command/app_config & command/config）
+        // 配置、窗口状态与 UI 偏好契约（infra/config & command/config）
         AgentConfig::decl(),
         ModelProfile::decl(),
         AppConfig::decl(),
@@ -131,7 +131,7 @@ fn render_contracts_ts() -> String {
         CacheHitPoint::decl(),
         SessionContextSnapshot::decl(),
         InterruptKind::decl(),
-        // 历史消息与分页契约（command/history.rs）
+        // 历史消息与分页契约（core/session/history_view.rs & command/history.rs）
         HistoryTurnTokens::decl(),
         HistoryTextBlock::decl(),
         HistoryThinkingBlock::decl(),
@@ -162,7 +162,7 @@ fn render_contracts_ts() -> String {
         // 后台任务与通知契约（infra/background.rs）
         BackgroundTask::decl(),
         BackgroundTaskNotification::decl(),
-        // 检查点与回滚预览契约（command/checkpoint.rs）
+        // 检查点与回滚预览契约（core/rollback/checkpoint_service.rs & command/checkpoint.rs）
         OpType::decl(),
         FileOperation::decl(),
         Checkpoint::decl(),
@@ -194,7 +194,7 @@ fn render_contracts_ts() -> String {
         ConflictResolution::decl(),
         Conflict::decl(),
         MergeResult::decl(),
-        // 后端推送事件契约（infra/types/events.rs，覆盖全部 25 类动态事件）
+        // 后端推送事件契约（infra/types/events.rs，覆盖全部 28 类动态事件）
         ChatTurnStartEvent::decl(),
         ChatTurnEndEvent::decl(),
         ChatContentEvent::decl(),
@@ -243,6 +243,9 @@ fn render_contracts_ts() -> String {
         McpPromptRenderResult::decl(),
         McpServerStatusEvent::decl(),
         ResolveUserQuestionResult::decl(),
+        // 统一跨端命令错误契约（infra/types/error.rs）
+        ErrorCode::decl(),
+        CommandError::decl(),
     ];
 
     let mut out = String::from(

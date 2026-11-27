@@ -7,12 +7,12 @@
 //!
 //! DeepSeek 模型的 reasoning_content 字段特殊处理也在此模块。
 
-use crate::core::session;
 use crate::infra::types::models::{
     Content, ContentBlock, Message, OpenAIContentPart, OpenAIFunctionCall,
     OpenAIFunctionDefinition, OpenAIImageUrl, OpenAIMessage, OpenAITool, OpenAIToolCall,
     OpenAIUserContent,
 };
+use base64::Engine;
 
 /// 规范化 JSON 字符串中的控制字符（换行、制表符等）
 fn normalize_json_string_control_chars(raw: &str) -> String {
@@ -465,7 +465,13 @@ pub fn translate_messages_to_openai_with_reasoning_backfill(
                                 let data = if !source.data.is_empty() {
                                     source.data.clone()
                                 } else if let Some(ref fp) = source.file_path {
-                                    session::load_image_data(fp).unwrap_or_default()
+                                    crate::infra::db::load_attachment_bytes(fp)
+                                        .ok()
+                                        .flatten()
+                                        .map(|(_, bytes)| {
+                                            base64::engine::general_purpose::STANDARD.encode(bytes)
+                                        })
+                                        .unwrap_or_default()
                                 } else {
                                     String::new()
                                 };

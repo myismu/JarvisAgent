@@ -31,7 +31,7 @@
 
 use super::permission::{PermissionDecision, PermissionKind};
 use super::policy::{self, ApprovalMode, JudgementInput, Outcome, ToolClass};
-use crate::infra::state::state::{SessionAllowance, SessionContext};
+use crate::core::runtime::{SessionAllowance, SessionContext};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use tauri::{Emitter, Manager};
@@ -1129,7 +1129,7 @@ pub async fn grant_session_allowance(
     scope: &str,
     label: String,
 ) {
-    let manager = app.state::<crate::infra::state::state::SessionManager>();
+    let manager = app.state::<crate::core::runtime::SessionManager>();
     let ctx = manager.get_or_create(session_id).await;
 
     // 同一个"类别 + 范围"只登记一次：用户可能在两张并排的卡上先后点了"本次会话都允许"，
@@ -1220,7 +1220,7 @@ pub async fn grant_session_allowance(
 ///
 /// 返回消化掉的条数（放行 + 拒绝），仅用于日志。
 pub async fn sweep_pending_on_mode_change(app: &tauri::AppHandle, session_id: &str) -> usize {
-    let manager = app.state::<crate::infra::state::state::SessionManager>();
+    let manager = app.state::<crate::core::runtime::SessionManager>();
     let ctx = manager.get_or_create(session_id).await;
     // 档位字符串 → 枚举走唯一入口 `ApprovalMode::from_str`（与 `enforce` 同源）
     let mode = ApprovalMode::from_str(ctx.approval_mode.lock().await.as_str());
@@ -1314,7 +1314,7 @@ pub async fn command_allowed(app: &tauri::AppHandle, session_id: &str, command: 
         .into_iter()
         .map(|(scope, _)| (ALLOWANCE_KIND_COMMAND.to_string(), scope))
         .collect();
-    let manager = app.state::<crate::infra::state::state::SessionManager>();
+    let manager = app.state::<crate::core::runtime::SessionManager>();
     let ctx = manager.get_or_create(session_id).await;
     ctx.allowance_covers_all(&keys).await
 }
@@ -1448,7 +1448,7 @@ pub async fn enforce(
     input: &Value,
     agent_type: &str,
 ) -> EnforceResult {
-    let manager = app.state::<crate::infra::state::state::SessionManager>();
+    let manager = app.state::<crate::core::runtime::SessionManager>();
     let ctx = manager.get_or_create(session_id).await;
     let mut facts = prepare_facts(&ctx, tool, input).await;
 

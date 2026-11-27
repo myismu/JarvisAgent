@@ -9,9 +9,11 @@
 //! - `session_manager`: 会话级快照生命周期管理（快照树、日志、沙箱、分支合并）
 //! - `store`: 文件系统持久化存储
 
+pub mod checkpoint_service;
 pub mod gc;
 pub mod journal;
 pub mod patch;
+pub mod patch_store;
 pub mod replay;
 pub mod rollback_logger;
 pub mod session_manager;

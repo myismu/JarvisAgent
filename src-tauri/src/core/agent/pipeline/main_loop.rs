@@ -81,13 +81,11 @@ impl PipelineState {
             let (req_json, req_api_format) = self.build_llm_request(history_snapshot);
 
             // 调试日志：logger 内部按 request_base + messages 增量落盘，
-            // 这里只打印一个体量（compact 序列化，不再为打印付出 pretty 的开销）
+            // 字节数改用零分配计数 Writer 统计，不再额外构建整份 JSON String。
             println!(
                 "[MAIN AGENT] loop {} request ({} bytes)",
                 self.total_loop_count + 1,
-                serde_json::to_string(&req_json)
-                    .map(|s| s.len())
-                    .unwrap_or(0)
+                debug_logger::json_serialized_len(&req_json)
             );
             debug_logger::debug_logger().log_request(
                 &self.sid,

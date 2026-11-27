@@ -359,7 +359,7 @@ pub async fn execute_tool_calls(
         // 从 session context 读取 dispatch_tool_call 写入的结构化标志
         let tool_flags = {
             use tauri::Manager;
-            let sm = app.state::<crate::infra::state::state::SessionManager>();
+            let sm = app.state::<crate::core::runtime::SessionManager>();
             let ctx = sm.get_or_create(sid).await;
             let mut flags = ctx.tool_result_flags.lock().await;
             flags.remove(&result.name).unwrap_or((false, false))

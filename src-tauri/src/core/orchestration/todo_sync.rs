@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use tauri::{Emitter, Manager};
 
-use crate::infra::state::state::{SessionContext, SessionManager};
+use crate::core::runtime::{SessionContext, SessionManager};
 use crate::infra::types::models::{Task, TaskStatus, TodoGroup, TodoItem, TodoStatus};
 
 /// 方案对应的 TODO 组 id。`plan:` 前缀避免与模型生成的 todo id 冲突。

@@ -1,4 +1,4 @@
-﻿//! # sandbox.rs — 多 Agent 沙箱会话 Tauri 命令
+//! # sandbox.rs — 多 Agent 沙箱会话 Tauri 命令
 //!
 //! 提供 Agent 沙箱的创建、查询、完成、放弃、发布和比较命令。
 //! 沙箱允许多个 Agent 在隔离环境中并行工作，互不干扰。
@@ -10,7 +10,7 @@
 //! - `sandbox_compare()`: 比较所有沙箱与主分支的差异
 
 use crate::core::orchestration::multi_agent::{AgentSandbox, SandboxComparison};
-use crate::infra::state::state::SnapshotRegistry;
+use crate::core::runtime::SnapshotRegistry;
 
 /// 为指定 Agent 创建沙箱环境
 #[tauri::command]

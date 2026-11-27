@@ -11,7 +11,7 @@
 //! - `save_shell_settings()`: 保存并返回展示状态
 //!
 //! ## Dependencies
-//! - Internal: `command::app_config`（持久化）、`infra::shell_dialect`（解析与缓存）
+//! - Internal: `infra::config::app_config`（持久化）、`infra::shell_dialect`（解析与缓存）
 
 use crate::infra::shell_dialect::{ShellResolution, ShellSettings};
 
@@ -19,7 +19,7 @@ use crate::infra::shell_dialect::{ShellResolution, ShellSettings};
 #[tauri::command]
 pub fn get_shell_settings() -> ShellResolution {
     crate::infra::shell_dialect::resolution_without_detection(
-        &crate::command::app_config::get_shell_settings(),
+        &crate::infra::config::app_config::get_shell_settings(),
     )
 }
 
@@ -27,7 +27,7 @@ pub fn get_shell_settings() -> ShellResolution {
 /// 因此这里只需要落盘并返回展示状态；手填路径无效会在 `error` 里提示。
 #[tauri::command]
 pub fn save_shell_settings(settings: ShellSettings) -> Result<ShellResolution, String> {
-    crate::command::app_config::save_shell_settings(settings.clone())?;
+    crate::infra::config::app_config::save_shell_settings(settings.clone())?;
     Ok(crate::infra::shell_dialect::resolution_without_detection(
         &settings,
     ))

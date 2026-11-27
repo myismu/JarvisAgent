@@ -14,7 +14,7 @@
 //! - Internal: `crate::infra::types::models::{TodoGroup, TodoItem}`
 //! - External: `serde`, `ts-rs`
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::infra::types::models::{TodoGroup, TodoItem};
@@ -469,12 +469,31 @@ pub struct ResolveUserQuestionResult {
 
 // ── MCP 扩展服务事件 ──
 
+/// MCP 服务运行状态
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum McpServerStatus {
+    /// 已停用（`enabled = false`）
+    Disabled,
+    /// 待机（已启用但尚未启动，懒启动默认态，零进程开销）
+    Idle,
+    /// 正在启动并握手
+    Starting,
+    /// 已就绪，可正常调用
+    Ready,
+    /// 启动失败或进程意外退出
+    Failed,
+    /// 已主动停止
+    Stopped,
+}
+
 /// `mcp-server-status`：MCP 服务运行状态或能力数量变化通知
 #[derive(Debug, Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerStatusEvent {
     pub server_name: String,
-    pub status: crate::core::mcp::McpServerStatus,
+    pub status: McpServerStatus,
     pub tool_count: usize,
     pub resource_count: usize,
     pub prompt_count: usize,

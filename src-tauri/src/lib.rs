@@ -8,13 +8,15 @@
 pub mod command;
 pub mod core;
 pub mod infra;
+#[cfg(test)]
+mod ts_bindings;
 
 use crate::core::mcp::{McpManager, McpManagerState};
 use crate::core::orchestration::subagents::SubAgentMonitorState;
 use crate::core::rollback::session_manager::SnapshotManagerRegistry;
+use crate::core::runtime::{SessionManager, SnapshotRegistry, WorkspaceState};
 use crate::infra::background::{BackgroundState, CompactingState};
 use crate::infra::config::config::{load_config, ConfigState};
-use crate::infra::state::state::{SessionManager, SnapshotRegistry, WorkspaceState};
 use tauri::Manager;
 
 use std::path::PathBuf;
@@ -132,7 +134,7 @@ pub fn run() {
 
     // Shell 方言必须在任何工具 schema 生成之前定下来：工具描述、只读判定、
     // 提示词注入都以它为唯一口径。这里读配置并写入进程级 OnceLock。
-    infra::shell_dialect::init(&command::app_config::get_shell_settings());
+    infra::shell_dialect::init(&infra::config::app_config::get_shell_settings());
 
     let startup_session_id = core::session::get_last_active_session_id()
         .filter(|id| core::session::get_session_meta(id).is_ok());
@@ -161,6 +163,28 @@ pub fn run() {
             let mgr = mcp_manager_setup.clone();
             tauri::async_runtime::spawn(async move {
                 mgr.initialize(handle).await;
+            });
+
+            // 后台定期回收空闲会话上下文与快照管理器缓存，防止长时运行内存累积
+            let handle_for_gc = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(10 * 60));
+                ticker.tick().await;
+                loop {
+                    ticker.tick().await;
+                    if let Some(session_mgr) = handle_for_gc.try_state::<SessionManager>() {
+                        let evicted = session_mgr.evict_default_idle_sessions().await;
+                        if evicted > 0 {
+                            println!("[System] 空闲会话缓存已回收 {} 个", evicted);
+                        }
+                    }
+                    if let Some(snap_reg) = handle_for_gc.try_state::<SnapshotRegistry>() {
+                        let evicted = snap_reg.0.read().await.evict_default_idle().await;
+                        if evicted > 0 {
+                            println!("[System] 空闲快照管理器缓存已回收 {} 个", evicted);
+                        }
+                    }
+                }
             });
             Ok(())
         })
@@ -217,13 +241,13 @@ pub fn run() {
             command::session::get_session_work_mode,
             command::session::list_sessions,
             command::session::create_session,
-            command::session::open_project,
-            command::session::list_projects,
-            command::session::archive_project,
+            command::project::open_project,
+            command::project::list_projects,
+            command::project::archive_project,
             command::session::restore_sessions,
             command::session::purge_sessions,
             command::session::count_deleted_sessions,
-            command::session::rename_project,
+            command::project::rename_project,
             command::session::switch_session,
             command::session::delete_session,
             command::session::list_deleted_sessions,
@@ -235,22 +259,22 @@ pub fn run() {
             command::session::get_session_usage_breakdown,
             command::session::get_session_usage,
             command::session::get_session_context_snapshot,
-            command::session::get_workspace_dir,
+            command::project::get_workspace_dir,
             command::session::list_plan_documents,
             command::session::list_agent_runs,
             command::session::list_agent_run_events,
             command::session::prepare_resume_agent_run,
             command::session::recover_interrupted_session_messages,
-            command::session::get_background_tasks,
-            command::session::dismiss_background_task,
-            command::session::kill_background_task,
-            command::session::clear_session_background_tasks,
-            command::session::get_subagent_runs,
-            command::session::list_subagents,
-            command::session::list_subagent_trace_runs,
-            command::session::list_subagent_trace_events,
-            command::session::cancel_subagent_run,
-            command::session::get_session_todos,
+            command::background::get_background_tasks,
+            command::background::dismiss_background_task,
+            command::background::kill_background_task,
+            command::background::clear_session_background_tasks,
+            command::background::get_subagent_runs,
+            command::background::list_subagents,
+            command::background::list_subagent_trace_runs,
+            command::background::list_subagent_trace_events,
+            command::background::cancel_subagent_run,
+            command::background::get_session_todos,
             command::session::compact_conversation,
             command::session::is_session_compacting,
             command::session::get_session_thinking,
@@ -343,10 +367,85 @@ pub fn run() {
                     tauri::async_runtime::block_on(mcp.0.shutdown_all());
                     println!("[System] 已清理所有 MCP 服务进程");
                 }
-                // 退出收尾：内存态会话落库 + 活跃 run 标记 Interrupted。
+                // 退出收尾：内存态会话落库 + 活跃 run 标记 Interrupted + 排空异步调试日志队列。
                 // 事件驱动检查点没有"进程退出"这一落库时机，此前直接关窗
                 // 会导致进度无痕丢失、run 永久停留 Running（三连 user 悬尾的根源之一）。
-                crate::command::session::finalize_active_runs_on_exit(handle);
+                crate::core::session::lifecycle::finalize_active_runs_on_exit(handle);
+                crate::infra::debug_logger::debug_logger().flush();
             }
         });
+}
+
+#[cfg(test)]
+mod architecture_guards {
+    //! 三层架构单向依赖守卫（`infra -> core -> command`）：
+    //! 防止后续迭代重新引入下层反向依赖上层的循环耦合。
+
+    use std::path::{Path, PathBuf};
+
+    fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        let entries = std::fs::read_dir(dir)
+            .unwrap_or_else(|e| panic!("读取目录 {} 失败: {}", dir.display(), e));
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_rs_files(&path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    fn find_forbidden_refs(root: &Path, forbidden: &[&str]) -> Vec<String> {
+        let mut files = Vec::new();
+        collect_rs_files(root, &mut files);
+        let mut violations = Vec::new();
+
+        for file in files {
+            let content = std::fs::read_to_string(&file)
+                .unwrap_or_else(|e| panic!("读取 {} 失败: {}", file.display(), e));
+            for (idx, line) in content.lines().enumerate() {
+                // 去掉单行注释（含 //! 与 ///），仅检查真实代码引用
+                let code = line.split("//").next().unwrap_or("");
+                for pattern in forbidden {
+                    if code.contains(pattern) {
+                        violations.push(format!(
+                            "{}:{}: 禁止引用 `{}` -> {}",
+                            file.display(),
+                            idx + 1,
+                            pattern,
+                            line.trim()
+                        ));
+                    }
+                }
+            }
+        }
+        violations
+    }
+
+    #[test]
+    fn infra_layer_never_depends_on_core_or_command() {
+        let infra_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("infra");
+        let violations = find_forbidden_refs(&infra_dir, &["crate::core", "crate::command"]);
+        assert!(
+            violations.is_empty(),
+            "检测到 infra 层反向依赖 core/command（违反三层单向边界）：\n{}",
+            violations.join("\n")
+        );
+    }
+
+    #[test]
+    fn core_layer_never_depends_on_command() {
+        let core_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("core");
+        let violations = find_forbidden_refs(&core_dir, &["crate::command"]);
+        assert!(
+            violations.is_empty(),
+            "检测到 core 层反向依赖 command（违反三层单向边界）：\n{}",
+            violations.join("\n")
+        );
+    }
 }

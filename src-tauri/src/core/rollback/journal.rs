@@ -83,6 +83,14 @@ impl Journal {
         })
     }
 
+    #[cfg(test)]
+    pub(super) fn new_for_test(session_id: &str) -> Self {
+        Self {
+            session_id: session_id.to_string(),
+            sequence: 0,
+        }
+    }
+
     pub fn append(&mut self, entry: &JournalEntry) -> Result<(), JournalError> {
         ensure_session_record(&self.session_id).map_err(JournalError::DbError)?;
         let json = serde_json::to_string(entry)?;

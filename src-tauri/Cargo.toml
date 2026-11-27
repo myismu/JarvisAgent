@@ -70,7 +70,7 @@ codegen-units = 1
 strip = true
 
 [lints.clippy]
-# infra/config/config.rs 与 infra/state/state.rs 历史模块布局，改名会大面积改动导入路径
+# infra/config/config.rs 历史模块布局，改名会大面积改动导入路径
 module_inception = "allow"
 
 

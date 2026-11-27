@@ -91,7 +91,7 @@ impl SnapshotStore {
     }
 
     pub fn load_tree(&self) -> Result<SnapshotTree, StoreError> {
-        let json = crate::infra::db::with_connection(|conn| {
+        let json = crate::infra::db::with_read_connection(|conn| {
             conn.query_row(
                 "SELECT tree_json FROM snapshot_trees WHERE session_id = ?1",
                 [self.session_id.as_str()],
@@ -125,7 +125,7 @@ pub fn save_content(session_id: &str, hash: &str, content: &str) -> Result<(), S
 }
 
 pub fn load_content(session_id: &str, hash: &str) -> Result<Option<String>, String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         conn.query_row(
             "SELECT content FROM snapshot_content WHERE session_id = ?1 AND content_hash = ?2",
             params![session_id, hash],

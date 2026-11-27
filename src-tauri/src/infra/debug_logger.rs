@@ -32,10 +32,68 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
+
+/// 有界异步写通道容量（洪峰背压保护：队列满时丢弃非关键调试日志而不阻塞 Agent 主循环）。
+const LOG_CHANNEL_CAPACITY: usize = 1024;
+
+/// 零堆分配字节计数 Writer：用于统计 `serde_json::Value` 序列化后的精确字节数，
+/// 消除主/子 Agent 热路径上仅为了打印字节数而构造整份巨型 JSON String 的冗余开销。
+struct ByteCounter(usize);
+
+impl Write for ByteCounter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// 精确计算 `serde_json::Value` 紧凑序列化后的 UTF-8 字节数（零 String 堆分配）。
+pub fn json_serialized_len(value: &serde_json::Value) -> usize {
+    let mut counter = ByteCounter(0);
+    if serde_json::to_writer(&mut counter, value).is_ok() {
+        counter.0
+    } else {
+        0
+    }
+}
+
+enum LogWriteCommand {
+    Line { path: PathBuf, line: String },
+    Flush(mpsc::Sender<()>),
+}
+
+fn spawn_log_writer() -> SyncSender<LogWriteCommand> {
+    let (tx, rx) = mpsc::sync_channel::<LogWriteCommand>(LOG_CHANNEL_CAPACITY);
+    let _ = std::thread::Builder::new()
+        .name("jarvis-debug-logger".to_string())
+        .spawn(move || {
+            while let Ok(cmd) = rx.recv() {
+                match cmd {
+                    LogWriteCommand::Line { path, line } => {
+                        if let Ok(mut file) =
+                            OpenOptions::new().create(true).append(true).open(&path)
+                        {
+                            let _ = writeln!(file, "{}", line);
+                        }
+                    }
+                    LogWriteCommand::Flush(ack) => {
+                        let _ = ack.send(());
+                    }
+                }
+            }
+        });
+    tx
+}
 
 // ───────────────────────── 事件结构 ─────────────────────────
 
@@ -324,6 +382,14 @@ pub struct DebugLogger {
     log_dir: PathBuf,
     policy: crate::infra::log_maintenance::LogPolicy,
     state: Mutex<LoggerState>,
+    writer_tx: SyncSender<LogWriteCommand>,
+    dropped_records: AtomicU64,
+}
+
+impl Drop for DebugLogger {
+    fn drop(&mut self) {
+        self.flush();
+    }
 }
 
 impl DebugLogger {
@@ -334,6 +400,8 @@ impl DebugLogger {
             log_dir,
             policy: crate::infra::log_maintenance::LogPolicy::from_env(),
             state: Mutex::new(LoggerState::default()),
+            writer_tx: spawn_log_writer(),
+            dropped_records: AtomicU64::new(0),
         }
     }
 
@@ -345,7 +413,23 @@ impl DebugLogger {
             log_dir,
             policy: crate::infra::log_maintenance::LogPolicy::default(),
             state: Mutex::new(LoggerState::default()),
+            writer_tx: spawn_log_writer(),
+            dropped_records: AtomicU64::new(0),
         }
+    }
+
+    /// 等待后台写线程排空当前已入队的全部日志（应用退出收尾与单测读盘前调用）。
+    pub fn flush(&self) {
+        let (ack_tx, ack_rx) = mpsc::channel();
+        if self.writer_tx.send(LogWriteCommand::Flush(ack_tx)).is_ok() {
+            let _ = ack_rx.recv_timeout(Duration::from_secs(2));
+        }
+    }
+
+    /// 返回因日志队列满而触发背压丢弃的记录数（供诊断监控）。
+    #[cfg(test)]
+    fn dropped_count(&self) -> u64 {
+        self.dropped_records.load(Ordering::Relaxed)
     }
 
     /// 本次写入应落在哪个分片文件（文件名，含分片序号）
@@ -365,13 +449,15 @@ impl DebugLogger {
         self.write_record_to(&filename, record);
     }
 
-    /// 写入指定分片文件（同一轮请求的多个事件必须落在同一个分片里）
+    /// 将序列化后的日志行非阻塞投递至有界后台写线程，避免主循环热路径同步打开磁盘文件。
     fn write_record_to(&self, filename: &std::ffi::OsStr, record: &impl Serialize) {
         let path = self.log_dir.join(filename);
-
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
-            if let Ok(line) = serde_json::to_string(record) {
-                let _ = writeln!(file, "{}", line);
+        if let Ok(line) = serde_json::to_string(record) {
+            if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) = self
+                .writer_tx
+                .try_send(LogWriteCommand::Line { path, line })
+            {
+                self.dropped_records.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -1099,6 +1185,9 @@ mod tests {
         logger.log_request(sid, "MAIN", 3, &req3);
 
         logger.log_session_summary(sid, 440, 24, "FINISH");
+        // 等待后台异步写线程排空队列后再校验落盘文件
+        logger.flush();
+        assert_eq!(logger.dropped_count(), 0);
 
         let events = read_events(&dir);
         let kinds: Vec<&str> = events
@@ -1169,5 +1258,18 @@ mod tests {
             !env_flag("JARVIS_LOG_REQUEST", "FULL"),
             "默认按增量记录请求"
         );
+    }
+
+    #[test]
+    fn json_serialized_len_matches_serde_to_string() {
+        let payload = json!({
+            "model": "claude-sonnet",
+            "messages": [
+                {"role": "user", "content": "中文和 \"转义\" 字符测试\n第二行"}
+            ],
+            "max_tokens": 4096
+        });
+        let expected = serde_json::to_string(&payload).unwrap().len();
+        assert_eq!(json_serialized_len(&payload), expected);
     }
 }

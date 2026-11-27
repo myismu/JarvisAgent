@@ -9,14 +9,14 @@
 //! - `commit_checkpoint_snapshot()`: 创建加速回放用检查点快照
 //!
 //! ## Dependencies
-//! - Internal: `crate::infra::state::state::SessionManager`, `crate::core::SnapshotRegistry`, `crate::core::rollback`
+//! - Internal: `crate::core::runtime::SessionManager`, `crate::core::SnapshotRegistry`, `crate::core::rollback`
 //! - External: `tauri`
 
 use tauri::{Emitter, Manager};
 
 use crate::core::rollback::Patch;
-use crate::infra::state::state::SnapshotRegistry;
-use crate::infra::state::state::{PendingSnapshotPatch, SessionManager};
+use crate::core::runtime::SnapshotRegistry;
+use crate::core::runtime::{PendingSnapshotPatch, SessionManager};
 use crate::infra::types::models::Message;
 
 /// 获取当前会话的工作目录沙箱
@@ -24,7 +24,7 @@ pub(super) async fn get_workspace(
     app: &tauri::AppHandle,
     session_id: &str,
 ) -> Option<std::path::PathBuf> {
-    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
+    if let Some(manager) = app.try_state::<crate::core::runtime::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         let ws = ctx.workspace.lock().await.clone();
         return ws;
@@ -102,7 +102,7 @@ fn latest_user_message_index(messages: &[Message]) -> Option<usize> {
 ///
 /// 撤回锚点必须用 ID，不能用下标：下标会被自动压缩/撤回改写，并被后续轮次复用。
 async fn active_user_message_id(app: &tauri::AppHandle, session_id: &str) -> Option<String> {
-    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
+    if let Some(manager) = app.try_state::<crate::core::runtime::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         let session = ctx.memory.lock().await;
         let index = latest_user_message_index(&session.messages)?;
@@ -161,7 +161,7 @@ async fn persist_pending_patch(
 }
 
 fn records_to_pending(
-    records: Vec<crate::infra::db::PendingSnapshotPatchRecord>,
+    records: Vec<crate::core::rollback::patch_store::PendingSnapshotPatchRecord>,
 ) -> Vec<PendingSnapshotPatch> {
     records
         .into_iter()
@@ -192,7 +192,7 @@ pub async fn has_pending_patches(app: &tauri::AppHandle, session_id: &str) -> bo
             return true;
         }
     }
-    crate::infra::db::list_agent_run_patches(session_id, None)
+    crate::core::rollback::patch_store::list_agent_run_patches(session_id, None)
         .map(|records| !records.is_empty())
         .unwrap_or(false)
 }
@@ -209,11 +209,14 @@ pub async fn commit_pending_snapshot(
     let pending = {
         let mut guard = ctx.pending_patches.lock().await;
         if guard.is_empty() {
-            let records = crate::infra::db::list_agent_run_patches(session_id, run_id.as_deref())
-                .unwrap_or_else(|err| {
-                    eprintln!("[Snapshot] 读取 pending patch 失败: {}", err);
-                    Vec::new()
-                });
+            let records = crate::core::rollback::patch_store::list_agent_run_patches(
+                session_id,
+                run_id.as_deref(),
+            )
+            .unwrap_or_else(|err| {
+                eprintln!("[Snapshot] 读取 pending patch 失败: {}", err);
+                Vec::new()
+            });
             records_to_pending(records)
         } else if let Some(run_id) = run_id.as_ref() {
             let (current_run, remaining): (Vec<_>, Vec<_>) =
@@ -268,9 +271,10 @@ pub async fn commit_pending_snapshot(
             {
                 Ok(snapshot) => {
                     let snapshot_id = snapshot.id.clone();
-                    if let Err(err) =
-                        crate::infra::db::delete_agent_run_patches(session_id, Some(&commit_run_id))
-                    {
+                    if let Err(err) = crate::core::rollback::patch_store::delete_agent_run_patches(
+                        session_id,
+                        Some(&commit_run_id),
+                    ) {
                         eprintln!("[Snapshot] 清理 pending patch 失败: {}", err);
                     }
                     let _ = app.emit(

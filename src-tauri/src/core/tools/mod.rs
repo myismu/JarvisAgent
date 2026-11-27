@@ -143,7 +143,7 @@ pub async fn tool_filter_for(
     app: &tauri::AppHandle,
     session_id: &str,
 ) -> framework::registry::ToolFilter {
-    match app.try_state::<crate::infra::state::state::SessionManager>() {
+    match app.try_state::<crate::core::runtime::SessionManager>() {
         Some(manager) => manager.get_or_create(session_id).await.tool_filter().await,
         // 没有 SessionManager（测试 / 启动极早期）：全部启用 ——
         // 开关是"少给几个工具"的偏好，不该在拿不到会话时把功能整个锁死。
@@ -174,7 +174,7 @@ pub async fn handle_tool_call(
         // 两条日志条目（一条带实际工具名，一条仅显示 ExecuteTool）。
         {
             use tauri::Manager;
-            let sm = app.state::<crate::infra::state::state::SessionManager>();
+            let sm = app.state::<crate::core::runtime::SessionManager>();
             let ctx = sm.get_or_create(session_id).await;
             let mut flags = ctx.tool_result_flags.lock().await;
             flags.insert(name.to_string(), (result.break_loop, result.is_error));
@@ -281,7 +281,7 @@ pub async fn handle_tool_call(
         // 将 break_loop/is_error 存入 session context，供 tools_runner 读取
         {
             use tauri::Manager;
-            let sm = app.state::<crate::infra::state::state::SessionManager>();
+            let sm = app.state::<crate::core::runtime::SessionManager>();
             let ctx = sm.get_or_create(session_id).await;
             let mut flags = ctx.tool_result_flags.lock().await;
             flags.insert(name.to_string(), (result.break_loop, result.is_error));
@@ -524,7 +524,7 @@ pub async fn dispatch_core_tool(
             // 用户点"停止生成"对调度器完全无效，调度会一直跑到所有子任务结束。
             // 令牌生命周期由管线管理，运行中必然存在；取不到时退回新令牌（无取消能力）。
             let cancel_token = {
-                let sm = app.state::<crate::infra::state::state::SessionManager>();
+                let sm = app.state::<crate::core::runtime::SessionManager>();
                 let ctx = sm.get_or_create(session_id).await;
                 ctx.current_cancel_token()
             }
@@ -646,7 +646,7 @@ pub async fn handle_tool_call_inner(
     // 将 break_loop/is_error 存入 session context，供 tools_runner 读取
     {
         use tauri::Manager;
-        let sm = app.state::<crate::infra::state::state::SessionManager>();
+        let sm = app.state::<crate::core::runtime::SessionManager>();
         let ctx = sm.get_or_create(session_id).await;
         let mut flags = ctx.tool_result_flags.lock().await;
         flags.insert(name.to_string(), (result.break_loop, result.is_error));

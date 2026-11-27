@@ -7,7 +7,7 @@
 //! - `ask_user()`: `AskUser` 工具主入口（复用 `WaitIntervalGuard` 计时 + `CancellationToken` 取消联动）
 //!
 //! ## Dependencies
-//! - Internal: `crate::core::tools::framework`, `crate::infra::state::state`, `crate::infra::types::events`
+//! - Internal: `crate::core::tools::framework`, `crate::core::runtime`, `crate::infra::types::events`
 //! - External: `serde_json`, `tauri`, `tokio`
 //!
 //! ## Constraints
@@ -19,11 +19,11 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tokio::sync::oneshot;
 
-use crate::core::tools::framework;
-use crate::core::tools::framework::permission::WaitIntervalGuard;
-use crate::infra::state::state::{
+use crate::core::runtime::{
     PendingUserQuestion, SessionContext, SessionManager, UserQuestionDecision,
 };
+use crate::core::tools::framework;
+use crate::core::tools::framework::permission::WaitIntervalGuard;
 use crate::infra::types::events::{
     UserQuestionAnswerItem, UserQuestionItem, UserQuestionOption, UserQuestionRequestEvent,
     UserQuestionResolvedEvent,

@@ -35,6 +35,8 @@
  * 事件监听与 store 写入都走那一层，避免各处各写一遍兜底逻辑。
  */
 import type {
+  ErrorCode,
+  CommandError,
   ProjectMeta,
   SessionMeta,
   BatchOpFailure,
@@ -160,12 +162,15 @@ import type {
   UserQuestionResolvedEvent,
   UserQuestionAnswerItem,
   ResolveUserQuestionResult,
+  McpServerStatusEvent,
 } from "./generated/contracts";
 
 export type UsageSourceBreakdown = UsageSourceView;
 export type SessionUsageBreakdown = SessionUsageBreakdownView;
 export type SessionUsageView = GeneratedSessionUsageView;
 export type {
+  ErrorCode,
+  CommandError,
   ProjectMeta,
   SessionMeta,
   BatchOpFailure,
@@ -288,6 +293,7 @@ export type {
   UserQuestionResolvedEvent,
   UserQuestionAnswerItem,
   ResolveUserQuestionResult,
+  McpServerStatusEvent,
 };
 
 /**

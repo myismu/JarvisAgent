@@ -23,6 +23,7 @@ mod pipeline;
 pub mod prompts;
 mod reflection;
 pub mod stream;
+pub mod subagent_runner;
 mod tools_runner;
 
 // 动态上下文组装（设置页「提示词」预览动态上下文时也要用，故公开）
@@ -44,7 +45,7 @@ pub async fn ask_jarvis(
     reflection_mode: Option<String>,
     display_msg: Option<String>,
     app: tauri::AppHandle,
-    session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
+    session_manager: tauri::State<'_, crate::core::runtime::SessionManager>,
     config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
 ) -> Result<JarvisResult, AgentError> {
     run_pipeline(
@@ -67,7 +68,7 @@ pub async fn resume_jarvis(
     session_id: String,
     reason: String,
     app: tauri::AppHandle,
-    session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
+    session_manager: tauri::State<'_, crate::core::runtime::SessionManager>,
     config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
 ) -> Result<JarvisResult, AgentError> {
     resume_pipeline(session_id, reason, app, session_manager, config_state).await

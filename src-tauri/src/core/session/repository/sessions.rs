@@ -89,7 +89,7 @@ pub(super) const SESSION_META_COLUMNS: &str =
      s.deleted_at, p.name";
 
 pub fn get_session_meta(id: &str) -> Result<SessionMeta, String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         let sql = format!(
             "SELECT {} FROM sessions s \
              LEFT JOIN projects p ON s.project_id = p.id \
@@ -113,7 +113,7 @@ pub fn get_session_meta(id: &str) -> Result<SessionMeta, String> {
 /// 需要"按工具/模型/E 筛选会话"时，工具名现在在 `resp_blocks` 的
 /// `ContentBlock::ToolUse` 里（`tool_results` 只有 id 与内容，没有名字）。
 pub fn list_sessions() -> Result<Vec<SessionMeta>, String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         let sql = format!(
             "SELECT {} FROM sessions s \
              LEFT JOIN projects p ON s.project_id = p.id \
@@ -231,7 +231,7 @@ pub fn restore_session(id: &str) -> Result<(), String> {
 /// 与 `list_sessions` 的唯一区别是过滤条件取反；列清单复用同一份
 /// [`SESSION_META_COLUMNS`]，所以不会出现"两条查询列不一致"的老问题。
 pub fn list_deleted_sessions() -> Result<Vec<SessionMeta>, String> {
-    crate::infra::db::with_connection(list_deleted_sessions_in)
+    crate::infra::db::with_read_connection(list_deleted_sessions_in)
 }
 
 /// [`list_deleted_sessions`] 的 connection 版（测试直接跑真实 SQL）。
@@ -496,7 +496,7 @@ pub(super) fn purge_sessions_in(
 
 /// 归档会话总数（归档页角标，也是「清空归档」的前置读数）。
 pub fn count_deleted_sessions() -> Result<usize, String> {
-    crate::infra::db::with_connection(count_deleted_sessions_in)
+    crate::infra::db::with_read_connection(count_deleted_sessions_in)
 }
 
 /// [`count_deleted_sessions`] 的 connection 版。
@@ -586,7 +586,7 @@ pub struct SessionRuntimePrefs {
 }
 
 pub fn get_session_runtime_prefs(id: &str) -> Result<SessionRuntimePrefs, String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         conn.query_row(
             "SELECT work_mode, approval_mode, agent_audience FROM sessions \
              WHERE id = ?1 AND deleted_at IS NULL",
@@ -636,7 +636,7 @@ pub fn update_session_agent_audience(id: &str, audience: &str) -> Result<(), Str
 }
 
 pub fn get_last_active_session_id() -> Option<String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         conn.query_row(
             "SELECT value FROM app_state WHERE key = 'last_active_session_id'",
             [],

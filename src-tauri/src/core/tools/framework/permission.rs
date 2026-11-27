@@ -24,7 +24,7 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tokio::sync::oneshot;
 
-use crate::infra::state::state::{SessionContext, SessionManager};
+use crate::core::runtime::{SessionContext, SessionManager};
 
 /// 权限请求来源：让前端能把"工具调用确认"和"循环续跑确认"区分开
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -291,7 +291,7 @@ pub async fn request_permission_with_origin(
         });
         perms.insert(
             id.clone(),
-            crate::infra::state::state::PendingPermission {
+            crate::core::runtime::PendingPermission {
                 created_at: std::time::Instant::now(),
                 message: message.to_string(),
                 kind,

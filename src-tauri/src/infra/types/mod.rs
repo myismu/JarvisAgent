@@ -7,5 +7,3 @@ pub mod constants;
 pub mod error;
 pub mod events;
 pub mod models;
-#[cfg(test)]
-mod ts_bindings;

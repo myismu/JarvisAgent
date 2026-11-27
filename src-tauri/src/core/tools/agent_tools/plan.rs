@@ -231,13 +231,13 @@ pub async fn propose_plan(
     }
 
     // 生成唯一 ID
-    let session_manager = app.state::<crate::infra::state::state::SessionManager>();
+    let session_manager = app.state::<crate::core::runtime::SessionManager>();
     let ctx = session_manager.get_or_create(session_id).await;
 
     let plan_fingerprint = format!(
         "{}:{}",
         title.trim().to_ascii_lowercase(),
-        crate::infra::state::state::stable_hash(&content)
+        crate::core::runtime::stable_hash(&content)
     );
 
     // 1. 先判重：完全相同内容 → 直接拒绝
@@ -286,7 +286,7 @@ pub async fn propose_plan(
         }
         pending.insert(
             plan_fingerprint.clone(),
-            crate::infra::state::state::PendingPlanCacheEntry {
+            crate::core::runtime::PendingPlanCacheEntry {
                 display: title.to_string(),
                 title: title.to_string(),
                 id: "pending".to_string(),
@@ -316,7 +316,7 @@ pub async fn propose_plan(
         perms.retain(|_, entry| now.duration_since(entry.created_at).as_secs() < 300);
         perms.insert(
             id.clone(),
-            crate::infra::state::state::PendingPermission {
+            crate::core::runtime::PendingPermission {
                 created_at: std::time::Instant::now(),
                 message: format!("方案审批: {}", title),
                 kind: crate::core::tools::framework::permission::PermissionKind::PlanApproval,

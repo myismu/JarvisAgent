@@ -1,0 +1,1743 @@
+//! # subagent_runner.rs — 子代理执行引擎
+//!
+//! 承载独立 Agent Loop（SSE 流式处理、并行工具执行、预算与空转保护），
+//! 统一复用 `infra::llm::request_builder::build_request_body`（协议适配）与
+//! `infra::llm::api_client::api_call_with_retry_subagent`（429 限流与 5xx/网络退避重试）。
+//!
+//! ## Key Exports
+//! - `run_subagent()`: 子代理执行引擎（支持只读/读写模式）
+//!
+//! ## Dependencies
+//! - Internal: `crate::core::orchestration::subagents`, `crate::core::tools`, `crate::infra::llm::{api_client, request_builder}`
+//! - External: `eventsource_stream`, `serde_json`, `tauri`, `tokio`
+//!
+//! ## Constraints
+//! - 子代理与主代理共用同一套请求构建、思考参数策略与重试退避阶梯
+//! - 子代理重试只记录后台日志，绝不向主聊天区广播 `agent-step` 重试提示
+
+use eventsource_stream::Eventsource;
+use tauri::{Emitter, Manager};
+
+use crate::core::agent::prompts::get_subagent_system_prompt;
+use crate::core::agent::{process_stream, StreamConfig};
+use crate::core::orchestration::subagents::{SubAgentMonitor, SubAgentPhase};
+use crate::core::runtime::{SessionManager, ToolDedupeCacheEntry};
+use crate::core::session::memory::{compact_messages, estimate_tokens};
+use crate::core::session::usage::record_request_usage;
+use crate::core::session::{RequestUsageRecord, UsageSource};
+use crate::core::tools::agent_tools::subagent_budget::{
+    activity_callback, BudgetPhase, BudgetVerdict, SharedSubagentBudget, SubagentBudget,
+};
+use crate::core::tools::file_tools::generate_repo_map;
+use crate::core::tools::framework::agent_registry::{normalize_agent_role, AgentRegistry};
+use crate::core::tools::handle_tool_call_inner_owned;
+use crate::infra::config::config::ConfigState;
+use crate::infra::llm::adapters::parse_streamed_tool_input;
+use crate::infra::types::models::{Content, ContentBlock, Message};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+/// 提取工具调用的关键输入摘要（规则提取，不调用 LLM）
+fn summarize_tool_input(name: &str, input: &serde_json::Value) -> String {
+    match name {
+        "ReadFile" | "ReadFileSkeleton" | "WriteFile" | "EditFile" | "ApplyPatch" => {
+            let path = input["path"].as_str().unwrap_or("?");
+            if let Some(start) = input["start_line"].as_u64() {
+                if let Some(end) = input["end_line"].as_u64() {
+                    format!("{} (L{}-{})", path, start, end)
+                } else {
+                    format!("{} (从 L{} 起)", path, start)
+                }
+            } else {
+                path.to_string()
+            }
+        }
+        "FindFiles" => {
+            let pattern = input["pattern"].as_str().unwrap_or("?");
+            pattern.to_string()
+        }
+        "SearchRepo" => {
+            let query = input["query"].as_str().unwrap_or("?");
+            format!("\"{}\"", query)
+        }
+        "SymbolSearch" => {
+            let sym = input["symbol"].as_str().unwrap_or("?");
+            let op = input["operation"].as_str().unwrap_or("?");
+            format!("{} {}", op, sym)
+        }
+        "RunCommand" => {
+            let cmd = input["command"].as_str().unwrap_or("?");
+            let truncated: String = cmd.chars().take(80).collect();
+            if cmd.len() > 80 {
+                format!("{}...", truncated)
+            } else {
+                truncated
+            }
+        }
+        "ListDirectory" => {
+            let path = input["path"].as_str().unwrap_or(".");
+            path.to_string()
+        }
+        "LoadSkill" => {
+            let skill_name = input["name"].as_str().unwrap_or("?");
+            skill_name.to_string()
+        }
+        _ => {
+            let raw = input.to_string();
+            let truncated: String = raw.chars().take(60).collect();
+            if raw.len() > 60 {
+                format!("{}...", truncated)
+            } else {
+                truncated
+            }
+        }
+    }
+}
+
+/// 提取工具调用结果的摘要（规则提取，不调用 LLM）
+fn summarize_tool_result(name: &str, content: &str) -> String {
+    match name {
+        "ReadFile" | "ReadFileSkeleton" => {
+            // 提取行数 + 首行预览
+            if let Some(line) = content.lines().find(|l| l.contains("Total:")) {
+                line.to_string()
+            } else {
+                let line_count = content.lines().count();
+                if line_count > 5 {
+                    format!("{} 行内容", line_count)
+                } else {
+                    String::new()
+                }
+            }
+        }
+        "FindFiles" => {
+            if content.contains("No files found") {
+                "无匹配".to_string()
+            } else {
+                let count = content.lines().count();
+                if count > 0 {
+                    format!("{} 个文件", count)
+                } else {
+                    String::new()
+                }
+            }
+        }
+        "RunCommand" => {
+            if content.contains("[exit code: 0") {
+                let preview: String = content
+                    .lines()
+                    .filter(|l| !l.starts_with("[exit code"))
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let truncated: String = preview.chars().take(80).collect();
+                if truncated.is_empty() {
+                    "成功".to_string()
+                } else {
+                    truncated
+                }
+            } else if content.contains("[exit code:") {
+                let err_preview: String = content
+                    .lines()
+                    .filter(|l| !l.starts_with("[exit code"))
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let truncated: String = err_preview.chars().take(80).collect();
+                format!("失败: {}", truncated)
+            } else {
+                String::new()
+            }
+        }
+        "WriteFile" | "EditFile" => {
+            if content.contains("成功创建")
+                || content.contains("成功编辑")
+                || content.contains("成功写入")
+            {
+                "成功".to_string()
+            } else if content.contains("失败") || content.contains("编辑失败") {
+                let line = content.lines().next().unwrap_or("失败");
+                line.chars().take(80).collect()
+            } else {
+                String::new()
+            }
+        }
+        "ListDirectory" => {
+            let items: Vec<&str> = content
+                .lines()
+                .filter(|l| l.starts_with("[FILE]") || l.starts_with("[DIR]"))
+                .take(5)
+                .collect();
+            if items.is_empty() {
+                "空目录".to_string()
+            } else {
+                let names: Vec<&str> = items
+                    .iter()
+                    .map(|l| l.trim_start_matches("[FILE] ").trim_start_matches("[DIR] "))
+                    .collect();
+                names.join(", ").to_string()
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+/// 判断工具是否需要去重（与主 Agent 去重目标一致）
+fn is_dedup_target(name: &str) -> bool {
+    matches!(
+        name,
+        "LoadSkill" | "CompactConversation" | "ConsolidateMemory" | "ProposePlan" | "RunSubagent"
+    )
+}
+
+/// 提取主 Agent 上下文供子 Agent 继承（规则提取，不调用 LLM）
+async fn extract_subagent_context(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    ws: &Option<std::path::PathBuf>,
+) -> String {
+    let mut ctx = String::new();
+
+    // 1. Repo Map（项目文件树，深度 3）
+    let repo_dir = ws
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let repo_map = generate_repo_map(&repo_dir, "", 0, 3);
+    if !repo_map.trim().is_empty() {
+        ctx.push_str("【项目结构（主Agent已探索）】\n```\n");
+        ctx.push_str(&repo_map);
+        ctx.push_str("```\n\n");
+    }
+
+    // 2. 主 Agent 工具调用 + 结果摘要（配对展示，含结果信息）
+    if let Some(manager) = app.try_state::<SessionManager>() {
+        let session_ctx = manager.get_or_create(session_id).await;
+        let memory = session_ctx.memory.lock().await;
+
+        let msgs = &memory.messages;
+        let mut tool_entries: Vec<String> = Vec::new();
+
+        // 遍历消息，将 ToolUse 与紧随的 ToolResult 配对
+        for window in msgs.windows(2) {
+            if let (
+                Message::Assistant {
+                    content: Content::Multiple(assistant_blocks),
+                },
+                Message::User {
+                    content: Content::Multiple(user_blocks),
+                },
+            ) = (&window[0], &window[1])
+            {
+                for block in assistant_blocks {
+                    if let ContentBlock::ToolUse {
+                        name, input, id, ..
+                    } = block
+                    {
+                        if matches!(
+                            name.as_str(),
+                            // ExecuteTool 一并跳过：RunSubagent 已是按需工具，父代理的委派
+                            // 现在以 ExecuteTool(name="RunSubagent") 的形式出现；不跳过就会把
+                            // "派子代理"当成一条普通操作摘要喂进子代理上下文（2026-09-21）
+                            "ExecuteTool"
+                                | "DiscoverTools"
+                                | "RunSubagent"
+                                | "RunSubagentsSequentially"
+                                | "CompactConversation"
+                                | "ConsolidateMemory"
+                                | "UpdateTodos"
+                        ) {
+                            continue;
+                        }
+                        let call_info = summarize_tool_input(name, input);
+                        // 查找对应的 ToolResult
+                        let result_info = user_blocks
+                            .iter()
+                            .find_map(|b| {
+                                if let ContentBlock::ToolResult {
+                                    tool_use_id,
+                                    content,
+                                    ..
+                                } = b
+                                {
+                                    if tool_use_id == id {
+                                        Some(summarize_tool_result(name, content))
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_default();
+
+                        let entry = if result_info.is_empty() {
+                            format!("- {}: {}", name, call_info)
+                        } else {
+                            format!("- {}: {} → {}", name, call_info, result_info)
+                        };
+                        tool_entries.push(entry);
+                        if tool_entries.len() >= 10 {
+                            break;
+                        }
+                    }
+                }
+            }
+            if tool_entries.len() >= 10 {
+                break;
+            }
+        }
+
+        if !tool_entries.is_empty() {
+            ctx.push_str("【主Agent已执行的关键操作（无需重复）】\n");
+            for entry in &tool_entries {
+                ctx.push_str(entry);
+                ctx.push('\n');
+            }
+            ctx.push('\n');
+        }
+
+        // 3. 主 Agent 最近的结论（最后一条非工具 Assistant 消息的 text 部分）
+        for msg in memory.messages.iter().rev() {
+            if let Message::Assistant {
+                content: Content::Multiple(blocks),
+            } = msg
+            {
+                let has_tool = blocks
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+                if !has_tool {
+                    let text: String = blocks
+                        .iter()
+                        .filter_map(|b| {
+                            if let ContentBlock::Text { text } = b {
+                                Some(text.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if !text.trim().is_empty() {
+                        let truncated: String = text.chars().take(300).collect();
+                        ctx.push_str(&format!("【主Agent的分析结论】\n{}\n\n", truncated));
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    // 4. 当前会话的后台任务状态（避免子Agent重复启动已运行的服务）
+    if let Some(bg_state) = app.try_state::<crate::infra::background::BackgroundState>() {
+        let bg = bg_state.0.lock().await;
+        let session_tasks: Vec<_> = bg
+            .tasks
+            .iter()
+            .filter(|(_, t)| t.session_id.as_deref() == Some(session_id))
+            .collect();
+        if !session_tasks.is_empty() {
+            ctx.push_str("【会话中已在运行的后台任务（绝对不要重复启动！）】\n");
+            for (_, task) in &session_tasks {
+                let port_info = task.port.map(|p| format!(" :{}", p)).unwrap_or_default();
+                ctx.push_str(&format!(
+                    "- [{}] {} {}{}\n",
+                    task.status,
+                    task.command,
+                    task.task_type.as_deref().unwrap_or("unknown"),
+                    port_info
+                ));
+            }
+            ctx.push_str("如果上述任务已覆盖你要执行的命令，跳过它，不要重复启动。\n\n");
+        }
+    }
+
+    ctx
+}
+
+/// 连续多少轮"本轮所有工具调用都失败"就判定结构性受阻、提前收口。
+///
+/// 取 3 不取 1：单轮失败很常见（参数写错、路径不存在），模型通常下一轮能自行修正；
+/// 连续 3 轮全败才说明这条路根本走不通。
+///
+/// 背景（2026-09-21 实测）：子代理被派去删 `.jarvis_trash` —— 在当时的工具集下这是
+/// **结构性无解**（回收站建在目标自己内部，rename 必然失败）。它于是逐轮换策略重试，
+/// 把轮数上限耗光、空转好几分钟且没有任何进度；主 Agent 收到失败结果后又派了一个
+/// **新子代理**从零再走一遍。这条护栏让"走不通"在 3 轮内收敛，并明确要求不要重复委派。
+const MAX_CONSECUTIVE_FAILED_LOOPS: u32 = 3;
+
+/// 取消检查：父级本轮令牌与子代理自身令牌任一取消，即视为取消。
+async fn cancel_requested(
+    app: &tauri::AppHandle,
+    run_id: &str,
+    parent: Option<&tokio_util::sync::CancellationToken>,
+) -> bool {
+    if let Some(token) = parent {
+        if token.is_cancelled() {
+            return true;
+        }
+    }
+    SubAgentMonitor::is_cancelled(app, run_id).await
+}
+
+/// 等待任一取消信号（父级 / 子代理自身）。供 select! 的取消分支使用。
+async fn wait_cancel(
+    parent: Option<&tokio_util::sync::CancellationToken>,
+    own: &tokio_util::sync::CancellationToken,
+) {
+    match parent {
+        Some(parent) => {
+            tokio::select! {
+                _ = parent.cancelled() => {}
+                _ = own.cancelled() => {}
+            }
+        }
+        None => own.cancelled().await,
+    }
+}
+
+/// 把子 Agent **单次请求**的用量写入明细与会话累计（`source = subagent`）。
+///
+/// ## 为什么必须在每 loop 就写
+/// 子 Agent 有自己独立的 Agent Loop，不经过主流程（`pipeline.rs`）的逐请求路径。
+/// 若改成回合收尾由父层一次性补交，会同时坏两件事：
+/// - 父层手里只有“本轮子 Agent 总量”这一个数，补交就是**主循环之外的额外一笔**，
+///   一旦哪天父层又把总用量整体交一次，子 Agent 的账就被双计（静默且无报错）；
+/// - 用户中途取消时收尾可能整体跳过，已真实花掉的 token 就永久不入账。
+///
+/// ## 写入口径
+/// 唯一写入口是 [`record_request_usage`]：它在**同一个事务**里插明细并累加
+/// `sessions.total_*`，所以“明细求和 == 累计值”恒成立。缓存两列**原样透传**：
+/// `None` = 这家未上报（落 NULL），`Some(0)` = 真没命中——两者语义不同，不编造 0。
+/// 这里刻意不做主流程那套端点能力推断（`usage_memory`）：子 Agent 的读数就是
+/// 它自己那一次响应的读数，不做跨请求推断。
+///
+/// 写失败只记日志、不中断子 Agent：账本问题不应把正在跑的任务打吹。
+#[allow(clippy::too_many_arguments)]
+fn record_subagent_turn_usage(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    run_id: &str,
+    loop_count: usize,
+    model_id: &str,
+    agent_role: &str,
+    task_id: Option<i32>,
+    result: &crate::core::agent::StreamResult,
+) {
+    // 厂商一次 usage 都没上报时（两个数都是 0）不写：
+    // 写一条 0/0 的明细只会把“请求次数”推高，对账本没有信息量。
+    if result.input_tokens == 0 && result.output_tokens == 0 {
+        return;
+    }
+
+    let mut record = RequestUsageRecord::new(session_id.to_string(), UsageSource::Subagent)
+        // loop_index 用 1 基序号，与 `process_stream` 收到/日志里的 loop 号同口径
+        .run(run_id.to_string(), Some((loop_count + 1) as u32))
+        .agent_role(agent_role.to_string())
+        .model_id(model_id.to_string())
+        .tokens(result.input_tokens, result.output_tokens)
+        .cache(
+            result.cache_hit_tokens,
+            result.cache_miss_tokens,
+            result.cache_source,
+        );
+    // 任务系统的 task_id 是 i32，明细表存字符串（与其它来源统一用文本主键）。
+    // `parent_tool_use_id` 当前拿不到：`run_subagent` 的入参里没有工具调用 id
+    //（那个 id 留在 RunSubagent 的 dispatch 层），故留空；按 run/role 仍可归集。
+    if let Some(id) = task_id {
+        record = record.task_id(id.to_string());
+    }
+
+    if let Err(err) = record_request_usage(app, record) {
+        crate::jarvis_warn!("SUBAGENT", "failed to record request usage: {}", err);
+    }
+}
+
+/// 记录一次「有进展」：推进预算的 idle 锚点。
+///
+/// 这是**手工**推进预算的唯一入口。调用点必须是真实的进展证据（一轮开始、收到响应头、
+/// 流式结束、工具批次起止），不要拿心跳定时器来调它 —— 那样 idle 判据等于失效，
+/// 真卡死的子代理会一直判 Running，超时机制退化成"没有机制"。
+///
+/// 锁只在这里持有一瞬（一次字段赋值），且**不跨 await**（本函数非 async）。
+fn budget_touch(budget: &SharedSubagentBudget) {
+    let mut guard = budget.lock().expect("子代理预算锁中毒：超时判据已不可信");
+    guard.touch();
+}
+
+/// 按指定阶段检查预算；命中终止判据时收尾，并返回可直接 `return` 的结果。
+///
+/// ## 返回什么
+/// `None` = 未越线，继续跑；`Some((文案, 累计输入, 累计输出))` = 已越线，调用方直接 `return`。
+/// 两条返回路径的动作完全一致：写监控失败态 + 返回累计 token，所以集中在这里，
+/// 避免在每个检查点重复三行 `fail_run` 并各自写一份略有差异的文案。
+///
+/// ## 为什么 token 只读不写
+/// 各返回路径**只读** `sub_input_tokens / sub_output_tokens`（见 `run_subagent` 里
+/// 「请求级入账」那段注释）：本次请求的 usage 已由 `record_subagent_turn_usage`
+/// 直写进明细与累计，这里再交一次就是双计。传 0 也不行 —— 监控面板那一行会显示
+/// "这个任务没花钱"，与账本对不上。
+///
+/// ## 阶段参数
+/// - [`BudgetPhase::AwaitingModel`]：等模型 / 流式期间，idle 判据生效。
+/// - [`BudgetPhase::RunningTool`]：工具执行期间，**只查硬上限**。
+async fn check_subagent_budget(
+    app: &tauri::AppHandle,
+    run_id: &str,
+    budget: &SharedSubagentBudget,
+    phase: BudgetPhase,
+    last_progress: &str,
+    sub_input_tokens: u64,
+    sub_output_tokens: u64,
+) -> Option<(String, u64, u64)> {
+    // 先把判据拷出来、放掉锁：下面的 fail_run 里全是 await，绝不能跨 await 持锁。
+    let verdict = {
+        let guard = budget.lock().expect("子代理预算锁中毒：超时判据已不可信");
+        guard.verdict_in_phase(phase)
+    };
+
+    let msg = match verdict {
+        BudgetVerdict::Running => return None,
+        // idle：链路静默太久，通常意味着流已死。带上"最后进展在哪一步"，
+        // 否则事后只看得到"卡了 200 秒"，无法判断卡在等模型还是卡在某一步。
+        BudgetVerdict::IdleTimeout { idle_secs } => format!(
+            "【子代理超时】连续 {} 秒无进展（最后进展：{}）",
+            idle_secs, last_progress
+        ),
+        // hard：总时长到顶，通常是循环/反复重试。与"这一段时间没动静"是两件事。
+        BudgetVerdict::HardTimeout { elapsed_secs } => {
+            format!("【子代理超时】已运行 {} 秒，达到硬上限", elapsed_secs)
+        }
+    };
+
+    SubAgentMonitor::fail_run(
+        app,
+        run_id,
+        msg.clone(),
+        sub_input_tokens,
+        sub_output_tokens,
+    )
+    .await;
+    Some((msg, sub_input_tokens, sub_output_tokens))
+}
+
+/// 子代理执行引擎：独立 Agent Loop，支持只读/读写模式，返回 (结果, 输入token, 输出token)
+///
+/// ## 返回的 token 数是什么
+/// 是**本次子代理全部轮次**的输入/输出总量，用途只有两个：
+/// - 子代理监控面板/`agent_runs` 汇总里的“这个子任务花了多少”；
+/// - `ExecuteTool` → `tools_runner` → `pipeline` 的展示链路。
+///
+/// 它**不参与** `sessions.total_*`：会话账本由本文件每轮调用的
+/// [`record_subagent_turn_usage`] 直写（明细 + 累计同事务）。调用方拿这两个数
+/// 只是为了展示，**不得**再当成增量交给任何入库接口（包括 `save_session`）——
+/// 那会把同一笔账记两遍。
+#[allow(clippy::too_many_arguments)]
+pub async fn run_subagent(
+    app: tauri::AppHandle,
+    prompt: String,
+    read_only: bool,
+    session_id: String,
+    task_id: Option<i32>,
+    label: Option<String>,
+    subagent_type: Option<String>,
+    model_override: Option<String>,
+    skills: Option<Vec<String>>,
+) -> (String, u64, u64) {
+    let agent_registry = AgentRegistry::global();
+    let requested_agent_role = normalize_agent_role(subagent_type.as_deref());
+    let agent = agent_registry
+        .get(requested_agent_role)
+        .unwrap_or_else(|| agent_registry.default_agent());
+    let agent_role = agent.agent_role.to_string();
+    let max_loops = agent
+        .max_turns
+        .unwrap_or(crate::infra::types::constants::MAX_AGENT_LOOP_BEFORE_CONFIRM);
+
+    let parent_run_id = if let Some(manager) = app.try_state::<SessionManager>() {
+        manager
+            .get_or_create(&session_id)
+            .await
+            .active_run_id
+            .lock()
+            .await
+            .clone()
+    } else {
+        None
+    };
+
+    // 父级本轮取消令牌（会话上下文里的那一枚）。
+    //
+    // `cancel_jarvis` 会级联取消本会话所有运行中的子代理，但存在竞态窗口：
+    // 取消请求可能恰好发生在子代理注册（start_run）之前，级联会漏掉本次运行。
+    // 这里取父级令牌并在所有阻塞点直接监听，父级一取消，子代理立即收口，
+    // 不依赖"取消请求正好赶在注册之后"这一时序假设。
+    let parent_cancel = if let Some(manager) = app.try_state::<SessionManager>() {
+        let ctx = manager.get_or_create(&session_id).await;
+        ctx.current_cancel_token()
+    } else {
+        None
+    };
+
+    // 注册子代理运行记录
+    let run_id = SubAgentMonitor::start_run(
+        &app,
+        &session_id,
+        &prompt,
+        read_only,
+        task_id,
+        label,
+        agent_role.clone(),
+        max_loops,
+        parent_run_id,
+    )
+    .await;
+
+    // 竞态兜底：注册前父级就已取消 → 本次子代理不该再发起任何请求。
+    // 先 cancel_run 推送一次取消事件与摘要，再 acknowledge 释放令牌。
+    if parent_cancel
+        .as_ref()
+        .map(|token| token.is_cancelled())
+        .unwrap_or(false)
+    {
+        println!("[SUBAGENT] 父级已取消，子代理 {} 不再启动", run_id);
+        let _ = SubAgentMonitor::cancel_run(&app, &run_id).await;
+        SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
+        return ("子代理已取消。".to_string(), 0, 0);
+    }
+
+    // 子代理执行预算：把「无进展」与「整体上限」拆成两条彼此独立的判据
+    // （idle 180s / hard 3600s，见 `infra::types::constants` 与本模块 `subagent_budget`
+    // 顶部的设计说明）。历史上只有一个 480 秒同时充当两者：慢命令被误杀，
+    // 真空转却要等满 480 秒。
+    //
+    // 为什么是共享形态（`Arc<Mutex<_>>`）：`process_stream` 的 `on_frame` 回调
+    // 每收到一个 SSE 帧就要推进「最近进展」，主循环同时要读判据 —— 两个访问者
+    // 必须看到同一份状态。锁在两侧各持有一瞬（一次读写），且都不跨 await。
+    let budget: SharedSubagentBudget = Arc::new(Mutex::new(SubagentBudget::from_defaults()));
+    // 判据只给出秒数，人看日志还需要「卡在哪一步」：这里记录最后一次进展的文字描述。
+    // 只由下面四处手工 touch 更新（帧级 touch 在流内部，无法顺带改这个字符串）。
+    // 首个值在循环开头（第一处 touch）写入，故此处不设初值 —— 设了也永远读不到，
+    // 只会招来一条 "value assigned is never read" 警告，让真正的告警淹在噪音里。
+    let mut last_progress: String;
+
+    // 从 ConfigState 读取配置
+    let app_cfg = app.state::<ConfigState>().0.lock().await.clone();
+    let cfg = app_cfg.active_config();
+    if cfg.api_key.is_empty() {
+        SubAgentMonitor::fail_run(&app, &run_id, "Missing API key".to_string(), 0, 0).await;
+        return ("子代理启动失败：未配置 API Key".to_string(), 0, 0);
+    }
+    let api_format_enum = cfg.api_format_enum();
+    let api_key = cfg.api_key;
+    let base_url = cfg.base_url;
+    let model_id = model_override
+        .filter(|model| !model.trim().is_empty())
+        .or_else(|| agent.model.map(|model| model.to_string()))
+        .unwrap_or(cfg.main_model);
+
+    // 与主 Agent 共用统一的客户端构造（连接超时 + TCP keepalive）
+    let client = crate::infra::llm::api_client::build_streaming_client();
+    // Only a session workspace is treated as a project/work directory.
+    // The app process CWD is JarvisAgent's own runtime location and must not
+    // leak into non-sandbox subagent context as the user's project.
+    let ws = crate::core::runtime::effective_workspace(&app, &session_id).await;
+    let cwd = ws
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| "No session workspace is configured".to_string());
+    let ws_str = ws.as_ref().map(|p| p.to_string_lossy().to_string());
+
+    // 用户开关（会话快照）。子代理**不走** `is_available` 那条路，所以在
+    // resolve_tools 与下面的技能提示里各把一道闸（见 resolve_tools 的注释）。
+    // 在这之前取好：system_prompt 的拼接要用到它。
+    let filter = crate::core::tools::tool_filter_for(&app, &session_id).await;
+
+    let mut system_prompt = get_subagent_system_prompt(&cwd, ws_str.as_deref());
+    system_prompt.push_str(&format!(
+        "\n\n[Subagent type]\n- type: {}\n- when to use: {}\n\n[Role instructions]\n{}\n\n[Tool boundary]\nOnly use the tools provided in this run. Do not attempt to call parent-control tools such as RunSubagent, RunSubagentsSequentially, UpdateTodos, CompactConversation, or ConsolidateMemory.",
+        agent.agent_role, agent.when_to_use, agent.system_prompt
+    ));
+
+    // 注入主 Agent 指定的技能
+    if let Some(ref skill_names) = skills {
+        if !skill_names.is_empty() {
+            let all_skills = crate::core::tools::load_all_skills();
+            // 只注入**已激活**的技能（2026-09-21 补）：
+            // 主 Agent 可能传一个被用户在设置里关掉的技能名。那种技能连正文都加载不了
+            // （LoadSkill 会直接拒），却仍会出现在子代理的 system prompt 里 ——
+            // 属"看得见调不动"，正是本项目在别处反复批判的两套真相。
+            let activations = crate::infra::config::app_config::get_all_skill_activations();
+            let matched: Vec<&crate::infra::types::models::Skill> = all_skills
+                .iter()
+                .filter(|s| skill_names.iter().any(|name| name == &s.name))
+                .filter(|s| activations.get(&s.name).copied().unwrap_or(true))
+                .collect();
+            // 提示里点名 LoadSkill，所以要确认它真在这个子代理的工具集里 ——
+            // 用户可能把它关掉了，那时 resolve_tools 已经剔除它，这句"Use LoadSkill"
+            // 就成了调用必失败的死指引。
+            if !matched.is_empty() && filter.is_enabled("LoadSkill") {
+                system_prompt
+                    .push_str("\n\n[Available skills]\nUse LoadSkill tool to load full content.\n");
+                for skill in &matched {
+                    system_prompt.push_str(&format!("  - {}: {}\n", skill.name, skill.description));
+                }
+            }
+        }
+    }
+
+    // 提取主 Agent 上下文注入到子 Agent 初始消息中
+    let subagent_context = extract_subagent_context(&app, &session_id, &ws).await;
+    let augmented_prompt = if subagent_context.is_empty() {
+        prompt.clone()
+    } else {
+        format!("{}\n【委派任务】\n{}", subagent_context, prompt)
+    };
+
+    let mut messages = vec![Message::User {
+        content: Content::Single(augmented_prompt),
+    }];
+
+    let mut loop_count = 0;
+    // 空转保护计数：连续多少轮"本轮所有工具调用都失败"（见 `MAX_CONSECUTIVE_FAILED_LOOPS`）
+    let mut consecutive_failed_loops: u32 = 0;
+    let mut final_answer = String::new();
+    let mut sub_input_tokens: u64 = 0;
+    let mut sub_output_tokens: u64 = 0;
+    // 子 Agent 工具去重（与主 Agent 机制一致，scope 为子 Agent run_id）
+    let mut agent_dedup_state: HashMap<String, ToolDedupeCacheEntry> = HashMap::new();
+
+    let tools = agent_registry.resolve_tools(agent, read_only, &filter);
+    if tools.is_empty() {
+        let msg = format!(
+            "Subagent '{}' has no available tools after permission filtering.",
+            agent.agent_role
+        );
+        SubAgentMonitor::fail_run(&app, &run_id, msg.clone(), 0, 0).await;
+        return (msg, 0, 0);
+    }
+
+    // 压缩判据（`infra::llm::context_budget`）要用「本地估算 vs 厂商实测」的比值标定，
+    // 而 system prompt 与工具 schema 不进 messages、却真实占用 prompt token。不把它们
+    // 补进估算，比值会被系统性抬高，阈值就判不准。
+    let fixed_overhead_tokens = {
+        let tools_json = serde_json::to_string(&tools).unwrap_or_default();
+        crate::infra::llm::token_count::count_text("gpt-4", &system_prompt).tokens
+            + crate::infra::llm::token_count::count_text("gpt-4", &tools_json).tokens
+    };
+
+    let mode_str = if read_only {
+        "只读模式"
+    } else {
+        "读写模式"
+    };
+    let _ = app.emit(
+        "chat-stream",
+        crate::infra::types::events::ChatStreamEvent {
+            content: format!(
+                "\n> **[启动子代理]** ({}, {}) 任务: `{}`\n",
+                agent_role, mode_str, prompt
+            ),
+            session_id: session_id.clone(),
+            loop_count: None,
+            is_sub_agent: Some(true),
+        },
+    );
+    let _ = app.emit(
+        "agent-step",
+        crate::infra::types::events::AgentStepEvent::SubagentStart {
+            task: format!(
+                "{} {} - {}",
+                agent_role,
+                mode_str,
+                prompt.chars().take(100).collect::<String>()
+            ),
+            session_id: session_id.clone(),
+            is_sub_agent: true,
+        },
+    );
+
+    // 子代理深度思考：**继承主 Agent 本轮档位**（设计文档 K3）。
+    //
+    // 改造前这里按全局 `agent_audience` 重新推导，结果可能与主 Agent 相反
+    // （例如主 Agent 被用户/模型夹紧为关闭，子代理却因 audience=developer 而开启）。
+    // 现在统一取 `SessionContext.turn_think`——主 Agent 每轮开始时写入的裁决结果。
+    // 若该会话尚未跑过主 Agent（直连工具调用等边缘路径），回落到 audience 默认值，
+    // 与改造前行为一致，不引入新的不确定性。
+    let should_think = {
+        let ctx = app
+            .state::<crate::core::runtime::SessionManager>()
+            .get_or_create(&session_id)
+            .await;
+        let inherited = *ctx.turn_think.lock().await;
+        match inherited {
+            Some(value) => value,
+            // 兜底：主 Agent 本轮尚未裁决（`turn_think` 为空）时，
+            // 按**本会话的档位**推导——而不是回落受众默认。
+            // 会话档位已是确定布尔，只需再按本模型能力夹紧一次，口径与
+            // `pipeline` 的裁决层一致（DeepSeek 类模型恒为开）。
+            None => {
+                let session_mode =
+                    crate::core::session::thinking::ThinkingMode(*ctx.thinking_mode.lock().await);
+                let caps = crate::infra::llm::registry::query_capabilities(&model_id);
+                crate::core::session::thinking::decide(None, session_mode, caps.as_ref()).enabled
+            }
+        }
+    };
+
+    while loop_count < max_loops {
+        // 预算进展信号 1/4：新的一轮开始（上一轮的工具结果已落地，链路仍在正常推进）。
+        // 后面就要发请求等模型了，所以用 `AwaitingModel` 判：这一段必须有 idle 兜底。
+        budget_touch(&budget);
+        last_progress = format!("第 {} 轮开始", loop_count + 1);
+        if let Some(stop) = check_subagent_budget(
+            &app,
+            &run_id,
+            &budget,
+            BudgetPhase::AwaitingModel,
+            &last_progress,
+            sub_input_tokens,
+            sub_output_tokens,
+        )
+        .await
+        {
+            return stop;
+        }
+
+        // 空转保护：连续多轮工具调用全部失败 → 结构性受阻，提前收口。
+        // 汇报里必须写清"为什么停"，并要求不要重复委派同一任务 —— 否则主 Agent 会再派一个
+        // 新子代理从头试一遍（这正是那次空转被放大成好几分钟的原因）。
+        if consecutive_failed_loops >= MAX_CONSECUTIVE_FAILED_LOOPS {
+            let msg = format!(
+                "子代理连续 {} 轮工具调用全部失败，判定为结构性受阻，已提前停止（未耗满 {} 轮上限）。\
+                 失败原文见上方各轮的工具结果。请换方案，或如实告知用户受阻点；**不要重复委派同一任务**。",
+                consecutive_failed_loops, max_loops
+            );
+            SubAgentMonitor::complete_run(
+                &app,
+                &run_id,
+                sub_input_tokens,
+                sub_output_tokens,
+                Some(msg.clone()),
+            )
+            .await;
+            return (msg, sub_input_tokens, sub_output_tokens);
+        }
+
+        if cancel_requested(&app, &run_id, parent_cancel.as_ref()).await {
+            SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
+            return (
+                "子代理已取消。".to_string(),
+                sub_input_tokens,
+                sub_output_tokens,
+            );
+        }
+
+        SubAgentMonitor::update_phase(
+            &app,
+            &run_id,
+            SubAgentPhase::WaitingModel,
+            loop_count + 1,
+            sub_input_tokens,
+            sub_output_tokens,
+        )
+        .await;
+
+        // 本轮的本地估算（含 system/tools 固定开销）：与 stream_result.input_tokens 是
+        // 同一份请求的一对，本轮结束后作为压缩判据的标定基准（实测 ÷ 估算）。
+        let est_before_request = estimate_tokens(&messages) + fixed_overhead_tokens;
+
+        // 与主 Agent 同源：用户覆盖 > 注册表 > 常量兜底（压缩判据的输出预算也用这个函数）
+        let max_tokens =
+            crate::infra::llm::context_budget::resolve_output_budget(&model_id, cfg.max_tokens)
+                as i32;
+
+        // 与主 Agent 同源：统一交给 infra::llm::request_builder 处理采样过滤、
+        // 思考参数、Context 块降级、unsigned thinking 剥离以及 OpenAI/Anthropic 协议翻译。
+        let (req_json, req_api_format) = crate::infra::llm::request_builder::build_request_body(
+            crate::infra::llm::request_builder::LlmRequestInput {
+                model_id: model_id.clone(),
+                base_url: base_url.clone(),
+                api_format: api_format_enum,
+                system_prompt: system_prompt.clone(),
+                messages: messages.clone(),
+                tools: tools.clone(),
+                max_tokens,
+                should_think,
+                temperature: cfg.temperature,
+                top_p: cfg.top_p,
+                top_k: cfg.top_k,
+            },
+        );
+
+        println!(
+            "[SUB AGENT] loop {} request ({} bytes)",
+            loop_count + 1,
+            crate::infra::debug_logger::json_serialized_len(&req_json)
+        );
+        if let Err(err) = SubAgentMonitor::append_trace_event(
+            &app,
+            &run_id,
+            loop_count + 1,
+            "request",
+            &req_json,
+            Some(&model_id),
+            None,
+            None,
+        )
+        .await
+        {
+            crate::jarvis_warn!("SUBAGENT", "failed to persist request trace: {}", err);
+        }
+        crate::infra::debug_logger::debug_logger().log_request(
+            &session_id,
+            "SUB",
+            loop_count + 1,
+            &req_json,
+        );
+
+        // 统一复用 infra::llm::api_client 的 429 限流退避与 5xx/网络抖动阶梯重试，
+        // 同时保留父级/自身取消令牌监听与响应头超时上限。
+        let header_cancel_token = SubAgentMonitor::cancel_token(&app, &run_id).await;
+        let header_cancel_fallback = tokio_util::sync::CancellationToken::new();
+        let header_cancel = header_cancel_token
+            .as_ref()
+            .unwrap_or(&header_cancel_fallback);
+        let header_timeout = std::time::Duration::from_secs(
+            crate::infra::types::constants::API_RESPONSE_HEADER_TIMEOUT_SECS,
+        );
+        let api_request = crate::infra::llm::api_client::api_call_with_retry_subagent(
+            &client,
+            &base_url,
+            &req_json,
+            &api_key,
+            req_api_format,
+            crate::infra::llm::api_client::MAX_API_RETRIES,
+        );
+        let response_res = tokio::select! {
+            biased;
+            _ = wait_cancel(parent_cancel.as_ref(), header_cancel) => {
+                SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
+                return (
+                    "子代理已取消。".to_string(),
+                    sub_input_tokens,
+                    sub_output_tokens,
+                );
+            }
+            timed = tokio::time::timeout(header_timeout, api_request) => {
+                match timed {
+                    Ok(res) => res,
+                    Err(_) => {
+                        let msg = format!(
+                            "Subagent request timed out: no response headers within {}s",
+                            crate::infra::types::constants::API_RESPONSE_HEADER_TIMEOUT_SECS
+                        );
+                        SubAgentMonitor::fail_run(
+                            &app,
+                            &run_id,
+                            msg.clone(),
+                            sub_input_tokens,
+                            sub_output_tokens,
+                        )
+                        .await;
+                        return (
+                            format!("子代理请求失败: {}", msg),
+                            sub_input_tokens,
+                            sub_output_tokens,
+                        );
+                    }
+                }
+            }
+        };
+
+        if cancel_requested(&app, &run_id, parent_cancel.as_ref()).await {
+            SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
+            return (
+                "子代理已取消。".to_string(),
+                sub_input_tokens,
+                sub_output_tokens,
+            );
+        }
+
+        let response = match response_res {
+            Ok(r) => r,
+            Err(e) => {
+                SubAgentMonitor::fail_run(
+                    &app,
+                    &run_id,
+                    format!("Subagent request failed: {}", e),
+                    sub_input_tokens,
+                    sub_output_tokens,
+                )
+                .await;
+                return (
+                    format!("子代理请求失败: {}", e),
+                    sub_input_tokens,
+                    sub_output_tokens,
+                );
+            }
+        };
+
+        SubAgentMonitor::update_phase(
+            &app,
+            &run_id,
+            SubAgentPhase::Streaming,
+            loop_count + 1,
+            sub_input_tokens,
+            sub_output_tokens,
+        )
+        .await;
+
+        // 预算进展信号 2/4：响应头已到达 —— 请求确实被厂商接住了（不是静默排队）。
+        budget_touch(&budget);
+        last_progress = format!("第 {} 轮已收到响应头", loop_count + 1);
+        if let Some(stop) = check_subagent_budget(
+            &app,
+            &run_id,
+            &budget,
+            BudgetPhase::AwaitingModel,
+            &last_progress,
+            sub_input_tokens,
+            sub_output_tokens,
+        )
+        .await
+        {
+            return stop;
+        }
+
+        let mut stream = response.bytes_stream().eventsource();
+        let sub_cancel_token = SubAgentMonitor::cancel_token(&app, &run_id).await;
+        let default_cancel = tokio_util::sync::CancellationToken::new();
+        let cancel_ref = sub_cancel_token.as_ref().unwrap_or(&default_cancel);
+
+        let stream_result = process_stream(
+            &mut stream,
+            req_api_format,
+            &app,
+            &session_id,
+            &run_id,
+            loop_count + 1,
+            cancel_ref,
+            StreamConfig {
+                is_subagent: true,
+                cache_usage_style: crate::infra::llm::registry::cache_usage_style_for(&model_id),
+                // 子 Agent 有自己的监控面板与阶段提示，不需要主聊天流的「等待提示」；
+                // 但 `on_frame` 的**另一个用途**这里必须用上：它是逐帧触发的真实进展信号
+                // （见 `core::agent::stream` 里调用点位于解析 payload 之前），预算判据靠它
+                // 区分「流还在吐数据」与「流已静默」。不接的话，一次长时间的流式生成
+                // （深度思考 + 长文本）期间没有任何手工 touch，会被 180 秒 idle 判据误判成失联。
+                on_frame: Some(activity_callback(budget.clone())),
+                model_id: Some(model_id.clone()),
+                // 子 Agent 的轮次不进 `agent_run_events`（那是主 Agent 崩溃重建的数据源），
+                // 故这里恒关——开了只会往一张不参与重建的表里写无关行。
+                crash_protection: false,
+            },
+        )
+        .await;
+
+        // 预算进展信号 3/4：本轮流式响应已结束（工具参数也一并收齐）。
+        // 位置与下面那段「请求级入账」注释一致：先 touch，再入账。
+        // 判据本身放在本轮 token 累加完成后才查（见下方），这样超时返回里带的是
+        // 含本轮在内的**完整**用量，与本轮已入账的金额完全对得上。
+        budget_touch(&budget);
+        last_progress = format!("第 {} 轮流式响应结束", loop_count + 1);
+
+        // ── 请求级入账（本 loop 一拿到 usage 就写）──
+        //
+        // 位置很关键：必须早于下面的取消检查。流已经跑完，这次请求的 token 就是
+        // **已经花掉的成本**；若放到取消/异常分支之后，用户点停止的那一刻就会丢掉
+        // 最后一轮的用量。之后各条返回路径（取消、空转提前收口、轮次上限、正常）
+        // 一律**只读** `sub_input_tokens/sub_output_tokens`，不得再交一次。
+        record_subagent_turn_usage(
+            &app,
+            &session_id,
+            &run_id,
+            loop_count,
+            &model_id,
+            &agent_role,
+            task_id,
+            &stream_result,
+        );
+
+        // 检查流式接收期间是否被取消
+        if cancel_requested(&app, &run_id, parent_cancel.as_ref()).await {
+            SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
+            return (
+                "子代理已取消。".to_string(),
+                stream_result.input_tokens,
+                stream_result.output_tokens,
+            );
+        }
+
+        // 更新思考阶段
+        if !stream_result.thinking.is_empty() {
+            SubAgentMonitor::update_phase(
+                &app,
+                &run_id,
+                SubAgentPhase::Thinking,
+                loop_count + 1,
+                stream_result.input_tokens,
+                stream_result.output_tokens,
+            )
+            .await;
+        }
+
+        // 本轮请求的厂商实测输入量（配 est_before_request 作压缩判据的标定基准）
+        let request_input_tokens = stream_result.input_tokens;
+        sub_input_tokens += stream_result.input_tokens;
+        sub_output_tokens += stream_result.output_tokens;
+
+        // 预算检查：紧跟在累计之后（而不是紧跟 touch 之后），保证超时收尾时交出去的
+        // `sub_*` 已含本轮 usage —— 若在入账前判，返回的用量会少一轮，
+        // 而那一轮的账已经写进去了，两边对不上。
+        if let Some(stop) = check_subagent_budget(
+            &app,
+            &run_id,
+            &budget,
+            BudgetPhase::AwaitingModel,
+            &last_progress,
+            sub_input_tokens,
+            sub_output_tokens,
+        )
+        .await
+        {
+            return stop;
+        }
+
+        let mut current_blocks = stream_result.blocks;
+        let tool_input_buffers = stream_result.tool_input_buffers;
+        let current_text_this_turn = stream_result.text;
+        let current_thinking_this_turn = stream_result.thinking;
+
+        let response_payload = serde_json::json!({
+            "blocks": &current_blocks,
+            "text": &current_text_this_turn,
+            "thinking": &current_thinking_this_turn,
+            "stopReason": &stream_result.stop_reason,
+        });
+        if let Err(err) = SubAgentMonitor::append_trace_event(
+            &app,
+            &run_id,
+            loop_count + 1,
+            "response",
+            &response_payload,
+            Some(&model_id),
+            Some(stream_result.input_tokens),
+            Some(stream_result.output_tokens),
+        )
+        .await
+        {
+            crate::jarvis_warn!("SUBAGENT", "failed to persist response trace: {}", err);
+        }
+
+        let tool_calls: Vec<(String, String)> = tool_input_buffers
+            .iter()
+            .filter_map(|(idx, buf)| {
+                if let Some(ContentBlock::ToolUse { name, .. }) = current_blocks.get(*idx) {
+                    Some((name.clone(), buf.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        crate::infra::debug_logger::debug_logger().log_thoughts(
+            &session_id,
+            "SUB",
+            loop_count + 1,
+            &current_thinking_this_turn,
+            &current_text_this_turn,
+            &tool_calls,
+            sub_input_tokens,
+            sub_output_tokens,
+        );
+
+        // 执行工具调用（并行模式）
+        // 子Agent工具任务数据
+        struct SubToolTaskData {
+            index: usize,
+            tool_use_id: String,
+            name: String,
+            input: serde_json::Value,
+        }
+        struct SubToolTaskResult {
+            index: usize,
+            tool_use_id: String,
+            name: String,
+            output: String,
+            /// 本次调用是否失败。用于空转保护：连续多轮"本轮全部失败"就判定结构性受阻（见
+            /// `MAX_CONSECUTIVE_FAILED_LOOPS`）。
+            is_error: bool,
+        }
+
+        // 阶段 1：预处理（串行） — 解析参数、emit 事件、收集任务
+        if cancel_requested(&app, &run_id, parent_cancel.as_ref()).await {
+            SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
+            return (
+                "子代理已取消。".to_string(),
+                sub_input_tokens,
+                sub_output_tokens,
+            );
+        }
+
+        let mut spawn_tasks: Vec<SubToolTaskData> = Vec::new();
+        let mut immediate_results: Vec<SubToolTaskResult> = Vec::new();
+
+        for (index, buf) in tool_input_buffers {
+            if let Some(ContentBlock::ToolUse {
+                name, input, id, ..
+            }) = current_blocks.get_mut(index)
+            {
+                match parse_streamed_tool_input(&buf) {
+                    Ok((parsed_input, recovered)) => {
+                        *input = parsed_input;
+                        let input_summary = {
+                            let raw = input.to_string();
+                            if raw.chars().count() > 160 {
+                                format!("{}...", raw.chars().take(160).collect::<String>())
+                            } else {
+                                raw
+                            }
+                        };
+                        SubAgentMonitor::update_tool(
+                            &app,
+                            &run_id,
+                            name,
+                            Some(input_summary.clone()),
+                            loop_count + 1,
+                            sub_input_tokens,
+                            sub_output_tokens,
+                        )
+                        .await;
+
+                        if recovered {
+                            let _ = app.emit(
+                                "chat-stream",
+                                crate::infra::types::events::ChatStreamEvent {
+                                    content: format!(
+                                        "\n>   - 子代理自动修复了工具 `{}` 的流式参数格式\n",
+                                        name
+                                    ),
+                                    session_id: session_id.clone(),
+                                    loop_count: None,
+                                    is_sub_agent: Some(true),
+                                },
+                            );
+                        }
+
+                        // 带上"这个工具在操作什么"的规则化摘要（复用子代理上下文用的同一个函数），
+                        // 让用户在聊天区就能看出子代理在干什么，而不是只看到一个工具名。
+                        // 摘要里若含换行会破坏 `> ` 引用块的逐行前缀，这里统一压成单行。
+                        let call_detail =
+                            summarize_tool_input(name, input).replace(['\n', '\r'], " ");
+                        let _ = app.emit(
+                            "chat-stream",
+                            crate::infra::types::events::ChatStreamEvent {
+                                content: format!(
+                                    "\n>   - 子代理使用工具: `{}` {}\n",
+                                    name, call_detail
+                                ),
+                                session_id: session_id.clone(),
+                                loop_count: None,
+                                is_sub_agent: Some(true),
+                            },
+                        );
+
+                        // 去重检查：与主 Agent 机制一致，阻止重复调用 Agent 控制工具
+                        if is_dedup_target(name) {
+                            let dedup_key = name.to_lowercase();
+                            if let Some(entry) = agent_dedup_state.get_mut(&dedup_key) {
+                                entry.suppressed_count += 1;
+                                let blocked = format!(
+                                    "重复调用被阻止: 工具 {} 已在本子Agent运行中被调用。请使用已有的结果继续，不要重复调用。 (第{}次抑制)",
+                                    name, entry.suppressed_count
+                                );
+                                SubAgentMonitor::record_tool_result(
+                                    &app,
+                                    &run_id,
+                                    name,
+                                    Some(blocked.chars().take(180).collect::<String>()),
+                                    loop_count + 1,
+                                    sub_input_tokens,
+                                    sub_output_tokens,
+                                )
+                                .await;
+                                immediate_results.push(SubToolTaskResult {
+                                    index,
+                                    tool_use_id: id.clone(),
+                                    name: name.clone(),
+                                    output: blocked,
+                                    // 被去重拦下 = 这次调用没产生任何进展，按失败计入空转统计
+                                    is_error: true,
+                                });
+                                continue;
+                            }
+                            agent_dedup_state.insert(
+                                dedup_key,
+                                ToolDedupeCacheEntry {
+                                    display: name.to_string(),
+                                    suppressed_count: 0,
+                                    running: false,
+                                },
+                            );
+                        }
+                        spawn_tasks.push(SubToolTaskData {
+                            index,
+                            tool_use_id: id.clone(),
+                            name: name.clone(),
+                            input: input.clone(),
+                        });
+                    }
+                    Err(err) => {
+                        let preview: String = buf.chars().take(500).collect();
+                        let truncated = if buf.chars().count() > 500 {
+                            format!("{}...(truncated)", preview)
+                        } else {
+                            preview
+                        };
+                        SubAgentMonitor::update_tool(
+                            &app,
+                            &run_id,
+                            name,
+                            Some(truncated.clone()),
+                            loop_count + 1,
+                            sub_input_tokens,
+                            sub_output_tokens,
+                        )
+                        .await;
+                        // 与主 Agent 同口径：追加分类化处置建议（见 tools_runner.rs）
+                        let failure = format!(
+                            "子代理工具 `{}` 参数解析失败：{}\n原始参数片段：{}\n\n{}",
+                            name,
+                            err,
+                            truncated,
+                            err.advice()
+                        );
+                        crate::jarvis_warn!("SUBAGENT", "[SUBAGENT] {}", failure);
+                        let _ = app.emit(
+                            "chat-stream",
+                            crate::infra::types::events::ChatStreamEvent {
+                                content: format!(
+                                    "\n>   - 子代理工具 `{}` 参数解析失败\n>   错误: `{}`\n",
+                                    name, err
+                                ),
+                                session_id: session_id.clone(),
+                                loop_count: None,
+                                is_sub_agent: Some(true),
+                            },
+                        );
+                        SubAgentMonitor::record_tool_result(
+                            &app,
+                            &run_id,
+                            name,
+                            Some(failure.chars().take(180).collect::<String>()),
+                            loop_count + 1,
+                            sub_input_tokens,
+                            sub_output_tokens,
+                        )
+                        .await;
+                        immediate_results.push(SubToolTaskResult {
+                            index,
+                            tool_use_id: id.clone(),
+                            name: name.clone(),
+                            output: failure,
+                            is_error: true,
+                        });
+                    }
+                }
+            }
+        }
+
+        // 阶段 2：并行执行（2026-11 改造：JoinSet + select 监听取消）
+        //
+        // 旧实现 spawn + join_all 死等：子代理开跑工具后（典型：同步 shell 最长
+        // 600 秒），用户点停止要等整批工具跑完才轮到下一次取消检查。
+        let mut all_results = immediate_results;
+
+        // 预算进展信号 4/4（起）：进入工具执行阶段。
+        //
+        // 这里的阶段必须切到 `RunningTool`：工具执行期间链路上没有任何 SSE 帧，
+        // 一条 `cargo build` 编译大工程 600 秒也是正常的。若仍按 180 秒 idle 判据，
+        // 慢命令会被误杀 —— 正是本次拆分要根治的老问题。工具自身已有 timeout 兜底
+        // （≤ 600 秒），所以这里只保留硬上限（防真死循环）。
+        budget_touch(&budget);
+        last_progress = format!(
+            "第 {} 轮工具执行开始（{} 个工具）",
+            loop_count + 1,
+            spawn_tasks.len()
+        );
+        if let Some(stop) = check_subagent_budget(
+            &app,
+            &run_id,
+            &budget,
+            BudgetPhase::RunningTool,
+            &last_progress,
+            sub_input_tokens,
+            sub_output_tokens,
+        )
+        .await
+        {
+            return stop;
+        }
+
+        if !spawn_tasks.is_empty() && !cancel_requested(&app, &run_id, parent_cancel.as_ref()).await
+        {
+            let mut set = tokio::task::JoinSet::new();
+            // 只登记同步 shell 命令：取消时它必须立刻停机（进程树由 exec 层守卫清理），
+            // 其余工具等待自然完成，避免把一次文件写入留在中间态。
+            let mut abortable: Vec<tokio::task::AbortHandle> = Vec::new();
+            for task in spawn_tasks {
+                let app_clone = app.clone();
+                let sid_clone = session_id.clone();
+                // 把子代理身份带进日志与审计（agent_type = "subagent:<role>"），
+                // 供 log-viewer / 审计区分"哪种类型的子代理在干活"（2026-09-20）
+                let agent_tag = format!("subagent:{}", agent_role);
+                let is_shell = task.name == "RunCommand";
+                let handle = set.spawn(async move {
+                    let (output, is_error) = handle_tool_call_inner_owned(
+                        app_clone.clone(),
+                        task.name.clone(),
+                        task.input.clone(),
+                        sid_clone,
+                        "SUBAGENT".to_string(), // intent：子代理执行的意图标记
+                        "edit".to_string(),     // 子agent使用 edit 模式
+                        agent_tag,              // agent_type：带子代理类型（2026-09-20）
+                    )
+                    .await;
+                    SubToolTaskResult {
+                        index: task.index,
+                        tool_use_id: task.tool_use_id,
+                        name: task.name,
+                        output,
+                        is_error,
+                    }
+                });
+                if is_shell {
+                    abortable.push(handle);
+                }
+            }
+
+            let batch_cancel_token = SubAgentMonitor::cancel_token(&app, &run_id).await;
+            let batch_cancel_fallback = tokio_util::sync::CancellationToken::new();
+            let batch_cancel = batch_cancel_token
+                .as_ref()
+                .unwrap_or(&batch_cancel_fallback);
+            let mut cancelled = false;
+            loop {
+                tokio::select! {
+                    biased;
+                    // 取消分支只触发一次：中止后不再监听，避免已取消的令牌忙循环
+                    _ = wait_cancel(parent_cancel.as_ref(), batch_cancel), if !cancelled => {
+                        cancelled = true;
+                        for handle in &abortable {
+                            handle.abort();
+                        }
+                    }
+                    joined = set.join_next() => match joined {
+                        Some(Ok(result)) => all_results.push(result),
+                        // 任务 panic 或被 abort：本轮整体已取消，结果不再使用
+                        Some(Err(_)) => {}
+                        None => break,
+                    }
+                }
+            }
+
+            if cancelled {
+                SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
+                return (
+                    "子代理已取消。".to_string(),
+                    sub_input_tokens,
+                    sub_output_tokens,
+                );
+            }
+        }
+
+        // 预算进展信号 4/4（终）：工具批次已结束，本轮的进展证据到此为止。
+        // 下面回到等模型阶段（下一轮请求 / 压缩调用），所以阶段切回 `AwaitingModel`。
+        budget_touch(&budget);
+        last_progress = format!(
+            "第 {} 轮工具执行结束（{} 个结果）",
+            loop_count + 1,
+            all_results.len()
+        );
+        if let Some(stop) = check_subagent_budget(
+            &app,
+            &run_id,
+            &budget,
+            BudgetPhase::AwaitingModel,
+            &last_progress,
+            sub_input_tokens,
+            sub_output_tokens,
+        )
+        .await
+        {
+            return stop;
+        }
+
+        // 阶段 3：排序 + 汇总
+        all_results.sort_by_key(|r| r.index);
+
+        // 空转保护计数：本轮"所有工具调用都失败"就 +1，只要有一个成功立刻清零。
+        // （`immediate_results` 里的去重拦截与参数解析失败也按失败计入。）
+        if !all_results.is_empty() && all_results.iter().all(|r| r.is_error) {
+            consecutive_failed_loops += 1;
+        } else {
+            consecutive_failed_loops = 0;
+        }
+
+        let mut tool_results = Vec::new();
+        for result in all_results {
+            if cancel_requested(&app, &run_id, parent_cancel.as_ref()).await {
+                SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
+                return (
+                    "子代理已取消。".to_string(),
+                    sub_input_tokens,
+                    sub_output_tokens,
+                );
+            }
+
+            let output_summary = {
+                if result.output.chars().count() > 180 {
+                    format!("{}...", result.output.chars().take(180).collect::<String>())
+                } else {
+                    result.output.clone()
+                }
+            };
+            SubAgentMonitor::record_tool_result(
+                &app,
+                &run_id,
+                &result.name,
+                Some(output_summary),
+                loop_count + 1,
+                sub_input_tokens,
+                sub_output_tokens,
+            )
+            .await;
+
+            let trace_result = serde_json::json!({
+                "toolUseId": &result.tool_use_id,
+                "tool": &result.name,
+                "output": &result.output,
+                "isError": result.is_error,
+            });
+            if let Err(err) = SubAgentMonitor::append_trace_event(
+                &app,
+                &run_id,
+                loop_count + 1,
+                "tool_result",
+                &trace_result,
+                Some(&model_id),
+                Some(sub_input_tokens),
+                Some(sub_output_tokens),
+            )
+            .await
+            {
+                crate::jarvis_warn!("SUBAGENT", "failed to persist tool trace: {}", err);
+            }
+
+            tool_results.push(ContentBlock::ToolResult {
+                tool_use_id: result.tool_use_id,
+                content: result.output,
+            });
+        }
+
+        messages.push(Message::Assistant {
+            content: Content::Multiple(current_blocks),
+        });
+
+        if tool_results.is_empty() {
+            final_answer = current_text_this_turn;
+            break;
+        } else {
+            messages.push(Message::User {
+                content: Content::Multiple(tool_results),
+            });
+            // 超阈值时触发 LLM 摘要压缩。判据与主 Agent 共用
+            // （`infra::llm::context_budget`）：阈值 =（模型窗口 − 输出预算）×
+            // `COMPACT_TRIGGER_PERCENT`（当前 85%），
+            // 占用 = 本地估算 ×（本轮实测 ÷ 本轮估算）。
+            let window = crate::infra::llm::context_budget::resolve_context_window(&model_id);
+            let output_budget =
+                crate::infra::llm::context_budget::resolve_output_budget(&model_id, cfg.max_tokens);
+            let trigger =
+                crate::infra::llm::context_budget::compact_trigger_tokens(window, output_budget);
+            let est_now = estimate_tokens(&messages) + fixed_overhead_tokens;
+            let context_tokens = crate::infra::llm::context_budget::calibrated_context_tokens(
+                Some(request_input_tokens),
+                Some(est_before_request),
+                est_now,
+            );
+            if crate::infra::llm::context_budget::should_compact(context_tokens, trigger) {
+                println!(
+                    "[SUBAGENT] 上下文占用 {} > {}% 可用窗口（窗口 {} − 输出预算 {} = {}, 本地估算 {}, 本轮实测 {}），触发自动压缩",
+                    context_tokens,
+                    crate::infra::llm::context_budget::COMPACT_TRIGGER_PERCENT,
+                    window,
+                    output_budget,
+                    window.saturating_sub(output_budget),
+                    est_now,
+                    request_input_tokens
+                );
+                let mut temp_memory = crate::infra::types::models::SessionMemory {
+                    messages: std::mem::take(&mut messages),
+                    ..Default::default()
+                };
+                // 子 Agent 的压缩是纯函数式调用：临时 memory 里全是普通对话消息
+                temp_memory.sources = temp_memory
+                    .messages
+                    .iter()
+                    .map(|_| crate::infra::types::models::MessageSource::Chat)
+                    .collect();
+                // 压缩是非流式 LLM 调用（整体超时约 60 秒），同样要能被取消。
+                // 临时 memory 是纯函数式副本，取消时直接丢弃即可，不影响真实会话。
+                let compact_cancel_token = SubAgentMonitor::cancel_token(&app, &run_id).await;
+                let compact_cancel_fallback = tokio_util::sync::CancellationToken::new();
+                let compact_cancel = compact_cancel_token
+                    .as_ref()
+                    .unwrap_or(&compact_cancel_fallback);
+                let cancelled_during_compact = tokio::select! {
+                    biased;
+                    _ = wait_cancel(parent_cancel.as_ref(), compact_cancel) => true,
+                    _ = compact_messages(
+                        &mut temp_memory,
+                        &client,
+                        &api_key,
+                        &base_url,
+                        &cfg.utility_model,
+                        api_format_enum,
+                    ) => false,
+                };
+                if cancelled_during_compact {
+                    SubAgentMonitor::acknowledge_cancelled(&app, &run_id).await;
+                    return (
+                        "子代理已取消。".to_string(),
+                        sub_input_tokens,
+                        sub_output_tokens,
+                    );
+                }
+                messages = temp_memory.messages;
+            }
+        }
+        // 每轮收尾再判一次：这里**不 touch** —— 尾部没有新的进展证据，只是把
+        // 「工具批次结束 → 消息落盘 → 可能的压缩调用」这段耗时也算进判据，
+        // 避免「每轮都刚好卡在阈值边缘」的长任务一直拖到硬上限。
+        if let Some(stop) = check_subagent_budget(
+            &app,
+            &run_id,
+            &budget,
+            BudgetPhase::AwaitingModel,
+            &last_progress,
+            sub_input_tokens,
+            sub_output_tokens,
+        )
+        .await
+        {
+            return stop;
+        }
+
+        loop_count += 1;
+    }
+
+    let _ = app.emit(
+        "chat-stream",
+        crate::infra::types::events::ChatStreamEvent {
+            content: "\n> **[子代理执行完毕]**\n".to_string(),
+            session_id: session_id.clone(),
+            loop_count: None,
+            is_sub_agent: Some(true),
+        },
+    );
+    let _ = app.emit(
+        "agent-step",
+        crate::infra::types::events::AgentStepEvent::SubagentEnd {
+            session_id: session_id.clone(),
+            is_sub_agent: true,
+        },
+    );
+
+    if loop_count >= max_loops {
+        // 收集最后的工具输出作为部分成果，而非直接标记失败
+        let mut partial_results: Vec<String> = messages
+            .iter()
+            .rev()
+            .filter_map(|msg| {
+                if let Message::User {
+                    content: Content::Multiple(blocks),
+                } = msg
+                {
+                    let summaries: Vec<&str> = blocks
+                        .iter()
+                        .filter_map(|block| {
+                            if let ContentBlock::ToolResult { content, .. } = block {
+                                Some(content.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if summaries.is_empty() {
+                        None
+                    } else {
+                        Some(summaries.join("\n"))
+                    }
+                } else {
+                    None
+                }
+            })
+            .take(5)
+            .collect();
+        partial_results.reverse();
+
+        let partial_summary = if !partial_results.is_empty() {
+            let joined: String = partial_results
+                .iter()
+                .map(|r| {
+                    let truncated: String = r.chars().take(200).collect();
+                    if r.len() > 200 {
+                        format!("{}...", truncated)
+                    } else {
+                        truncated
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n---\n");
+            format!("\n\n【部分成果（{}轮已达上限）】\n{}", max_loops, joined)
+        } else {
+            String::new()
+        };
+
+        let stop_message = format!(
+            "子代理执行达到 {} 轮上限，已停止。{}",
+            max_loops, partial_summary
+        );
+
+        if final_answer.is_empty() && partial_results.is_empty() {
+            SubAgentMonitor::fail_run(
+                &app,
+                &run_id,
+                "Subagent reached loop limit with no results".to_string(),
+                sub_input_tokens,
+                sub_output_tokens,
+            )
+            .await;
+        } else {
+            SubAgentMonitor::complete_run(
+                &app,
+                &run_id,
+                sub_input_tokens,
+                sub_output_tokens,
+                Some(stop_message.clone()),
+            )
+            .await;
+        }
+        (stop_message, sub_input_tokens, sub_output_tokens)
+    } else {
+        SubAgentMonitor::complete_run(
+            &app,
+            &run_id,
+            sub_input_tokens,
+            sub_output_tokens,
+            Some(final_answer.clone()),
+        )
+        .await;
+        (final_answer, sub_input_tokens, sub_output_tokens)
+    }
+}

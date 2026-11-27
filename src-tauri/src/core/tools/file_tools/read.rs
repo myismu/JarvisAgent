@@ -257,7 +257,7 @@ pub async fn read_file(
             }
 
             // 探索模式拦截：记录文件目录，检测逐文件遍历
-            if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
+            if let Some(manager) = app.try_state::<crate::core::runtime::SessionManager>() {
                 let ctx = manager.get_or_create(session_id).await;
                 let dir = std::path::Path::new(&path)
                     .parent()

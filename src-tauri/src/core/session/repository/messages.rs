@@ -173,7 +173,7 @@ pub(super) const SESSION_MESSAGE_COLUMNS: &str =
 pub fn list_visible_session_messages(
     session_id: &str,
 ) -> Result<Vec<StoredSessionMessage>, String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {} FROM session_messages
@@ -210,39 +210,48 @@ pub fn list_visible_session_messages_paged(
     before_seq: Option<i64>,
     limit: usize,
 ) -> Result<Vec<StoredSessionMessage>, String> {
-    crate::infra::db::with_connection(|conn| {
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT {} FROM session_messages
-                 WHERE session_id = ?1
-                   AND hidden_at IS NULL
-                   AND recalled_at IS NULL
-                   AND source != ?4
-                   AND (?2 IS NULL OR seq < ?2)
-                 ORDER BY seq DESC
-                 LIMIT ?3",
-                SESSION_MESSAGE_COLUMNS
-            ))
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(
-                rusqlite::params![
-                    session_id,
-                    before_seq,
-                    limit as i64,
-                    MessageSource::Compact.as_db()
-                ],
-                stored_session_message_from_row,
-            )
-            .map_err(|e| e.to_string())?;
-        let mut messages = Vec::new();
-        for row in rows {
-            messages.push(row.map_err(|e| e.to_string())?);
-        }
-        // 倒序取出（最新在前），翻正为 ASC 供渲染层直接使用
-        messages.reverse();
-        Ok(messages)
+    crate::infra::db::with_read_connection(|conn| {
+        list_visible_session_messages_paged_in(conn, session_id, before_seq, limit)
     })
+}
+
+fn list_visible_session_messages_paged_in(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    before_seq: Option<i64>,
+    limit: usize,
+) -> Result<Vec<StoredSessionMessage>, String> {
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT {} FROM session_messages
+             WHERE session_id = ?1
+               AND hidden_at IS NULL
+               AND recalled_at IS NULL
+               AND source != ?4
+               AND (?2 IS NULL OR seq < ?2)
+             ORDER BY seq DESC
+             LIMIT ?3",
+            SESSION_MESSAGE_COLUMNS
+        ))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![
+                session_id,
+                before_seq,
+                limit as i64,
+                MessageSource::Compact.as_db()
+            ],
+            stored_session_message_from_row,
+        )
+        .map_err(|e| e.to_string())?;
+    let mut messages = Vec::new();
+    for row in rows {
+        messages.push(row.map_err(|e| e.to_string())?);
+    }
+    // 倒序取出（最新在前），翻正为 ASC 供渲染层直接使用
+    messages.reverse();
+    Ok(messages)
 }
 
 /// 判断一条存储消息是否为"轮的起点"——即用户真实输入（可渲染的 user 消息）。
@@ -322,31 +331,35 @@ pub fn load_visible_turns_page(
     let mut enough_turns = false;
     let mut batches = 0usize;
 
-    loop {
-        batches += 1;
-        if batches > MAX_BATCHES {
-            reached_oldest = true; // 防御上限触发：停止补取，按现状裁剪
-            break;
-        }
-        let batch = list_visible_session_messages_paged(session_id, cursor, BUFFER)?;
-        if batch.is_empty() {
-            reached_oldest = true; // 游标之前没有更早消息
-            break;
-        }
-        let batch_len = batch.len(); // 先记录：splice 会 move batch
-        collected.splice(0..0, batch); // batch 是 ASC，插到头部保持整体 ASC
-        cursor = Some(collected[0].seq as i64);
+    // 单次借用只读连接完成整页多批回扫，避免循环中反复进出连接池
+    crate::infra::db::with_read_connection(|conn| {
+        loop {
+            batches += 1;
+            if batches > MAX_BATCHES {
+                reached_oldest = true; // 防御上限触发：停止补取，按现状裁剪
+                break;
+            }
+            let batch = list_visible_session_messages_paged_in(conn, session_id, cursor, BUFFER)?;
+            if batch.is_empty() {
+                reached_oldest = true; // 游标之前没有更早消息
+                break;
+            }
+            let batch_len = batch.len(); // 先记录：splice 会 move batch
+            collected.splice(0..0, batch); // batch 是 ASC，插到头部保持整体 ASC
+            cursor = Some(collected[0].seq as i64);
 
-        let turns = count_turn_starts(&collected);
-        if turns > max_turns {
-            enough_turns = true; // 轮数已凑够（且仍有更早轮未取）
-            break;
+            let turns = count_turn_starts(&collected);
+            if turns > max_turns {
+                enough_turns = true; // 轮数已凑够（且仍有更早轮未取）
+                break;
+            }
+            if batch_len < BUFFER {
+                reached_oldest = true; // 本批不满 = 已到会话最老
+                break;
+            }
         }
-        if batch_len < BUFFER {
-            reached_oldest = true; // 本批不满 = 已到会话最老
-            break;
-        }
-    }
+        Ok(())
+    })?;
 
     // 轮起点下标（升序）
     let starts: Vec<usize> = collected
@@ -378,7 +391,7 @@ pub fn find_session_message_by_id(
     session_id: &str,
     message_id: &str,
 ) -> Result<Option<StoredSessionMessage>, String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         find_session_message_by_id_in(conn, session_id, message_id)
     })
 }
@@ -518,7 +531,7 @@ pub fn hide_orphan_session_messages(
 }
 
 pub fn session_messages_count(session_id: &str) -> Result<usize, String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM session_messages WHERE session_id = ?1",
@@ -544,7 +557,7 @@ pub fn session_messages_count(session_id: &str) -> Result<usize, String> {
 ///
 /// 空会话返回 `(0, None)` —— `MAX(seq)` 在没有行时本身就是 NULL。
 pub fn session_message_stats(session_id: &str) -> Result<(i64, Option<i64>), String> {
-    crate::infra::db::with_connection(|conn| session_message_stats_in(conn, session_id))
+    crate::infra::db::with_read_connection(|conn| session_message_stats_in(conn, session_id))
 }
 
 /// [`session_message_stats`] 的 connection 版。
@@ -634,7 +647,7 @@ pub(super) fn stored_session_message_from_row(
 }
 
 pub fn load_session(id: &str) -> Result<SessionMemory, String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         let json = conn
             .query_row(
                 "SELECT memory_json FROM session_memory
@@ -800,7 +813,7 @@ pub fn update_context_snapshot_usage(
 }
 
 pub fn get_context_snapshot(session_id: &str) -> Result<Option<SessionContextSnapshot>, String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         conn.query_row(
             "SELECT snapshot_json FROM session_context_snapshots
              JOIN sessions ON sessions.id = session_context_snapshots.session_id

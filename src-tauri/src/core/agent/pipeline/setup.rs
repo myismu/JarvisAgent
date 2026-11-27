@@ -25,7 +25,7 @@ impl PipelineState {
     pub(super) async fn ensure_session_thinking_initialized(
         app: &tauri::AppHandle,
         session_id: &str,
-        ctx: &std::sync::Arc<crate::infra::state::state::SessionContext>,
+        ctx: &std::sync::Arc<crate::core::runtime::SessionContext>,
         thinking_forced: bool,
     ) {
         // 已经跑过主 Agent：说明值已固化（或用户已表态），不再改动
@@ -34,7 +34,7 @@ impl PipelineState {
         }
 
         // 读设置里的默认档位（L1），解析为确定布尔
-        let default_raw = crate::command::app_config::read_file()
+        let default_raw = crate::infra::config::app_config::read_file()
             .ui_preferences
             .thinking_default;
         let resolved = crate::core::session::thinking::ThinkingDefault::parse(&default_raw)
@@ -80,7 +80,7 @@ impl PipelineState {
         display_msg: Option<String>,
         _inject_user_message: bool,
         app: tauri::AppHandle,
-        session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
+        session_manager: tauri::State<'_, crate::core::runtime::SessionManager>,
         config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
     ) -> Result<Self, AgentError> {
         println!("\n{}", "=".repeat(60));
@@ -468,7 +468,7 @@ impl PipelineState {
             turn_text_this_turn: String::new(),
             turn_thinking_this_turn: String::new(),
             // 崩溃保护是纯全局设置：读一次当轮快照，中途改设置不影响进行中的轮次
-            crash_protection: crate::command::app_config::read_file()
+            crash_protection: crate::infra::config::app_config::read_file()
                 .ui_preferences
                 .crash_protection,
             display_msg,
@@ -547,7 +547,7 @@ impl PipelineState {
             // 3a. 崩溃恢复：上次 run 异常中断时，把残留消息恢复进内存。
             // 走唯一闸门 `ensure_session_recovered`（原子抢占锁 + 闸门内统一落库/盖章），
             // 本入口不再自行 save/mark。
-            let recovered = crate::command::session::ensure_session_recovered(
+            let recovered = crate::core::session::lifecycle::ensure_session_recovered(
                 &self.sid,
                 &mut session,
                 active_run_id_before_recovery.as_deref(),

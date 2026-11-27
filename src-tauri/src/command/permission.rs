@@ -11,9 +11,10 @@
 //! - `resolve_permission()`: 前端提交权限决策，支持方案审批（plan_*）和普通权限
 //! - `cancel_jarvis()`: 取消当前 Agent 执行，清理所有待处理权限和子 Agent
 
+use crate::core::runtime::SessionManager;
 use crate::core::tools::framework::permission::PermissionDecision;
-use crate::core::tools::framework::policy::ApprovalMode;
-use crate::infra::state::state::SessionManager;
+use crate::core::tools::framework::policy::{mode_requires_project, ApprovalMode};
+use crate::infra::types::error::CommandError;
 use serde::Serialize;
 use tauri::Emitter;
 
@@ -86,19 +87,6 @@ pub struct PermissionResolvedPayload {
     pub decision_text: String,
 }
 
-/// 「绑定项目」要求的**唯一口径**：哪些档位必须挂在项目下才能生效。
-///
-/// 为什么单独抽成一个函数：这条规则在两条路径上都要用——
-/// 1. 设置路径（本文件的 [`set_session_approval_mode`]）：不满足就拒绝，档位不变；
-/// 2. 恢复路径（`infra::state` 的 `SessionManager::get_or_create`）：存量脏数据不满足就降级。
-///
-/// 两处各写一份判断，必然出现"设置时拦、恢复时放"（或反之）的漂移。
-/// 新增"必须绑项目"的档位时只改这里。
-pub(crate) fn mode_requires_project(mode: &str) -> bool {
-    // 解析走唯一入口 `ApprovalMode::from_str`（未知值兜底 request_approval，不会意外变宽）
-    ApprovalMode::from_str(mode) == ApprovalMode::FullApprove
-}
-
 /// 把前端传来的 decision/content 解析成结构化决策。
 /// 未知取值一律按"明确拒绝"处理（安全默认），并保留用户说明。
 fn parse_decision(decision: &str, content: Option<String>) -> PermissionDecision {
@@ -122,7 +110,7 @@ pub async fn resolve_permission(
     content: Option<String>,
     session_manager: tauri::State<'_, SessionManager>,
     app: tauri::AppHandle,
-) -> Result<ResolvePermissionResult, String> {
+) -> Result<ResolvePermissionResult, CommandError> {
     let ctx = session_manager.get_or_create(&session_id).await;
     // 审批通过时拿到的方案文档：稍后（等本轮执行结束后）据此自动建任务图。
     let mut approved_plan: Option<crate::infra::types::models::PlanDocument> = None;
@@ -253,7 +241,7 @@ pub async fn cancel_jarvis(
     session_id: String,
     session_manager: tauri::State<'_, SessionManager>,
     app: tauri::AppHandle,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     println!("[JARVIS] 收到取消请求: {}", session_id);
     let ctx = session_manager.get_or_create(&session_id).await;
     let execution_id = ctx.request_execution_cancel();
@@ -289,11 +277,11 @@ pub async fn cancel_jarvis(
         .drain()
         .collect::<Vec<_>>();
     for (id, entry) in pending_qs {
-        let _ = entry.responder.send(
-            crate::infra::state::state::UserQuestionDecision::Interrupted {
+        let _ = entry
+            .responder
+            .send(crate::core::runtime::UserQuestionDecision::Interrupted {
                 reason: "本轮执行已被取消".to_string(),
-            },
-        );
+            });
         let _ = app.emit(
             "user-question-resolved",
             crate::infra::types::events::UserQuestionResolvedEvent {
@@ -326,7 +314,7 @@ pub async fn cancel_jarvis(
 pub async fn get_permission_state(
     session_id: String,
     session_manager: tauri::State<'_, SessionManager>,
-) -> Result<PermissionStateView, String> {
+) -> Result<PermissionStateView, CommandError> {
     let ctx = session_manager.get_or_create(&session_id).await;
     // 只统计普通权限请求，排除方案审批（plan proposals 有独立的审批面板）
     let pending: Vec<PendingPermissionItem> = ctx
@@ -373,7 +361,7 @@ pub async fn get_permission_state(
 pub async fn get_session_permission_settings(
     session_id: String,
     session_manager: tauri::State<'_, SessionManager>,
-) -> Result<SessionPermissionSettingsView, String> {
+) -> Result<SessionPermissionSettingsView, CommandError> {
     let ctx = session_manager.get_or_create(&session_id).await;
     let approval_mode = ctx.approval_mode.lock().await.clone();
     let read_only = ctx.read_only_enabled().await;
@@ -407,7 +395,7 @@ pub async fn set_session_approval_mode(
     mode: String,
     session_manager: tauri::State<'_, SessionManager>,
     app: tauri::AppHandle,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     // 白名单直接对齐 `ApprovalMode::as_str()`（唯一字符串口径），避免这里手写一份字符串
     // 表、新增档位时漏改本处。注意：不能用 `ApprovalMode::from_str` 判合法——它对
     // 未知值会兜底成 request_approval，等于把非法输入静默改成另一个档位。
@@ -419,10 +407,10 @@ pub async fn set_session_approval_mode(
     .into_iter()
     .any(|candidate| candidate.as_str() == mode.as_str());
     if !supported {
-        return Err(format!(
+        return Err(CommandError::invalid_input(format!(
             "不支持的权限档位「{}」。支持：request_approval（请求审批）、auto_approve（帮我批准）、full_approve（完全批准）。",
             mode
-        ));
+        )));
     }
 
     // 「完全批准」的项目绑定前置校验。放在 `get_or_create` 之前：校验失败不应顺手
@@ -431,13 +419,15 @@ pub async fn set_session_approval_mode(
         // 查不到会话元信息时按失败处理（fail-closed）：项目归属无法确认，就不能当成
         // "已绑定项目"放行。合法会话在建会话时即已落库，查不到只可能是脏数据/串号。
         let meta = crate::core::session::get_session_meta(&session_id).map_err(|e| {
-            format!(
+            CommandError::not_found(format!(
                 "无法确认会话「{}」的项目绑定，已拒绝切换到「完全批准」：{}",
                 session_id, e
-            )
+            ))
         })?;
         if meta.project_id.is_none() {
-            return Err("「完全批准」只能在绑定项目的会话里启用：本会话没有所属项目，放行范围无从界定。请把会话挂到项目下再切档，或改用「帮我批准」。".to_string());
+            return Err(CommandError::permission_denied(
+                "「完全批准」只能在绑定项目的会话里启用：本会话没有所属项目，放行范围无从界定。请把会话挂到项目下再切档，或改用「帮我批准」。",
+            ));
         }
     }
 
@@ -485,7 +475,7 @@ pub async fn set_agent_read_only(
     enabled: bool,
     session_manager: tauri::State<'_, SessionManager>,
     app: tauri::AppHandle,
-) -> Result<bool, String> {
+) -> Result<bool, CommandError> {
     let ctx = session_manager.get_or_create(&session_id).await;
     *ctx.agent_read_only.lock().await = enabled;
     let _ = app.emit(
@@ -511,7 +501,7 @@ pub async fn revoke_session_allowance(
     scope: String,
     session_manager: tauri::State<'_, SessionManager>,
     app: tauri::AppHandle,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     let ctx = session_manager.get_or_create(&session_id).await;
     ctx.session_allowances
         .lock()
@@ -534,7 +524,7 @@ pub async fn clear_session_allowances(
     session_id: String,
     session_manager: tauri::State<'_, SessionManager>,
     app: tauri::AppHandle,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     let ctx = session_manager.get_or_create(&session_id).await;
     ctx.session_allowances.lock().await.clear();
     // 「清空」连项目账本一起删
@@ -559,7 +549,7 @@ pub async fn resolve_user_question(
     answers: Option<Vec<crate::infra::types::events::UserQuestionAnswerItem>>,
     session_manager: tauri::State<'_, SessionManager>,
     app: tauri::AppHandle,
-) -> Result<crate::infra::types::events::ResolveUserQuestionResult, String> {
+) -> Result<crate::infra::types::events::ResolveUserQuestionResult, CommandError> {
     let ctx = session_manager.get_or_create(&session_id).await;
     let entry = ctx.pending_questions.lock().await.remove(&request_id);
     let Some(entry) = entry else {
@@ -571,12 +561,12 @@ pub async fn resolve_user_question(
 
     let (parsed_decision, status) = if decision == "skipped" {
         (
-            crate::infra::state::state::UserQuestionDecision::Skipped,
+            crate::core::runtime::UserQuestionDecision::Skipped,
             "skipped",
         )
     } else {
         (
-            crate::infra::state::state::UserQuestionDecision::Answered(answers.unwrap_or_default()),
+            crate::core::runtime::UserQuestionDecision::Answered(answers.unwrap_or_default()),
             "answered",
         )
     };
@@ -602,7 +592,7 @@ pub async fn resolve_user_question(
 pub async fn get_pending_user_questions(
     session_id: String,
     session_manager: tauri::State<'_, SessionManager>,
-) -> Result<Vec<crate::infra::types::events::UserQuestionRequestEvent>, String> {
+) -> Result<Vec<crate::infra::types::events::UserQuestionRequestEvent>, CommandError> {
     let ctx = session_manager.get_or_create(&session_id).await;
     let pending = ctx.pending_questions.lock().await;
     let mut items = Vec::with_capacity(pending.len());

@@ -428,9 +428,9 @@ pub async fn consolidate_memory(
     session_id: &str,
 ) -> framework::ToolCallResult {
     // 同一次 run 内只允许触发一次，避免模型反复整理
-    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
+    if let Some(manager) = app.try_state::<crate::core::runtime::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
-        let scope = crate::infra::state::state::active_run_scope_key(app, session_id).await;
+        let scope = crate::core::runtime::active_run_scope_key(app, session_id).await;
         let mut cache = ctx.dedupe_cache.lock().await;
         let state = cache.entry("memory_consolidate".to_string()).or_default();
         if let Some(entry) = state.get_mut(&scope) {
@@ -442,7 +442,7 @@ pub async fn consolidate_memory(
         }
         state.insert(
             scope,
-            crate::infra::state::state::ToolDedupeCacheEntry {
+            crate::core::runtime::ToolDedupeCacheEntry {
                 display: "consolidate".to_string(),
                 suppressed_count: 0,
                 running: false,

@@ -92,9 +92,9 @@ use helpers::*;
 struct PipelineState {
     app: tauri::AppHandle,
     sid: String,
-    ctx: Arc<crate::infra::state::state::SessionContext>,
+    ctx: Arc<crate::core::runtime::SessionContext>,
     /// 生命周期守卫：正常收尾时释放，异常退出时清理本轮占用。
-    execution_lease: crate::infra::state::state::ExecutionLease,
+    execution_lease: crate::core::runtime::ExecutionLease,
     cancel_token: tokio_util::sync::CancellationToken,
     request_workspace: Option<std::path::PathBuf>,
     cfg: AgentConfig,
@@ -266,7 +266,7 @@ pub async fn run_pipeline(
     reflection_mode_override: Option<String>,
     display_msg: Option<String>,
     app: tauri::AppHandle,
-    session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
+    session_manager: tauri::State<'_, crate::core::runtime::SessionManager>,
     config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
 ) -> Result<JarvisResult, AgentError> {
     run_pipeline_inner(
@@ -292,7 +292,7 @@ pub async fn resume_pipeline(
     session_id: String,
     reason: String,
     app: tauri::AppHandle,
-    session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
+    session_manager: tauri::State<'_, crate::core::runtime::SessionManager>,
     config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
 ) -> Result<JarvisResult, AgentError> {
     run_pipeline_inner(
@@ -326,7 +326,7 @@ async fn run_pipeline_inner(
     display_msg: Option<String>,
     inject_user_message: bool,
     app: tauri::AppHandle,
-    session_manager: tauri::State<'_, crate::infra::state::state::SessionManager>,
+    session_manager: tauri::State<'_, crate::core::runtime::SessionManager>,
     config_state: tauri::State<'_, crate::infra::config::config::ConfigState>,
 ) -> Result<JarvisResult, AgentError> {
     // ── 阶段 1：初始化（会话与配置准备 + 复杂任务判定）──

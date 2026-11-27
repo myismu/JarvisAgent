@@ -32,7 +32,7 @@ fn count_tokens(text: &str) -> usize {
 #[tauri::command]
 pub async fn list_skills() -> Result<Vec<SkillMeta>, String> {
     let skills = load_all_skills();
-    let activations = crate::command::app_config::get_all_skill_activations();
+    let activations = crate::infra::config::app_config::get_all_skill_activations();
     Ok(skills
         .into_iter()
         .map(|s| {

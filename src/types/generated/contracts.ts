@@ -285,7 +285,7 @@ agentApprovalMode: string,
  *   `thinking_forced`，与 `agent_audience` 已解耦）；
  * - `on` / `off`：无条件开关。
  *
- * ⚠️ 它**只在新建会话时被解析一次**并固化进 `sessions.thinking_mode`（布尔），
+ * 注意：它**只在新建会话时被解析一次**并固化进 `sessions.thinking_mode`（布尔），
  * 此后修改本字段**不会影响任何已有会话**——这是与"工作模式/权限档位"完全一致的
  * 三值分治语义（设置态只喂新会话）。
  *
@@ -680,7 +680,7 @@ export type HistoryTurnSnapshot = { version: number, status: string, textBlocks:
  * 属于状态标注；而 text_blocks 是模型正文，渲染在气泡内。
  * 中断/取消这类"运行状态"信息一律走 notice，避免混进正文显得突兀。
  *
- * ⚠️ 这里曾经是 `notice: Option<String>`、装后端拼好的**中文句子** ——
+ * 注意：这里曾经是 `notice: Option<String>`、装后端拼好的**中文句子** ——
  * 界面切英文后中断轮次仍冒中文。现在后端只发 key（如 `notice.userCancel`），
  * 文案统一由前端语言包提供，与运行期 `JarvisResult::notice_i18n_key` 同源。
  */
@@ -1149,3 +1149,7 @@ combinedText: string, };
 export type McpServerStatusEvent = { serverName: string, status: McpServerStatus, toolCount: number, resourceCount: number, promptCount: number, lastError?: string, };
 
 export type ResolveUserQuestionResult = { resolved: boolean, status: string, };
+
+export type ErrorCode = "INVALID_INPUT" | "NOT_FOUND" | "CONFLICT" | "PERMISSION_DENIED" | "CONFIG_ERROR" | "DATABASE_ERROR" | "NETWORK_ERROR" | "RATE_LIMITED" | "CANCELLED" | "INTERNAL_ERROR";
+
+export type CommandError = { code: ErrorCode, message: string, retryable: boolean, };

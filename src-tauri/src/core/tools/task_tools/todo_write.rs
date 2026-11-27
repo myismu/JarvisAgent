@@ -219,7 +219,7 @@ pub async fn todo_write(
     let mut replaced_group: Option<String> = None;
     let mut groups_snapshot: Vec<TodoGroup> = Vec::new();
 
-    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
+    if let Some(manager) = app.try_state::<crate::core::runtime::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         let mut groups = ctx.todos.lock().await;
         replaced_group = apply_todo_update(&mut groups, todos);

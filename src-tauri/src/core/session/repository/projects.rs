@@ -20,7 +20,7 @@ pub(super) const PROJECT_META_COLUMNS: &str = "p.id, p.name, p.path, p.created_a
      (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id AND s.deleted_at IS NULL) as session_count";
 
 pub fn get_project_path(project_id: &str) -> Result<Option<String>, String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         conn.query_row(
             "SELECT path FROM projects WHERE id = ?1",
             [project_id],
@@ -36,7 +36,7 @@ pub fn get_project_path(project_id: &str) -> Result<Option<String>, String> {
 /// 与 [`get_project_by_path`] 共用同一份列清单与行映射，保证「重命名后返回的对象」
 /// 与列表页拿到的字段口径完全一致（含 `session_count`）。
 pub fn get_project(id: &str) -> Result<Option<crate::core::session::ProjectMeta>, String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         conn.query_row(
             &format!(
                 "SELECT {} FROM projects p WHERE p.id = ?1",
@@ -53,7 +53,7 @@ pub fn get_project(id: &str) -> Result<Option<crate::core::session::ProjectMeta>
 pub fn get_project_by_path(
     path: &str,
 ) -> Result<Option<crate::core::session::ProjectMeta>, String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         conn.query_row(
             &format!(
                 "SELECT {} FROM projects p WHERE p.path = ?1",
@@ -91,7 +91,7 @@ pub fn create_project(name: &str, path: &str) -> Result<crate::core::session::Pr
 }
 
 pub fn list_projects() -> Result<Vec<crate::core::session::ProjectMeta>, String> {
-    crate::infra::db::with_connection(list_projects_in)
+    crate::infra::db::with_read_connection(list_projects_in)
 }
 
 /// [`list_projects`] 的 connection 版（测试直接跑真实 SQL）。
@@ -132,7 +132,7 @@ pub(super) fn list_projects_in(
 /// 项目不存在时返回 `false`（不是错误）：调用方已通过 `get_project_by_path` 拿到记录，
 /// 这里只回答「要不要复活」，查不到就按未归档处理即可。
 pub fn is_project_archived(project_id: &str) -> Result<bool, String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         let archived: Option<i64> = conn
             .query_row(
                 "SELECT deleted_at FROM projects WHERE id = ?1",

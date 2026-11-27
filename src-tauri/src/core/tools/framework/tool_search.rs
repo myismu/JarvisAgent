@@ -505,13 +505,12 @@ async fn execute_mcp_deferred_tool(
         };
 
     // 3. 取会话取消令牌并调用 MCP 服务（若处于 Idle 会自动透明拉起）
-    let cancel_token =
-        if let Some(sm) = app.try_state::<crate::infra::state::state::SessionManager>() {
-            let ctx = sm.get_or_create(session_id).await;
-            ctx.current_cancel_token()
-        } else {
-            None
-        };
+    let cancel_token = if let Some(sm) = app.try_state::<crate::core::runtime::SessionManager>() {
+        let ctx = sm.get_or_create(session_id).await;
+        ctx.current_cancel_token()
+    } else {
+        None
+    };
 
     let call_result = mcp_state
         .0
@@ -551,7 +550,7 @@ async fn execute_mcp_deferred_tool(
                     }
                     output.push_str(&saved_notes.join("\n"));
                 }
-                if let Some(sm) = app.try_state::<crate::infra::state::state::SessionManager>() {
+                if let Some(sm) = app.try_state::<crate::core::runtime::SessionManager>() {
                     let ctx = sm.get_or_create(session_id).await;
                     let mut pending = ctx.pending_tool_images.lock().await;
                     pending.extend(saved_for_vision);

@@ -18,8 +18,10 @@ use crate::core::orchestration::multi_agent::{
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::{Mutex as AsyncMutex, RwLock};
 
 /// 快照存储根目录名
 /// 会话快照管理器
@@ -37,10 +39,17 @@ pub struct SessionSnapshotManager {
 }
 
 impl SessionSnapshotManager {
-    /// 创建新的会话管理器
+    /// 创建新的会话管理器（在阻塞线程池内完成 SQLite/快照树/GC/沙箱磁盘加载，避免阻塞异步工作线程）
     ///
     /// 初始化快照树、日志、沙箱管理器等组件
     pub async fn new(session_id: &str) -> Result<Self, String> {
+        let sid = session_id.to_string();
+        tokio::task::spawn_blocking(move || Self::new_blocking(&sid))
+            .await
+            .map_err(|e| format!("初始化会话快照管理器任务失败: {}", e))?
+    }
+
+    fn new_blocking(session_id: &str) -> Result<Self, String> {
         let sandbox_base_dir = crate::infra::config::data_paths::tmp_dir()
             .join("sandboxes")
             .join(session_id);
@@ -83,7 +92,7 @@ impl SessionSnapshotManager {
         //    普通快照优先；只有整轮快照节点已被裁剪时，才退而使用 checkpoint 节点。 ──
         {
             let mut linked_message_ids: HashSet<String> =
-                crate::infra::db::list_checkpoint_user_message_links(session_id)
+                crate::core::rollback::patch_store::list_checkpoint_user_message_links(session_id)
                     .unwrap_or_default()
                     .into_iter()
                     .map(|link| link.message_id)
@@ -114,7 +123,7 @@ impl SessionSnapshotManager {
                     {
                         continue;
                     }
-                    if crate::infra::db::insert_checkpoint_user_message_link_if_absent(
+                    if crate::core::rollback::patch_store::insert_checkpoint_user_message_link_if_absent(
                         session_id,
                         &message_id,
                         &snapshot.id,
@@ -194,7 +203,7 @@ impl SessionSnapshotManager {
             // **只登记本轮第一个文件快照**：同一条用户消息可能因续跑/循环确认产生
             // 多个快照。撤回这条消息时应回到"本轮开始前"，因此目标必须锚定第一个
             // 快照的父节点；若每次覆盖成最新快照，只会撤掉最后一次续跑。
-            crate::infra::db::insert_checkpoint_user_message_link_if_absent(
+            crate::core::rollback::patch_store::insert_checkpoint_user_message_link_if_absent(
                 &self.session_id,
                 message_id,
                 &snapshot.id,
@@ -862,11 +871,50 @@ impl SessionSnapshotManager {
 /// 会话快照管理器引用类型
 pub type SessionSnapshotManagerRef = Arc<SessionSnapshotManager>;
 
+/// 快照管理器注册表默认缓存上限（超出后按最近最少使用回收无外部引用的条目）
+pub const MAX_CACHED_SNAPSHOT_MANAGERS: usize = 32;
+/// 快照管理器空闲回收阈值（30 分钟未访问且无外部持有者时自动回收）
+pub const SNAPSHOT_MANAGER_IDLE_TTL_MS: u64 = 30 * 60 * 1000;
+
+fn now_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+struct CachedSnapshotManager {
+    manager: SessionSnapshotManagerRef,
+    /// 最近访问毫秒时间戳（原子更新，热路径持读锁即可刷新，无需升级写锁）
+    last_accessed_ms: AtomicU64,
+}
+
+impl CachedSnapshotManager {
+    fn new(manager: SessionSnapshotManagerRef) -> Self {
+        Self {
+            manager,
+            last_accessed_ms: AtomicU64::new(now_epoch_ms()),
+        }
+    }
+
+    fn touch(&self) {
+        self.last_accessed_ms
+            .store(now_epoch_ms(), Ordering::Relaxed);
+    }
+
+    fn last_accessed(&self) -> u64 {
+        self.last_accessed_ms.load(Ordering::Relaxed)
+    }
+}
+
 /// 快照管理器注册表
 ///
-/// 管理多个会话的 SessionSnapshotManager 实例，支持按需创建和缓存
+/// 管理多个会话的 `SessionSnapshotManager` 实例，具备：
+/// - 按 `session_id` 细粒度加锁的双检初始化（Double-Check Lock），彻底杜绝冷会话并发重复初始化与重复 GC；
+/// - 基于原子访问时间戳与强引用计数（`Arc::strong_count == 1`）的有界空闲回收，防止内存无限增长。
 pub struct SnapshotManagerRegistry {
-    managers: RwLock<HashMap<String, SessionSnapshotManagerRef>>,
+    managers: RwLock<HashMap<String, CachedSnapshotManager>>,
+    init_locks: StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>,
 }
 
 impl Default for SnapshotManagerRegistry {
@@ -879,38 +927,335 @@ impl SnapshotManagerRegistry {
     pub fn new() -> Self {
         Self {
             managers: RwLock::new(HashMap::new()),
+            init_locks: StdMutex::new(HashMap::new()),
         }
+    }
+
+    /// 获取指定会话的专属初始化锁（不存在则创建）。
+    fn acquire_init_lock(&self, session_id: &str) -> Arc<AsyncMutex<()>> {
+        let mut locks = self
+            .init_locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        locks
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
+    }
+
+    /// 仅在无其他并发协程持有同一把初始化锁时回收表项，避免 `init_locks` 长期累积。
+    fn cleanup_init_lock(&self, session_id: &str, lock: &Arc<AsyncMutex<()>>) {
+        let mut locks = self
+            .init_locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if locks
+            .get(session_id)
+            .is_some_and(|existing| Arc::ptr_eq(existing, lock) && Arc::strong_count(existing) == 2)
+        {
+            locks.remove(session_id);
+        }
+    }
+
+    /// 在持有 `managers` 写锁时执行空闲超期回收与容量上限 LRU 淘汰。
+    ///
+    /// 安全不变量：仅驱逐 `Arc::strong_count(&entry.manager) == 1`（仅注册表自身持有，无外部命令/工具在使用）
+    /// 且不在 `protect_session_id` 中的条目。
+    fn evict_locked(
+        managers: &mut HashMap<String, CachedSnapshotManager>,
+        now_ms: u64,
+        max_idle_ms: u64,
+        max_entries: usize,
+        protect_session_id: Option<&str>,
+    ) -> usize {
+        let mut evicted = 0usize;
+
+        // 阶段一：回收超过空闲阈值且无外部引用的条目
+        let expired_keys: Vec<String> = managers
+            .iter()
+            .filter(|(sid, entry)| {
+                protect_session_id != Some(sid.as_str())
+                    && Arc::strong_count(&entry.manager) == 1
+                    && now_ms.saturating_sub(entry.last_accessed()) >= max_idle_ms
+            })
+            .map(|(sid, _)| sid.clone())
+            .collect();
+
+        for sid in expired_keys {
+            if managers.remove(&sid).is_some() {
+                evicted += 1;
+            }
+        }
+
+        // 阶段二：若总量仍超过上限，按最近最少使用（LRU）淘汰无外部引用的条目
+        if managers.len() > max_entries {
+            let need_evict = managers.len() - max_entries;
+            let mut candidates: Vec<(u64, String)> = managers
+                .iter()
+                .filter(|(sid, entry)| {
+                    protect_session_id != Some(sid.as_str())
+                        && Arc::strong_count(&entry.manager) == 1
+                })
+                .map(|(sid, entry)| (entry.last_accessed(), sid.clone()))
+                .collect();
+            candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+            for (_, sid) in candidates.into_iter().take(need_evict) {
+                if managers.remove(&sid).is_some() {
+                    evicted += 1;
+                }
+            }
+        }
+
+        evicted
+    }
+
+    /// 通用按会话细粒度双检锁加载入口（便于单测注入自定义异步 loader 验证并发防击穿）。
+    async fn get_or_create_with<F, Fut>(
+        &self,
+        session_id: &str,
+        loader: F,
+    ) -> Result<SessionSnapshotManagerRef, String>
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Result<SessionSnapshotManagerRef, String>>,
+    {
+        // 快速路径：热命中直接走读锁并原子刷新访问时间，不碰写锁和初始化锁
+        {
+            let managers = self.managers.read().await;
+            if let Some(entry) = managers.get(session_id) {
+                entry.touch();
+                return Ok(entry.manager.clone());
+            }
+        }
+
+        // 慢速路径：按 session_id 粒度加初始化锁（同会话串行，跨会话完全并行）
+        let init_lock = self.acquire_init_lock(session_id);
+        let init_guard = init_lock.lock().await;
+
+        // 双检（Double-Check）：等待锁期间同会话前序请求可能已完成初始化
+        {
+            let managers = self.managers.read().await;
+            if let Some(entry) = managers.get(session_id) {
+                entry.touch();
+                let mgr = entry.manager.clone();
+                drop(managers);
+                drop(init_guard);
+                self.cleanup_init_lock(session_id, &init_lock);
+                return Ok(mgr);
+            }
+        }
+
+        // 锁外执行全部磁盘与数据库初始化，避免卡住全局注册表读写锁
+        let built = match loader(session_id.to_string()).await {
+            Ok(mgr) => mgr,
+            Err(err) => {
+                drop(init_guard);
+                self.cleanup_init_lock(session_id, &init_lock);
+                return Err(err);
+            }
+        };
+
+        // 纳秒级短写锁插入，并在超限时顺手做轻量 LRU 回收
+        let manager = {
+            let mut managers = self.managers.write().await;
+            let entry = managers
+                .entry(session_id.to_string())
+                .or_insert_with(|| CachedSnapshotManager::new(built));
+            entry.touch();
+            let mgr = entry.manager.clone();
+            if managers.len() > MAX_CACHED_SNAPSHOT_MANAGERS {
+                Self::evict_locked(
+                    &mut managers,
+                    now_epoch_ms(),
+                    SNAPSHOT_MANAGER_IDLE_TTL_MS,
+                    MAX_CACHED_SNAPSHOT_MANAGERS,
+                    Some(session_id),
+                );
+            }
+            mgr
+        };
+
+        drop(init_guard);
+        self.cleanup_init_lock(session_id, &init_lock);
+        Ok(manager)
     }
 
     /// 获取或创建会话快照管理器
     ///
-    /// 优先从缓存获取，不存在则创建新实例
+    /// 优先从缓存获取，不存在则按会话粒度双检初始化新实例
     pub async fn get_or_create(
         &self,
         session_id: &str,
     ) -> Result<SessionSnapshotManagerRef, String> {
-        // 先尝试读取缓存
-        {
-            let managers = self.managers.read().await;
-            if let Some(manager) = managers.get(session_id) {
-                return Ok(manager.clone());
-            }
-        }
-
-        // 缓存未命中，创建新实例
-        let manager = Arc::new(SessionSnapshotManager::new(session_id).await?);
-
-        // 写入缓存
-        {
-            let mut managers = self.managers.write().await;
-            managers.insert(session_id.to_string(), manager.clone());
-        }
-
-        Ok(manager)
+        self.get_or_create_with(session_id, |sid| async move {
+            SessionSnapshotManager::new(&sid).await.map(Arc::new)
+        })
+        .await
     }
 
-    pub async fn remove(&self, session_id: &str) {
+    /// 回收空闲超时或超出容量上限且无外部引用的快照管理器，返回本次回收条目数。
+    pub async fn evict_idle(&self, max_idle_ms: u64, max_entries: usize) -> usize {
         let mut managers = self.managers.write().await;
-        managers.remove(session_id);
+        Self::evict_locked(
+            &mut managers,
+            now_epoch_ms(),
+            max_idle_ms,
+            max_entries,
+            None,
+        )
+    }
+
+    /// 按默认阈值（30 分钟空闲 / 最多 32 个缓存）执行一次回收。
+    pub async fn evict_default_idle(&self) -> usize {
+        self.evict_idle(SNAPSHOT_MANAGER_IDLE_TTL_MS, MAX_CACHED_SNAPSHOT_MANAGERS)
+            .await
+    }
+
+    /// 移除指定会话缓存；若该会话正好处于并发冷初始化中，先等待其结束再删除，防止幽灵条目回写。
+    pub async fn remove(&self, session_id: &str) {
+        let maybe_lock = {
+            let locks = self
+                .init_locks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            locks.get(session_id).cloned()
+        };
+        if let Some(lock) = maybe_lock {
+            let guard = lock.lock().await;
+            self.managers.write().await.remove(session_id);
+            drop(guard);
+            self.cleanup_init_lock(session_id, &lock);
+        } else {
+            self.managers.write().await.remove(session_id);
+        }
+    }
+}
+
+#[cfg(test)]
+mod registry_concurrency_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
+
+    fn make_stub_manager(session_id: &str) -> SessionSnapshotManagerRef {
+        Arc::new(SessionSnapshotManager {
+            tree: RwLock::new(SnapshotTree::new(session_id)),
+            journal: RwLock::new(Journal::new_for_test(session_id)),
+            store: SnapshotStore::new(session_id),
+            replay_engine: ReplayEngine::new(session_id),
+            sandbox_manager: RwLock::new(SandboxManager::new(
+                PathBuf::from("test_sandbox"),
+                session_id.to_string(),
+            )),
+            merge_engine: MergeEngine::new(),
+            session_id: session_id.to_string(),
+        })
+    }
+
+    /// 同一冷会话高并发访问快照注册表时，双检锁保证 loader 仅执行一次，且完成后清理 init_locks
+    #[tokio::test]
+    async fn concurrent_cold_get_or_create_initializes_once_and_cleans_lock() {
+        let registry = Arc::new(SnapshotManagerRegistry::new());
+        let init_count = Arc::new(AtomicUsize::new(0));
+
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let reg = Arc::clone(&registry);
+            let counter = Arc::clone(&init_count);
+            tasks.push(tokio::spawn(async move {
+                reg.get_or_create_with("snap_cold_1", |sid| async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    Ok(make_stub_manager(&sid))
+                })
+                .await
+                .expect("测试初始化不应失败")
+            }));
+        }
+
+        let mut results = Vec::new();
+        for task in tasks {
+            results.push(task.await.expect("任务不应 panic"));
+        }
+
+        assert_eq!(
+            init_count.load(Ordering::SeqCst),
+            1,
+            "同一冷会话快照管理器只应初始化一次"
+        );
+        for mgr in &results[1..] {
+            assert!(
+                Arc::ptr_eq(&results[0], mgr),
+                "并发调用应共享同一个 SessionSnapshotManager 实例"
+            );
+        }
+        assert!(
+            registry.init_locks.lock().unwrap().is_empty(),
+            "初始化完成后应清理无竞争的 init_locks"
+        );
+    }
+
+    /// 回收逻辑绝不淘汰外部仍在引用的快照管理器，但会按 TTL 与 LRU 回收空闲条目
+    #[tokio::test]
+    async fn evict_idle_preserves_referenced_and_reclaims_stale_or_overflow() {
+        let registry = SnapshotManagerRegistry::new();
+        let now = now_epoch_ms();
+
+        // 注入 4 个会话条目并设置确定的访问时间顺序
+        let _s1 = registry
+            .get_or_create_with("s1", |sid| async move { Ok(make_stub_manager(&sid)) })
+            .await
+            .unwrap();
+        let held_s2 = registry
+            .get_or_create_with("s2", |sid| async move { Ok(make_stub_manager(&sid)) })
+            .await
+            .unwrap();
+        let _s3 = registry
+            .get_or_create_with("s3", |sid| async move { Ok(make_stub_manager(&sid)) })
+            .await
+            .unwrap();
+        let _s4 = registry
+            .get_or_create_with("s4", |sid| async move { Ok(make_stub_manager(&sid)) })
+            .await
+            .unwrap();
+        drop(_s1);
+        drop(_s3);
+        drop(_s4);
+
+        {
+            let guard = registry.managers.read().await;
+            guard["s1"]
+                .last_accessed_ms
+                .store(now.saturating_sub(10_000), Ordering::Relaxed);
+            guard["s2"]
+                .last_accessed_ms
+                .store(now.saturating_sub(9_000), Ordering::Relaxed);
+            guard["s3"]
+                .last_accessed_ms
+                .store(now.saturating_sub(2_000), Ordering::Relaxed);
+            guard["s4"].last_accessed_ms.store(now, Ordering::Relaxed);
+        }
+
+        // TTL=5s、上限=2：s1 超期应被回收；s2 虽超期但外部仍持有 held_s2 不可回收；
+        // 剩余 s2/s3/s4 共 3 个超上限 2，按 LRU 应淘汰最旧的无引用条目 s3，最终保留 s2 与 s4
+        let evicted = registry.evict_idle(5_000, 2).await;
+        assert_eq!(evicted, 2);
+        {
+            let guard = registry.managers.read().await;
+            assert!(!guard.contains_key("s1"), "超期无引用条目 s1 应被回收");
+            assert!(guard.contains_key("s2"), "外部持有引用的 s2 绝不可回收");
+            assert!(
+                !guard.contains_key("s3"),
+                "超容量上限的最旧无引用条目 s3 应被 LRU 淘汰"
+            );
+            assert!(guard.contains_key("s4"), "最新访问的 s4 应保留");
+        }
+
+        // 释放 held_s2 后再次按 TTL=5s 回收，s2 应顺利被清理
+        drop(held_s2);
+        let evicted_after_drop = registry.evict_idle(5_000, 2).await;
+        assert_eq!(evicted_after_drop, 1);
+        assert!(!registry.managers.read().await.contains_key("s2"));
     }
 }

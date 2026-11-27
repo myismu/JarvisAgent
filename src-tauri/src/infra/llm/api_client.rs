@@ -205,54 +205,91 @@ pub fn log_model_request(model: &str, url: &str, agent_kind: &str) {
     println!("请求【{}】，url：【{}】，【{}】", model, url, agent_kind);
 }
 
-/// 带退避重试的 API 调用
-///
-/// 重试策略：固定阶梯 `RETRY_BACKOFF_SECS`（1s → 3s → 5s，三次退避合计 9s；
-/// 首次尝试另有多达 `HTTP_CONNECT_TIMEOUT_SECS`(15s) 的建连宽限）。
-///
-/// 为什么用固定阶梯而非指数退避（原为 1s/2s/4s）：
-/// 后者三次合计仅 7 秒，对"服务刚重启、需要几秒才就绪"这类场景几乎等于不等待；
-/// 而"服务彻底没起来"时等多久都没用。固定阶梯的每一级都由常量表决定，
-/// 既覆盖短暂抖动，又不会让用户以为卡死。
-///
-/// 客户端错误（4xx）立即返回，不重试。
-/// **连接被拒（服务未监听）直接失败**：那是确定性失败，重试只是白等。
+/// 重试回调上下文：区分主 Agent（向前端广播 `agent-step` 进度与清除事件）
+/// 与子 Agent（仅记录日志，绝不污染主聊天区的气泡下方 notice）。
+enum RetryEventTarget<'a> {
+    MainAgent {
+        app: &'a tauri::AppHandle,
+        session_id: &'a str,
+    },
+    SubAgent,
+}
+
+/// 根据 HTTP 状态码决定本次响应是否应当重试（纯函数，便于单测锁住 429 / 5xx / 4xx 策略）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HttpRetryAction {
+    /// 2xx 成功响应
+    Success,
+    /// 429 触发限流：按 `Retry-After`（缺省 5s）退避重试
+    RateLimited,
+    /// 5xx 服务端异常：按阶梯退避重试
+    RetryServerError,
+    /// 4xx（非 429）客户端错误：确定性失败，立即返回不重试
+    FailClientError,
+}
+
+fn classify_http_status(status: reqwest::StatusCode) -> HttpRetryAction {
+    if status.is_success() || status.as_u16() == 200 {
+        HttpRetryAction::Success
+    } else if status.as_u16() == 429 {
+        HttpRetryAction::RateLimited
+    } else if status.is_client_error() {
+        HttpRetryAction::FailClientError
+    } else {
+        HttpRetryAction::RetryServerError
+    }
+}
+
+/// 解析 HTTP 429 响应的 `Retry-After` 秒数（缺省或非法时回退 5 秒，上限钳制在 60 秒防止恶意长等）。
+fn parse_retry_after_secs(header_value: Option<&str>) -> u64 {
+    header_value
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(|secs| secs.clamp(1, 60))
+        .unwrap_or(5)
+}
+
+/// 带退避重试与 429 限流处理的共享核心实现（主 Agent 与子 Agent 共用同一套重试与限流策略）。
 #[allow(clippy::too_many_arguments)]
-pub async fn api_call_with_retry(
+async fn api_call_with_retry_core(
     client: &reqwest::Client,
     url: &str,
     body: &serde_json::Value,
     api_key: &str,
     api_format: ApiFormat,
     max_retries: u32,
-    app: &tauri::AppHandle,
-    session_id: &str,
+    target: RetryEventTarget<'_>,
 ) -> Result<reqwest::Response, ApiError> {
     let (auth_header_name, auth_header_value) = api_format.auth_header(api_key);
+    let (log_prefix, agent_kind) = match target {
+        RetryEventTarget::MainAgent { .. } => ("[JARVIS]", "主agent"),
+        RetryEventTarget::SubAgent => ("[SUBAGENT]", "子agent"),
+    };
 
     let mut last_error = String::new();
     for attempt in 0..=max_retries {
         if attempt > 0 {
             let wait_secs = retry_backoff_secs(attempt);
-            // 走 agent-step 而非 chat-stream：
-            // 重试进度属于**过程性状态**，经 chat-stream 会混进模型正文
-            // （渲染在回复气泡内部、刷新后消失）。改由前端渲染成气泡下方小字，
-            // 与"等待提示"一致，也不落库（避免历史里堆满重试噪音）。
-            let _ = app.emit(
-                "agent-step",
-                crate::infra::types::events::AgentStepEvent::Retry {
-                    attempt,
-                    max: max_retries,
-                    // 秒数交给前端 `notice.retry` 组句 —— 后端不再产出用户可见文案
-                    wait_secs,
-                    session_id: session_id.to_string(),
-                },
-            );
+            if let RetryEventTarget::MainAgent { app, session_id } = target {
+                // 走 agent-step 而非 chat-stream：
+                // 重试进度属于**过程性状态**，经 chat-stream 会混进模型正文
+                // （渲染在回复气泡内部、刷新后消失）。改由前端渲染成气泡下方小字，
+                // 与"等待提示"一致，也不落库（避免历史里堆满重试噪音）。
+                let _ = app.emit(
+                    "agent-step",
+                    crate::infra::types::events::AgentStepEvent::Retry {
+                        attempt,
+                        max: max_retries,
+                        // 秒数交给前端 `notice.retry` 组句 —— 后端不再产出用户可见文案
+                        wait_secs,
+                        session_id: session_id.to_string(),
+                    },
+                );
+            }
             println!(
-                "[JARVIS] API 重试 {}/{}，等待 {}s...",
-                attempt, max_retries, wait_secs
+                "{} API 重试 {}/{}，等待 {}s...",
+                log_prefix, attempt, max_retries, wait_secs
             );
-            tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+            tokio::time::sleep(Duration::from_secs(wait_secs)).await;
         }
 
         let mut req = client
@@ -268,66 +305,60 @@ pub async fn api_call_with_retry(
             .get("model")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
-        log_model_request(model, url, "主agent");
+        log_model_request(model, url, agent_kind);
 
         match req.json(body).send().await {
             Ok(response) => {
                 let status = response.status();
-                if status.is_success() || status.as_u16() == 200 {
-                    // 重试成功后必须**主动清除**前端的重试提示。
-                    //
-                    // 2026-11-22 用户实测：第 1 次重试就成功时，界面上
-                    // 「API 调用失败，1 秒后进行第 1/3 次重试…」会一直挂到整轮 loop
-                    // 结束。根因不在后端 —— 提示确实发出过，但前端 `currentTurn.notice`
-                    // 是**单向写入**的字段，没有任何「已恢复」的信号来清它；成功之后
-                    // 也不会再有下一次 retry 事件覆盖它（没有下一次了）。
-                    //
-                    // 故恢复点由后端显式发一条清除事件，前端按 kind 精确清
-                    // （只清 retry，不碰等待提示与反思标注）。
-                    let _ = app.emit(
-                        "agent-step",
-                        crate::infra::types::events::AgentStepEvent::NoticeClear {
-                            kinds: vec!["retry".to_string()],
-                            session_id: session_id.to_string(),
-                            loop_count: None,
-                        },
-                    );
-                    return Ok(response);
+                match classify_http_status(status) {
+                    HttpRetryAction::Success => {
+                        if let RetryEventTarget::MainAgent { app, session_id } = target {
+                            // 重试成功后主动清除前端的重试提示，避免单向写入的 notice 一直挂到整轮结束。
+                            let _ = app.emit(
+                                "agent-step",
+                                crate::infra::types::events::AgentStepEvent::NoticeClear {
+                                    kinds: vec!["retry".to_string()],
+                                    session_id: session_id.to_string(),
+                                    loop_count: None,
+                                },
+                            );
+                        }
+                        return Ok(response);
+                    }
+                    HttpRetryAction::RateLimited => {
+                        let retry_after = parse_retry_after_secs(
+                            response
+                                .headers()
+                                .get("retry-after")
+                                .and_then(|v| v.to_str().ok()),
+                        );
+                        println!(
+                            "{} 触发频率限制 (429)，按服务器建议等待 {}s...",
+                            log_prefix, retry_after
+                        );
+                        tokio::time::sleep(Duration::from_secs(retry_after)).await;
+                        last_error = format!("频率限制 (429)，等待 {}s 后重试", retry_after);
+                        continue;
+                    }
+                    HttpRetryAction::FailClientError => {
+                        let err_body = response.text().await.unwrap_or_default();
+                        return Err(ApiError::HttpError {
+                            status: status.as_u16(),
+                            body: err_body,
+                        });
+                    }
+                    HttpRetryAction::RetryServerError => {
+                        last_error = format!("API 服务端错误: {}", status.as_u16());
+                    }
                 }
-                // 429 Rate Limit：按服务器建议的等待时间重试
-                if status.as_u16() == 429 {
-                    let retry_after = response
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| v.parse::<u64>().ok())
-                        .unwrap_or(5);
-                    println!(
-                        "[JARVIS] 触发频率限制 (429)，按服务器建议等待 {}s...",
-                        retry_after
-                    );
-                    tokio::time::sleep(std::time::Duration::from_secs(retry_after)).await;
-                    last_error = format!("频率限制 (429)，等待 {}s 后重试", retry_after);
-                    continue;
-                }
-                if status.is_client_error() {
-                    let err_body = response.text().await.unwrap_or_default();
-                    return Err(ApiError::HttpError {
-                        status: status.as_u16(),
-                        body: err_body,
-                    });
-                }
-                last_error = format!("API 服务端错误: {}", status.as_u16());
             }
             Err(e) => {
-                // 注：曾尝试"连接被拒则跳过重试"，但实测**无法可靠识别** ——
-                // Windows 上对未监听端口多半是 TCP 静默丢弃，reqwest 成因链只到
-                // `tcp connect error → deadline has elapsed`（超时），
-                // 拿不到 `Connection refused`。既然区分不可靠，就不做区分：
+                // 注：曾尝试"连接被拒则跳过重试"，但实测无法在 Windows 上可靠识别，
                 // 统一走退避重试（也覆盖"服务正在启动、稍后就绪"的情况）。
                 last_error = format!("网络错误: {}", describe_network_error(&e));
                 println!(
-                    "[JARVIS] API 请求失败（第 {} 次）: {}",
+                    "{} API 请求失败（第 {} 次）: {}",
+                    log_prefix,
                     attempt + 1,
                     last_error
                 );
@@ -338,6 +369,58 @@ pub async fn api_call_with_retry(
         max_retries,
         last_error,
     })
+}
+
+/// 带退避重试的 API 调用（主 Agent 专用：重试期间向主聊天区广播过程态进度与恢复清除事件）。
+///
+/// 重试策略：固定阶梯 `RETRY_BACKOFF_SECS`（1s → 3s → 5s，三次退避合计 9s；
+/// 首次尝试另有多达 `HTTP_CONNECT_TIMEOUT_SECS`(15s) 的建连宽限）。
+/// 客户端错误（4xx，除 429 外）立即返回，不重试。
+#[allow(clippy::too_many_arguments)]
+pub async fn api_call_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+    body: &serde_json::Value,
+    api_key: &str,
+    api_format: ApiFormat,
+    max_retries: u32,
+    app: &tauri::AppHandle,
+    session_id: &str,
+) -> Result<reqwest::Response, ApiError> {
+    api_call_with_retry_core(
+        client,
+        url,
+        body,
+        api_key,
+        api_format,
+        max_retries,
+        RetryEventTarget::MainAgent { app, session_id },
+    )
+    .await
+}
+
+/// 带退避重试与 429 限流处理的子 Agent 专用流式 API 调用。
+///
+/// 与主 Agent 共用同一套阶梯退避和 429 `Retry-After` 逻辑，但绝不向主聊天区发送 `agent-step` 事件，
+/// 避免干扰主对话界面的状态标注。
+pub async fn api_call_with_retry_subagent(
+    client: &reqwest::Client,
+    url: &str,
+    body: &serde_json::Value,
+    api_key: &str,
+    api_format: ApiFormat,
+    max_retries: u32,
+) -> Result<reqwest::Response, ApiError> {
+    api_call_with_retry_core(
+        client,
+        url,
+        body,
+        api_key,
+        api_format,
+        max_retries,
+        RetryEventTarget::SubAgent,
+    )
+    .await
 }
 
 /// 简单的非流式单轮 LLM 调用
@@ -560,7 +643,10 @@ pub async fn call_llm_with_messages(
 
 #[cfg(test)]
 mod retry_policy_tests {
-    use super::{describe_network_error, retry_backoff_secs, MAX_API_RETRIES, RETRY_BACKOFF_SECS};
+    use super::{
+        classify_http_status, describe_network_error, parse_retry_after_secs, retry_backoff_secs,
+        HttpRetryAction, MAX_API_RETRIES, RETRY_BACKOFF_SECS,
+    };
 
     /// 退避阶梯必须是固定且递增的，且不含首跳长等待 ——
     /// "首次 15 秒宽限"由 `HTTP_CONNECT_TIMEOUT_SECS` 承担，不再放进阶梯。
@@ -618,6 +704,45 @@ mod retry_policy_tests {
             retry_backoff_secs(99),
             RETRY_BACKOFF_SECS[RETRY_BACKOFF_SECS.len() - 1]
         );
+    }
+
+    /// 主代理与子代理共用的 HTTP 状态码重试分类护栏：429 走限流、5xx 走退避、4xx 立即失败。
+    #[test]
+    fn http_status_classification_covers_429_5xx_4xx_and_2xx() {
+        assert_eq!(
+            classify_http_status(reqwest::StatusCode::OK),
+            HttpRetryAction::Success
+        );
+        assert_eq!(
+            classify_http_status(reqwest::StatusCode::TOO_MANY_REQUESTS),
+            HttpRetryAction::RateLimited
+        );
+        assert_eq!(
+            classify_http_status(reqwest::StatusCode::BAD_REQUEST),
+            HttpRetryAction::FailClientError
+        );
+        assert_eq!(
+            classify_http_status(reqwest::StatusCode::UNAUTHORIZED),
+            HttpRetryAction::FailClientError
+        );
+        assert_eq!(
+            classify_http_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
+            HttpRetryAction::RetryServerError
+        );
+        assert_eq!(
+            classify_http_status(reqwest::StatusCode::BAD_GATEWAY),
+            HttpRetryAction::RetryServerError
+        );
+    }
+
+    /// 429 Retry-After 解析：非法/缺省回退 5 秒，极端值钳制在 [1, 60] 秒。
+    #[test]
+    fn retry_after_header_parses_and_clamps_safely() {
+        assert_eq!(parse_retry_after_secs(None), 5);
+        assert_eq!(parse_retry_after_secs(Some("invalid")), 5);
+        assert_eq!(parse_retry_after_secs(Some("0")), 1);
+        assert_eq!(parse_retry_after_secs(Some("12")), 12);
+        assert_eq!(parse_retry_after_secs(Some("999")), 60);
     }
 
     /// **文案回归**：连接失败必须给出可读结论，而不是把 reqwest 的

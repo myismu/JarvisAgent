@@ -8,6 +8,7 @@
 //! - `orchestration`: 调度器、任务编排
 //! - `session`: 会话生命周期、记忆
 //! - `rollback`: 快照、回滚、GC、分支合并
+//! - `runtime`: 会话级运行时上下文与全局状态管理器（SessionManager / SessionContext / SnapshotRegistry / WorkspaceState）
 //! - `complex_task`: 复杂任务/方案内容检测（方案审批流程的入口判定）
 //! - `tools`: 所有工具实现
 
@@ -16,6 +17,7 @@ pub mod complex_task;
 pub mod mcp;
 pub mod orchestration;
 pub mod rollback;
+pub mod runtime;
 pub mod session;
 pub mod tools;
 

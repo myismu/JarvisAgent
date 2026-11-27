@@ -12,7 +12,10 @@
 //!
 //! 存储结构：`<agent_home>/jarvis.sqlite3`
 
+pub mod history_view;
+pub mod lifecycle;
 pub mod memory;
+pub mod naming;
 pub mod repository;
 pub mod resource_repository;
 pub mod thinking;

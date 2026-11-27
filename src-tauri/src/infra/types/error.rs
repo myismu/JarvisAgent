@@ -140,6 +140,152 @@ impl From<String> for DbError {
     }
 }
 
+/// 跨端统一错误码（与前端 `src/types/generated/contracts.ts` 自动对齐）。
+///
+/// 前端可据此区分输入校验、资源缺失、并发冲突、权限拒绝、网络/限流等错误类别，
+/// 进行精准的国际化提示或重试交互，不再只能靠正则解析裸字符串。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[ts(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ErrorCode {
+    InvalidInput,
+    NotFound,
+    Conflict,
+    PermissionDenied,
+    ConfigError,
+    DatabaseError,
+    NetworkError,
+    RateLimited,
+    Cancelled,
+    InternalError,
+}
+
+/// 面向 Tauri 命令边界的统一结构化错误（可逐步替换 `Result<T, String>`）。
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct CommandError {
+    pub code: ErrorCode,
+    pub message: String,
+    pub retryable: bool,
+}
+
+impl CommandError {
+    pub fn new(code: ErrorCode, message: impl Into<String>, retryable: bool) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            retryable,
+        }
+    }
+
+    pub fn invalid_input(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::InvalidInput, message, false)
+    }
+
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::NotFound, message, false)
+    }
+
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::Conflict, message, true)
+    }
+
+    pub fn permission_denied(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::PermissionDenied, message, false)
+    }
+
+    pub fn config(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::ConfigError, message, false)
+    }
+
+    pub fn database(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::DatabaseError, message, true)
+    }
+
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::InternalError, message, false)
+    }
+
+    /// 将既有仓储/服务层 `String` 错误按语义关键字映射为结构化错误码，便于渐进迁移。
+    pub fn from_domain_message(message: impl Into<String>) -> Self {
+        let msg = message.into();
+        if msg.contains("不存在") || msg.contains("不在归档") || msg.contains("未找到") {
+            Self::not_found(msg)
+        } else if msg.contains("不能为空")
+            || msg.contains("不能超过")
+            || msg.contains("不支持")
+            || msg.contains("不是文件夹")
+            || msg.contains("非法")
+        {
+            Self::invalid_input(msg)
+        } else if msg.contains("正在执行") || msg.contains("尚未结束") || msg.contains("锁")
+        {
+            Self::conflict(msg)
+        } else if msg.contains("SQLite") || msg.contains("数据库") {
+            Self::database(msg)
+        } else {
+            Self::internal(msg)
+        }
+    }
+}
+
+impl std::fmt::Display for CommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for CommandError {}
+
+impl From<String> for CommandError {
+    fn from(message: String) -> Self {
+        Self::from_domain_message(message)
+    }
+}
+
+impl From<&str> for CommandError {
+    fn from(message: &str) -> Self {
+        Self::from_domain_message(message)
+    }
+}
+
+impl From<DbError> for CommandError {
+    fn from(err: DbError) -> Self {
+        match err {
+            DbError::NotFound(msg) => Self::not_found(msg),
+            other => Self::database(other.to_string()),
+        }
+    }
+}
+
+impl From<AgentError> for CommandError {
+    fn from(err: AgentError) -> Self {
+        match err {
+            AgentError::Config(msg) => Self::config(msg),
+            AgentError::Api(ApiError::HttpError { status: 429, body }) => {
+                Self::new(ErrorCode::RateLimited, body, true)
+            }
+            AgentError::Api(api_err) => {
+                let retryable = matches!(
+                    api_err,
+                    ApiError::Network(_) | ApiError::RetriesExhausted { .. }
+                );
+                Self::new(ErrorCode::NetworkError, api_err.to_string(), retryable)
+            }
+            AgentError::Tool(ToolError::PermissionDenied { tool }) => {
+                Self::permission_denied(format!("工具 '{}' 权限被拒绝", tool))
+            }
+            AgentError::Tool(tool_err) => Self::internal(tool_err.to_string()),
+            AgentError::ExecutionBusy(msg) | AgentError::ExecutionStopping(msg) => {
+                Self::conflict(msg)
+            }
+            AgentError::Cancelled => Self::new(ErrorCode::Cancelled, "操作已取消", false),
+            other => Self::internal(other.to_string()),
+        }
+    }
+}
+
 impl From<DbError> for AgentError {
     fn from(e: DbError) -> Self {
         AgentError::Session(e.to_string())
@@ -199,5 +345,47 @@ mod tests {
     fn memory_error_display() {
         let err = MemoryError::FileRead("path/to/file not found".to_string());
         assert!(format!("{}", err).contains("path/to/file"));
+    }
+
+    #[test]
+    fn command_error_classifies_domain_messages_and_serializes() {
+        let not_found: CommandError = "会话 s1 不存在".into();
+        assert_eq!(not_found.code, ErrorCode::NotFound);
+        assert!(!not_found.retryable);
+
+        let invalid: CommandError = "项目名不能为空".into();
+        assert_eq!(invalid.code, ErrorCode::InvalidInput);
+        assert!(!invalid.retryable);
+
+        let conflict: CommandError = "当前任务尚未结束，请等待".into();
+        assert_eq!(conflict.code, ErrorCode::Conflict);
+        assert!(conflict.retryable);
+
+        let json = serde_json::to_value(&invalid).expect("CommandError 应可序列化");
+        assert_eq!(json["code"], "INVALID_INPUT");
+        assert_eq!(json["message"], "项目名不能为空");
+        assert_eq!(json["retryable"], false);
+    }
+
+    #[test]
+    fn command_error_converts_from_agent_error() {
+        let rate_limited: CommandError = AgentError::Api(ApiError::HttpError {
+            status: 429,
+            body: "rate limit".to_string(),
+        })
+        .into();
+        assert_eq!(rate_limited.code, ErrorCode::RateLimited);
+        assert!(rate_limited.retryable);
+
+        let busy: CommandError = AgentError::ExecutionBusy("执行中".to_string()).into();
+        assert_eq!(busy.code, ErrorCode::Conflict);
+        assert!(busy.retryable);
+
+        let denied: CommandError = AgentError::Tool(ToolError::PermissionDenied {
+            tool: "WriteFile".to_string(),
+        })
+        .into();
+        assert_eq!(denied.code, ErrorCode::PermissionDenied);
+        assert!(!denied.retryable);
     }
 }

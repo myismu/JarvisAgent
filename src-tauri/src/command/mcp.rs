@@ -7,6 +7,7 @@ use crate::core::mcp::{
     CachedPromptArgument, McpImportItemResult, McpManagerState, McpPromptRenderResult,
     McpResourceReadResult, McpServerConfig, McpServerSummary, McpTestConfigResult, McpToolView,
 };
+use crate::infra::types::error::CommandError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use ts_rs::TS;
@@ -43,7 +44,7 @@ pub struct McpPromptItemView {
 #[tauri::command]
 pub async fn mcp_list_servers(
     state: tauri::State<'_, McpManagerState>,
-) -> Result<Vec<McpServerSummary>, String> {
+) -> Result<Vec<McpServerSummary>, CommandError> {
     Ok(state.0.list_servers().await)
 }
 
@@ -52,24 +53,36 @@ pub async fn mcp_save_server(
     state: tauri::State<'_, McpManagerState>,
     name: String,
     config: McpServerConfig,
-) -> Result<McpServerSummary, String> {
-    state.0.save_server(name, config).await
+) -> Result<McpServerSummary, CommandError> {
+    state
+        .0
+        .save_server(name, config)
+        .await
+        .map_err(CommandError::from)
 }
 
 #[tauri::command]
 pub async fn mcp_delete_server(
     state: tauri::State<'_, McpManagerState>,
     name: String,
-) -> Result<(), String> {
-    state.0.delete_server(&name).await
+) -> Result<(), CommandError> {
+    state
+        .0
+        .delete_server(&name)
+        .await
+        .map_err(CommandError::from)
 }
 
 #[tauri::command]
 pub async fn mcp_import_json(
     state: tauri::State<'_, McpManagerState>,
     raw_json: String,
-) -> Result<Vec<McpImportItemResult>, String> {
-    state.0.import_json(&raw_json).await
+) -> Result<Vec<McpImportItemResult>, CommandError> {
+    state
+        .0
+        .import_json(&raw_json)
+        .await
+        .map_err(CommandError::from)
 }
 
 #[tauri::command]
@@ -77,8 +90,12 @@ pub async fn mcp_set_server_enabled(
     state: tauri::State<'_, McpManagerState>,
     name: String,
     enabled: bool,
-) -> Result<(), String> {
-    state.0.set_server_enabled(&name, enabled).await
+) -> Result<(), CommandError> {
+    state
+        .0
+        .set_server_enabled(&name, enabled)
+        .await
+        .map_err(CommandError::from)
 }
 
 #[tauri::command]
@@ -86,23 +103,31 @@ pub async fn mcp_set_server_trusted(
     state: tauri::State<'_, McpManagerState>,
     name: String,
     trusted: bool,
-) -> Result<(), String> {
-    state.0.set_server_trusted(&name, trusted).await
+) -> Result<(), CommandError> {
+    state
+        .0
+        .set_server_trusted(&name, trusted)
+        .await
+        .map_err(CommandError::from)
 }
 
 #[tauri::command]
 pub async fn mcp_restart_server(
     state: tauri::State<'_, McpManagerState>,
     name: String,
-) -> Result<McpServerSummary, String> {
-    state.0.restart_server(&name).await
+) -> Result<McpServerSummary, CommandError> {
+    state
+        .0
+        .restart_server(&name)
+        .await
+        .map_err(CommandError::from)
 }
 
 #[tauri::command]
 pub async fn mcp_stop_server(
     state: tauri::State<'_, McpManagerState>,
     name: String,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     state
         .0
         .stop_server(&name, crate::core::mcp::McpServerStatus::Idle)
@@ -114,7 +139,7 @@ pub async fn mcp_stop_server(
 pub async fn mcp_test_config(
     state: tauri::State<'_, McpManagerState>,
     config: McpServerConfig,
-) -> Result<McpTestConfigResult, String> {
+) -> Result<McpTestConfigResult, CommandError> {
     Ok(state.0.test_config(config).await)
 }
 
@@ -122,7 +147,7 @@ pub async fn mcp_test_config(
 pub async fn mcp_list_tools(
     state: tauri::State<'_, McpManagerState>,
     server_name: Option<String>,
-) -> Result<Vec<McpToolView>, String> {
+) -> Result<Vec<McpToolView>, CommandError> {
     Ok(state.0.list_tools(server_name.as_deref()).await)
 }
 
@@ -132,18 +157,19 @@ pub async fn mcp_set_tool_enabled(
     server_name: String,
     tool_name: String,
     enabled: bool,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     state
         .0
         .set_tool_enabled(&server_name, &tool_name, enabled)
         .await
+        .map_err(CommandError::from)
 }
 
 #[tauri::command]
 pub async fn mcp_list_resources(
     state: tauri::State<'_, McpManagerState>,
     server_name: Option<String>,
-) -> Result<Vec<McpResourceItemView>, String> {
+) -> Result<Vec<McpResourceItemView>, CommandError> {
     let list = state.0.list_resources(server_name.as_deref()).await;
     Ok(list
         .into_iter()
@@ -162,19 +188,19 @@ pub async fn mcp_read_resource(
     state: tauri::State<'_, McpManagerState>,
     server_name: String,
     uri: String,
-) -> Result<McpResourceReadResult, String> {
+) -> Result<McpResourceReadResult, CommandError> {
     state
         .0
         .read_resource(&server_name, &uri, None)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| CommandError::from_domain_message(e.to_string()))
 }
 
 #[tauri::command]
 pub async fn mcp_list_prompts(
     state: tauri::State<'_, McpManagerState>,
     server_name: Option<String>,
-) -> Result<Vec<McpPromptItemView>, String> {
+) -> Result<Vec<McpPromptItemView>, CommandError> {
     let list = state.0.list_prompts(server_name.as_deref()).await;
     Ok(list
         .into_iter()
@@ -193,19 +219,19 @@ pub async fn mcp_get_prompt(
     server_name: String,
     prompt_name: String,
     arguments: Option<HashMap<String, String>>,
-) -> Result<McpPromptRenderResult, String> {
+) -> Result<McpPromptRenderResult, CommandError> {
     let args = arguments.unwrap_or_default();
     state
         .0
         .get_prompt(&server_name, &prompt_name, &args)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| CommandError::from_domain_message(e.to_string()))
 }
 
 #[tauri::command]
 pub async fn mcp_get_server_logs(
     state: tauri::State<'_, McpManagerState>,
     name: String,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, CommandError> {
     Ok(state.0.get_server_logs(&name).await)
 }

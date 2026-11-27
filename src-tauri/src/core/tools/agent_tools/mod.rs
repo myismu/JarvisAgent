@@ -95,7 +95,7 @@ pub async fn get_tool_catalog(
 
     if load_skill_available {
         let skills = super::load_all_skills();
-        let activations = crate::command::app_config::get_all_skill_activations();
+        let activations = crate::infra::config::app_config::get_all_skill_activations();
         let active_skills: Vec<String> = skills
             .iter()
             .filter(|s| activations.get(&s.name).copied().unwrap_or(true))

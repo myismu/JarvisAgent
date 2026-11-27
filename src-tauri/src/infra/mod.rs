@@ -6,19 +6,16 @@
 //! ## 子模块
 //! - `types`: 数据模型、错误类型、常量
 //! - `config`: 配置管理、数据路径
-//! - `state`: 全局状态管理
 //! - `db`: SQLite 数据库连接
 //! - `llm`: LLM 客户端、适配器、注册表
 //!
 //! ## 关键重导出
-//! - `SessionManager`, `SessionContext`, `WorkspaceState`, `SnapshotRegistry`
 //! - `AgentError`, `ApiError`, `ToolError`, `MemoryError`
 //! - `AgentConfig`, `ConfigState`, `load_config`, `save_config`
 
 pub mod config;
 pub mod db;
 pub mod llm;
-pub mod state;
 pub mod types;
 
 pub mod background;

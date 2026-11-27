@@ -146,7 +146,7 @@ pub(in crate::core::session) fn insert_request_usage_in(
 
 /// 读取会话的用量账本（按来源分组 + 总计）。
 pub fn get_session_usage_breakdown(session_id: &str) -> Result<UsageBreakdown, String> {
-    crate::infra::db::with_connection(|conn| session_usage_breakdown_in(conn, session_id))
+    crate::infra::db::with_read_connection(|conn| session_usage_breakdown_in(conn, session_id))
 }
 
 /// 汇总查询的一行（`GROUP BY source` 的结果）。

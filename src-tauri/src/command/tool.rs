@@ -8,7 +8,7 @@
 //! - `set_tool_active()`: 启用或停用某个工具
 //!
 //! ## 依赖
-//! - Internal: `core::tools::framework::registry`（工具注册表）、`command::app_config`（持久化）
+//! - Internal: `core::tools::framework::registry`（工具注册表）、`infra::config::app_config`（持久化）
 //!
 //! ## 约束
 //! - 状态存在 `app-config.json` 的 `tools` 字段，与技能那套同构：**只存被关掉的**，
@@ -49,7 +49,7 @@ pub struct ToolMeta {
 #[tauri::command]
 pub async fn list_tools() -> Result<Vec<ToolMeta>, String> {
     let registry = ToolRegistry::global();
-    let states = crate::command::app_config::get_all_tool_states();
+    let states = crate::infra::config::app_config::get_all_tool_states();
 
     let mut tools: Vec<ToolMeta> = registry
         .all_tool_names()
@@ -80,7 +80,7 @@ pub async fn list_tools() -> Result<Vec<ToolMeta>, String> {
 /// 想让当前会话立刻用上，调 [`apply_tool_filter_now`]。
 #[tauri::command]
 pub async fn set_tool_active(tool_name: String, enabled: bool) -> Result<(), String> {
-    crate::command::app_config::set_tool_enabled(&tool_name, enabled)
+    crate::infra::config::app_config::set_tool_enabled(&tool_name, enabled)
 }
 
 // 这里曾有一个 `apply_tool_filter_now`（丢掉会话快照、让当前会话立刻用上最新开关）。

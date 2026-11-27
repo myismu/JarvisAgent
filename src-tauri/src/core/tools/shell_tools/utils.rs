@@ -15,7 +15,7 @@ use super::super::framework::permission::{has_parent_dir_segment, is_within_work
 use tauri::Manager;
 
 pub async fn get_workspace(app: &tauri::AppHandle, session_id: &str) -> Option<std::path::PathBuf> {
-    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
+    if let Some(manager) = app.try_state::<crate::core::runtime::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         let ws = ctx.workspace.lock().await.clone();
         return ws;

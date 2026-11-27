@@ -52,16 +52,7 @@ pub fn save_attachment(
 }
 
 pub fn load_attachment(filename: &str) -> Result<Option<(String, Vec<u8>)>, String> {
-    let filename = basename(filename);
-    crate::infra::db::with_connection(|conn| {
-        conn.query_row(
-            "SELECT media_type, data FROM session_attachments WHERE filename = ?1",
-            [filename],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
-        )
-        .optional()
-        .map_err(|e| e.to_string())
-    })
+    crate::infra::db::load_attachment_bytes(filename)
 }
 
 /// 校验自定义协议 / 工具传入的附件名是否安全：非空、不含路径分隔符与 `..`。
@@ -78,7 +69,7 @@ pub fn load_session_attachment_meta(
     filename: &str,
 ) -> Result<Option<(String, String)>, String> {
     let filename = basename(filename);
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         query_session_attachment_meta(conn, session_id, &filename)
     })
 }
@@ -100,7 +91,7 @@ fn query_session_attachment_meta(
 
 /// 列出指定会话内的全部附件 `(filename, media_type)`（按创建时间升序）
 pub fn list_session_attachments(session_id: &str) -> Result<Vec<(String, String)>, String> {
-    crate::infra::db::with_connection(|conn| query_session_attachments(conn, session_id))
+    crate::infra::db::with_read_connection(|conn| query_session_attachments(conn, session_id))
 }
 
 /// `list_session_attachments` 的纯 SQL 部分（接收连接，便于内存库单测）
@@ -205,7 +196,7 @@ pub fn save_task_with_auto_id(session_id: &str, task: &Task) -> Result<Task, Str
 }
 
 pub fn load_task(session_id: &str, task_id: i32) -> Result<Option<Task>, String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         conn.query_row(
             "SELECT task_json FROM session_tasks WHERE session_id = ?1 AND task_id = ?2",
             params![session_id, task_id as i64],
@@ -219,7 +210,7 @@ pub fn load_task(session_id: &str, task_id: i32) -> Result<Option<Task>, String>
 }
 
 pub fn list_tasks(session_id: &str) -> Result<Vec<Task>, String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         let mut stmt = conn
             .prepare("SELECT task_json FROM session_tasks WHERE session_id = ?1 ORDER BY task_id")
             .map_err(|e| e.to_string())?;
@@ -248,7 +239,7 @@ pub fn delete_task(session_id: &str, task_id: i32) -> Result<(), String> {
 }
 
 pub fn max_task_id(session_id: &str) -> Result<i32, String> {
-    crate::infra::db::with_connection(|conn| {
+    crate::infra::db::with_read_connection(|conn| {
         conn.query_row(
             "SELECT COALESCE(MAX(task_id), 0) FROM session_tasks WHERE session_id = ?1",
             [session_id],

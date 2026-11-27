@@ -14,8 +14,8 @@ use tauri::Manager;
 use super::framework::permission::ensure_path_permission;
 use super::framework::registry::ToolDef;
 use crate::core::rollback::Patch;
+use crate::core::runtime::{PendingSnapshotPatch, SessionManager};
 use crate::core::tools::framework;
-use crate::infra::state::state::{PendingSnapshotPatch, SessionManager};
 use crate::infra::types::models::Message;
 
 const IPYNB_INDENT: &[u8] = b" ";
@@ -29,7 +29,7 @@ struct NotebookEditOutcome {
 }
 
 async fn get_workspace(app: &tauri::AppHandle, session_id: &str) -> Option<PathBuf> {
-    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
+    if let Some(manager) = app.try_state::<crate::core::runtime::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         return ctx.workspace.lock().await.clone();
     }
@@ -51,7 +51,7 @@ fn latest_user_message_index(messages: &[Message]) -> Option<usize> {
 }
 
 async fn active_user_message_id(app: &tauri::AppHandle, session_id: &str) -> Option<String> {
-    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
+    if let Some(manager) = app.try_state::<crate::core::runtime::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         let session = ctx.memory.lock().await;
         let index = latest_user_message_index(&session.messages)?;

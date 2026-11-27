@@ -1,4 +1,4 @@
-//! # state.rs — 状态管理模块
+//! # runtime.rs — 会话级运行时上下文与全局状态管理器
 //!
 //! 定义 Tauri 应用的全局状态管理器，包括会话管理、工作空间状态和快照注册表。
 //! 使用 `Arc<Mutex<T>>` 和 `RwLock` 实现线程安全的状态共享。
@@ -20,7 +20,9 @@
 //! - `SessionManager::get_or_create()` 会自动从 SQLite 加载历史数据
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{watch, Mutex, RwLock};
 
 use crate::core::rollback::session_manager::SnapshotManagerRegistry;
@@ -453,7 +455,7 @@ impl SessionContext {
             return filter.clone();
         }
         let filter = crate::core::tools::framework::registry::ToolFilter::from_states(
-            &crate::command::app_config::get_all_tool_states(),
+            &crate::infra::config::app_config::get_all_tool_states(),
         );
         *guard = Some(filter.clone());
         filter
@@ -562,8 +564,140 @@ impl Drop for ExecutionLease {
     }
 }
 
-/// 全局管理器，维护所有活跃会话的 SessionContext
-pub struct SessionManager(pub RwLock<HashMap<String, Arc<SessionContext>>>);
+/// 冷会话同步初始化载荷（在 `spawn_blocking` 阻塞线程池中采集，绝不持全局会话表锁）。
+struct SessionBootstrapData {
+    memory: Option<SessionMemory>,
+    work_mode: String,
+    approval_mode: String,
+    audience: String,
+    workspace: Option<std::path::PathBuf>,
+    thinking_mode: bool,
+}
+
+/// 在阻塞线程池内同步读取配置、历史消息与会话元数据。
+fn load_session_bootstrap(session_id: &str) -> SessionBootstrapData {
+    // 1. 新会话及冷会话的默认初始值 = 用户设置里的默认偏好
+    let prefs = crate::infra::config::app_config::read_file().ui_preferences;
+    let mut work_mode = if prefs.agent_work_mode == "plan" {
+        "plan".to_string()
+    } else {
+        "edit".to_string()
+    };
+    let mut approval_mode = if prefs.agent_approval_mode == "auto_approve" {
+        "auto_approve".to_string()
+    } else {
+        "request_approval".to_string()
+    };
+    let mut audience = if prefs.agent_audience == "user" {
+        "user".to_string()
+    } else {
+        "developer".to_string()
+    };
+
+    // 2. 从 SQLite 加载历史记忆与元信息
+    let memory = crate::core::session::load_session(session_id).ok();
+    let meta = crate::core::session::get_session_meta(session_id).ok();
+    let bound_to_project = meta
+        .as_ref()
+        .and_then(|meta| meta.project_id.as_deref())
+        .is_some();
+
+    // 3. 会话级运行偏好覆盖：落库非 NULL 则以落库值为准
+    if let Ok(runtime_prefs) = crate::core::session::get_session_runtime_prefs(session_id) {
+        if let Some(mode) = runtime_prefs.work_mode {
+            work_mode = mode;
+        }
+        if let Some(mode) = runtime_prefs.approval_mode {
+            // 「完全批准」要求会话绑定项目；无项目绑定的存量脏数据降级为「请求审批」并回写落库
+            if crate::core::tools::framework::policy::mode_requires_project(&mode)
+                && !bound_to_project
+            {
+                let downgraded = ApprovalMode::RequestApproval.as_str();
+                approval_mode = downgraded.to_string();
+                if let Err(e) =
+                    crate::core::session::update_session_approval_mode(session_id, downgraded)
+                {
+                    eprintln!("[JARVIS] 会话 {} 权限档位降级回写失败：{}", session_id, e);
+                }
+                println!(
+                    "[JARVIS] 会话 {} 恢复时发现「完全批准」但无项目绑定，已降级为「请求审批」",
+                    session_id
+                );
+            } else {
+                approval_mode = mode;
+            }
+        }
+        if let Some(aud) = runtime_prefs.agent_audience {
+            audience = aud;
+        }
+    }
+
+    let (workspace, thinking_mode) = if let Some(meta) = meta {
+        let ws = meta.working_directory.map(|ws| {
+            std::path::PathBuf::from(crate::core::session::strip_extended_path_prefix(&ws))
+        });
+        (ws, meta.thinking_mode)
+    } else {
+        (None, false)
+    };
+
+    SessionBootstrapData {
+        memory,
+        work_mode,
+        approval_mode,
+        audience,
+        workspace,
+        thinking_mode,
+    }
+}
+
+/// 会话运行时缓存默认上限（超过后按最近最少使用回收无活跃状态与外部引用的冷会话）
+pub const MAX_CACHED_SESSIONS: usize = 32;
+/// 空闲会话缓存回收阈值（30 分钟未访问且无执行/待办挂起时自动回收）
+pub const SESSION_IDLE_TTL_MS: u64 = 30 * 60 * 1000;
+
+fn now_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+struct CachedSession {
+    ctx: Arc<SessionContext>,
+    /// 最近访问毫秒时间戳（原子变量更新，保证读锁热路径零写锁开销）
+    last_accessed_ms: AtomicU64,
+}
+
+impl CachedSession {
+    fn new(ctx: Arc<SessionContext>) -> Self {
+        Self {
+            ctx,
+            last_accessed_ms: AtomicU64::new(now_epoch_ms()),
+        }
+    }
+
+    fn touch(&self) {
+        self.last_accessed_ms
+            .store(now_epoch_ms(), Ordering::Relaxed);
+    }
+
+    fn last_accessed(&self) -> u64 {
+        self.last_accessed_ms.load(Ordering::Relaxed)
+    }
+}
+
+/// 全局管理器，维护所有活跃会话的 SessionContext。
+///
+/// 并发与缓存模型：
+/// - 热会话命中走 `sessions` 读锁快速路径，原子更新 `last_accessed_ms`，零阻塞；
+/// - 冷会话加载按 `session_id` 粒度加 `init_locks` 异步锁，并在 `spawn_blocking` 中完成配置与 DB 读取，
+///   彻底避免持全局写锁做 I/O 卡住其他会话；
+/// - 仅在最终写入缓存表时短暂获取纳秒级全局写锁，并支持按空闲超时与容量上限（LRU）安全回收冷会话。
+pub struct SessionManager {
+    sessions: RwLock<HashMap<String, CachedSession>>,
+    init_locks: StdMutex<HashMap<String, Arc<Mutex<()>>>>,
+}
 
 impl Default for SessionManager {
     fn default() -> Self {
@@ -573,114 +707,300 @@ impl Default for SessionManager {
 
 impl SessionManager {
     pub fn new() -> Self {
-        Self(RwLock::new(HashMap::new()))
+        Self {
+            sessions: RwLock::new(HashMap::new()),
+            init_locks: StdMutex::new(HashMap::new()),
+        }
     }
 
+    /// 按可选 session_id 过滤返回当前内存中的会话上下文列表（短读锁快照）。
+    pub async fn list_contexts(&self, session_id: Option<&str>) -> Vec<Arc<SessionContext>> {
+        let sessions = self.sessions.read().await;
+        sessions
+            .iter()
+            .filter(|(sid, _)| session_id.is_none_or(|target| target == sid.as_str()))
+            .map(|(_, entry)| entry.ctx.clone())
+            .collect()
+    }
+
+    /// 退出路径同步采集所有内存态会话记忆快照（仅在 `ExitRequested` 使用）。
+    pub fn snapshot_all_memories_blocking(&self) -> Vec<(String, SessionMemory)> {
+        let map = self.sessions.blocking_read();
+        map.iter()
+            .map(|(sid, entry)| {
+                let memory = entry.ctx.memory.blocking_lock();
+                (sid.clone(), memory.clone())
+            })
+            .collect()
+    }
+
+    /// 判定一个会话上下文是否满足“绝对安全可驱逐”条件：
+    /// 必须无外部 `Arc` 持有者、无正在运行的 Agent 执行、无待审批权限/咨询/补丁/续跑挂起。
+    fn is_evictable(ctx: &Arc<SessionContext>) -> bool {
+        if Arc::strong_count(ctx) > 1 {
+            return false;
+        }
+        if ctx.has_active_execution() {
+            return false;
+        }
+        if ctx.execution_gate.try_lock().is_err() {
+            return false;
+        }
+        if match ctx.active_run_id.try_lock() {
+            Ok(guard) => guard.is_some(),
+            Err(_) => true,
+        } {
+            return false;
+        }
+        if match ctx.pending_permissions.try_lock() {
+            Ok(guard) => !guard.is_empty(),
+            Err(_) => true,
+        } {
+            return false;
+        }
+        if match ctx.pending_questions.try_lock() {
+            Ok(guard) => !guard.is_empty(),
+            Err(_) => true,
+        } {
+            return false;
+        }
+        if match ctx.pending_patches.try_lock() {
+            Ok(guard) => !guard.is_empty(),
+            Err(_) => true,
+        } {
+            return false;
+        }
+        if match ctx.loop_continuation_pending.try_lock() {
+            Ok(guard) => *guard,
+            Err(_) => true,
+        } {
+            return false;
+        }
+        true
+    }
+
+    /// 在持有 `sessions` 写锁时执行空闲超期回收与容量上限 LRU 淘汰，返回回收数量。
+    fn evict_locked(
+        sessions: &mut HashMap<String, CachedSession>,
+        now_ms: u64,
+        max_idle_ms: u64,
+        max_entries: usize,
+        protect_session_id: Option<&str>,
+    ) -> usize {
+        let mut evicted = 0usize;
+
+        // 阶段一：回收空闲超期且安全可驱逐的冷会话
+        let expired_keys: Vec<String> = sessions
+            .iter()
+            .filter(|(sid, entry)| {
+                protect_session_id != Some(sid.as_str())
+                    && Self::is_evictable(&entry.ctx)
+                    && now_ms.saturating_sub(entry.last_accessed()) >= max_idle_ms
+            })
+            .map(|(sid, _)| sid.clone())
+            .collect();
+
+        for sid in expired_keys {
+            if sessions.remove(&sid).is_some() {
+                evicted += 1;
+            }
+        }
+
+        // 阶段二：若总数仍超过上限，按最近最少使用（LRU）淘汰可驱逐的冷会话
+        if sessions.len() > max_entries {
+            let need_evict = sessions.len() - max_entries;
+            let mut candidates: Vec<(u64, String)> = sessions
+                .iter()
+                .filter(|(sid, entry)| {
+                    protect_session_id != Some(sid.as_str()) && Self::is_evictable(&entry.ctx)
+                })
+                .map(|(sid, entry)| (entry.last_accessed(), sid.clone()))
+                .collect();
+            candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+            for (_, sid) in candidates.into_iter().take(need_evict) {
+                if sessions.remove(&sid).is_some() {
+                    evicted += 1;
+                }
+            }
+        }
+
+        evicted
+    }
+
+    /// 回收空闲超时或超过容量上限的冷会话上下文（活跃、外部引用中或有挂起状态的会话绝不驱逐）。
+    pub async fn evict_idle_sessions(&self, max_idle_ms: u64, max_entries: usize) -> usize {
+        let mut sessions = self.sessions.write().await;
+        Self::evict_locked(
+            &mut sessions,
+            now_epoch_ms(),
+            max_idle_ms,
+            max_entries,
+            None,
+        )
+    }
+
+    /// 按默认策略（30 分钟空闲 / 最多 32 个缓存会话）执行一次空闲回收。
+    pub async fn evict_default_idle_sessions(&self) -> usize {
+        self.evict_idle_sessions(SESSION_IDLE_TTL_MS, MAX_CACHED_SESSIONS)
+            .await
+    }
+
+    /// 获取指定会话的专属初始化异步锁（不存在则创建）。
+    fn acquire_init_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self
+            .init_locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        locks
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    /// 当且仅当没有其他并发任务持有同一把 `init_lock` 时清理表项，防止 `init_locks` 长期累积。
+    fn cleanup_init_lock(&self, session_id: &str, lock: &Arc<Mutex<()>>) {
+        let mut locks = self
+            .init_locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if locks
+            .get(session_id)
+            .is_some_and(|existing| Arc::ptr_eq(existing, lock) && Arc::strong_count(existing) == 2)
+        {
+            locks.remove(session_id);
+        }
+    }
+
+    /// 移除指定会话缓存。若该会话正好处于并发冷加载中，先等待加载完毕再移除，避免幽灵条目回写。
     pub async fn remove(&self, session_id: &str) -> Option<Arc<SessionContext>> {
-        self.0.write().await.remove(session_id)
+        let maybe_lock = {
+            let locks = self
+                .init_locks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            locks.get(session_id).cloned()
+        };
+        let removed = if let Some(lock) = maybe_lock {
+            let guard = lock.lock().await;
+            let val = self
+                .sessions
+                .write()
+                .await
+                .remove(session_id)
+                .map(|entry| entry.ctx);
+            drop(guard);
+            self.cleanup_init_lock(session_id, &lock);
+            val
+        } else {
+            self.sessions
+                .write()
+                .await
+                .remove(session_id)
+                .map(|entry| entry.ctx)
+        };
+        removed
+    }
+
+    /// 通用按会话细粒度加锁加载入口（便于单测注入自定义异步 loader 验证并发隔离）。
+    async fn get_or_create_with<F, Fut>(&self, session_id: &str, loader: F) -> Arc<SessionContext>
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Arc<SessionContext>>,
+    {
+        // 快速路径：热会话命中直接走短读锁并原子刷新访问时间，不碰写锁和初始化锁
+        {
+            let read_guard = self.sessions.read().await;
+            if let Some(entry) = read_guard.get(session_id) {
+                entry.touch();
+                return entry.ctx.clone();
+            }
+        }
+
+        // 慢速路径：按 session_id 粒度加初始化锁（同会话串行防重复加载，跨会话完全并行）
+        let init_lock = self.acquire_init_lock(session_id);
+        let init_guard = init_lock.lock().await;
+
+        // 双检（Double-Check）：排在前面的同会话并发请求可能已经加载完毕
+        {
+            let read_guard = self.sessions.read().await;
+            if let Some(entry) = read_guard.get(session_id) {
+                entry.touch();
+                let ctx = entry.ctx.clone();
+                drop(read_guard);
+                drop(init_guard);
+                self.cleanup_init_lock(session_id, &init_lock);
+                return ctx;
+            }
+        }
+
+        // 锁外执行全部重 I/O（绝不阻塞全局 sessions 读写锁）
+        let built = loader(session_id.to_string()).await;
+
+        // 纳秒级短写锁插入，并在超限时顺手执行轻量 LRU 回收
+        let arc_ctx = {
+            let mut write_guard = self.sessions.write().await;
+            let entry = write_guard
+                .entry(session_id.to_string())
+                .or_insert_with(|| CachedSession::new(built));
+            entry.touch();
+            let ctx = entry.ctx.clone();
+            if write_guard.len() > MAX_CACHED_SESSIONS {
+                Self::evict_locked(
+                    &mut write_guard,
+                    now_epoch_ms(),
+                    SESSION_IDLE_TTL_MS,
+                    MAX_CACHED_SESSIONS,
+                    Some(session_id),
+                );
+            }
+            ctx
+        };
+
+        drop(init_guard);
+        self.cleanup_init_lock(session_id, &init_lock);
+        arc_ctx
     }
 
     pub async fn get_or_create(&self, session_id: &str) -> Arc<SessionContext> {
-        let read_guard = self.0.read().await;
-        if let Some(ctx) = read_guard.get(session_id) {
-            return ctx.clone();
-        }
-        drop(read_guard);
+        self.get_or_create_with(session_id, |sid| async move {
+            let sid_for_blocking = sid.clone();
+            let bootstrap =
+                tokio::task::spawn_blocking(move || load_session_bootstrap(&sid_for_blocking))
+                    .await
+                    .unwrap_or_else(|err| {
+                        eprintln!(
+                            "[SessionManager] spawn_blocking 加载会话 {} 失败: {}",
+                            sid, err
+                        );
+                        SessionBootstrapData {
+                            memory: None,
+                            work_mode: "edit".to_string(),
+                            approval_mode: "request_approval".to_string(),
+                            audience: "developer".to_string(),
+                            workspace: None,
+                            thinking_mode: false,
+                        }
+                    });
 
-        let mut write_guard = self.0.write().await;
-        // Double check
-        if let Some(ctx) = write_guard.get(session_id) {
-            return ctx.clone();
-        }
+            let ctx = SessionContext::new(sid);
+            *ctx.agent_work_mode.lock().await = bootstrap.work_mode;
+            *ctx.approval_mode.lock().await = bootstrap.approval_mode;
+            *ctx.agent_audience.lock().await = bootstrap.audience;
+            if let Some(memory) = bootstrap.memory {
+                *ctx.memory.lock().await = memory;
+            }
+            *ctx.workspace.lock().await = bootstrap.workspace.clone();
+            *ctx.thinking_mode.lock().await = bootstrap.thinking_mode;
 
-        let ctx = SessionContext::new(session_id.to_string());
-        // 新会话（及重启后首次访问的存量会话）初始值 = 用户设置里的默认。
-        // 此前 SessionContext::new 硬编码 edit/request_approval/developer，
-        // 设置页的默认工作模式/权限档位/用户类型形同虚设（新建会话永远从硬编码值起步）。
-        // 注意：这三个字段仍是纯内存态（不落库），这里只是把"出厂默认"换成"用户设置的默认"。
-        {
-            let prefs = crate::command::app_config::read_file().ui_preferences;
-            let work_mode = if prefs.agent_work_mode == "plan" {
-                "plan"
-            } else {
-                "edit"
-            };
-            let approval = if prefs.agent_approval_mode == "auto_approve" {
-                "auto_approve"
-            } else {
-                "request_approval"
-            };
-            let audience = if prefs.agent_audience == "user" {
-                "user"
-            } else {
-                "developer"
-            };
-            *ctx.agent_work_mode.lock().await = work_mode.to_string();
-            *ctx.approval_mode.lock().await = approval.to_string();
-            *ctx.agent_audience.lock().await = audience.to_string();
-        }
-        // 尝试从磁盘加载历史数据和工作目录
-        if let Ok(memory) = crate::core::session::load_session(session_id) {
-            *ctx.memory.lock().await = memory;
-        }
-        // 会话元信息先取：下面的权限档位恢复要判断"是否绑定项目"（full_approve 的准入条件），
-        // 工作目录与思考档位也出自同一份 meta，合并成一次查询。
-        let meta = crate::core::session::get_session_meta(session_id).ok();
-        let bound_to_project = meta
-            .as_ref()
-            .and_then(|meta| meta.project_id.as_deref())
-            .is_some();
-        // 会话级运行偏好恢复：用户在本会话表态过（落库非 NULL）则以落库值为准，
-        // 否则保持上面按设置默认初始化的值（与 thinking_mode 的恢复路径对称）
-        if let Ok(prefs) = crate::core::session::get_session_runtime_prefs(session_id) {
-            if let Some(mode) = prefs.work_mode {
-                *ctx.agent_work_mode.lock().await = mode;
+            // 挂载项目后把该项目的授权账本注入内存（用户此前点过的「本项目允许」自动生效）
+            if let Some(root) = bootstrap.workspace {
+                crate::core::tools::framework::allowance_store::load_into(&ctx, &root).await;
             }
-            if let Some(mode) = prefs.approval_mode {
-                // 「完全批准」要求会话绑定项目（放行范围靠项目根界定）。存量数据可能在
-                // 这条准入规则之前就写进了 full_approve，而项目后来被删（sessions.project_id
-                // 外键 ON DELETE SET NULL）或会话被摘出项目，都会留下"无项目 + 完全批准"
-                // 这个危险组合。恢复时降级为 request_approval 并**回写库**，保证内存档位与
-                // 落库值一致，而不是只在内存里改一次、下次启动又重新放宽。
-                // 规则口径来自 `command::permission::mode_requires_project`（与设置路径同一处），
-                // 这里只负责"发现违规后的降级与回写"，不另写一份档位判断。
-                if crate::command::permission::mode_requires_project(&mode) && !bound_to_project {
-                    let downgraded = ApprovalMode::RequestApproval.as_str();
-                    *ctx.approval_mode.lock().await = downgraded.to_string();
-                    if let Err(e) =
-                        crate::core::session::update_session_approval_mode(session_id, downgraded)
-                    {
-                        eprintln!("[JARVIS] 会话 {} 权限档位降级回写失败：{}", session_id, e);
-                    }
-                    println!(
-                        "[JARVIS] 会话 {} 恢复时发现「完全批准」但无项目绑定，已降级为「请求审批」",
-                        session_id
-                    );
-                } else {
-                    *ctx.approval_mode.lock().await = mode;
-                }
-            }
-            if let Some(audience) = prefs.agent_audience {
-                *ctx.agent_audience.lock().await = audience;
-            }
-        }
-        if let Some(meta) = meta {
-            // 存量记录可能带 \\?\ 前缀，绑定前剥离（下游报错文案与显示才干净）
-            *ctx.workspace.lock().await = meta.working_directory.map(|ws| {
-                std::path::PathBuf::from(crate::core::session::strip_extended_path_prefix(&ws))
-            });
-            // 深度思考档位随会话恢复（布尔）。已在建会话/首次发消息时固化为确定值，
-            // 因此直接取库值即可，无需再解析"设置默认"。
-            *ctx.thinking_mode.lock().await = meta.thinking_mode;
-        }
-        // 挂载项目后把该项目的授权账本注入内存（用户此前点过的「本项目允许」自动生效）
-        if let Some(root) = ctx.workspace.lock().await.clone() {
-            crate::core::tools::framework::allowance_store::load_into(&ctx, &root).await;
-        }
 
-        let arc_ctx = Arc::new(ctx);
-        write_guard.insert(session_id.to_string(), arc_ctx.clone());
-        arc_ctx
+            Arc::new(ctx)
+        })
+        .await
     }
 }
 
@@ -714,4 +1034,218 @@ pub async fn effective_workspace(
         return ctx.workspace.lock().await.clone();
     }
     None
+}
+
+#[cfg(test)]
+mod session_manager_concurrency_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    /// 同一冷会话高并发访问时，loader 只执行一次且返回同一实例，完成后 init_locks 自动清理
+    #[tokio::test]
+    async fn concurrent_cold_session_loads_once_and_cleans_init_lock() {
+        let manager = Arc::new(SessionManager::new());
+        let load_count = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let mgr = Arc::clone(&manager);
+            let counter = Arc::clone(&load_count);
+            handles.push(tokio::spawn(async move {
+                mgr.get_or_create_with("cold_s1", |sid| async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(60)).await;
+                    Arc::new(SessionContext::new(sid))
+                })
+                .await
+            }));
+        }
+
+        let mut ptrs = Vec::new();
+        for h in handles {
+            ptrs.push(h.await.expect("并发任务不应 panic"));
+        }
+
+        assert_eq!(
+            load_count.load(Ordering::SeqCst),
+            1,
+            "同一冷会话只应加载一次"
+        );
+        for ctx in &ptrs[1..] {
+            assert!(
+                Arc::ptr_eq(&ptrs[0], ctx),
+                "并发请求应共享同一 SessionContext 实例"
+            );
+        }
+        assert!(
+            manager.init_locks.lock().unwrap().is_empty(),
+            "加载完成后应清理无竞争的 init_locks 条目"
+        );
+    }
+
+    /// 一个慢速冷会话在加载期间，绝不阻塞热会话命中和其他冷会话并行加载
+    #[tokio::test]
+    async fn slow_cold_session_does_not_block_hot_session() {
+        let manager = Arc::new(SessionManager::new());
+
+        // 预热热会话 hot_s1
+        let hot = manager
+            .get_or_create_with(
+                "hot_s1",
+                |sid| async move { Arc::new(SessionContext::new(sid)) },
+            )
+            .await;
+
+        // 启动一个耗时 180ms 的慢速冷会话加载
+        let mgr_slow = Arc::clone(&manager);
+        let slow_task = tokio::spawn(async move {
+            mgr_slow
+                .get_or_create_with("slow_cold", |sid| async move {
+                    tokio::time::sleep(Duration::from_millis(180)).await;
+                    Arc::new(SessionContext::new(sid))
+                })
+                .await
+        });
+
+        // 稍等确保 slow_cold 已进入 loader 阶段
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // 此时读取热会话必须瞬间返回（远小于 180ms）
+        let started = Instant::now();
+        let got = manager.get_or_create("hot_s1").await;
+        let elapsed = started.elapsed();
+
+        assert!(Arc::ptr_eq(&hot, &got));
+        assert!(
+            elapsed < Duration::from_millis(60),
+            "慢速冷会话不得阻塞热会话读取，实际耗时: {:?}",
+            elapsed
+        );
+
+        let _ = slow_task.await.expect("慢速加载不应 panic");
+    }
+
+    /// 空闲会话回收绝不淘汰活跃执行中或外部仍持有引用的会话，但会按 LRU 回收冷会话
+    #[tokio::test]
+    async fn evict_idle_sessions_preserves_active_and_referenced_reclaims_cold_lru() {
+        let manager = SessionManager::new();
+        let now = now_epoch_ms();
+
+        let s1 = manager
+            .get_or_create_with(
+                "s1",
+                |sid| async move { Arc::new(SessionContext::new(sid)) },
+            )
+            .await;
+        let held_s2 = manager
+            .get_or_create_with(
+                "s2",
+                |sid| async move { Arc::new(SessionContext::new(sid)) },
+            )
+            .await;
+        let s3 = manager
+            .get_or_create_with(
+                "s3",
+                |sid| async move { Arc::new(SessionContext::new(sid)) },
+            )
+            .await;
+        let s4 = manager
+            .get_or_create_with(
+                "s4",
+                |sid| async move { Arc::new(SessionContext::new(sid)) },
+            )
+            .await;
+
+        // s3 模拟运行态：带有 active_run_id
+        *s3.active_run_id.lock().await = Some("run-active-1".to_string());
+
+        // 释放 s1/s3/s4 外部引用，只保留 held_s2 外部引用
+        drop(s1);
+        drop(s3);
+        drop(s4);
+
+        {
+            let guard = manager.sessions.read().await;
+            guard["s1"]
+                .last_accessed_ms
+                .store(now.saturating_sub(20_000), Ordering::Relaxed);
+            guard["s2"]
+                .last_accessed_ms
+                .store(now.saturating_sub(18_000), Ordering::Relaxed);
+            guard["s3"]
+                .last_accessed_ms
+                .store(now.saturating_sub(15_000), Ordering::Relaxed);
+            guard["s4"].last_accessed_ms.store(now, Ordering::Relaxed);
+        }
+
+        // TTL=60s，容量上限=3：共 4 条记录需淘汰 1 条；s2（外部强引用 > 1）与 s3（active_run_id = Some）均受保护，
+        // 在可驱逐的 s1/s4 中按 LRU 淘汰最旧的 s1，保留 s2、s3 与最新的 s4
+        let evicted = manager.evict_idle_sessions(60_000, 3).await;
+        assert_eq!(evicted, 1, "只应淘汰最旧的无保护冷会话 s1");
+        {
+            let guard = manager.sessions.read().await;
+            assert!(!guard.contains_key("s1"), "冷会话 s1 应被 LRU 淘汰");
+            assert!(guard.contains_key("s2"), "外部引用的 s2 绝不可淘汰");
+            assert!(guard.contains_key("s3"), "含活跃运行 ID 的 s3 绝不可淘汰");
+            assert!(guard.contains_key("s4"), "最新访问的 s4 应保留");
+        }
+
+        // 即使 s2(18s) 与 s3(15s) 都超过 TTL=10s，因仍处于受保护状态，TTL 回收也必须返回 0
+        let evicted_protected = manager.evict_idle_sessions(10_000, 32).await;
+        assert_eq!(
+            evicted_protected, 0,
+            "外部引用中或运行中的会话即使超过 TTL 也绝不可被回收"
+        );
+
+        // 释放 held_s2 且清空 s3 活跃运行状态后，按容量上限=1 应淘汰 s2 与 s3，仅保留最新的 s4
+        drop(held_s2);
+        {
+            let guard = manager.sessions.read().await;
+            *guard["s3"].ctx.active_run_id.lock().await = None;
+        }
+        let evicted_second = manager.evict_idle_sessions(60_000, 1).await;
+        assert_eq!(evicted_second, 2);
+        {
+            let guard = manager.sessions.read().await;
+            assert_eq!(guard.len(), 1);
+            assert!(guard.contains_key("s4"));
+        }
+    }
+
+    /// 超过空闲 TTL 且无活跃挂起的会话会被回收，未超期会话保留
+    #[tokio::test]
+    async fn evict_idle_sessions_respects_ttl_expiration() {
+        let manager = SessionManager::new();
+        let now = now_epoch_ms();
+
+        let _old = manager
+            .get_or_create_with("ttl_old", |sid| async move {
+                Arc::new(SessionContext::new(sid))
+            })
+            .await;
+        let _fresh = manager
+            .get_or_create_with("ttl_fresh", |sid| async move {
+                Arc::new(SessionContext::new(sid))
+            })
+            .await;
+        drop(_old);
+        drop(_fresh);
+
+        {
+            let guard = manager.sessions.read().await;
+            guard["ttl_old"]
+                .last_accessed_ms
+                .store(now.saturating_sub(10_000), Ordering::Relaxed);
+            guard["ttl_fresh"]
+                .last_accessed_ms
+                .store(now, Ordering::Relaxed);
+        }
+
+        let evicted = manager.evict_idle_sessions(5_000, 32).await;
+        assert_eq!(evicted, 1);
+        let guard = manager.sessions.read().await;
+        assert!(!guard.contains_key("ttl_old"));
+        assert!(guard.contains_key("ttl_fresh"));
+    }
 }

@@ -1,4 +1,4 @@
-﻿//! # compact.rs — 上下文压缩与记忆整理工具
+//! # compact.rs — 上下文压缩与记忆整理工具
 //!
 //! ## 关键导出
 //! - `compact()`: 手动触发上下文压缩
@@ -13,9 +13,9 @@ pub async fn compact(
     _input: &serde_json::Value,
     session_id: &str,
 ) -> framework::ToolCallResult {
-    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
+    if let Some(manager) = app.try_state::<crate::core::runtime::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
-        let scope = crate::infra::state::state::active_run_scope_key(app, session_id).await;
+        let scope = crate::core::runtime::active_run_scope_key(app, session_id).await;
         let mut cache = ctx.dedupe_cache.lock().await;
         let state = cache.entry("compact".to_string()).or_default();
         if let Some(entry) = state.get_mut(&scope) {
@@ -27,7 +27,7 @@ pub async fn compact(
         }
         state.insert(
             scope,
-            crate::infra::state::state::ToolDedupeCacheEntry {
+            crate::core::runtime::ToolDedupeCacheEntry {
                 display: "compact".to_string(),
                 suppressed_count: 0,
                 running: false,

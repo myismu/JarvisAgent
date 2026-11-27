@@ -16,13 +16,11 @@ impl PipelineState {
 
         // 崩溃兜底：提交前先把补丁持久化到 agent_run_patches 表
         {
-            let manager = self
-                .app
-                .state::<crate::infra::state::state::SessionManager>();
+            let manager = self.app.state::<crate::core::runtime::SessionManager>();
             let ctx = manager.get_or_create(&self.sid).await;
             let patches: Vec<_> = ctx.pending_patches.lock().await.clone();
             for p in &patches {
-                let _ = crate::infra::db::insert_agent_run_patch(
+                let _ = crate::core::rollback::patch_store::insert_agent_run_patch(
                     &self.sid,
                     &p.run_id,
                     p.seq,
@@ -105,7 +103,7 @@ impl PipelineState {
                 let sid_clone = self.sid.clone();
                 let memory_clone = memory.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = crate::command::session::auto_name_session(
+                    if let Err(e) = crate::core::session::naming::auto_name_session(
                         app_clone,
                         sid_clone,
                         memory_clone,

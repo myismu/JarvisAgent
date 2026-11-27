@@ -782,7 +782,7 @@ pub(super) async fn record_file_read(
     path: &str,
     content: &str,
 ) {
-    if let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() {
+    if let Some(manager) = app.try_state::<crate::core::runtime::SessionManager>() {
         let ctx = manager.get_or_create(session_id).await;
         record_file_read_on_ctx(&ctx, path, content).await;
     }
@@ -804,7 +804,7 @@ pub(super) async fn ensure_fresh_read(
     path: &str,
     current_content: &str,
 ) -> Result<(), String> {
-    let Some(manager) = app.try_state::<crate::infra::state::state::SessionManager>() else {
+    let Some(manager) = app.try_state::<crate::core::runtime::SessionManager>() else {
         return Ok(());
     };
     let ctx = manager.get_or_create(session_id).await;
@@ -813,7 +813,7 @@ pub(super) async fn ensure_fresh_read(
 
 /// `record_file_read` 的核心（不依赖 AppHandle，供单测构造全链路场景）。
 async fn record_file_read_on_ctx(
-    ctx: &crate::infra::state::state::SessionContext,
+    ctx: &crate::core::runtime::SessionContext,
     path: &str,
     content: &str,
 ) {
@@ -827,7 +827,7 @@ async fn record_file_read_on_ctx(
 
 /// `ensure_fresh_read` 的核心（不依赖 AppHandle，供单测构造全链路场景）。
 async fn ensure_fresh_read_on_ctx(
-    ctx: &crate::infra::state::state::SessionContext,
+    ctx: &crate::core::runtime::SessionContext,
     path: &str,
     current_content: &str,
 ) -> Result<(), String> {
@@ -1025,7 +1025,7 @@ mod tests {
     /// 重读放 → 写后刷新不误报。
     #[tokio::test]
     async fn read_then_edit_cycle_with_external_change() {
-        let ctx = crate::infra::state::state::SessionContext::new("test-session".into());
+        let ctx = crate::core::runtime::SessionContext::new("test-session".into());
         let path = "E:\\proj\\main.rs";
 
         // 没读过就改 → 拦
@@ -1051,7 +1051,7 @@ mod tests {
     /// 记录时用反斜杠、校验时用正斜杠，仍应放行，而不是报「本会话尚未读过」。
     #[tokio::test]
     async fn same_file_across_separators_is_one_key() {
-        let ctx = crate::infra::state::state::SessionContext::new("test-session".into());
+        let ctx = crate::core::runtime::SessionContext::new("test-session".into());
 
         record_file_read_on_ctx(&ctx, "E:\\proj\\main.rs", "v1").await;
         assert!(
@@ -1065,7 +1065,7 @@ mod tests {
     /// 归一不能过度合并：不同文件必须各自独立，记录 a.rs 不能放行对 b.rs 的修改。
     #[tokio::test]
     async fn different_paths_stay_isolated() {
-        let ctx = crate::infra::state::state::SessionContext::new("test-session".into());
+        let ctx = crate::core::runtime::SessionContext::new("test-session".into());
 
         record_file_read_on_ctx(&ctx, "E:\\proj\\a.rs", "v1").await;
         assert!(

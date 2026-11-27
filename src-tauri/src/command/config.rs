@@ -8,6 +8,7 @@
 //! - `get_image_compress_config()`: 返回当前激活配置的图片压缩参数
 
 use crate::infra::config::config;
+use crate::infra::types::error::CommandError;
 use serde::Serialize;
 use tauri::Emitter;
 
@@ -25,7 +26,7 @@ pub struct ImageCompressConfig {
 #[tauri::command]
 pub async fn get_config(
     config_state: tauri::State<'_, config::ConfigState>,
-) -> Result<config::AppConfig, String> {
+) -> Result<config::AppConfig, CommandError> {
     Ok(config_state.0.lock().await.clone())
 }
 
@@ -35,11 +36,11 @@ pub async fn save_config_cmd(
     new_config: config::AppConfig,
     config_state: tauri::State<'_, config::ConfigState>,
     app: tauri::AppHandle,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     // 校验必填字段
-    config::validate_config(&new_config)?;
+    config::validate_config(&new_config).map_err(CommandError::invalid_input)?;
     // 原子写入磁盘
-    config::save_config(&new_config)?;
+    config::save_config(&new_config).map_err(CommandError::config)?;
     let mut current = config_state.0.lock().await;
     *current = new_config.clone();
     let active = new_config.active_config();
@@ -53,10 +54,8 @@ pub async fn save_config_cmd(
 
 /// 获取图片压缩配置（最大宽高、质量），从 UiPreferences 读取
 #[tauri::command]
-pub async fn get_image_compress_config() -> Result<ImageCompressConfig, String> {
-    let prefs = crate::command::app_config::get_ui_preferences()
-        .await
-        .unwrap_or_default();
+pub async fn get_image_compress_config() -> Result<ImageCompressConfig, CommandError> {
+    let prefs = crate::infra::config::app_config::get_ui_preferences();
     Ok(ImageCompressConfig {
         max_width: prefs.image_max_width,
         max_height: prefs.image_max_height,
