@@ -1,13 +1,9 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
-// @ts-expect-error node:url 是 nodejs 内置模块，本仓库未装 @types/node
 import { fileURLToPath } from "node:url";
 
-// @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
-// @ts-expect-error process is a nodejs global
 const isWindowsTarget = process.env.TAURI_ENV_PLATFORM === "windows";
-// @ts-expect-error process is a nodejs global
 const isDebugBuild = !!process.env.TAURI_ENV_DEBUG;
 
 // https://vite.dev/config/
@@ -50,7 +46,7 @@ export default defineConfig(async () => ({
     //    其余是 WKWebView。不显式指定时 Vite 按最新 ESNext 产出，老内核上可能直接白屏。
     target: isWindowsTarget ? "chrome105" : "safari13",
     // 5. 调试构建保留 sourcemap 且不压缩，方便在 WebView 里定位到原始代码
-    minify: isDebugBuild ? false : "esbuild",
+    minify: isDebugBuild ? false : ("esbuild" as const),
     sourcemap: isDebugBuild,
     rollupOptions: {
       input: {

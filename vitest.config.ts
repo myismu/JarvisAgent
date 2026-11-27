@@ -12,7 +12,6 @@
  */
 import { defineConfig } from "vitest/config";
 import vue from "@vitejs/plugin-vue";
-// @ts-expect-error node:url 是 nodejs 内置模块，本仓库未装 @types/node
 import { fileURLToPath } from "node:url";
 
 export default defineConfig({
