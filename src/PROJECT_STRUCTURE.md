@@ -22,14 +22,15 @@ src/
 ├── MonitorApp.vue               # 监控页应用根组件
 ├── i18n.ts                      # vue-i18n 国际化初始化
 ├── vite-env.d.ts                # Vite 类型声明
+├── api/                         # 强类型跨端 IPC 与事件契约层（commands / events / session / config / permission）
 ├── assets/                      # 静态资源与全局样式
-├── components/                  # Vue 组件，按功能域拆分
-├── composables/                 # 可复用组合式逻辑
+├── components/                  # Vue 组件，按功能域拆分（含 archive / extension / chat / common 等）
+├── composables/                 # 可复用组合式逻辑（按 agentEvents / sidebar / chat / input / settings / agent 分域）
 ├── locales/                     # 语言包（zh-CN.json / en-US.json）
-├── stores/                      # Pinia 状态管理
+├── stores/                      # Pinia 状态管理（session / chat / agent / permission / appView / mcp）
 ├── services/                    # 前端服务封装，主要包装 Tauri invoke
-├── types/                       # 前端共享类型定义
-└── utils/                       # 纯工具函数与渲染辅助逻辑
+├── types/                       # 前端共享类型定义（generated/contracts.ts 由 ts-rs 自动生成）
+└── utils/                       # 纯工具函数与流式渲染/结构化错误解析辅助逻辑
 ```
 
 ## 3. 应用入口与主布局
@@ -100,9 +101,11 @@ assets/
 ```text
 components/
 ├── layout/                      # 桌面窗口布局组件
-├── chat/                        # 聊天、输入、Agent 执行展示组件
-├── common/                      # 通用弹窗与确认类组件
-├── settings/                    # 设置面板
+├── chat/                        # 聊天、输入、用户消息气泡、Agent 执行展示组件
+├── common/                      # 通用弹窗、流式 Markdown 与确认类组件
+├── settings/                    # 设置面板与分栏设置页
+├── extension/                   # 扩展中心与 MCP 服务管理面板
+├── archive/                     # 归档会话管理页
 ├── skill/                       # 技能管理与技能市场
 ├── snapshot/                    # 快照展示组件
 └── checkpoint/                  # 检查点展示组件
@@ -125,10 +128,14 @@ layout/
 
 ```text
 chat/
-├── ChatArea.vue                 # 聊天消息主区域
+├── ChatArea.vue                 # 聊天消息主区域（滚动锚定下沉至 useChatScroll，用户气泡拆为 UserMessageBubble）
+├── UserMessageBubble.vue        # 单条用户消息气泡、长文本折叠、复制/编辑/撤回幽灵操作栏与原地编辑
+├── MessageRail.vue              # 对话消息侧边导航标尺
 ├── TerminalInput.vue            # 用户输入框与发送入口
-├── AgentPanel.vue               # 右侧 Agent 执行流程总面板
+├── McpPromptPickerModal.vue     # MCP Prompt 模板选择与渲染弹窗
+├── AgentPanel.vue               # 右侧 Agent 执行流程总面板（事件驱动权限刷新，无轮询定时器）
 ├── AgentTurn.vue                # 单轮 Agent 回合展示
+├── AgentTurnNotice.vue          # 气泡外状态标注（等待提示、中断、反思审查、错误说明）
 ├── ExecutionPanel.vue           # 工具调用、执行日志、结果展示
 ├── TodoPanel.vue                # 待办清单面板
 ├── ToolCallGroup.vue            # 工具调用分组展示
@@ -237,16 +244,19 @@ skill/
 
 ```text
 composables/
-├── useAgentEvents.ts            # 后端事件监听装配入口（薄门面）
+├── useAgentEvents.ts            # 后端事件监听装配入口（支持按域订阅与 HMR 去重释放）
 ├── agentEvents/                 # 后端事件按领域拆分（types / runState / loaders / governanceEvents / streamEvents / lifecycleEvents）
+├── sidebar/                     # Sidebar 项目与会话管理逻辑（useSessionSidebar）
 ├── input/                       # TerminalInput 领域逻辑（useTurnMetrics / useMediaAttachments / useProfileSwitcher / useSessionControlModes）
 ├── settings/                    # SettingsPanel 预设编辑逻辑（useProfilesEditor）
-├── chat/                        # ChatArea 回滚与剪贴板逻辑（useChatRollback / useChatClipboard）
+├── chat/                        # ChatArea 滚动锚定、回滚与剪贴板逻辑（useChatScroll / useChatRollback / useChatClipboard）
 ├── agent/                       # AgentPanel 后台任务同步逻辑（useBackgroundTasks）
 ├── usePreferences.ts            # 前端 UI 偏好持久化
+├── useRunElapsed.ts             # 运行中轮次读秒（权限/咨询等待期自动冻结）
 ├── useTheme.ts                  # 主题切换/主题状态逻辑
 ├── useThinkingMode.ts           # 深度思考档位（会话级）
 ├── useToast.ts                  # 全局轻提示单例队列
+├── useUpdater.ts                # 应用内自动更新检查与安装
 └── useWindow.ts                 # Tauri 窗口相关操作封装
 ```
 
@@ -297,11 +307,12 @@ composables/
 
 ```text
 stores/
-├── session.ts                   # 会话视图状态与流式缓冲
-├── chat.ts                      # 聊天渲染控制与滚动行为
-├── agent.ts                     # Agent/子 Agent/任务状态
-├── permission.ts                # 权限请求与计划文档状态
-└── appView.ts                   # 全局视图状态：面板显隐、侧栏折叠等
+├── session.ts                   # 会话视图状态与流式缓冲（历史消息应用 markRaw 降低 Proxy 开销）
+├── chat.ts                      # 聊天主链路发送/取消/撤回/续跑、非响应式节流与滚动回调管理
+├── agent.ts                     # Agent/子 Agent/任务/上下文快照状态
+├── permission.ts                # 权限请求、运行期咨询与计划文档状态
+├── mcp.ts                       # MCP 扩展服务列表与状态同步
+└── appView.ts                   # 全局视图状态：聊天 / 扩展中心 / 归档页切换
 ```
 
 ### `session.ts`
@@ -407,6 +418,10 @@ utils/
 ├── agentTurnRender.ts           # 开发者时间线构建 + 伪工具调用剥离
 ├── toolDisplay.ts               # 工具调用分组与展示摘要
 ├── markdown.ts                  # Markdown 渲染（唯一入口 renderMarkdown）
+├── streamingMarkdown.ts         # 流式 Markdown O(Δ) 增量边界扫描与块级静态 HTML 渲染
+├── commandError.ts              # 跨端结构化 CommandError 守卫、错误码/重试态与可读文案提取
+├── contextUsage.ts / usageBreakdown.ts / tokenDisplay.ts # 上下文占比、分组用量归一化与数字格式化
+├── userMessage.ts               # 用户纯文本提取与长消息折叠阈值
 ├── timeline.ts                  # 时间线数据处理
 └── thinking.ts                  # 深度思考档位（与后端同源的 TS 镜像）
 ```

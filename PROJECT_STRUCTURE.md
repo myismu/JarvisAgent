@@ -17,12 +17,12 @@
 
 JarvisAgent 是一个基于 **Tauri 2.0 + Vue 3 + Pinia + Rust/Tokio** 的桌面 AI 编程助手。
 
-- 前端负责会话界面、执行过程展示、权限弹窗、设置面板、快照/检查点可视化。
-- 后端采用三层架构：
-  - `infra` 基础设施层：数据模型、LLM 客户端、数据库、配置、全局状态。
-  - `core` 业务层：Agent 主循环、复杂任务检测、工具系统、任务编排、会话、快照回滚。
-  - `command` 命令层：Tauri invoke handler 胶水（所有前端可调用命令）。
-- 前后端通信通过 Tauri 完成：前端使用 `invoke` 调用 Rust 命令，后端使用 `emit` 推送流式事件。
+- 前端负责会话界面、执行过程展示、权限弹窗、设置面板、快照/检查点可视化，所有高频跨端调用收口于 `src/api/` 强类型契约层。
+- 后端采用严格单向三层架构（`infra -> core -> command`，并由 `architecture_guards` 单测守护）：
+  - `infra` 基础设施层：数据模型、分层错误（含跨端 `CommandError`）、LLM 客户端、SQLite 读写分离连接池（WAL）、配置持久化、后台进程与异步调试日志。
+  - `core` 业务层：运行时上下文（`core/runtime.rs`）、Agent 主循环与子代理执行器（`subagent_runner.rs`）、MCP 客户端、工具系统、任务编排、会话、快照回滚。
+  - `command` 命令层：Tauri invoke handler 薄胶水（全部 133 个前端可调用命令）。
+- 前后端通信通过 Tauri 完成：前端使用 `src/api/` 的 `invokeTyped` / `listenTyped` 调用 Rust 命令与订阅强类型事件。
 
 ## 2. 顶层目录结构
 
@@ -88,20 +88,23 @@ src-tauri/src/main.rs
 → 恢复工作目录
 → 恢复或创建启动会话
 → tauri::Builder::default()
-→ manage(...) 注册全局状态
+→ manage(...) 注册全局状态（8 个核心 State）
+→ setup(...) 初始化 MCP 客户端并启动空闲会话/快照缓存定期回收任务
 → plugin(...) 注册 Tauri 插件
-→ invoke_handler(...) 注册前端命令（115 个）
+→ register_uri_scheme_protocol("jarvis-attachment") 注册只读图片附件协议
+→ invoke_handler(...) 注册前端命令（133 个）
 → run(tauri::generate_context!())
 ```
 
 `lib.rs` 中注册的核心状态包括：
 
-- `SessionManager`（`infra::state::state`）：活跃会话生命周期、取消令牌、权限请求等。
-- `BackgroundState` / `CompactingState`（`infra::background`）：后台任务与压缩状态。
+- `SessionManager`（`core::runtime`）：活跃会话生命周期、按会话细粒度双检初始化、取消令牌、权限请求与空闲 LRU 回收。
+- `BackgroundState` / `CompactingState`（`infra::background`）：后台任务（`spawn_blocking` 进程树查杀）与压缩状态。
 - `SubAgentMonitorState`（`core::orchestration::subagents`）：子 Agent 运行状态。
 - `ConfigState`（`infra::config::config`）：应用配置。
-- `WorkspaceState`（`infra::state::state`）：当前工作目录。
-- `SnapshotRegistry`（`infra::state::state`）：会话级快照管理器注册表。
+- `WorkspaceState`（`core::runtime`）：当前工作目录。
+- `SnapshotRegistry`（`core::runtime`）：会话级快照管理器注册表（按会话双检锁与空闲 LRU 回收）。
+- `McpManagerState`（`core::mcp`）：MCP 扩展服务生命周期、工具/资源/模板目录与调用调度。
 
 ## 6. 前后端事件与状态同步
 
@@ -137,7 +140,7 @@ Rust command / Agent pipeline
 | 修改工具执行结果处理 | `src-tauri/src/core/agent/tools_runner.rs` |
 | 新增工具 | `src-tauri/src/core/tools/` 对应子模块 + `framework/registry.rs` 注册宏 |
 | 修改权限逻辑 | `src-tauri/src/core/tools/framework/permission.rs` 与 `command/permission.rs` |
-| 新增 Tauri 命令 | `src-tauri/src/command/` + `src-tauri/src/lib.rs` + `infra/types/ts_bindings.rs`（执行 `pnpm gen:types`） |
+| 新增 Tauri 命令 | `src-tauri/src/command/` + `src-tauri/src/lib.rs` + `src-tauri/src/ts_bindings.rs`（执行 `pnpm gen:types`） + `src/api/commands.ts` |
 | 新增模型能力 | `src-tauri/model_registry.json` + `infra/llm/registry.rs` |
 | 新增 Provider/API 格式 | `infra/llm/api_format.rs`、`infra/llm/request_builder.rs`、`model_registry.json` |
 | 修改会话持久化 | `src-tauri/src/core/session/mod.rs`、`src-tauri/src/core/session/repository/` |

@@ -36,10 +36,11 @@ src-tauri/
 ```text
 src/
 ├── main.rs                      # 二进制入口，启动 jarvisagent_lib::run()
-├── lib.rs                       # Tauri 后端入口：数据目录、状态、插件、invoke_handler
-├── infra/                       # 基础设施层：配置 / 数据库 / LLM / Provider / 状态 / 类型
-├── core/                        # 业务层：Agent / 工具 / 编排 / 回滚 / 会话
-└── command/                     # Tauri 命令层：所有前端可调用命令
+├── lib.rs                       # Tauri 后端入口：数据目录、状态、插件、自定义协议、invoke_handler 与架构守卫测试
+├── ts_bindings.rs               # 顶层 #[cfg(test)] 跨端 ts-rs 契约导出与一致性守卫（133 命令 + 28 类事件）
+├── infra/                       # 基础设施层：配置 / SQLite 读写池 / LLM / 后台进程 / 日志 / 类型（零反向依赖）
+├── core/                        # 业务层：runtime / Agent 与子代理执行器 / MCP / 工具 / 编排 / 回滚 / 会话
+└── command/                     # Tauri 命令层：133 个前端可调用命令薄封装（高频核心域统一 CommandError）
 ```
 
 ### `src/lib.rs`
@@ -47,12 +48,14 @@ src/
 `lib.rs` 是 Tauri 后端的真实启动入口，主要职责：
 
 1. 检测并锁定运行时 `data/` 目录（`AGENT_HOME_DIR`）。
-2. `infra::db::init()` 初始化 SQLite（20 张表 + v1~v29 增量迁移）。
-3. 恢复上次工作目录与启动会话。
-4. 注册全局状态：`SessionManager`、`BackgroundState`、`CompactingState`、`SubAgentMonitorState`、`ConfigState`、`RuntimeConfigState`、`WorkspaceState`、`SnapshotRegistry`。
-5. 注册 Tauri 插件：opener、dialog、fs、window-state、updater、process。
-6. 在 `invoke_handler` 中注册全部前端可调用命令（115 个）。
-7. 退出时清理所有后台任务进程（`kill_all_process_tree`）。
+2. `infra::db::init()` 初始化 SQLite（20 张表 + v1~v29 增量迁移 + WAL 只读连接池）。
+3. 恢复上次工作目录、初始化 Shell 方言与启动会话。
+4. 注册全局状态：`SessionManager`、`BackgroundState`、`CompactingState`、`SubAgentMonitorState`、`ConfigState`、`WorkspaceState`、`SnapshotRegistry`、`McpManagerState`。
+5. 在 `setup` 中异步初始化 MCP 服务管理器，并挂载每 10 分钟执行一次的空闲会话/快照缓存回收任务。
+6. 注册 Tauri 插件（opener、dialog、fs、window-state、updater、process）与 `jarvis-attachment` 只读自定义协议（直接从 SQLite 提供会话图片附件）。
+7. 在 `invoke_handler` 中注册全部前端可调用命令（133 个）。
+8. 退出时刷新异步调试日志（`debug_logger().flush()`）、收尾活跃会话记忆与运行记录，并清理所有后台任务进程（`kill_all_process_tree`）。
+9. 内置 `architecture_guards` 单元测试，静态锁死 `infra`/`core` 零反向依赖 `command`、`infra` 零反向依赖 `core`。
 
 ## 基础设施层：`src/infra/`
 
@@ -60,10 +63,11 @@ src/
 infra/
 ├── mod.rs                       # 基础设施模块入口
 ├── config/
-│   ├── config.rs                # 配置加载与保存（原子写入：先写 tmp 再 rename）；AgentConfig、RuntimeSettings
+│   ├── app_config.rs            # app-config.json 进程内互斥锁 + 原子写 + 损坏自动备份（窗口状态、UI 偏好、工具/技能开关）
+│   ├── config.rs                # config.json 配置加载与原子保存；AgentConfig、ModelProfile、AppConfig
 │   └── data_paths.rs            # data 目录、会话、图片、快照等运行期路径管理
 ├── db/
-│   ├── mod.rs                   # SQLite 连接管理与初始化
+│   ├── mod.rs                   # SQLite 单写连接 + 零依赖 WAL 只读连接池（ReadConnectionPool）与事务封装
 │   └── schema/                  # 20 张表 schema 定义 + 增量迁移分卷
 │       ├── mod.rs               # SCHEMA_VERSION、建表 DDL 与迁移编排入口
 │       ├── migrations_v1_v15.rs # v3~v15 早期增量迁移
@@ -71,21 +75,38 @@ infra/
 │       └── tests.rs             # schema 初始化与历史迁移回归测试
 ├── llm/
 │   ├── api_format.rs            # ApiFormat 枚举（认证头、版本头）
-│   ├── api_client.rs            # HTTP 客户端、固定阶梯重试、429 Retry-After
+│   ├── api_client.rs            # HTTP 客户端、主/子代理共用阶梯重试（1s/3s/5s）与 429 Retry-After 限流
 │   ├── request_builder.rs       # 双协议请求体构建（内部按 Anthropic 建模，OpenAI 出口翻译）
 │   ├── adapters.rs              # Anthropic ↔ OpenAI 消息格式转换
-│   ├── registry.rs              # 读取 model_registry.json 的模型能力与命令入口
+│   ├── stream_parse.rs          # SSE 增量解析原语
+│   ├── context_budget.rs        # 上下文窗口预算与自动压缩阈值计算
+│   ├── usage.rs / usage_memory.rs # 多厂商 Token/缓存命中率归因与端点上报记忆
+│   ├── registry.rs              # 读取 model_registry.json 的模型能力与生命周期探测
 │   └── token_count.rs           # tiktoken BPE Token 计数
-├── state/
-│   └── state.rs                 # SessionManager、SessionContext、WorkspaceState、SnapshotRegistry
 ├── types/
-│   ├── models.rs                # 消息、工具、会话、计划文档等共享数据模型
+│   ├── models.rs                # 消息、工具、会话、计划文档、MCP 状态等共享数据模型
 │   ├── events.rs                # 后端 app.emit 推送事件强类型结构体与判别联合枚举
-│   ├── error.rs                 # AgentError、ApiError、DbError 等分层错误类型
-│   ├── constants.rs             # 全局常量
-│   └── ts_bindings.rs           # ts-rs 跨端 TypeScript 契约导出与一致性门禁测试（覆盖 115 命令 + 36 事件）
-├── background.rs                # 后台任务状态与输出管理（bg-task-done 事件推送）
-└── debug_logger.rs              # 调试日志
+│   ├── error.rs                 # AgentError、ApiError、DbError 与跨端 CommandError / ErrorCode
+│   └── constants.rs             # 全局常量
+├── background.rs                # 后台任务状态、锁外 spawn_blocking 进程树查杀与 bg-task-done 事件推送
+├── debug_logger.rs              # 有界异步通道（mpsc::sync_channel）后台写线程 + 增量 JSONL 日志 + 零分配体积计数
+├── log_maintenance.rs           # 日志按大小分片、归档与超期清理策略
+├── shell_command.rs             # 跨平台 Shell 命令分段、引号解析与无窗口执行辅助
+└── shell_dialect.rs             # PowerShell / Bash 方言探测与统一口径
+```
+
+## 运行时状态与 MCP 客户端：`core/runtime.rs` + `core/mcp/`
+
+```text
+core/
+├── runtime.rs                   # SessionManager（按会话双检锁 + spawn_blocking 冷加载 + 空闲 LRU 回收）、SessionContext、WorkspaceState、SnapshotRegistry
+└── mcp/                         # MCP 扩展服务客户端子系统（4 独立 RwLock + 单服务 start/call 锁 + 空闲回收）
+    ├── mod.rs                   # 模块聚合导出
+    ├── manager.rs               # McpManager / McpManagerState 服务生命周期、启停、热重载与工具调用调度
+    ├── client.rs                # stdio / streamable_http 协议客户端实现
+    ├── catalog.rs               # 工具/资源/Prompt 能力缓存目录
+    ├── config.rs                # mcp_servers.json 配置持久化与导入校验
+    └── naming.rs                # 命名空间工具名（mcp__server__tool）编码与解析
 ```
 
 ## Agent 管线：`core/agent/`
@@ -103,6 +124,8 @@ agent/
 │   ├── helpers.rs               # 管线辅助函数
 │   └── tests.rs                 # 管线单元测试
 ├── context.rs                   # 动态上下文注入：记忆、技能、目录结构等
+├── context_format.rs            # 消息可读摘要格式化（上下文检查器与诊断视图共用）
+├── subagent_runner.rs           # 子代理执行引擎（复用 request_builder 与 api_client 阶梯重试/429 限流）
 ├── stream.rs                    # SSE 流解析：文本、thinking、tool_use
 ├── tools_runner.rs              # 执行模型返回的工具调用并回填观察结果
 ├── prompts.rs                   # 系统提示词三层组装（Base + Audience + WorkMode）
@@ -141,16 +164,21 @@ agent/
 ```text
 command/
 ├── mod.rs                       # command 模块声明
-├── config.rs                    # get_config、save_config_cmd、get_image_compress_config
-├── app_config.rs                # 窗口状态、UI 偏好、技能激活状态
-├── permission.rs                # cancel_jarvis、resolve_permission、权限状态查询
-├── session.rs                   # 会话 CRUD、Agent run、子代理、后台任务、计划文档查询
-├── history.rs / history_types.rs # 历史消息渲染与类型
-├── checkpoint.rs                # 检查点、分支、回滚、提交、清理 pending operations
+├── config.rs                    # get_config、save_config_cmd、get_image_compress_config（统一 CommandError）
+├── app_config.rs                # 窗口状态、UI 偏好、输入草稿、工具与技能开关
+├── permission.rs                # cancel_jarvis、resolve_permission、权限/咨询管理（统一 CommandError）
+├── session.rs                   # 会话 CRUD、归档/恢复、思考档位、撤回、压缩与 Agent run（统一 CommandError）
+├── project.rs                   # 项目打开、列表、归档、重命名与工作区目录查询（统一 CommandError）
+├── background.rs                # 后台任务、子代理轨迹与运行状态查询/取消
+├── history.rs                   # 历史消息分页查询（核心读模型位于 core/session/history_view.rs）
+├── checkpoint.rs                # 检查点、分支、回滚、提交薄封装（统一 CommandError）
 ├── snapshot.rs                  # 快照创建、查询、详情、分支、回滚
 ├── sandbox.rs                   # 多 Agent 沙盒创建、查询、完成、放弃、发布、对比
 ├── merge.rs                     # 合并预览、执行、冲突查询
-├── mcp.rs                       # MCP 服务配置、启停、导入、测试连接、工具/资源/模板/日志命令
+├── mcp.rs                       # MCP 服务配置、启停、导入、测试连接、工具/资源/模板/日志（统一 CommandError）
+├── prompt.rs                    # 系统提示词模板查询、磁盘覆盖保存与重置
+├── shell.rs                     # Shell 终端设置查询、保存与探测
+├── tool.rs                      # 工具元信息列表与开关状态查询
 └── skill.rs                     # 技能列表与详情查询
 ```
 
@@ -194,8 +222,11 @@ tools/
 │   ├── execution.rs / background.rs / readonly.rs / git.rs
 │   └── security.rs / guards.rs / regexes.rs / types.rs / utils.rs
 ├── agent_tools/                 # Agent 专用工具
-│   ├── mod.rs                   # 注册入口（LoadSkill / GetToolCatalog）
-│   ├── subagent.rs              # 子代理执行引擎（RunSubagent / RunSubagentsSequentially）
+│   ├── mod.rs                   # 注册入口（LoadSkill / GetToolCatalog 等）
+│   ├── subagent.rs              # 子代理薄委托入口（核心执行器已抽离至 core/agent/subagent_runner.rs）
+│   ├── ask_user.rs              # 运行期结构化咨询工具（AskUser）
+│   ├── mcp_resource.rs          # MCP 资源读取工具
+│   ├── memory.rs / session_image.rs # 记忆检索与会话图片读取工具
 │   ├── skill.rs                 # 技能加载
 │   ├── compact.rs               # 上下文压缩 + 记忆整理（CompactConversation / ConsolidateMemory）
 │   ├── plan.rs                  # 方案审批（ProposePlan）
@@ -262,7 +293,11 @@ orchestration/
 ```text
 session/
 ├── mod.rs                       # 会话创建、切换、删除、重命名、元数据管理
-├── repository/                  # 会话 SQLite 领域仓储目录
+├── lifecycle.rs                 # 会话中断恢复闸门、退出收尾、持锁撤回、归档切走与摘要压缩编排
+├── naming.rs                    # 会话智能命名（LLM 自动生成标题）
+├── history_view.rs              # 历史消息分页读模型投影与工具调用聚合
+├── thinking.rs / usage.rs       # 深度思考裁决与用量聚合视图
+├── repository/                  # 会话 SQLite 领域仓储目录（纯读路径走 WAL 只读连接池）
 │   ├── mod.rs                   # 仓储统一门面与重导出
 │   ├── sessions.rs              # 会话元数据、回收站、项目归档与运行偏好
 │   ├── messages.rs              # 消息索引、分页回溯与上下文快照
@@ -287,13 +322,16 @@ session/
 ```text
 rollback/
 ├── mod.rs                       # 回滚引擎模块导出
+├── checkpoint_service.rs        # 检查点目标解析、撤回预览与文件回滚编排服务
+├── patch_store.rs               # 补丁与用户消息关联 SQLite 仓储
 ├── snapshot.rs                  # 文件级快照结构与快照树
 ├── patch.rs                     # 文件变更 Patch（Create/Update/Delete/Rename）
 ├── replay.rs                    # 快照重放 + 原子文件回滚（staging + rename）
 ├── store.rs                     # 快照 SQLite 持久化
 ├── gc.rs                        # 三阶段垃圾回收（脱离分支 → 孤儿快照 → 孤儿内容）
+├── trash.rs                     # 软删除回收站管理
 ├── journal.rs                   # 操作日志
-├── session_manager.rs           # 会话级快照注册与分支管理
+├── session_manager.rs           # 会话级快照管理器与注册表（双检锁 + spawn_blocking + 空闲 LRU 回收）
 └── rollback_logger.rs           # 回滚日志
 
 orchestration/multi_agent/
@@ -369,7 +407,7 @@ cargo clippy                     # Rust lint 检查
 | 会话、历史、工作区恢复异常 | `core/session/`、`command/session.rs`、`infra/config/data_paths.rs` |
 | 数据库 schema / 迁移异常 | `infra/db/schema/`、`infra/db/mod.rs` |
 | Agent 执行记录或执行面板异常 | `core/orchestration/agent_runs.rs`、`command/session.rs` |
-| 子代理异常 | `core/orchestration/subagents.rs`、`core/tools/agent_tools/subagent.rs` |
+| 子代理异常 | `core/agent/subagent_runner.rs`、`core/orchestration/subagents.rs`、`core/tools/agent_tools/subagent.rs` |
 | 任务系统异常 | `core/orchestration/tasks.rs`、`core/tools/task_tools/` |
 | 快照、回滚异常 | `core/rollback/`、`command/{snapshot,checkpoint}.rs` |
 | 沙盒、合并异常 | `core/orchestration/multi_agent/`、`command/{sandbox,merge}.rs` |
