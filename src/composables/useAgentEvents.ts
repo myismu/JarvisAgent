@@ -5,18 +5,19 @@
  * 管理跨 Vite HMR 生命周期的全局监听器去重与注销，并对外导出后端状态加载方法。
  *
  * ## Key Exports
- * - `useAgentEvents()`: 提供 `initListeners()` 及 7 个后端运行态/轨迹加载方法
+ * - `useAgentEvents()`: 提供 `initListeners(options?)`、`disposeListeners()` 及 7 个后端运行态/轨迹加载方法
  *
  * ## Dependencies
  * - Internal: `./agentEvents/*`, `@/stores/session`, `@/stores/chat`, `@/stores/agent`, `@/stores/permission`
  * - External: `@tauri-apps/api/event`, `vue-i18n`
  *
  * ## Constraints
- * - `initListeners()` 挂载全局 `window.__jarvisUnlisteners`，跨 HMR 自动注销旧监听器避免重复触发
+ * - `initListeners()` 挂载全局 `window.__jarvisUnlisteners`，跨 HMR 自动注销旧监听器与域内定时器
+ * - 注册中途失败会回滚已注册句柄并确保 `__jarvisListenersInitializing` 复位，不会永久锁死
  */
-import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useI18n } from "vue-i18n";
+import { listenTyped } from "../api/events";
 import { useSessionStore } from "../stores/session";
 import { useChatStore } from "../stores/chat";
 import { useAgentStore } from "../stores/agent";
@@ -30,7 +31,14 @@ import { createAgentEventsLoaders } from "./agentEvents/loaders";
 import { registerGovernanceEvents } from "./agentEvents/governanceEvents";
 import { registerStreamEvents } from "./agentEvents/streamEvents";
 import { registerLifecycleEvents } from "./agentEvents/lifecycleEvents";
-import type { AgentEventsContext, EventRegisterFn } from "./agentEvents/types";
+import type {
+  AgentEventDomain,
+  AgentEventsContext,
+  EventRegisterFn,
+  InitAgentListenersOptions,
+} from "./agentEvents/types";
+
+const ALL_DOMAINS: AgentEventDomain[] = ["governance", "stream", "lifecycle"];
 
 // 将初始化标志和 unlisten 句柄挂在 window 上，跨 Vite HMR 生命周期持久化
 declare global {
@@ -39,6 +47,19 @@ declare global {
     __jarvisListenersInitializing?: boolean;
     __jarvisUnlisteners?: UnlistenFn[];
   }
+}
+
+/** 清理当前窗口已注册的全部事件监听器与域内定时器，并复位全局状态标志 */
+export function disposeAgentListeners(): void {
+  if (typeof window === "undefined") return;
+  if (window.__jarvisUnlisteners) {
+    for (const unlisten of window.__jarvisUnlisteners) {
+      unlisten();
+    }
+    window.__jarvisUnlisteners = undefined;
+  }
+  window.__jarvisListenersInitialized = false;
+  window.__jarvisListenersInitializing = false;
 }
 
 export function useAgentEvents() {
@@ -86,15 +107,11 @@ export function useAgentEvents() {
     loaders,
   };
 
-  const initListeners = async () => {
+  const initListeners = async (options: InitAgentListenersOptions = {}) => {
     // 跨 HMR 生命周期：如果当前 window 已有监听器，先全部清理再重新注册
     if (window.__jarvisUnlisteners) {
       console.warn("[JarvisAgent] HMR 检测：清理旧事件监听器，重新注册");
-      for (const unlisten of window.__jarvisUnlisteners) {
-        unlisten();
-      }
-      window.__jarvisUnlisteners = undefined;
-      window.__jarvisListenersInitialized = false;
+      disposeAgentListeners();
     }
 
     if (window.__jarvisListenersInitializing) {
@@ -110,40 +127,61 @@ export function useAgentEvents() {
       console.warn("[JarvisAgent] 检测到过期监听器标志，重新注册");
       window.__jarvisListenersInitialized = false;
     }
-    window.__jarvisListenersInitializing = true;
 
+    const enabledDomains = new Set<AgentEventDomain>(options.domains ?? ALL_DOMAINS);
+    const syncChatMessages = options.syncChatMessages ?? enabledDomains.has("stream");
+
+    window.__jarvisListenersInitializing = true;
     const unlisteners: UnlistenFn[] = [];
     const on: EventRegisterFn = async (event, handler) => {
-      const unlisten = await listen(event, handler);
+      const unlisten = await listenTyped(event, handler);
       unlisteners.push(unlisten);
     };
 
-    await registerGovernanceEvents(on, ctx);
-    await registerStreamEvents(on, ctx);
-    await registerLifecycleEvents(on, ctx);
+    try {
+      if (enabledDomains.has("governance")) {
+        await registerGovernanceEvents(on, ctx);
+      }
+      if (enabledDomains.has("stream")) {
+        await registerStreamEvents(on, ctx);
+      }
+      if (enabledDomains.has("lifecycle")) {
+        const cleanupLifecycle = await registerLifecycleEvents(on, ctx, {
+          syncChatMessages,
+        });
+        unlisteners.push(cleanupLifecycle);
+      }
 
-    // 保存所有 unlisten 句柄到 window 级别（跨 HMR 生命周期）
-    window.__jarvisUnlisteners = unlisteners;
-    window.__jarvisListenersInitialized = true;
-    window.__jarvisListenersInitializing = false;
+      // 保存所有 unlisten 句柄到 window 级别（跨 HMR 生命周期）
+      window.__jarvisUnlisteners = unlisteners;
+      window.__jarvisListenersInitialized = true;
+    } catch (err) {
+      // 注册中途抛错时回滚已注册句柄与定时器，防止半初始化泄漏或永久锁死
+      for (const unlisten of unlisteners) {
+        try {
+          unlisten();
+        } catch {
+          // 忽略单项回滚异常，确保其余句柄继续释放
+        }
+      }
+      window.__jarvisUnlisteners = undefined;
+      window.__jarvisListenersInitialized = false;
+      throw err;
+    } finally {
+      window.__jarvisListenersInitializing = false;
+    }
 
-    // Vite HMR 清理：热更新时自动注销旧监听器
+    // Vite HMR 清理：热更新时自动注销旧监听器与定时器
     if (import.meta.hot) {
       import.meta.hot.dispose(() => {
-        if (window.__jarvisUnlisteners) {
-          for (const unlisten of window.__jarvisUnlisteners) {
-            unlisten();
-          }
-          window.__jarvisUnlisteners = undefined;
-          window.__jarvisListenersInitialized = false;
-          window.__jarvisListenersInitializing = false;
-        }
+        disposeAgentListeners();
       });
     }
   };
 
   return {
     initListeners,
+    disposeListeners: disposeAgentListeners,
     loadSubAgentRunsFromBackend: loaders.loadSubAgentRunsFromBackend,
     loadSubAgentTraceFromBackend: loaders.loadSubAgentTraceFromBackend,
     loadPlanDocumentsFromBackend: loaders.loadPlanDocumentsFromBackend,

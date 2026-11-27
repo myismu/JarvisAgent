@@ -28,7 +28,9 @@ import {
 } from "../../utils/agentTurnState";
 import type { AgentEventsContext, EventRegisterFn } from "./types";
 
-function payloadLoop(payload: any): number | null {
+function payloadLoop(
+  payload: { loopCount?: number; loop_count?: number; loop?: number } | null | undefined,
+): number | null {
   const raw = payload?.loopCount ?? payload?.loop_count ?? payload?.loop;
   const value = Number(raw);
   return Number.isFinite(value) && value > 0 ? value : null;
@@ -57,7 +59,7 @@ export async function registerStreamEvents(
   const { t, session, dismissedInterruptedRuns, syncActiveSessionView } = ctx;
 
   // chat turn start
-  await on<any>("chat-turn-start", (event) => {
+  await on("chat-turn-start", (event) => {
     const sessionId = event.payload?.sessionId ?? session.activeSessionId;
     if (!sessionId) return;
     const view = session.getSessionView(sessionId);
@@ -79,7 +81,7 @@ export async function registerStreamEvents(
   });
 
   // chat content — 流式片段必须逐段追加，不能按文本内容去重
-  await on<any>("chat-content", (event) => {
+  await on("chat-content", (event) => {
     const sessionId = event.payload?.sessionId ?? session.activeSessionId;
     if (!sessionId) return;
     const { content } = event.payload;
@@ -95,7 +97,7 @@ export async function registerStreamEvents(
   });
 
   // chat thinking — 同样保留所有片段，避免重复词或重复标点被误删
-  await on<any>("chat-thinking", (event) => {
+  await on("chat-thinking", (event) => {
     if (event.payload?.isSubAgent) return; // 子代理事件不注入主聊天
     const sessionId = event.payload?.sessionId ?? session.activeSessionId;
     if (!sessionId) return;
@@ -112,7 +114,7 @@ export async function registerStreamEvents(
   });
 
   // chat tool start
-  await on<any>("chat-tool-start", (event) => {
+  await on("chat-tool-start", (event) => {
     const sessionId = event.payload?.sessionId ?? session.activeSessionId;
     if (!sessionId) return;
     const view = session.getSessionView(sessionId);
@@ -135,7 +137,7 @@ export async function registerStreamEvents(
   });
 
   // chat tool debug
-  await on<any>("chat-tool-debug", (event) => {
+  await on("chat-tool-debug", (event) => {
     const sessionId = event.payload?.sessionId ?? session.activeSessionId;
     if (!sessionId) return;
     const view = session.getSessionView(sessionId);
@@ -158,7 +160,7 @@ export async function registerStreamEvents(
   });
 
   // chat stream — 工具/子代理输出
-  await on<any>("chat-stream", (event) => {
+  await on("chat-stream", (event) => {
     if (event.payload?.isSubAgent) return; // 子代理事件不注入主聊天
     const sessionId = event.payload?.sessionId ?? session.activeSessionId;
     if (!sessionId) return;
@@ -173,7 +175,7 @@ export async function registerStreamEvents(
   });
 
   // chat turn end
-  await on<any>("chat-turn-end", (event) => {
+  await on("chat-turn-end", (event) => {
     const sessionId = event.payload?.sessionId ?? session.activeSessionId;
     if (!sessionId) return;
     const { has_tool } = event.payload;
@@ -188,11 +190,11 @@ export async function registerStreamEvents(
   });
 
   // agent step
-  await on<any>("agent-step", (event) => {
+  await on("agent-step", (event) => {
     if (event.payload?.isSubAgent) return; // 子代理事件不注入主聊天
     const sessionId = event.payload?.sessionId ?? session.activeSessionId;
     if (!sessionId) return;
-    const step = event.payload as Omit<AgentStep, "timestamp">;
+    const step = event.payload;
     const view = session.getSessionView(sessionId);
 
     // 过程性状态标注：写入时必须带 `noticeKind`，供 `notice_clear` 按来源精确清除

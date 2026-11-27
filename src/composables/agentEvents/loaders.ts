@@ -11,21 +11,21 @@
  * - Internal: `@/stores/session`, `@/stores/chat`, `@/stores/agent`, `@/stores/permission`, `@/types`
  * - External: `@tauri-apps/api/core`
  */
-import { invoke } from "@tauri-apps/api/core";
+import {
+  getSessionContextSnapshot,
+  getSessionTodos,
+  listAgentRunEvents,
+  listAgentRuns,
+  listPlanDocuments,
+  listSubagents,
+  listSubagentTraceEvents,
+  listSubagentTraceRuns,
+} from "../../api";
 import type { useSessionStore } from "../../stores/session";
 import type { useChatStore } from "../../stores/chat";
 import type { useAgentStore } from "../../stores/agent";
 import type { usePermissionStore } from "../../stores/permission";
-import type {
-  AgentRun,
-  AgentRunLoopEvent,
-  PlanDocument,
-  SessionContextSnapshot,
-  SubAgentRun,
-  SubAgentTraceEvent,
-  SubAgentTraceRunSummary,
-  TodoGroup,
-} from "../../types";
+import type { AgentRun, AgentRunLoopEvent } from "../../types";
 import type { AgentEventsLoaders } from "./types";
 
 interface LoaderDeps {
@@ -64,10 +64,8 @@ export function createAgentEventsLoaders(deps: LoaderDeps): AgentEventsLoaders {
     const load = (async () => {
       try {
         const [runs, traceRuns] = await Promise.all([
-          invoke<SubAgentRun[]>("list_subagents", { sessionId: effectiveSid }),
-          invoke<SubAgentTraceRunSummary[]>("list_subagent_trace_runs", {
-            sessionId: effectiveSid,
-          }),
+          listSubagents(effectiveSid),
+          listSubagentTraceRuns(effectiveSid),
         ]);
         const otherRuns = Object.fromEntries(
           Object.entries(agent.subAgentRuns).filter(([, run]) => run.sessionId !== effectiveSid),
@@ -97,7 +95,7 @@ export function createAgentEventsLoaders(deps: LoaderDeps): AgentEventsLoaders {
     subAgentTraceLoadVersion.set(runId, version);
     agent.subAgentTraceByRun[runId] ??= [];
     try {
-      const events = await invoke<SubAgentTraceEvent[]>("list_subagent_trace_events", { runId });
+      const events = await listSubagentTraceEvents(runId);
       if (
         subAgentTraceLoadVersion.get(runId) === version &&
         Object.prototype.hasOwnProperty.call(agent.subAgentTraceByRun, runId)
@@ -113,9 +111,7 @@ export function createAgentEventsLoaders(deps: LoaderDeps): AgentEventsLoaders {
     try {
       const effectiveSid = sid ?? session.activeSessionId;
       if (!effectiveSid) return;
-      const documents = await invoke<PlanDocument[]>("list_plan_documents", {
-        sessionId: effectiveSid,
-      });
+      const documents = await listPlanDocuments(effectiveSid);
       perm.planDocumentsBySession = {
         ...perm.planDocumentsBySession,
         [effectiveSid]: documents,
@@ -133,7 +129,7 @@ export function createAgentEventsLoaders(deps: LoaderDeps): AgentEventsLoaders {
     try {
       const effectiveSid = sid ?? session.activeSessionId;
       if (!effectiveSid) return;
-      const groups = await invoke<TodoGroup[]>("get_session_todos", { sessionId: effectiveSid });
+      const groups = await getSessionTodos(effectiveSid);
       agent.todoGroupsBySession = {
         ...agent.todoGroupsBySession,
         [effectiveSid]: groups,
@@ -151,7 +147,7 @@ export function createAgentEventsLoaders(deps: LoaderDeps): AgentEventsLoaders {
       const effectiveSid = sid ?? session.activeSessionId;
       if (!effectiveSid) return;
       const beforeMsgCount = session.getSessionView(effectiveSid).messages.length;
-      const runs = await invoke<AgentRun[]>("list_agent_runs", { sessionId: effectiveSid });
+      const runs = await listAgentRuns(effectiveSid);
       const otherRuns = Object.fromEntries(
         Object.entries(agent.agentRuns).filter(([, run]) => run.sessionId !== effectiveSid),
       );
@@ -177,10 +173,7 @@ export function createAgentEventsLoaders(deps: LoaderDeps): AgentEventsLoaders {
     try {
       const effectiveSid = sid ?? session.activeSessionId;
       if (!effectiveSid) return;
-      const events = await invoke<AgentRunLoopEvent[]>("list_agent_run_events", {
-        sessionId: effectiveSid,
-        runId: null,
-      });
+      const events = await listAgentRunEvents(effectiveSid, null);
       const grouped = events.reduce<Record<string, AgentRunLoopEvent[]>>((acc, item) => {
         if (!acc[item.runId]) acc[item.runId] = [];
         acc[item.runId].push(item);
@@ -205,10 +198,7 @@ export function createAgentEventsLoaders(deps: LoaderDeps): AgentEventsLoaders {
     try {
       const effectiveSid = sid ?? session.activeSessionId;
       if (!effectiveSid) return;
-      const snapshot = await invoke<SessionContextSnapshot | null>(
-        "get_session_context_snapshot",
-        { sessionId: effectiveSid },
-      );
+      const snapshot = await getSessionContextSnapshot(effectiveSid);
       if (snapshot) {
         agent.upsertContextSnapshot(snapshot);
       } else {

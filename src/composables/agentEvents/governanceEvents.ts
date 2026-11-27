@@ -12,14 +12,7 @@
  * - Internal: `./types`, `@/stores/session`, `@/types`
  */
 import type { SessionViewState } from "../../stores/session";
-import type {
-  PermissionRequest,
-  PermissionResolvedPayload,
-  PlanDocument,
-  PlanProposal,
-  UserQuestionRequestEvent,
-  UserQuestionResolvedEvent,
-} from "../../types";
+import type { PlanProposal } from "../../types";
 import type { AgentEventsContext, EventRegisterFn } from "./types";
 
 function replacePlanTextWithNotice(source: string, planContent: string, notice: string): string {
@@ -58,29 +51,29 @@ export async function registerGovernanceEvents(
   const { t, session, perm, syncActiveSessionView } = ctx;
 
   // permission
-  await on<PermissionRequest>("permission-request", (event) => {
+  await on("permission-request", (event) => {
     // 入队而不是覆盖：并行子代理可能同时发起多个权限请求
     perm.enqueuePermission(event.payload);
   });
 
-  await on<PermissionResolvedPayload>("permission-resolved", (event) => {
+  await on("permission-resolved", (event) => {
     const sid = event.payload.sessionId ?? session.activeSessionId;
     // 按 id 精确移除：一张卡的决议不能把排在它后面的请求一起抹掉
     perm.removePermission(sid, event.payload.id);
   });
 
   // 运行期用户咨询（AskUser 工具）
-  await on<UserQuestionRequestEvent>("user-question-request", (event) => {
+  await on("user-question-request", (event) => {
     perm.enqueueUserQuestion(event.payload);
   });
 
-  await on<UserQuestionResolvedEvent>("user-question-resolved", (event) => {
+  await on("user-question-resolved", (event) => {
     const sid = event.payload.sessionId ?? session.activeSessionId;
     perm.removeUserQuestion(sid, event.payload.id);
   });
 
   // plan proposal stream (chunked)
-  await on<{ sessionId?: string; content: string }>("plan-proposal-stream", (event) => {
+  await on("plan-proposal-stream", (event) => {
     const sid = event.payload.sessionId ?? session.activeSessionId;
     if (sid) {
       perm.updatePlanProposalStreamingContent(sid, event.payload.content);
@@ -90,7 +83,7 @@ export async function registerGovernanceEvents(
   });
 
   // plan proposal
-  await on<PlanProposal>("plan-proposal", (event) => {
+  await on("plan-proposal", (event) => {
     const sid = event.payload.sessionId ?? session.activeSessionId;
     if (sid) {
       const view = session.getSessionView(sid);
@@ -121,7 +114,7 @@ export async function registerGovernanceEvents(
   });
 
   // plan document updated
-  await on<PlanDocument>("plan-document-updated", (event) => {
+  await on("plan-document-updated", (event) => {
     perm.upsertPlanDocument(event.payload);
   });
 }

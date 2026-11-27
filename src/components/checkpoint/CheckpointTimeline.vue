@@ -16,6 +16,7 @@ import { listen } from '@tauri-apps/api/event';
 import type { Checkpoint, Branch, CheckpointTree } from '../../types';
 import FileOpIcon from '../snapshot/FileOpIcon.vue';
 import { formatRelativeTime, getFileOpLabel } from '../../utils/timeline';
+import { extractCommandErrorMessage } from '../../utils/commandError';
 
 const props = defineProps<{
   sessionId: string | null;
@@ -59,7 +60,7 @@ const loadCheckpointTree = async () => {
     activeBranch.value = active;
   } catch (err) {
     console.error('加载检查点失败:', err);
-    error.value = String(err);
+    error.value = extractCommandErrorMessage(err);
   } finally {
     loading.value = false;
   }
@@ -80,7 +81,7 @@ const handleRollback = async (checkpointId: string) => {
     await loadCheckpointTree();
   } catch (err) {
     console.error('回滚失败:', err);
-    error.value = `回滚失败: ${err}`;
+    error.value = `回滚失败: ${extractCommandErrorMessage(err)}`;
   }
 };
 
@@ -95,7 +96,7 @@ const switchBranch = async (branchName: string) => {
     await loadCheckpointTree();
   } catch (err) {
     console.error('切换分支失败:', err);
-    error.value = `切换分支失败: ${err}`;
+    error.value = `切换分支失败: ${extractCommandErrorMessage(err)}`;
   }
 };
 
@@ -115,7 +116,7 @@ const createNewBranch = async (fromCheckpointId: string) => {
     await loadCheckpointTree();
   } catch (err) {
     console.error('创建分支失败:', err);
-    error.value = `创建分支失败: ${err}`;
+    error.value = `创建分支失败: ${extractCommandErrorMessage(err)}`;
   }
 };
 

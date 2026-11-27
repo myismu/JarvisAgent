@@ -33,6 +33,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { SessionMeta } from '../../types';
 import { useAppViewStore } from '../../stores/appView';
 import { useSessionStore } from '../../stores/session';
+import { extractCommandErrorMessage } from '../../utils/commandError';
 import { showToast } from '../../composables/useToast';
 import { formatTokenCount } from '../../utils/tokenDisplay';
 import ConfirmModal from '../common/ConfirmModal.vue';
@@ -371,13 +372,7 @@ function metaParts(session: SessionMeta): string {
 }
 
 function formatError(err: unknown): string {
-  if (typeof err === 'string') return err;
-  if (err instanceof Error) return err.message;
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return String(err);
-  }
+  return extractCommandErrorMessage(err);
 }
 
 // ───────────────────────────── 数据加载 ─────────────────────────────

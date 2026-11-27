@@ -15,6 +15,7 @@ import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useSessionStore } from "../../stores/session";
 import { usePreferences } from "../usePreferences";
+import { extractCommandErrorMessage } from "../../utils/commandError";
 import type {
   AgentApprovalMode,
   AgentUserMode,
@@ -128,7 +129,7 @@ export function useSessionControlModes() {
       agentReadOnly.value = next;
     } catch (e) {
       agentReadOnly.value = prev;
-      workModeWarning.value = String(e);
+      workModeWarning.value = extractCommandErrorMessage(e);
       console.error("Failed to toggle read-only protection:", e);
     }
   };
@@ -149,7 +150,7 @@ export function useSessionControlModes() {
       }
     } catch (e) {
       currentApprovalMode.value = prev;
-      workModeWarning.value = String(e);
+      workModeWarning.value = extractCommandErrorMessage(e);
       console.error("Failed to switch approval mode:", e);
     }
   };
@@ -170,7 +171,7 @@ export function useSessionControlModes() {
       }
     } catch (e) {
       currentWorkMode.value = prev;
-      workModeWarning.value = String(e);
+      workModeWarning.value = extractCommandErrorMessage(e);
       console.error("Failed to switch work mode:", e);
     }
   };

@@ -8,6 +8,7 @@ import { ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useMcpStore } from '../../stores/mcp';
 import { showToast } from '../../composables/useToast';
+import { extractCommandErrorMessage } from '../../utils/commandError';
 import type {
   McpImportItemResult,
   McpServerConfig,
@@ -155,7 +156,7 @@ const handleTest = async () => {
       toolCount: 0,
       resourceCount: 0,
       promptCount: 0,
-      message: String(err),
+      message: extractCommandErrorMessage(err),
     };
   } finally {
     testing.value = false;
@@ -170,7 +171,7 @@ const handleSave = async () => {
     showToast(t('extensions.mcp.saved', { name: trimmed }));
     emit('update:modelValue', false);
   } catch (err) {
-    showToast(t('extensions.mcp.saveFailed', { error: String(err) }), 'error');
+    showToast(t('extensions.mcp.saveFailed', { error: extractCommandErrorMessage(err) }), 'error');
   } finally {
     saving.value = false;
   }
@@ -189,7 +190,7 @@ const handleImport = async () => {
       emit('update:modelValue', false);
     }
   } catch (err) {
-    showToast(String(err), 'error');
+    showToast(extractCommandErrorMessage(err), 'error');
   } finally {
     saving.value = false;
   }

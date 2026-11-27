@@ -28,6 +28,7 @@ import { computed, ref, watch, type Ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useSessionStore } from "../stores/session";
+import { extractCommandErrorMessage } from "../utils/commandError";
 import {
   decideThinking,
   isThinkingToggleDisabled,
@@ -76,7 +77,7 @@ async function loadSessionThinkingInto(sessionId: string | null) {
     lastError.value = null;
   } catch (e) {
     // 不写入任何档位：宁可不显示，也不猜测
-    lastError.value = String(e);
+    lastError.value = extractCommandErrorMessage(e);
   }
 }
 
@@ -105,7 +106,7 @@ export async function loadPendingThinking() {
     }
     lastError.value = null;
   } catch (e) {
-    lastError.value = String(e);
+    lastError.value = extractCommandErrorMessage(e);
   }
 }
 

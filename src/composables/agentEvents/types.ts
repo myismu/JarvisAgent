@@ -6,6 +6,8 @@
  *
  * ## Key Exports
  * - `EventRegisterFn`: 抽象的事件注册函数签名（生产接 Tauri `listen`，测试可注入内存分发器）
+ * - `AgentEventDomain`: 事件域标识（`governance` / `stream` / `lifecycle`）
+ * - `InitAgentListenersOptions` / `LifecycleEventsOptions`: 按需订阅与聊天同步开关选项
  * - `AgentEventsLoaders`: 后端数据加载器集合
  * - `AgentEventsContext`: 各事件域共享的上下文对象
  * - `SessionMessagesChangedPayload` / `SessionCleanupPayload`: 事件载荷契约
@@ -18,17 +20,37 @@ import type { useChatStore } from "../../stores/chat";
 import type { useAgentStore } from "../../stores/agent";
 import type { usePermissionStore } from "../../stores/permission";
 import type { AgentRun, SessionMessagesChangedEvent } from "../../types";
+import type { ActiveSessionChangedEvent, AgentEventName, EventMap } from "../../api/events";
 
-/** 抽象事件监听注册函数（类似 Java 的 EventBus.subscribe） */
-export type EventRegisterFn = <T>(
-  event: string,
-  handler: (event: { payload: T }) => void | Promise<void>,
+/** 事件域枚举：支持主窗口全量订阅与独立监控窗口按需订阅 */
+export type AgentEventDomain = "governance" | "stream" | "lifecycle";
+
+/** `initListeners` 初始化选项 */
+export interface InitAgentListenersOptions {
+  /** 需要注册的事件域，默认全部注册 `["governance", "stream", "lifecycle"]` */
+  domains?: AgentEventDomain[];
+  /**
+   * 是否在生命周期事件中同步主聊天区消息历史与提示条。
+   * 主窗口默认 `true`；监控窗口不渲染聊天气泡，传 `false` 可避免重复发分页 IPC。
+   */
+  syncChatMessages?: boolean;
+}
+
+/** 生命周期事件域注册选项 */
+export interface LifecycleEventsOptions {
+  syncChatMessages?: boolean;
+}
+
+/**
+ * 强类型事件监听注册函数（类似 Java 的泛型 EventBus.subscribe）。
+ * 传入合法事件名 `K` 后，自动根据 `EventMap[K]` 推导回调参数类型，禁止 `on<any>`。
+ */
+export type EventRegisterFn = <K extends AgentEventName>(
+  event: K,
+  handler: (event: { payload: EventMap[K] }) => void | Promise<void>,
 ) => Promise<void>;
 
-export interface SessionCleanupPayload {
-  deletedSessionId?: string | null;
-  activeSessionId?: string | null;
-}
+export type SessionCleanupPayload = ActiveSessionChangedEvent;
 
 /** 复用 Rust 侧 ts-rs 自动生成的事件契约，消除手工双份维护 */
 export type SessionMessagesChangedPayload = SessionMessagesChangedEvent;

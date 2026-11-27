@@ -27,7 +27,7 @@ import type { AgentRun, SubAgentRun } from "../../types";
 
 type Handler = (event: { payload: any }) => void | Promise<void>;
 
-async function createTestHarness() {
+async function createTestHarness(options?: { syncChatMessages?: boolean }) {
   const session = useSessionStore();
   const chat = useChatStore();
   const agent = useAgentStore();
@@ -75,7 +75,9 @@ async function createTestHarness() {
 
   await registerGovernanceEvents(on, ctx);
   await registerStreamEvents(on, ctx);
-  await registerLifecycleEvents(on, ctx);
+  const cleanupLifecycle = await registerLifecycleEvents(on, ctx, {
+    syncChatMessages: options?.syncChatMessages ?? true,
+  });
 
   async function emit(event: string, payload: unknown) {
     const list = handlers.get(event) ?? [];
@@ -84,7 +86,7 @@ async function createTestHarness() {
     }
   }
 
-  return { session, chat, agent, perm, emit };
+  return { session, chat, agent, perm, emit, handlers, cleanupLifecycle };
 }
 
 describe("agentEvents 事件域集成测试", () => {
@@ -309,5 +311,69 @@ describe("agentEvents 事件域集成测试", () => {
     expect(agent.subAgentRuns["sub_1"]?.loopCount).toBe(2);
     expect(agent.subAgentRuns["sub_2"]?.loopCount).toBe(1);
     expect(agent.subAgentTraceRunsBySession["s1"]).toHaveLength(2);
+  });
+
+  it("lifecycle 清理回调会取消未触发的 subagent 节流定时器，避免销毁后写入 store", async () => {
+    vi.useFakeTimers();
+    const { agent, emit, cleanupLifecycle } = await createTestHarness();
+
+    const subRun: SubAgentRun = {
+      runId: "sub_pending",
+      sessionId: "s1",
+      label: "待清理子任务",
+      agentRole: "research",
+      promptPreview: "preview",
+      readOnly: true,
+      status: "running",
+      phase: "streaming",
+      loopCount: 1,
+      maxLoops: 10,
+      inputTokens: 10,
+      outputTokens: 5,
+      startedAt: 1000,
+      updatedAt: 1000,
+    };
+
+    await emit("subagent-updated", subRun);
+    cleanupLifecycle();
+    await vi.advanceTimersByTimeAsync(2500);
+
+    expect(Object.keys(agent.subAgentRuns)).toHaveLength(0);
+  });
+
+  it("监控窗口模式（syncChatMessages=false）：不订阅聊天消息变更事件且切会话零分页 IPC", async () => {
+    const { handlers, emit, session } = await createTestHarness({ syncChatMessages: false });
+
+    expect(handlers.has("session-messages-changed")).toBe(false);
+    expect(handlers.has("checkpoint-created")).toBe(false);
+    expect(handlers.has("memory-updated")).toBe(false);
+    expect(handlers.has("background-failed")).toBe(false);
+    expect(handlers.has("agent-run-updated")).toBe(true);
+    expect(handlers.has("subagent-updated")).toBe(true);
+    expect(handlers.has("context-snapshot-updated")).toBe(true);
+
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_session_meta") {
+        return Promise.resolve({
+          id: "s2",
+          workingDirectory: "/repo",
+          totalInputTokens: 10,
+          totalOutputTokens: 20,
+          totalCacheHitTokens: 5,
+          totalCacheMissTokens: 5,
+        });
+      }
+      return Promise.resolve([]);
+    });
+
+    await emit("active-session-changed", {
+      deletedSessionId: "s1",
+      activeSessionId: "s2",
+    });
+
+    expect(session.activeSessionId).toBe("s2");
+    expect(session.workingDirectory).toBe("/repo");
+    const pagedCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === "get_session_messages_paged");
+    expect(pagedCalls).toHaveLength(0);
   });
 });

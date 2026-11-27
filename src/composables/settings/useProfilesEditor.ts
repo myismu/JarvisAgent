@@ -20,6 +20,7 @@ import { computed, onMounted, onUnmounted, ref, watch, type Ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
 import type { AgentConfig, AppConfig, ModelCapabilities, ModelProfile } from "../../types";
+import { extractCommandErrorMessage } from "../../utils/commandError";
 
 export interface RetiredHit {
   profileName: string;
@@ -445,7 +446,7 @@ export function useProfilesEditor(options: ProfilesEditorOptions) {
       setSuccessStatus(t("settings.profiles.globalUpdated"));
     } catch (e) {
       console.error("保存全局预设失败:", e);
-      setErrorStatus(t("settings.status.globalSaveError", { error: String(e) }));
+      setErrorStatus(t("settings.status.globalSaveError", { error: extractCommandErrorMessage(e) }));
     } finally {
       actionLoading.value = false;
     }
@@ -496,7 +497,7 @@ export function useProfilesEditor(options: ProfilesEditorOptions) {
       setSuccessStatus(t("settings.profiles.deleteSuccess"));
     } catch (e) {
       console.error("删除配置预设失败:", e);
-      setErrorStatus(t("settings.status.deleteError", { error: String(e) }));
+      setErrorStatus(t("settings.status.deleteError", { error: extractCommandErrorMessage(e) }));
     } finally {
       actionLoading.value = false;
     }
@@ -550,7 +551,7 @@ export function useProfilesEditor(options: ProfilesEditorOptions) {
       await persistFilledNewProfilesBeforeClose();
     } catch (e) {
       console.error("保存已填写的新预设失败:", e);
-      setErrorStatus(t("settings.status.filledProfileSaveError", { error: String(e) }));
+      setErrorStatus(t("settings.status.filledProfileSaveError", { error: extractCommandErrorMessage(e) }));
       return;
     }
 
@@ -602,7 +603,7 @@ export function useProfilesEditor(options: ProfilesEditorOptions) {
         void close();
       }, 800);
     } catch (e) {
-      setErrorStatus(t("settings.status.saveError", { error: String(e) }));
+      setErrorStatus(t("settings.status.saveError", { error: extractCommandErrorMessage(e) }));
     } finally {
       isSaving.value = false;
     }

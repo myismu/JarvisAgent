@@ -25,6 +25,7 @@ import { emit as tauriEmit } from '@tauri-apps/api/event';
 import ConfirmModal from '../common/ConfirmModal.vue';
 import { useSessionStore } from '../../stores/session';
 import { canManuallyCompact, COMPACT_MIN_MESSAGES, COMPACT_SUGGEST_PERCENT, COMPACT_TRIGGER_PERCENT, isContextMeasured, resolveContextPercent, resolveContextTokens } from '../../utils/contextUsage';
+import { extractCommandErrorMessage } from '../../utils/commandError';
 import type { CacheHitPoint, ContextSectionSnapshot, SessionContextSnapshot } from '../../types';
 
 const props = defineProps<{
@@ -372,7 +373,7 @@ const confirmCompact = async () => {
     emit('compacted', compactSessionId);
   } catch (err) {
     if (props.sessionId === compactSessionId) {
-      compactError.value = String(err);
+      compactError.value = extractCommandErrorMessage(err);
       setTimeout(() => {
         if (toastGeneration === compactToastGeneration) compactError.value = '';
       }, 6000);

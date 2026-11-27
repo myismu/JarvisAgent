@@ -17,6 +17,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useSessionStore } from "../../stores/session";
 import { useChatStore } from "../../stores/chat";
 import { usePermissionStore } from "../../stores/permission";
+import { extractCommandErrorMessage } from "../../utils/commandError";
 import type {
   PatchSummary,
   PlanDocument,
@@ -121,12 +122,7 @@ export function useChatRollback() {
   const rollbackError = ref("");
 
   const normalizeRollbackError = (err: unknown) => {
-    const raw =
-      typeof err === "string"
-        ? err
-        : err instanceof Error
-          ? err.message
-          : String(err || t("common.unknownError"));
+    const raw = extractCommandErrorMessage(err) || t("common.unknownError");
     if (raw.includes(t("rollback.historyKept"))) {
       return raw;
     }

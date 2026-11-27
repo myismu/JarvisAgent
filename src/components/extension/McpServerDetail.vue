@@ -6,6 +6,7 @@ import { ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useMcpStore } from '../../stores/mcp';
 import { showToast } from '../../composables/useToast';
+import { extractCommandErrorMessage } from '../../utils/commandError';
 import type {
   McpPromptItemView,
   McpResourceItemView,
@@ -53,7 +54,7 @@ const loadAll = async () => {
     prompts.value = pList;
     logs.value = logList;
   } catch (err) {
-    showToast(String(err), 'error');
+    showToast(extractCommandErrorMessage(err), 'error');
   }
 };
 
@@ -73,7 +74,7 @@ const toggleTool = async (tool: McpToolView) => {
     await mcpStore.setToolEnabled(tool.serverName, tool.name, next);
     tool.enabled = next;
   } catch (err) {
-    showToast(String(err), 'error');
+    showToast(extractCommandErrorMessage(err), 'error');
   }
 };
 
@@ -112,7 +113,7 @@ const handlePreviewResource = async (res: McpResourceItemView) => {
     previewTitle.value = res.uri;
     previewContent.value = data.content;
   } catch (err) {
-    showToast(String(err), 'error');
+    showToast(extractCommandErrorMessage(err), 'error');
   }
 };
 
@@ -122,7 +123,7 @@ const handlePreviewPrompt = async (prompt: McpPromptItemView) => {
     previewTitle.value = prompt.name;
     previewContent.value = data.combinedText;
   } catch (err) {
-    showToast(String(err), 'error');
+    showToast(extractCommandErrorMessage(err), 'error');
   }
 };
 

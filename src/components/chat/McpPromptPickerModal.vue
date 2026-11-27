@@ -9,6 +9,7 @@ import { ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useMcpStore } from '../../stores/mcp';
 import { showToast } from '../../composables/useToast';
+import { extractCommandErrorMessage } from '../../utils/commandError';
 import type { McpPromptItemView } from '../../types/generated/contracts';
 
 const props = defineProps<{
@@ -39,7 +40,7 @@ const loadPrompts = async () => {
       selectPrompt(prompts.value[0]);
     }
   } catch (err) {
-    showToast(String(err), 'error');
+    showToast(extractCommandErrorMessage(err), 'error');
   } finally {
     loading.value = false;
   }
@@ -75,7 +76,7 @@ const handleInsert = async () => {
       emit('update:modelValue', false);
     }
   } catch (err) {
-    showToast(String(err), 'error');
+    showToast(extractCommandErrorMessage(err), 'error');
   } finally {
     rendering.value = false;
   }

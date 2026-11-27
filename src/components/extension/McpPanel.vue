@@ -9,6 +9,7 @@ import { ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useMcpStore } from '../../stores/mcp';
 import { showToast } from '../../composables/useToast';
+import { extractCommandErrorMessage } from '../../utils/commandError';
 import type { McpServerSummary } from '../../types/generated/contracts';
 import McpServerCard from './McpServerCard.vue';
 import McpServerEditor from './McpServerEditor.vue';
@@ -55,7 +56,7 @@ const handleToggleEnabled = async (name: string, enabled: boolean) => {
   try {
     await mcpStore.setServerEnabled(name, enabled);
   } catch (err) {
-    showToast(String(err), 'error');
+    showToast(extractCommandErrorMessage(err), 'error');
   }
 };
 
@@ -63,7 +64,7 @@ const handleToggleTrusted = async (name: string, trusted: boolean) => {
   try {
     await mcpStore.setServerTrusted(name, trusted);
   } catch (err) {
-    showToast(String(err), 'error');
+    showToast(extractCommandErrorMessage(err), 'error');
   }
 };
 
@@ -75,7 +76,7 @@ const handleRestart = async (name: string) => {
     await mcpStore.restartServer(name);
     showToast(t('extensions.mcp.restarted', { name }));
   } catch (err) {
-    showToast(t('extensions.mcp.restartFailed', { error: String(err) }), 'error');
+    showToast(t('extensions.mcp.restartFailed', { error: extractCommandErrorMessage(err) }), 'error');
   } finally {
     const done = new Set(restartingNames.value);
     done.delete(name);
@@ -88,7 +89,7 @@ const handleStop = async (name: string) => {
     await mcpStore.stopServer(name);
     showToast(t('extensions.mcp.stopped', { name }));
   } catch (err) {
-    showToast(String(err), 'error');
+    showToast(extractCommandErrorMessage(err), 'error');
   }
 };
 
@@ -100,7 +101,7 @@ const confirmDelete = async () => {
     await mcpStore.deleteServer(target);
     showToast(t('extensions.mcp.deleted', { name: target }));
   } catch (err) {
-    showToast(String(err), 'error');
+    showToast(extractCommandErrorMessage(err), 'error');
   }
 };
 </script>

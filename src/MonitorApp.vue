@@ -32,6 +32,7 @@ const session = useSessionStore();
 const { locale } = useI18n();
 const {
   initListeners,
+  disposeListeners,
   loadSubAgentRunsFromBackend,
   loadPlanDocumentsFromBackend,
   loadAgentRunsFromBackend,
@@ -42,11 +43,15 @@ const { onMonitorSessionChanged, onMonitorLocaleChanged, restoreCurrentWindowSta
 let unlistenSessionChanged: (() => void) | null = null;
 let unlistenLocaleChanged: (() => void) | null = null;
 let unwatchWindowState: (() => void) | null = null;
+let unlistenFocus: (() => void) | null = null;
+// 卸载竞态标记：组件可能在异步注册完成前已卸载，await 返回后需立即释放刚拿到的监听句柄
+let isUnmounted = false;
 
 const hydrateMonitorState = async (targetSessionId?: string | null) => {
   const activeSessionId = targetSessionId === undefined
     ? await invoke<string | null>("get_active_session_id")
     : targetSessionId;
+  if (isUnmounted) return;
   session.activeSessionId = activeSessionId;
 
   if (!activeSessionId) {
@@ -56,6 +61,7 @@ const hydrateMonitorState = async (targetSessionId?: string | null) => {
   }
 
   const meta = await invoke<SessionMeta>("get_session_meta", { id: activeSessionId });
+  if (isUnmounted) return;
   session.workingDirectory = meta.workingDirectory || null;
   session.setSessionUsageTotals(activeSessionId, {
     input: meta.totalInputTokens || 0,
@@ -75,25 +81,69 @@ const hydrateMonitorState = async (targetSessionId?: string | null) => {
 
 onMounted(async () => {
   await restoreCurrentWindowState();
-  unwatchWindowState = await watchCurrentWindowState();
+  if (isUnmounted) return;
+
+  const stopWatch = await watchCurrentWindowState();
+  if (isUnmounted) {
+    stopWatch();
+    return;
+  }
+  unwatchWindowState = stopWatch;
+
   agent.showAgentPanel = true;
-  await initListeners();
-  await hydrateMonitorState();
-  unlistenSessionChanged = await onMonitorSessionChanged((sessionId) => {
-    hydrateMonitorState(sessionId);
+  // 监控窗口只展示运行态、子 Agent、权限与上下文，不订阅聊天流也不重复拉取聊天消息历史
+  await initListeners({
+    domains: ["governance", "lifecycle"],
+    syncChatMessages: false,
   });
-  unlistenLocaleChanged = await onMonitorLocaleChanged((nextLocale) => {
+  if (isUnmounted) {
+    disposeListeners();
+    return;
+  }
+
+  await hydrateMonitorState();
+  if (isUnmounted) return;
+
+  const stopSessionChanged = await onMonitorSessionChanged((sessionId) => {
+    void hydrateMonitorState(sessionId);
+  });
+  if (isUnmounted) {
+    stopSessionChanged();
+    return;
+  }
+  unlistenSessionChanged = stopSessionChanged;
+
+  const stopLocaleChanged = await onMonitorLocaleChanged((nextLocale) => {
     locale.value = normalizeLocale(nextLocale);
   });
-  // 每次窗口可见时刷新上下文
-  const unlistenFocus = await getCurrentWindow().listen('tauri://focus', () => hydrateMonitorState());
-  onBeforeUnmount(() => { unlistenFocus(); });
+  if (isUnmounted) {
+    stopLocaleChanged();
+    return;
+  }
+  unlistenLocaleChanged = stopLocaleChanged;
+
+  // 每次窗口可见时刷新上下文（必须在同步顶层 onBeforeUnmount 中释放，避免 async 后挂钩失效）
+  const stopFocus = await getCurrentWindow().listen('tauri://focus', () => {
+    void hydrateMonitorState();
+  });
+  if (isUnmounted) {
+    stopFocus();
+    return;
+  }
+  unlistenFocus = stopFocus;
 });
 
 onBeforeUnmount(() => {
+  isUnmounted = true;
+  unlistenFocus?.();
+  unlistenFocus = null;
   unlistenSessionChanged?.();
+  unlistenSessionChanged = null;
   unlistenLocaleChanged?.();
+  unlistenLocaleChanged = null;
   unwatchWindowState?.();
+  unwatchWindowState = null;
+  disposeListeners();
 });
 </script>
 

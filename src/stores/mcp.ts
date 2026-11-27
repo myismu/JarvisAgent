@@ -7,6 +7,7 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { extractCommandErrorMessage } from "../utils/commandError";
 import type {
   McpImportItemResult,
   McpPromptItemView,
@@ -33,7 +34,7 @@ export const useMcpStore = defineStore("mcp", () => {
     try {
       servers.value = await invoke<McpServerSummary[]>("mcp_list_servers");
     } catch (err) {
-      error.value = String(err);
+      error.value = extractCommandErrorMessage(err);
     } finally {
       loading.value = false;
     }
